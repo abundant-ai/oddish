@@ -1206,7 +1206,11 @@ async def cancel_trial_analysis_core(
     trial_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int | list[str]]:
-    """Cancel in-flight analysis for one trial without cancelling the trial."""
+    """Cancel in-flight analysis for one trial without cancelling the trial.
+
+    Classification now runs inside the single task-level QA (``VERDICT``)
+    job, so cancelling analysis also cancels that job for the task.
+    """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     now_value = utcnow()
     rows = await _cancel_worker_jobs_for_kind(
@@ -1228,27 +1232,40 @@ async def cancel_trial_analysis_core(
         .where(TaskModel.id == trial.task_id)
     )
     task = task_result.scalar_one_or_none()
-    other_active_analysis = any(
-        other.id != trial_id
-        and other.superseded_by_trial_id is None
-        and _has_active_analysis(other)
-        for other in (task.trials if task else [])
+
+    # The task QA job classifies all trials then synthesizes the verdict in
+    # one worker job; cancel it so it stops mid-classification.
+    verdict_rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="VERDICT",
+        subject_table="tasks",
+        subject_ids=[trial.task_id],
+        reason=USER_CANCELLED_MESSAGE,
     )
+    if task and (
+        verdict_rows
+        or _has_active_verdict(task)
+        or task.status == TaskStatus.VERDICT_PENDING
+    ):
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = USER_CANCELLED_MESSAGE
+        task.verdict_finished_at = now_value
+
     if (
         task
-        and task.status == TaskStatus.ANALYZING
-        and (rows or had_active_analysis)
-        and not other_active_analysis
+        and task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING)
+        and (rows or had_active_analysis or verdict_rows)
     ):
         task.status = TaskStatus.FAILED
         task.finished_at = now_value
 
+    all_rows = [*rows, *verdict_rows]
     await session.commit()
     return {
         "status": "cancelled",
         "trial_id": trial_id,
-        "analysis_jobs_cancelled": len(rows),
-        **_collect_cancel_metadata(rows),
+        "analysis_jobs_cancelled": len(all_rows),
+        **_collect_cancel_metadata(all_rows),
     }
 
 
@@ -1258,7 +1275,11 @@ async def cancel_task_analysis_core(
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int | list[str]]:
-    """Cancel in-flight analysis jobs for a task without cancelling trials."""
+    """Cancel in-flight analysis jobs for a task without cancelling trials.
+
+    Classification now runs inside the single task-level QA (``VERDICT``)
+    job, so cancelling analysis also cancels that job for the task.
+    """
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
@@ -1280,6 +1301,15 @@ async def cancel_task_analysis_core(
         subject_ids=trial_ids,
         reason=USER_CANCELLED_MESSAGE,
     )
+    # The task QA job classifies all trials then synthesizes the verdict in
+    # one worker job; cancel it so it stops mid-classification.
+    verdict_rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="VERDICT",
+        subject_table="tasks",
+        subject_ids=[task_id],
+        reason=USER_CANCELLED_MESSAGE,
+    )
     cancelled_subject_ids = {str(row["subject_id"]) for row in rows}
     trials_updated = 0
     for trial in live_trials:
@@ -1290,17 +1320,29 @@ async def cancel_task_analysis_core(
         trial.analysis_finished_at = now_value
         trials_updated += 1
 
-    if task.status == TaskStatus.ANALYZING or trials_updated:
+    if verdict_rows or _has_active_verdict(task) or (
+        task.status == TaskStatus.VERDICT_PENDING
+    ):
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = USER_CANCELLED_MESSAGE
+        task.verdict_finished_at = now_value
+
+    if (
+        task.status in (TaskStatus.ANALYZING, TaskStatus.VERDICT_PENDING)
+        or trials_updated
+        or verdict_rows
+    ):
         task.status = TaskStatus.FAILED
         task.finished_at = now_value
 
+    all_rows = [*rows, *verdict_rows]
     await session.commit()
     return {
         "status": "cancelled",
         "task_id": task_id,
-        "analysis_jobs_cancelled": len(rows),
+        "analysis_jobs_cancelled": len(all_rows),
         "trials_cancelled": trials_updated,
-        **_collect_cancel_metadata(rows),
+        **_collect_cancel_metadata(all_rows),
     }
 
 
@@ -1310,8 +1352,21 @@ async def cancel_task_verdict_core(
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int | list[str]]:
-    """Cancel an in-flight task verdict without cancelling trials or analysis."""
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    """Cancel an in-flight task QA (``VERDICT``) job.
+
+    The QA job classifies every trial and then synthesizes the verdict in
+    one worker job, so cancelling it also finalizes any trial whose
+    classification was mid-flight (left RUNNING by a killed worker).
+    """
+    result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
     now_value = utcnow()
     rows = await _cancel_worker_jobs_for_kind(
         session,
@@ -1324,6 +1379,13 @@ async def cancel_task_verdict_core(
         task.verdict_status = VerdictStatus.FAILED
         task.verdict_error = USER_CANCELLED_MESSAGE
         task.verdict_finished_at = now_value
+        # Finalize trials whose classification the QA job had in flight so
+        # they don't linger in a RUNNING analysis state.
+        for trial in task.trials or []:
+            if trial.superseded_by_trial_id is None and _has_active_analysis(trial):
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = USER_CANCELLED_MESSAGE
+                trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
@@ -1467,16 +1529,19 @@ async def rerun_trial_analysis_core(
             detail="Cannot rerun analysis while the task verdict is still running",
         )
 
+    # Reset just this trial's analysis (the task-level QA job re-classifies
+    # only trials whose analysis isn't already SUCCESS, then re-synthesizes
+    # the verdict). One job handles the whole task.
     _reset_trial_analysis(trial)
     _reset_task_verdict(task)
     task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
+    task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
-    trial.analysis_status = AnalysisStatus.QUEUED
+    task.verdict_status = VerdictStatus.QUEUED
 
-    from oddish.queue import enqueue_analysis_worker_job
+    from oddish.queue import enqueue_verdict_worker_job
 
-    await enqueue_analysis_worker_job(session, trial_id=trial_id, org_id=trial.org_id)
+    await enqueue_verdict_worker_job(session, task_id=task.id, org_id=task.org_id)
 
     await session.commit()
     return {"status": "queued", "trial_id": trial_id}
@@ -1538,19 +1603,21 @@ async def rerun_task_analysis_core(
             detail="Cannot rerun analysis while the task verdict is still running",
         )
 
-    from oddish.queue import enqueue_analysis_worker_job
-
+    # Reset every live trial's analysis and re-run the whole task QA as a
+    # single job: it re-classifies all live trials, then synthesizes the
+    # verdict.
     for trial in live_trials:
         _reset_trial_analysis(trial)
-        trial.analysis_status = AnalysisStatus.QUEUED
-        await enqueue_analysis_worker_job(
-            session, trial_id=trial.id, org_id=trial.org_id
-        )
 
     _reset_task_verdict(task)
     task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
+    task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
+    task.verdict_status = VerdictStatus.QUEUED
+
+    from oddish.queue import enqueue_verdict_worker_job
+
+    await enqueue_verdict_worker_job(session, task_id=task.id, org_id=task.org_id)
 
     await session.commit()
     return {

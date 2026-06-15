@@ -70,26 +70,29 @@ async def _heartbeat_analysis_worker_job(
             pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
-async def run_analysis_job(
-    trial_id: str,
-    queue_key: str,
-    modal_function_call_id: str | None = None,
-    worker_job_id: str | None = None,
-) -> None:
-    """
-    Execute analysis for a claimed trial.
+async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
+    """Resolve, classify, and store one trial's analysis.
 
-    1. Download task and trial from S3
-    2. Run classification with Claude Code
-    3. Store classification in trial.analysis
-    4. Check if all analyses done -> start verdict stage
+    This is the heartbeat-free, stage-transition-free core of per-trial
+    analysis. It marks the trial RUNNING, downloads the task/trial
+    artifacts, runs the Claude Code classifier (or the probe analyzer for
+    probe trials), and persists the result onto ``trial.analysis`` /
+    ``trial.analysis_status``.
+
+    It is shared by two callers:
+
+    * the task-level QA job (``run_verdict_job``), which classifies every
+      live trial in a single worker job before synthesizing the verdict,
+      and manages one heartbeat loop spanning the whole task; and
+    * the legacy per-trial ``run_analysis_job`` wrapper, which adds a
+      heartbeat loop and the verdict stage transition around this call so
+      in-flight ANALYSIS worker_jobs keep working through a deploy.
+
+    Returns the resulting ``AnalysisStatus`` (SUCCESS / FAILED), or
+    ``None`` if the trial was skipped because its analysis was already
+    terminal.
     """
     from oddish.analyze import TrialClassifier
-
-    console.print(
-        f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key})"
-    )
-    console.print(f"[dim]Task bucket: {settings.s3_bucket}[/dim]")
 
     # Mark as running
     async with _trial_session(trial_id) as (session, trial):
@@ -101,7 +104,7 @@ async def run_analysis_job(
             console.print(
                 f"[yellow]Trial {trial_id} already analyzed, skipping[/yellow]"
             )
-            return
+            return None
 
         trial.analysis_status = AnalysisStatus.RUNNING
         trial.analysis_started_at = utcnow()
@@ -111,6 +114,7 @@ async def run_analysis_job(
         if not task:
             raise RuntimeError(f"Task {trial.task_id} not found")
 
+        task_id = task.id
         task_s3_key = task.task_s3_key
         trial_s3_key = trial.trial_s3_key
         task_path = task.task_path
@@ -137,23 +141,13 @@ async def run_analysis_job(
     classification_result = None
     analysis_error = None
 
-    heartbeat_stop = asyncio.Event()
-    heartbeat_task: asyncio.Task | None = None
-    if worker_job_id:
-        heartbeat_task = asyncio.create_task(
-            _heartbeat_analysis_worker_job(
-                worker_job_id=worker_job_id,
-                stop_event=heartbeat_stop,
-            )
-        )
-
     try:
         (
             task_dir_to_use,
             temp_task_dir,
             resolved_task_s3_key,
         ) = await resolve_task_directory(
-            task_id=task.id,
+            task_id=task_id,
             task_s3_key=task_s3_key,
             task_path=task_path,
         )
@@ -250,16 +244,16 @@ async def run_analysis_job(
         analysis_error = f"{type(e).__name__}: {e}"
         console.print(f"[red]Analysis error for {trial_id}: {analysis_error}[/red]")
     finally:
-        heartbeat_stop.set()
-        if heartbeat_task is not None:
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
         # Clean up temp directories
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
         if temp_trial_dir and temp_trial_dir.exists():
             shutil.rmtree(temp_trial_dir, ignore_errors=True)
 
+    stored_status: AnalysisStatus = AnalysisStatus.FAILED
+
     async def _store_results() -> None:
+        nonlocal stored_status
         async with _trial_session(trial_id, allow_missing=True) as (session, trial):
             if not trial:
                 return
@@ -269,6 +263,7 @@ async def run_analysis_job(
                 trial.analysis_status = AnalysisStatus.SUCCESS
                 trial.analysis_finished_at = utcnow()
                 trial.analysis_error = None
+                stored_status = AnalysisStatus.SUCCESS
                 console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
             else:
                 trial.analysis_status = AnalysisStatus.FAILED
@@ -276,17 +271,65 @@ async def run_analysis_job(
                     analysis_error or "Analysis execution failed with exception"
                 )
                 trial.analysis_finished_at = utcnow()
+                stored_status = AnalysisStatus.FAILED
                 console.print(f"[red]Analysis {trial_id} FAILED[/red]")
 
-            # Check if all analyses done → start verdict stage.
-            # Imported lazily to avoid a circular import with
-            # ``oddish.queue`` (handler auto-registration path).
-            from oddish.queue import maybe_start_verdict_stage
+    await asyncio.shield(_store_results())
+    return stored_status
 
+
+async def run_analysis_job(
+    trial_id: str,
+    queue_key: str,
+    modal_function_call_id: str | None = None,
+    worker_job_id: str | None = None,
+) -> None:
+    """Execute analysis for a single claimed trial (legacy per-trial path).
+
+    Task-level QA (``run_verdict_job``) now classifies every trial in a
+    single worker job, so the unified pipeline no longer enqueues
+    per-trial ANALYSIS jobs. This handler body is retained so any ANALYSIS
+    worker_jobs already in flight across a deploy still run to completion;
+    it wraps :func:`classify_trial_and_store` with a heartbeat loop and the
+    verdict stage transition.
+
+    1. Download task and trial from S3
+    2. Run classification with Claude Code
+    3. Store classification in trial.analysis
+    4. Check if all analyses done -> start verdict stage
+    """
+    console.print(
+        f"[cyan]Processing analysis[/cyan] {trial_id} (queue_key={queue_key})"
+    )
+    console.print(f"[dim]Task bucket: {settings.s3_bucket}[/dim]")
+
+    heartbeat_stop = asyncio.Event()
+    heartbeat_task: asyncio.Task | None = None
+    if worker_job_id:
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_analysis_worker_job(
+                worker_job_id=worker_job_id,
+                stop_event=heartbeat_stop,
+            )
+        )
+
+    try:
+        await classify_trial_and_store(trial_id)
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_task is not None:
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+    async def _advance_stage() -> None:
+        from oddish.db import get_session
+        from oddish.queue import maybe_start_verdict_stage
+
+        async with get_session() as session:
             started = await maybe_start_verdict_stage(session, trial_id)
             if started:
                 console.print(
-                    f"[blue]Task {trial.task_id} transitioned to VERDICT_PENDING[/blue]"
+                    f"[blue]Task transitioned to VERDICT_PENDING after "
+                    f"analysis {trial_id}[/blue]"
                 )
 
-    await asyncio.shield(_store_results())
+    await asyncio.shield(_advance_stage())
