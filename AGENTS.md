@@ -98,13 +98,21 @@ Harbor task execution → logs/results/artifacts (S3)
 High-level flow:
 
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
-2. Submit a sweep of agent/model trials for that task; each trial, analysis,
-   and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
-   config to override the total attempt budget for newly-created trials.
+2. Submit a sweep of agent/model trials for that task; each trial is
+   enqueued as a `worker_jobs` row in the same transaction as its domain
+   row. Set `max_trial_attempts` on a sweep submission or sweep config to
+   override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
-   handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
-4. Use the CLI or dashboard to watch progress and pull logs/artifacts
+   handler (`TRIAL` / `VERDICT`), write heartbeats, and exit.
+4. Trajectory analysis is **task-scoped**: when every trial of a
+   `run_analysis` task is terminal, a single `VERDICT` job is enqueued. That
+   one job classifies every live trial's trajectory (same taxonomy /
+   evidence / reasoning, written to `trials.analysis`) and then synthesizes
+   the task verdict (`tasks.verdict`). A sweep of `T` tasks × `N` trials
+   therefore enqueues `T` QA jobs instead of `T × (N + 1)`. (The legacy
+   per-trial `ANALYSIS` kind/handler is retained only so in-flight rows
+   drain across a deploy; nothing enqueues new ones.)
+5. Use the CLI or dashboard to watch progress and pull logs/artifacts
    back locally.
 
 ## Package Boundaries
@@ -113,7 +121,10 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
- handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+ handler registry (`TrialJobHandler`, `VerdictJobHandler`, plus the legacy
+ `AnalysisJobHandler` kept for in-flight rows)
+- the task-level QA job (`run_verdict_job`): classify every live trial via
+ the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
  per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
@@ -200,7 +211,9 @@ Behavior:
 |------|---------|
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
-| `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
+| `trial_handler.py` | TRIAL execution body |
+| `verdict_handler.py` | Task-level QA job: `run_verdict_job` classifies every live trial then synthesizes the verdict |
+| `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the legacy `run_analysis_job` wrapper for in-flight ANALYSIS rows |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, orphaned-slot release |
 | `slots.py` | `queue_slots` lease acquire/release |
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping |
@@ -278,13 +291,13 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
 | DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
-| POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
+| POST | `/tasks/{task_id}/analysis/retry` | Re-run the task QA job: reset every live trial's classification and the verdict, then enqueue one task-level QA job |
 | POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
 | POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
-| POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
+| POST | `/trials/{trial_id}/analysis/retry` | Reset one trial's classification + the task verdict, then enqueue the single task-level QA job (it re-classifies only the reset trial and re-synthesizes the verdict) |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
@@ -583,15 +596,19 @@ deadlocked the next sweep):
 3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
    queue key and calls `run_single_worker_job`, which atomically claims one
    row from `worker_jobs`, dispatches to the registered handler
-   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats on both
-   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
-   outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
-   post-success hook (GitHub notification) when applicable, and exits.
+   (`TRIAL` or the task-level QA `VERDICT`; `ANALYSIS` only for in-flight
+   legacy rows), writes heartbeats on both `worker_jobs.heartbeat_at` and
+   the mirrored domain column, records the outcome
+   (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the post-success
+   hook (GitHub notification) when applicable, and exits.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
 (`notify_github_trial`, `notify_github_analysis`, `notify_github_verdict`)
-are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`.
+are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`. The
+task-level QA `VERDICT` job fires `notify_github_verdict`, which refreshes
+the whole PR comment (per-trial classifications + task verdict) in one
+update.
 
 ### Local Development
 
