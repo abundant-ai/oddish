@@ -38,7 +38,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-VERDICT_MODEL = "gpt-5.2"
+VERDICT_MODEL = "gpt-5.4"
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
