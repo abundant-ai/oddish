@@ -326,7 +326,7 @@ ODDISH_OPENAI_PROVIDER=azure
 AZURE_OPENAI_API_KEY=...
 AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com/openai/v1
 AZURE_OPENAI_API_VERSION=...
-ODDISH_AZURE_OPENAI_DEPLOYMENTS='{"openai/gpt-5.2":"azure-gpt-5-2","gpt-5.2":"azure-gpt-5-2"}'
+ODDISH_AZURE_OPENAI_DEPLOYMENTS='{"openai/gpt-5.4":"azure-gpt-5-4","gpt-5.4":"azure-gpt-5-4"}'
 
 # AWS Bedrock — the default route for Claude models on the Modal
 # deployment (the image sets CLAUDE_CODE_USE_BEDROCK=1). Provide the
@@ -549,16 +549,38 @@ If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single e
 
 ### Worker Architecture
 
-Dispatcher + single-job pattern, backed by the unified `worker_jobs` table:
+Dispatcher + reconciler + single-job pattern, backed by the unified
+`worker_jobs` table. **Dispatch and reconciliation are deliberately separate
+scheduled functions** so a slow or deadlocking reconciliation sweep can never
+block worker spawning (previously they shared one function under a tight 60s
+timeout, so a sweep that timed out or deadlocked spawned zero workers that
+cycle — and a SIGKILL mid-sweep left orphaned `idle in transaction` locks that
+deadlocked the next sweep):
 
-1. `poll_queue()` runs on a 120s Modal schedule. It calls
+1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (180s) Modal schedule under
+   `DISPATCHER_TIMEOUT_SECONDS` (120s). It does only two things: discover active
+   queue keys via `discover_active_worker_job_queue_keys`, and launch up to
+   `MAX_WORKERS_PER_POLL` single-job containers via the org-first fair-share
+   `build_spawn_plan`. It runs no cleanup, so dispatch is never blocked by it.
+   `MAX_WORKERS_PER_POLL` is the dominant throughput ceiling: long agent trials
+   hold a `queue_slots` lease for their full duration, so steady-state running
+   workers ≈ `spawns_per_poll × trial_duration / poll_interval`. It must stay
+   high enough to fill the per-model concurrency limits (which sum into the
+   hundreds); the per-queue-key slot caps and `WORKER_MAX_CONTAINERS` remain the
+   real bounds.
+2. `reconcile_queue_state()` runs on its own `CLEANUP_INTERVAL_SECONDS` (240s)
+   schedule under a generous `CLEANUP_TIMEOUT_SECONDS` (600s) so it is never
+   SIGKILLed mid-transaction. It runs (each phase wrapped best-effort so one
+   failure doesn't abort the rest): stale `queue_slots` lease cleanup,
    `cleanup_orphaned_queue_state` (zombie-txn reap + stale-heartbeat sweep +
-   stage safety nets + orphaned slot release), runs the experiments owner
+   stage safety nets + orphaned slot release), and the experiments owner
    backfill (`dashboard_owner_backfill` — converges `owner_user_id` so the
-   dashboard Mine filter stays on its indexed fast path), discovers active
-   queue keys via `discover_active_worker_job_queue_keys`, and launches up
-   to `MAX_WORKERS_PER_POLL` single-job containers.
-2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
+   dashboard Mine filter stays on its indexed fast path). The display-hygiene
+   clear of terminal-trial claim metadata
+   (`clear_terminal_trial_runtime_refs`) runs after the main reconciliation
+   transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
+   can neither deadlock against live workers nor roll back the sweep.
+3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
    queue key and calls `run_single_worker_job`, which atomically claims one
    row from `worker_jobs`, dispatches to the registered handler
    (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats on both
@@ -629,9 +651,12 @@ ODDISH_ENABLE_MODAL_WORKERS=...
 ODDISH_MODAL_API_MIN_CONTAINERS=...
 ODDISH_MODAL_API_MAX_CONTAINERS=...
 ODDISH_MODAL_POLL_INTERVAL_SECONDS=...
+ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS=...
+ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS=...
+ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS=...
 ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
 ODDISH_MODAL_WORKER_NONPREEMPTIBLE=...
-ODDISH_MODAL_MAX_WORKERS_PER_POLL=64
+ODDISH_MODAL_MAX_WORKERS_PER_POLL=128
 ODDISH_DEFAULT_MODEL_CONCURRENCY=...
 ODDISH_MODAL_NOP_ORACLE_CONCURRENCY=...
 MODAL_APP_NAME=...
@@ -665,7 +690,7 @@ uv run alembic upgrade head
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
 | `auth/verification.py` | API key + Clerk JWT verification |
-| `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic single-job runner |
+| `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
