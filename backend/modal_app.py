@@ -51,6 +51,20 @@ WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
 POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
+# The dispatcher (poll_queue) now only discovers active queue keys and spawns
+# job workers -- it no longer runs the heavy reconciliation sweep inline, so it
+# stays well under this timeout. Kept comfortably above 60s so spawning a large
+# batch via asyncio.gather can never be SIGKILLed mid-flight (a kill there used
+# to leave orphaned 'idle in transaction' locks that deadlocked the next poll).
+DISPATCHER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS", 120)
+# Queue-state reconciliation (stale-heartbeat reap, stage advances, orphaned
+# slot release, owner backfill) runs in its own scheduled function, decoupled
+# from dispatch. It gets a generous timeout so it is never SIGKILLed
+# mid-transaction; the interval is a little longer than the poll interval since
+# the stale-heartbeat threshold is 15 minutes and reconciliation does not need
+# to run as often as dispatch.
+CLEANUP_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS", 240)
+CLEANUP_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS", 600)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -75,8 +89,15 @@ WORKER_MAX_CONTAINERS = _env_int(
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
+# Max number of workers spawned per poll cycle (rate limiter, global across all
+# queue_keys). This is the dominant throughput ceiling: long agent trials hold a
+# slot for their full duration (often 10-30+ min), so the steady-state pool of
+# running workers is roughly (spawns_per_poll * trial_duration / poll_interval).
+# At 64/180s the global rate could not fill the per-model concurrency limits
+# (which sum into the hundreds), leaving most models far below their caps. The
+# per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
+# real safety bounds; this just stops the dispatcher from starving them.
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 128)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
 # jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
