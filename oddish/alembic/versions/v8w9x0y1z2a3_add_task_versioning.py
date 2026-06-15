@@ -46,19 +46,25 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True), if_not_exists=True)
+        sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
+        if_not_exists=True,
+    )
 
     op.create_index(
         "idx_task_versions_task_id_version",
         "task_versions",
         ["task_id", "version"],
-        unique=True, if_not_exists=True)
+        unique=True,
+        if_not_exists=True,
+    )
 
     # --- tasks: add current_version_id (FK added separately to avoid
     #     circular dependency issues during table creation) ---
     op.add_column(
         "tasks",
-        sa.Column("current_version_id", sa.String(128), nullable=True), if_not_exists=True)
+        sa.Column("current_version_id", sa.String(128), nullable=True),
+        if_not_exists=True,
+    )
     op.execute(
         """
         DO $$
@@ -86,11 +92,12 @@ def upgrade() -> None:
             sa.String(128),
             sa.ForeignKey("task_versions.id", ondelete="SET NULL"),
             nullable=True,
-        ), if_not_exists=True)
+        ),
+        if_not_exists=True,
+    )
     op.create_index(
-        "idx_trials_task_version_id",
-        "trials",
-        ["task_version_id"], if_not_exists=True)
+        "idx_trials_task_version_id", "trials", ["task_version_id"], if_not_exists=True
+    )
 
     # --- enforce unique (org_id, name) on tasks ---
     # COALESCE handles NULL org_id (OSS) so the constraint works for both
@@ -99,7 +106,9 @@ def upgrade() -> None:
         "idx_tasks_unique_org_name",
         "tasks",
         [sa.text("COALESCE(org_id, '')"), "name"],
-        unique=True, if_not_exists=True)
+        unique=True,
+        if_not_exists=True,
+    )
 
 
 def downgrade() -> None:

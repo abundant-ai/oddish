@@ -1,4 +1,5 @@
 """next_probe_model round-robins over the fixed probe model pool."""
+
 from __future__ import annotations
 
 from pathlib import Path

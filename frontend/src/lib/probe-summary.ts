@@ -77,7 +77,9 @@ export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";
   const mapped = m === "cheat_ratio" ? "ratio" : m;
   const known: ProbeMetric[] = ["ratio", "result_focus", "none"];
-  return known.includes(mapped as ProbeMetric) ? (mapped as ProbeMetric) : "none";
+  return known.includes(mapped as ProbeMetric)
+    ? (mapped as ProbeMetric)
+    : "none";
 }
 
 export function ratioUnitVerb(cfg: ProbeHarborConfig): {

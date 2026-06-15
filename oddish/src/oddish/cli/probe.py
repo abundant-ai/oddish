@@ -126,7 +126,9 @@ def probe(
     console.print(f"  Task ID:    {result['id']}")
     console.print(f"  New trials: {result.get('trials_count', len(new_trial_ids))}")
     for trial_id in new_trial_ids:
-        console.print(f"  Probe:      {dashboard_url}/tasks/{result['id']}/probe/{trial_id}")
+        console.print(
+            f"  Probe:      {dashboard_url}/tasks/{result['id']}/probe/{trial_id}"
+        )
 
     if watch and len(new_trial_ids) == 1:
         console.print("\n[dim]Watching probe (Ctrl+C to stop)...[/dim]\n")

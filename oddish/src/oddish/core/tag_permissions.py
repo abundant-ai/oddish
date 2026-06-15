@@ -14,6 +14,7 @@ with TASKS+ scope may modify any tag in their org. The helpers below
 return ``True`` whenever ``auth.user_role`` is unset AND the Clerk-backed
 ``OrganizationModel`` is unavailable.
 """
+
 from __future__ import annotations
 
 from typing import Any

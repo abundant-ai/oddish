@@ -47,9 +47,7 @@ async def _cleanup(
     async with get_session() as session:
         if trial_ids:
             await session.execute(
-                TrialModel.__table__.delete().where(
-                    TrialModel.id.in_(trial_ids)
-                )
+                TrialModel.__table__.delete().where(TrialModel.id.in_(trial_ids))
             )
         if task_ids:
             await session.execute(
@@ -96,9 +94,13 @@ async def empty_experiment():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"ep-test-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"ep-test-{suffix}", org_id=org_id)
+        )
         session.add(
             TaskModel(
                 id=task_id,
@@ -167,9 +169,15 @@ async def probed_experiment():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"ep-probe-test-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(
+                id=experiment_id, name=f"ep-probe-test-{suffix}", org_id=org_id
+            )
+        )
         # Insert task without current_version_id first (to satisfy FK order)
         session.add(
             TaskModel(
@@ -261,9 +269,15 @@ async def dual_probe_experiment():
 
     async with get_session() as session:
         session.add(
-            OrganizationModel(id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}")
+            OrganizationModel(
+                id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
+            )
         )
-        session.add(ExperimentModel(id=experiment_id, name=f"ep-dual-probe-{suffix}", org_id=org_id))
+        session.add(
+            ExperimentModel(
+                id=experiment_id, name=f"ep-dual-probe-{suffix}", org_id=org_id
+            )
+        )
         session.add(
             TaskModel(
                 id=task_id,

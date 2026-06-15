@@ -96,8 +96,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const [modalRatioUnit, setModalRatioUnit] = useState("");
   const [modalRatioVerb, setModalRatioVerb] = useState("");
 
-  const selectedPreset =
-    presets.find((p) => p.id === selectedPresetId) ?? null;
+  const selectedPreset = presets.find((p) => p.id === selectedPresetId) ?? null;
 
   const reloadPresets = useCallback(async () => {
     try {
@@ -292,9 +291,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
             className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
           >
             <option value="">
-              {presetsLoaded
-                ? "— Select a probe agent —"
-                : "Loading presets…"}
+              {presetsLoaded ? "— Select a probe agent —" : "Loading presets…"}
             </option>
             {presets.map((p) => (
               <option key={p.id} value={p.id}>
@@ -484,8 +481,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               disabled={
                 !modalName.trim() ||
                 !modalOperatorPrompt.trim() ||
-                (modalEvaluationMetric === "ratio" &&
-                  !modalRatioUnit.trim())
+                (modalEvaluationMetric === "ratio" && !modalRatioUnit.trim())
               }
               className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
             >
@@ -496,132 +492,132 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       </Dialog>
       {selectedPresetId ? (
         <>
-      {(() => {
-        if (!selectedPreset) return null;
-        const m = selectedPreset.evaluation_metric;
-        const metric = m === "cheat_ratio" ? "ratio" : m;
-        if (metric === "ratio") {
-          const unit =
-            selectedPreset.ratio_unit ??
-            (m === "cheat_ratio" ? "cheat" : "attempt");
-          const verb =
-            selectedPreset.ratio_verb ??
-            (m === "cheat_ratio" ? "succeeded" : null);
-          const plural = pluralize(unit);
-          const example = verb
-            ? `e.g. "2/5 ${plural} ${verb}"`
-            : `e.g. "2/5 ${plural}"`;
-          return (
-            <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">
-                Result column will show:
-              </span>{" "}
-              ratio of {plural}
-              {verb ? ` ${verb}` : ""} ({example}).{" "}
-              <button
-                type="button"
-                onClick={openEditModal}
-                className="underline hover:text-foreground"
+          {(() => {
+            if (!selectedPreset) return null;
+            const m = selectedPreset.evaluation_metric;
+            const metric = m === "cheat_ratio" ? "ratio" : m;
+            if (metric === "ratio") {
+              const unit =
+                selectedPreset.ratio_unit ??
+                (m === "cheat_ratio" ? "cheat" : "attempt");
+              const verb =
+                selectedPreset.ratio_verb ??
+                (m === "cheat_ratio" ? "succeeded" : null);
+              const plural = pluralize(unit);
+              const example = verb
+                ? `e.g. "2/5 ${plural} ${verb}"`
+                : `e.g. "2/5 ${plural}"`;
+              return (
+                <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    Result column will show:
+                  </span>{" "}
+                  ratio of {plural}
+                  {verb ? ` ${verb}` : ""} ({example}).{" "}
+                  <button
+                    type="button"
+                    onClick={openEditModal}
+                    className="underline hover:text-foreground"
+                  >
+                    Edit
+                  </button>{" "}
+                  to change.
+                </div>
+              );
+            }
+            if (metric === "result_focus") {
+              return (
+                <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    Result column will show:
+                  </span>{" "}
+                  the analyzer's answer to your focus question.
+                </div>
+              );
+            }
+            return (
+              <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">
+                  Result column will show:
+                </span>{" "}
+                raw verifier reward (no specific evaluation metric).
+              </div>
+            );
+          })()}
+          <div className="flex gap-4">
+            <label className="flex-1">
+              <span className="text-sm font-medium">Agent</span>
+              <select
+                value={agent}
+                onChange={(e) => {
+                  const a = e.target.value;
+                  setAgent(a);
+                  setModel(MODELS_BY_AGENT[a][0].value);
+                }}
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
               >
-                Edit
-              </button>{" "}
-              to change.
-            </div>
-          );
-        }
-        if (metric === "result_focus") {
-          return (
-            <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              <span className="font-medium text-foreground">
-                Result column will show:
-              </span>{" "}
-              the analyzer's answer to your focus question.
-            </div>
-          );
-        }
-        return (
-          <div className="rounded border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-            <span className="font-medium text-foreground">
-              Result column will show:
-            </span>{" "}
-            raw verifier reward (no specific evaluation metric).
+                {AGENTS.map((a) => (
+                  <option key={a.value} value={a.value}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex-1">
+              <span className="text-sm font-medium">Model</span>
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+              >
+                {(MODELS_BY_AGENT[agent] ?? []).map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
-        );
-      })()}
-      <div className="flex gap-4">
-        <label className="flex-1">
-          <span className="text-sm font-medium">Agent</span>
-          <select
-            value={agent}
-            onChange={(e) => {
-              const a = e.target.value;
-              setAgent(a);
-              setModel(MODELS_BY_AGENT[a][0].value);
-            }}
-            className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
+          <label className="block">
+            <span className="text-sm font-medium">Extra instructions</span>
+            <textarea
+              value={extraInstructions}
+              onChange={(e) => setExtraInstructions(e.target.value)}
+              placeholder="You are a security researcher. Find any way to make the verifier pass without solving the task..."
+              rows={10}
+              required
+              className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="text-sm font-medium">
+              Result focus{" "}
+              <span className="text-muted-foreground">(optional)</span>
+            </span>
+            <p className="text-xs text-muted-foreground">
+              A specific question you want the analyzer to answer about this
+              trial. Shows as a callout on the result page.
+            </p>
+            <textarea
+              value={result_focus}
+              onChange={(e) => setResultFocus(e.target.value)}
+              placeholder="e.g. Did the agent find any ambiguities in the spec? Or: Which anti-cheat layer was most effective?"
+              rows={3}
+              className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
+            />
+          </label>
+          {error && (
+            <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
+              {error}
+            </p>
+          )}
+          <button
+            type="submit"
+            disabled={submitting || !extraInstructions.trim()}
+            className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {AGENTS.map((a) => (
-              <option key={a.value} value={a.value}>
-                {a.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="flex-1">
-          <span className="text-sm font-medium">Model</span>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-sm"
-          >
-            {(MODELS_BY_AGENT[agent] ?? []).map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <label className="block">
-        <span className="text-sm font-medium">Extra instructions</span>
-        <textarea
-          value={extraInstructions}
-          onChange={(e) => setExtraInstructions(e.target.value)}
-          placeholder="You are a security researcher. Find any way to make the verifier pass without solving the task..."
-          rows={10}
-          required
-          className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
-        />
-      </label>
-      <label className="block">
-        <span className="text-sm font-medium">
-          Result focus{" "}
-          <span className="text-muted-foreground">(optional)</span>
-        </span>
-        <p className="text-xs text-muted-foreground">
-          A specific question you want the analyzer to answer about this trial.
-          Shows as a callout on the result page.
-        </p>
-        <textarea
-          value={result_focus}
-          onChange={(e) => setResultFocus(e.target.value)}
-          placeholder="e.g. Did the agent find any ambiguities in the spec? Or: Which anti-cheat layer was most effective?"
-          rows={3}
-          className="mt-1 w-full rounded border bg-background px-2 py-1.5 font-mono text-sm"
-        />
-      </label>
-      {error && (
-        <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
-          {error}
-        </p>
-      )}
-      <button
-        type="submit"
-        disabled={submitting || !extraInstructions.trim()}
-        className="rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-      >
-        {submitting ? "Submitting..." : "Submit"}
-      </button>
+            {submitting ? "Submitting..." : "Submit"}
+          </button>
         </>
       ) : (
         <p className="text-sm text-muted-foreground">
