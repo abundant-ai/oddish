@@ -53,6 +53,7 @@ class ChatOrchestrator:
         transcript_buffer: SessionTranscriptBuffer,
         anthropic_api_key: str,
         chat_auto_stop_minutes: int = 30,
+        chat_auto_delete_minutes: int = 60,
         blob_store=None,
     ) -> None:
         self._daytona = daytona
@@ -60,6 +61,7 @@ class ChatOrchestrator:
         self._buffer = transcript_buffer
         self._anthropic_api_key = anthropic_api_key
         self._auto_stop = chat_auto_stop_minutes
+        self._auto_delete = chat_auto_delete_minutes
         self._blob = blob_store
         self._sandboxes: dict[str, CreatedSandbox] = {}
 
@@ -97,6 +99,8 @@ class ChatOrchestrator:
         sandbox = await Provisioner(client=self._daytona).create(
             env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
             auto_stop_minutes=self._auto_stop,
+            auto_delete_minutes=self._auto_delete,
+            labels={"app": "cc_chat", "session_id": session_id},
             daytona_session_id=DAYTONA_SESSION_ID,
         )
         try:
