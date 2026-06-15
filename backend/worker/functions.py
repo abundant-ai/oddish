@@ -1,9 +1,23 @@
 from oddish.config import Settings
 
-# Worker containers process one job each; keep DB pools minimal to avoid
-# exhausting connection limits when Modal bursts many containers.
-Settings.db_pool_size = 1
-Settings.db_pool_max_overflow = 0
+# Worker containers run ONE job for its full duration -- agent trials can run
+# for many minutes up to ~10 hours. A pooled (QueuePool) connection would be
+# opened by the first session (``_prepare_trial_run``) and then held *idle* for
+# the entire trial, even though the worker only touches the DB for a few ms
+# every 30s (heartbeats) plus a claim and a final write. Across a large fleet
+# that's hundreds of connections held idle for hours against the Supavisor
+# client cap.
+#
+# NullPool makes every SQLAlchemy session short-lived: open a connection, run
+# its quick transaction, close it. Combined with the runner's per-op asyncpg
+# connections (claim / heartbeat / outcome) and slots.py's per-op connections,
+# a worker holds *no* DB connection during the long Harbor run -- only the few
+# workers actively writing at any instant consume a client connection. This is
+# what lets the fleet scale past the naive ``workers × held_conns`` ceiling.
+# Supavisor transaction mode is built for exactly this transient-connection
+# pattern. The API keeps its QueuePool (see endpoints.py) because it is warm,
+# long-lived, and latency-sensitive.
+Settings.db_use_null_pool = True
 
 import asyncio
 import time
