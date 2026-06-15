@@ -16,7 +16,10 @@ import modal
 from observability import span as _otel_span
 
 from modal_app import (
+    CLEANUP_INTERVAL_SECONDS,
+    CLEANUP_TIMEOUT_SECONDS,
     DISPATCHER_NONPREEMPTIBLE,
+    DISPATCHER_TIMEOUT_SECONDS,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
     WORKER_BATCH_BUDGET_SECONDS,
@@ -200,7 +203,104 @@ async def process_single_job(queue_key: str):
     image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
-    timeout=60,  # Dispatcher is lightweight, should complete quickly
+    timeout=CLEANUP_TIMEOUT_SECONDS,
+    min_containers=1,  # Keep one reconciler container warm.
+    max_containers=1,  # Singleton-ish: never run two sweeps at once.
+    schedule=modal.Period(seconds=CLEANUP_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
+)
+async def reconcile_queue_state():
+    """
+    Scheduled reconciliation sweep, decoupled from dispatch.
+
+    This used to run inline at the top of ``poll_queue`` under a 60s
+    timeout. The sweep does several near-full-table passes over
+    ``trials`` / ``tasks`` / ``worker_jobs`` and could (a) exceed the
+    dispatcher's tight timeout -- getting SIGKILLed mid-transaction and
+    leaving orphaned 'idle in transaction' locks -- and (b) deadlock
+    against the live single-job workers writing the same rows. Either
+    way the dispatcher's spawn step never ran, so the queue got *no*
+    new workers that cycle. Splitting it out means dispatch can never
+    be blocked by reconciliation, and the sweep gets a generous timeout
+    so it is never killed mid-transaction.
+
+    Each phase is wrapped defensively: a failure (e.g. a transient
+    deadlock) in one phase logs and is swallowed so the remaining
+    phases still run.
+    """
+    cycle_span = _otel_span("worker.reconcile_queue_state")
+    cycle_span.__enter__()
+    try:
+        console.print("[cyan]Queue reconciler starting...[/cyan]")
+        await configure_storage_paths()
+
+        try:
+            stale_cleared = await cleanup_stale_queue_slots()
+            if stale_cleared > 0:
+                console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
+                console.print(
+                    f"[dim]Cleared {stale_cleared} stale queue slot lock(s)[/dim]"
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
+
+        try:
+            cleanup_counts = await cleanup_orphaned_queue_state()
+            if any(cleanup_counts.values()):
+                console.print(
+                    "metric=orphaned_queue_cleanup "
+                    + " ".join(
+                        f"{key}={value}" for key, value in cleanup_counts.items()
+                    )
+                )
+                console.print(
+                    "[yellow]Reconciled orphaned queue state:[/yellow] "
+                    + ", ".join(
+                        f"{key}={value}"
+                        for key, value in cleanup_counts.items()
+                        if value > 0
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            console.print(
+                f"[yellow]Orphaned-state reconciliation skipped: {e}[/yellow]"
+            )
+
+        try:
+            backfill_counts = await backfill_experiment_owners()
+            if any(backfill_counts.values()):
+                console.print(
+                    "metric=experiments_owner_backfill "
+                    + " ".join(
+                        f"{key}={value}" for key, value in backfill_counts.items()
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
+
+    except OSError as e:
+        console.print(
+            f"[yellow]Reconciler skipped (transient network error): {e}[/yellow]"
+        )
+    except Exception as e:
+        console.print(f"[red]Reconciler error: {e}[/red]")
+        raise
+    finally:
+        await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
+        console.print("[green]Reconciler complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=DISPATCHER_TIMEOUT_SECONDS,
     min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
@@ -211,51 +311,25 @@ async def poll_queue():
     Queue-aware dispatcher that spawns ``process_single_job`` workers
     based on per-queue-key depth in the unified ``worker_jobs`` table.
 
-    Runs every ``POLL_INTERVAL_SECONDS``:
-    1. Reaps orphaned ``queue_slots`` leases and stale ``worker_jobs``
-       rows so the queue can make forward progress.
-    2. Scans ``worker_jobs`` for active queue keys and their
+    Runs every ``POLL_INTERVAL_SECONDS`` and does only two things --
+    discover active queue keys and spawn workers. Reconciliation
+    (stale-heartbeat reap, stage advances, orphaned slot release, owner
+    backfill) lives in the separate ``reconcile_queue_state`` function
+    so a slow or deadlocking sweep can never block dispatch:
+
+    1. Scans ``worker_jobs`` for active queue keys and their
        queued/running counts.
-    3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
+    2. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
        workers, budgeted per queue_key against concurrency limits.
     """
-    # Open the span FIRST so the storage-path setup, cleanup,
-    # discovery, and spawn-plan queries all nest under one named
+    # Open the span FIRST so the storage-path setup, discovery, and
+    # spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
     try:
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
-
-        stale_cleared = await cleanup_stale_queue_slots()
-        if stale_cleared > 0:
-            console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
-            console.print(
-                f"[dim]Cleared {stale_cleared} stale queue slot lock(s)[/dim]"
-            )
-
-        cleanup_counts = await cleanup_orphaned_queue_state()
-        if any(cleanup_counts.values()):
-            console.print(
-                "metric=orphaned_queue_cleanup "
-                + " ".join(f"{key}={value}" for key, value in cleanup_counts.items())
-            )
-            console.print(
-                "[yellow]Reconciled orphaned queue state:[/yellow] "
-                + ", ".join(
-                    f"{key}={value}"
-                    for key, value in cleanup_counts.items()
-                    if value > 0
-                )
-            )
-
-        backfill_counts = await backfill_experiment_owners()
-        if any(backfill_counts.values()):
-            console.print(
-                "metric=experiments_owner_backfill "
-                + " ".join(f"{key}={value}" for key, value in backfill_counts.items())
-            )
 
         queue_keys = await discover_active_worker_job_queue_keys()
         queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
