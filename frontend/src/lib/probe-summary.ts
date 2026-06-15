@@ -1,9 +1,9 @@
 // Shared types + pure helpers for rendering probe runs. Used by the probe
 // detail page and the task-drawer PROBE summary so both stay consistent.
 
-export type ProbeMetric = "ratio" | "result_focus" | "none";
+type ProbeMetric = "ratio" | "result_focus" | "none";
 
-export type Attempt = {
+type Attempt = {
   title?: string;
   rationale?: string;
   outcome?: string;
@@ -11,13 +11,13 @@ export type Attempt = {
   step_indices?: number[];
 };
 
-export type ToolInsight = {
+type ToolInsight = {
   name?: string;
   kind?: "skill" | "mcp";
   note?: string;
 };
 
-export type Recommendation = {
+type Recommendation = {
   priority: "must_fix" | "should_fix" | "optional";
   action: string;
   rationale?: string;
@@ -40,7 +40,7 @@ export type ProbeSummary = {
   result_focus_findings?: string | null;
 };
 
-export type ProbeHarborConfig = {
+type ProbeHarborConfig = {
   mode?: string;
   extra_instructions?: string;
   // "cheat_ratio" kept as a legacy alias — normalizeMetric folds it to "ratio".
@@ -92,7 +92,7 @@ export function ratioUnitVerb(cfg: ProbeHarborConfig): {
   return { unit, verb };
 }
 
-export type AttemptTally = {
+type AttemptTally = {
   succeeded: number;
   blocked: number;
   investigation: number;

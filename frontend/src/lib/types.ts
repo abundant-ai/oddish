@@ -271,7 +271,7 @@ export interface TaskVersionSummary {
   user_tags?: UserTagRef[];
 }
 
-export interface TaskCostTotals {
+interface TaskCostTotals {
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
