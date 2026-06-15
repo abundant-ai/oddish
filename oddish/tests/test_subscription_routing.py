@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from harbor.models.trial.config import AgentConfig
 
 from oddish.config import (
@@ -69,7 +72,13 @@ def test_provider_and_queue_bucket_are_dedicated() -> None:
         settings.get_provider_for_trial("claude-code", "sub/claude-opus-4-5")
         == "subscription"
     )
-    assert settings.get_queue_key_for_trial("codex", "sub/gpt-5-codex") == "sub/gpt-5-codex"
+    # Codex is serialized regardless of opt-in path: even the explicit
+    # "sub/<model>" prefix lands in the capped "sub-solo/" bucket (it shares one
+    # refresh-sensitive auth.json), not the plain "sub/" bucket.
+    assert (
+        settings.get_queue_key_for_trial("codex", "sub/gpt-5-codex")
+        == "sub-solo/gpt-5-codex"
+    )
     # Non-subscription routing is unchanged.
     assert settings.get_provider_for_trial("codex", "gpt-5.2") == "openai"
 
@@ -85,6 +94,19 @@ def test_claude_code_subscription_agent_config() -> None:
     assert ac.env.get("ANTHROPIC_API_KEY") == ""
     assert ac.env.get("CLAUDE_CODE_USE_BEDROCK") == ""
     assert ac.env.get("AWS_BEARER_TOKEN_BEDROCK") == ""
+
+
+def test_claude_code_subscription_env_blanks_base_url() -> None:
+    # FIX 1: a stray ANTHROPIC_BASE_URL (like ANTHROPIC_AUTH_TOKEN) reroutes the
+    # OAuth token to the wrong endpoint and 401s, so the subscription env must
+    # blank it too -- while still wiring the OAuth token and blanking the other
+    # ambient creds.
+    ac = AgentConfig(name="claude-code", model_name="claude-opus-4-5")
+    hr._apply_claude_code_subscription_env(ac)
+    assert ac.env.get("ANTHROPIC_BASE_URL") == ""
+    assert ac.env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${CS_CLAUDE_CODE_OAUTH_TOKEN}"
+    assert ac.env.get("ANTHROPIC_API_KEY") == ""
+    assert ac.env.get("ANTHROPIC_AUTH_TOKEN") == ""
 
 
 def test_codex_subscription_agent_config_skips_azure() -> None:
@@ -122,9 +144,51 @@ def test_materialize_codex_auth_json_respects_explicit_path(monkeypatch) -> None
 
 
 def test_materialize_codex_auth_json_no_secret(monkeypatch) -> None:
+    # FIX 3: this helper only runs when codex is subscription-routed, so a
+    # missing secret is a misconfiguration that must fail loudly (mirroring the
+    # claude-code path, where harbor raises on a missing ${CS_...}).
     monkeypatch.delenv("CS_CODEX_AUTH_JSON_B64", raising=False)
     ac = AgentConfig(name="codex", model_name="gpt-5-codex")
-    assert hr._materialize_codex_auth_json(ac) is None
+    with pytest.raises(RuntimeError):
+        hr._materialize_codex_auth_json(ac)
+
+
+def test_materialize_codex_auth_json_freshness_warning(monkeypatch, caplog) -> None:
+    # FIX 2: warn (never raise) when the seeded auth.json is older than 7 days,
+    # since codex refreshes near ~8 days and the per-trial re-seed discards the
+    # refreshed token, breaking subsequent codex trials.
+    def _materialize(last_refresh: str):
+        monkeypatch.setenv(
+            "CS_CODEX_AUTH_JSON_B64",
+            base64.b64encode(
+                json.dumps({"last_refresh": last_refresh}).encode()
+            ).decode(),
+        )
+        return hr._materialize_codex_auth_json(
+            AgentConfig(name="codex", model_name="gpt-5-codex")
+        )
+
+    now = datetime.now(timezone.utc)
+
+    # A fresh seed (now) must not warn.
+    with caplog.at_level(logging.WARNING):
+        fresh_tmp = _materialize(now.isoformat())
+    try:
+        assert "days old" not in caplog.text
+    finally:
+        if fresh_tmp is not None:
+            fresh_tmp.cleanup()
+
+    caplog.clear()
+
+    # A stale seed (30 days old) must warn.
+    with caplog.at_level(logging.WARNING):
+        stale_tmp = _materialize((now - timedelta(days=30)).isoformat())
+    try:
+        assert "days old" in caplog.text
+    finally:
+        if stale_tmp is not None:
+            stale_tmp.cleanup()
 
 
 # --- Agent-flag route (ODDISH_SUBSCRIPTION_AGENTS) ---------------------------

@@ -980,6 +980,10 @@ class Settings(BaseSettings):
         # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
         # auth.json refresh-token invalidation across concurrent workers. Both
         # are already canonical queue keys, so pass them through untouched.
+        # Canonicalize the ``subscription/`` opt-in alias to ``sub/`` first so an
+        # override key written that way still matches the real ``sub/<id>`` key.
+        if normalized.startswith("subscription/"):
+            normalized = "sub/" + normalized[len("subscription/") :]
         if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
             return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
@@ -1007,12 +1011,15 @@ class Settings(BaseSettings):
         if normalized_agent in _NOP_ORACLE_AGENTS:
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
-        # Subscription agents get a dedicated internal queue bucket so their
+        # Subscription trials get a dedicated internal queue bucket so their
         # concurrency can be capped independently of the standard model id they
-        # still store. Agents whose shared credential is refresh-sensitive
-        # (codex auth.json) get a serialized ``sub-solo/<id>`` bucket; the rest
-        # (claude-code OAuth, safe concurrent) get a plain ``sub/<id>`` bucket.
-        if self._is_subscription_agent(agent):
+        # still store. Both opt-in paths route here -- the agent flag and the
+        # explicit ``sub/<id>`` model prefix (mirroring get_provider_for_trial) --
+        # so a model-prefix opt-in can't escape the cap via normalize_queue_key.
+        # Agents whose shared credential is refresh-sensitive (codex auth.json)
+        # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
+        # safe concurrent) get a plain ``sub/<id>`` bucket.
+        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
             bare = subscription_bare_model_id(normalized_model or "default") or "default"
             if self._is_serialized_subscription_agent(agent):
                 return f"sub-solo/{bare}"
