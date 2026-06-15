@@ -161,7 +161,7 @@ async def _claim_for_user(
     result = await session.execute(
         _claim_update_statement(experiment_ids=experiment_ids, user_id=user_id)
     )
-    return int(result.rowcount or 0)
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
 def _sentinel_update_statement(*, org_id: str, batch: int):
