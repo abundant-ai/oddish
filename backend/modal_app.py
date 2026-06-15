@@ -96,7 +96,7 @@ WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
 )  # Keep idle workers warm for 5 minutes
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    448,
+    384,
 )  # High global cap so several queue keys can scale, but still not unbounded.
 
 # Mark single-job worker containers as non-preemptible so Modal does not
@@ -128,7 +128,7 @@ RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 # (which sum into the hundreds), leaving most models far below their caps. The
 # per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
 # real safety bounds; this just stops the dispatcher from starving them.
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 128)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 96)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
 # jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
