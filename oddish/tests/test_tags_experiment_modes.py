@@ -4,6 +4,7 @@ Uses a thin in-memory fake session that captures every ``execute``,
 ``add``, and ``flush`` call. Real SQL execution is exercised in DB
 integration tests, not here.
 """
+
 from __future__ import annotations
 
 import asyncio

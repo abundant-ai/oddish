@@ -50,7 +50,14 @@ import type {
   Trial,
 } from "@/lib/types";
 import { formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
-import { ArrowLeft, ChevronDown, ExternalLink, FileText, GitPullRequest, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  GitPullRequest,
+  Loader2,
+} from "lucide-react";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -58,18 +65,18 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  }
+  },
 );
 
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel
+      (mod) => mod.TrialDetailPanel,
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  }
+  },
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -88,7 +95,7 @@ function readVersionFromQuery(): string | null {
 
 function writeVersionToQuery(
   versionId: string | null,
-  defaultId: string | null
+  defaultId: string | null,
 ) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -232,9 +239,14 @@ function TaskDetailHeader({
             if (affiliated.length === 0) return null;
             return (
               <>
-                <span>{affiliated.length > 1 ? "experiments" : "experiment"}</span>
+                <span>
+                  {affiliated.length > 1 ? "experiments" : "experiment"}
+                </span>
                 {affiliated.map((exp, i) => (
-                  <span key={exp.id} className="inline-flex items-center gap-x-2">
+                  <span
+                    key={exp.id}
+                    className="inline-flex items-center gap-x-2"
+                  >
                     {i > 0 ? <span aria-hidden>·</span> : null}
                     <Link
                       href={`/experiments/${encodeURIComponent(encodeURIComponent(exp.id))}`}
@@ -276,7 +288,9 @@ function TaskDetailHeader({
               target="_blank"
               rel="noopener noreferrer"
               title={
-                title ? `${title} — view on GitHub` : "View pull request on GitHub"
+                title
+                  ? `${title} — view on GitHub`
+                  : "View pull request on GitHub"
               }
               className="inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors hover:bg-accent"
             >
@@ -287,7 +301,10 @@ function TaskDetailHeader({
                   <span className="text-muted-foreground"> #{number}</span>
                 )}
               </span>
-              <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+              <ExternalLink
+                className="h-3 w-3 shrink-0 opacity-50"
+                aria-hidden
+              />
             </a>
           );
         })()}
@@ -398,7 +415,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   const status = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message
+    trial.error_message,
   );
   const config = STATUS_CONFIG[status];
   const badgeLabel =
@@ -484,7 +501,7 @@ function AgentCard({
         const bTime = b.finished_at || b.started_at || b.created_at;
         return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
       }),
-    [trials]
+    [trials],
   );
 
   return (
@@ -598,7 +615,7 @@ export function TaskDetailClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: initialDetail ?? undefined,
-    }
+    },
   );
 
   const detail = data ?? initialDetail ?? null;
@@ -609,7 +626,7 @@ export function TaskDetailClient({
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
-    () => initialVersionId ?? null
+    () => initialVersionId ?? null,
   );
 
   useEffect(() => {
@@ -632,7 +649,7 @@ export function TaskDetailClient({
       setSelectedVersionId(id);
       writeVersionToQuery(id, defaultVersionId);
     },
-    [defaultVersionId]
+    [defaultVersionId],
   );
 
   const trialsForVersion = useMemo(() => {
@@ -658,12 +675,12 @@ export function TaskDetailClient({
             },
           ]
         : [],
-    [task, trialsForVersion]
+    [task, trialsForVersion],
   );
 
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
-    [tasksForGrouping]
+    [tasksForGrouping],
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -687,7 +704,7 @@ export function TaskDetailClient({
           trials,
         };
       }),
-    [agentSummaries, trialsByAgentKey]
+    [agentSummaries, trialsByAgentKey],
   );
 
   const orderedTrials = useMemo(() => {
@@ -711,7 +728,7 @@ export function TaskDetailClient({
         trialGroups,
       });
     },
-    [orderedTrials, trialGroups]
+    [orderedTrials, trialGroups],
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -727,10 +744,10 @@ export function TaskDetailClient({
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
       setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
+        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev,
       );
     },
-    []
+    [],
   );
 
   const handleRerun = useCallback(() => {
@@ -758,7 +775,7 @@ export function TaskDetailClient({
       void mutate();
     } catch (err) {
       setJudgeError(
-        err instanceof Error ? err.message : "Failed to queue judge"
+        err instanceof Error ? err.message : "Failed to queue judge",
       );
     } finally {
       setIsRunningJudge(false);
@@ -780,7 +797,7 @@ export function TaskDetailClient({
       void mutate();
     } catch (err) {
       setJudgeError(
-        err instanceof Error ? err.message : "Failed to cancel judge"
+        err instanceof Error ? err.message : "Failed to cancel judge",
       );
     } finally {
       setIsCancellingJudge(false);
@@ -1049,7 +1066,7 @@ export function TaskDetailClient({
                             trial: null,
                             trialIndex: null,
                           }
-                        : prev
+                        : prev,
                     )
                   }
                   onRetry={handleRerun}

@@ -72,7 +72,10 @@ export function Nav() {
   // responses from the previous workspace would otherwise survive a switch.
   const prevOrgId = useRef(organization?.id);
   useEffect(() => {
-    if (prevOrgId.current !== undefined && organization?.id !== prevOrgId.current) {
+    if (
+      prevOrgId.current !== undefined &&
+      organization?.id !== prevOrgId.current
+    ) {
       mutate(() => true, undefined, { revalidate: true });
     }
     prevOrgId.current = organization?.id;
@@ -142,91 +145,91 @@ export function Nav() {
             <ThemeToggle />
             {isLoaded && isSignedIn && (
               <>
-              <Button
-                variant="ghost"
-                size="sm"
-                asChild
-                className="gap-2 text-foreground hover:text-foreground"
-              >
-                <a
-                  href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
-                  target="_blank"
-                  rel="noreferrer"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  asChild
+                  className="gap-2 text-foreground hover:text-foreground"
                 >
-                  <BookOpen className="h-4 w-4" />
-                  <span className="hidden sm:inline">Docs</span>
-                </a>
-              </Button>
-              <OrganizationSwitcher
-                hidePersonal
-                afterCreateOrganizationUrl="/dashboard"
-                afterSelectOrganizationUrl="/dashboard"
-                appearance={navSwitcherAppearance}
-              />
-              <DropdownMenu modal={false}>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-auto rounded-full border border-[#6f88b4]/20 bg-background/70 px-2 py-1 text-sm hover:border-[#85b85c]/20 hover:bg-muted"
+                  <a
+                    href="https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
+                    target="_blank"
+                    rel="noreferrer"
                   >
-                    <Avatar className="h-8 w-8">
-                      <AvatarImage
-                        src={user?.imageUrl}
-                        alt={user?.fullName ?? "User avatar"}
-                      />
-                      <AvatarFallback className="text-xs font-semibold">
-                        {user?.firstName?.[0] ?? "U"}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="hidden md:inline">
-                      {user?.firstName ?? user?.fullName ?? "Account"}
-                    </span>
-                    <ChevronDown className="hidden h-4 w-4 text-muted-foreground sm:inline" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="w-64 border-[#6f88b4]/20 p-2"
-                >
-                  <div className="px-2 py-1.5">
-                    <p className="text-sm font-medium">
-                      {user?.fullName ?? user?.username ?? "Account"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {user?.primaryEmailAddress?.emailAddress ?? "—"}
-                    </p>
-                  </div>
-                  <DropdownMenuSeparator className="my-1" />
-                  <DropdownMenuItem asChild>
-                    <Link
-                      href="/settings"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                    <BookOpen className="h-4 w-4" />
+                    <span className="hidden sm:inline">Docs</span>
+                  </a>
+                </Button>
+                <OrganizationSwitcher
+                  hidePersonal
+                  afterCreateOrganizationUrl="/dashboard"
+                  afterSelectOrganizationUrl="/dashboard"
+                  appearance={navSwitcherAppearance}
+                />
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-auto rounded-full border border-[#6f88b4]/20 bg-background/70 px-2 py-1 text-sm hover:border-[#85b85c]/20 hover:bg-muted"
                     >
-                      <User className="h-4 w-4" />
-                      Settings
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link
-                      href="/admin"
-                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
-                    >
-                      <Shield className="h-4 w-4" />
-                      Admin
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator className="my-2" />
-                  <DropdownMenuItem
-                    onSelect={() => signOut()}
-                    className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted"
+                      <Avatar className="h-8 w-8">
+                        <AvatarImage
+                          src={user?.imageUrl}
+                          alt={user?.fullName ?? "User avatar"}
+                        />
+                        <AvatarFallback className="text-xs font-semibold">
+                          {user?.firstName?.[0] ?? "U"}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="hidden md:inline">
+                        {user?.firstName ?? user?.fullName ?? "Account"}
+                      </span>
+                      <ChevronDown className="hidden h-4 w-4 text-muted-foreground sm:inline" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent
+                    align="end"
+                    className="w-64 border-[#6f88b4]/20 p-2"
                   >
-                    <LogOut className="h-4 w-4" />
-                    Sign out
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                    <div className="px-2 py-1.5">
+                      <p className="text-sm font-medium">
+                        {user?.fullName ?? user?.username ?? "Account"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {user?.primaryEmailAddress?.emailAddress ?? "—"}
+                      </p>
+                    </div>
+                    <DropdownMenuSeparator className="my-1" />
+                    <DropdownMenuItem asChild>
+                      <Link
+                        href="/settings"
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                      >
+                        <User className="h-4 w-4" />
+                        Settings
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem asChild>
+                      <Link
+                        href="/admin"
+                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
+                      >
+                        <Shield className="h-4 w-4" />
+                        Admin
+                      </Link>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="my-2" />
+                    <DropdownMenuItem
+                      onSelect={() => signOut()}
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm text-red-500 outline-hidden hover:bg-muted focus:bg-muted"
+                    >
+                      <LogOut className="h-4 w-4" />
+                      Sign out
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </>
             )}
             {isLoaded && !isSignedIn && (

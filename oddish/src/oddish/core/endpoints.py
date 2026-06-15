@@ -626,15 +626,13 @@ async def browse_tasks_core(
             select(
                 TrialModel.task_id.label("task_id"),
                 func.count(TrialModel.id).label("total_trials"),
-                func.count(
-                    case((TrialModel.status == TrialStatus.SUCCESS, 1))
-                ).label("completed_trials"),
-                func.count(
-                    case((TrialModel.status == TrialStatus.FAILED, 1))
-                ).label("failed_trials"),
-                func.count(case((TrialModel.reward == 1, 1))).label(
-                    "reward_success"
+                func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+                    "completed_trials"
                 ),
+                func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+                    "failed_trials"
+                ),
+                func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
                 func.sum(TrialModel.reward).label("reward_sum"),
                 func.count(case((TrialModel.reward.isnot(None), 1))).label(
                     "reward_total"
@@ -779,22 +777,30 @@ async def browse_tasks_core(
                 ),
                 version_count=int(row["version_count"] or 0),
                 total_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials") or 0
+                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials")
+                    or 0
                 ),
                 completed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("completed_trials") or 0
+                    counters_by_task.get(str(row["task_id"]), {}).get(
+                        "completed_trials"
+                    )
+                    or 0
                 ),
                 failed_trials=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials") or 0
+                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials")
+                    or 0
                 ),
                 reward_success=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success") or 0
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success")
+                    or 0
                 ),
                 reward_sum=float(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum") or 0.0
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum")
+                    or 0.0
                 ),
                 reward_total=int(
-                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total") or 0
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total")
+                    or 0
                 ),
                 last_run_at=row["last_run_at"],
                 link=row["link"],

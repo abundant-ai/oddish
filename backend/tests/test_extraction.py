@@ -56,4 +56,6 @@ def test_extract_csv_by_filename_extension():
 def test_extract_csv_strips_excel_utf8_bom():
     # Excel exports CSV as UTF-8 with a leading BOM; it must not leak into text.
     raw = b"\xef\xbb\xbfname,score\nada,9"
-    assert extract_text(raw, mime="text/csv", filename="data.csv") == "name,score\nada,9"
+    assert (
+        extract_text(raw, mime="text/csv", filename="data.csv") == "name,score\nada,9"
+    )

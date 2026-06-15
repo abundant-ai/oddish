@@ -8,7 +8,7 @@ type BackendJsonResult = {
 
 export async function readBackendJson(
   response: Response,
-  fallbackError: string
+  fallbackError: string,
 ): Promise<BackendJsonResult> {
   const text = await response.text();
   const trimmed = text.trim();
@@ -38,7 +38,7 @@ export async function readBackendJson(
 
 export function backendErrorPayload(
   payload: unknown,
-  fallbackError: string
+  fallbackError: string,
 ): JsonObject {
   if (payload && typeof payload === "object" && !Array.isArray(payload)) {
     return payload as JsonObject;
