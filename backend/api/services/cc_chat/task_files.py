@@ -65,7 +65,7 @@ async def collect_task_version_files(
                 rel = key[len(prefix):]
                 if not rel or _should_skip(rel):
                     continue
-                if total >= max_total_bytes:
+                if total > max_total_bytes:
                     truncated = True
                     break
                 data = await storage.download_bytes(key)
