@@ -158,19 +158,25 @@ function QueueSlotsCard() {
                           </span>
                         </span>
                         <div className="flex items-center gap-2">
-                          <div className="flex gap-1">
-                            {Array.from({
-                              length: queueSummary.total_slots,
-                            }).map((_, i) => (
-                              <div
-                                key={i}
-                                className={`h-2 w-2 rounded-full ${
-                                  i < queueSummary.active_slots
-                                    ? "bg-blue-500"
-                                    : "bg-muted-foreground/30"
-                                }`}
-                              />
-                            ))}
+                          {/* Fixed-width fill bar instead of one-dot-per-slot:
+                              high-concurrency keys (up to 128 slots) used to
+                              paint a dot row that ran off the screen. */}
+                          <div className="bg-muted-foreground/20 h-2 w-20 overflow-hidden rounded-full">
+                            <div
+                              className="h-full bg-blue-500"
+                              style={{
+                                width: `${
+                                  queueSummary.total_slots > 0
+                                    ? Math.min(
+                                        100,
+                                        (queueSummary.active_slots /
+                                          queueSummary.total_slots) *
+                                          100,
+                                      )
+                                    : 0
+                                }%`,
+                              }}
+                            />
                           </div>
                           <Badge
                             variant={
@@ -178,7 +184,7 @@ function QueueSlotsCard() {
                                 ? "default"
                                 : "outline"
                             }
-                            className="text-xs"
+                            className="font-mono text-xs"
                           >
                             {queueSummary.active_slots}/
                             {queueSummary.total_slots}
