@@ -184,7 +184,7 @@ def test_build_task_status_response_populates_user_tags(monkeypatch):
     async def _fake_list(session, *, task_ids, public_only=False):
         return {
             tid: [
-                helpers._UserTagView(  # type: ignore[attr-defined]
+                UserTagRef(
                     tag_id="t-1",
                     key="flaky",
                     value=None,
