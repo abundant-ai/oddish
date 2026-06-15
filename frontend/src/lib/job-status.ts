@@ -97,11 +97,6 @@ function getActiveTrialCount(task: Task | null | undefined): number {
 export function getCancelActionLabel(task: Task | null | undefined): string {
   const activeTrials = getActiveTrialCount(task);
   if (activeTrials > 0) return `Cancel (${activeTrials})`;
-  if (
-    task?.status === "verdict_pending" ||
-    isActivePipelineStatus(task?.verdict_status)
-  ) {
-    return "Cancel verdict";
-  }
-  return "Cancel analysis";
+  // Trajectory analysis + verdict are one task-level QA job now.
+  return "Cancel QA";
 }
