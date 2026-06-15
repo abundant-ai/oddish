@@ -673,6 +673,10 @@ def _apply_claude_code_subscription_env(agent_config: AgentConfig) -> None:
     env["ANTHROPIC_AUTH_TOKEN"] = ""
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    # A stray ANTHROPIC_BASE_URL (like ANTHROPIC_AUTH_TOKEN above) routes the
+    # OAuth token at the wrong endpoint and 401s; blank it so Claude Code uses
+    # the official Anthropic endpoint.
+    env["ANTHROPIC_BASE_URL"] = ""
     agent_config.env = env
 
 
@@ -701,16 +705,17 @@ def _materialize_codex_auth_json(
         return None
     b64 = os.environ.get("CS_CODEX_AUTH_JSON_B64")
     if not b64:
-        logger.warning(
-            "codex subscription route: CS_CODEX_AUTH_JSON_B64 is not set; codex "
-            "will fall back to OPENAI_API_KEY auth and likely fail on a "
-            "ChatGPT-plan model."
+        raise RuntimeError(
+            "codex subscription route is enabled but CS_CODEX_AUTH_JSON_B64 is not "
+            "set. Provide the codex auth.json (base64 of a `codex login` auth.json) "
+            "via the bring-your-own-creds Modal secret (ODDISH_EXTRA_SECRET_NAME), "
+            "or remove codex from ODDISH_SUBSCRIPTION_AGENTS."
         )
-        return None
     tmp = tempfile.TemporaryDirectory(prefix="oddish-codex-auth-")
     try:
+        raw = base64.b64decode(b64)
         auth_path = Path(tmp.name) / "auth.json"
-        auth_path.write_bytes(base64.b64decode(b64))
+        auth_path.write_bytes(raw)
         auth_path.chmod(0o600)
     except Exception:
         logger.exception(
@@ -718,6 +723,30 @@ def _materialize_codex_auth_json(
         )
         tmp.cleanup()
         return None
+    # Best-effort freshness probe. codex refreshes its token near ~8 days old;
+    # the per-trial re-seed discards refreshed tokens, so a refresh consumes the
+    # single-use refresh token and breaks later codex trials. Warn so the
+    # operator reseeds a fresh auth.json before a long run. Never block the run.
+    try:
+        import json
+        from datetime import datetime, timezone
+        last_refresh = json.loads(raw).get("last_refresh")
+        if isinstance(last_refresh, str) and last_refresh:
+            ts = datetime.fromisoformat(last_refresh.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+            if age_days > 7:
+                logger.warning(
+                    "codex subscription auth.json is %.1f days old "
+                    "(last_refresh=%s); codex refreshes near ~8 days and the "
+                    "per-trial re-seed discards refreshed tokens, so a refresh can "
+                    "break subsequent codex trials. Reseed CS_CODEX_AUTH_JSON_B64 "
+                    "with a fresh `codex login` auth.json before a long run.",
+                    age_days, last_refresh,
+                )
+    except Exception:
+        pass
     env["CODEX_AUTH_JSON_PATH"] = str(auth_path)
     agent_config.env = env
     return tmp
