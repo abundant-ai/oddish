@@ -13,16 +13,15 @@ EXP = "d8d31fa9"
 
 # Precise markers that only appear in a *provider API error response*,
 # not in arbitrary task prompts.
+# Narrow to markers that appear in a *provider API error event*, not in
+# agent-written task source (e.g. a stripe-clone implementing 401 responses).
 MARKERS = [
-    r'"api_error_status"\s*:\s*"?[1-5]\d\d',   # non-null HTTP error status in result event
+    r'"api_error_status"\s*:\s*"?(4|5)\d\d',   # non-null HTTP error status in CC result event
+    r'"is_error"\s*:\s*true.*?(payment required|insufficient|invalid api key|unauthorized)',
     r"payment required",
     r"insufficient (balance|quota|credit)",
     r"account balance",
-    r"invalid[ _-]?api[ _-]?key",
-    r"invalid x-api-key",
-    r"authentication_error",
-    r"\b402\b.*(minimax|moonshot|payment|balance)",
-    r"(minimax|moonshot).*\b(401|402|403)\b",
+    r"(api\.minimax\.io|api\.moonshot\.ai)[^\n]{0,80}\b(401|402|403)\b",
 ]
 RX = re.compile("|".join(MARKERS), re.IGNORECASE)
 
