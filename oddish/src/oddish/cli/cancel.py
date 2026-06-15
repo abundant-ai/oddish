@@ -141,7 +141,9 @@ def cancel(
 
     if response.status_code == 404:
         if json_output:
-            print_json({"error": f"{target_label.capitalize()} not found", "status": 404})
+            print_json(
+                {"error": f"{target_label.capitalize()} not found", "status": 404}
+            )
         else:
             console.print(f"[red]{target_label.capitalize()} not found[/red]")
         raise typer.Exit(1)
@@ -150,7 +152,9 @@ def cancel(
         if json_output:
             print_json({"error": response.text, "status": response.status_code})
         else:
-            console.print(f"[red]Failed to cancel {action_label}:[/red] {response.text}")
+            console.print(
+                f"[red]Failed to cancel {action_label}:[/red] {response.text}"
+            )
         raise typer.Exit(1)
 
     result = response.json()

@@ -3,6 +3,7 @@
 These mirror ``test_worker_jobs_schema.py``: metadata-only assertions that
 detect drift between the ORM and the migration without needing a DB.
 """
+
 from __future__ import annotations
 
 import sys

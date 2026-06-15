@@ -189,7 +189,9 @@ def convert_codex_stdout_jsonl_to_trajectory(
         if etype == "turn.failed":
             error = event.get("error")
             message = (
-                error.get("message") if isinstance(error, dict) else event.get("message")
+                error.get("message")
+                if isinstance(error, dict)
+                else event.get("message")
             )
             if message:
                 steps.append(

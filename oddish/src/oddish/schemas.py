@@ -1217,7 +1217,9 @@ class TagAssignRequest(BaseModel):
     @model_validator(mode="after")
     def _validate_scope(self):
         if self.scope not in {"VERSION", "TASK", "EXPERIMENT"}:
-            raise ValueError(f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})")
+            raise ValueError(
+                f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})"
+            )
         if self.scope == "EXPERIMENT" and self.mode not in {"snapshot", "living"}:
             raise ValueError("EXPERIMENT-scope apply requires mode='snapshot'|'living'")
         return self

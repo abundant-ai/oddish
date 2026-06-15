@@ -170,7 +170,10 @@ export function TagEditor({
     onMutate();
   }
 
-  function handleEdited(tagId: string, patch: Pick<UserTagRef, "key" | "color">) {
+  function handleEdited(
+    tagId: string,
+    patch: Pick<UserTagRef, "key" | "color">,
+  ) {
     setTags((prev) =>
       prev.map((t) => (t.tag_id === tagId ? { ...t, ...patch } : t)),
     );
@@ -231,9 +234,7 @@ export function TagEditor({
           </Button>
         }
       />
-      {error ? (
-        <span className="text-xs text-destructive">{error}</span>
-      ) : null}
+      {error ? <span className="text-xs text-destructive">{error}</span> : null}
     </div>
   );
 }

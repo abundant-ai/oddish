@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
@@ -432,9 +432,7 @@ async def create_task_sweep(
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        _stamp_experiment_owner(
-            experiment, owner_user_id, claim_unowned=not is_append
-        )
+        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
             created_by_user_id = await _resolve_created_by_user_id(
@@ -845,7 +843,7 @@ async def cancel_task_analysis(
         )
 
     modal_cancelled = await _cancel_modal_function_calls(
-        result.get("modal_function_call_ids", [])
+        cast("list[str]", result.get("modal_function_call_ids", []))
     )
     return {
         key: value for key, value in result.items() if key != "modal_function_call_ids"
@@ -880,7 +878,7 @@ async def cancel_task_verdict(
         )
 
     modal_cancelled = await _cancel_modal_function_calls(
-        result.get("modal_function_call_ids", [])
+        cast("list[str]", result.get("modal_function_call_ids", []))
     )
     return {
         key: value for key, value in result.items() if key != "modal_function_call_ids"

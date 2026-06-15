@@ -796,13 +796,13 @@ async def _handle_harbor_event(
 
                     # Store exception info if present
                     if result.exception_info:
-                        exc = result.exception_info
+                        exc_info = result.exception_info
                         error_msg = (
-                            exc.exception_message
-                            or exc.exception_type
+                            exc_info.exception_message
+                            or exc_info.exception_type
                             or "Unknown error"
                         )
-                        is_agent_timeout = _is_agent_timeout_exception(exc)
+                        is_agent_timeout = _is_agent_timeout_exception(exc_info)
                         if is_agent_timeout:
                             if (
                                 extracted_reward is None
@@ -1085,11 +1085,7 @@ async def run_trial_job(
         # place their summary is produced in the cloud. Must run before the
         # cleanup below prunes job_dir.
         probe_analysis = None
-        if (
-            probe_extra_instructions
-            and execution.outcome
-            and execution.outcome.job_dir
-        ):
+        if probe_extra_instructions and execution.outcome and execution.outcome.job_dir:
             probe_analysis = await _generate_probe_summary_inline(
                 trial_id=trial_id,
                 job_dir=execution.outcome.job_dir,

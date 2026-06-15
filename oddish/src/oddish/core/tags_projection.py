@@ -10,6 +10,7 @@ Recompute-from-truth makes every run idempotent and order-independent;
 there is intentionally no last_event_id watermark (bigserial != commit
 order).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -140,9 +141,7 @@ async def recompute_task_browse_projection(session, *, task_id: str) -> None:
     """
     rows = (
         await session.execute(
-            text(
-                "SELECT id FROM task_versions WHERE task_id = :task_id"
-            ),
+            text("SELECT id FROM task_versions WHERE task_id = :task_id"),
             {"task_id": task_id},
         )
     ).all()
