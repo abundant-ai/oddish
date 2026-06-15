@@ -50,9 +50,11 @@ CELL_CAP_OVERRIDE = {
 POLL_SECONDS = 240
 
 PENDING_STATES = {"queued", "running", "retrying", "pending"}
-AUTH_PATTERNS = ["402", "payment required", "insufficient", "unauthorized",
-                 "invalid api key", "authentication", "invalid_api_key",
-                 "401 ", "403 "]
+# NOTE: error_message embeds the full task prompt + command, so substring
+# scanning for auth patterns is unreliable (task specs contain "401",
+# "authentication", etc.). Genuine provider auth/402 failures are checked
+# separately via babysit_authcheck.py (inspects agent logs). The loop just
+# requeues infra failures (exit 137 / -1 / network) like any other invalid.
 
 
 def log(*a):
@@ -84,7 +86,6 @@ async def fetch_state(session):
     invalid = defaultdict(int)
     total = defaultdict(int)
     inflight_agent = defaultdict(int)
-    auth_hits = []
     for r in rows:
         st = (r["status"] or "").lower()
         ag = r["agent"]
@@ -100,10 +101,7 @@ async def fetch_state(session):
             inflight_agent[ag] += 1
         else:
             invalid[key] += 1
-            em = (r["error_message"] or "").lower()
-            if any(p in em for p in AUTH_PATTERNS):
-                auth_hits.append((r["id"], r["error_message"]))
-    return valid, pending, invalid, total, inflight_agent, auth_hits
+    return valid, pending, invalid, total, inflight_agent
 
 
 def cfg(agent, model):
@@ -156,13 +154,7 @@ def cell_cap(task_id):
 
 async def one_round():
     async with get_session() as s:
-        valid, pending, invalid, total, inflight, auth_hits = await fetch_state(s)
-
-    if auth_hits:
-        log("!!! AUTH/402-STYLE ERRORS DETECTED — ABORTING per instructions:")
-        for tid, em in auth_hits[:10]:
-            log("   ", tid, (em or "")[:160])
-        return "ABORT"
+        valid, pending, invalid, total, inflight = await fetch_state(s)
 
     # progress summary
     cells_done = sum(1 for t in TASK_IDS for a in AGENT_NAMES if valid[(t, a)] >= TARGET)
