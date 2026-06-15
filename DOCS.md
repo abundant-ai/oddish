@@ -5,7 +5,7 @@
 ## Installation
 
 ```bash
-uv pip install oddish
+uv pip install "oddish @ git+https://github.com/abundant-ai/oddish.git#subdirectory=oddish"
 ```
 
 Ensure your API key is set:

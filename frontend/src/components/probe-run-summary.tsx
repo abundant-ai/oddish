@@ -7,19 +7,9 @@ import {
   ratioUnitVerb,
   tallyAttempts,
   pluralize,
+  PRIORITY_META,
+  sortRecommendations,
 } from "@/lib/probe-summary";
-
-const PRIORITY_ORDER: Record<string, number> = {
-  must_fix: 0,
-  should_fix: 1,
-  optional: 2,
-};
-
-const PRIORITY_META: Record<string, { label: string; cls: string }> = {
-  must_fix: { label: "Must fix", cls: "bg-red-500/15 text-red-600" },
-  should_fix: { label: "Should fix", cls: "bg-amber-500/15 text-amber-700" },
-  optional: { label: "Optional", cls: "bg-slate-500/15 text-slate-600" },
-};
 
 // The single probe-summary rendering, shared by the probe-run detail page and
 // the task-drawer probe card so both show exactly the same summary. `action`
@@ -70,12 +60,7 @@ export function ProbeRunSummary({
     summary.attempts,
   );
   const hasRecsField = Array.isArray(summary.recommendations);
-  const recs = hasRecsField
-    ? [...(summary.recommendations ?? [])].sort(
-        (a, b) =>
-          (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9),
-      )
-    : [];
+  const recs = hasRecsField ? sortRecommendations(summary.recommendations) : [];
   const mustFixCount = recs.filter((r) => r.priority === "must_fix").length;
   const metricLabel =
     metric === "ratio"
