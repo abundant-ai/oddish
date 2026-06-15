@@ -930,7 +930,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.13.1"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#7474cf6c06542b3b58dd3b6a322b160c8e49b26c" }
+source = { git = "https://github.com/rishidesai/harbor?branch=main#07a576944f95c3f57147ba35a7f3ec97910d6141" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
