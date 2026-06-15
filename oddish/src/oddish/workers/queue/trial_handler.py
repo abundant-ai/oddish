@@ -619,9 +619,8 @@ async def _store_trial_results(
 
         # Probe trials are analyzed inline (in the same job, before the local
         # artifacts were cleaned up). Persist that summary onto the row here so
-        # it lands in the same write as reward/status, and so we know below to
-        # skip the generic ANALYSIS enqueue.
-        is_probe = bool((trial.harbor_config or {}).get("extra_instructions"))
+        # it lands in the same write as reward/status; the task-level QA job
+        # then reuses it and does not re-classify probe trials.
         if probe_analysis is not None:
             if probe_analysis["analysis"] is not None:
                 trial.analysis = probe_analysis["analysis"]
@@ -631,36 +630,18 @@ async def _store_trial_results(
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            task = await session.get(TaskModel, trial.task_id)
-            # Check if all trials done → transition task status.
+            # Check if all trials done → transition task status. Trajectory
+            # analysis is now task-scoped: once every trial is terminal,
+            # ``maybe_start_analysis_stage`` enqueues a single task-level QA
+            # job that classifies all trials and synthesizes the verdict, so
+            # there is no per-trial ANALYSIS enqueue here anymore. (Probe
+            # trials are still analyzed inline, above.)
+            #
             # Imported lazily to avoid a circular import with
             # ``oddish.queue`` (which imports the worker_jobs enqueue
             # helpers, which in turn import this module via the handler
             # auto-registration).
-            from oddish.queue import (
-                enqueue_analysis_worker_job,
-                maybe_start_analysis_stage,
-            )
-
-            # Probes already have their summary (generated inline above); only
-            # non-probe trials on run_analysis tasks get a separate ANALYSIS job.
-            if (
-                not is_probe
-                and task
-                and task.run_analysis
-                and trial.analysis_status is None
-            ):
-                trial.analysis_status = AnalysisStatus.QUEUED
-                analysis_job = await enqueue_analysis_worker_job(
-                    session, trial_id=trial_id, org_id=trial.org_id
-                )
-                if analysis_job is not None:
-                    console.print(f"[cyan]Queued analysis for {trial_id}[/cyan]")
-                else:
-                    console.print(
-                        f"[yellow]Skipped analysis for {trial_id}: no stored "
-                        "result to analyze[/yellow]"
-                    )
+            from oddish.queue import maybe_start_analysis_stage
 
             started = await maybe_start_analysis_stage(session, trial_id)
             if started:

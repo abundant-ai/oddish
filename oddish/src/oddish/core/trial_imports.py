@@ -44,7 +44,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import (
-    AnalysisStatus,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -316,26 +315,19 @@ async def initialize_trial_import(
 
         await session.flush()
 
-        # Mirror the per-trial analysis enqueue that the live trial
-        # handler runs when a trial reaches a terminal state, so
-        # imported rows participate in the analysis / verdict pipeline
-        # exactly like live ones.
-        from oddish.queue import (
-            enqueue_analysis_worker_job,
-            maybe_start_analysis_stage,
-        )
+        # Trajectory analysis is task-scoped: once every trial is
+        # terminal, ``maybe_start_analysis_stage`` enqueues a single
+        # task-level QA job that classifies all trials (imported rows
+        # included) and synthesizes the verdict. Imported trials no longer
+        # get a per-trial ANALYSIS enqueue.
+        #
+        # Run the stage-transition here so tasks whose only trials are
+        # imported (and especially the ``--skip-artifacts`` path, where
+        # ``complete`` is never called) still transition forward.
+        # ``maybe_start_analysis_stage`` is idempotent -- calling it again
+        # in ``complete_trial_import`` is a no-op.
+        from oddish.queue import maybe_start_analysis_stage
 
-        if task.run_analysis and trial_row.analysis_status is None:
-            trial_row.analysis_status = AnalysisStatus.QUEUED
-            await enqueue_analysis_worker_job(
-                session, trial_id=trial_id, org_id=task.org_id
-            )
-
-        # Run the stage-transition here too so tasks whose only trials
-        # are imported (and especially the ``--skip-artifacts`` path,
-        # where ``complete`` is never called) still transition to
-        # COMPLETED. ``maybe_start_analysis_stage`` is idempotent --
-        # calling it again in ``complete_trial_import`` is a no-op.
         await maybe_start_analysis_stage(session, trial_id)
 
         await session.commit()
