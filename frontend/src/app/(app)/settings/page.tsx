@@ -266,9 +266,7 @@ function SectionContainer({
       inert={!active}
       className={cn(
         "transition-opacity duration-200 ease-out",
-        active
-          ? "relative opacity-100"
-          : "absolute inset-0 opacity-0",
+        active ? "relative opacity-100" : "absolute inset-0 opacity-0",
       )}
     >
       {children}
@@ -777,8 +775,8 @@ function WorkspaceManagementPanel() {
               No workspace selected
             </p>
             <p className="max-w-sm text-xs text-muted-foreground">
-              Pick a workspace from the menu in the top navigation — or create
-              a new one — to manage members, roles, and organization details.
+              Pick a workspace from the menu in the top navigation — or create a
+              new one — to manage members, roles, and organization details.
             </p>
           </div>
         </div>

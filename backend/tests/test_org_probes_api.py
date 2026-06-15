@@ -106,7 +106,9 @@ async def probed_org():
             )
         session.add(ExperimentModel(id=exp_id, name=f"op-{suffix}", org_id=org_id))
         session.add(
-            ExperimentModel(id=other_exp_id, name=f"op-other-{suffix}", org_id=other_org_id)
+            ExperimentModel(
+                id=other_exp_id, name=f"op-other-{suffix}", org_id=other_org_id
+            )
         )
         for tid, oid in (
             (task_a, org_id),
@@ -115,20 +117,53 @@ async def probed_org():
             (other_task, other_org_id),
         ):
             session.add(
-                TaskModel(id=tid, name=f"name-{tid}", user="test",
-                          task_path="/tmp/fake", org_id=oid)
+                TaskModel(
+                    id=tid,
+                    name=f"name-{tid}",
+                    user="test",
+                    task_path="/tmp/fake",
+                    org_id=oid,
+                )
             )
         await session.flush()
         session.add(trial(a_old, task_a, org_id, exp_id, base, is_probe=True))
-        session.add(trial(a_new, task_a, org_id, exp_id, base + timedelta(hours=2),
-                          is_probe=True, status=TrialStatus.RUNNING))
-        session.add(trial(a_real, task_a, org_id, exp_id, base + timedelta(hours=3),
-                          is_probe=False))
-        session.add(trial(b_probe, task_b, org_id, exp_id, base - timedelta(hours=5),
-                          is_probe=True))
+        session.add(
+            trial(
+                a_new,
+                task_a,
+                org_id,
+                exp_id,
+                base + timedelta(hours=2),
+                is_probe=True,
+                status=TrialStatus.RUNNING,
+            )
+        )
+        session.add(
+            trial(
+                a_real,
+                task_a,
+                org_id,
+                exp_id,
+                base + timedelta(hours=3),
+                is_probe=False,
+            )
+        )
+        session.add(
+            trial(
+                b_probe,
+                task_b,
+                org_id,
+                exp_id,
+                base - timedelta(hours=5),
+                is_probe=True,
+            )
+        )
         session.add(trial(c_real, task_c, org_id, exp_id, base, is_probe=False))
-        session.add(trial(other_probe, other_task, other_org_id, other_exp_id, base,
-                          is_probe=True))
+        session.add(
+            trial(
+                other_probe, other_task, other_org_id, other_exp_id, base, is_probe=True
+            )
+        )
 
     yield {"org_id": org_id, "task_a": task_a, "task_b": task_b, "task_c": task_c}
 
@@ -149,7 +184,7 @@ async def test_list_org_probes_groups_counts_and_orders(probed_org):
     assert [r.task_id for r in rows] == [probed_org["task_a"], probed_org["task_b"]]
 
     a = rows[0]
-    assert a.run_count == 2          # two probe trials, non-probe excluded
+    assert a.run_count == 2  # two probe trials, non-probe excluded
     assert a.last_status == "running"  # status of the most recent probe trial
     b = rows[1]
     assert b.run_count == 1

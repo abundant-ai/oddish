@@ -8,7 +8,9 @@ from oddish.core.digest import (
 
 
 def test_build_digest_prompt_includes_title_and_text():
-    p = build_digest_prompt(title="Onboarding QA", text="Q: how to reset? A: click reset.")
+    p = build_digest_prompt(
+        title="Onboarding QA", text="Q: how to reset? A: click reset."
+    )
     assert "Onboarding QA" in p
     assert "click reset" in p
     assert "summary" in p.lower() and "tags" in p.lower()

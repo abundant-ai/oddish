@@ -1,4 +1,5 @@
 """Tests for the hourly tag-projection reconciliation in cleanup.py."""
+
 from __future__ import annotations
 
 import asyncio

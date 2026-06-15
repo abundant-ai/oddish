@@ -68,7 +68,7 @@ export function UnifiedDrawerWrapper({
     displayMode === "trial" && showTask && hasLeft && !showTrial;
 
   const [width, setWidth] = useState(
-    sideBySideActive ? sideBySideWidth : defaultWidth
+    sideBySideActive ? sideBySideWidth : defaultWidth,
   );
   const userResizedRef = useRef(false);
 
@@ -208,7 +208,7 @@ export function UnifiedDrawerWrapper({
     >
       <div
         className={cn(
-          "flex flex-1 flex-col overflow-hidden transition-opacity duration-300"
+          "flex flex-1 flex-col overflow-hidden transition-opacity duration-300",
         )}
         style={{ opacity: isTransitioning ? 0.3 : 1 }}
       >

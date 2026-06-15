@@ -1,4 +1,5 @@
 """Tests for tag handling on the task-import endpoint."""
+
 from __future__ import annotations
 
 import inspect

@@ -409,9 +409,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         n_skills = await stage_org_skills(skills_root, org_id=trial_org_id)
         if n_skills:
             agent_skill_paths = [skills_root]
-            logger.info(
-                "probe: staged %d skill(s) for trial %s", n_skills, trial_id
-            )
+            logger.info("probe: staged %d skill(s) for trial %s", n_skills, trial_id)
     else:
         actual_task_path = task_path
 

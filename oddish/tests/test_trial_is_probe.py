@@ -45,7 +45,8 @@ def _submission(*, name: str, extra_instructions: str | None) -> TaskSubmission:
 async def test_create_task_marks_probe_trials(cleanup_task_ids):
     async with get_session() as session:
         probe_task = await create_task(
-            session, _submission(name="is-probe-test-probe", extra_instructions="poke around")
+            session,
+            _submission(name="is-probe-test-probe", extra_instructions="poke around"),
         )
         normal_task = await create_task(
             session, _submission(name="is-probe-test-normal", extra_instructions=None)
@@ -55,9 +56,7 @@ async def test_create_task_marks_probe_trials(cleanup_task_ids):
     async with get_session() as session:
         probe_trials = (
             await session.execute(
-                TrialModel.__table__.select().where(
-                    TrialModel.task_id == probe_task.id
-                )
+                TrialModel.__table__.select().where(TrialModel.task_id == probe_task.id)
             )
         ).all()
         normal_trials = (
@@ -246,7 +245,9 @@ async def test_retry_preserves_is_probe(monkeypatch):
     async def fake_reserve(session, *, task_id):
         return 1
 
-    async def fake_enqueue(session, *, trial_id, queue_key, org_id, max_attempts, parent_job_id=None):
+    async def fake_enqueue(
+        session, *, trial_id, queue_key, org_id, max_attempts, parent_job_id=None
+    ):
         pass
 
     monkeypatch.setattr(queue_mod, "reserve_next_trial_index", fake_reserve)
@@ -256,6 +257,6 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
     assert added, "retry_trial_core should have added a new TrialModel"
     new_trial = added[0]
-    assert new_trial.is_probe is True, (
-        f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"
-    )
+    assert (
+        new_trial.is_probe is True
+    ), f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"

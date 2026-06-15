@@ -85,10 +85,10 @@ class TrialJobHandler:
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                if (
-                    getattr(trial, "harbor_stage", None)
-                    == MODAL_IMAGE_BUILD_FAILED_STAGE
-                    or is_modal_image_build_failure(trial.error_message)
+                if getattr(
+                    trial, "harbor_stage", None
+                ) == MODAL_IMAGE_BUILD_FAILED_STAGE or is_modal_image_build_failure(
+                    trial.error_message
                 ):
                     return _fail_permanent(error_message)
                 return _fail_retryable(error_message)

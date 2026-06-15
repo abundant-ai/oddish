@@ -5,6 +5,7 @@ migration file and assert that key SQL fragments are present. This catches
 the easy regressions (typos in CREATE TABLE / index predicates) without
 needing a Postgres instance.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -66,6 +67,7 @@ def test_core_migration_revision_id():
     src = _read("aa00ta01core_add_tag_tables.py")
     assert 'revision: str = "aa00ta01core"' in src
     import re
+
     m = re.search(r'down_revision[^=]*=\s*"([^"]*)"', src)
     assert m is not None, "down_revision constant not found"
     assert m.group(1), "down_revision must not be empty"
@@ -88,10 +90,7 @@ def test_projection_columns_migration():
     assert '"aa00ta01core"' in src
     assert "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS effective_tag_ids" in src
     assert "ALTER TABLE tasks ADD COLUMN IF NOT EXISTS current_version_tag_ids" in src
-    assert (
-        "ALTER TABLE task_versions ADD COLUMN IF NOT EXISTS effective_tag_ids"
-        in src
-    )
+    assert "ALTER TABLE task_versions ADD COLUMN IF NOT EXISTS effective_tag_ids" in src
     assert "TEXT[] NOT NULL DEFAULT '{}'" in src
 
 
@@ -115,9 +114,7 @@ def test_tag_project_enum_add_is_autocommit_and_not_referenced():
     assert '"trial_is_probe_001"' in src
     assert '"aa03ta04kind"' in _read("aa00ta01core_add_tag_tables.py")
     assert "with op.get_context().autocommit_block():" in src
-    assert (
-        "ALTER TYPE worker_job_kind ADD VALUE IF NOT EXISTS 'TAG_PROJECT'" in src
-    )
+    assert "ALTER TYPE worker_job_kind ADD VALUE IF NOT EXISTS 'TAG_PROJECT'" in src
     # The newly-added enum value MUST NOT be referenced in the
     # same migration — Postgres raises "unsafe use of new value".
     assert "INSERT" not in src.split("ADD VALUE", 1)[1]
@@ -125,9 +122,7 @@ def test_tag_project_enum_add_is_autocommit_and_not_referenced():
 
 
 def test_cloud_fk_migration_present():
-    cloud_dir = (
-        Path(__file__).resolve().parents[2] / "backend" / "alembic" / "versions"
-    )
+    cloud_dir = Path(__file__).resolve().parents[2] / "backend" / "alembic" / "versions"
     src = (cloud_dir / "n0p1q2r3s4t5_add_tag_cloud_fks.py").read_text()
     assert 'revision: str = "n0p1q2r3s4t5"' in src
     assert '"m9n0p1q2r3s4"' in src
@@ -265,9 +260,9 @@ def test_six_bugfixed_columns_keep_their_server_defaults():
     for table, cols in fixed.items():
         declared = set(_migration_default_columns(src, table))
         for col in cols:
-            assert col in declared, (
-                f"{table}.{col} is no longer parsed as a DEFAULT column"
-            )
+            assert (
+                col in declared
+            ), f"{table}.{col} is no longer parsed as a DEFAULT column"
             assert (
                 Base.metadata.tables[table].columns[col].server_default is not None
             ), f"{table}.{col} lost its server_default (regression of the fix)"

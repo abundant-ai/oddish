@@ -9,6 +9,7 @@ Revision ID: aa03ta04kind
 Revises: trial_is_probe_001
 Create Date: 2026-06-06 12:15:00.000000
 """
+
 from typing import Sequence, Union
 
 from alembic import op

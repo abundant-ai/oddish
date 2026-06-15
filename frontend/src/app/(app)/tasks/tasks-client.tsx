@@ -313,7 +313,10 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
                     <span className="min-w-0 max-w-[140px] truncate">
                       {label}
                       {number && (
-                        <span className="text-muted-foreground"> #{number}</span>
+                        <span className="text-muted-foreground">
+                          {" "}
+                          #{number}
+                        </span>
                       )}
                     </span>
                     <ExternalLink
@@ -397,7 +400,10 @@ export function TasksPageClient({
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
-  const parsed = useMemo(() => parseTaskSearch(debouncedQuery), [debouncedQuery]);
+  const parsed = useMemo(
+    () => parseTaskSearch(debouncedQuery),
+    [debouncedQuery],
+  );
 
   useEffect(() => {
     setOffset(0);
