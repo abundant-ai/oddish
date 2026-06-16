@@ -10,12 +10,15 @@ interface UseChatSession {
   error: string | null;
   unavailable: boolean; // backend 503
   send: (text: string) => Promise<void>;
-  reset: () => void;            // "New chat"
-  adopt: (id: string) => void;  // jump into an existing session id
+  reset: () => void; // "New chat"
+  adopt: (id: string) => void; // jump into an existing session id
   resume: (id: string) => Promise<void>; // resume a past chat (live reattach or dead restore)
 }
 
-export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseChatSession {
+export function useChatSession(
+  scopeKind: ChatScopeKind,
+  scopeId: string,
+): UseChatSession {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [bubbles, setBubbles] = useState<ChatBubble[]>([]);
   const [working, setWorking] = useState(false);
@@ -30,108 +33,143 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ scope_kind: scopeKind, scope_id: scopeId }),
     });
-    if (res.status === 503) { setUnavailable(true); return null; }
-    if (!res.ok) { setError("Could not start chat"); return null; }
+    if (res.status === 503) {
+      setUnavailable(true);
+      return null;
+    }
+    if (!res.ok) {
+      setError("Could not start chat");
+      return null;
+    }
     const data = await res.json();
     setSessionId(data.session_id);
     return data.session_id as string;
   }, [sessionId, scopeKind, scopeId]);
 
-  const send = useCallback(async (text: string) => {
-    setError(null);
+  const send = useCallback(
+    async (text: string) => {
+      setError(null);
 
-    // Echo the user's message and enter the working state BEFORE provisioning.
-    // On the first message ensureSession() blocks ~10s creating the sandbox;
-    // doing this first means the message shows immediately and the composer is
-    // disabled during provisioning (prevents a second send racing in).
-    setBubbles((b) => [...b, { role: "user", text }]);
-    setWorking(true);
+      // Echo the user's message and enter the working state BEFORE provisioning.
+      // On the first message ensureSession() blocks ~10s creating the sandbox;
+      // doing this first means the message shows immediately and the composer is
+      // disabled during provisioning (prevents a second send racing in).
+      setBubbles((b) => [...b, { role: "user", text }]);
+      setWorking(true);
 
-    const id = await ensureSession();
-    if (!id) { setWorking(false); return; }
-
-    abortRef.current?.abort();
-    const ac = new AbortController();
-    abortRef.current = ac;
-
-    let res: Response;
-    try {
-      res = await fetch(`/api/chat-sessions/${id}/messages`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text }),
-        signal: ac.signal,
-      });
-    } catch (e) {
-      setWorking(false);
-      if (!isAbort(e)) setError("Chat stream failed");
-      return;
-    }
-    if (!res.ok || !res.body) { setWorking(false); setError("Chat stream failed"); return; }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    let startedAssistant = false;
-
-    function handleFrame(frame: string) {
-      const lines = frame.split("\n");
-      const evType = lines.find((l) => l.startsWith("event:"))?.slice(6).trim();
-      const dataLine = lines.find((l) => l.startsWith("data:"))?.slice(5).trim();
-      if (!dataLine) return;
-      if (evType === "error") {
-        try { const d = JSON.parse(dataLine); setError((d && (d.detail || d.type)) || "Chat error"); }
-        catch { setError(dataLine || "Chat error"); }
+      const id = await ensureSession();
+      if (!id) {
+        setWorking(false);
         return;
       }
-      if (evType === "done") return;
-      try {
-        const ev = JSON.parse(dataLine);
-        const piece = extractAssistantText(ev);
-        if (!piece) return;
-        if (!startedAssistant) {
-          setBubbles((b) => [...b, { role: "assistant", text: piece }]);
-          startedAssistant = true;
-        } else {
-          setBubbles((b) => {
-            const next = [...b];
-            const last = next[next.length - 1];
-            if (last && last.role === "assistant") next[next.length - 1] = { ...last, text: last.text + piece };
-            return next;
-          });
-        }
-      } catch { /* ignore non-JSON keepalive */ }
-    }
 
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf("\n\n")) !== -1) {
-          const frame = buf.slice(0, nl);
-          buf = buf.slice(nl + 2);
-          handleFrame(frame);
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
+      let res: Response;
+      try {
+        res = await fetch(`/api/chat-sessions/${id}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: text }),
+          signal: ac.signal,
+        });
+      } catch (e) {
+        setWorking(false);
+        if (!isAbort(e)) setError("Chat stream failed");
+        return;
+      }
+      if (!res.ok || !res.body) {
+        setWorking(false);
+        setError("Chat stream failed");
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let startedAssistant = false;
+
+      function handleFrame(frame: string) {
+        const lines = frame.split("\n");
+        const evType = lines
+          .find((l) => l.startsWith("event:"))
+          ?.slice(6)
+          .trim();
+        const dataLine = lines
+          .find((l) => l.startsWith("data:"))
+          ?.slice(5)
+          .trim();
+        if (!dataLine) return;
+        if (evType === "error") {
+          try {
+            const d = JSON.parse(dataLine);
+            setError((d && (d.detail || d.type)) || "Chat error");
+          } catch {
+            setError(dataLine || "Chat error");
+          }
+          return;
+        }
+        if (evType === "done") return;
+        try {
+          const ev = JSON.parse(dataLine);
+          const piece = extractAssistantText(ev);
+          if (!piece) return;
+          if (!startedAssistant) {
+            setBubbles((b) => [...b, { role: "assistant", text: piece }]);
+            startedAssistant = true;
+          } else {
+            setBubbles((b) => {
+              const next = [...b];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant")
+                next[next.length - 1] = { ...last, text: last.text + piece };
+              return next;
+            });
+          }
+        } catch {
+          /* ignore non-JSON keepalive */
         }
       }
-    } catch (e) {
-      if (!isAbort(e)) setError("Chat stream failed");
-    } finally {
-      setWorking(false);
-    }
-  }, [ensureSession]);
+
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n\n")) !== -1) {
+            const frame = buf.slice(0, nl);
+            buf = buf.slice(nl + 2);
+            handleFrame(frame);
+          }
+        }
+      } catch (e) {
+        if (!isAbort(e)) setError("Chat stream failed");
+      } finally {
+        setWorking(false);
+      }
+    },
+    [ensureSession],
+  );
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
-    setSessionId(null); setBubbles([]); setError(null); setWorking(false);
+    setSessionId(null);
+    setBubbles([]);
+    setError(null);
+    setWorking(false);
   }, []);
 
   const adopt = useCallback((id: string) => {
     abortRef.current?.abort();
-    setSessionId(id); setBubbles([]); setError(null); setWorking(false);
+    setSessionId(id);
+    setBubbles([]);
+    setError(null);
+    setWorking(false);
   }, []);
 
   const resume = useCallback(async (id: string) => {
@@ -139,32 +177,62 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
     setError(null);
     setBubbles([]);
     setWorking(false);
-    const res = await fetch(`/api/chat-sessions/${id}/resume`, { method: "POST" });
+    const res = await fetch(`/api/chat-sessions/${id}/resume`, {
+      method: "POST",
+    });
     if (res.status === 409) {
       let detail = "This chat can't be restored.";
-      try { const d = await res.json(); if (d?.detail) detail = d.detail; } catch { /* ignore */ }
+      try {
+        const d = await res.json();
+        if (d?.detail) detail = d.detail;
+      } catch {
+        /* ignore */
+      }
       setError(detail);
       return;
     }
-    if (!res.ok && res.status !== 204) { setError("Could not resume chat"); return; }
+    if (!res.ok && res.status !== 204) {
+      setError("Could not resume chat");
+      return;
+    }
     setSessionId(id);
   }, []);
 
-  return { sessionId, bubbles, working, error, unavailable, send, reset, adopt, resume };
+  return {
+    sessionId,
+    bubbles,
+    working,
+    error,
+    unavailable,
+    send,
+    reset,
+    adopt,
+    resume,
+  };
 }
 
 function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === "AbortError";
 }
 
+type StreamContentBlock = { type?: string; text?: string };
+type StreamEvent = {
+  type?: string;
+  text?: string;
+  message?: { content?: StreamContentBlock[] };
+};
+
 // stream-json assistant text lives in event.message.content[].text for
 // type==="assistant"; tolerate the simpler {type:"assistant", text} shape too.
-function extractAssistantText(ev: any): string {
+function extractAssistantText(ev: StreamEvent | null | undefined): string {
   if (ev?.type !== "assistant") return "";
   if (typeof ev.text === "string") return ev.text;
   const content = ev?.message?.content;
   if (Array.isArray(content)) {
-    return content.filter((c: any) => c?.type === "text").map((c: any) => c.text).join("");
+    return content
+      .filter((c) => c?.type === "text")
+      .map((c) => c.text ?? "")
+      .join("");
   }
   return "";
 }
