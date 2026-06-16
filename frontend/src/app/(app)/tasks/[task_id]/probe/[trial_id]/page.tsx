@@ -9,7 +9,7 @@ import { ProbeRunSummary } from "@/components/probe-run-summary";
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
   text: string;
-  name?: string;        // tool name when kind === "tool_use" (e.g. "Bash", "Read")
+  name?: string; // tool name when kind === "tool_use" (e.g. "Bash", "Read")
   is_error?: boolean;
 };
 
@@ -61,7 +61,9 @@ export default function ProbeResultPage({
   const fetcher = async (url: string) => {
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok)
-      throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      throw new Error(
+        `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`,
+      );
     return res.json();
   };
 
@@ -156,7 +158,18 @@ export default function ProbeResultPage({
         >
           ← Back to workbench
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold">Probe run</h1>
+        <p className="mt-2 text-xs uppercase tracking-wide text-muted-foreground">
+          Probe run
+        </p>
+        <p className="text-sm">
+          Task:{" "}
+          <Link
+            href={`/tasks/${task_id}`}
+            className="font-mono font-medium text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
+          >
+            {task_id}
+          </Link>
+        </p>
         <p className="mt-1 font-mono text-xs text-muted-foreground">
           {trial.id}
         </p>

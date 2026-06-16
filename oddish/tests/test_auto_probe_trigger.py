@@ -4,6 +4,7 @@ rotates models across versions, and never raises into the caller.
 Also includes an end-to-end test verifying that create_task_sweep_core
 triggers the auto-probe and that dedup holds across a second submission.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,7 +19,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.core.auto_probe import maybe_enqueue_auto_probe  # noqa: E402
 from oddish.db import TaskModel, TrialModel, get_session  # noqa: E402
 from oddish.queue import create_task  # noqa: E402
-from oddish.schemas import AgentModelPair, TaskSubmission, TaskSweepSubmission, TrialSpec  # noqa: E402
+from oddish.schemas import (
+    AgentModelPair,
+    TaskSubmission,
+    TaskSweepSubmission,
+    TrialSpec,
+)  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 
@@ -96,7 +102,9 @@ async def test_failure_is_swallowed(cleanup_task_ids, monkeypatch):
 
     async with get_session() as session:
         task = await session.get(TaskModel, task.id)
-        await maybe_enqueue_auto_probe(session, task=task, experiment=None, org_id=None)  # must NOT raise
+        await maybe_enqueue_auto_probe(
+            session, task=task, experiment=None, org_id=None
+        )  # must NOT raise
 
 
 @pytest.mark.asyncio
@@ -179,7 +187,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         first = await _probe_trials(s, seeded_sweep_task_id)
-    assert len(first) == 1, f"Expected 1 probe trial after first sweep, got {len(first)}"
+    assert (
+        len(first) == 1
+    ), f"Expected 1 probe trial after first sweep, got {len(first)}"
 
     # Second sweep (same task version): probe should NOT be enqueued again.
     async with get_session() as s:
@@ -187,9 +197,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         second = await _probe_trials(s, seeded_sweep_task_id)
-    assert len(second) == 1, (
-        f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
-    )
+    assert (
+        len(second) == 1
+    ), f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
 
 
 @pytest.mark.asyncio
@@ -216,6 +226,4 @@ async def test_sweep_does_not_probe_by_default(seeded_sweep_task_id):
 
     async with get_session() as s:
         probes = await _probe_trials(s, seeded_sweep_task_id)
-    assert len(probes) == 0, (
-        f"Expected no probe trials by default, got {len(probes)}"
-    )
+    assert len(probes) == 0, f"Expected no probe trials by default, got {len(probes)}"

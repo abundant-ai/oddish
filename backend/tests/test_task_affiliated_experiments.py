@@ -5,11 +5,15 @@ singular experiment_* fields (the primary pick) for compatibility and adds
 ``experiments`` with every live link, excluding soft-deleted memberships.
 Runs against an empty Postgres via ``ODDISH_DATABASE_URL``; skips otherwise.
 """
+
 import os
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
+    async_sessionmaker,
+    create_async_engine,
+)
 
 import models  # noqa: F401  registers cloud tables on the shared Base
 from oddish.core.endpoints import get_task_status_core
@@ -102,9 +106,7 @@ async def test_public_task_payload_lists_only_public_experiments():
             for include_trials in (True, False):
                 # include_trials=False previously 500'd (MultipleResultsFound)
                 # for a task in two public experiments.
-                resp = await get_public_task_status(
-                    "t1", include_trials=include_trials
-                )
+                resp = await get_public_task_status("t1", include_trials=include_trials)
                 names = [(e.id, e.name) for e in resp.experiments]
                 assert names == [
                     ("exp-pub", "Public Exp"),

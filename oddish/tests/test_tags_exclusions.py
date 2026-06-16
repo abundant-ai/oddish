@@ -1,4 +1,5 @@
 """Tests for tag_exclusion creation/removal in tags_core."""
+
 from __future__ import annotations
 
 import asyncio

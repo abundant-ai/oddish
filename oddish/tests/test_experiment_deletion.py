@@ -133,11 +133,7 @@ def test_backend_router_exposes_delete_experiment_endpoint():
     """Hosted backend must surface the experiment soft-delete handler."""
 
     router_path = (
-        Path(__file__).resolve().parents[2]
-        / "backend"
-        / "api"
-        / "routers"
-        / "tasks.py"
+        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
     )
     source = router_path.read_text(encoding="utf-8")
     module = ast.parse(source, filename=str(router_path))

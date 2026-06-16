@@ -38,8 +38,7 @@ def upgrade() -> None:
     )
     # Backfill historical probe rows from the JSONB marker. No-op on a fresh DB.
     op.execute(
-        "UPDATE trials SET is_probe = true "
-        "WHERE harbor_config->>'mode' = 'probe'"
+        "UPDATE trials SET is_probe = true " "WHERE harbor_config->>'mode' = 'probe'"
     )
     # Index name matches SQLAlchemy's default for ``index=True`` (ix_<table>_<col>)
     # so the model's create_all() index and this one are the same object.

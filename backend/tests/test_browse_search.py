@@ -6,11 +6,15 @@ Schema is built with ``Base.metadata.create_all`` on an empty Postgres
 - user-typed LIKE wildcards (%, _, \\) are literals, not patterns
 - the free-text grammar: terms AND in any order, "quoted phrase", -exclusion
 """
+
 import os
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
+    async_sessionmaker,
+    create_async_engine,
+)
 
 import models  # noqa: F401  registers cloud tables on the shared Base
 from oddish.core.endpoints import browse_tasks_core

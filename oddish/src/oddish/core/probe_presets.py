@@ -86,9 +86,7 @@ async def _get_owned_preset(
     if preset is None:
         raise HTTPException(status_code=404, detail=f"Preset {preset_id} not found")
     if preset.is_seed:
-        raise HTTPException(
-            status_code=403, detail="Seed presets are read-only"
-        )
+        raise HTTPException(status_code=403, detail="Seed presets are read-only")
     if preset.org_id != org_id:
         raise HTTPException(status_code=404, detail=f"Preset {preset_id} not found")
     return preset
@@ -102,9 +100,7 @@ async def update_probe_preset_core(
     org_id: str | None = None,
 ) -> ProbePresetModel:
     """Apply provided fields to an org-owned custom preset."""
-    preset = await _get_owned_preset(
-        session, preset_id=preset_id, org_id=org_id
-    )
+    preset = await _get_owned_preset(session, preset_id=preset_id, org_id=org_id)
     for field, value in data.model_dump(exclude_unset=True).items():
         setattr(preset, field, value)
     await session.flush()
@@ -118,8 +114,6 @@ async def delete_probe_preset_core(
     org_id: str | None = None,
 ) -> None:
     """Soft-delete an org-owned custom preset."""
-    preset = await _get_owned_preset(
-        session, preset_id=preset_id, org_id=org_id
-    )
+    preset = await _get_owned_preset(session, preset_id=preset_id, org_id=org_id)
     preset.deleted_at = utcnow()
     await session.flush()

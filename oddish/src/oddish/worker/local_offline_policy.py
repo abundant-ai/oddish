@@ -58,8 +58,6 @@ def enable_local_internet(task_dir: Path) -> bool:
         tc.environment.allow_internet = True
         config_path.write_text(tc.model_dump_toml())
     except Exception:
-        logger.exception(
-            "local-policy: enabling internet for %s failed", config_path
-        )
+        logger.exception("local-policy: enabling internet for %s failed", config_path)
         return False
     return True

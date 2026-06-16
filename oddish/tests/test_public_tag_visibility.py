@@ -1,4 +1,5 @@
 """Tests for public-endpoint tag visibility filtering."""
+
 from __future__ import annotations
 
 import asyncio

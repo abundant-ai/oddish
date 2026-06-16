@@ -58,6 +58,7 @@ async def test_local_mode_dispatches_local_runner(monkeypatch, seeded_task_id):
     monkeypatch.setenv("ODDISH_LOCAL_MODE", "1")
     # Reload settings if cached
     import oddish.config as cfg_mod
+
     monkeypatch.setattr(cfg_mod, "settings", cfg_mod.Settings())
 
     fake = AsyncMock()
