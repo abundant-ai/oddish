@@ -169,8 +169,9 @@ async def cancel_tasks_runs(
         if kind == "TRIAL" and subject_id:
             canceled_trial_kinds.add(str(subject_id))
         elif kind == "ANALYSIS" and subject_id:
+            # Legacy per-trial classification rows, drained across a deploy.
             canceled_analysis_trial_ids.add(str(subject_id))
-        elif kind == "VERDICT" and subject_id:
+        elif kind == "QA" and subject_id:
             canceled_verdict_task_ids.add(str(subject_id))
 
     # Mirror terminal state back to the domain rows so the dashboard
@@ -336,7 +337,13 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # Every domain-row insertion or stage transition that schedules compute
 # work has a sibling ``worker_jobs`` row in the same transaction. The
 # dispatcher claims from ``worker_jobs`` only; these helpers are the
-# single enqueue surface for the TRIAL / ANALYSIS / VERDICT kinds.
+# single enqueue surface for the TRIAL and (task-level) QA kinds.
+#
+# Trajectory analysis is task-scoped: a single QA worker job classifies
+# every trial in the task and then synthesizes the task verdict, so there
+# is no longer a per-trial classification enqueue on the normal pipeline.
+# ``enqueue_analysis_worker_job`` is retained only to drain in-flight
+# legacy ANALYSIS rows across a deploy.
 
 
 async def enqueue_trial_worker_job(
@@ -406,17 +413,22 @@ async def enqueue_analysis_worker_job(
     )
 
 
-async def enqueue_verdict_worker_job(
+async def enqueue_qa_worker_job(
     session: AsyncSession,
     *,
     task_id: str,
     org_id: str | None,
 ) -> WorkerJobModel:
+    """Enqueue the single task-level QA job for a task.
+
+    One job per task: it classifies every live trial's trajectory and then
+    synthesizes the task verdict.
+    """
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
-            kind=WorkerJobKind.VERDICT,
-            queue_key=settings.get_verdict_queue_key(),
+            kind=WorkerJobKind.QA,
+            queue_key=settings.get_qa_queue_key(),
             payload={"task_id": task_id},
             subject_table="tasks",
             subject_id=task_id,
@@ -913,11 +925,11 @@ async def append_trials_to_task(
         task.verdict_error = None
         task.verdict_started_at = None
         task.verdict_finished_at = None
-        # Cancel any in-flight VERDICT worker_job for this task so a
-        # worker that's already claimed (or about to claim) the old
-        # row doesn't overwrite the new verdict with stale data.
-        # The dispatcher re-enqueues a fresh VERDICT row once all
-        # analyses for the new trial set complete.
+        # Cancel any in-flight QA worker_job for this task so a worker
+        # that's already claimed (or about to claim) the old row doesn't
+        # overwrite the new verdict with stale data. The dispatcher
+        # re-enqueues a fresh QA row once all trials for the new set
+        # complete.
         await session.execute(
             text(
                 """
@@ -928,7 +940,7 @@ async def append_trials_to_task(
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
-                WHERE  kind::text = 'VERDICT'
+                WHERE  kind::text = 'QA'
                   AND  subject_table = 'tasks'
                   AND  subject_id = :task_id
                   AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
@@ -950,11 +962,18 @@ async def append_trials_to_task(
 # =============================================================================
 
 
-async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bool:
+async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     """Check if all trials for a task are done and transition task status.
 
-    If run_analysis is enabled -> status becomes ANALYZING
-    If run_analysis is disabled -> status becomes COMPLETED
+    If run_analysis (the QA opt-in) is enabled -> enqueue the single
+    task-level QA job (which classifies every trial then synthesizes the
+    verdict) and move the task to VERDICT_PENDING.
+    If it is disabled -> status becomes COMPLETED.
+
+    There is only one QA job: it handles both per-trial classification and
+    the task verdict, so a task goes straight from RUNNING to
+    VERDICT_PENDING (the "QA running" status) rather than passing through a
+    separate ANALYZING stage.
 
     Uses SELECT FOR UPDATE to prevent race conditions.
     """
@@ -996,33 +1015,9 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
         return False
 
     if task.run_analysis:
-        task.status = TaskStatus.ANALYZING
-        await session.flush()
-
-        analysis_pending_count = await session.scalar(
-            select(func.count(TrialModel.id)).where(
-                and_(
-                    TrialModel.task_id == task_id,
-                    TrialModel.superseded_by_trial_id.is_(None),
-                    or_(
-                        TrialModel.analysis_status.is_(None),
-                        TrialModel.analysis_status.in_(
-                            [
-                                AnalysisStatus.PENDING,
-                                AnalysisStatus.QUEUED,
-                                AnalysisStatus.RUNNING,
-                            ]
-                        ),
-                    ),
-                )
-            )
-        )
-        if analysis_pending_count == 0:
-            task.status = TaskStatus.VERDICT_PENDING
-            task.verdict_status = VerdictStatus.QUEUED
-            await enqueue_verdict_worker_job(
-                session, task_id=task_id, org_id=task.org_id
-            )
+        task.status = TaskStatus.VERDICT_PENDING
+        task.verdict_status = VerdictStatus.QUEUED
+        await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
     else:
         task.status = TaskStatus.COMPLETED
         task.finished_at = utcnow()
@@ -1031,8 +1026,15 @@ async def maybe_start_analysis_stage(session: AsyncSession, trial_id: str) -> bo
     return True
 
 
-async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> bool:
-    """Check if all analyses for a task are done. If so, transition to VERDICT_PENDING.
+async def maybe_advance_legacy_analyzing_task(
+    session: AsyncSession, trial_id: str
+) -> bool:
+    """Advance a task stuck in the legacy ANALYZING stage to QA.
+
+    New tasks never enter ANALYZING (they go RUNNING -> VERDICT_PENDING via
+    :func:`maybe_start_qa_stage`). This only fires from the cleanup sweep for
+    tasks left in ANALYZING by the pre-QA-refactor code: once every live
+    trial's per-trial classification is terminal, enqueue the single QA job.
 
     Uses SELECT FOR UPDATE to prevent race conditions.
     """
@@ -1077,7 +1079,7 @@ async def maybe_start_verdict_stage(session: AsyncSession, trial_id: str) -> boo
 
     task.status = TaskStatus.VERDICT_PENDING
     task.verdict_status = VerdictStatus.QUEUED
-    await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
+    await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
     await session.flush()
 
     return True
@@ -1103,7 +1105,7 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
     stats: dict[str, dict[str, int]] = {}
     valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
     analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_verdict_queue_key()
+    verdict_queue_key = settings.get_qa_queue_key()
 
     def _ensure_queue(queue_key: str) -> None:
         if queue_key not in stats:
@@ -1205,7 +1207,7 @@ async def get_queue_and_pipeline_stats_with_concurrency(
     analysis_pipeline: dict[str, int] = {}
     verdict_pipeline: dict[str, int] = {}
     analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_verdict_queue_key()
+    verdict_queue_key = settings.get_qa_queue_key()
 
     for queue_key, provider_stats in stats.items():
         for status_name, count in provider_stats.items():

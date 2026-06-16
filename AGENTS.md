@@ -84,7 +84,7 @@ FastAPI server — oddish standalone (python -m oddish.server)
         |
         v
 Postgres
-  - worker_jobs       # unified queue (TRIAL / ANALYSIS / VERDICT / …)
+  - worker_jobs       # unified queue (TRIAL / QA / …)
   - trials / tasks    # domain state + live UI columns
   - queue_slots       # per-queue-key concurrency leases
         |
@@ -98,13 +98,24 @@ Harbor task execution → logs/results/artifacts (S3)
 High-level flow:
 
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
-2. Submit a sweep of agent/model trials for that task; each trial, analysis,
-   and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
-   config to override the total attempt budget for newly-created trials.
+2. Submit a sweep of agent/model trials for that task; each trial is
+   enqueued as a `worker_jobs` row in the same transaction as its domain
+   row. Set `max_trial_attempts` on a sweep submission or sweep config to
+   override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
-   handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
-4. Use the CLI or dashboard to watch progress and pull logs/artifacts
+   handler (`TRIAL` / `QA`), write heartbeats, and exit.
+4. Trajectory analysis is **task-scoped**: when every trial of a
+   `run_analysis` task is terminal, a single `QA` job is enqueued. That one
+   job classifies every live trial's trajectory (same taxonomy / evidence /
+   reasoning, written to `trials.analysis`) and then synthesizes the task
+   verdict (`tasks.verdict`). A sweep of `T` tasks × `N` trials therefore
+   enqueues `T` QA jobs instead of `T × (N + 1)`. (The pre-refactor per-trial
+   `ANALYSIS` and per-task `VERDICT` kinds are kept as legacy enum values only
+   so historical / in-flight rows remain valid and drain across a deploy;
+   nothing enqueues them anymore. `trials.analysis` holds the per-trial
+   classification and `tasks.verdict` the task-level result — both are outputs
+   of the one QA job.)
+5. Use the CLI or dashboard to watch progress and pull logs/artifacts
    back locally.
 
 ## Package Boundaries
@@ -113,7 +124,10 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
- handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+ handler registry (`TrialJobHandler`, `QaJobHandler`, plus the legacy
+ `AnalysisJobHandler` kept to drain in-flight rows)
+- the task-level QA job (`run_task_qa_job`): classify every live trial via
+ the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
  per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
@@ -200,7 +214,9 @@ Behavior:
 |------|---------|
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
-| `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
+| `trial_handler.py` | TRIAL execution body |
+| `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
+| `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
 | `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping |
@@ -278,13 +294,12 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
 | DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
-| POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
-| POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
+| POST | `/tasks/{task_id}/qa/retry` | (Re)run the single task-level QA job: reset every live trial's classification + the verdict, then classify all trials and synthesize a fresh verdict |
+| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
-| POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
@@ -586,16 +601,20 @@ deadlocked the next sweep):
    `locked_until = NOW() + WORKER_TIMEOUT + 30s`) and calls
    `run_single_worker_job` → `drain_worker_jobs`, which atomically claims one or
    more rows from `worker_jobs` (stamping `current_worker_id = <worker_id>`),
-   dispatches to the registered handler (`TRIAL` / `ANALYSIS` / `VERDICT`),
-   writes heartbeats on both `worker_jobs.heartbeat_at` and the mirrored domain
-   column, records the outcome (`SUCCESS` / `RETRYING` / `FAILED` /
-   `CANCELLED`), runs the post-success hook (GitHub notification) when
-   applicable, releases the slot in its `finally`, and exits.
+   dispatches to the registered handler (`TRIAL` or the task-level `QA` job;
+   `ANALYSIS` only for legacy in-flight rows), writes heartbeats on both
+   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
+   outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
+   post-success hook (GitHub notification) when applicable, releases the slot
+   in its `finally`, and exits.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
-(`notify_github_trial`, `notify_github_analysis`, `notify_github_verdict`)
-are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`.
+(`notify_github_trial`, `notify_github_qa`, and the transitional
+`notify_github_analysis`) are wired through `_POST_SUCCESS_HOOKS` in
+`worker/functions.py`. The task-level `QA` job fires `notify_github_qa`,
+which refreshes the whole PR comment (per-trial classifications + task
+verdict) in one update.
 
 ### Worker Runtime Invariants & Pitfalls
 
@@ -766,14 +785,15 @@ uv run alembic upgrade head
 - `/` — public landing page; signed-in users are redirected to `/dashboard`
 - `/dashboard` — main dashboard and experiment entrypoint
 - `/tasks` — authenticated task browser with search, pagination, version summaries
-- `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel
+- `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel. Trajectory QA is a single task-level action: the trials table toolbar exposes one **Run QA** / **Cancel QA** per selected task, `TaskFilesPanel` exposes one **Run QA** button, and `TaskVerdictBadge` renders the unified QA state (**Running QA…** / **QA failed** / **Task is good** / **Needs review**) with **Run QA** / **Cancel QA**. Per-trial analysis run/cancel controls were removed (the trial drawer still shows each trial's classification read-only); Run QA proxies to `POST /tasks/{id}/qa/retry` and Cancel QA to `POST /tasks/{id}/qa/cancel`.
 - `/settings` — organization and API key management
 - `/admin` — two tabs:
-  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix,
-    stale-RUNNING samples, recent failures/cancels, duration percentiles,
-    plus `OrphanedStateCard`
+  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix
+    (`Task QA` is the task-level `QA` job; `Task Verdict` and `Trial Analysis`
+    are shown as legacy and only drain in-flight rows), stale-RUNNING samples, recent
+    failures/cancels, duration percentiles, plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
-- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all trial-analysis and task-verdict UI (matrix analysis dots, the "Trial analysis" legend section, the trial analysis card, and the task verdict badge) from public viewers.
+- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all QA UI (matrix classification dots, the "Trial analysis" legend section, the trial classification card, and the task QA verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
 ### Request Flow

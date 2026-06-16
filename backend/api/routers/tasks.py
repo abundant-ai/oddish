@@ -15,8 +15,7 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
-    cancel_task_analysis_core,
-    cancel_task_verdict_core,
+    cancel_task_qa_core,
     combine_experiments_core,
     create_task_sweep_core,
     delete_experiment_core,
@@ -26,8 +25,7 @@ from oddish.core.endpoints import (
     get_task_version_core,
     list_tasks_core,
     list_task_versions_core,
-    rerun_task_analysis_core,
-    rerun_task_verdict_core,
+    rerun_task_qa_core,
 )
 from oddish.core.dashboard import (
     EXPERIMENTS_UNATTRIBUTED_OWNER,
@@ -815,65 +813,29 @@ async def cancel_tasks(
     }
 
 
-@router.post("/tasks/{task_id}/analysis/retry")
-async def retry_task_analysis(
+@router.post("/tasks/{task_id}/qa/retry")
+async def retry_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Queue analysis jobs for every completed trial in a task."""
+    """(Re)run the single task-level QA job: classify every trial, then
+    synthesize the task verdict."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        return await rerun_task_analysis_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
 
 
-@router.post("/tasks/{task_id}/analysis/cancel")
-async def cancel_task_analysis(
+@router.post("/tasks/{task_id}/qa/cancel")
+async def cancel_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Cancel active analysis jobs for a task without cancelling trials."""
+    """Cancel a task's in-flight QA job."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        result = await cancel_task_analysis_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
-
-    modal_cancelled = await _cancel_modal_function_calls(
-        cast("list[str]", result.get("modal_function_call_ids", []))
-    )
-    return {
-        key: value for key, value in result.items() if key != "modal_function_call_ids"
-    } | {"modal_calls_cancelled": modal_cancelled}
-
-
-@router.post("/tasks/{task_id}/verdict/retry")
-async def retry_task_verdict(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Queue a fresh verdict job for a task whose analyses are complete."""
-    auth.require_scope(APIKeyScope.TASKS)
-
-    async with get_session() as session:
-        return await rerun_task_verdict_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
-
-
-@router.post("/tasks/{task_id}/verdict/cancel")
-async def cancel_task_verdict(
-    task_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Cancel an active verdict job for a task."""
-    auth.require_scope(APIKeyScope.TASKS)
-
-    async with get_session() as session:
-        result = await cancel_task_verdict_core(
+        result = await cancel_task_qa_core(
             session, task_id=task_id, org_id=auth.org_id
         )
 

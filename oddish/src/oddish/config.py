@@ -924,7 +924,12 @@ class Settings(BaseSettings):
     def get_analysis_queue_key(self) -> str:
         return self.normalize_queue_key(self.analysis_model)
 
-    def get_verdict_queue_key(self) -> str:
+    def get_qa_queue_key(self) -> str:
+        """Concurrency bucket for the task-level QA job.
+
+        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
+        existing per-model concurrency overrides keep applying.
+        """
         return self.normalize_queue_key(self.verdict_model)
 
     def get_task_expand_queue_key(self) -> str:
@@ -949,7 +954,7 @@ class Settings(BaseSettings):
         keys = {
             NOP_ORACLE_QUEUE_KEY,
             self.get_analysis_queue_key(),
-            self.get_verdict_queue_key(),
+            self.get_qa_queue_key(),
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
