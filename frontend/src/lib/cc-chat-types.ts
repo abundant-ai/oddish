@@ -1,4 +1,4 @@
-export type ChatScopeKind = "experiment" | "task_probes" | "global";
+export type ChatScopeKind = "experiment" | "task" | "global";
 
 export type ChatStatus = "provisioning" | "active" | "closed" | "broken";
 
