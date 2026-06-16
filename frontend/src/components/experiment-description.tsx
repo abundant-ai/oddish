@@ -21,6 +21,29 @@ interface ExperimentDescriptionProps {
 const PILL_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]";
 
+// Matches the meta strip (created · by · id) font so the show/hide toggle and
+// the "add a description" affordance sit naturally beneath it.
+const META_TEXT_CLASS =
+  "w-fit cursor-pointer font-mono text-[11.5px] text-[color:var(--paper-ink-3)] transition-colors hover:text-[color:var(--paper-ink)]";
+
+function extractErrorMessage(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const { detail, error } = data as Record<string, unknown>;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) =>
+        d && typeof d === "object" && typeof (d as { msg?: unknown }).msg === "string"
+          ? (d as { msg: string }).msg
+          : null,
+      )
+      .filter((m): m is string => Boolean(m));
+    if (msgs.length) return msgs.join("; ");
+  }
+  if (typeof error === "string") return error;
+  return null;
+}
+
 export function ExperimentDescription({
   experimentId,
   description,
@@ -28,6 +51,7 @@ export function ExperimentDescription({
   onSaved,
 }: ExperimentDescriptionProps) {
   const [isEditing, setIsEditing] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [draft, setDraft] = useState(description ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +61,7 @@ export function ExperimentDescription({
   const startEditing = () => {
     setDraft(description ?? "");
     setError(null);
+    setIsExpanded(true);
     setIsEditing(true);
   };
 
@@ -48,9 +73,7 @@ export function ExperimentDescription({
 
   const handleSave = async () => {
     if (!experimentId) return;
-    // Send only `description` so the partial-update endpoint leaves the
-    // name untouched. Blank/whitespace clears the description (NULL).
-    const next = draft.trim() ? draft.trim() : null;
+    const trimmed = draft.trim();
 
     setIsSaving(true);
     setError(null);
@@ -60,19 +83,19 @@ export function ExperimentDescription({
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ description: next }),
+          body: JSON.stringify({ description: trimmed }),
         },
       );
 
       if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => null);
         throw new Error(
-          data.detail || data.error || "Failed to save description",
+          extractErrorMessage(data) || "Failed to save description",
         );
       }
 
       setIsEditing(false);
-      onSaved?.(next);
+      onSaved?.(trimmed || null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Save failed");
     } finally {
@@ -90,7 +113,7 @@ export function ExperimentDescription({
           rows={6}
           autoFocus
           disabled={isSaving}
-          className="min-h-[140px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[13px] leading-relaxed"
+          className="min-h-[140px] rounded-[10px] border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] font-mono text-[13px] leading-relaxed"
         />
         {error ? (
           <span className="text-xs text-destructive">{error}</span>
@@ -119,39 +142,46 @@ export function ExperimentDescription({
     );
   }
 
-  // Empty state: offer an affordance to editors; render nothing for viewers.
+  // Empty state: offer an inline affordance to editors; render nothing for
+  // viewers so the public page has no empty box.
   if (!description) {
     if (!canEdit) return null;
     return (
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={startEditing}
-        className="h-7 w-fit gap-1.5 rounded-sm px-2 font-mono text-[12px] text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
-      >
-        <Pencil className="h-3 w-3" />
+      <button type="button" onClick={startEditing} className={META_TEXT_CLASS}>
         add a description
-      </Button>
+      </button>
     );
   }
 
-  // Display mode with content.
+  // Has a description: a show/hide toggle styled like the meta strip, with the
+  // rendered markdown revealed when expanded.
   return (
-    <div className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-      <MarkdownRenderer content={description} />
-      {canEdit ? (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          onClick={startEditing}
-          className="absolute right-2 top-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] group-hover:opacity-100"
-          aria-label="Edit description"
-          title="Edit description"
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </Button>
+    <div className="flex flex-col gap-2">
+      <button
+        type="button"
+        onClick={() => setIsExpanded((value) => !value)}
+        aria-expanded={isExpanded}
+        className={META_TEXT_CLASS}
+      >
+        {isExpanded ? "hide description" : "show description"}
+      </button>
+      {isExpanded ? (
+        <div className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+          <MarkdownRenderer content={description} />
+          {canEdit ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={startEditing}
+              className="absolute right-2 top-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] group-hover:opacity-100"
+              aria-label="Edit description"
+              title="Edit description"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );
