@@ -155,8 +155,18 @@ class WorkerJobKind(str, Enum):
     """
 
     TRIAL = "TRIAL"
-    ANALYSIS = "ANALYSIS"
+    # The single task-level trajectory-analysis (QA) job: it classifies every
+    # trial's trajectory and then synthesizes the task verdict in one job.
+    QA = "QA"
+    # Legacy kinds. Trajectory analysis used to be a per-trial ``ANALYSIS`` job
+    # plus a separate per-task ``VERDICT`` job; both collapsed into ``QA``.
+    # Nothing enqueues these anymore. They are kept as enum members so the
+    # native ``worker_job_kind`` Postgres type (created from this enum) still
+    # carries the values that historical migrations / rows reference, and so
+    # any row in flight across the deploy can drain. ``qa02`` repoints existing
+    # ``VERDICT`` rows to ``QA``.
     VERDICT = "VERDICT"
+    ANALYSIS = "ANALYSIS"
     QA_REVIEW = "QA_REVIEW"
     # Expand a task tarball into a per-file S3 tree at
     # ``tasks/{task_id}/v{N}-files/``. Derived cache only; the archive
@@ -907,6 +917,12 @@ class QueueSlotModel(Base):
     locked_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When the current lease was taken. Lets the reconciler reclaim a leaked
+    # lease per-slot (keyed on the owning worker's liveness) while still
+    # honoring a short grace window for the brief acquire->claim gap.
+    locked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index(
@@ -1210,9 +1226,7 @@ class TagAssignmentModel(TimestampedMixin, Base):
             postgresql_where=text("deleted_at IS NULL"),
         ),
         Index("idx_tag_assignments_tag_scope_state", "tag_id", "scope", "state"),
-        Index(
-            "idx_tag_assignments_scope_target_state", "scope", "target_id", "state"
-        ),
+        Index("idx_tag_assignments_scope_target_state", "scope", "target_id", "state"),
         Index("idx_tag_assignments_org_tag_state", "org_id", "tag_id", "state"),
         Index(
             "idx_tag_assignments_source_experiment",
@@ -1440,7 +1454,9 @@ class TagPolicyModel(Base):
         Integer, nullable=False, default=64, server_default="64"
     )
     name_charset: Mapped[str] = mapped_column(
-        String(128), nullable=False, default="[a-z0-9._-]",
+        String(128),
+        nullable=False,
+        default="[a-z0-9._-]",
         server_default="[a-z0-9._-]",
     )
     reserved_prefixes: Mapped[list[str]] = mapped_column(
@@ -1562,7 +1578,7 @@ class SkillModel(TimestampedMixin, Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    files: Mapped[list["SkillFileModel"]] = relationship(
+    files: Mapped[list["SkillFileModel"]] = relationship(  # type: ignore[assignment]
         "SkillFileModel",
         back_populates="skill",
         cascade="all, delete-orphan",
@@ -1582,12 +1598,17 @@ class SkillFileModel(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     skill_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64),
+        ForeignKey("skills.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     relative_path: Mapped[str] = mapped_column(String(512), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
 
-    skill: Mapped["SkillModel"] = relationship("SkillModel", back_populates="files")
+    skill: Mapped["SkillModel"] = relationship(  # type: ignore[assignment]
+        "SkillModel", back_populates="files"
+    )
 
 
 class DocumentModel(TimestampedMixin, Base):

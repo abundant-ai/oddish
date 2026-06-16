@@ -34,7 +34,7 @@
  *      → { text: '"exact phrase" -noisy', all: ["smoke"], any: [], none: [] }
  */
 
-export interface ParsedTaskSearch {
+interface ParsedTaskSearch {
   text: string;
   all: string[];
   any: string[];

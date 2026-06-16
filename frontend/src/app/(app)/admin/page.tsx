@@ -32,6 +32,7 @@ import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
+import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
 const formatAge = (dateStr: string | null) => {
@@ -106,7 +107,7 @@ function QueueSlotsCard() {
           </Button>
         </div>
         {data && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             Last updated: {new Date(data.timestamp).toLocaleTimeString()}
           </p>
         )}
@@ -125,7 +126,7 @@ function QueueSlotsCard() {
         ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : !data || data.queue_keys.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
+          <div className="text-muted-foreground py-8 text-center">
             <Server className="mx-auto mb-3 h-12 w-12 opacity-50" />
             <p>No queue slots configured</p>
           </div>
@@ -157,19 +158,25 @@ function QueueSlotsCard() {
                           </span>
                         </span>
                         <div className="flex items-center gap-2">
-                          <div className="flex gap-1">
-                            {Array.from({
-                              length: queueSummary.total_slots,
-                            }).map((_, i) => (
-                              <div
-                                key={i}
-                                className={`h-2 w-2 rounded-full ${
-                                  i < queueSummary.active_slots
-                                    ? "bg-blue-500"
-                                    : "bg-muted-foreground/30"
-                                }`}
-                              />
-                            ))}
+                          {/* Fixed-width fill bar instead of one-dot-per-slot:
+                              high-concurrency keys (up to 128 slots) used to
+                              paint a dot row that ran off the screen. */}
+                          <div className="bg-muted-foreground/20 h-2 w-20 overflow-hidden rounded-full">
+                            <div
+                              className="h-full bg-blue-500"
+                              style={{
+                                width: `${
+                                  queueSummary.total_slots > 0
+                                    ? Math.min(
+                                        100,
+                                        (queueSummary.active_slots /
+                                          queueSummary.total_slots) *
+                                          100,
+                                      )
+                                    : 0
+                                }%`,
+                              }}
+                            />
                           </div>
                           <Badge
                             variant={
@@ -177,7 +184,7 @@ function QueueSlotsCard() {
                                 ? "default"
                                 : "outline"
                             }
-                            className="text-xs"
+                            className="font-mono text-xs"
                           >
                             {queueSummary.active_slots}/
                             {queueSummary.total_slots}
@@ -230,7 +237,7 @@ function QueueSlotsCard() {
               })}
             </Accordion>
             {filteredProviders.length === 0 && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 No queue keys match the current filter.
               </p>
             )}
@@ -372,7 +379,7 @@ function QueueHealthCard() {
           )}
         </div>
         {qsData && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             Last updated: {new Date(qsData.timestamp).toLocaleTimeString()}
           </p>
         )}
@@ -393,7 +400,7 @@ function QueueHealthCard() {
         ) : slotsLoading || qsLoading ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : queueRows.length === 0 ? (
-          <div className="py-6 text-center text-muted-foreground">
+          <div className="text-muted-foreground py-6 text-center">
             <Server className="mx-auto mb-2 h-10 w-10 opacity-50" />
             <p>No queue data available</p>
           </div>
@@ -444,14 +451,14 @@ function QueueHealthCard() {
                     <TableCell className="text-right text-xs">
                       {row.activeSlots}/{row.totalSlots || "—"}
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">
+                    <TableCell className="text-muted-foreground text-xs">
                       {row.notes.length > 0 ? row.notes.join(" • ") : "—"}
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               Running tracks active workers. If queued &gt; 0 with no active
               slots, workers are not spawning or slots are locked.
             </p>
@@ -501,13 +508,13 @@ function OrphanedStateCard() {
             )}
           </div>
           {data && (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               Updated {new Date(data.timestamp).toLocaleTimeString()}
             </p>
           )}
         </div>
         {data && (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-muted-foreground text-xs">
             Heartbeat becomes stale after {data.stale_after_minutes} minutes.
           </p>
         )}
@@ -535,7 +542,7 @@ function OrphanedStateCard() {
             </div>
 
             {totalIssues === 0 ? (
-              <p className="text-sm text-muted-foreground">
+              <p className="text-muted-foreground text-sm">
                 No orphaned queue or pipeline state detected.
               </p>
             ) : (
@@ -545,7 +552,7 @@ function OrphanedStateCard() {
                     Execution job samples
                   </div>
                   {data.trial_samples.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-muted-foreground text-xs">
                       No execution job samples.
                     </p>
                   ) : (
@@ -574,7 +581,7 @@ function OrphanedStateCard() {
                             <TableCell className="font-mono text-xs">
                               {sample.current_worker_id || "—"}
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
+                            <TableCell className="text-muted-foreground text-xs">
                               {formatAge(sample.heartbeat_at)}
                             </TableCell>
                           </TableRow>
@@ -589,7 +596,7 @@ function OrphanedStateCard() {
                     Task-stage job samples
                   </div>
                   {data.task_samples.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-muted-foreground text-xs">
                       No task samples.
                     </p>
                   ) : (
@@ -618,7 +625,7 @@ function OrphanedStateCard() {
                             <TableCell className="text-xs">
                               {sample.verdict_status || "—"}
                             </TableCell>
-                            <TableCell className="text-xs text-muted-foreground">
+                            <TableCell className="text-muted-foreground text-xs">
                               {formatAge(sample.updated_at)}
                             </TableCell>
                           </TableRow>
@@ -645,17 +652,22 @@ export default function AdminPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Admin Dashboard</h1>
-        <p className="text-sm text-muted-foreground">
+        <p className="text-muted-foreground text-sm">
           Internal system monitoring for workers and job queues
         </p>
       </div>
 
-      <Tabs defaultValue="worker-jobs" className="space-y-4">
+      <Tabs defaultValue="overview" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="overview" className="space-y-4">
+          <QueueHealthOverviewCard />
+        </TabsContent>
 
         <TabsContent value="worker-jobs" className="space-y-4">
           <WorkerJobsCard />

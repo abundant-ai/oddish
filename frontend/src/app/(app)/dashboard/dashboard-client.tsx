@@ -104,7 +104,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Needs review" },
-  { value: "pending-verdict", label: "Pending verdict" },
+  { value: "pending-verdict", label: "QA pending" },
   { value: "failed", label: "Failures" },
 ] as const;
 
@@ -482,19 +482,26 @@ const PIPELINE_KIND_DISPLAY: Record<
     accentText: "text-blue-500 dark:text-blue-300",
     accentBorder: "border-blue-500/30",
   },
-  ANALYSIS: {
-    label: "Trajectory Analysis",
-    description: "LLM classification per trial",
-    Icon: Microscope,
-    accentText: "text-purple-500 dark:text-purple-300",
-    accentBorder: "border-purple-500/30",
-  },
-  VERDICT: {
-    label: "QA Verdict",
-    description: "Cross-trial synthesis",
+  QA: {
+    label: "Task QA",
+    description: "Classify trials + synthesize verdict",
     Icon: Gavel,
     accentText: "text-amber-500 dark:text-amber-300",
     accentBorder: "border-amber-500/30",
+  },
+  VERDICT: {
+    label: "Task Verdict (legacy)",
+    description: "Folded into Task QA",
+    Icon: Gavel,
+    accentText: "text-amber-500/70 dark:text-amber-300/70",
+    accentBorder: "border-amber-500/30",
+  },
+  ANALYSIS: {
+    label: "Trial Analysis (legacy)",
+    description: "Folded into Task QA",
+    Icon: Microscope,
+    accentText: "text-purple-500 dark:text-purple-300",
+    accentBorder: "border-purple-500/30",
   },
 };
 
@@ -1171,8 +1178,8 @@ function UsageOverviewCard({
                     {formatCost(totals.cost)}
                   </span>
                   <span>
-                    Statuses include trial, analysis, and verdict jobs; token
-                    and cost metrics come from trial runs.
+                    Statuses include trial and task-QA jobs; token and cost
+                    metrics come from trial runs.
                   </span>
                 </div>
               )}

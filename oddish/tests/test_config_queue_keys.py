@@ -24,13 +24,43 @@ def _settings(monkeypatch, *, clear_openai_env: bool = True, **kwargs) -> Settin
     return Settings(_env_file=None, **kwargs)
 
 
-def test_nop_and_oracle_use_dedicated_queue_key(monkeypatch):
+def test_nop_and_oracle_use_single_id_for_model_and_queue(monkeypatch):
     settings = _settings(monkeypatch)
 
-    assert settings.normalize_trial_model("nop", None) == "default"
-    assert settings.normalize_trial_model("oracle", None) == "default"
+    # The model id and queue key must be the SAME single string so the stored
+    # model, the queue key, and the concurrency bucket never drift apart.
+    assert settings.normalize_trial_model("nop", None) == NOP_ORACLE_QUEUE_KEY
+    assert settings.normalize_trial_model("oracle", None) == NOP_ORACLE_QUEUE_KEY
     assert settings.get_queue_key_for_trial("nop", None) == NOP_ORACLE_QUEUE_KEY
     assert settings.get_queue_key_for_trial("oracle", None) == NOP_ORACLE_QUEUE_KEY
+
+
+def test_nop_oracle_variants_force_single_id(monkeypatch):
+    settings = _settings(monkeypatch)
+
+    # Suffixed / prefixed baseline variants must be treated like plain
+    # nop/oracle: model and queue collapse to the one nop_oracle id, regardless
+    # of whatever (often arbitrary) model string was passed.
+    for agent in ("oracle-v2", "nop-baseline", "agent-nop", "agent-oracle-2"):
+        for model in (None, "default", "nop_oracle", "some-random-thing"):
+            assert (
+                settings.normalize_trial_model(agent, model) == NOP_ORACLE_QUEUE_KEY
+            ), (agent, model)
+            assert (
+                settings.get_queue_key_for_trial(agent, model) == NOP_ORACLE_QUEUE_KEY
+            ), (agent, model)
+
+
+def test_non_baseline_agents_are_not_treated_as_nop_oracle(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Substring matches that are not baseline variants must keep normal routing.
+    assert settings.get_queue_key_for_trial("codex", "openai/gpt-5.2") == (
+        "openai/gpt-5.2"
+    )
+    assert settings.normalize_trial_model("codex", "openai/gpt-5.2") == (
+        "openai/gpt-5.2"
+    )
 
 
 def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):
@@ -236,6 +266,36 @@ def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
     assert settings.normalize_queue_key(legacy_key) == legacy_key
     with pytest.raises(ValueError):
         settings.normalize_trial_model("claude-code", legacy_key)
+
+
+def test_subscription_model_prefix_is_serialized_for_codex(monkeypatch):
+    # Regression: a codex trial that opts in via the explicit "sub/<model>"
+    # prefix (not the ODDISH_SUBSCRIPTION_AGENTS flag) must still land in the
+    # serialized "sub-solo/" bucket. Before the fix it fell through to
+    # normalize_queue_key("sub/...") == "sub/..." -- which get_model_concurrency
+    # does NOT cap -- so a refresh-sensitive codex trial escaped serialization.
+    settings = _settings(monkeypatch, default_model_concurrency=48)
+
+    # codex is serialized by default (subscription_serialized_agents="codex").
+    key = settings.get_queue_key_for_trial("codex", "sub/gpt-5.5")
+    assert key == "sub-solo/gpt-5.5"
+    assert settings.get_model_concurrency(key) == settings.subscription_queue_concurrency
+
+    # claude-code is NOT serialized, so the same model-prefix opt-in keeps the
+    # plain "sub/" bucket (off Bedrock, but safe concurrent).
+    assert (
+        settings.get_queue_key_for_trial("claude-code", "sub/claude-opus-4-8")
+        == "sub/claude-opus-4-8"
+    )
+
+
+def test_normalize_queue_key_canonicalizes_subscription_alias(monkeypatch):
+    # "subscription/" is an alias for the canonical "sub/" queue bucket;
+    # normalize_queue_key must map it through so a model_concurrency_overrides
+    # key written as "subscription/<x>" matches the real "sub/<x>" queue key.
+    settings = _settings(monkeypatch)
+
+    assert settings.normalize_queue_key("subscription/gpt-5.5") == "sub/gpt-5.5"
 
 
 def test_openai_provider_defaults_to_azure(monkeypatch):

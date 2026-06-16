@@ -4,6 +4,7 @@ The chip-editor delete always targets an assigned tag, so the router must
 request ``cascade_remove_assignments``; without it the core refuses (safety
 default for raw API callers).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -97,9 +98,7 @@ def test_delete_with_cascade_removes_assignments_and_reprojects(monkeypatch):
     monkeypatch.setattr(tags_core, "_optimistic_state_update", fake_state_update)
     monkeypatch.setattr(tags_core, "_emit_tag_event", fake_emit)
     monkeypatch.setattr(tags_core, "enqueue_tag_project_worker_job", fake_enqueue)
-    monkeypatch.setattr(
-        tags_core, "recompute_task_browse_projection", fake_recompute
-    )
+    monkeypatch.setattr(tags_core, "recompute_task_browse_projection", fake_recompute)
 
     # Two ACTIVE assignments flip: one task-scoped, one living-experiment.
     returning = _StubResult(

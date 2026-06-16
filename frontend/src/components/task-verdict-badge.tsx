@@ -26,7 +26,7 @@ type VerdictPresentation = {
 
 function presentVerdict(
   task: Task,
-  iconSizeClass: string
+  iconSizeClass: string,
 ): VerdictPresentation {
   const status = task.verdict_status;
   const verdict = task.verdict ?? null;
@@ -34,16 +34,15 @@ function presentVerdict(
     status === "running" || status === "pending" || status === "queued";
   const failed = status === "failed";
   const isGood = verdict?.is_good ?? null;
-  // Trial analyses run before the verdict can be synthesized; surface that
-  // separately so we don't render the neutral "Verdict pending" state while
-  // work is actually in flight.
+  // The single task-level QA job classifies every trial and then synthesizes
+  // the verdict, so any in-flight classification is also "QA running".
   const analysesInFlight =
     !verdictPending &&
     !failed &&
     isGood == null &&
     (task.status === "analyzing" ||
       (task.trials ?? []).some((t) =>
-        isActivePipelineStatus(t.analysis_status)
+        isActivePipelineStatus(t.analysis_status),
       ));
   const pending = verdictPending || analysesInFlight;
 
@@ -51,27 +50,18 @@ function presentVerdict(
   let title: string;
   let toneCard: string;
   let toneInline: string;
-  if (verdictPending) {
+  if (pending) {
     icon = (
       <Loader2
         className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`}
       />
     );
-    title = "Computing verdict...";
-    toneCard = "border-blue-500/30 bg-blue-500/5";
-    toneInline = "border-[color:var(--paper-line)]";
-  } else if (analysesInFlight) {
-    icon = (
-      <Loader2
-        className={`${iconSizeClass} shrink-0 animate-spin text-blue-500`}
-      />
-    );
-    title = "Analyzing trials...";
+    title = "Running QA...";
     toneCard = "border-blue-500/30 bg-blue-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   } else if (failed) {
     icon = <XCircle className={`${iconSizeClass} shrink-0 text-red-500`} />;
-    title = "Verdict failed";
+    title = "QA failed";
     toneCard = "border-red-500/30 bg-red-500/5";
     toneInline = "border-red-500/40 bg-red-500/[0.04]";
   } else if (isGood === true) {
@@ -92,7 +82,7 @@ function presentVerdict(
     icon = (
       <Microscope className={`${iconSizeClass} shrink-0 text-slate-500`} />
     );
-    title = "Verdict pending";
+    title = "QA pending";
     toneCard = "border-slate-500/30 bg-slate-500/5";
     toneInline = "border-[color:var(--paper-line)]";
   }
@@ -139,7 +129,7 @@ export function TaskVerdictBadge({
     onRunJudge != null && !p.pending && !isRunning && verdict?.is_good == null;
   const showCancelButton = onCancelJudge != null && p.pending;
   const runLabel =
-    task.verdict_status || task.verdict ? "Rerun judge" : "Run judge";
+    task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
 
   if (variant === "inline") {
     return (
@@ -154,7 +144,7 @@ export function TaskVerdictBadge({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="font-mono text-[12px] font-semibold text-[color:var(--paper-ink)]">
-              {isRunning ? "Queuing LLM judge..." : p.title}
+              {isRunning ? "Queuing QA..." : p.title}
             </span>
             {verdict?.confidence ? (
               <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
@@ -186,7 +176,7 @@ export function TaskVerdictBadge({
             ) : (
               <OctagonX className="mr-1 h-3.5 w-3.5" />
             )}
-            {isCancelling ? "Cancelling..." : "Cancel judge"}
+            {isCancelling ? "Cancelling..." : "Cancel QA"}
           </Button>
         ) : showRunButton ? (
           <Button

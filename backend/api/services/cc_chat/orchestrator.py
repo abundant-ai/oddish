@@ -13,10 +13,13 @@ from oddish.db.models import utcnow as _utcnow
 from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
+    render_task_chat_claude_md,
     render_task_probes_claude_md,
 )
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
 from api.services.cc_chat.events import append_event, prune_events
+from api.services.cc_chat.file_loader import upload_files
+from api.services.cc_chat.task_files import collect_task_version_files
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
 from api.services.cc_chat.turns import close_turn, open_turn

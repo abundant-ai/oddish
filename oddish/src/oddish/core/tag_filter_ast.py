@@ -11,12 +11,13 @@ would fail to resolve a tag created with the same display name.
 Saved filters persist stable IDs; aliases are resolved at read by
 following ``merged_into_id``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.elements import TextClause
 
 from oddish.core.tag_naming import normalize_tag_key
 
@@ -137,18 +138,18 @@ def build_filter_predicates(resolved: ResolvedTagFilter):
     All three ride the GIN(array_ops) index. The caller is responsible
     for binding parameters via ``.params(...)``.
     """
-    predicates: list[ColumnElement] = []
+    predicates: list[TextClause] = []
     if resolved.all_ids:
         predicates.append(
-            text(
-                "tasks.effective_tag_ids @> CAST(:tags_all_ids AS TEXT[])"
-            ).bindparams(tags_all_ids=list(resolved.all_ids))
+            text("tasks.effective_tag_ids @> CAST(:tags_all_ids AS TEXT[])").bindparams(
+                tags_all_ids=list(resolved.all_ids)
+            )
         )
     if resolved.any_ids:
         predicates.append(
-            text(
-                "tasks.effective_tag_ids && CAST(:tags_any_ids AS TEXT[])"
-            ).bindparams(tags_any_ids=list(resolved.any_ids))
+            text("tasks.effective_tag_ids && CAST(:tags_any_ids AS TEXT[])").bindparams(
+                tags_any_ids=list(resolved.any_ids)
+            )
         )
     if resolved.none_ids:
         predicates.append(

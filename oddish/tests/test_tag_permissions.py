@@ -3,6 +3,7 @@
 We fake out the Clerk-backed UserRole by passing a small stand-in
 object with ``user`` / ``user_role`` / ``method`` attributes.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -105,6 +106,7 @@ def test_can_definition_capability_admin_bypass():
 
                 def all(self):
                     return []
+
             return _R()
 
         async def scalar(self, *a, **k):
@@ -133,6 +135,7 @@ def test_can_definition_capability_owner_bypass():
 
                 def all(self):
                     return []
+
             return _R()
 
         async def scalar(self, *a, **k):

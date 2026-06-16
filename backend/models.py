@@ -247,6 +247,7 @@ class APIKeyModel(TimestampedMixin, Base):
 class ChatScopeKind(str, Enum):
     experiment = "experiment"
     task_probes = "task_probes"
+    task = "task"
 
 
 class ChatStatus(str, Enum):
