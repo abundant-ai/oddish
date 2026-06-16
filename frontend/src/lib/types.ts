@@ -271,7 +271,7 @@ export interface TaskVersionSummary {
   user_tags?: UserTagRef[];
 }
 
-export interface TaskCostTotals {
+interface TaskCostTotals {
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
@@ -617,6 +617,49 @@ export interface WorkerJobsResponse {
   recent_failures: WorkerJobSample[];
   durations_last_hour: WorkerJobDurationStat[];
   stale_after_minutes: number;
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Queue health overview
+// ---------------------------------------------------------------------------
+
+interface QueueThroughputStat {
+  kind: WorkerJobKind;
+  started_5m: number;
+  started_15m: number;
+  started_60m: number;
+  finished_5m: number;
+  finished_15m: number;
+  finished_60m: number;
+}
+
+export interface QueueCapacityStat {
+  queue_key: string;
+  queued: number;
+  queued_scheduled: number;
+  running: number;
+  limit: number;
+  fill: number | null;
+  oldest_queued_age_seconds: number | null;
+  wait_p50_seconds: number | null;
+  wait_p95_seconds: number | null;
+}
+
+export interface QueueRuntimeComponentStatus {
+  component: string;
+  updated_at: string | null;
+  age_seconds: number | null;
+  payload: Record<string, unknown>;
+}
+
+export interface QueueHealthResponse {
+  totals_queued: number;
+  totals_running: number;
+  throughput: QueueThroughputStat[];
+  capacity: QueueCapacityStat[];
+  dispatcher: QueueRuntimeComponentStatus | null;
+  reconciler: QueueRuntimeComponentStatus | null;
   timestamp: string;
 }
 

@@ -64,12 +64,12 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
   );
   const [ratioUnit, setRatioUnit] = useState(
     editing?.evaluation_metric === "cheat_ratio"
-      ? (editing.ratio_unit || "cheat")
+      ? editing.ratio_unit || "cheat"
       : (editing?.ratio_unit ?? ""),
   );
   const [ratioVerb, setRatioVerb] = useState(
     editing?.evaluation_metric === "cheat_ratio"
-      ? (editing.ratio_verb || "succeeded")
+      ? editing.ratio_verb || "succeeded"
       : (editing?.ratio_verb ?? ""),
   );
   const [saving, setSaving] = useState(false);
@@ -145,24 +145,56 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
       <CardContent className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label htmlFor="preset-name" className="text-xs font-medium">Name</Label>
-            <Input id="preset-name" value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="cheat-probe" maxLength={80} className="h-8 border-[#6f88b4]/20" />
+            <Label htmlFor="preset-name" className="text-xs font-medium">
+              Name
+            </Label>
+            <Input
+              id="preset-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="cheat-probe"
+              maxLength={80}
+              className="h-8 border-[#6f88b4]/20"
+            />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="preset-agent" className="text-xs font-medium">Agent</Label>
-            <Input id="preset-agent" value={agent} onChange={(e) => setAgent(e.target.value)}
-              placeholder="claude-code" className="h-8 border-[#6f88b4]/20" />
+            <Label htmlFor="preset-agent" className="text-xs font-medium">
+              Agent
+            </Label>
+            <Input
+              id="preset-agent"
+              value={agent}
+              onChange={(e) => setAgent(e.target.value)}
+              placeholder="claude-code"
+              className="h-8 border-[#6f88b4]/20"
+            />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="preset-model" className="text-xs font-medium">Model</Label>
-            <Input id="preset-model" value={model} onChange={(e) => setModel(e.target.value)}
-              placeholder="anthropic/claude-sonnet-4-6" className="h-8 border-[#6f88b4]/20" />
+            <Label htmlFor="preset-model" className="text-xs font-medium">
+              Model
+            </Label>
+            <Input
+              id="preset-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="anthropic/claude-sonnet-4-6"
+              className="h-8 border-[#6f88b4]/20"
+            />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="preset-metric" className="text-xs font-medium">Evaluation metric</Label>
-            <Select value={metric} onValueChange={(v) => setMetric(v as EvaluationMetric)}>
-              <SelectTrigger id="preset-metric" className="h-8 border-[#6f88b4]/20"><SelectValue /></SelectTrigger>
+            <Label htmlFor="preset-metric" className="text-xs font-medium">
+              Evaluation metric
+            </Label>
+            <Select
+              value={metric}
+              onValueChange={(v) => setMetric(v as EvaluationMetric)}
+            >
+              <SelectTrigger
+                id="preset-metric"
+                className="h-8 border-[#6f88b4]/20"
+              >
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">None</SelectItem>
                 <SelectItem value="ratio">Ratio</SelectItem>
@@ -175,31 +207,63 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
         {metric === "ratio" && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="preset-ratio-unit" className="text-xs font-medium">Ratio unit</Label>
-              <Input id="preset-ratio-unit" value={ratioUnit} onChange={(e) => setRatioUnit(e.target.value)}
-                placeholder="cheat" className="h-8 border-[#6f88b4]/20" />
+              <Label
+                htmlFor="preset-ratio-unit"
+                className="text-xs font-medium"
+              >
+                Ratio unit
+              </Label>
+              <Input
+                id="preset-ratio-unit"
+                value={ratioUnit}
+                onChange={(e) => setRatioUnit(e.target.value)}
+                placeholder="cheat"
+                className="h-8 border-[#6f88b4]/20"
+              />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="preset-ratio-verb" className="text-xs font-medium">Ratio verb</Label>
-              <Input id="preset-ratio-verb" value={ratioVerb} onChange={(e) => setRatioVerb(e.target.value)}
-                placeholder="succeeded" className="h-8 border-[#6f88b4]/20" />
+              <Label
+                htmlFor="preset-ratio-verb"
+                className="text-xs font-medium"
+              >
+                Ratio verb
+              </Label>
+              <Input
+                id="preset-ratio-verb"
+                value={ratioVerb}
+                onChange={(e) => setRatioVerb(e.target.value)}
+                placeholder="succeeded"
+                className="h-8 border-[#6f88b4]/20"
+              />
             </div>
           </div>
         )}
 
         <div className="space-y-1.5">
-          <Label htmlFor="preset-prompt" className="text-xs font-medium">Operator prompt</Label>
-          <textarea id="preset-prompt" value={operatorPrompt} onChange={(e) => setOperatorPrompt(e.target.value)}
-            rows={8} placeholder="Prompt prepended to the task instruction…"
-            className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          <Label htmlFor="preset-prompt" className="text-xs font-medium">
+            Operator prompt
+          </Label>
+          <textarea
+            id="preset-prompt"
+            value={operatorPrompt}
+            onChange={(e) => setOperatorPrompt(e.target.value)}
+            rows={8}
+            placeholder="Prompt prepended to the task instruction…"
+            className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
         </div>
 
         <div className="space-y-1.5">
           <Label htmlFor="preset-focus" className="text-xs font-medium">
-            Result focus <span className="text-muted-foreground">(optional)</span>
+            Result focus{" "}
+            <span className="text-muted-foreground">(optional)</span>
           </Label>
-          <Input id="preset-focus" value={resultFocus} onChange={(e) => setResultFocus(e.target.value)}
-            className="h-8 border-[#6f88b4]/20" />
+          <Input
+            id="preset-focus"
+            value={resultFocus}
+            onChange={(e) => setResultFocus(e.target.value)}
+            className="h-8 border-[#6f88b4]/20"
+          />
         </div>
 
         {error && (
@@ -210,12 +274,27 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
         )}
 
         <div className="flex items-center gap-2 pt-1">
-          <Button type="button" size="sm" onClick={() => void handleSave()}
-            disabled={saving || !name.trim() || !operatorPrompt.trim()} className="h-8">
-            {saving ? "Saving…" : isEditCustom ? "Update preset" : "Create preset"}
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => void handleSave()}
+            disabled={saving || !name.trim() || !operatorPrompt.trim()}
+            className="h-8"
+          >
+            {saving
+              ? "Saving…"
+              : isEditCustom
+                ? "Update preset"
+                : "Create preset"}
           </Button>
-          <Button type="button" variant="outline" size="sm" className="h-8 border-[#6f88b4]/20"
-            onClick={onCancel} disabled={saving}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-8 border-[#6f88b4]/20"
+            onClick={onCancel}
+            disabled={saving}
+          >
             Cancel
           </Button>
         </div>
@@ -253,9 +332,12 @@ export function PresetsClient() {
   }, [load]);
 
   async function handleDelete(preset: Preset) {
-    if (!confirm(`Delete preset "${preset.name}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete preset "${preset.name}"? This cannot be undone.`))
+      return;
     try {
-      const res = await fetch(`/api/probe-presets/${preset.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/probe-presets/${preset.id}`, {
+        method: "DELETE",
+      });
       if (!res.ok) {
         alert(`Failed to delete preset (HTTP ${res.status})`);
         return;
@@ -293,7 +375,12 @@ export function PresetsClient() {
               Reusable probe configurations available when launching a run.
             </p>
           </div>
-          <Button type="button" size="sm" className="h-8 text-xs" onClick={() => setFormState("new")}>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 text-xs"
+            onClick={() => setFormState("new")}
+          >
             + New preset
           </Button>
         </CardHeader>
@@ -304,7 +391,9 @@ export function PresetsClient() {
               <AlertDescription>{fetchError}</AlertDescription>
             </Alert>
           ) : loading ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">Loading…</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Loading…
+            </div>
           ) : presets.length === 0 ? (
             <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
               No presets yet. Create one to get started.
@@ -331,15 +420,23 @@ export function PresetsClient() {
                         {p.name}
                       </button>
                     </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{p.agent}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{p.model}</TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {p.agent}
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {p.model}
+                    </TableCell>
                     <TableCell className="text-right">
                       {/* Click the name to open. Built-in defaults open as a new
                           copy and can't be deleted; your own presets can. */}
                       {!p.is_seed && (
-                        <Button type="button" variant="ghost" size="sm"
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
                           className="h-6 px-2 text-[11px] text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                          onClick={() => void handleDelete(p)}>
+                          onClick={() => void handleDelete(p)}
+                        >
                           Delete
                         </Button>
                       )}

@@ -7,7 +7,7 @@ import { tagColor } from "@/lib/tag-colors";
 import type { UserTagRef } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export interface TagChipProps {
+interface TagChipProps {
   tag: UserTagRef;
   className?: string;
 }

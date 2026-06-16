@@ -1,4 +1,5 @@
 """Saved tag-filter CRUD tests."""
+
 from __future__ import annotations
 
 import asyncio
@@ -70,7 +71,5 @@ def test_list_saved_filters_returns_owner_and_org_visible():
         ("f-2", "Shared", '{"all":[],"any":[],"none":[]}', "ORG", "u-2"),
     ]
     s = _FakeSession(rows=rows)
-    items = _run(
-        list_saved_tag_filters_core(s, org_id="org-1", actor_user_id="u-1")
-    )
+    items = _run(list_saved_tag_filters_core(s, org_id="org-1", actor_user_id="u-1"))
     assert len(items) == 2

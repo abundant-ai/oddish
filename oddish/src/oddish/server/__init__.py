@@ -37,6 +37,8 @@ from oddish.core.endpoints import (
 
 def _split_tag_csv(csv: str | None) -> list[str]:
     return [s.strip() for s in (csv or "").split(",") if s.strip()]
+
+
 from oddish.core.public_helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
@@ -51,9 +53,11 @@ from oddish.core.trial_io import (
     read_trial_trajectory,
 )
 from oddish.core.admin import (
+    QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
+    get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
@@ -792,6 +796,13 @@ async def admin_orphaned_state(
         return await get_orphaned_state_core(
             session, stale_after_minutes=stale_after_minutes
         )
+
+
+@api.get("/admin/queue-health", response_model=QueueHealthResponse)
+async def admin_queue_health() -> QueueHealthResponse:
+    """Throughput, per-queue-key capacity fill, and component heartbeats."""
+    async with get_session() as session:
+        return await get_queue_health_core(session)
 
 
 def run_server(

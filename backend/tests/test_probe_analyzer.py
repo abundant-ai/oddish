@@ -44,9 +44,7 @@ async def test_probe_analyzer_parses_json_response():
     with patch("anthropic.AsyncAnthropic", return_value=fake_client):
         result = await run_probe_analyzer(
             extra_instructions="find cheats",
-            agent_messages=[
-                {"kind": "assistant_text", "text": "Looking at tests..."}
-            ],
+            agent_messages=[{"kind": "assistant_text", "text": "Looking at tests..."}],
             verifier_stdout="passed: 0",
             reward=0.0,
             result_focus="Did the agent find spec ambiguities?",
@@ -135,9 +133,7 @@ def test_normalize_recommendations_passthrough():
 
 
 def test_normalize_recommendations_bad_priority_coerced():
-    out = _normalize(
-        {"recommendations": [{"priority": "nope", "action": "do thing"}]}
-    )
+    out = _normalize({"recommendations": [{"priority": "nope", "action": "do thing"}]})
     assert out["recommendations"][0]["priority"] == "should_fix"
 
 

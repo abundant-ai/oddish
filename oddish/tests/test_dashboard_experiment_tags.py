@@ -1,4 +1,5 @@
 """Dashboard experiments tag filtering — predicates, empty-page rules, hydration."""
+
 from __future__ import annotations
 
 import asyncio
@@ -72,7 +73,9 @@ def test_direct_tags_for_targets_maps_rows():
 def test_direct_tags_for_targets_empty_input():
     from oddish.core.tags_projection import list_direct_tags_for_targets
 
-    out = asyncio.run(list_direct_tags_for_targets(object(), scope="EXPERIMENT", target_ids=[]))
+    out = asyncio.run(
+        list_direct_tags_for_targets(object(), scope="EXPERIMENT", target_ids=[])
+    )
     assert out == {}
 
 
@@ -81,12 +84,22 @@ def test_user_tag_view_payload_shape():
     from oddish.core.tags_projection import UserTagView
 
     view = UserTagView(
-        tag_id="tg9", key="urgent", value=None, color="blue",
-        visibility="PUBLIC", current=True, older=False,
+        tag_id="tg9",
+        key="urgent",
+        value=None,
+        color="blue",
+        visibility="PUBLIC",
+        current=True,
+        older=False,
     )
     assert _user_tag_view_payload(view) == {
-        "tag_id": "tg9", "key": "urgent", "value": None, "color": "blue",
-        "visibility": "PUBLIC", "current": True, "older": False,
+        "tag_id": "tg9",
+        "key": "urgent",
+        "value": None,
+        "color": "blue",
+        "visibility": "PUBLIC",
+        "current": True,
+        "older": False,
     }
 
 
@@ -98,16 +111,28 @@ def test_attach_user_tags_to_task_payloads():
     by_task = {
         "t1": [
             UserTagView(
-                tag_id="tg9", key="urgent", value=None, color="blue",
-                visibility="PUBLIC", current=False, older=True,
+                tag_id="tg9",
+                key="urgent",
+                value=None,
+                color="blue",
+                visibility="PUBLIC",
+                current=False,
+                older=True,
             )
         ]
     }
     _attach_user_tags_to_task_payloads(payloads, by_task)
-    assert payloads[0]["user_tags"] == [{
-        "tag_id": "tg9", "key": "urgent", "value": None, "color": "blue",
-        "visibility": "PUBLIC", "current": False, "older": True,
-    }]
+    assert payloads[0]["user_tags"] == [
+        {
+            "tag_id": "tg9",
+            "key": "urgent",
+            "value": None,
+            "color": "blue",
+            "visibility": "PUBLIC",
+            "current": False,
+            "older": True,
+        }
+    ]
     assert payloads[1]["user_tags"] == []
 
 

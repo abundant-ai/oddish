@@ -9,7 +9,7 @@ import { backendErrorPayload, readBackendJson } from "@/lib/backend-response";
 
 export async function POST(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string }> }
+  { params }: { params: Promise<{ trial_id: string }> },
 ) {
   try {
     const { getToken } = await auth();
@@ -36,7 +36,7 @@ export async function POST(
     if (!res.ok) {
       return NextResponse.json(
         backendErrorPayload(parsed.data, "Failed to queue analysis"),
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -44,7 +44,7 @@ export async function POST(
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }
