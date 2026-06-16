@@ -152,7 +152,29 @@ async def list_tasks_core(
         include_worker_jobs = False
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
-        trials_loader = selectinload(TaskModel.trials)
+        # When scoped to an experiment, push the trial filter into the
+        # selectin load so each task fetches only that experiment's non-probe
+        # trials instead of every trial across every version / experiment /
+        # superseded rerun. The former code loaded the full set and filtered
+        # in Python (below), which materialized far more rows than the view
+        # needs -- the memory spike that OOM-killed the API container. This is
+        # an exact in-SQL equivalent of that Python filter: ``experiment_id``
+        # and ``is_probe`` are both NOT NULL, so ``experiment_id == X``
+        # excludes legacy/NULL-experiment trials (``None == X`` is False in
+        # Python, ``NULL = X`` is not-true in SQL) and ``is_probe.is_(False)``
+        # matches ``not t.is_probe``. The effective-version resolution and the
+        # superseded/off-version drop stay in Python, computed from the scoped
+        # set exactly as before. The filtered selectin still runs inside the
+        # async session (eager, no lazy load -> no MissingGreenlet) and still
+        # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        if experiment_id:
+            trials_relationship = TaskModel.trials.and_(
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.is_probe.is_(False),
+            )
+        else:
+            trials_relationship = TaskModel.trials
+        trials_loader = selectinload(trials_relationship)
         experiments_loader = selectinload(TaskModel.experiments)
         if compact_trials:
             trials_loader = trials_loader.load_only(
@@ -183,11 +205,13 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                # Read both by the compact builder (``build_compact_trial_response``)
-                # and the experiment-scoped trial filter below. Must be loaded
-                # eagerly; otherwise accessing it triggers a lazy-load on this
-                # column outside the async greenlet and fails with MissingGreenlet
-                # (same reason ``origin`` / ``harbor_config`` are here).
+                # Read by the compact builder (``build_compact_trial_response``);
+                # the experiment-scoped path also filters on ``is_probe``, but
+                # that now happens in SQL via the filtered selectin above. Must
+                # still be loaded eagerly for the builder; otherwise accessing
+                # it triggers a lazy-load on this column outside the async
+                # greenlet and fails with MissingGreenlet (same reason
+                # ``origin`` / ``harbor_config`` are here).
                 TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
@@ -296,16 +320,14 @@ async def list_tasks_core(
 
         for task in tasks:
             if experiment_id:
-                # Probes have their own experiment tab (list_experiment_probes_core);
-                # keep them out of the main trial matrix so probe runs don't show up
-                # as if they were ordinary trials. Excluding them before resolving the
-                # effective version also stops a probe-only version from skewing it.
-                scoped_trials = [
-                    t
-                    for t in task.trials
-                    if t.experiment_id == experiment_id and not t.is_probe
-                ]
-                set_committed_value(task, "trials", scoped_trials)
+                # ``task.trials`` is already scoped to this experiment's
+                # non-probe trials by the filtered selectin load above (probes
+                # have their own tab via ``list_experiment_probes_core``, and
+                # excluding them before resolving the effective version stops a
+                # probe-only version from skewing it). Resolve the experiment's
+                # effective version from that scoped set, then drop superseded /
+                # off-version trials -- identical result to before, without
+                # re-filtering in Python.
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
