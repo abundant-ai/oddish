@@ -654,6 +654,37 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     return None
 
 
+# Canonical deployed-backend API base URLs (single source of truth; the CLI in
+# ``oddish.cli.config`` re-exports these). Forks override via the env vars.
+DEFAULT_API_URL = os.environ.get(
+    "ODDISH_DEFAULT_API_URL", "https://abundant-ai--api.modal.run"
+)
+# Format string for a PR-preview API URL. ``{n}`` is the PR number.
+PREVIEW_URL_TEMPLATE = os.environ.get(
+    "ODDISH_PREVIEW_URL_TEMPLATE",
+    "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
+)
+
+
+def api_base_url_for_modal_app(app_name: str | None = None) -> str:
+    """Derive the deployed backend API base URL from the Modal app identity.
+
+    Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
+    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
+    running in Modal, so callers fall back or fail fast rather than silently
+    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
+    that PR's preview URL.
+    """
+    name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
+    if not name:
+        return ""
+    if name.startswith("oddish-pr-"):
+        suffix = name[len("oddish-pr-") :]
+        if suffix.isdigit():
+            return PREVIEW_URL_TEMPLATE.format(n=suffix)
+    return DEFAULT_API_URL
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Load .env first, then layer .env.local over it (later file wins on
@@ -706,7 +737,9 @@ class Settings(BaseSettings):
 
     # Externally reachable base URL of the oddish backend API. Injected into
     # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
-    # oddish-query CLI can call back into the backend.
+    # oddish-query CLI can call back into the backend. Optional override — when
+    # unset, the orchestrator derives it from MODAL_APP_NAME via
+    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
     public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class

@@ -13,17 +13,13 @@ error_console = Console(stderr=True)
 # Constants
 # =============================================================================
 
-DEFAULT_API_URL = os.environ.get(
-    "ODDISH_DEFAULT_API_URL", "https://abundant-ai--api.modal.run"
-)
+# Canonical API base URL constants live in oddish.config (single source of
+# truth, importable without pulling in the CLI's typer/rich deps). Re-exported
+# here for the CLI's existing callers.
+from oddish.config import DEFAULT_API_URL, PREVIEW_URL_TEMPLATE  # noqa: E402,F401
+
 DEFAULT_DASHBOARD_URL = os.environ.get(
     "ODDISH_DEFAULT_DASHBOARD_URL", "https://www.oddish.app"
-)
-# Format string for resolving a PR-preview URL from `ODDISH_PREVIEW_PR`.
-# `{n}` is the PR number. Forks override via `ODDISH_PREVIEW_URL_TEMPLATE`.
-PREVIEW_URL_TEMPLATE = os.environ.get(
-    "ODDISH_PREVIEW_URL_TEMPLATE",
-    "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
 )
 
 
