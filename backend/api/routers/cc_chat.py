@@ -11,6 +11,7 @@ from models import ChatSession
 from api.services.cc_chat import events as events_mod
 from api.services.cc_chat.turns import running_turn
 from api.services.cc_chat.orchestrator import SessionNotFound
+from api.services.cc_chat.sessions_query import list_sessions
 
 router = APIRouter(tags=["cc_chat"])
 
@@ -58,6 +59,29 @@ async def start_session(
         db_session_factory=lambda: get_session(),
     )
     return ChatStartResponse(session_id=session_id)
+
+
+@router.get("/chat-sessions")
+async def list_sessions_route(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    scope_kind: Literal["experiment", "task_probes"],
+    scope_id: str,
+    limit: int = 10,
+    offset: int = 0,
+    q: str | None = None,
+):
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        items, total = await list_sessions(
+            session,
+            org_id=auth.org_id,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            limit=limit,
+            offset=offset,
+            q=q,
+        )
+    return {"sessions": items, "total": total}
 
 
 @router.get("/chat-sessions/{session_id}")
