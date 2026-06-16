@@ -289,8 +289,12 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   if (!data)
     return <p className="text-sm text-muted-foreground">Loading history…</p>;
 
-  // The server already filtered to probes (?probe=true); render as-is.
-  const probes = data;
+  // The server already filtered to probes (?probe=true); show newest first.
+  const probes = [...data].sort((a, b) => {
+    const at = a.started_at ? new Date(a.started_at).getTime() : 0;
+    const bt = b.started_at ? new Date(b.started_at).getTime() : 0;
+    return bt - at;
+  });
 
   return (
     <div>
