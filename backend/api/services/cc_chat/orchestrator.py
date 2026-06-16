@@ -406,6 +406,28 @@ class ChatOrchestrator:
         self._sandboxes[session_id] = sandbox
         return sandbox
 
+    async def _heal_sandbox(
+        self, *, session_id: str, db_session_factory: Callable[[], object]
+    ) -> CreatedSandbox | None:
+        """Re-provision + restore a session whose ephemeral sandbox was evicted.
+
+        Idle chats lose their sandbox to Daytona's auto-stop, so a returning
+        user would otherwise hit ``session_not_found`` mid-conversation. When the
+        session has an archive (a ``claude_session_id`` written by a prior turn),
+        resume() rebuilds the sandbox from it and the next message just works.
+        Returns the live handle, or None when there's nothing to restore yet.
+        """
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            recoverable = row is not None and row.claude_session_id is not None
+        if not recoverable:
+            return None
+        try:
+            await self.resume(session_id=session_id, db_session_factory=db_session_factory)
+        except (ResumeUnavailable, SessionNotFound):
+            return None
+        return self._sandboxes.get(session_id)
+
     async def send(
         self,
         *,
@@ -422,6 +444,11 @@ class ChatOrchestrator:
         sandbox = await self._reconnect_sandbox(
             session_id=session_id, db_session_factory=db_session_factory
         )
+        if sandbox is None:
+            # Sandbox evicted (idle auto-stop) — transparently rebuild it.
+            sandbox = await self._heal_sandbox(
+                session_id=session_id, db_session_factory=db_session_factory
+            )
         if sandbox is None:
             raise SessionNotFound(session_id)
 
