@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable, Literal
 
+from daytona import DaytonaNotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus, generate_id
 from oddish.db.models import utcnow as _utcnow
+from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
-    render_task_chat_claude_md,
     render_task_probes_claude_md,
 )
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
@@ -37,6 +38,10 @@ class SessionNotFound(Exception):
     pass
 
 
+class ResumeUnavailable(Exception):
+    pass
+
+
 class ChatOrchestrator:
     """Phase-1 chat orchestrator. Runs Claude Code in a Daytona sandbox and
     streams stream-json events, persisting every event durably to the
@@ -56,6 +61,7 @@ class ChatOrchestrator:
         transcript_buffer: SessionTranscriptBuffer,
         anthropic_api_key: str,
         chat_auto_stop_minutes: int = 30,
+        chat_auto_delete_minutes: int = 60,
         blob_store=None,
     ) -> None:
         self._daytona = daytona
@@ -63,38 +69,53 @@ class ChatOrchestrator:
         self._buffer = transcript_buffer
         self._anthropic_api_key = anthropic_api_key
         self._auto_stop = chat_auto_stop_minutes
+        self._auto_delete = chat_auto_delete_minutes
         self._blob = blob_store
         self._sandboxes: dict[str, CreatedSandbox] = {}
+
+    async def _provision_sandbox(
+        self, *, session_id: str, scope_kind: str, scope_id: str
+    ) -> CreatedSandbox:
+        """Provision a fresh sandbox for a chat session: render CLAUDE.md, create
+        the Daytona sandbox, install the runtime, and upload CLAUDE.md. On any
+        failure the partially-created sandbox is deleted and the error re-raised.
+        Shared by start() and resume() so their provisioning never drifts."""
+        if scope_kind == "experiment":
+            claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
+        else:
+            claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
+
+        sandbox = await Provisioner(client=self._daytona).create(
+            env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
+            auto_stop_minutes=self._auto_stop,
+            auto_delete_minutes=self._auto_delete,
+            labels={"app": "cc_chat", "session_id": session_id},
+            daytona_session_id=DAYTONA_SESSION_ID,
+        )
+        try:
+            await self._runtime.install(self._daytona, sandbox)
+            await self._daytona.upload_file(
+                sandbox,
+                dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
+                content=claude_md.encode("utf-8"),
+            )
+            # TODO(phase2): sync trial/probe artifacts into the sandbox workspace
+            # via oddish.core (the experiment/task_probes file resolution that the
+            # ported start() did against a blob store + OddishClient + ProbeRun).
+        except Exception:
+            await delete_sandbox_quietly(self._daytona, sandbox)
+            raise
+        return sandbox
 
     async def start(
         self,
         *,
         org_id: str,
         user_id: str | None,
-        scope_kind: Literal["experiment", "task_probes", "task"],
+        scope_kind: Literal["experiment", "task_probes"],
         scope_id: str,
         db_session_factory: Callable[[], object],
     ) -> str:
-        files: list[tuple[str, bytes]] = []
-        if scope_kind == "experiment":
-            claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
-        elif scope_kind == "task":
-            if self._blob is None:
-                raise RuntimeError("blob_store is required for task-scope chat sessions")
-            async with self._db(db_session_factory) as db:
-                current_version, version_trials, files, truncated = await collect_task_version_files(
-                    db, self._blob, task_id=scope_id, org_id=org_id,
-                )
-            if truncated:
-                log.warning("cc_chat task-scope upload truncated at byte cap: task=%s", scope_id)
-            claude_md = render_task_chat_claude_md(
-                task_name=scope_id,
-                current_version=current_version,
-                version_trials=version_trials,
-            )
-        else:  # task_probes
-            claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
-
         session_id = generate_id()
         async with self._db(db_session_factory) as db:
             db.add(
@@ -111,24 +132,11 @@ class ChatOrchestrator:
             )
             await db.commit()
 
-        sandbox = await Provisioner(client=self._daytona).create(
-            env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
-            auto_stop_minutes=self._auto_stop,
-            daytona_session_id=DAYTONA_SESSION_ID,
-        )
         try:
-            await self._runtime.install(self._daytona, sandbox)
-            if files:
-                await upload_files(
-                    self._daytona, sandbox, files=files, workspace_root=WORKSPACE_ROOT,
-                )
-            await self._daytona.upload_file(
-                sandbox,
-                dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
-                content=claude_md.encode("utf-8"),
+            sandbox = await self._provision_sandbox(
+                session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
             )
         except Exception:
-            await delete_sandbox_quietly(self._daytona, sandbox)
             async with self._db(db_session_factory) as db:
                 row = await db.get(ChatSession, session_id)
                 if row is not None:
@@ -146,6 +154,51 @@ class ChatOrchestrator:
             row.last_activity = _now()
             await db.commit()
         return session_id
+
+    async def resume(
+        self,
+        *,
+        session_id: str,
+        db_session_factory: Callable[[], object],
+    ) -> None:
+        # Already attached in-process → nothing to do.
+        if self._sandboxes.get(session_id) is not None:
+            return
+
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            if row is None:
+                raise SessionNotFound(session_id)
+            scope_kind = row.scope_kind
+            scope_id = row.scope_id
+            claude_session_id = row.claude_session_id
+
+        sandbox = await self._provision_sandbox(
+            session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
+        )
+        try:
+            if claude_session_id:
+                restored = await restore_native_session(
+                    self._daytona, sandbox, blob=self._blob,
+                    session_id=session_id, claude_session_id=claude_session_id,
+                )
+            else:
+                restored = False
+            if not restored:
+                raise ResumeUnavailable(session_id)
+        except Exception:
+            await delete_sandbox_quietly(self._daytona, sandbox)
+            raise
+
+        self._sandboxes[session_id] = sandbox
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            row.sandbox_id = sandbox.id
+            row.status = ChatStatus.active.value
+            row.error = None
+            row.closed_at = None
+            row.last_activity = _now()
+            await db.commit()
 
     async def send(
         self,
@@ -197,6 +250,17 @@ class ChatOrchestrator:
                     await append_event(db, session_id=session_id, event=event)
                     await db.commit()
                 yield event
+        except DaytonaNotFoundError:
+            turn_status, turn_error = "failed", "sandbox no longer exists"
+            self._sandboxes.pop(session_id, None)
+            async with self._db(db_session_factory) as db:
+                row = await db.get(ChatSession, session_id)
+                if row is not None:
+                    row.status = ChatStatus.broken.value
+                    row.error = turn_error
+                    row.closed_at = _now()
+                    await db.commit()
+            return
         except Exception as exc:
             turn_status, turn_error = "failed", str(exc)
             raise
@@ -215,6 +279,15 @@ class ChatOrchestrator:
             if r is not None:
                 r.last_activity = _now()
                 await db.commit()
+
+        if self._blob is not None and claude_session_id is not None and sandbox is not None:
+            try:
+                await archive_native_session(
+                    self._daytona, sandbox, blob=self._blob,
+                    session_id=session_id, claude_session_id=claude_session_id,
+                )
+            except Exception:
+                log.exception("post-turn archival failed: %s", session_id)
 
     async def close(
         self,
