@@ -37,6 +37,7 @@ def build_trial_specs_from_sweep(
     *,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
+    existing_counts: dict[tuple[str, str | None], int] | None = None,
 ) -> list[TrialSpec]:
     trials: list[TrialSpec] = []
     effective_default_environment = submission.environment or default_environment
@@ -56,7 +57,19 @@ def build_trial_specs_from_sweep(
                 allowed_environments=allowed_environments,
             )
 
-        for _ in range(config.n_trials):
+        # Reconcile-to-N (declarative): in reconcile mode, emit only the
+        # shortfall needed to bring the live count for this (agent, model)
+        # up to the desired n_trials. In create mode (existing_counts is
+        # None) emit the full n_trials -- today's additive behavior.
+        n = config.n_trials
+        if existing_counts is not None:
+            from oddish.config import settings
+
+            norm_model = settings.normalize_trial_model(config.agent, config.model)
+            existing = existing_counts.get((config.agent, norm_model), 0)
+            n = max(0, config.n_trials - existing)
+
+        for _ in range(n):
             trial_kwargs: dict = {
                 "agent": config.agent,
                 "model": config.model,
