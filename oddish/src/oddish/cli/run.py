@@ -96,6 +96,18 @@ def run(
             help="Append trials to an existing task ID instead of uploading task files",
         ),
     ] = None,
+    add_more: Annotated[
+        bool,
+        typer.Option(
+            "--add",
+            help=(
+                "Add n_trials MORE trials to an existing task instead of "
+                "reconciling to n_trials. Without --add, re-running a manifest "
+                "is idempotent: only the shortfall needed to reach n_trials is "
+                "appended. With --add, every run appends another batch."
+            ),
+        ),
+    ] = False,
     config: Annotated[
         Optional[Path],
         typer.Option(
@@ -662,6 +674,7 @@ def run(
             agent_kwargs=agent_kwargs,
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
+            additive=add_more,
             content_hash=task_content_hash,
             link=link,
         )
