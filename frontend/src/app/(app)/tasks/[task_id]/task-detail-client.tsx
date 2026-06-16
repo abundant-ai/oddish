@@ -847,16 +847,6 @@ export function TaskDetailClient({
           }
         />
 
-        <TaskVerdictBadge
-          task={task}
-          variant="inline"
-          onRunJudge={handleRunJudge}
-          onCancelJudge={handleCancelJudge}
-          isRunning={isRunningJudge}
-          isCancelling={isCancellingJudge}
-          error={judgeError}
-        />
-
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
           <KpiTile
             label="Total spent (all versions)"
@@ -968,7 +958,21 @@ export function TaskDetailClient({
           </div>
         </div>
 
-        <TaskProbeRunCard taskId={task.id} versionId={selectedVersionId} />
+        <TaskProbeRunCard
+          taskId={task.id}
+          versionId={selectedVersionId}
+          headerSlot={
+            <TaskVerdictBadge
+              task={task}
+              variant="inline"
+              onRunJudge={handleRunJudge}
+              onCancelJudge={handleCancelJudge}
+              isRunning={isRunningJudge}
+              isCancelling={isCancellingJudge}
+              error={judgeError}
+            />
+          }
+        />
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
