@@ -18,6 +18,9 @@ interface ExperimentDescriptionProps {
   onSaved?: (next: string | null) => void;
 }
 
+const PILL_BUTTON_CLASS =
+  "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]";
+
 export function ExperimentDescription({
   experimentId,
   description,
@@ -83,7 +86,7 @@ export function ExperimentDescription({
         <Textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="Add a description (markdown supported)…"
+          placeholder="add a description (markdown supported)…"
           rows={6}
           autoFocus
           disabled={isSaving}
@@ -95,20 +98,19 @@ export function ExperimentDescription({
         <div className="flex items-center gap-2">
           <Button
             type="button"
-            size="sm"
-            className="h-8"
+            variant="ghost"
             onClick={handleSave}
             disabled={isSaving}
+            className={PILL_BUTTON_CLASS}
           >
             {isSaving ? "Saving..." : "Save"}
           </Button>
           <Button
             type="button"
             variant="ghost"
-            size="sm"
-            className="h-8"
             onClick={cancelEditing}
             disabled={isSaving}
+            className={PILL_BUTTON_CLASS}
           >
             Cancel
           </Button>
@@ -129,7 +131,7 @@ export function ExperimentDescription({
         className="h-7 w-fit gap-1.5 rounded-sm px-2 font-mono text-[12px] text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
       >
         <Pencil className="h-3 w-3" />
-        Add a description
+        add a description
       </Button>
     );
   }
