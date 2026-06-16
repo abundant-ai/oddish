@@ -35,6 +35,35 @@ class ClaudeCodeRuntime:
     ]
 
     async def install(self, client: DaytonaClient, sandbox: CreatedSandbox) -> None:
+        """Install claude-code + harbor into the sandbox.
+
+        Each is skipped when already present, so a pre-baked snapshot (see
+        ``cc_chat_daytona_snapshot``) turns this into two cheap existence checks
+        instead of ~a minute of npm/pip. When both are missing (default image)
+        they install concurrently rather than sequentially.
+        """
+        need_claude = not await self._present(
+            client, sandbox, f"test -x {_CLAUDE_BIN}"
+        )
+        need_harbor = not await self._present(
+            client, sandbox, "python -c 'import harbor'"
+        )
+
+        jobs = []
+        if need_claude:
+            jobs.append(self._install_claude(client, sandbox))
+        if need_harbor:
+            jobs.append(self._install_harbor(client, sandbox))
+        if jobs:
+            await asyncio.gather(*jobs)
+
+    @staticmethod
+    async def _present(client: DaytonaClient, sandbox: CreatedSandbox, check: str) -> bool:
+        exit_code, _ = await client.exec_sync(sandbox, command=check)
+        return exit_code == 0
+
+    @staticmethod
+    async def _install_claude(client: DaytonaClient, sandbox: CreatedSandbox) -> None:
         cmd = (
             f"mkdir -p {_NPM_PREFIX} && "
             f"npm config set prefix {_NPM_PREFIX} && "
@@ -46,6 +75,8 @@ class ClaudeCodeRuntime:
                 f"claude-code install failed (exit={exit_code}): {output[-500:]}"
             )
 
+    @staticmethod
+    async def _install_harbor(client: DaytonaClient, sandbox: CreatedSandbox) -> None:
         # Make the harbor package available so the agent can `import harbor` /
         # read its source (anti-cheat scanners, task scaffolding, etc.) without
         # having to reverse-engineer verifier scripts.

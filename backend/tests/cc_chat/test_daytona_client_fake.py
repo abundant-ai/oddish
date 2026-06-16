@@ -47,3 +47,24 @@ async def test_real_create_requests_ephemeral_sandbox():
     # passing both emits a UserWarning, so we must not set auto_delete_interval.
     assert not sdk.params.auto_delete_interval
     assert sdk.params.auto_stop_interval == 30
+    # No snapshot configured -> default base image.
+    assert not sdk.params.snapshot
+
+
+async def test_real_create_uses_snapshot_when_configured():
+    class _CapturingSDK:
+        def __init__(self):
+            self.params = None
+
+        async def create(self, params):
+            self.params = params
+            return type("Sbx", (), {"id": "sbx_1"})()
+
+    client = RealDaytonaClient(api_key="test-key", snapshot="cc-chat-base-v1")
+    sdk = _CapturingSDK()
+    client._daytona = sdk
+
+    await client.create_sandbox(
+        env_vars={}, auto_stop_minutes=30, auto_delete_minutes=60, labels={}
+    )
+    assert sdk.params.snapshot == "cc-chat-base-v1"

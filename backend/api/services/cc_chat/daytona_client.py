@@ -85,8 +85,11 @@ class DaytonaClient(Protocol):
 class RealDaytonaClient:
     """Production implementation backed by the Daytona Python SDK."""
 
-    def __init__(self, *, api_key: str) -> None:
+    def __init__(self, *, api_key: str, snapshot: str | None = None) -> None:
         self._daytona = AsyncDaytona(DaytonaConfig(api_key=api_key))
+        # Optional pre-baked snapshot (claude-code + harbor installed). When set,
+        # provisioning skips the in-sandbox installs.
+        self._snapshot = snapshot or None
 
     async def create_sandbox(
         self,
@@ -103,14 +106,15 @@ class RealDaytonaClient:
         # the conversation from the blob-store archive. ephemeral forces
         # auto_delete_interval to 0, so we don't pass auto_delete_minutes (doing
         # so would emit a UserWarning); auto_stop still bounds idle lifetime.
-        sbx = await self._daytona.create(
-            CreateSandboxFromSnapshotParams(
-                env_vars=env_vars,
-                auto_stop_interval=auto_stop_minutes,
-                labels=labels,
-                ephemeral=True,
-            )
+        params = CreateSandboxFromSnapshotParams(
+            env_vars=env_vars,
+            auto_stop_interval=auto_stop_minutes,
+            labels=labels,
+            ephemeral=True,
         )
+        if self._snapshot:
+            params.snapshot = self._snapshot
+        sbx = await self._daytona.create(params)
         return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
 
     async def connect_sandbox(self, *, sandbox_id: str) -> CreatedSandbox:
