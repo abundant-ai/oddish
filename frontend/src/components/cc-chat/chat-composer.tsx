@@ -8,7 +8,7 @@ export function ChatComposer({
   onSend,
 }: {
   disabled: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string) => void | Promise<void>;
 }) {
   const [value, setValue] = useState("");
   const submit = () => {

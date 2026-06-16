@@ -20,6 +20,8 @@ export function ChatButton({
         size="sm"
         variant="outline"
         className="gap-1.5"
+        aria-expanded={open}
+        aria-haspopup="dialog"
         onClick={() => setOpen(true)}
       >
         <MessageSquare className="h-3.5 w-3.5" /> Chat
