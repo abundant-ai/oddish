@@ -669,6 +669,14 @@ export interface QueueHealthResponse {
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;
+  description: string | null;
+}
+
+export interface ExperimentShareInfo {
+  name: string;
+  is_public: boolean;
+  public_token: string | null;
+  description: string | null;
 }
 
 export interface ExperimentProbeRow {
