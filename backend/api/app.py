@@ -100,10 +100,16 @@ async def lifespan(_api: FastAPI):
                 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
                 from api.services.cc_chat.orchestrator import ChatOrchestrator
                 from api.services.cc_chat.restart_sweep import sweep_orphan_chat_sessions
+                from oddish.config import api_base_url_for_modal_app
                 from oddish.db import get_session
                 from oddish.db.storage import get_storage_client
 
                 _daytona = RealDaytonaClient(api_key=_daytona_key)
+                # Explicit override wins; otherwise derive from the Modal app
+                # identity so prod and PR previews resolve automatically.
+                _chat_api_base_url = (
+                    settings.public_api_base_url or api_base_url_for_modal_app()
+                )
                 _api.state.chat_orchestrator = ChatOrchestrator(
                     daytona=_daytona,
                     runtime=ClaudeCodeRuntime(),
@@ -111,6 +117,7 @@ async def lifespan(_api: FastAPI):
                     anthropic_api_key=_anthropic_key,
                     chat_auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
                     chat_auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
+                    public_api_base_url=_chat_api_base_url,
                     blob_store=get_storage_client(),
                 )
                 await sweep_orphan_chat_sessions(
