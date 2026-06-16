@@ -157,6 +157,52 @@ def to_zai_model_id(model: str | None) -> str | None:
     return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
 
 
+# Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
+# auth.json). Lets the claude-code / codex agents authenticate with a Claude
+# Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API key. A
+# ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
+# Bedrock chokepoint and gets its own provider/queue bucket (so it never
+# contends for Bedrock/OpenAI slots and can be throttled independently), and
+# harbor_runner injects the subscription credentials while blanking the ambient
+# Bedrock/API creds the Modal image bakes in.
+SUBSCRIPTION_PROVIDER = "subscription"
+_SUBSCRIPTION_PREFIXES: tuple[str, ...] = ("sub/", "subscription/")
+
+
+def is_subscription_model(model: str | None) -> bool:
+    """Return True if *model* opts into the personal-subscription auth route."""
+    if not model:
+        return False
+    return model.strip().lower().startswith(_SUBSCRIPTION_PREFIXES)
+
+
+def subscription_bare_model_id(model: str) -> str:
+    """Strip the ``sub/``/``subscription/`` prefix, returning the bare model id.
+
+    ``sub/claude-opus-4-5`` -> ``claude-opus-4-5``. This is the id handed to the
+    agent CLI (``--model`` / ``ANTHROPIC_MODEL``). A bare id is returned as-is.
+    """
+    raw = model.strip()
+    low = raw.lower()
+    for prefix in _SUBSCRIPTION_PREFIXES:
+        if low.startswith(prefix):
+            return raw[len(prefix) :].strip()
+    return raw
+
+
+def to_subscription_model_id(model: str | None) -> str | None:
+    """Canonicalize a subscription reference to ``sub/<bare-id>``.
+
+    Non-subscription models are returned unchanged. The ``sub/`` prefix keeps the
+    trial off the Bedrock chokepoint and gives it a dedicated provider/queue
+    bucket (see ``get_provider_for_trial`` / ``normalize_queue_key``).
+    """
+    if not is_subscription_model(model):
+        return model
+    assert model is not None
+    return f"sub/{subscription_bare_model_id(model)}"
+
+
 # MiniMax / Moonshot (Kimi) routing. Like GLM/z.ai, these are served over an
 # Anthropic-compatible /messages endpoint and run on the claude-code harness,
 # but must NOT inherit claude-code's fixed Bedrock provider/queue. We
@@ -608,6 +654,37 @@ def _infer_provider_prefix(model_name: str) -> str | None:
     return None
 
 
+# Canonical deployed-backend API base URLs (single source of truth; the CLI in
+# ``oddish.cli.config`` re-exports these). Forks override via the env vars.
+DEFAULT_API_URL = os.environ.get(
+    "ODDISH_DEFAULT_API_URL", "https://abundant-ai--api.modal.run"
+)
+# Format string for a PR-preview API URL. ``{n}`` is the PR number.
+PREVIEW_URL_TEMPLATE = os.environ.get(
+    "ODDISH_PREVIEW_URL_TEMPLATE",
+    "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
+)
+
+
+def api_base_url_for_modal_app(app_name: str | None = None) -> str:
+    """Derive the deployed backend API base URL from the Modal app identity.
+
+    Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
+    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
+    running in Modal, so callers fall back or fail fast rather than silently
+    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
+    that PR's preview URL.
+    """
+    name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
+    if not name:
+        return ""
+    if name.startswith("oddish-pr-"):
+        suffix = name[len("oddish-pr-") :]
+        if suffix.isdigit():
+            return PREVIEW_URL_TEMPLATE.format(n=suffix)
+    return DEFAULT_API_URL
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Load .env first, then layer .env.local over it (later file wins on
@@ -654,9 +731,23 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
+    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
+    # claude-code + harbor already installed. When set, sandboxes are created
+    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
+    # minute of per-chat provisioning). Unset -> default base image + install
+    # at provision time. See docs/cc-chat-snapshot.md to build it.
+    cc_chat_daytona_snapshot: str = ""
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+
+    # Externally reachable base URL of the oddish backend API. Injected into
+    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
+    # oddish-query CLI can call back into the backend. Optional override — when
+    # unset, the orchestrator derives it from MODAL_APP_NAME via
+    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
+    public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
@@ -668,6 +759,22 @@ class Settings(BaseSettings):
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 32
+    # Subscription agents whose shared credential is refresh-sensitive and so
+    # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
+    # its refresh token, so two concurrent Codex trials can invalidate each
+    # other's token. These agents get a serialized ``sub-solo/<id>`` queue
+    # bucket capped at ``subscription_queue_concurrency``. (Claude Code's OAuth
+    # token is a static bearer token, safe to use concurrently, so claude-code
+    # is deliberately NOT listed here.)
+    subscription_serialized_agents: str = "codex"
+    # Concurrency cap for the ``sub-solo/<id>`` buckets above. Within the token's
+    # no-refresh window each trial gets its own independent auth.json copy that
+    # never refreshes, so running several at once is safe; this cap only bounds
+    # the single-use-refresh-token race near the ~8-day boundary. Default 4;
+    # raise via ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY when the credential is
+    # unused elsewhere and freshly seeded. An explicit per-key
+    # ODDISH_MODEL_CONCURRENCY_OVERRIDES entry still wins.
+    subscription_queue_concurrency: int = 4
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -843,9 +950,38 @@ class Settings(BaseSettings):
                 return provider
         return "default"
 
+    # Agents that authenticate with the operator's personal subscription
+    # (Claude Pro/Max OAuth token / ChatGPT auth.json) instead of Bedrock/Azure.
+    # Comma-separated agent names, e.g. "claude-code,codex". When an agent is
+    # listed, its trials keep their STANDARD model id (no Bedrock/Azure mapping,
+    # no "sub/" prefix), get a dedicated subscription provider + queue bucket,
+    # and harbor_runner injects the subscription credentials at runtime.
+    subscription_agents: str = ""
+
+    def _is_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
+    def _is_serialized_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_serialized_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated provider so they never fall through
+        # to the fixed agent provider (e.g. codex -> "openai"), which would drag
+        # them onto the Azure/OpenAI credential path.
+        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
+            return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
             if provider:
@@ -868,6 +1004,19 @@ class Settings(BaseSettings):
 
         if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
+
+        # Personal-subscription agents keep their STANDARD model id (no Bedrock
+        # mapping, no prefix) -- the route is selected by agent, not model name.
+        # The dedicated provider/queue bucket comes from get_provider_for_trial /
+        # get_queue_key_for_trial, which also key off the agent.
+        if self._is_subscription_agent(agent):
+            return cleaned
+
+        # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
+        # canonicalize BEFORE the Bedrock chokepoint so the trial stays off
+        # Bedrock and gets its own provider/queue bucket.
+        if is_subscription_model(cleaned):
+            return to_subscription_model_id(cleaned)
 
         # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
         # harness but route to their own direct endpoints, not Bedrock.
@@ -893,6 +1042,16 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
+        # Subscription models keep their own ``sub/<id>`` bucket; serialized
+        # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
+        # auth.json refresh-token invalidation across concurrent workers. Both
+        # are already canonical queue keys, so pass them through untouched.
+        # Canonicalize the ``subscription/`` opt-in alias to ``sub/`` first so an
+        # override key written that way still matches the real ``sub/<id>`` key.
+        if normalized.startswith("subscription/"):
+            normalized = "sub/" + normalized[len("subscription/") :]
+        if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
+            return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
         normalized = _to_bedrock_model_id_if_known(normalized)
@@ -917,6 +1076,19 @@ class Settings(BaseSettings):
         if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated internal queue bucket so their
+        # concurrency can be capped independently of the standard model id they
+        # still store. Both opt-in paths route here -- the agent flag and the
+        # explicit ``sub/<id>`` model prefix (mirroring get_provider_for_trial) --
+        # so a model-prefix opt-in can't escape the cap via normalize_queue_key.
+        # Agents whose shared credential is refresh-sensitive (codex auth.json)
+        # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
+        # safe concurrent) get a plain ``sub/<id>`` bucket.
+        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
+            bare = subscription_bare_model_id(normalized_model or "default") or "default"
+            if self._is_serialized_subscription_agent(agent):
+                return f"sub-solo/{bare}"
+            return f"sub/{bare}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
@@ -948,6 +1120,13 @@ class Settings(BaseSettings):
             return max(int(override), 0)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
+        # Serialized subscription buckets (shared refresh-sensitive credential,
+        # e.g. codex auth.json) default to a low cap so concurrent trials can't
+        # race on the shared token, without relying on a per-key override. An
+        # explicit override above still wins. Plain ``sub/<id>`` subscription
+        # buckets (e.g. claude-code OAuth) are safe concurrent and NOT capped.
+        if normalized.startswith("sub-solo/"):
+            return max(int(self.subscription_queue_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:

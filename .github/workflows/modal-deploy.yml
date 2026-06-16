@@ -26,6 +26,15 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      # Subscription eval enablement (cyber 206-task run, PR #308). The cs-creds
+      # secret (personal Claude OAuth token + codex auth.json) is mounted ONLY on
+      # the trial worker (backend/modal_app.py:worker_secrets), never the API or
+      # dispatcher. Routing is opt-in per-trial via the `sub/<model>` prefix, so
+      # default prod agents are unaffected. The claude-code `sub/` bucket is
+      # capped (overrides below) so it can't run 48-wide against a single Claude
+      # Max account.
+      ODDISH_EXTRA_SECRET_NAME: cs-creds
+      ODDISH_MODEL_CONCURRENCY_OVERRIDES: '{"google/gemini-3.5-flash": 128, "global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, "openai/gpt-5.4-mini": 128, "sub/claude-opus-4-8": 4}'
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op
