@@ -87,6 +87,41 @@ async def lifespan(_api: FastAPI):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
+        # cc_chat orchestrator (chat feature). Guarded: if Daytona/Anthropic
+        # secrets are absent (some envs), skip construction — the chat routes
+        # return 503 via their _orch() guard.
+        _api.state.chat_orchestrator = None
+        try:
+            _daytona_key = os.environ.get("DAYTONA_API_KEY")
+            _anthropic_key = settings.anthropic_api_key
+            if _daytona_key and _anthropic_key:
+                from api.services.cc_chat.daytona_client import RealDaytonaClient
+                from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
+                from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
+                from api.services.cc_chat.orchestrator import ChatOrchestrator
+                from api.services.cc_chat.restart_sweep import sweep_orphan_chat_sessions
+                from oddish.db import get_session
+                from oddish.db.storage import get_storage_client
+
+                _daytona = RealDaytonaClient(api_key=_daytona_key)
+                _api.state.chat_orchestrator = ChatOrchestrator(
+                    daytona=_daytona,
+                    runtime=ClaudeCodeRuntime(),
+                    transcript_buffer=SessionTranscriptBuffer(),
+                    anthropic_api_key=_anthropic_key,
+                    blob_store=get_storage_client(),
+                )
+                await sweep_orphan_chat_sessions(
+                    daytona=_daytona, db_session_factory=lambda: get_session()
+                )
+            else:
+                logger.warning(
+                    "cc_chat orchestrator not constructed: missing DAYTONA_API_KEY or ANTHROPIC_API_KEY"
+                )
+        except Exception:
+            _api.state.chat_orchestrator = None
+            logger.exception("cc_chat orchestrator construction failed")
+
     yield
 
     with _otel_span("app.shutdown"):
@@ -152,6 +187,7 @@ def create_app() -> FastAPI:
     from api.routers import (
         admin,
         api_keys,
+        cc_chat,
         clerk_webhooks,
         dashboard,
         documents,
@@ -166,6 +202,7 @@ def create_app() -> FastAPI:
         trials,
     )
 
+    api.include_router(cc_chat.router)
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(api_keys.router)
