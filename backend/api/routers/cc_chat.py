@@ -17,7 +17,7 @@ router = APIRouter(tags=["cc_chat"])
 
 
 class ChatStartRequest(BaseModel):
-    scope_kind: Literal["experiment", "task_probes"]
+    scope_kind: Literal["experiment", "task_probes", "task", "global"]
     scope_id: str
 
 
@@ -64,7 +64,7 @@ async def start_session(
 @router.get("/chat-sessions")
 async def list_sessions_route(
     auth: Annotated[AuthContext, Depends(require_auth)],
-    scope_kind: Literal["experiment", "task_probes"],
+    scope_kind: Literal["experiment", "task_probes", "task", "global"],
     scope_id: str,
     limit: int = 10,
     offset: int = 0,

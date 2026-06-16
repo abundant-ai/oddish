@@ -25,6 +25,7 @@ async def list_api_keys(
         result = await session.execute(
             select(APIKeyModel)
             .where(APIKeyModel.org_id == auth.org_id)
+            .where(APIKeyModel.is_internal.is_(False))
             .order_by(APIKeyModel.created_at.desc())
         )
         keys = result.scalars().all()
