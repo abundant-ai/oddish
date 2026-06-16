@@ -10,7 +10,8 @@ from oddish.db import get_session
 from models import ChatSession
 from api.services.cc_chat import events as events_mod
 from api.services.cc_chat.turns import running_turn
-from api.services.cc_chat.orchestrator import SessionNotFound
+from api.services.cc_chat.orchestrator import ResumeUnavailable, SessionNotFound
+from api.services.cc_chat.sessions_query import list_sessions
 
 router = APIRouter(tags=["cc_chat"])
 
@@ -58,6 +59,29 @@ async def start_session(
         db_session_factory=lambda: get_session(),
     )
     return ChatStartResponse(session_id=session_id)
+
+
+@router.get("/chat-sessions")
+async def list_sessions_route(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    scope_kind: Literal["experiment", "task_probes"],
+    scope_id: str,
+    limit: int = 10,
+    offset: int = 0,
+    q: str | None = None,
+):
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        items, total = await list_sessions(
+            session,
+            org_id=auth.org_id,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            limit=limit,
+            offset=offset,
+            q=q,
+        )
+    return {"sessions": items, "total": total}
 
 
 @router.get("/chat-sessions/{session_id}")
@@ -115,8 +139,11 @@ async def send_message(
                 content=body.content,
                 db_session_factory=lambda: get_session(),
             ):
-                kind = "error" if event.get("type") == "_stderr" else "message"
-                yield f"event: {kind}\ndata: {json.dumps(event)}\n\n"
+                # _stderr / internal events are informational; the only real
+                # error signal in this stream is the explicit SessionNotFound
+                # yield below. Stream everything else as a normal message event
+                # (the frontend renders assistant text and ignores other types).
+                yield f"event: message\ndata: {json.dumps(event)}\n\n"
         except SessionNotFound:
             yield 'event: error\ndata: {"type":"session_not_found"}\n\n'
             return
@@ -134,3 +161,19 @@ async def close_session(
     auth.require_scope(APIKeyScope.READ)
     await _require_session(session_id, auth.org_id)
     await _orch(request).close(session_id=session_id, db_session_factory=lambda: get_session())
+
+
+@router.post("/chat-sessions/{session_id}/resume", status_code=204)
+async def resume_session(
+    session_id: str,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+):
+    auth.require_scope(APIKeyScope.READ)
+    await _require_session(session_id, auth.org_id)
+    try:
+        await _orch(request).resume(session_id=session_id, db_session_factory=lambda: get_session())
+    except ResumeUnavailable:
+        raise HTTPException(409, detail="This chat can't be restored (no saved session).")
+    except SessionNotFound:
+        raise HTTPException(404, detail="session not found")
