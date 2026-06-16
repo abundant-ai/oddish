@@ -104,7 +104,10 @@ async def lifespan(_api: FastAPI):
                 from oddish.db import get_session
                 from oddish.db.storage import get_storage_client
 
-                _daytona = RealDaytonaClient(api_key=_daytona_key)
+                _daytona = RealDaytonaClient(
+                    api_key=_daytona_key,
+                    snapshot=settings.cc_chat_daytona_snapshot or None,
+                )
                 # Explicit override wins; otherwise derive from the Modal app
                 # identity so prod and PR previews resolve automatically.
                 _chat_api_base_url = (
