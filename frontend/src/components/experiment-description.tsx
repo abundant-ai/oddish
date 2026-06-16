@@ -51,7 +51,7 @@ export function ExperimentDescription({
   onSaved,
 }: ExperimentDescriptionProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(true);
   const [draft, setDraft] = useState(description ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +109,12 @@ export function ExperimentDescription({
         <Textarea
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              cancelEditing();
+            }
+          }}
           placeholder="add a description (markdown supported)…"
           rows={6}
           autoFocus
@@ -147,7 +153,12 @@ export function ExperimentDescription({
   if (!description) {
     if (!canEdit) return null;
     return (
-      <button type="button" onClick={startEditing} className={META_TEXT_CLASS}>
+      <button
+        type="button"
+        onClick={startEditing}
+        className={`${META_TEXT_CLASS} inline-flex items-center gap-1`}
+      >
+        <Pencil className="h-3 w-3" />
         add a description
       </button>
     );
