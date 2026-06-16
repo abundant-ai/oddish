@@ -17,7 +17,7 @@ router = APIRouter(tags=["cc_chat"])
 
 
 class ChatStartRequest(BaseModel):
-    scope_kind: Literal["experiment", "task_probes"]
+    scope_kind: Literal["experiment", "task_probes", "task", "global"]
     scope_id: str
 
 

@@ -111,6 +111,7 @@ async def lifespan(_api: FastAPI):
                     anthropic_api_key=_anthropic_key,
                     chat_auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
                     chat_auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
+                    public_api_base_url=settings.public_api_base_url,
                     blob_store=get_storage_client(),
                 )
                 await sweep_orphan_chat_sessions(
