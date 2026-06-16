@@ -16,13 +16,19 @@ from oddish.config import Settings
 # like DB latency under load).
 #
 # Client-connection budget (worst case):
-#   API:     24 containers × (pool_size 4 + max_overflow 4) = up to 192
+#   API:     64 containers × (pool_size 2 + max_overflow 1) = up to 192
 #   Workers: WORKER_MAX_CONTAINERS(512) × ~2 (1 SQLAlchemy + 1 asyncpg) ≈ 1024
 #   Total ≈ 1216 — ~81% of the 1500 client cap. Concurrent *execution* is gated
 #   by the 100-backend transaction pool, not these client counts.
+#
+# API_CONCURRENCY_MAX was lowered 8->3 (with API_MAX_CONTAINERS raised 24->64)
+# to bound the OOM blast radius (the memory hog itself is fixed in
+# oddish.core.endpoints.list_tasks_core -- see modal_app.py). The pool is
+# resized to match the new per-container concurrency so the budget above is
+# unchanged (64 × 3 == 24 × 8 == 192 API client connections).
 Settings.db_use_null_pool = False
-Settings.db_pool_size = 4
-Settings.db_pool_max_overflow = 4
+Settings.db_pool_size = 2
+Settings.db_pool_max_overflow = 1
 
 import modal
 
