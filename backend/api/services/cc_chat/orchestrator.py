@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus, generate_id
 from oddish.db.models import utcnow as _utcnow
+from api.services.cc_chat.archive import archive_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
     render_task_probes_claude_md,
@@ -213,6 +214,15 @@ class ChatOrchestrator:
             if r is not None:
                 r.last_activity = _now()
                 await db.commit()
+
+        if self._blob is not None and claude_session_id is not None and sandbox is not None:
+            try:
+                await archive_native_session(
+                    self._daytona, sandbox, blob=self._blob,
+                    session_id=session_id, claude_session_id=claude_session_id,
+                )
+            except Exception:
+                log.exception("post-turn archival failed: %s", session_id)
 
     async def close(
         self,
