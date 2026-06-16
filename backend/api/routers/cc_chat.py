@@ -10,7 +10,7 @@ from oddish.db import get_session
 from models import ChatSession
 from api.services.cc_chat import events as events_mod
 from api.services.cc_chat.turns import running_turn
-from api.services.cc_chat.orchestrator import SessionNotFound
+from api.services.cc_chat.orchestrator import ResumeUnavailable, SessionNotFound
 from api.services.cc_chat.sessions_query import list_sessions
 
 router = APIRouter(tags=["cc_chat"])
@@ -158,3 +158,19 @@ async def close_session(
     auth.require_scope(APIKeyScope.READ)
     await _require_session(session_id, auth.org_id)
     await _orch(request).close(session_id=session_id, db_session_factory=lambda: get_session())
+
+
+@router.post("/chat-sessions/{session_id}/resume", status_code=204)
+async def resume_session(
+    session_id: str,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+):
+    auth.require_scope(APIKeyScope.READ)
+    await _require_session(session_id, auth.org_id)
+    try:
+        await _orch(request).resume(session_id=session_id, db_session_factory=lambda: get_session())
+    except ResumeUnavailable:
+        raise HTTPException(409, detail="This chat can't be restored (no saved session).")
+    except SessionNotFound:
+        raise HTTPException(404, detail="session not found")
