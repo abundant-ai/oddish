@@ -959,7 +959,7 @@ class Settings(BaseSettings):
         # mapping, no prefix) -- the route is selected by agent, not model name.
         # The dedicated provider/queue bucket comes from get_provider_for_trial /
         # get_queue_key_for_trial, which also key off the agent.
-        if self._is_subscription_agent(normalized_agent):
+        if self._is_subscription_agent(agent):
             return cleaned
 
         # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
