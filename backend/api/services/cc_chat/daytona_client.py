@@ -27,7 +27,12 @@ class CreatedSandbox:
 
 class DaytonaClient(Protocol):
     async def create_sandbox(
-        self, *, env_vars: dict[str, str], auto_stop_minutes: int
+        self,
+        *,
+        env_vars: dict[str, str],
+        auto_stop_minutes: int,
+        auto_delete_minutes: int,
+        labels: dict[str, str],
     ) -> CreatedSandbox: ...
 
     async def upload_file(
@@ -78,12 +83,19 @@ class RealDaytonaClient:
         self._daytona = AsyncDaytona(DaytonaConfig(api_key=api_key))
 
     async def create_sandbox(
-        self, *, env_vars: dict[str, str], auto_stop_minutes: int
+        self,
+        *,
+        env_vars: dict[str, str],
+        auto_stop_minutes: int,
+        auto_delete_minutes: int,
+        labels: dict[str, str],
     ) -> CreatedSandbox:
         sbx = await self._daytona.create(
             CreateSandboxFromSnapshotParams(
                 env_vars=env_vars,
                 auto_stop_interval=auto_stop_minutes,
+                auto_delete_interval=auto_delete_minutes,
+                labels=labels,
             )
         )
         return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
@@ -259,7 +271,9 @@ class FakeDaytonaClient:
         self.exec_sync_results: dict[str, tuple[int, str]] = {}  # command-substring -> (exit_code, output)
         self.next_cmd_id_seq = 0
 
-    async def create_sandbox(self, *, env_vars, auto_stop_minutes) -> CreatedSandbox:
+    async def create_sandbox(
+        self, *, env_vars, auto_stop_minutes, auto_delete_minutes, labels
+    ) -> CreatedSandbox:
         sbx_id = f"sbx_{secrets.token_hex(6)}"
         self.sandboxes[sbx_id] = {
             "env": env_vars,
@@ -267,6 +281,8 @@ class FakeDaytonaClient:
             "sessions": set(),
             "exec_log": [],
             "auto_stop": auto_stop_minutes,
+            "auto_delete": auto_delete_minutes,
+            "labels": labels,
         }
         return CreatedSandbox(id=sbx_id, _sdk_handle=sbx_id)
 
