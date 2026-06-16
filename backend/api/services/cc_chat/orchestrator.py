@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
 from models import ChatSession, ChatStatus, generate_id
 from oddish.db.models import utcnow as _utcnow
-from api.services.cc_chat.archive import archive_native_session
+from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
     render_task_probes_claude_md,
@@ -33,6 +33,10 @@ def _now() -> datetime:
 
 
 class SessionNotFound(Exception):
+    pass
+
+
+class ResumeUnavailable(Exception):
     pass
 
 
@@ -134,6 +138,66 @@ class ChatOrchestrator:
             row.last_activity = _now()
             await db.commit()
         return session_id
+
+    async def resume(
+        self,
+        *,
+        session_id: str,
+        db_session_factory: Callable[[], object],
+    ) -> None:
+        # Already attached in-process → nothing to do.
+        if self._sandboxes.get(session_id) is not None:
+            return
+
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            if row is None:
+                raise SessionNotFound(session_id)
+            scope_kind = row.scope_kind
+            scope_id = row.scope_id
+            claude_session_id = row.claude_session_id
+
+        if scope_kind == "experiment":
+            claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
+        else:
+            claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
+
+        sandbox = await Provisioner(client=self._daytona).create(
+            env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
+            auto_stop_minutes=self._auto_stop,
+            auto_delete_minutes=self._auto_delete,
+            labels={"app": "cc_chat", "session_id": session_id},
+            daytona_session_id=DAYTONA_SESSION_ID,
+        )
+        try:
+            await self._runtime.install(self._daytona, sandbox)
+            await self._daytona.upload_file(
+                sandbox,
+                dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
+                content=claude_md.encode("utf-8"),
+            )
+            if claude_session_id:
+                restored = await restore_native_session(
+                    self._daytona, sandbox, blob=self._blob,
+                    session_id=session_id, claude_session_id=claude_session_id,
+                )
+            else:
+                restored = False
+            if not restored:
+                raise ResumeUnavailable(session_id)
+        except Exception:
+            await delete_sandbox_quietly(self._daytona, sandbox)
+            raise
+
+        self._sandboxes[session_id] = sandbox
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            row.sandbox_id = sandbox.id
+            row.status = ChatStatus.active.value
+            row.error = None
+            row.closed_at = None
+            row.last_activity = _now()
+            await db.commit()
 
     async def send(
         self,
