@@ -233,12 +233,19 @@ jobs:
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      # TEMPORARY — validating PR #308 end-to-end on the Modal sandbox; REVERT
+      # before merge. Turns on the personal-subscription route on this PR's
+      # preview (inert where cs-creds is absent). Must NOT land on main.
+      ODDISH_EXTRA_SECRET_NAME: cs-creds
+      ODDISH_SUBSCRIPTION_AGENTS: claude-code,codex
+      ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY: "16"
+      ODDISH_DEFAULT_MODEL_CONCURRENCY: "16"
+      ODDISH_MODAL_API_MIN_CONTAINERS: "1"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
-      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "3"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "1"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
-      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "44"
     defaults:
       run:
         working-directory: backend
