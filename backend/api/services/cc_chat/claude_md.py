@@ -182,14 +182,16 @@ whole org; you cannot write anything.
 
 ## Tool: `oddish-query` (call via Bash)
 
+Run it from the workspace dir as `./oddish-query` (it lives in the current directory).
+
 Start shallow, go deep only when the conversation does:
 
-- `oddish-query tasks search [--q TEXT] [--tags-any a,b] [--tags-all a,b] [--tags-none a,b] [--limit 25] [--offset N]`
+- `./oddish-query tasks search [--q TEXT] [--tags-any a,b] [--tags-all a,b] [--tags-none a,b] [--limit 25] [--offset N]`
   Compact cards: id, name, tags, total_trials, pass_rate, last_run_at. **Start here.**
   Push filters into `--q`/`--tags-*` so the server returns ~25 relevant rows, not thousands.
-- `oddish-query tasks get <id>` — one task's detail (versions, counts, description).
-- `oddish-query tasks trials <id> [--version N]` — that task's trial rows (status, reward, trial_id).
-- `oddish-query trials logs <trial_id> [--trajectory]` — a single trial's logs. **Large — one trial at a time.**
+- `./oddish-query tasks get <id>` — one task's detail (versions, counts, description).
+- `./oddish-query tasks trials <id>` — that task's trial rows (status, reward, trial_id).
+- `./oddish-query trials logs <trial_id> [--trajectory]` — a single trial's logs. **Large — one trial at a time.**
 
 ## Discipline
 

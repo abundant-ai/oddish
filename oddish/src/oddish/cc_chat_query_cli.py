@@ -50,16 +50,18 @@ def _get(path: str, params: dict | None = None):
         _die(str(e), 0)
 
 
-def _emit_rows(rows: list[dict]) -> None:
+def _emit_rows(rows: list[dict]) -> bool:
+    """Emit projected rows; return True if output was truncated for budget."""
     total, shown = 0, 0
     for row in rows:
         line = json.dumps(row, separators=(",", ":"))
         if total + len(line) > MAX_BYTES:
             _print(json.dumps({"_truncated": True, "_shown": shown}))
-            return
+            return True
         _print(line)
         total += len(line)
         shown += 1
+    return False
 
 
 def _card(item: dict) -> dict:
@@ -84,7 +86,9 @@ def _cmd_search(a) -> None:
         "limit": a.limit,
         "offset": a.offset,
     })
-    _emit_rows([_card(i) for i in (data.get("items") or [])])
+    truncated = _emit_rows([_card(i) for i in (data.get("items") or [])])
+    if not truncated and data.get("has_more"):
+        _print(json.dumps({"_has_more": True}, separators=(",", ":")))
 
 
 def _cmd_get(a) -> None:
@@ -92,7 +96,7 @@ def _cmd_get(a) -> None:
 
 
 def _cmd_trials(a) -> None:
-    data = _get(f"/tasks/{a.id}/trials", {"version": a.version})
+    data = _get(f"/tasks/{a.id}/trials")
     rows = data if isinstance(data, list) else (data.get("trials") or data.get("items") or [])
     _emit_rows([
         {
@@ -131,7 +135,6 @@ def main(argv: list[str] | None = None) -> None:
     g.set_defaults(func=_cmd_get)
     tr = tasks.add_parser("trials")
     tr.add_argument("id")
-    tr.add_argument("--version", type=int, default=None)
     tr.set_defaults(func=_cmd_trials)
 
     trials = sub.add_parser("trials").add_subparsers(dest="cmd", required=True)
