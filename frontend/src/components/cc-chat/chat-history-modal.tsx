@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import type { ChatScopeKind, ChatSessionSummary } from "@/lib/cc-chat-types";
 
 export function ChatHistoryModal({
@@ -41,7 +43,9 @@ export function ChatHistoryModal({
     fetch(`/api/chat-sessions?${params.toString()}`)
       .then((r) => r.json())
       .then((d) => {
-        setItems(d.sessions ?? []);
+        setItems((prev) =>
+          offset === 0 ? (d.sessions ?? []) : [...prev, ...(d.sessions ?? [])],
+        );
         setTotal(d.total ?? 0);
       })
       .catch(() => {
@@ -55,9 +59,12 @@ export function ChatHistoryModal({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Chat history</DialogTitle>
+          <DialogDescription className="sr-only">
+            Browse and resume past chat sessions.
+          </DialogDescription>
         </DialogHeader>
-        <input
-          className="bg-background mb-2 w-full rounded-md border px-2 py-1.5 text-sm"
+        <Input
+          className="mb-2"
           placeholder="Search past chats…"
           value={q}
           onChange={(e) => {
