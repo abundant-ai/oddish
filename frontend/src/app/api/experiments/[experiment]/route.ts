@@ -26,12 +26,20 @@ export async function PATCH(
     }
 
     const body = await request.json().catch(() => null);
-    if (!body || typeof body.name !== "string") {
+    const hasName = body != null && typeof body.name === "string";
+    const hasDescription =
+      body != null &&
+      (typeof body.description === "string" || body.description === null);
+    if (!hasName && !hasDescription) {
       return NextResponse.json(
-        { error: "Missing experiment name" },
+        { error: "No fields to update" },
         { status: 400 },
       );
     }
+
+    const payload: { name?: string; description?: string | null } = {};
+    if (hasName) payload.name = body.name;
+    if (hasDescription) payload.description = body.description;
 
     const { experiment } = await params;
     const experimentId = decodeExperimentRouteParam(experiment);
@@ -47,7 +55,7 @@ export async function PATCH(
         "Content-Type": "application/json",
         ...getAuthHeaders(token),
       },
-      body: JSON.stringify({ name: body.name }),
+      body: JSON.stringify(payload),
     });
 
     const text = await res.text();
