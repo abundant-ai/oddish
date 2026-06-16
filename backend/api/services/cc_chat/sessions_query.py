@@ -23,8 +23,8 @@ async def list_sessions(
         ChatSession.scope_kind == scope_kind,
         ChatSession.scope_id == scope_id,
     ]
-    if q:
-        where.append(ChatSession.title.ilike(f"%{q}%"))
+    if q and q.strip():
+        where.append(ChatSession.title.ilike(f"%{q.strip()}%"))
 
     total = (
         await session.execute(select(func.count()).select_from(ChatSession).where(*where))
