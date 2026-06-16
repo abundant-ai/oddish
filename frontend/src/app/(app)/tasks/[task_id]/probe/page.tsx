@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { ProbeSubmitForm } from "@/components/probe-submit-form";
 import { ProbeHistoryTable } from "@/components/probe-history-table";
 
@@ -15,8 +16,14 @@ export default async function ProbePage({
           Submit a custom prompt prepended to this task&apos;s instruction. The
           agent runs in local Docker via Harbor.
         </p>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Task: <span className="font-mono">{task_id}</span>
+        <p className="mt-1 text-sm">
+          Task:{" "}
+          <Link
+            href={`/tasks/${task_id}`}
+            className="font-mono font-medium text-blue-600 underline-offset-4 hover:text-blue-700 hover:underline"
+          >
+            {task_id}
+          </Link>
         </p>
       </div>
       <ProbeSubmitForm taskId={task_id} />
