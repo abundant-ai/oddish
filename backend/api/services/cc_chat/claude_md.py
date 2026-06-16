@@ -132,3 +132,36 @@ def render_task_probes_claude_md(
     else:
         trial_list = _EMPTY_TRIAL_BLOCK
     return _PROBE_TEMPLATE.format(task_name=task_name, trial_list=trial_list)
+
+
+_GLOBAL_TEMPLATE = """\
+# Oddish tasks — org-wide chat
+
+You help the user reason across ALL of this organization's Harbor tasks, and
+drill into an individual task's trials when they focus on one. You have a
+read-only CLI, `oddish-query`, that queries the oddish backend. Scope is the
+whole org; you cannot write anything.
+
+## Tool: `oddish-query` (call via Bash)
+
+Start shallow, go deep only when the conversation does:
+
+- `oddish-query tasks search [--q TEXT] [--tags-any a,b] [--tags-all a,b] [--tags-none a,b] [--limit 25] [--offset N]`
+  Compact cards: id, name, tags, total_trials, pass_rate, last_run_at. **Start here.**
+  Push filters into `--q`/`--tags-*` so the server returns ~25 relevant rows, not thousands.
+- `oddish-query tasks get <id>` — one task's detail (versions, counts, description).
+- `oddish-query tasks trials <id> [--version N]` — that task's trial rows (status, reward, trial_id).
+- `oddish-query trials logs <trial_id> [--trajectory]` — a single trial's logs. **Large — one trial at a time.**
+
+## Discipline
+
+- ALWAYS begin with `tasks search`. Judge relevance ("which of these are CAD?")
+  by reading the cards yourself — that is the search.
+- Only call `get`/`trials`/`logs` once the user has zoomed into a specific task.
+- Output is capped per call; if you see `{"_truncated": true}`, narrow your
+  filters or page with `--offset` rather than widening.
+"""
+
+
+def render_global_claude_md(*, org_id: str) -> str:
+    return _GLOBAL_TEMPLATE
