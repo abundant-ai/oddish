@@ -1114,48 +1114,50 @@ export function ExperimentDetailView({
            * Fraunces display title, a dot-separated meta strip, with the
            * Show-graph + Publish actions parked top-right.
            */}
-          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="flex min-w-0 flex-wrap items-center gap-2">
-                {headerLeft}
-                {experimentId && (
-                  <TagEditor
-                    scope="EXPERIMENT"
-                    targetId={experimentId}
-                    initialTags={experimentTags ?? []}
-                    experimentMode="living"
-                    onMutate={() => void mutateExperimentTags()}
-                  />
-                )}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  {headerLeft}
+                  {experimentId && (
+                    <TagEditor
+                      scope="EXPERIMENT"
+                      targetId={experimentId}
+                      initialTags={experimentTags ?? []}
+                      experimentMode="living"
+                      onMutate={() => void mutateExperimentTags()}
+                    />
+                  )}
+                </div>
+                <ExperimentMetaStrip
+                  tasks={tasksForExperiment}
+                  isInitialLoading={isInitialLoading}
+                  experimentId={experimentId}
+                />
               </div>
-              <ExperimentMetaStrip
-                tasks={tasksForExperiment}
+              <ExperimentHeaderMeta
+                isLoading={isLoading}
                 isInitialLoading={isInitialLoading}
-                experimentId={experimentId}
+                headerStatus={headerStatus}
+                showPassAtK={showPassAtK}
+                onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
+                headerRight={headerRight}
+                prLink={
+                  // The PR chip links into GitHub for the experiment's source
+                  // branch — internal context that shouldn't surface on the
+                  // public share view.
+                  readOnly ? undefined : (
+                    <ExperimentPrLink
+                      tasks={tasksForExperiment}
+                      isInitialLoading={isInitialLoading}
+                    />
+                  )
+                }
               />
             </div>
-            <ExperimentHeaderMeta
-              isLoading={isLoading}
-              isInitialLoading={isInitialLoading}
-              headerStatus={headerStatus}
-              showPassAtK={showPassAtK}
-              onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-              headerRight={headerRight}
-              prLink={
-                // The PR chip links into GitHub for the experiment's source
-                // branch — internal context that shouldn't surface on the
-                // public share view.
-                readOnly ? undefined : (
-                  <ExperimentPrLink
-                    tasks={tasksForExperiment}
-                    isInitialLoading={isInitialLoading}
-                  />
-                )
-              }
-            />
-          </div>
 
-          {headerDescription}
+            {headerDescription}
+          </div>
 
           <ExperimentSummaryBar
             taskCount={tasksForExperiment.length}
