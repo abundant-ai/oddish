@@ -66,13 +66,15 @@ export function ExperimentDescription({
   useEffect(() => {
     const el = cardRef.current;
     if (!el) return;
-    const measure = () =>
+    const measure = () => {
+      if (!el.isConnected) return;
       setIsOverflowing(el.scrollHeight > COLLAPSED_MAX_HEIGHT_PX);
+    };
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [description]);
+  }, [description, isEditing]);
 
   const startEditing = () => {
     setDraft(description ?? "");
@@ -181,20 +183,40 @@ export function ExperimentDescription({
   }
 
   // Has a description: render the markdown, truncated to ~3 lines of height with
-  // a bottom fade + "…more"/"see less" when it overflows that threshold.
+  // a bottom fade + a "see more"/"see less" control inside the card when it
+  // overflows that threshold.
   const collapsed = !isExpanded && isOverflowing;
   return (
     <div className="flex flex-col gap-2">
-      <div
-        ref={cardRef}
-        className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]"
-        style={
-          collapsed
-            ? { maxHeight: COLLAPSED_MAX_HEIGHT_PX, overflow: "hidden" }
-            : undefined
-        }
-      >
-        <MarkdownRenderer content={description} />
+      <div className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+        {/* Only the markdown is height-clamped; the toggle below stays visible. */}
+        <div
+          ref={cardRef}
+          className="relative"
+          style={
+            collapsed
+              ? { maxHeight: COLLAPSED_MAX_HEIGHT_PX, overflow: "hidden" }
+              : undefined
+          }
+        >
+          <MarkdownRenderer content={description} />
+          {collapsed ? (
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[color:var(--paper-surface)] to-transparent"
+            />
+          ) : null}
+        </div>
+        {isOverflowing ? (
+          <button
+            type="button"
+            onClick={() => setIsExpanded((value) => !value)}
+            aria-expanded={isExpanded}
+            className={`${META_TEXT_CLASS} mb-3 ml-4 mt-1`}
+          >
+            {collapsed ? "see more" : "see less"}
+          </button>
+        ) : null}
         {canEdit ? (
           <Button
             type="button"
@@ -208,23 +230,7 @@ export function ExperimentDescription({
             <Pencil className="h-3.5 w-3.5" />
           </Button>
         ) : null}
-        {collapsed ? (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-[10px] bg-gradient-to-t from-[color:var(--paper-surface)] to-transparent"
-          />
-        ) : null}
       </div>
-      {isOverflowing ? (
-        <button
-          type="button"
-          onClick={() => setIsExpanded((value) => !value)}
-          aria-expanded={isExpanded}
-          className={META_TEXT_CLASS}
-        >
-          {collapsed ? "…more" : "see less"}
-        </button>
-      ) : null}
     </div>
   );
 }
