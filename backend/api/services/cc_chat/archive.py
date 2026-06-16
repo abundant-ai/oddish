@@ -77,6 +77,10 @@ async def restore_native_session(
         return False
     if not data:
         return False
+    # Intentionally NOT swallowing sandbox-write failures here: returning False
+    # means "no archive to restore" (caller surfaces a clean 'can't be restored'
+    # message), whereas a write failure against a freshly-provisioned sandbox is a
+    # real infra error the caller (resume()) should see and clean up after.
     dest = _native_path(claude_session_id)
     await client.exec_sync(sandbox, command=f"mkdir -p {shlex.quote(dest.rsplit('/', 1)[0])}")
     await client.upload_file(sandbox, dest_path=dest, content=data)

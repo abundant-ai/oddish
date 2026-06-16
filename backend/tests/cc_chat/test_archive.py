@@ -4,8 +4,6 @@ from api.services.cc_chat.archive import (
 )
 from api.services.cc_chat.daytona_client import FakeDaytonaClient
 
-pytestmark = pytest.mark.asyncio
-
 
 def test_project_dir_transform():
     assert project_dir_for("/home/daytona/workspace") == "-home-daytona-workspace"
@@ -22,6 +20,7 @@ class _Blob:
     async def object_exists(self, key): return key in self.store
 
 
+@pytest.mark.asyncio
 async def test_archive_then_restore_roundtrip():
     client = FakeDaytonaClient()
     sbx = await client.create_sandbox(env_vars={}, auto_stop_minutes=1, auto_delete_minutes=1, labels={})
@@ -46,6 +45,7 @@ async def test_archive_then_restore_roundtrip():
     assert client.sandboxes[fresh.id]["files"][dest] == b'{"line":1}\n'
 
 
+@pytest.mark.asyncio
 async def test_restore_missing_archive_returns_false():
     client = FakeDaytonaClient()
     sbx = await client.create_sandbox(env_vars={}, auto_stop_minutes=1, auto_delete_minutes=1, labels={})
@@ -55,6 +55,7 @@ async def test_restore_missing_archive_returns_false():
     ) is False
 
 
+@pytest.mark.asyncio
 async def test_archive_no_blob_or_no_claude_id_returns_false():
     client = FakeDaytonaClient()
     sbx = await client.create_sandbox(env_vars={}, auto_stop_minutes=1, auto_delete_minutes=1, labels={})
