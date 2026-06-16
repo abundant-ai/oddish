@@ -14,7 +14,7 @@ class _FakeSandbox:
 class _FakeDaytona:
     def __init__(self):
         self.uploaded: list[str] = []
-    async def create_sandbox(self, *, env_vars, auto_stop_minutes):
+    async def create_sandbox(self, *, env_vars, auto_stop_minutes, auto_delete_minutes, labels):
         return _FakeSandbox()
     async def create_session(self, sandbox, *, session_id):
         return None
