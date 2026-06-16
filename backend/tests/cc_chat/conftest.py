@@ -48,3 +48,61 @@ async def db():
         yield maker
     finally:
         await engine.dispose()
+
+
+async def seed_task_with_trials(maker, *, task_id="task_1", versions=(1, 2), trials_per_version=1):
+    """Seed an experiment, a task, its task_versions, current_version pointer,
+    and trials via raw INSERTs (avoids ORM enum/NOT-NULL pitfalls). Returns
+    {version_int: [trial_id, ...]}. Trials get trial_s3_key=None so
+    resolve_trial_s3_prefix falls back to tasks/{task_id}/trials/{trial_id}/."""
+    from sqlalchemy import text
+    out: dict[int, list[str]] = {}
+    exp_id = f"exp_{task_id}"
+    async with maker() as s:
+        await s.execute(
+            text(
+                "insert into experiments (id,name,org_id,is_public,created_at,updated_at) "
+                "values (:id,'demo-exp',:org,false,now(),now())"
+            ),
+            {"id": exp_id, "org": ORG},
+        )
+        await s.execute(
+            text(
+                'insert into tasks (id,name,org_id,"user",priority,status,task_path,'
+                "tags,run_analysis,run_probe,created_at,updated_at) "
+                "values (:id,'demo-task',:org,'u','LOW','COMPLETED','p','{}'::jsonb,"
+                "false,false,now(),now())"
+            ),
+            {"id": task_id, "org": ORG},
+        )
+        max_v = max(versions)
+        for v in versions:
+            vid = f"{task_id}-v{v}"
+            await s.execute(
+                text(
+                    "insert into task_versions (id,task_id,version,task_path,created_at,updated_at) "
+                    "values (:id,:tid,:v,'p',now(),now())"
+                ),
+                {"id": vid, "tid": task_id, "v": v},
+            )
+            ids = []
+            for i in range(trials_per_version):
+                trial_id = f"{task_id}-{v}{i}"
+                await s.execute(
+                    text(
+                        "insert into trials (id,name,task_id,task_version_id,experiment_id,"
+                        "org_id,agent,provider,queue_key,status,origin,is_probe,attempts,"
+                        "max_attempts,created_at,updated_at) "
+                        "values (:id,:id,:tid,:vid,:eid,:org,'claude','anthropic','q',"
+                        "'SUCCESS','oddish',false,1,6,now(),now())"
+                    ),
+                    {"id": trial_id, "tid": task_id, "vid": vid, "eid": exp_id, "org": ORG},
+                )
+                ids.append(trial_id)
+            out[v] = ids
+        await s.execute(
+            text("update tasks set current_version_id=:vid where id=:tid"),
+            {"vid": f"{task_id}-v{max_v}", "tid": task_id},
+        )
+        await s.commit()
+    return out
