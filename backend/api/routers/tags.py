@@ -5,6 +5,7 @@ rejected up front). USE-plane actions reuse the existing ``write access
 to the target task/experiment`` helper; DEFINITION-plane actions go
 through ``can_definition_capability`` + ``can_manage_grants``.
 """
+
 from __future__ import annotations
 
 import json
@@ -121,9 +122,7 @@ async def _assert_target_in_org(
     query = _TARGET_ORG_QUERIES.get(scope)
     if query is None:
         raise HTTPException(status_code=400, detail=f"invalid scope: {scope}")
-    row = await session.scalar(
-        text(query), {"target_id": target_id, "org_id": org_id}
-    )
+    row = await session.scalar(text(query), {"target_id": target_id, "org_id": org_id})
     if row is None:
         raise HTTPException(status_code=404, detail="target not found")
 
@@ -272,9 +271,7 @@ async def list_tags_for_target(
         await _assert_target_in_org(
             session, scope=scope, target_id=target_id, org_id=auth.org_id
         )
-        views = await list_direct_target_tags(
-            session, scope=scope, target_id=target_id
-        )
+        views = await list_direct_target_tags(session, scope=scope, target_id=target_id)
     return [
         UserTagRef(
             tag_id=v.tag_id,
@@ -383,7 +380,9 @@ async def delete_tag(
         if not await can_definition_capability(
             session, auth, tag=tag, capability="DELETE"
         ):
-            raise HTTPException(status_code=403, detail="not allowed to delete this tag")
+            raise HTTPException(
+                status_code=403, detail="not allowed to delete this tag"
+            )
         try:
             await delete_tag_core(
                 session,
@@ -413,7 +412,9 @@ async def archive_tag(
         if not await can_definition_capability(
             session, auth, tag=tag, capability="EDIT"
         ):
-            raise HTTPException(status_code=403, detail="not allowed to archive this tag")
+            raise HTTPException(
+                status_code=403, detail="not allowed to archive this tag"
+            )
         try:
             await archive_tag_core(
                 session,
@@ -476,7 +477,9 @@ async def set_visibility(
         if not await can_definition_capability(
             session, auth, tag=tag, capability="EDIT"
         ):
-            raise HTTPException(status_code=403, detail="not allowed to change visibility")
+            raise HTTPException(
+                status_code=403, detail="not allowed to change visibility"
+            )
         try:
             await set_tag_visibility_core(
                 session,
@@ -513,9 +516,7 @@ async def assign_tag(
             tag.get("normalized_key", ""),
             reserved_prefixes=list(policy.get("reserved_prefixes", []) or []),
         )
-        if not can_use_apply(
-            auth, target_org_id=auth.org_id, reserved=reserved
-        ):
+        if not can_use_apply(auth, target_org_id=auth.org_id, reserved=reserved):
             raise HTTPException(status_code=403, detail="not allowed to apply tags")
         try:
             await assert_under_tag_cap(
@@ -710,7 +711,9 @@ async def create_grant(
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not can_manage_grants(auth, tag=tag):
-            raise HTTPException(status_code=403, detail="MANAGE_GRANTS is owner/admin only")
+            raise HTTPException(
+                status_code=403, detail="MANAGE_GRANTS is owner/admin only"
+            )
         grant_id = await grant_tag_capability_core(
             session,
             tag_id=tag_id,
@@ -739,7 +742,9 @@ async def delete_grant(
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not can_manage_grants(auth, tag=tag):
-            raise HTTPException(status_code=403, detail="MANAGE_GRANTS is owner/admin only")
+            raise HTTPException(
+                status_code=403, detail="MANAGE_GRANTS is owner/admin only"
+            )
         await revoke_tag_capability_core(
             session,
             grant_id=grant_id,
@@ -878,9 +883,7 @@ async def list_filters(
         items = await list_saved_tag_filters_core(
             session, org_id=auth.org_id or "", actor_user_id=auth.user_id or ""
         )
-    return SavedTagFilterListResponse(
-        items=[SavedTagFilterItem(**i) for i in items]
-    )
+    return SavedTagFilterListResponse(items=[SavedTagFilterItem(**i) for i in items])
 
 
 @router.post("/tag-filters", response_model=SavedTagFilterItem)
@@ -942,8 +945,7 @@ async def _update_filter(
                 actor_user_id=auth.user_id or "",
                 org_id=auth.org_id,
                 updates={
-                    k: v
-                    for k, v in payload.model_dump(exclude_none=True).items()
+                    k: v for k, v in payload.model_dump(exclude_none=True).items()
                 },
             )
             await session.commit()
@@ -1033,9 +1035,15 @@ async def list_task_tags(
     return TagListResponse(
         items=[
             TagListItem(
-                id=str(r[0]), key=str(r[1]), value=r[2], color=r[3],
-                visibility=str(r[4]), state=str(r[5]), usage_count=int(r[6]),
-                row_version=int(r[7]), owner_user_id=r[8],
+                id=str(r[0]),
+                key=str(r[1]),
+                value=r[2],
+                color=r[3],
+                visibility=str(r[4]),
+                state=str(r[5]),
+                usage_count=int(r[6]),
+                row_version=int(r[7]),
+                owner_user_id=r[8],
             )
             for r in rows
         ]
@@ -1079,12 +1087,16 @@ async def list_experiment_tags(
     return TagListResponse(
         items=[
             TagListItem(
-                id=str(r[0]), key=str(r[1]), value=r[2], color=r[3],
-                visibility=str(r[4]), state=str(r[5]), usage_count=int(r[6]),
-                row_version=int(r[7]), owner_user_id=r[8],
+                id=str(r[0]),
+                key=str(r[1]),
+                value=r[2],
+                color=r[3],
+                visibility=str(r[4]),
+                state=str(r[5]),
+                usage_count=int(r[6]),
+                row_version=int(r[7]),
+                owner_user_id=r[8],
             )
             for r in rows
         ]
     )
-
-

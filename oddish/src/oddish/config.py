@@ -38,7 +38,7 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-VERDICT_MODEL = "gpt-5.2"
+VERDICT_MODEL = "gpt-5.4"
 
 PROBE_MODEL_ROTATION: list[str] = [
     "claude-haiku-4-5",
@@ -50,23 +50,37 @@ def next_probe_model(index: int) -> str:
     return PROBE_MODEL_ROTATION[index % len(PROBE_MODEL_ROTATION)]
 
 
-# Directive injected into every auto-probe (the operator supplies nothing).
-# Mirrors the established default probe preset; change requires a deploy.
-AUTO_PROBE_INSTRUCTIONS: str = (
-    "You are probing this task's harness, not solving the task. Explore the "
-    "environment, the verifier, and (via `import harbor`) the harness itself. "
-    "Report anything that would let *the real solving agent* score well "
-    "without genuinely completing the task: reward hacks, leaked solutions, "
-    "verifier gaps, or environment quirks. The real agent sees only its `/app` "
-    "workspace plus its prompt — probe-only material is staged separately under "
-    "`/probe-harness/`, and a hidden answer key or reference solution there "
-    "(tests/, solution/) is by design, not a leak, unless that same answer is "
-    "reachable from `/app`. Be concise and concrete."
+NOP_ORACLE_QUEUE_KEY = "nop_oracle"
+_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+# Suffixed/prefixed variants of the deterministic baseline agents (e.g.
+# "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
+# ``_baseline_agent_clause`` and the frontend's ``isBaselineAgentName`` so every
+# code path agrees on what counts as a nop/oracle baseline.
+_NOP_ORACLE_AGENT_PREFIXES: tuple[str, ...] = (
+    "nop-",
+    "oracle-",
+    "agent-nop",
+    "agent-oracle",
 )
 
 
-NOP_ORACLE_QUEUE_KEY = "nop_oracle"
-_NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+def is_nop_oracle_agent(agent: str | None) -> bool:
+    """Return True for the deterministic nop/oracle baseline agents.
+
+    Matches the exact ``nop``/``oracle`` names plus the common suffixed and
+    prefixed variants people use (``oracle-v2``, ``agent-nop``, ...). Every
+    baseline trial — whatever its agent variant — is then forced onto the
+    ``default`` model and the shared nop/oracle queue, instead of inheriting
+    whatever (often arbitrary) model string the caller happened to pass.
+    """
+    normalized = (agent or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _NOP_ORACLE_AGENTS:
+        return True
+    return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
@@ -141,6 +155,52 @@ def to_zai_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
+
+
+# Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
+# auth.json). Lets the claude-code / codex agents authenticate with a Claude
+# Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API key. A
+# ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
+# Bedrock chokepoint and gets its own provider/queue bucket (so it never
+# contends for Bedrock/OpenAI slots and can be throttled independently), and
+# harbor_runner injects the subscription credentials while blanking the ambient
+# Bedrock/API creds the Modal image bakes in.
+SUBSCRIPTION_PROVIDER = "subscription"
+_SUBSCRIPTION_PREFIXES: tuple[str, ...] = ("sub/", "subscription/")
+
+
+def is_subscription_model(model: str | None) -> bool:
+    """Return True if *model* opts into the personal-subscription auth route."""
+    if not model:
+        return False
+    return model.strip().lower().startswith(_SUBSCRIPTION_PREFIXES)
+
+
+def subscription_bare_model_id(model: str) -> str:
+    """Strip the ``sub/``/``subscription/`` prefix, returning the bare model id.
+
+    ``sub/claude-opus-4-5`` -> ``claude-opus-4-5``. This is the id handed to the
+    agent CLI (``--model`` / ``ANTHROPIC_MODEL``). A bare id is returned as-is.
+    """
+    raw = model.strip()
+    low = raw.lower()
+    for prefix in _SUBSCRIPTION_PREFIXES:
+        if low.startswith(prefix):
+            return raw[len(prefix) :].strip()
+    return raw
+
+
+def to_subscription_model_id(model: str | None) -> str | None:
+    """Canonicalize a subscription reference to ``sub/<bare-id>``.
+
+    Non-subscription models are returned unchanged. The ``sub/`` prefix keeps the
+    trial off the Bedrock chokepoint and gives it a dedicated provider/queue
+    bucket (see ``get_provider_for_trial`` / ``normalize_queue_key``).
+    """
+    if not is_subscription_model(model):
+        return model
+    assert model is not None
+    return f"sub/{subscription_bare_model_id(model)}"
 
 
 # MiniMax / Moonshot (Kimi) routing. Like GLM/z.ai, these are served over an
@@ -654,6 +714,22 @@ class Settings(BaseSettings):
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 32
+    # Subscription agents whose shared credential is refresh-sensitive and so
+    # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
+    # its refresh token, so two concurrent Codex trials can invalidate each
+    # other's token. These agents get a serialized ``sub-solo/<id>`` queue
+    # bucket capped at ``subscription_queue_concurrency``. (Claude Code's OAuth
+    # token is a static bearer token, safe to use concurrently, so claude-code
+    # is deliberately NOT listed here.)
+    subscription_serialized_agents: str = "codex"
+    # Concurrency cap for the ``sub-solo/<id>`` buckets above. Within the token's
+    # no-refresh window each trial gets its own independent auth.json copy that
+    # never refreshes, so running several at once is safe; this cap only bounds
+    # the single-use-refresh-token race near the ~8-day boundary. Default 4;
+    # raise via ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY when the credential is
+    # unused elsewhere and freshly seeded. An explicit per-key
+    # ODDISH_MODEL_CONCURRENCY_OVERRIDES entry still wins.
+    subscription_queue_concurrency: int = 4
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -829,9 +905,38 @@ class Settings(BaseSettings):
                 return provider
         return "default"
 
+    # Agents that authenticate with the operator's personal subscription
+    # (Claude Pro/Max OAuth token / ChatGPT auth.json) instead of Bedrock/Azure.
+    # Comma-separated agent names, e.g. "claude-code,codex". When an agent is
+    # listed, its trials keep their STANDARD model id (no Bedrock/Azure mapping,
+    # no "sub/" prefix), get a dedicated subscription provider + queue bucket,
+    # and harbor_runner injects the subscription credentials at runtime.
+    subscription_agents: str = ""
+
+    def _is_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
+    def _is_serialized_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_serialized_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated provider so they never fall through
+        # to the fixed agent provider (e.g. codex -> "openai"), which would drag
+        # them onto the Azure/OpenAI credential path.
+        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
+            return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
             if provider:
@@ -842,16 +947,31 @@ class Settings(BaseSettings):
         """Canonicalize trial model input for storage/routing.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
-        - For nop/oracle, always force model to 'default'.
+        - For nop/oracle, always force the model to the single canonical
+          ``nop_oracle`` id (same string as the queue key) so the stored model,
+          the queue key, and the concurrency bucket all agree -- one id, no
+          model/queue drift in bookkeeping.
         - Canonicalize Claude models to their Bedrock runtime id, since Oddish
           runs Claude through Bedrock and persists the same id it executes.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
 
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
-            return "default"
+        if is_nop_oracle_agent(agent):
+            return NOP_ORACLE_QUEUE_KEY
+
+        # Personal-subscription agents keep their STANDARD model id (no Bedrock
+        # mapping, no prefix) -- the route is selected by agent, not model name.
+        # The dedicated provider/queue bucket comes from get_provider_for_trial /
+        # get_queue_key_for_trial, which also key off the agent.
+        if self._is_subscription_agent(agent):
+            return cleaned
+
+        # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
+        # canonicalize BEFORE the Bedrock chokepoint so the trial stays off
+        # Bedrock and gets its own provider/queue bucket.
+        if is_subscription_model(cleaned):
+            return to_subscription_model_id(cleaned)
 
         # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
         # harness but route to their own direct endpoints, not Bedrock.
@@ -877,6 +997,16 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
+        # Subscription models keep their own ``sub/<id>`` bucket; serialized
+        # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
+        # auth.json refresh-token invalidation across concurrent workers. Both
+        # are already canonical queue keys, so pass them through untouched.
+        # Canonicalize the ``subscription/`` opt-in alias to ``sub/`` first so an
+        # override key written that way still matches the real ``sub/<id>`` key.
+        if normalized.startswith("subscription/"):
+            normalized = "sub/" + normalized[len("subscription/") :]
+        if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
+            return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
         normalized = _to_bedrock_model_id_if_known(normalized)
@@ -898,10 +1028,22 @@ class Settings(BaseSettings):
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
+        if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated internal queue bucket so their
+        # concurrency can be capped independently of the standard model id they
+        # still store. Both opt-in paths route here -- the agent flag and the
+        # explicit ``sub/<id>`` model prefix (mirroring get_provider_for_trial) --
+        # so a model-prefix opt-in can't escape the cap via normalize_queue_key.
+        # Agents whose shared credential is refresh-sensitive (codex auth.json)
+        # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
+        # safe concurrent) get a plain ``sub/<id>`` bucket.
+        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
+            bare = subscription_bare_model_id(normalized_model or "default") or "default"
+            if self._is_serialized_subscription_agent(agent):
+                return f"sub-solo/{bare}"
+            return f"sub/{bare}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
@@ -909,7 +1051,12 @@ class Settings(BaseSettings):
     def get_analysis_queue_key(self) -> str:
         return self.normalize_queue_key(self.analysis_model)
 
-    def get_verdict_queue_key(self) -> str:
+    def get_qa_queue_key(self) -> str:
+        """Concurrency bucket for the task-level QA job.
+
+        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
+        existing per-model concurrency overrides keep applying.
+        """
         return self.normalize_queue_key(self.verdict_model)
 
     def get_task_expand_queue_key(self) -> str:
@@ -928,13 +1075,20 @@ class Settings(BaseSettings):
             return max(int(override), 0)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
+        # Serialized subscription buckets (shared refresh-sensitive credential,
+        # e.g. codex auth.json) default to a low cap so concurrent trials can't
+        # race on the shared token, without relying on a per-key override. An
+        # explicit override above still wins. Plain ``sub/<id>`` subscription
+        # buckets (e.g. claude-code OAuth) are safe concurrent and NOT capped.
+        if normalized.startswith("sub-solo/"):
+            return max(int(self.subscription_queue_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:
         keys = {
             NOP_ORACLE_QUEUE_KEY,
             self.get_analysis_queue_key(),
-            self.get_verdict_queue_key(),
+            self.get_qa_queue_key(),
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys

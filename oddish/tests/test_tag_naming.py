@@ -1,4 +1,5 @@
 """Tests for tag key/value normalization and validation."""
+
 from __future__ import annotations
 
 import sys

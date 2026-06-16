@@ -44,7 +44,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setDebouncedValue(value),
-      delayMs
+      delayMs,
     );
     return () => window.clearTimeout(timeoutId);
   }, [delayMs, value]);
@@ -63,7 +63,7 @@ function NewProbeRunDialog({
   const [query, setQuery] = useState("");
   const { data, error } = useSWR<TaskOption[]>(
     open ? "/api/tasks" : null,
-    fetcher
+    fetcher,
   );
 
   const filtered = useMemo(() => {
@@ -138,7 +138,7 @@ export function QaRunsClient() {
   const [page, setPage] = useState(0);
   const debouncedQuery = useDebouncedValue(
     searchQuery.trim().toLowerCase(),
-    300
+    300,
   );
   const { data, error, isLoading } = useSWR<ProbeRow[]>("/api/probes", fetcher);
 
@@ -150,7 +150,7 @@ export function QaRunsClient() {
     const rows = data ?? [];
     if (!debouncedQuery) return rows;
     return rows.filter((row) =>
-      row.task_name.toLowerCase().includes(debouncedQuery)
+      row.task_name.toLowerCase().includes(debouncedQuery),
     );
   }, [data, debouncedQuery]);
 
@@ -158,7 +158,7 @@ export function QaRunsClient() {
   const currentPage = Math.min(page, pageCount - 1);
   const pageRows = filtered.slice(
     currentPage * PAGE_SIZE,
-    currentPage * PAGE_SIZE + PAGE_SIZE
+    currentPage * PAGE_SIZE + PAGE_SIZE,
   );
 
   return (

@@ -13,7 +13,11 @@ const _ref: UserTagRef = {
   older: false,
 };
 
-const _ast: TagFilterAST = { all: ["flaky"], any: ["regression"], none: ["wip"] };
+const _ast: TagFilterAST = {
+  all: ["flaky"],
+  any: ["regression"],
+  none: ["wip"],
+};
 
 // Field-existence checks (avoid brittle full-object literals):
 const _browseTags: TaskBrowseItem["user_tags"] = [_ref];

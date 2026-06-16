@@ -41,13 +41,11 @@ import {
   Route,
   Package,
   Trash2,
-  OctagonX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
-import { trialHasActiveAnalysis } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -237,9 +235,6 @@ export function TrialDetailPanel({
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
-  const [analysisRunning, setAnalysisRunning] = useState(false);
-  const [analysisCancelling, setAnalysisCancelling] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -288,25 +283,6 @@ export function TrialDetailPanel({
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
   const canDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
-  const taskHasActiveTrials =
-    task !== null
-      ? Math.max(0, task.total - task.completed - task.failed) > 0
-      : false;
-  const canCancelAnalysis =
-    showAnalysis && allowRetry && trialHasActiveAnalysis(trial);
-  const canRunAnalysis =
-    showAnalysis &&
-    allowRetry &&
-    !canCancelAnalysis &&
-    !taskHasActiveTrials &&
-    (task?.run_analysis ||
-      trial?.analysis_status != null ||
-      trial?.analysis != null);
-  const analysisLabel =
-    trial?.analysis_status || trial?.analysis
-      ? "Rerun analysis"
-      : "Run analysis";
-
   const handleRetry = async () => {
     if (!trial || retrying || !allowRetry) return;
     setRetrying(true);
@@ -349,68 +325,6 @@ export function TrialDetailPanel({
     }
   };
 
-  const handleRunAnalysis = async () => {
-    if (!trial || !task || analysisRunning || !canRunAnalysis) return;
-    setAnalysisRunning(true);
-    setAnalysisError(null);
-
-    try {
-      const res = await fetch(
-        `${apiBaseUrl}/trials/${trial.id}/analysis/retry`,
-        {
-          method: "POST",
-        },
-      );
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to queue analysis",
-        );
-      }
-
-      onRetry?.([task.id]);
-      onClose();
-    } catch (err) {
-      setAnalysisError(
-        err instanceof Error ? err.message : "Failed to queue analysis",
-      );
-    } finally {
-      setAnalysisRunning(false);
-    }
-  };
-
-  const handleCancelAnalysis = async () => {
-    if (!trial || !task || analysisCancelling || !canCancelAnalysis) return;
-    setAnalysisCancelling(true);
-    setAnalysisError(null);
-
-    try {
-      const res = await fetch(
-        `${apiBaseUrl}/trials/${trial.id}/analysis/cancel`,
-        {
-          method: "POST",
-        },
-      );
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to cancel analysis",
-        );
-      }
-
-      onRetry?.([task.id]);
-      onClose();
-    } catch (err) {
-      setAnalysisError(
-        err instanceof Error ? err.message : "Failed to cancel analysis",
-      );
-    } finally {
-      setAnalysisCancelling(false);
-    }
-  };
-
   const STAGE_FILE_MAP: Record<string, string> = {
     starting: "agent/oracle.txt",
     trial_started: "agent/oracle.txt",
@@ -433,9 +347,6 @@ export function TrialDetailPanel({
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
-      setAnalysisRunning(false);
-      setAnalysisCancelling(false);
-      setAnalysisError(null);
       setDeleteDialogOpen(false);
       setDeleting(false);
       setDeleteError(null);
@@ -770,48 +681,6 @@ export function TrialDetailPanel({
                 </a>
               </Button>
             )}
-            {canRunAnalysis && (
-              <Button
-                onClick={handleRunAnalysis}
-                disabled={analysisRunning}
-                variant="outline"
-                size="sm"
-                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold tracking-wide uppercase"
-              >
-                {analysisRunning ? (
-                  <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Queueing...
-                  </>
-                ) : (
-                  <>
-                    <Microscope className="mr-1 h-3.5 w-3.5" />
-                    {analysisLabel}
-                  </>
-                )}
-              </Button>
-            )}
-            {canCancelAnalysis && (
-              <Button
-                onClick={handleCancelAnalysis}
-                disabled={analysisCancelling}
-                variant="destructive"
-                size="sm"
-                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold tracking-wide uppercase"
-              >
-                {analysisCancelling ? (
-                  <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Cancelling...
-                  </>
-                ) : (
-                  <>
-                    <OctagonX className="mr-1 h-3.5 w-3.5" />
-                    Cancel analysis
-                  </>
-                )}
-              </Button>
-            )}
             {canDelete && (
               <Button
                 onClick={() => {
@@ -840,11 +709,6 @@ export function TrialDetailPanel({
         </div>
         {retryError && (
           <p className="pt-1 text-right text-xs text-red-500">{retryError}</p>
-        )}
-        {analysisError && (
-          <p className="pt-1 text-right text-xs text-red-500">
-            {analysisError}
-          </p>
         )}
       </DrawerHeader>
 

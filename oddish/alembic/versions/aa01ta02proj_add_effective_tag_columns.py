@@ -8,6 +8,7 @@ Revision ID: aa01ta02proj
 Revises: aa00ta01core
 Create Date: 2026-06-06 12:05:00.000000
 """
+
 from typing import Sequence, Union
 
 from alembic import op

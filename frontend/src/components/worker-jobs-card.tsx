@@ -48,8 +48,9 @@ import {
 
 const KIND_ORDER: WorkerJobKind[] = [
   "TRIAL",
-  "ANALYSIS",
+  "QA",
   "VERDICT",
+  "ANALYSIS",
   "QA_REVIEW",
 ];
 
@@ -68,17 +69,25 @@ const KIND_DISPLAY: Record<
     Icon: Beaker,
     accent: "text-blue-400",
   },
-  ANALYSIS: {
-    label: "Trial Analysis",
-    description: "LLM classification of individual trial trajectories",
-    Icon: Microscope,
-    accent: "text-purple-400",
-  },
-  VERDICT: {
-    label: "Task Verdict",
-    description: "Cross-trial synthesis once analyses complete",
+  QA: {
+    label: "Task QA",
+    description:
+      "One job per task: classifies every trial, then synthesizes the verdict",
     Icon: Gavel,
     accent: "text-amber-400",
+  },
+  VERDICT: {
+    label: "Task Verdict (legacy)",
+    description: "Folded into Task QA — no longer enqueued",
+    Icon: Gavel,
+    accent: "text-amber-400/70",
+  },
+  ANALYSIS: {
+    label: "Trial Analysis (legacy)",
+    description:
+      "Folded into Task QA — no longer enqueued; drains in-flight rows",
+    Icon: Microscope,
+    accent: "text-purple-400",
   },
   QA_REVIEW: {
     label: "QA Review",
@@ -576,8 +585,9 @@ export function WorkerJobsCard() {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          Every trial, trajectory analysis, and task verdict runs as its own
-          queued worker job. Counts below are live from the unified{" "}
+          Every trial runs as its own queued worker job, and each task&apos;s
+          trajectory QA (classification + verdict) runs as one task-level job.
+          Counts below are live from the unified{" "}
           <span className="font-mono">worker_jobs</span> table.
         </p>
       </CardHeader>

@@ -1,7 +1,7 @@
 """Tests for the per-kind JobHandler wrappers in ``oddish.workers.jobs.handlers``.
 
 The handlers are thin adapters: they delegate to the existing
-``run_trial_job`` / ``run_analysis_job`` / ``run_verdict_job``
+``run_trial_job`` / ``run_task_qa_job`` / ``run_analysis_job``
 functions and then inspect the domain row's terminal state to decide
 the ``JobOutcome`` that drives the ``worker_jobs`` row's transition.
 
@@ -30,8 +30,8 @@ from oddish.db import (  # noqa: E402
 from oddish.workers.jobs import handlers as handlers_module  # noqa: E402
 from oddish.workers.jobs.handlers import (  # noqa: E402
     AnalysisJobHandler,
+    QaJobHandler,
     TrialJobHandler,
-    VerdictJobHandler,
 )
 from oddish.workers.queue.worker_job_single_job import ClaimedWorkerJob  # noqa: E402
 
@@ -104,8 +104,8 @@ def _analysis_claim(**overrides) -> ClaimedWorkerJob:
 def _verdict_claim(**overrides) -> ClaimedWorkerJob:
     defaults = dict(
         id="wj-vd-1",
-        kind=WorkerJobKind.VERDICT,
-        queue_key="verdict",
+        kind=WorkerJobKind.QA,
+        queue_key="qa",
         subject_table="tasks",
         subject_id="task-xyz",
         payload={"task_id": "task-xyz"},
@@ -307,12 +307,12 @@ async def test_analysis_handler_returns_retryable_fail_on_failed_status(monkeypa
 
 
 # ---------------------------------------------------------------------------
-# VerdictJobHandler
+# QaJobHandler
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_verdict_handler_returns_ok_on_success(monkeypatch):
+async def test_qa_handler_returns_ok_on_success(monkeypatch):
     task_row = SimpleNamespace(
         verdict_status=VerdictStatus.RUNNING,
         verdict_error=None,
@@ -324,15 +324,15 @@ async def test_verdict_handler_returns_ok_on_success(monkeypatch):
     async def _stub_run(*args, **kwargs):
         task_row.verdict_status = VerdictStatus.SUCCESS
 
-    monkeypatch.setattr(handlers_module, "run_verdict_job", _stub_run)
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
 
-    outcome = await VerdictJobHandler().run(_verdict_claim())
+    outcome = await QaJobHandler().run(_verdict_claim())
 
     assert outcome.success is not None
 
 
 @pytest.mark.asyncio
-async def test_verdict_handler_resets_terminal_state_on_retry(monkeypatch):
+async def test_qa_handler_resets_terminal_state_on_retry(monkeypatch):
     task_row = SimpleNamespace(
         verdict_status=VerdictStatus.FAILED,
         verdict_error="previous crash",
@@ -349,9 +349,9 @@ async def test_verdict_handler_resets_terminal_state_on_retry(monkeypatch):
         task_row.verdict_status = VerdictStatus.SUCCESS
         task_row.verdict_error = None
 
-    monkeypatch.setattr(handlers_module, "run_verdict_job", _stub_run)
+    monkeypatch.setattr(handlers_module, "run_task_qa_job", _stub_run)
 
-    outcome = await VerdictJobHandler().run(_verdict_claim())
+    outcome = await QaJobHandler().run(_verdict_claim())
 
     assert state_at_run["status"] == VerdictStatus.QUEUED
     assert outcome.success is not None
@@ -370,8 +370,9 @@ def test_all_three_handlers_register_against_builtin_registry():
 
     ensure_builtin_handlers_registered()
     assert WorkerJobKind.TRIAL in HANDLERS
+    assert WorkerJobKind.QA in HANDLERS
+    # ANALYSIS handler is kept transitionally to drain legacy rows.
     assert WorkerJobKind.ANALYSIS in HANDLERS
-    assert WorkerJobKind.VERDICT in HANDLERS
 
 
 def test_tag_project_handler_is_registered(monkeypatch):
