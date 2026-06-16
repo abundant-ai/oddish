@@ -160,6 +160,7 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
         return PublicExperimentResponse(
             name=experiment.name,
             public_token=experiment.public_token or public_token,
+            description=experiment.description,
         )
 
 
