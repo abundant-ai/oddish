@@ -90,12 +90,19 @@ class RealDaytonaClient:
         auto_delete_minutes: int,
         labels: dict[str, str],
     ) -> CreatedSandbox:
+        # Some Daytona regions reject non-ephemeral sandboxes ("Only ephemeral
+        # sandboxes are permitted in this region"). Ephemeral is allowed in
+        # every region and is the right model for chat: a stopped sandbox is
+        # deleted, and resume() always re-provisions a fresh one and restores
+        # the conversation from the blob-store archive. ephemeral forces
+        # auto_delete_interval to 0, so we don't pass auto_delete_minutes (doing
+        # so would emit a UserWarning); auto_stop still bounds idle lifetime.
         sbx = await self._daytona.create(
             CreateSandboxFromSnapshotParams(
                 env_vars=env_vars,
                 auto_stop_interval=auto_stop_minutes,
-                auto_delete_interval=auto_delete_minutes,
                 labels=labels,
+                ephemeral=True,
             )
         )
         return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
