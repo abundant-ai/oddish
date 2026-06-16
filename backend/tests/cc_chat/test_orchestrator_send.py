@@ -192,6 +192,53 @@ async def test_send_session_not_found_when_sandbox_deleted(db):
             pass
 
 
+async def test_send_self_heals_evicted_sandbox_via_resume(db):
+    """An idle chat loses its ephemeral sandbox to Daytona's auto-stop. The next
+    message must transparently resume (re-provision + restore from the per-turn
+    archive) instead of dead-ending the user with session_not_found."""
+    from daytona import DaytonaNotFoundError
+    from models import ChatSession
+
+    await seed_session(db, status="active", sandbox_id="sbx_old")
+    async with db() as s:
+        row = await s.get(ChatSession, "cs_1")
+        row.claude_session_id = "claude-xyz"  # has an archive -> recoverable
+        await s.commit()
+
+    def factory():
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    class _Evicted:
+        async def connect_sandbox(self, *, sandbox_id):
+            raise DaytonaNotFoundError(f"gone: {sandbox_id}")
+
+    orch = ChatOrchestrator(
+        daytona=_Evicted(),
+        runtime=_FakeRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(),
+        anthropic_api_key="test",
+    )
+
+    resumed = {"called": False}
+
+    async def _fake_resume(*, session_id, db_session_factory):
+        resumed["called"] = True
+        orch._sandboxes[session_id] = _FakeSandbox()
+
+    orch.resume = _fake_resume
+
+    seen = []
+    async for ev in orch.send(session_id="cs_1", content="hi", db_session_factory=factory):
+        seen.append(ev)
+
+    assert resumed["called"]
+    assert len(seen) == 2
+
+
 async def test_send_archives_native_session_after_turn(db):
     await seed_session(db, status="active")
 
