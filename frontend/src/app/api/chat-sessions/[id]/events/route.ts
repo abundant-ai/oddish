@@ -6,6 +6,14 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 
+function safeJson(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : {};
+  } catch {
+    return { detail: text };
+  }
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -27,7 +35,7 @@ export async function GET(
       headers: getAuthHeaders(t),
     });
     const text = await res.text();
-    return NextResponse.json(text ? JSON.parse(text) : {}, {
+    return NextResponse.json(safeJson(text), {
       status: res.status,
     });
   } catch (error) {
