@@ -15,6 +15,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
 import { TagChip } from "@/components/tag-chip";
@@ -393,9 +394,11 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
 export function TasksPageClient({
   initialData,
   initialQuery = "",
+  orgId = null,
 }: {
   initialData?: TaskBrowseResponse | null;
   initialQuery?: string;
+  orgId?: string | null;
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
@@ -466,6 +469,7 @@ export function TasksPageClient({
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
               <div className="relative w-full sm:w-[260px]">
                 <Input
                   value={searchQuery}

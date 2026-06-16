@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   Anthropic,
   Baichuan,
@@ -19,7 +20,6 @@ import {
   Qwen,
   XAI,
   Yi,
-  ZAI,
 } from "@lobehub/icons";
 import { Sparkles } from "lucide-react";
 
@@ -42,7 +42,7 @@ type KnownProvider =
   | "cohere"
   | "cursor"
   | "qwen"
-  | "glm"
+  | "zai"
   | "kimi"
   | "minimax"
   | "yi"
@@ -102,7 +102,7 @@ function matchProviderFromSource(raw: string): KnownProvider {
     probe.includes("zai/") ||
     probe.includes("z-ai/")
   ) {
-    return "glm";
+    return "zai";
   }
   // Moonshot's Kimi family: `kimi-k2`, `moonshot/kimi-...`, `moonshotai/...`.
   if (probe.includes("kimi") || probe.includes("moonshot")) {
@@ -249,8 +249,16 @@ export function QueueKeyIcon({
   if (resolvedProvider === "qwen") {
     return <Qwen size={size} className={className} />;
   }
-  if (resolvedProvider === "glm") {
-    return <ZAI size={size} className={className} />;
+  if (resolvedProvider === "zai") {
+    return (
+      <Image
+        src="/zai-logo.png"
+        alt="Z.ai"
+        width={size}
+        height={size}
+        className={className}
+      />
+    );
   }
   if (resolvedProvider === "kimi") {
     return <Kimi size={size} className={className} />;

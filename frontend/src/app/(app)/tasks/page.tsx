@@ -46,6 +46,7 @@ export default async function TasksPage({
 }: {
   searchParams?: Promise<{ query?: string | string[] }>;
 }) {
+  const { orgId } = await auth();
   const initialData = await getInitialTaskBrowseData();
   const params = await searchParams;
   const queryParam = params?.query;
@@ -53,6 +54,10 @@ export default async function TasksPage({
     ? (queryParam[0] ?? "")
     : (queryParam ?? "");
   return (
-    <TasksPageClient initialData={initialData} initialQuery={initialQuery} />
+    <TasksPageClient
+      initialData={initialData}
+      initialQuery={initialQuery}
+      orgId={orgId ?? null}
+    />
   );
 }
