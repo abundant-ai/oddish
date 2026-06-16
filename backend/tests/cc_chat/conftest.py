@@ -26,13 +26,13 @@ async def reset_and_seed(engine):
         )
 
 
-async def seed_session(maker, *, session_id="cs_1", status="active", scope_kind="experiment", scope_id="exp_1"):
+async def seed_session(maker, *, session_id="cs_1", status="active", scope_kind="experiment", scope_id="exp_1", sandbox_id=None):
     from models import ChatSession
     async with maker() as s:
         s.add(ChatSession(
             id=session_id, org_id=ORG, user_id="u1",
             scope_kind=scope_kind, scope_id=scope_id,
-            status=status, daytona_session_id="cc",
+            status=status, daytona_session_id="cc", sandbox_id=sandbox_id,
         ))
         await s.commit()
 

@@ -377,6 +377,34 @@ class ChatOrchestrator:
                 row.query_api_key_id = new_query_api_key_id
             await db.commit()
 
+    async def _reconnect_sandbox(
+        self, *, session_id: str, db_session_factory: Callable[[], object]
+    ) -> CreatedSandbox | None:
+        """Return a live sandbox handle for the session, rehydrating it when
+        this container didn't create it.
+
+        The API runs across many autoscaled containers with no session
+        affinity, so the container handling a message is usually not the one
+        that ran start(); ``self._sandboxes`` is per-process. When the handle
+        isn't cached locally we reconnect to the existing Daytona sandbox by
+        its persisted id so any container can serve the session. Returns None
+        when the session has no sandbox or it no longer exists.
+        """
+        cached = self._sandboxes.get(session_id)
+        if cached is not None:
+            return cached
+        async with self._db(db_session_factory) as db:
+            row = await db.get(ChatSession, session_id)
+            sandbox_id = row.sandbox_id if row is not None else None
+        if not sandbox_id:
+            return None
+        try:
+            sandbox = await self._daytona.connect_sandbox(sandbox_id=sandbox_id)
+        except DaytonaNotFoundError:
+            return None
+        self._sandboxes[session_id] = sandbox
+        return sandbox
+
     async def send(
         self,
         *,
@@ -390,7 +418,9 @@ class ChatOrchestrator:
                 raise SessionNotFound(session_id)
             claude_session_id = row.claude_session_id
 
-        sandbox = self._sandboxes.get(session_id)
+        sandbox = await self._reconnect_sandbox(
+            session_id=session_id, db_session_factory=db_session_factory
+        )
         if sandbox is None:
             raise SessionNotFound(session_id)
 
@@ -473,6 +503,14 @@ class ChatOrchestrator:
         db_session_factory: Callable[[], object],
     ) -> None:
         sandbox = self._sandboxes.pop(session_id, None)
+        if sandbox is None:
+            # close may land on a different container than start(); reconnect
+            # so the remote sandbox is actually deleted, not leaked until its
+            # ephemeral auto-stop fires.
+            sandbox = await self._reconnect_sandbox(
+                session_id=session_id, db_session_factory=db_session_factory
+            )
+            self._sandboxes.pop(session_id, None)
 
         # Flush the cold archive (object storage) before pruning the hot log.
         if self._blob is not None:
