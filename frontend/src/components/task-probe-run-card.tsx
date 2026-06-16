@@ -135,7 +135,7 @@ export function TaskProbeRunCard({
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
-          Probe runs
+          Task Analysis
         </h2>
         <Link
           href={`/tasks/${taskId}/probe`}
