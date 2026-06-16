@@ -64,7 +64,7 @@ export function ChatDrawer({
             {chat.error ? (
               <div className="px-3 py-1 text-xs text-red-600">{chat.error}</div>
             ) : null}
-            <ChatComposer disabled={chat.unavailable} onSend={chat.send} />
+            <ChatComposer disabled={chat.unavailable || chat.working} onSend={chat.send} />
           </>
         )}
       </div>
