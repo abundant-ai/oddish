@@ -55,6 +55,40 @@ async def test_send_persists_events_and_tracks_turn(db):
         assert await turns_mod.running_turn(s, session_id="cs_1") is None
 
 
+async def test_send_marks_session_broken_when_sandbox_gone(db):
+    from daytona import DaytonaNotFoundError
+    from models import ChatSession, ChatStatus
+    await seed_session(db, status="active")
+
+    def factory():
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    class _GoneRuntime:
+        async def stream_chat(self, daytona, sandbox, *, content, claude_session_id, daytona_session_id):
+            raise DaytonaNotFoundError("sandbox not found")
+            yield  # pragma: no cover  (forces this to be an async generator)
+
+    orch = ChatOrchestrator(
+        daytona=object(),
+        runtime=_GoneRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(),
+        anthropic_api_key="test",
+    )
+    orch._sandboxes["cs_1"] = _FakeSandbox()
+
+    async for _ in orch.send(session_id="cs_1", content="hi", db_session_factory=factory):
+        pass
+
+    assert "cs_1" not in orch._sandboxes
+    async with db() as s:
+        row = await s.get(ChatSession, "cs_1")
+    assert row.status == ChatStatus.broken.value
+
+
 async def test_send_disconnect_closes_turn_as_canceled(db):
     await seed_session(db, status="active")
 
