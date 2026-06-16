@@ -9,7 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
-import type { Task, Trial } from "@/lib/types";
+import { ExperimentDescription } from "@/components/experiment-description";
+import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
+import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 
@@ -143,6 +145,17 @@ export function ExperimentClientPage({
   const hasMoreTrials = Boolean(
     trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
   );
+
+  // Experiment-level metadata (sharing + description) for the header.
+  // Fetched eagerly so the description renders immediately; shares the SWR
+  // cache key with ExperimentShareButton (which fetches lazily on open).
+  const experimentShareKey = experimentId
+    ? `/api/experiments/${encodedId}/share`
+    : null;
+  const { data: experimentShare, mutate: mutateExperimentShare } =
+    useSWR<ExperimentShareInfo>(experimentShareKey, fetcher, {
+      revalidateOnFocus: false,
+    });
 
   // Merge lightweight task shells with trial-enriched data.  The backend
   // already scopes each task's trials, counts, and reported ``current_version``
@@ -521,6 +534,21 @@ export function ExperimentClientPage({
               <ExperimentShareButton
                 experimentId={experimentId}
                 canManageShare={canManageExperimentShare}
+              />
+            ) : null
+          }
+          headerDescription={
+            experimentId ? (
+              <ExperimentDescription
+                experimentId={experimentId}
+                description={experimentShare?.description ?? null}
+                onSaved={(next) =>
+                  void mutateExperimentShare(
+                    (prev) =>
+                      prev ? { ...prev, description: next } : prev,
+                    { revalidate: false },
+                  )
+                }
               />
             ) : null
           }

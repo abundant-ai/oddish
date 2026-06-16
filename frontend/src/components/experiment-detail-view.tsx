@@ -103,6 +103,7 @@ interface ExperimentDetailViewProps {
   headerLeft: React.ReactNode;
   headerStatus?: React.ReactNode;
   headerRight?: React.ReactNode;
+  headerDescription?: React.ReactNode;
   inlineAlert?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
@@ -772,6 +773,7 @@ export function ExperimentDetailView({
   headerLeft,
   headerStatus,
   headerRight,
+  headerDescription,
   inlineAlert,
   readOnly = false,
   allowRetry = true,
@@ -1152,6 +1154,8 @@ export function ExperimentDetailView({
               }
             />
           </div>
+
+          {headerDescription}
 
           <ExperimentSummaryBar
             taskCount={tasksForExperiment.length}
