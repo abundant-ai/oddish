@@ -71,36 +71,17 @@ class ChatOrchestrator:
         self._blob = blob_store
         self._sandboxes: dict[str, CreatedSandbox] = {}
 
-    async def start(
-        self,
-        *,
-        org_id: str,
-        user_id: str | None,
-        scope_kind: Literal["experiment", "task_probes"],
-        scope_id: str,
-        db_session_factory: Callable[[], object],
-    ) -> str:
-        # Phase 1: render CLAUDE.md per scope; trial/probe file sync deferred to Phase 2.
+    async def _provision_sandbox(
+        self, *, session_id: str, scope_kind: str, scope_id: str
+    ) -> CreatedSandbox:
+        """Provision a fresh sandbox for a chat session: render CLAUDE.md, create
+        the Daytona sandbox, install the runtime, and upload CLAUDE.md. On any
+        failure the partially-created sandbox is deleted and the error re-raised.
+        Shared by start() and resume() so their provisioning never drifts."""
         if scope_kind == "experiment":
             claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
         else:
             claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
-
-        session_id = generate_id()
-        async with self._db(db_session_factory) as db:
-            db.add(
-                ChatSession(
-                    id=session_id,
-                    org_id=org_id,
-                    user_id=user_id,
-                    scope_kind=scope_kind,
-                    scope_id=scope_id,
-                    status=ChatStatus.provisioning.value,
-                    created_at=_now(),
-                    last_activity=_now(),
-                )
-            )
-            await db.commit()
 
         sandbox = await Provisioner(client=self._daytona).create(
             env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
@@ -121,6 +102,39 @@ class ChatOrchestrator:
             # ported start() did against a blob store + OddishClient + ProbeRun).
         except Exception:
             await delete_sandbox_quietly(self._daytona, sandbox)
+            raise
+        return sandbox
+
+    async def start(
+        self,
+        *,
+        org_id: str,
+        user_id: str | None,
+        scope_kind: Literal["experiment", "task_probes"],
+        scope_id: str,
+        db_session_factory: Callable[[], object],
+    ) -> str:
+        session_id = generate_id()
+        async with self._db(db_session_factory) as db:
+            db.add(
+                ChatSession(
+                    id=session_id,
+                    org_id=org_id,
+                    user_id=user_id,
+                    scope_kind=scope_kind,
+                    scope_id=scope_id,
+                    status=ChatStatus.provisioning.value,
+                    created_at=_now(),
+                    last_activity=_now(),
+                )
+            )
+            await db.commit()
+
+        try:
+            sandbox = await self._provision_sandbox(
+                session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
+            )
+        except Exception:
             async with self._db(db_session_factory) as db:
                 row = await db.get(ChatSession, session_id)
                 if row is not None:
@@ -157,25 +171,10 @@ class ChatOrchestrator:
             scope_id = row.scope_id
             claude_session_id = row.claude_session_id
 
-        if scope_kind == "experiment":
-            claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
-        else:
-            claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
-
-        sandbox = await Provisioner(client=self._daytona).create(
-            env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
-            auto_stop_minutes=self._auto_stop,
-            auto_delete_minutes=self._auto_delete,
-            labels={"app": "cc_chat", "session_id": session_id},
-            daytona_session_id=DAYTONA_SESSION_ID,
+        sandbox = await self._provision_sandbox(
+            session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
         )
         try:
-            await self._runtime.install(self._daytona, sandbox)
-            await self._daytona.upload_file(
-                sandbox,
-                dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
-                content=claude_md.encode("utf-8"),
-            )
             if claude_session_id:
                 restored = await restore_native_session(
                     self._daytona, sandbox, blob=self._blob,
