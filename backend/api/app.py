@@ -99,21 +99,38 @@ async def lifespan(_api: FastAPI):
                 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
                 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
                 from api.services.cc_chat.orchestrator import ChatOrchestrator
-                from api.services.cc_chat.restart_sweep import sweep_orphan_chat_sessions
+                from oddish.config import api_base_url_for_modal_app
                 from oddish.db import get_session
                 from oddish.db.storage import get_storage_client
 
-                _daytona = RealDaytonaClient(api_key=_daytona_key)
+                _daytona = RealDaytonaClient(
+                    api_key=_daytona_key,
+                    snapshot=settings.cc_chat_daytona_snapshot or None,
+                )
+                # Explicit override wins; otherwise derive from the Modal app
+                # identity so prod and PR previews resolve automatically.
+                _chat_api_base_url = (
+                    settings.public_api_base_url or api_base_url_for_modal_app()
+                )
                 _api.state.chat_orchestrator = ChatOrchestrator(
                     daytona=_daytona,
                     runtime=ClaudeCodeRuntime(),
                     transcript_buffer=SessionTranscriptBuffer(),
                     anthropic_api_key=_anthropic_key,
+                    chat_auto_stop_minutes=settings.daytona_auto_stop_interval_mins,
+                    chat_auto_delete_minutes=settings.daytona_auto_delete_interval_mins,
+                    public_api_base_url=_chat_api_base_url,
                     blob_store=get_storage_client(),
                 )
-                await sweep_orphan_chat_sessions(
-                    daytona=_daytona, db_session_factory=lambda: get_session()
-                )
+                # NB: no global "restart sweep" here. The API autoscales across
+                # many containers with no session affinity, so every new
+                # container (autoscale-up or a deploy rolling pods) would
+                # otherwise mark *all* active chats broken + delete their
+                # sandboxes — killing live conversations owned by other
+                # containers. Recovery is lazy instead: any container reconnects
+                # a session by its persisted sandbox_id, send() self-heals an
+                # evicted sandbox via resume(), and a truly-orphaned ephemeral
+                # sandbox is reaped by Daytona's idle auto-stop.
             else:
                 logger.warning(
                     "cc_chat orchestrator not constructed: missing DAYTONA_API_KEY or ANTHROPIC_API_KEY"

@@ -13,6 +13,7 @@ from daytona import (
     AsyncDaytona,
     CreateSandboxFromSnapshotParams,
     DaytonaConfig,
+    DaytonaNotFoundError,
     SessionExecuteRequest,
 )
 
@@ -27,8 +28,18 @@ class CreatedSandbox:
 
 class DaytonaClient(Protocol):
     async def create_sandbox(
-        self, *, env_vars: dict[str, str], auto_stop_minutes: int
+        self,
+        *,
+        env_vars: dict[str, str],
+        auto_stop_minutes: int,
+        auto_delete_minutes: int,
+        labels: dict[str, str],
     ) -> CreatedSandbox: ...
+
+    async def connect_sandbox(self, *, sandbox_id: str) -> CreatedSandbox:
+        """Reconnect to an existing sandbox by id, raising DaytonaNotFoundError
+        if it no longer exists."""
+        ...
 
     async def upload_file(
         self, sandbox: CreatedSandbox, *, dest_path: str, content: bytes
@@ -74,18 +85,40 @@ class DaytonaClient(Protocol):
 class RealDaytonaClient:
     """Production implementation backed by the Daytona Python SDK."""
 
-    def __init__(self, *, api_key: str) -> None:
+    def __init__(self, *, api_key: str, snapshot: str | None = None) -> None:
         self._daytona = AsyncDaytona(DaytonaConfig(api_key=api_key))
+        # Optional pre-baked snapshot (claude-code + harbor installed). When set,
+        # provisioning skips the in-sandbox installs.
+        self._snapshot = snapshot or None
 
     async def create_sandbox(
-        self, *, env_vars: dict[str, str], auto_stop_minutes: int
+        self,
+        *,
+        env_vars: dict[str, str],
+        auto_stop_minutes: int,
+        auto_delete_minutes: int,
+        labels: dict[str, str],
     ) -> CreatedSandbox:
-        sbx = await self._daytona.create(
-            CreateSandboxFromSnapshotParams(
-                env_vars=env_vars,
-                auto_stop_interval=auto_stop_minutes,
-            )
+        # Some Daytona regions reject non-ephemeral sandboxes ("Only ephemeral
+        # sandboxes are permitted in this region"). Ephemeral is allowed in
+        # every region and is the right model for chat: a stopped sandbox is
+        # deleted, and resume() always re-provisions a fresh one and restores
+        # the conversation from the blob-store archive. ephemeral forces
+        # auto_delete_interval to 0, so we don't pass auto_delete_minutes (doing
+        # so would emit a UserWarning); auto_stop still bounds idle lifetime.
+        params = CreateSandboxFromSnapshotParams(
+            env_vars=env_vars,
+            auto_stop_interval=auto_stop_minutes,
+            labels=labels,
+            ephemeral=True,
         )
+        if self._snapshot:
+            params.snapshot = self._snapshot
+        sbx = await self._daytona.create(params)
+        return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
+
+    async def connect_sandbox(self, *, sandbox_id: str) -> CreatedSandbox:
+        sbx = await self._daytona.get(sandbox_id)
         return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
 
     async def upload_file(
@@ -259,7 +292,9 @@ class FakeDaytonaClient:
         self.exec_sync_results: dict[str, tuple[int, str]] = {}  # command-substring -> (exit_code, output)
         self.next_cmd_id_seq = 0
 
-    async def create_sandbox(self, *, env_vars, auto_stop_minutes) -> CreatedSandbox:
+    async def create_sandbox(
+        self, *, env_vars, auto_stop_minutes, auto_delete_minutes, labels
+    ) -> CreatedSandbox:
         sbx_id = f"sbx_{secrets.token_hex(6)}"
         self.sandboxes[sbx_id] = {
             "env": env_vars,
@@ -267,8 +302,15 @@ class FakeDaytonaClient:
             "sessions": set(),
             "exec_log": [],
             "auto_stop": auto_stop_minutes,
+            "auto_delete": auto_delete_minutes,
+            "labels": labels,
         }
         return CreatedSandbox(id=sbx_id, _sdk_handle=sbx_id)
+
+    async def connect_sandbox(self, *, sandbox_id) -> CreatedSandbox:
+        if sandbox_id in self.deleted or sandbox_id not in self.sandboxes:
+            raise DaytonaNotFoundError(f"sandbox not found: {sandbox_id}")
+        return CreatedSandbox(id=sandbox_id, _sdk_handle=sandbox_id)
 
     async def upload_file(self, sandbox, *, dest_path, content) -> None:
         self.sandboxes[sandbox.id]["files"][dest_path] = content

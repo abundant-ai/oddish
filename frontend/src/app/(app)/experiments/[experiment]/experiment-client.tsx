@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
+import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
@@ -531,10 +532,13 @@ export function ExperimentClientPage({
           }
           headerRight={
             experimentId ? (
-              <ExperimentShareButton
-                experimentId={experimentId}
-                canManageShare={canManageExperimentShare}
-              />
+              <div className="flex items-center gap-2">
+                <ChatButton scopeKind="experiment" scopeId={experimentId} />
+                <ExperimentShareButton
+                  experimentId={experimentId}
+                  canManageShare={canManageExperimentShare}
+                />
+              </div>
             ) : null
           }
           headerDescription={
