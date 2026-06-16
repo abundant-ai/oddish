@@ -246,10 +246,12 @@ ENV_VARS = {
     # agent still authenticates via the bring-your-own-creds secret above.
     "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
     # Concurrency cap for serialized subscription buckets (codex sub-solo/...).
-    # Defaults to 1 (serialized) to protect a shared refresh-sensitive credential;
-    # raise it for a run that finishes inside the token-validity window.
+    # Defaults to 4: per-trial codex auth.json copies are independent within the
+    # token's refresh window, so a handful of concurrent trials is safe (matches
+    # the oddish.config.Settings default). Lower to 1 to fully serialize a shared
+    # refresh-sensitive credential.
     "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY": os.environ.get(
-        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "1"
+        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "4"
     ),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
