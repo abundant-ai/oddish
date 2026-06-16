@@ -25,6 +25,12 @@ _CLAUDE_BIN = f"{_NPM_PREFIX}/bin/claude"
 _WORKSPACE = "/home/daytona/workspace"
 _TRANSCRIPT_PATH = f"{_WORKSPACE}/agent/transcript.jsonl"
 
+# Headless `--print` runs can't surface an interactive approval prompt, so any
+# tool the agent invokes (Bash `./oddish-query`, Read, etc.) would block on a
+# permission gate that nothing can answer. The sandbox is ephemeral and
+# isolated, so bypass permissions to let the agent actually use its tools.
+_PERMISSION_FLAGS = ["--permission-mode", "bypassPermissions"]
+
 
 class ClaudeCodeRuntime:
     name: ClassVar[str] = "claude-code"
@@ -112,6 +118,7 @@ class ClaudeCodeRuntime:
             "--print",
             "--output-format=stream-json",
             "--verbose",
+            *_PERMISSION_FLAGS,
             "--model",
             shlex.quote(model),
             "--",
@@ -189,6 +196,7 @@ class ClaudeCodeRuntime:
             "--print",
             "--output-format=stream-json",
             "--verbose",
+            *_PERMISSION_FLAGS,
         ]
         if claude_session_id:
             parts += ["--resume", shlex.quote(claude_session_id)]
