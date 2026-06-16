@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { ExternalLink, Microscope } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   isTerminalProbeStatus,
   normalizeMetric,
@@ -151,8 +152,28 @@ export function TaskProbeRunCard({
       {headerSlot}
 
       {!latest ? (
-        <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-6 text-center text-[12px] text-[color:var(--paper-ink-3)]">
-          No probe run for this version yet.
+        <div className="flex flex-col items-center gap-3 rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-6 text-center">
+          <p className="text-[12px] text-[color:var(--paper-ink-3)]">
+            No probe run found for this version yet.
+          </p>
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Button
+              asChild
+              variant="outline"
+              className="h-7 shrink-0 rounded-[7px] px-3 font-mono text-[11px]"
+            >
+              <Link href={`/tasks/${taskId}/probe`}>
+                <Microscope className="h-3.5 w-3.5" aria-hidden="true" />
+                Run probe run
+              </Link>
+            </Button>
+            <Link
+              href={`/tasks/${taskId}/probe`}
+              className="font-mono text-[11px] text-[color:var(--paper-ink-3)] underline hover:text-[color:var(--paper-ink)]"
+            >
+              View all →
+            </Link>
+          </div>
         </div>
       ) : (
         <ProbeRow taskId={taskId} trial={latest} />
