@@ -139,8 +139,11 @@ async def send_message(
                 content=body.content,
                 db_session_factory=lambda: get_session(),
             ):
-                kind = "error" if event.get("type") == "_stderr" else "message"
-                yield f"event: {kind}\ndata: {json.dumps(event)}\n\n"
+                # _stderr / internal events are informational; the only real
+                # error signal in this stream is the explicit SessionNotFound
+                # yield below. Stream everything else as a normal message event
+                # (the frontend renders assistant text and ignores other types).
+                yield f"event: message\ndata: {json.dumps(event)}\n\n"
         except SessionNotFound:
             yield 'event: error\ndata: {"type":"session_not_found"}\n\n'
             return
