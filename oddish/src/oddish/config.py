@@ -731,6 +731,13 @@ class Settings(BaseSettings):
     # still applies as the idle backstop.
     daytona_ephemeral: bool = True
 
+    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
+    # claude-code + harbor already installed. When set, sandboxes are created
+    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
+    # minute of per-chat provisioning). Unset -> default base image + install
+    # at provision time. See docs/cc-chat-snapshot.md to build it.
+    cc_chat_daytona_snapshot: str = ""
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
