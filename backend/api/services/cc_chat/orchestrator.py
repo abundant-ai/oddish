@@ -11,10 +11,13 @@ from models import ChatSession, ChatStatus, generate_id
 from oddish.db.models import utcnow as _utcnow
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
+    render_task_chat_claude_md,
     render_task_probes_claude_md,
 )
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
 from api.services.cc_chat.events import append_event, prune_events
+from api.services.cc_chat.file_loader import upload_files
+from api.services.cc_chat.task_files import collect_task_version_files
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
 from api.services.cc_chat.turns import close_turn, open_turn
@@ -68,14 +71,28 @@ class ChatOrchestrator:
         *,
         org_id: str,
         user_id: str | None,
-        scope_kind: Literal["experiment", "task_probes"],
+        scope_kind: Literal["experiment", "task_probes", "task"],
         scope_id: str,
         db_session_factory: Callable[[], object],
     ) -> str:
-        # Phase 1: render CLAUDE.md per scope; trial/probe file sync deferred to Phase 2.
+        files: list[tuple[str, bytes]] = []
         if scope_kind == "experiment":
             claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
-        else:
+        elif scope_kind == "task":
+            if self._blob is None:
+                raise RuntimeError("blob_store is required for task-scope chat sessions")
+            async with self._db(db_session_factory) as db:
+                current_version, version_trials, files, truncated = await collect_task_version_files(
+                    db, self._blob, task_id=scope_id, org_id=org_id,
+                )
+            if truncated:
+                log.warning("cc_chat task-scope upload truncated at byte cap: task=%s", scope_id)
+            claude_md = render_task_chat_claude_md(
+                task_name=scope_id,
+                current_version=current_version,
+                version_trials=version_trials,
+            )
+        else:  # task_probes
             claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
 
         session_id = generate_id()
@@ -101,14 +118,15 @@ class ChatOrchestrator:
         )
         try:
             await self._runtime.install(self._daytona, sandbox)
+            if files:
+                await upload_files(
+                    self._daytona, sandbox, files=files, workspace_root=WORKSPACE_ROOT,
+                )
             await self._daytona.upload_file(
                 sandbox,
                 dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
                 content=claude_md.encode("utf-8"),
             )
-            # TODO(phase2): sync trial/probe artifacts into the sandbox workspace
-            # via oddish.core (the experiment/task_probes file resolution that the
-            # ported start() did against a blob store + OddishClient + ProbeRun).
         except Exception:
             await delete_sandbox_quietly(self._daytona, sandbox)
             async with self._db(db_session_factory) as db:
