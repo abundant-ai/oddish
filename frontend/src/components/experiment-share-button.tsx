@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { Copy, Eye, EyeOff, Loader2 } from "lucide-react";
 import { fetcher } from "@/lib/api";
+import type { ExperimentShareInfo } from "@/lib/types";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,12 +18,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-
-interface ExperimentShareInfo {
-  name: string;
-  is_public: boolean;
-  public_token: string | null;
-}
 
 export function ExperimentShareButton({
   experimentId,
