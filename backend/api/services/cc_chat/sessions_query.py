@@ -30,12 +30,9 @@ async def list_sessions(
         await session.execute(select(func.count()).select_from(ChatSession).where(*where))
     ).scalar_one()
 
-    turn_count = (
-        select(func.count())
-        .select_from(ChatTurn)
-        .where(ChatTurn.session_id == ChatSession.id)
-        .scalar_subquery()
-    )
+    # Page the sessions first (served by ix_chat_sessions_org_scope_activity),
+    # then fetch turn counts for just this page in one grouped query. This
+    # avoids a per-row correlated subquery, which degraded badly under load.
     rows = (
         await session.execute(
             select(
@@ -44,7 +41,6 @@ async def list_sessions(
                 ChatSession.status,
                 ChatSession.created_at,
                 ChatSession.last_activity,
-                turn_count.label("turn_count"),
             )
             .where(*where)
             .order_by(ChatSession.last_activity.desc())
@@ -53,6 +49,18 @@ async def list_sessions(
         )
     ).all()
 
+    page_ids = [r.id for r in rows]
+    counts: dict[str, int] = {}
+    if page_ids:
+        count_rows = (
+            await session.execute(
+                select(ChatTurn.session_id, func.count())
+                .where(ChatTurn.session_id.in_(page_ids))
+                .group_by(ChatTurn.session_id)
+            )
+        ).all()
+        counts = {sid: n for sid, n in count_rows}
+
     items = [
         {
             "id": r.id,
@@ -60,7 +68,7 @@ async def list_sessions(
             "status": r.status,
             "created_at": r.created_at,
             "last_activity": r.last_activity,
-            "turn_count": r.turn_count,
+            "turn_count": counts.get(r.id, 0),
         }
         for r in rows
     ]
