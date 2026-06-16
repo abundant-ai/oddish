@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-16]
+
+### Added
+- Claude Code chat sessions (Phase 1): durable `chat_session_events` append-only log and `chat_turns` table (one-running-turn-per-session enforced by a partial unique index) with a full orchestration engine — Daytona sandbox provisioner, Claude Code runtime, idle reaper, and restart sweep that marks orphaned running turns `failed` while preserving the event log; API routes `POST /chat-sessions`, `GET /chat-sessions/{id}`, SSE `POST /chat-sessions/{id}/messages`, events-replay `GET /chat-sessions/{id}/events?since=<seq>`, and `DELETE /chat-sessions/{id}`; sessions survive page refresh and backend container restarts (#306)
+- Chat `task` scope (Phase 2a): chat sessions scoped to a task download trial log files from S3 and upload them into the Daytona sandbox as `jobs/v{version}/{trial_id}/…` (byte-capped at 50 MB); a version-aware `CLAUDE.md` highlights the current version as the default focus and de-emphasizes past versions (#307)
+- Task detail page now shows a "Probe runs" card for the selected version: the latest probe run's agent/preset name, run status, cheat/blocked/neutral result, and prioritized action items from the analyzer; auto-polls while the probe is in-flight and links to the full probe result page (#310)
+- Admin `GET /queue-health` endpoint and dashboard overview card exposing throughput, per-queue-key capacity fill, and persisted dispatcher/reconciler heartbeats so operators can self-diagnose "queued but not running" without querying psql or Modal logs; backed by a new `queue_runtime_status` table written at the end of each dispatcher/reconciler cycle (#312)
+
+### Changed
+- Probe submit page now shows a prominent "Submit a probe run" button that expands to reveal the agent picker and form on click (previously the form rendered inline on agent selection); probe history list sorted newest-first; task ID on the probe run detail page rendered as a clickable link to the experiment page (#313)
+- Modal function CPU/memory resource floors now configurable via env vars (`ODDISH_MODAL_API_CPU`/`MEMORY_MB`, `ODDISH_MODAL_WORKER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_DISPATCHER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_RECONCILER_CPU`/`MEMORY_MB`); API defaults to 2 CPU / 4 GiB (was unconstrained fractional-core), reducing latency spikes under concurrent load; `WORKER_MAX_CONTAINERS` raised 320 → 448 (#312)
+- Probe submit form converted to shadcn `Button`, `Input`, and `Select` components; unused frontend exports flagged by knip removed; pre-commit hooks (ruff, black, mypy, prettier) pass cleanly across the full repo; dead code removed: `TrialClassifier.classify_trials` batch method and `AUTO_PROBE_INSTRUCTIONS` constant (#311)
+
+### Fixed
+- Worker dispatcher no longer starved by a slow or deadlocking reconciliation sweep: `reconcile_queue_state` now runs as its own dedicated Modal scheduled function (240s interval, 600s timeout) instead of inline inside `poll_queue`; a SIGKILL mid-sweep previously left orphaned `idle in transaction` locks that deadlocked the next sweep cycle and spawned zero workers; `poll_queue` now only discovers queue keys and spawns workers, with `MAX_WORKERS_PER_POLL` raised 64 → 128 (#309)
+
+---
+
 ## [2026-06-15]
 
 ### Added
