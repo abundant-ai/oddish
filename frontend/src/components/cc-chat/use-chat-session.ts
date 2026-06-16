@@ -12,6 +12,7 @@ interface UseChatSession {
   send: (text: string) => Promise<void>;
   reset: () => void;            // "New chat"
   adopt: (id: string) => void;  // jump into an existing session id
+  resume: (id: string) => Promise<void>; // resume a past chat (live reattach or dead restore)
 }
 
 export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseChatSession {
@@ -128,7 +129,23 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
     setSessionId(id); setBubbles([]); setError(null); setWorking(false);
   }, []);
 
-  return { sessionId, bubbles, working, error, unavailable, send, reset, adopt };
+  const resume = useCallback(async (id: string) => {
+    abortRef.current?.abort();
+    setError(null);
+    setBubbles([]);
+    setWorking(false);
+    const res = await fetch(`/api/chat-sessions/${id}/resume`, { method: "POST" });
+    if (res.status === 409) {
+      let detail = "This chat can't be restored.";
+      try { const d = await res.json(); if (d?.detail) detail = d.detail; } catch { /* ignore */ }
+      setError(detail);
+      return;
+    }
+    if (!res.ok && res.status !== 204) { setError("Could not resume chat"); return; }
+    setSessionId(id);
+  }, []);
+
+  return { sessionId, bubbles, working, error, unavailable, send, reset, adopt, resume };
 }
 
 function isAbort(e: unknown): boolean {

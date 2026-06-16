@@ -73,7 +73,7 @@ export function ChatDrawer({
         onOpenChange={setHistoryOpen}
         scopeKind={scopeKind}
         scopeId={scopeId}
-        onPick={(id) => chat.adopt(id)}
+        onPick={(id) => chat.resume(id)}
       />
     </ResizableDrawer>
   );
