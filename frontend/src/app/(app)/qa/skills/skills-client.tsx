@@ -34,11 +34,7 @@ type Skill = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function buildSkillMd(
-  name: string,
-  description: string,
-  body: string,
-): string {
+function buildSkillMd(name: string, description: string, body: string): string {
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}`;
 }
 
@@ -191,9 +187,7 @@ function ExtraFileRow({ index, file, onChange, onRemove }: ExtraFileRowProps) {
       </div>
       <textarea
         value={file.content}
-        onChange={(e) =>
-          onChange(index, { ...file, content: e.target.value })
-        }
+        onChange={(e) => onChange(index, { ...file, content: e.target.value })}
         rows={4}
         placeholder="File content…"
         className="w-full rounded border border-[#6f88b4]/20 bg-background px-2 py-1.5 font-mono text-xs resize-y"
@@ -233,9 +227,7 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
 
   const isEdit = editingSkill !== null;
 
-  async function handleFolderSelected(
-    e: React.ChangeEvent<HTMLInputElement>,
-  ) {
+  async function handleFolderSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const fileList = e.target.files;
     if (!fileList || fileList.length === 0) return;
     setError(null);
@@ -280,7 +272,11 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
     setSaving(true);
     setError(null);
     try {
-      const skillMdContent = buildSkillMd(name.trim(), description.trim(), skillMdBody);
+      const skillMdContent = buildSkillMd(
+        name.trim(),
+        description.trim(),
+        skillMdBody,
+      );
       const files: SkillFile[] = [
         { relative_path: "SKILL.md", content: skillMdContent },
         ...extraFiles.filter((f) => f.relative_path.trim() !== ""),
@@ -291,9 +287,7 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
         files,
       };
 
-      const url = isEdit
-        ? `/api/skills/${editingSkill.id}`
-        : "/api/skills";
+      const url = isEdit ? `/api/skills/${editingSkill.id}` : "/api/skills";
       const method = isEdit ? "PUT" : "POST";
 
       const res = await fetch(url, {
@@ -303,7 +297,9 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
       });
 
       if (!res.ok) {
-        let detail = isEdit ? "Failed to update skill" : "Failed to create skill";
+        let detail = isEdit
+          ? "Failed to update skill"
+          : "Failed to create skill";
         try {
           const data = (await res.json()) as { detail?: string };
           detail = data.detail ?? detail;
@@ -347,7 +343,10 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
             ref={folderInputRef}
             type="file"
             // webkitdirectory is non-standard; React's types don't include it.
-            {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+            {...({ webkitdirectory: "", directory: "" } as Record<
+              string,
+              string
+            >)}
             multiple
             hidden
             onChange={(e) => void handleFolderSelected(e)}

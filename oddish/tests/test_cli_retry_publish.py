@@ -167,7 +167,7 @@ def test_retry_task_only_retries_failed_trials(monkeypatch) -> None:
     assert posted == ["/trials/tsk-0/retry", "/trials/tsk-2/retry"]
 
 
-def test_retry_verdict_dispatches_task_endpoint(monkeypatch) -> None:
+def test_retry_qa_dispatches_task_endpoint(monkeypatch) -> None:
     _patch_key(monkeypatch)
     posted: list[str] = []
     monkeypatch.setattr(
@@ -187,7 +187,7 @@ def test_retry_verdict_dispatches_task_endpoint(monkeypatch) -> None:
             "--task",
             "tsk",
             "--retry",
-            "--verdict",
+            "--qa",
             "-y",
             "--api",
             "http://api.test",
@@ -196,60 +196,47 @@ def test_retry_verdict_dispatches_task_endpoint(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0, result.output
-    assert posted == ["/tasks/tsk/verdict/retry"]
+    assert posted == ["/tasks/tsk/qa/retry"]
 
 
-def test_cancel_analysis_dispatches_task_endpoint(monkeypatch) -> None:
+def test_cancel_qa_dispatches_task_endpoint(monkeypatch) -> None:
     _patch_key(monkeypatch)
     calls: list[str] = []
-    resp = _Resp(200, {"status": "cancelled", "analysis_jobs_cancelled": 1})
-    monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
-    monkeypatch.setattr(cancel_mod, "get_task_summary", lambda *a, **k: None)
-
-    result = runner.invoke(
-        app,
-        ["cancel", "tsk", "--analysis", "--force", "--api", "http://api.test", "--json"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert calls == ["http://api.test/tasks/tsk/analysis/cancel"]
-    assert json.loads(result.stdout)["analysis_jobs_cancelled"] == 1
-
-
-def test_cancel_verdict_dispatches_task_endpoint(monkeypatch) -> None:
-    _patch_key(monkeypatch)
-    calls: list[str] = []
-    resp = _Resp(200, {"status": "cancelled", "verdict_jobs_cancelled": 1})
+    resp = _Resp(200, {"status": "cancelled", "qa_jobs_cancelled": 1})
     monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
 
     result = runner.invoke(
         app,
-        ["cancel", "tsk", "--verdict", "--force", "--api", "http://api.test", "--json"],
+        ["cancel", "tsk", "--qa", "--force", "--api", "http://api.test", "--json"],
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == ["http://api.test/tasks/tsk/verdict/cancel"]
-    assert json.loads(result.stdout)["verdict_jobs_cancelled"] == 1
+    assert calls == ["http://api.test/tasks/tsk/qa/cancel"]
+    assert json.loads(result.stdout)["qa_jobs_cancelled"] == 1
 
 
-def test_cancel_analysis_dispatches_trial_endpoint(monkeypatch) -> None:
+def test_cancel_qa_resolves_trial_to_task_endpoint(monkeypatch) -> None:
     _patch_key(monkeypatch)
     calls: list[str] = []
-    resp = _Resp(200, {"status": "cancelled", "analysis_jobs_cancelled": 1})
+    resp = _Resp(200, {"status": "cancelled", "qa_jobs_cancelled": 1})
     monkeypatch.setattr(cancel_mod.httpx, "Client", lambda **kw: _Client(resp, calls))
-    monkeypatch.setattr(
-        cancel_mod,
-        "get_task_summary",
-        lambda _api, task_id: {"id": task_id, "trials": [{"id": "tsk-0"}]},
-    )
 
     result = runner.invoke(
         app,
-        ["cancel", "tsk-0", "--analysis", "--force", "--api", "http://api.test", "--json"],
+        [
+            "cancel",
+            "tsk-0",
+            "--qa",
+            "--force",
+            "--api",
+            "http://api.test",
+            "--json",
+        ],
     )
 
     assert result.exit_code == 0, result.output
-    assert calls == ["http://api.test/trials/tsk-0/analysis/cancel"]
+    # A trial-shaped id resolves to its parent task's QA job.
+    assert calls == ["http://api.test/tasks/tsk/qa/cancel"]
 
 
 def test_delete_trial_json_reports_records(monkeypatch) -> None:

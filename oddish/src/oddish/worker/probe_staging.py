@@ -69,9 +69,7 @@ async def stage_related_trial_logs(
         try:
             keys = await storage.list_keys(prefix)
         except Exception:
-            logger.exception(
-                "probe: list_keys failed for %s; skipping", trial.id
-            )
+            logger.exception("probe: list_keys failed for %s; skipping", trial.id)
             continue
         staged_for_trial = 0
         for key in keys:
@@ -82,18 +80,14 @@ async def stage_related_trial_logs(
                     MAX_FILES_PER_TRIAL,
                 )
                 break
-            rel = key[len(prefix):]
+            rel = key[len(prefix) :]
             # Skip the prefix root and any hidden path segment.
-            if not rel or any(
-                part.startswith(".") for part in rel.split("/") if part
-            ):
+            if not rel or any(part.startswith(".") for part in rel.split("/") if part):
                 continue
             try:
                 content = await storage.download_bytes(key)
             except Exception:
-                logger.exception(
-                    "probe: download failed for %s; skipping", key
-                )
+                logger.exception("probe: download failed for %s; skipping", key)
                 continue
             if len(content) > MAX_BYTES_PER_FILE:
                 logger.info(
@@ -225,9 +219,7 @@ async def apply_probe_overlay(
     which Harbor never mounts into the container.)
     """
     try:
-        has_related = await stage_related_trial_logs(
-            task_dir, task_id, trial_id
-        )
+        has_related = await stage_related_trial_logs(task_dir, task_id, trial_id)
     except Exception:
         logger.exception("probe: staging related trial logs failed")
         has_related = False

@@ -98,9 +98,7 @@ def test_list_task_versions_core_skips_task_fetch_when_task_passed(monkeypatch):
         fetched["count"] += 1
         return SimpleNamespace(id="task-1")
 
-    monkeypatch.setattr(
-        endpoints, "get_task_for_org_core", fake_get_task_for_org_core
-    )
+    monkeypatch.setattr(endpoints, "get_task_for_org_core", fake_get_task_for_org_core)
 
     session = _RecordingSession(
         results=[_Result(scalars=[_VersionRow("v1", 1), _VersionRow("v2", 2)])]
@@ -127,9 +125,7 @@ def test_list_task_versions_core_fetches_task_when_not_passed(monkeypatch):
         fetched["count"] += 1
         return SimpleNamespace(id="task-1")
 
-    monkeypatch.setattr(
-        endpoints, "get_task_for_org_core", fake_get_task_for_org_core
-    )
+    monkeypatch.setattr(endpoints, "get_task_for_org_core", fake_get_task_for_org_core)
 
     session = _RecordingSession(results=[_Result(scalars=[])])
 

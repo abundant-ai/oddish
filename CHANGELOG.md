@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-16]
+
+### Added
+- Claude Code chat sessions (Phase 1): durable `chat_session_events` append-only log and `chat_turns` table (one-running-turn-per-session enforced by a partial unique index) with a full orchestration engine — Daytona sandbox provisioner, Claude Code runtime, idle reaper, and restart sweep that marks orphaned running turns `failed` while preserving the event log; API routes `POST /chat-sessions`, `GET /chat-sessions/{id}`, SSE `POST /chat-sessions/{id}/messages`, events-replay `GET /chat-sessions/{id}/events?since=<seq>`, and `DELETE /chat-sessions/{id}`; sessions survive page refresh and backend container restarts (#306)
+- Chat `task` scope (Phase 2a): chat sessions scoped to a task download trial log files from S3 and upload them into the Daytona sandbox as `jobs/v{version}/{trial_id}/…` (byte-capped at 50 MB); a version-aware `CLAUDE.md` highlights the current version as the default focus and de-emphasizes past versions (#307)
+- Task detail page now shows a "Probe runs" card for the selected version: the latest probe run's agent/preset name, run status, cheat/blocked/neutral result, and prioritized action items from the analyzer; auto-polls while the probe is in-flight and links to the full probe result page (#310)
+- Admin `GET /queue-health` endpoint and dashboard overview card exposing throughput, per-queue-key capacity fill, and persisted dispatcher/reconciler heartbeats so operators can self-diagnose "queued but not running" without querying psql or Modal logs; backed by a new `queue_runtime_status` table written at the end of each dispatcher/reconciler cycle (#312)
+
+### Changed
+- Probe submit page now shows a prominent "Submit a probe run" button that expands to reveal the agent picker and form on click (previously the form rendered inline on agent selection); probe history list sorted newest-first; task ID on the probe run detail page rendered as a clickable link to the experiment page (#313)
+- Modal function CPU/memory resource floors now configurable via env vars (`ODDISH_MODAL_API_CPU`/`MEMORY_MB`, `ODDISH_MODAL_WORKER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_DISPATCHER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_RECONCILER_CPU`/`MEMORY_MB`); API defaults to 2 CPU / 4 GiB (was unconstrained fractional-core), reducing latency spikes under concurrent load; `WORKER_MAX_CONTAINERS` raised 320 → 448 (#312)
+- Probe submit form converted to shadcn `Button`, `Input`, and `Select` components; unused frontend exports flagged by knip removed; pre-commit hooks (ruff, black, mypy, prettier) pass cleanly across the full repo; dead code removed: `TrialClassifier.classify_trials` batch method and `AUTO_PROBE_INSTRUCTIONS` constant (#311)
+
+### Fixed
+- Worker dispatcher no longer starved by a slow or deadlocking reconciliation sweep: `reconcile_queue_state` now runs as its own dedicated Modal scheduled function (240s interval, 600s timeout) instead of inline inside `poll_queue`; a SIGKILL mid-sweep previously left orphaned `idle in transaction` locks that deadlocked the next sweep cycle and spawned zero workers; `poll_queue` now only discovers queue keys and spawns workers, with `MAX_WORKERS_PER_POLL` raised 64 → 128 (#309)
+
+---
+
 ## [2026-06-15]
 
 ### Added
@@ -13,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
 
 ### Changed
+- Trajectory analysis is now a single task-level `QA` worker job instead of one classification job per trial plus a separate verdict job: when every trial of a `run_analysis` task finishes, one `QA` job classifies all live trials (unchanged taxonomy/evidence/reasoning, still written to `trials.analysis`) and then synthesizes the task verdict (`tasks.verdict`), so a sweep of `T` tasks × `N` trials enqueues `T` jobs instead of `T × (N + 1)`. The whole surface uses one "QA" concept: worker-job kind `QA` (migration `qa01`/`qa02` adds it and repoints old `VERDICT` rows; `ANALYSIS`/`VERDICT` remain only as legacy enum values for historical/in-flight rows), one `run_task_qa_job` handler, one set of endpoints (`POST /tasks/{id}/qa/retry`, `POST /tasks/{id}/qa/cancel`), one CLI surface (`oddish run --retry --qa`, `oddish cancel --qa`), and one dashboard control (Run QA / Cancel QA). The per-trial analysis and separate verdict retry/cancel endpoints, CLI flags (`--analysis`/`--verdict`), and UI buttons were removed (#315) (#315)
 - Probe agent container now receives the full staged task directory via a Harbor `AGENT_START` hook, with all probe-only material (`tests/`, `solution/`, `harbor_src/`, `related_trials/`, `AGENT_BRIEF.md`) staged under `/probe-harness/` instead of `/app`, keeping the real agent's workspace pristine; probe instruction reframes the task spec as a "REAL AGENT BRIEF" with an auto-generated visibility map, eliminating false-positive vulnerability reports for files the real agent cannot access (#300, #301)
 - Probe analyzer prompt gains a SCOPE section instructing it not to emit recommendations premised on probe-only paths (under `/probe-harness/`) being agent-reachable, and to preserve the probe agent's own hedges rather than upgrading them to `must_fix` (#301)
 - Harbor bumped to `07a576944` picking up MiniMax M3 and Kimi K2.7 long-run hardening: streaming/timeout env vars (`API_TIMEOUT_MS=3.6M`, idle stream timeout, eager flush, max output tokens), Claude Code pinned to `2.1.167` (fixes MiniMax exit-137 mid-stream stalls), and plan-mode tools (`EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`) disabled for Kimi variants (fixes K2.7 plan-mode no-op bail) (#303)

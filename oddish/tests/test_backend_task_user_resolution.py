@@ -91,11 +91,7 @@ def _load_helpers() -> dict[str, Any]:
     from FastAPI/Clerk/Modal imports.
     """
     router_path = (
-        Path(__file__).resolve().parents[2]
-        / "backend"
-        / "api"
-        / "routers"
-        / "tasks.py"
+        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
     )
     source = router_path.read_text(encoding="utf-8")
 
@@ -176,7 +172,9 @@ def test_explicit_github_username_used_when_no_user():
 
 
 def test_api_key_resolves_to_linked_user_email():
-    user = _UserStub(id="u1", github_username="alice-gh", name="Alice", email="alice@example.com")
+    user = _UserStub(
+        id="u1", github_username="alice-gh", name="Alice", email="alice@example.com"
+    )
     api_key = _APIKeyStub(id="k1", name="ci-bot", created_by_user_id="u1")
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
@@ -190,7 +188,9 @@ def test_api_key_resolves_to_linked_user_email():
 
 
 def test_clerk_jwt_uses_auth_user_email():
-    user = _UserStub(id="u1", github_username="bob", name="Bob", email="bob@example.com")
+    user = _UserStub(
+        id="u1", github_username="bob", name="Bob", email="bob@example.com"
+    )
     auth = _AuthStub(user=user, user_id="u1")
     session = _SessionStub()  # no DB load needed
     result = _run(
@@ -206,7 +206,9 @@ def test_clerk_jwt_cache_hit_lazy_loads_user():
     re-fetch via session.get(UserModel, auth.user_id) so the cached request
     still resolves to the real Clerk identity instead of falling back to
     "unknown"."""
-    user = _UserStub(id="u1", github_username=None, name=None, email="cached@example.com")
+    user = _UserStub(
+        id="u1", github_username=None, name=None, email="cached@example.com"
+    )
     auth = _AuthStub(user_id="u1")  # no .user (cache-hit shape)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     result = _run(
@@ -289,9 +291,7 @@ def test_created_by_user_id_prefers_api_key_owner():
     auth = _AuthStub(api_key_id="k1", api_key=api_key, user_id=None)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     submission = _SubmissionStub()
-    result = _run(
-        _resolve_created_by_user_id(session, submission, auth)
-    )
+    result = _run(_resolve_created_by_user_id(session, submission, auth))
     assert result == "u1"
 
 
@@ -309,9 +309,7 @@ def test_created_by_user_id_resolves_github_username_to_user():
 
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="octocat")
-    result = _run(
-        _resolve_created_by_user_id(session, submission, auth)
-    )
+    result = _run(_resolve_created_by_user_id(session, submission, auth))
     assert result == "u2"
 
 
@@ -319,9 +317,7 @@ def test_created_by_user_id_falls_back_to_auth_user_id():
     auth = _AuthStub(user_id="u-clerk", org_id="org-1")
     session = _SessionStub()
     submission = _SubmissionStub(github_username=None)
-    result = _run(
-        _resolve_created_by_user_id(session, submission, auth)
-    )
+    result = _run(_resolve_created_by_user_id(session, submission, auth))
     assert result == "u-clerk"
 
 

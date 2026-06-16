@@ -69,7 +69,7 @@ export function prNumberFromUrl(url: string | null | undefined): string | null {
 
 // Extract the repo name from a GitHub URL
 // (https://github.com/<owner>/<repo>/...  ->  "<repo>").
-export function repoNameFromUrl(url: string | null | undefined): string | null {
+function repoNameFromUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   const match = url.match(/github\.com\/[^/]+\/([^/]+)/);
   return match ? match[1] : null;

@@ -57,9 +57,7 @@ def _compile_sql(clause) -> str:
 
 
 def test_author_filter_absent_when_no_user() -> None:
-    assert (
-        _build_experiments_author_filter(None, None, org_id="org_1") is None
-    )
+    assert _build_experiments_author_filter(None, None, org_id="org_1") is None
 
 
 def test_author_filter_matches_created_by_and_scopes_org() -> None:
@@ -79,9 +77,7 @@ def test_author_filter_matches_created_by_and_scopes_org() -> None:
 
 
 def test_author_filter_includes_github_username_fallback() -> None:
-    clause = _build_experiments_author_filter(
-        "user_123", ("octocat",), org_id="org_1"
-    )
+    clause = _build_experiments_author_filter("user_123", ("octocat",), org_id="org_1")
     assert clause is not None
     sql = _compile_sql(clause)
     assert "github_username" in sql

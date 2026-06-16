@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 from sqlalchemy import text
@@ -246,12 +247,14 @@ async def get_queue_status_core(session: AsyncSession) -> QueueStatusResponse:
         queues.append(entry)
         if kind == "TRIAL":
             trial_queues.append(entry)
-        elif kind == "ANALYSIS":
-            analysis_queued += queued
-            analysis_running += running
-        elif kind == "VERDICT":
+        elif kind == "QA":
+            # The single task-level QA job (classification + verdict).
             verdict_queued += queued
             verdict_running += running
+        elif kind == "ANALYSIS":
+            # Legacy per-trial classification rows, drained across a deploy.
+            analysis_queued += queued
+            analysis_running += running
         # Unknown kinds (e.g. future QA_REVIEW) silently ignored by
         # this endpoint; the ``WorkerJobsCard`` admin panel surfaces
         # them in the kind-agnostic matrix instead.
@@ -629,5 +632,237 @@ async def get_worker_jobs_admin_core(
         recent_failures=recent_failures,
         durations_last_hour=durations_last_hour,
         stale_after_minutes=stale_after_minutes,
+        timestamp=now.isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Queue health overview
+#
+# A single operator-facing answer to "is the queue keeping up?": throughput
+# (jobs started/finished per window), per-queue-key capacity fill (running vs
+# configured concurrency limit) with the oldest queued age and time-in-queue
+# percentiles, plus the persisted dispatcher/reconciler heartbeats. This is
+# the panel that lets an operator self-diagnose "queued but not running"
+# without dropping into psql + Modal logs.
+# ---------------------------------------------------------------------------
+
+
+class QueueThroughputStat(BaseModel):
+    kind: str
+    started_5m: int
+    started_15m: int
+    started_60m: int
+    finished_5m: int
+    finished_15m: int
+    finished_60m: int
+
+
+class QueueCapacityStat(BaseModel):
+    queue_key: str
+    queued: int
+    queued_scheduled: int
+    running: int
+    limit: int
+    # Fraction running / limit in [0, 1+] (can exceed 1 if a limit was lowered
+    # below the current running count). None when limit is 0.
+    fill: float | None
+    oldest_queued_age_seconds: float | None
+    wait_p50_seconds: float | None
+    wait_p95_seconds: float | None
+
+
+class QueueRuntimeComponentStatus(BaseModel):
+    component: str
+    updated_at: datetime | None
+    age_seconds: float | None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class QueueHealthResponse(BaseModel):
+    totals_queued: int
+    totals_running: int
+    throughput: list[QueueThroughputStat]
+    capacity: list[QueueCapacityStat]
+    dispatcher: QueueRuntimeComponentStatus | None
+    reconciler: QueueRuntimeComponentStatus | None
+    timestamp: str
+
+
+async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
+    """Aggregate throughput, per-queue-key capacity fill, and component health."""
+    now = utcnow()
+
+    # -- throughput per kind ----------------------------------------------
+    throughput_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT kind::text AS kind,
+                       COUNT(*) FILTER (WHERE started_at  >= NOW() - INTERVAL '5 minutes')  AS started_5m,
+                       COUNT(*) FILTER (WHERE started_at  >= NOW() - INTERVAL '15 minutes') AS started_15m,
+                       COUNT(*) FILTER (WHERE started_at  >= NOW() - INTERVAL '60 minutes') AS started_60m,
+                       COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '5 minutes')  AS finished_5m,
+                       COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '15 minutes') AS finished_15m,
+                       COUNT(*) FILTER (WHERE finished_at >= NOW() - INTERVAL '60 minutes') AS finished_60m
+                FROM   worker_jobs
+                WHERE  started_at  >= NOW() - INTERVAL '60 minutes'
+                   OR  finished_at >= NOW() - INTERVAL '60 minutes'
+                GROUP  BY kind
+                ORDER  BY kind
+                """
+            )
+        )
+    ).all()
+    throughput = [
+        QueueThroughputStat(
+            kind=row.kind,
+            started_5m=int(row.started_5m or 0),
+            started_15m=int(row.started_15m or 0),
+            started_60m=int(row.started_60m or 0),
+            finished_5m=int(row.finished_5m or 0),
+            finished_15m=int(row.finished_15m or 0),
+            finished_60m=int(row.finished_60m or 0),
+        )
+        for row in throughput_rows
+    ]
+
+    # -- per-queue-key queued / running / oldest-age ----------------------
+    capacity_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT queue_key,
+                       COUNT(*) FILTER (
+                           WHERE status::text IN ('QUEUED', 'RETRYING')
+                             AND available_after <= NOW()
+                       ) AS queued_ready,
+                       COUNT(*) FILTER (
+                           WHERE status::text IN ('QUEUED', 'RETRYING')
+                             AND available_after > NOW()
+                       ) AS queued_scheduled,
+                       COUNT(*) FILTER (WHERE status::text = 'RUNNING') AS running,
+                       EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (
+                           WHERE status::text IN ('QUEUED', 'RETRYING')
+                             AND available_after <= NOW()
+                       ))) AS oldest_queued_age_seconds
+                FROM   worker_jobs
+                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING')
+                GROUP  BY queue_key
+                """
+            )
+        )
+    ).all()
+
+    # -- time-in-queue percentiles per queue_key (claimed in last hour) ---
+    wait_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT queue_key,
+                       percentile_cont(0.50) WITHIN GROUP (
+                           ORDER BY EXTRACT(EPOCH FROM (claimed_at - created_at))
+                       ) AS wait_p50,
+                       percentile_cont(0.95) WITHIN GROUP (
+                           ORDER BY EXTRACT(EPOCH FROM (claimed_at - created_at))
+                       ) AS wait_p95
+                FROM   worker_jobs
+                WHERE  claimed_at IS NOT NULL
+                  AND  claimed_at >= NOW() - INTERVAL '1 hour'
+                  AND  claimed_at >= created_at
+                GROUP  BY queue_key
+                HAVING COUNT(*) >= 3
+                """
+            )
+        )
+    ).all()
+    wait_by_key: dict[str, tuple[float | None, float | None]] = {}
+    for row in wait_rows:
+        key = settings.normalize_queue_key(row.queue_key)
+        wait_by_key[key] = (
+            float(row.wait_p50) if row.wait_p50 is not None else None,
+            float(row.wait_p95) if row.wait_p95 is not None else None,
+        )
+
+    # Merge per queue_key (normalizing collapses aliases onto one bucket).
+    merged: dict[str, dict[str, float | None]] = {}
+    for row in capacity_rows:
+        key = settings.normalize_queue_key(row.queue_key)
+        bucket = merged.setdefault(
+            key,
+            {"queued": 0, "queued_scheduled": 0, "running": 0, "oldest": None},
+        )
+        bucket["queued"] = (bucket["queued"] or 0) + int(row.queued_ready or 0)
+        bucket["queued_scheduled"] = (bucket["queued_scheduled"] or 0) + int(
+            row.queued_scheduled or 0
+        )
+        bucket["running"] = (bucket["running"] or 0) + int(row.running or 0)
+        age = (
+            float(row.oldest_queued_age_seconds)
+            if row.oldest_queued_age_seconds is not None
+            else None
+        )
+        if age is not None:
+            current = bucket["oldest"]
+            bucket["oldest"] = age if current is None else max(current, age)
+
+    capacity: list[QueueCapacityStat] = []
+    for key, bucket in merged.items():
+        limit = settings.get_model_concurrency(key)
+        running = int(bucket["running"] or 0)
+        wait_p50, wait_p95 = wait_by_key.get(key, (None, None))
+        capacity.append(
+            QueueCapacityStat(
+                queue_key=key,
+                queued=int(bucket["queued"] or 0),
+                queued_scheduled=int(bucket["queued_scheduled"] or 0),
+                running=running,
+                limit=limit,
+                fill=(running / limit) if limit > 0 else None,
+                oldest_queued_age_seconds=bucket["oldest"],
+                wait_p50_seconds=wait_p50,
+                wait_p95_seconds=wait_p95,
+            )
+        )
+
+    # Most-pressured first: deepest backlog, then highest fill.
+    capacity.sort(key=lambda c: (c.queued, c.running), reverse=True)
+
+    totals_queued = sum(c.queued for c in capacity)
+    totals_running = sum(c.running for c in capacity)
+
+    # -- persisted dispatcher / reconciler heartbeats ---------------------
+    # Lazy import keeps the worker-only import chain out of the server-only
+    # install; the queue-health endpoint is hosted-backend only.
+    from oddish.workers.queue.runtime_status import (
+        DISPATCHER_COMPONENT,
+        RECONCILER_COMPONENT,
+        get_queue_runtime_statuses,
+    )
+
+    statuses = await get_queue_runtime_statuses(session)
+
+    def _component(name: str) -> QueueRuntimeComponentStatus | None:
+        row = statuses.get(name)
+        if row is None:
+            return None
+        updated_at = row.get("updated_at")
+        age_seconds: float | None = None
+        if isinstance(updated_at, datetime):
+            age_seconds = max((now - updated_at).total_seconds(), 0.0)
+        return QueueRuntimeComponentStatus(
+            component=name,
+            updated_at=updated_at,
+            age_seconds=age_seconds,
+            payload=row.get("payload") or {},
+        )
+
+    return QueueHealthResponse(
+        totals_queued=totals_queued,
+        totals_running=totals_running,
+        throughput=throughput,
+        capacity=capacity,
+        dispatcher=_component(DISPATCHER_COMPONENT),
+        reconciler=_component(RECONCILER_COMPONENT),
         timestamp=now.isoformat(),
     )

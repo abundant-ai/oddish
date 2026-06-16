@@ -1,4 +1,5 @@
 """Governance tests: policy upsert + 10-tag cap."""
+
 from __future__ import annotations
 
 import asyncio
@@ -105,10 +106,15 @@ def test_create_tag_core_rejects_profanity_in_enforce_mode(monkeypatch):
                 value=None,
                 org_id="org-1",
                 actor_user_id="u-1",
-                policy={"profanity_mode": "ENFORCE", "name_max_len": 64,
-                        "name_charset": "[a-z0-9._-]", "reserved_prefixes": [],
-                        "who_can_create": "ANY_MEMBER", "profanity_allowlist": [],
-                        "profanity_denylist": []},
+                policy={
+                    "profanity_mode": "ENFORCE",
+                    "name_max_len": 64,
+                    "name_charset": "[a-z0-9._-]",
+                    "reserved_prefixes": [],
+                    "who_can_create": "ANY_MEMBER",
+                    "profanity_allowlist": [],
+                    "profanity_denylist": [],
+                },
                 is_admin=False,
             )
         )
@@ -118,9 +124,11 @@ def test_create_tag_core_rejects_reserved_prefix_for_non_admin(monkeypatch):
     from oddish.core import tags_core
 
     monkeypatch.setattr(
-        tags_core, "check_tag_text", lambda t, p: __import__("types").SimpleNamespace(
+        tags_core,
+        "check_tag_text",
+        lambda t, p: __import__("types").SimpleNamespace(
             allowed=True, hits=[], mode="ENFORCE"
-        )
+        ),
     )
 
     session = _FakeSession()
@@ -135,11 +143,15 @@ def test_create_tag_core_rejects_reserved_prefix_for_non_admin(monkeypatch):
                 value=None,
                 org_id="org-1",
                 actor_user_id="u-1",
-                policy={"profanity_mode": "OFF", "name_max_len": 64,
-                        "name_charset": "[a-z0-9._-]",
-                        "reserved_prefixes": ["system:"],
-                        "who_can_create": "ANY_MEMBER",
-                        "profanity_allowlist": [], "profanity_denylist": []},
+                policy={
+                    "profanity_mode": "OFF",
+                    "name_max_len": 64,
+                    "name_charset": "[a-z0-9._-]",
+                    "reserved_prefixes": ["system:"],
+                    "who_can_create": "ANY_MEMBER",
+                    "profanity_allowlist": [],
+                    "profanity_denylist": [],
+                },
                 is_admin=False,
             )
         )
@@ -149,9 +161,11 @@ def test_create_tag_core_admin_only_policy_blocks_member(monkeypatch):
     from oddish.core import tags_core
 
     monkeypatch.setattr(
-        tags_core, "check_tag_text", lambda t, p: __import__("types").SimpleNamespace(
+        tags_core,
+        "check_tag_text",
+        lambda t, p: __import__("types").SimpleNamespace(
             allowed=True, hits=[], mode="OFF"
-        )
+        ),
     )
 
     session = _FakeSession()
@@ -166,11 +180,15 @@ def test_create_tag_core_admin_only_policy_blocks_member(monkeypatch):
                 value=None,
                 org_id="org-1",
                 actor_user_id="u-1",
-                policy={"profanity_mode": "OFF", "name_max_len": 64,
-                        "name_charset": "[a-z0-9._-]",
-                        "reserved_prefixes": [],
-                        "who_can_create": "ADMIN_ONLY",
-                        "profanity_allowlist": [], "profanity_denylist": []},
+                policy={
+                    "profanity_mode": "OFF",
+                    "name_max_len": 64,
+                    "name_charset": "[a-z0-9._-]",
+                    "reserved_prefixes": [],
+                    "who_can_create": "ADMIN_ONLY",
+                    "profanity_allowlist": [],
+                    "profanity_denylist": [],
+                },
                 is_admin=False,
             )
         )
@@ -224,7 +242,8 @@ def test_set_tag_visibility_core_writes_update_and_event(monkeypatch):
         for s, _ in session.executed
     )
     assert any(
-        "INSERT INTO tag_events" in s and "SET_VISIBILITY" in str(params).upper()
+        "INSERT INTO tag_events" in s
+        and "SET_VISIBILITY" in str(params).upper()
         or "SET_VISIBILITY" in s
         for s, params in session.executed
     )

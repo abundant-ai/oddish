@@ -81,7 +81,9 @@ async def test_list_orders_by_updated_at_desc(org_id):
     async with get_session() as session:
         for t in ("first", "second"):
             d = DocumentCreate(title=t, source_type="paste", content=t)
-            await docs.create_document_core(session, data=d, org_id=org_id, user_id="u1")
+            await docs.create_document_core(
+                session, data=d, org_id=org_id, user_id="u1"
+            )
         await session.commit()
         rows = await docs.list_documents_core(
             session, org_id=org_id, limit=10, offset=0

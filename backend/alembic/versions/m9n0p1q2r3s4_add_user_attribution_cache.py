@@ -17,9 +17,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute(
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS attribution_cache JSONB"
-    )
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS attribution_cache JSONB")
 
 
 def downgrade() -> None:
