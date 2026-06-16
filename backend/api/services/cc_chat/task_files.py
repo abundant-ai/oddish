@@ -2,10 +2,15 @@ from __future__ import annotations
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from oddish.core.endpoints import get_task_for_org_core
-from oddish.db.models import TaskVersionModel, TrialModel
+from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
 from oddish.db.storage import resolve_trial_s3_prefix
+
+
+class TaskNotFound(Exception):
+    """Raised when a task-scope chat references a task that doesn't exist
+    in the caller's org."""
 
 # Heavy/binary noise that wastes upload time and adds no chat value.
 _SKIP_PARTS = frozenset({"node_modules", "__pycache__", "sessions", "backups", "skills"})
@@ -19,18 +24,28 @@ async def collect_task_version_files(
     session: AsyncSession,
     storage,
     *,
-    task_id: str,
+    task_name: str,
     org_id: str | None,
     max_total_bytes: int = 50_000_000,
-) -> tuple[int | None, dict[int, list[str]], list[tuple[str, bytes]], bool]:
-    """Return (current_version, {version: [trial_id,...]}, files, truncated).
+) -> tuple[int | None, dict[int, list[str]], list[tuple[str, bytes]], bool, set[str]]:
+    """Return (current_version, {version: [trial_id,...]}, files, truncated,
+    probe_trial_ids).
 
-    `files` are (workspace_rel_path, bytes) tuples laid out as
-    jobs/v{version}/{trial_id}/{rel}. Org-scoped. Stops once the running byte
-    total would exceed max_total_bytes (sets truncated=True)."""
-    task = await get_task_for_org_core(
-        session, task_id=task_id, org_id=org_id, load_current_version=True
+    Resolves the task by ``name`` within the org (the per-task chat is keyed by
+    the human task name, which is unique per org). `files` are
+    (workspace_rel_path, bytes) tuples laid out as
+    jobs/v{version}/{trial_id}/{rel}. Stops once the running byte total would
+    exceed max_total_bytes (sets truncated=True). `probe_trial_ids` is the
+    subset of collected trials with is_probe set, so the chat can flag them as
+    distinct from regular runs. Raises TaskNotFound if the task doesn't exist."""
+    task_q = select(TaskModel).where(TaskModel.name == task_name).options(
+        selectinload(TaskModel.current_version)
     )
+    if org_id is not None:
+        task_q = task_q.where(TaskModel.org_id == org_id)
+    task = (await session.execute(task_q)).scalars().first()
+    if task is None:
+        raise TaskNotFound(task_name)
     current_version = task.current_version.version if task.current_version else None
 
     version_rows = (
@@ -42,6 +57,7 @@ async def collect_task_version_files(
     ).scalars().all()
 
     version_trials: dict[int, list[str]] = {}
+    probe_trial_ids: set[str] = set()
     files: list[tuple[str, bytes]] = []
     total = 0
     truncated = False
@@ -56,6 +72,7 @@ async def collect_task_version_files(
             trial_q = trial_q.where(TrialModel.org_id == org_id)
         trials = (await session.execute(trial_q)).scalars().all()
         version_trials[v.version] = [t.id for t in trials]
+        probe_trial_ids.update(t.id for t in trials if t.is_probe)
 
         for t in trials:
             prefix = resolve_trial_s3_prefix(
@@ -79,4 +96,4 @@ async def collect_task_version_files(
         if truncated:
             break
 
-    return current_version, version_trials, files, truncated
+    return current_version, version_trials, files, truncated, probe_trial_ids

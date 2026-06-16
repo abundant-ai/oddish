@@ -55,7 +55,7 @@ async def test_start_task_scope_uploads_versioned_files_and_claude_md(db):
         blob_store=_FakeStorage(),
     )
     session_id = await orch.start(
-        org_id=ORG, user_id="u1", scope_kind="task", scope_id="task_1",
+        org_id=ORG, user_id="u1", scope_kind="task", scope_id="demo-task",
         db_session_factory=factory,
     )
     assert session_id

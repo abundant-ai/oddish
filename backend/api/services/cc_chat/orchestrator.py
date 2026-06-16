@@ -115,9 +115,9 @@ class ChatOrchestrator:
             if self._blob is None:
                 raise RuntimeError("blob_store is required for task-scope chat sessions")
             async with self._db(db_session_factory) as db:
-                current_version, version_trials, files, truncated = (
+                current_version, version_trials, files, truncated, probe_trial_ids = (
                     await collect_task_version_files(
-                        db, self._blob, task_id=scope_id, org_id=org_id,
+                        db, self._blob, task_name=scope_id, org_id=org_id,
                     )
                 )
             if truncated:
@@ -128,6 +128,7 @@ class ChatOrchestrator:
                 task_name=scope_id,
                 current_version=current_version,
                 version_trials=version_trials,
+                probe_trial_ids=probe_trial_ids,
             )
         else:  # task_probes
             claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
