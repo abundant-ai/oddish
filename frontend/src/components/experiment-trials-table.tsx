@@ -249,7 +249,7 @@ function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
 /**
  * Reference-style inline action button: transparent by default, subtle
  * hover, disabled in ink-4. Used across the toolbar's "selected"
- * action row (Clear / Rerun / Cancel / Run analysis / Run verdict / Delete).
+ * action row (Clear / Rerun / Cancel / Run QA / Cancel QA / Delete).
  */
 function InlineBtn({
   onClick,
@@ -488,12 +488,12 @@ export function ExperimentTrialsTable({
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancellingSelected, setIsCancellingSelected] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
-  const [isCancellingAnalysis, setIsCancellingAnalysis] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
-  const [isCancellingVerdict, setIsCancellingVerdict] = useState(false);
-  const [verdictError, setVerdictError] = useState<string | null>(null);
+  // Trajectory analysis is a single task-level QA job (classify every trial,
+  // then synthesize the verdict), so the toolbar exposes one Run QA / Cancel
+  // QA action rather than separate analysis + verdict controls.
+  const [isRunningQA, setIsRunningQA] = useState(false);
+  const [isCancellingQA, setIsCancellingQA] = useState(false);
+  const [qaError, setQAError] = useState<string | null>(null);
   const [tagBulkOpen, setTagBulkOpen] = useState(false);
   const [tagBulkMode, setTagBulkMode] = useState<"snapshot" | "living">(
     "snapshot",
@@ -590,8 +590,7 @@ export function ExperimentTrialsTable({
   useEffect(() => {
     if (selectedTasks.size === 0) {
       setRerunError(null);
-      setAnalysisError(null);
-      setVerdictError(null);
+      setQAError(null);
     }
   }, [selectedTasks]);
 
@@ -894,17 +893,18 @@ export function ExperimentTrialsTable({
     [selectedTaskList],
   );
 
-  const selectedAnalysisCancellableTasks = useMemo(
-    () => selectedTaskList.filter((task) => taskHasActiveAnalysis(task)),
+  // Tasks whose single task-level QA job is in flight (classifying trials or
+  // synthesizing the verdict) and can therefore be cancelled.
+  const selectedQACancellableTasks = useMemo(
+    () =>
+      selectedTaskList.filter(
+        (task) => taskHasActiveAnalysis(task) || taskHasActiveVerdict(task),
+      ),
     [selectedTaskList],
   );
 
-  const selectedVerdictCancellableTasks = useMemo(
-    () => selectedTaskList.filter((task) => taskHasActiveVerdict(task)),
-    [selectedTaskList],
-  );
-
-  const selectedAnalysisRunnableTasks = useMemo(
+  // Tasks ready to (re)run QA: every trial terminal and no QA in flight.
+  const selectedQARunnableTasks = useMemo(
     () =>
       selectedTaskList.filter((task) => {
         const trials = task.trials ?? [];
@@ -917,25 +917,6 @@ export function ExperimentTrialsTable({
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
-      }),
-    [selectedTaskList],
-  );
-
-  const selectedVerdictRunnableTasks = useMemo(
-    () =>
-      selectedTaskList.filter((task) => {
-        const trials = task.trials ?? [];
-        if (trials.length === 0) return false;
-        const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
-        );
-        const allAnalysesComplete = trials.every(
-          (trial) =>
-            trial.analysis_status === "success" ||
-            trial.analysis_status === "failed",
-        );
-        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
-        return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
     [selectedTaskList],
   );
@@ -1195,24 +1176,26 @@ export function ExperimentTrialsTable({
     }
   };
 
-  const handleCancelAnalysisForSelectedTasks = async () => {
-    if (isCancellingAnalysis || selectedAnalysisCancellableTasks.length === 0) {
+  const handleCancelQAForSelectedTasks = async () => {
+    if (isCancellingQA || selectedQACancellableTasks.length === 0) {
       return;
     }
 
-    setIsCancellingAnalysis(true);
-    setAnalysisError(null);
+    setIsCancellingQA(true);
+    setQAError(null);
 
     try {
       const results = await Promise.allSettled(
-        selectedAnalysisCancellableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/analysis/cancel`, {
+        selectedQACancellableTasks.map(async (task) => {
+          // One task-level QA job; cancelling it stops both in-flight
+          // classification and verdict synthesis.
+          const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
             method: "POST",
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to cancel task analysis",
+              data.detail || data.error || "Failed to cancel task QA",
             );
           }
         }),
@@ -1220,38 +1203,38 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setAnalysisError(
-          `Failed to cancel analysis for ${failures.length} task(s).`,
-        );
+        setQAError(`Failed to cancel QA for ${failures.length} task(s).`);
       } else {
-        setAnalysisError(null);
+        setQAError(null);
       }
-      onRerun?.(selectedAnalysisCancellableTasks.map((task) => task.id));
+      onRerun?.(selectedQACancellableTasks.map((task) => task.id));
     } finally {
-      setIsCancellingAnalysis(false);
+      setIsCancellingQA(false);
     }
   };
 
-  const handleRunAnalysisForSelectedTasks = async () => {
-    if (!canRerun || isRunningAnalysis) return;
-    if (selectedAnalysisRunnableTasks.length === 0) {
-      setAnalysisError("No tasks are ready for analysis.");
+  const handleRunQAForSelectedTasks = async () => {
+    if (!canRerun || isRunningQA) return;
+    if (selectedQARunnableTasks.length === 0) {
+      setQAError("No tasks are ready for QA.");
       return;
     }
 
-    setIsRunningAnalysis(true);
-    setAnalysisError(null);
+    setIsRunningQA(true);
+    setQAError(null);
 
     try {
       const results = await Promise.allSettled(
-        selectedAnalysisRunnableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+        selectedQARunnableTasks.map(async (task) => {
+          // One task-level QA job: (re)classify every trial, then synthesize
+          // the task verdict.
+          const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis",
+              data.detail || data.error || "Failed to queue task QA",
             );
           }
         }),
@@ -1259,91 +1242,13 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`,
-        );
+        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
       } else {
-        setAnalysisError(null);
+        setQAError(null);
       }
-      onRerun?.(selectedAnalysisRunnableTasks.map((task) => task.id));
+      onRerun?.(selectedQARunnableTasks.map((task) => task.id));
     } finally {
-      setIsRunningAnalysis(false);
-    }
-  };
-
-  const handleCancelVerdictForSelectedTasks = async () => {
-    if (isCancellingVerdict || selectedVerdictCancellableTasks.length === 0) {
-      return;
-    }
-
-    setIsCancellingVerdict(true);
-    setVerdictError(null);
-
-    try {
-      const results = await Promise.allSettled(
-        selectedVerdictCancellableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/verdict/cancel`, {
-            method: "POST",
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(
-              data.detail || data.error || "Failed to cancel task verdict",
-            );
-          }
-        }),
-      );
-
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        setVerdictError(
-          `Failed to cancel verdict for ${failures.length} task(s).`,
-        );
-      } else {
-        setVerdictError(null);
-      }
-      onRerun?.(selectedVerdictCancellableTasks.map((task) => task.id));
-    } finally {
-      setIsCancellingVerdict(false);
-    }
-  };
-
-  const handleRunVerdictForSelectedTasks = async () => {
-    if (!canRerun || isRunningVerdict) return;
-    if (selectedVerdictRunnableTasks.length === 0) {
-      setVerdictError("No tasks are ready for a verdict.");
-      return;
-    }
-
-    setIsRunningVerdict(true);
-    setVerdictError(null);
-
-    try {
-      const results = await Promise.allSettled(
-        selectedVerdictRunnableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/verdict/retry`, {
-            method: "POST",
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            throw new Error(
-              data.detail || data.error || "Failed to queue task verdict",
-            );
-          }
-        }),
-      );
-
-      const failures = results.filter((result) => result.status === "rejected");
-      if (failures.length > 0) {
-        setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`,
-        );
-      } else {
-        setVerdictError(null);
-      }
-      onRerun?.(selectedVerdictRunnableTasks.map((task) => task.id));
-    } finally {
-      setIsRunningVerdict(false);
+      setIsRunningQA(false);
     }
   };
 
@@ -1985,61 +1890,30 @@ export function ExperimentTrialsTable({
                     </span>
                     {canRerun && (
                       <InlineBtn
-                        onClick={handleCancelAnalysisForSelectedTasks}
+                        onClick={handleCancelQAForSelectedTasks}
                         disabled={
-                          isCancellingAnalysis ||
-                          selectedAnalysisCancellableTasks.length === 0
+                          isCancellingQA ||
+                          selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isCancellingAnalysis
-                          ? "Cancelling"
-                          : "Cancel analysis"}
+                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
                         <InlineCount>
-                          {selectedAnalysisCancellableTasks.length}
+                          {selectedQACancellableTasks.length}
                         </InlineCount>
                       </InlineBtn>
                     )}
                     {canRerun && (
                       <InlineBtn
-                        onClick={handleRunAnalysisForSelectedTasks}
+                        onClick={handleRunQAForSelectedTasks}
                         disabled={
-                          isRunningAnalysis ||
-                          isCancellingAnalysis ||
-                          selectedAnalysisRunnableTasks.length === 0
+                          isRunningQA ||
+                          isCancellingQA ||
+                          selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningAnalysis ? "Queueing" : "Run analysis"}
+                        {isRunningQA ? "Queueing" : "Run QA"}
                         <InlineCount>
-                          {selectedAnalysisRunnableTasks.length}
-                        </InlineCount>
-                      </InlineBtn>
-                    )}
-                    {canRerun && (
-                      <InlineBtn
-                        onClick={handleCancelVerdictForSelectedTasks}
-                        disabled={
-                          isCancellingVerdict ||
-                          selectedVerdictCancellableTasks.length === 0
-                        }
-                      >
-                        {isCancellingVerdict ? "Cancelling" : "Cancel verdict"}
-                        <InlineCount>
-                          {selectedVerdictCancellableTasks.length}
-                        </InlineCount>
-                      </InlineBtn>
-                    )}
-                    {canRerun && (
-                      <InlineBtn
-                        onClick={handleRunVerdictForSelectedTasks}
-                        disabled={
-                          isRunningVerdict ||
-                          isCancellingVerdict ||
-                          selectedVerdictRunnableTasks.length === 0
-                        }
-                      >
-                        {isRunningVerdict ? "Queueing" : "Run verdict"}
-                        <InlineCount>
-                          {selectedVerdictRunnableTasks.length}
+                          {selectedQARunnableTasks.length}
                         </InlineCount>
                       </InlineBtn>
                     )}
@@ -2077,14 +1951,9 @@ export function ExperimentTrialsTable({
                     {rerunError}
                   </span>
                 )}
-                {analysisError && (
+                {qaError && (
                   <span className="text-[10px] text-[color:var(--paper-fail)]">
-                    {analysisError}
-                  </span>
-                )}
-                {verdictError && (
-                  <span className="text-[10px] text-[color:var(--paper-fail)]">
-                    {verdictError}
+                    {qaError}
                   </span>
                 )}
               </div>
