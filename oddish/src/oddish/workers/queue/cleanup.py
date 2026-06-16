@@ -79,6 +79,16 @@ ORPHANED_SLOT_GRACE_MINUTES = 2
 # over several ticks instead of one giant transaction.
 STUCK_ANALYZING_MINUTES = 15
 STUCK_ANALYZING_BATCH_LIMIT = 200
+
+# Backstop for tasks wedged in VERDICT_PENDING whose QA job is gone -- e.g. it
+# failed/exhausted without committing a terminal ``verdict_status`` (the old
+# unguarded verdict reconstruction crashed on probe-summary trials and rolled
+# back, leaving ``verdict_status='QUEUED'`` with no live worker_job). The
+# previous step-4 guard keyed off ``verdict_status NOT IN ('QUEUED','RUNNING')``
+# and so skipped exactly these rows, stranding them forever. We instead key off
+# "no live QA/VERDICT worker_job" and re-enqueue (or finalize) them. Batched so
+# a large backlog drains over several ticks instead of one giant burst.
+STALE_VERDICT_PENDING_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
@@ -513,26 +523,42 @@ async def cleanup_orphaned_queue_state(
                 tasks_progressed_to_verdict += 1
 
         # -----------------------------------------------------------------
-        # 4. VERDICT_PENDING tasks with no queued/running verdict_status.
-        #    Either their worker_jobs QA row finished and we never saw the
-        #    hook, or the task was created before the unified refactor and
-        #    has no QA row at all -- re-enqueue it so the dispatcher has
-        #    something to claim.
+        # 4. VERDICT_PENDING tasks with no LIVE QA job.
+        #    A task is wedged here when its QA (task-level) job is gone --
+        #    it finished/failed/exhausted (and we missed the hook, or it
+        #    rolled back before committing a terminal ``verdict_status``),
+        #    or the task predates the unified refactor and never had one.
+        #    The condition that matters is "no claimable QA/VERDICT
+        #    worker_job", NOT ``verdict_status``: a row stuck at
+        #    ``verdict_status='QUEUED'`` with no live job (the old
+        #    probe-summary KeyError left thousands of these) would never be
+        #    healed by a ``verdict_status``-keyed check. Re-enqueue so the
+        #    dispatcher has something to claim (or finalize if the verdict
+        #    is already terminal). ``ANALYSIS`` rows are intentionally
+        #    ignored here -- they no longer drive the verdict.
         # -----------------------------------------------------------------
         stale_verdict_pending = (
             await session.execute(
                 text(
                     """
-                    SELECT id
-                    FROM tasks
-                    WHERE status = 'VERDICT_PENDING'
-                      AND deleted_at IS NULL
-                      AND (
-                          verdict_status IS NULL
-                          OR verdict_status::text NOT IN ('QUEUED', 'RUNNING')
+                    SELECT t.id
+                    FROM tasks t
+                    WHERE t.status = 'VERDICT_PENDING'
+                      AND t.deleted_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM worker_jobs wj
+                          WHERE wj.subject_table = 'tasks'
+                            AND wj.subject_id = t.id
+                            AND wj.kind::text IN ('QA', 'VERDICT')
+                            AND wj.status::text IN (
+                                'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
+                            )
                       )
+                    ORDER BY t.updated_at ASC
+                    LIMIT :batch_limit
                     """
-                )
+                ),
+                {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
             )
         ).all()
 
