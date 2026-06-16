@@ -147,21 +147,39 @@ Each `jobs/v<version>/<trial_id>/` folder contains the usual Harbor trial tree
 (`config.json`, `result.json`, `trial.log`, `exception.txt`, `agent/`,
 `verifier/`). Read files on demand rather than assuming their contents.
 
+## Regular runs vs probe runs
+
+Trials marked `(probe)` below are **probe runs**: a probe prepends extra
+operator instructions to the task prompt — typically to test whether the agent
+cheats, fails in interesting ways, or behaves differently under a nudge. A
+probe's behavior is therefore NOT directly comparable to a regular run; treat
+probes as a distinct category. To see the nudge applied to a probe, read its
+`config.json` -> `harbor_config.extra_instructions`. Unmarked trials are
+regular runs with no operator overlay.
+
 ## Versions and trials in this workspace
 {version_block}
 """
 
 
 def render_task_chat_claude_md(
-    *, task_name: str, current_version: int | None, version_trials: dict[int, list[str]]
+    *,
+    task_name: str,
+    current_version: int | None,
+    version_trials: dict[int, list[str]],
+    probe_trial_ids: set[str] | None = None,
 ) -> str:
+    probes = probe_trial_ids or set()
     lines: list[str] = []
     for v in sorted(version_trials, reverse=True):
         tag = " (current)" if v == current_version else ""
         lines.append(f"- **v{v}**{tag}:")
         trials = sorted(version_trials[v])
         if trials:
-            lines.extend(f"  - `{tid}`" for tid in trials)
+            lines.extend(
+                f"  - `{tid}`" + (" (probe)" if tid in probes else "")
+                for tid in trials
+            )
         else:
             lines.append("  - _(no trials)_")
     version_block = "\n".join(lines) if lines else _EMPTY_TRIAL_BLOCK

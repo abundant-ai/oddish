@@ -277,7 +277,7 @@ function TaskDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <ChatButton scopeKind="task_probes" scopeId={task.name} />
+        <ChatButton scopeKind="task" scopeId={task.name} />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);
