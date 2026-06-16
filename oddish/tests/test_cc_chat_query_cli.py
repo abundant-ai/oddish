@@ -58,6 +58,30 @@ def test_search_maps_params(monkeypatch):
     assert seen["params"]["limit"] == 5
 
 
+def _card_item(i):
+    return {
+        "id": f"t{i}", "name": "x", "user_tags": [],
+        "total_trials": 1, "reward_success": 0, "reward_total": 0,
+        "last_run_at": None,
+    }
+
+
+def test_search_emits_has_more_when_truthy(monkeypatch):
+    out = _run(
+        monkeypatch, ["tasks", "search"],
+        lambda p, params=None: {"items": [_card_item(0)], "has_more": True},
+    )
+    assert json.loads(out.splitlines()[-1]) == {"_has_more": True}
+
+
+def test_search_omits_has_more_when_false(monkeypatch):
+    out = _run(
+        monkeypatch, ["tasks", "search"],
+        lambda p, params=None: {"items": [_card_item(0)], "has_more": False},
+    )
+    assert "_has_more" not in out
+
+
 def test_search_truncates_when_over_budget(monkeypatch):
     items = [
         {"id": f"t{i}", "name": "x" * 500, "user_tags": [],

@@ -253,6 +253,7 @@ class ChatScopeKind(str, Enum):
     experiment = "experiment"
     task_probes = "task_probes"
     task = "task"
+    global_ = "global"
 
 
 class ChatStatus(str, Enum):
