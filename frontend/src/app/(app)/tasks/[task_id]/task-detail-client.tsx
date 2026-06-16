@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
+import { ChatButton } from "@/components/cc-chat/chat-button";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -264,6 +265,7 @@ function TaskDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <ChatButton scopeKind="task_probes" scopeId={task.name} />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);

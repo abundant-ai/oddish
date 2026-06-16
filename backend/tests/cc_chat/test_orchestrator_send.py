@@ -119,3 +119,40 @@ async def test_send_disconnect_closes_turn_as_canceled(db):
         assert await turns_mod.running_turn(s, session_id="cs_1") is None
         t = (await s.execute(select(ChatTurn).where(ChatTurn.session_id == "cs_1"))).scalar_one()
         assert t.status == "canceled"
+
+
+async def test_send_archives_native_session_after_turn(db):
+    await seed_session(db, status="active")
+
+    def factory():
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    class _Blob:
+        def __init__(self): self.store = {}
+        async def upload_bytes(self, data, key, *, content_type=None): self.store[key] = data
+        async def download_bytes(self, key): return self.store[key]
+        async def object_exists(self, key): return key in self.store
+
+    from api.services.cc_chat.daytona_client import FakeDaytonaClient
+    client = FakeDaytonaClient()
+    sbx = await client.create_sandbox(env_vars={}, auto_stop_minutes=1, auto_delete_minutes=1, labels={})
+    native_path = "/home/daytona/.claude/projects/-home-daytona-workspace/claude-xyz.jsonl"
+    await client.upload_file(sbx, dest_path=native_path, content=b'{"line":1}\n')
+    client.exec_sync_results = {"find": (0, native_path + "\n")}
+
+    blob = _Blob()
+    orch = ChatOrchestrator(
+        daytona=client, runtime=_FakeRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(), anthropic_api_key="test", blob_store=blob,
+    )
+    orch._sandboxes["cs_1"] = sbx
+
+    async for _ in orch.send(session_id="cs_1", content="hi", db_session_factory=factory):
+        pass
+
+    from api.services.cc_chat.archive import native_session_blob_key
+    assert native_session_blob_key("cs_1") in blob.store
