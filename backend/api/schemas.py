@@ -103,12 +103,18 @@ class ExperimentShareResponse(BaseModel):
     name: str
     is_public: bool
     public_token: str | None = None
+    description: str | None = None
 
 
 class ExperimentUpdateRequest(BaseModel):
-    """Request to update experiment metadata."""
+    """Request to update experiment metadata.
 
-    name: str
+    Both fields are optional so callers can patch ``name`` and
+    ``description`` independently without clobbering the other.
+    """
+
+    name: str | None = None
+    description: str | None = None
 
 
 class ExperimentUpdateResponse(BaseModel):
@@ -116,3 +122,4 @@ class ExperimentUpdateResponse(BaseModel):
 
     id: str
     name: str
+    description: str | None = None

@@ -1097,6 +1097,7 @@ class PublicExperimentResponse(BaseModel):
 
     name: str
     public_token: str
+    description: str | None = None
 
 
 class PublicExperimentListItem(BaseModel):

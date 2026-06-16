@@ -613,6 +613,7 @@ async def get_experiment_share(
             name=experiment.name,
             is_public=bool(experiment.is_public),
             public_token=experiment.public_token,
+            description=experiment.description,
         )
 
 
@@ -625,10 +626,22 @@ async def update_experiment(
     payload: ExperimentUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ExperimentUpdateResponse:
-    """Update experiment metadata."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Experiment name cannot be empty")
+    """Update experiment metadata.
+
+    ``name`` and ``description`` are independently optional: a request may
+    update either or both. Only fields explicitly provided (``not None``) are
+    touched, so a description edit never clobbers the name and vice versa.
+    """
+    if payload.name is None and payload.description is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    name: str | None = None
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=400, detail="Experiment name cannot be empty"
+            )
 
     async with get_session() as session:
         result = await session.execute(
@@ -641,10 +654,20 @@ async def update_experiment(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
-        experiment.name = name
+        if name is not None:
+            experiment.name = name
+        if payload.description is not None:
+            # Treat blank/whitespace-only as "no description" so the empty
+            # state is uniform (NULL) regardless of how it was cleared.
+            cleaned = payload.description.strip()
+            experiment.description = cleaned or None
         await session.commit()
 
-        return ExperimentUpdateResponse(id=experiment.id, name=experiment.name)
+        return ExperimentUpdateResponse(
+            id=experiment.id,
+            name=experiment.name,
+            description=experiment.description,
+        )
 
 
 @router.delete("/experiments/{experiment_id}")

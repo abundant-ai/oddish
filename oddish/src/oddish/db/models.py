@@ -398,6 +398,10 @@ class ExperimentModel(TimestampedMixin, Base):
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # User-authored markdown description shown in the experiment header.
+    # Nullable; ``None``/blank means "no description".
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # ``lazy="select"`` (the default): no production read path actually
     # touches ``experiment.tasks``. Loading an experiment used to fan
     # out into a task fetch via ``task_experiments`` on every access;
