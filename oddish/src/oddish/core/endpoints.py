@@ -167,6 +167,14 @@ async def list_tasks_core(
         # set exactly as before. The filtered selectin still runs inside the
         # async session (eager, no lazy load -> no MissingGreenlet) and still
         # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        #
+        # NOTE: this relies on ``task.trials`` being UNLOADED on the incoming
+        # session. A filtered selectin scopes the collection on first load but
+        # does NOT re-filter one already fully loaded in the same session. Every
+        # ``/tasks`` route calls this on a fresh per-request session, so it holds
+        # today; if this helper is ever reused after the full ``trials`` set was
+        # loaded on the same session, add ``populate_existing()`` (or re-scope in
+        # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
                 TrialModel.experiment_id == experiment_id,
