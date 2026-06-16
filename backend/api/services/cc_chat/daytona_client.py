@@ -13,6 +13,7 @@ from daytona import (
     AsyncDaytona,
     CreateSandboxFromSnapshotParams,
     DaytonaConfig,
+    DaytonaNotFoundError,
     SessionExecuteRequest,
 )
 
@@ -34,6 +35,11 @@ class DaytonaClient(Protocol):
         auto_delete_minutes: int,
         labels: dict[str, str],
     ) -> CreatedSandbox: ...
+
+    async def connect_sandbox(self, *, sandbox_id: str) -> CreatedSandbox:
+        """Reconnect to an existing sandbox by id, raising DaytonaNotFoundError
+        if it no longer exists."""
+        ...
 
     async def upload_file(
         self, sandbox: CreatedSandbox, *, dest_path: str, content: bytes
@@ -105,6 +111,10 @@ class RealDaytonaClient:
                 ephemeral=True,
             )
         )
+        return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
+
+    async def connect_sandbox(self, *, sandbox_id: str) -> CreatedSandbox:
+        sbx = await self._daytona.get(sandbox_id)
         return CreatedSandbox(id=sbx.id, _sdk_handle=sbx)
 
     async def upload_file(
@@ -292,6 +302,11 @@ class FakeDaytonaClient:
             "labels": labels,
         }
         return CreatedSandbox(id=sbx_id, _sdk_handle=sbx_id)
+
+    async def connect_sandbox(self, *, sandbox_id) -> CreatedSandbox:
+        if sandbox_id in self.deleted or sandbox_id not in self.sandboxes:
+            raise DaytonaNotFoundError(f"sandbox not found: {sandbox_id}")
+        return CreatedSandbox(id=sandbox_id, _sdk_handle=sandbox_id)
 
     async def upload_file(self, sandbox, *, dest_path, content) -> None:
         self.sandboxes[sandbox.id]["files"][dest_path] = content

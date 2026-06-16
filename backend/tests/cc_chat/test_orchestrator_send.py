@@ -121,6 +121,77 @@ async def test_send_disconnect_closes_turn_as_canceled(db):
         assert t.status == "canceled"
 
 
+async def test_send_reconnects_sandbox_on_a_different_container(db):
+    """The API autoscales across containers with no session affinity, so the
+    container handling a message usually isn't the one that ran start() and
+    holds the sandbox handle in memory. send() must rehydrate the handle from
+    the persisted sandbox_id instead of raising SessionNotFound."""
+    from api.services.cc_chat.daytona_client import FakeDaytonaClient
+
+    # Shared "remote" Daytona service + a sandbox created by container A.
+    client = FakeDaytonaClient()
+    sbx = await client.create_sandbox(
+        env_vars={}, auto_stop_minutes=30, auto_delete_minutes=60, labels={}
+    )
+    await seed_session(db, status="active", sandbox_id=sbx.id)
+
+    def factory():
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    # Container B: fresh orchestrator, empty _sandboxes — never ran start().
+    orch = ChatOrchestrator(
+        daytona=client,
+        runtime=_FakeRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(),
+        anthropic_api_key="test",
+    )
+    assert "cs_1" not in orch._sandboxes
+
+    seen = []
+    async for ev in orch.send(session_id="cs_1", content="hi", db_session_factory=factory):
+        seen.append(ev)
+
+    assert len(seen) == 2
+    # Handle was rehydrated by reconnecting to the existing sandbox.
+    assert orch._sandboxes["cs_1"].id == sbx.id
+
+
+async def test_send_session_not_found_when_sandbox_deleted(db):
+    """If the persisted sandbox no longer exists (ephemeral, auto-stopped and
+    evicted), reconnect fails and the session reads as not found."""
+    from api.services.cc_chat.daytona_client import FakeDaytonaClient
+
+    client = FakeDaytonaClient()
+    sbx = await client.create_sandbox(
+        env_vars={}, auto_stop_minutes=30, auto_delete_minutes=60, labels={}
+    )
+    client.deleted.add(sbx.id)
+    await seed_session(db, status="active", sandbox_id=sbx.id)
+
+    def factory():
+        @asynccontextmanager
+        async def _cm():
+            async with db() as s:
+                yield s
+        return _cm()
+
+    orch = ChatOrchestrator(
+        daytona=client,
+        runtime=_FakeRuntime(),
+        transcript_buffer=SessionTranscriptBuffer(),
+        anthropic_api_key="test",
+    )
+
+    from api.services.cc_chat.orchestrator import SessionNotFound
+    with pytest.raises(SessionNotFound):
+        async for _ in orch.send(session_id="cs_1", content="hi", db_session_factory=factory):
+            pass
+
+
 async def test_send_archives_native_session_after_turn(db):
     await seed_session(db, status="active")
 
