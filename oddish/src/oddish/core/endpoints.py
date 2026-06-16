@@ -2739,10 +2739,35 @@ async def create_task_sweep_core(
             else default_environment
         )
 
+        # Reconcile-to-N (default): count the live, non-probe trials already on
+        # the task's CURRENT version, grouped by (agent, model), so the sweep
+        # only tops up the shortfall instead of unconditionally appending N.
+        # Scoping to current_version_id is what makes a changed task (fresh
+        # version -> 0 existing) correctly get a full N. The default ORM select
+        # excludes soft-deleted rows, so tombstones never count toward live N.
+        # ``--add`` / ``additive=True`` opts out: skip the count entirely and
+        # fall back to the additive behavior (existing_counts=None -> +N).
+        existing_counts: dict[tuple[str, str | None], int] | None = None
+        if not submission.additive:
+            existing_counts_result = await session.execute(
+                select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
+                .where(
+                    TrialModel.task_id == task.id,
+                    TrialModel.task_version_id == task.current_version_id,
+                    TrialModel.is_probe.is_(False),
+                )
+                .group_by(TrialModel.agent, TrialModel.model)
+            )
+            existing_counts = {
+                (agent, model): count
+                for agent, model, count in existing_counts_result.all()
+            }
+
         trials = build_trial_specs_from_sweep(
             submission,
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
+            existing_counts=existing_counts,
         )
 
         fallback_experiment_id = primary_experiment.id if primary_experiment else None
