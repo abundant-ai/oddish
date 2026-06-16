@@ -39,15 +39,20 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
 
   const send = useCallback(async (text: string) => {
     setError(null);
+
+    // Echo the user's message and enter the working state BEFORE provisioning.
+    // On the first message ensureSession() blocks ~10s creating the sandbox;
+    // doing this first means the message shows immediately and the composer is
+    // disabled during provisioning (prevents a second send racing in).
+    setBubbles((b) => [...b, { role: "user", text }]);
+    setWorking(true);
+
     const id = await ensureSession();
-    if (!id) return;
+    if (!id) { setWorking(false); return; }
 
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-
-    setBubbles((b) => [...b, { role: "user", text }]);
-    setWorking(true);
 
     let res: Response;
     try {
