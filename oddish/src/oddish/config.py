@@ -704,6 +704,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # Externally reachable base URL of the oddish backend API. Injected into
+    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
+    # oddish-query CLI can call back into the backend.
+    public_api_base_url: str = ""
+
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
     db_use_null_pool: ClassVar[bool] = False

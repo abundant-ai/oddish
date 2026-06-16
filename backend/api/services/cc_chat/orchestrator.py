@@ -2,17 +2,26 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from importlib import resources
 from typing import Callable, Literal
 
 from daytona import DaytonaNotFoundError
 from sqlalchemy.ext.asyncio import AsyncSession as _AsyncSession
 
-from models import ChatSession, ChatStatus, generate_id
+from models import (
+    APIKeyModel,
+    APIKeyScope,
+    ChatSession,
+    ChatStatus,
+    create_api_key,
+    generate_id,
+)
 from oddish.db.models import utcnow as _utcnow
 from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
+    render_global_claude_md,
     render_task_chat_claude_md,
     render_task_probes_claude_md,
 )
@@ -23,6 +32,14 @@ from api.services.cc_chat.task_files import collect_task_version_files
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
 from api.services.cc_chat.turns import close_turn, open_turn
+
+# The internal READ key minted for a global-scope sandbox expires after this
+# many minutes. This expiry is the eviction backstop: a sandbox that escapes
+# close() still loses backend access once the key lapses.
+GLOBAL_QUERY_KEY_TTL_MINUTES = 45
+
+# The oddish-query CLI is uploaded here and made executable for global scope.
+QUERY_CLI_DEST = "oddish-query"
 
 log = logging.getLogger("oddish.cc_chat.orchestrator")
 
@@ -63,6 +80,7 @@ class ChatOrchestrator:
         anthropic_api_key: str,
         chat_auto_stop_minutes: int = 30,
         chat_auto_delete_minutes: int = 60,
+        public_api_base_url: str = "",
         blob_store=None,
     ) -> None:
         self._daytona = daytona
@@ -71,23 +89,70 @@ class ChatOrchestrator:
         self._anthropic_api_key = anthropic_api_key
         self._auto_stop = chat_auto_stop_minutes
         self._auto_delete = chat_auto_delete_minutes
+        self._public_api_base_url = public_api_base_url
         self._blob = blob_store
         self._sandboxes: dict[str, CreatedSandbox] = {}
 
-    async def _provision_sandbox(
-        self, *, session_id: str, scope_kind: str, scope_id: str
-    ) -> CreatedSandbox:
-        """Provision a fresh sandbox for a chat session: render CLAUDE.md, create
-        the Daytona sandbox, install the runtime, and upload CLAUDE.md. On any
-        failure the partially-created sandbox is deleted and the error re-raised.
-        Shared by start() and resume() so their provisioning never drifts."""
+    async def _resolve_scope_inputs(
+        self,
+        *,
+        scope_kind: str,
+        scope_id: str,
+        org_id: str | None,
+        db_session_factory: Callable[[], object],
+    ) -> tuple[str, list[tuple[str, bytes]]]:
+        """Resolve the CLAUDE.md text and any workspace files for a scope.
+
+        Returns ``(claude_md, files)``. Shared by start() and resume() so the
+        sandbox contents never drift between the two provisioning paths.
+        """
+        files: list[tuple[str, bytes]] = []
         if scope_kind == "experiment":
             claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
-        else:
+        elif scope_kind == "global":
+            claude_md = render_global_claude_md(org_id=org_id or scope_id)
+        elif scope_kind == "task":
+            if self._blob is None:
+                raise RuntimeError("blob_store is required for task-scope chat sessions")
+            async with self._db(db_session_factory) as db:
+                current_version, version_trials, files, truncated = (
+                    await collect_task_version_files(
+                        db, self._blob, task_id=scope_id, org_id=org_id,
+                    )
+                )
+            if truncated:
+                log.warning(
+                    "cc_chat task-scope upload truncated at byte cap: task=%s", scope_id
+                )
+            claude_md = render_task_chat_claude_md(
+                task_name=scope_id,
+                current_version=current_version,
+                version_trials=version_trials,
+            )
+        else:  # task_probes
             claude_md = render_task_probes_claude_md(task_name=scope_id, trial_ids=[])
+        return claude_md, files
+
+    async def _provision_sandbox(
+        self,
+        *,
+        session_id: str,
+        claude_md: str,
+        files: list[tuple[str, bytes]] | None = None,
+        extra_env: dict[str, str] | None = None,
+        upload_query_cli: bool = False,
+    ) -> CreatedSandbox:
+        """Provision a fresh sandbox for a chat session: create the Daytona
+        sandbox, install the runtime, upload CLAUDE.md (plus any scope files and
+        the oddish-query CLI). On any failure the partially-created sandbox is
+        deleted and the error re-raised. Shared by start() and resume() so their
+        provisioning never drifts."""
+        env_vars = {"ANTHROPIC_API_KEY": self._anthropic_api_key}
+        if extra_env:
+            env_vars.update(extra_env)
 
         sandbox = await Provisioner(client=self._daytona).create(
-            env_vars={"ANTHROPIC_API_KEY": self._anthropic_api_key},
+            env_vars=env_vars,
             auto_stop_minutes=self._auto_stop,
             auto_delete_minutes=self._auto_delete,
             labels={"app": "cc_chat", "session_id": session_id},
@@ -95,29 +160,77 @@ class ChatOrchestrator:
         )
         try:
             await self._runtime.install(self._daytona, sandbox)
+            if files:
+                await upload_files(
+                    self._daytona, sandbox, files=files, workspace_root=WORKSPACE_ROOT,
+                )
             await self._daytona.upload_file(
                 sandbox,
                 dest_path=f"{WORKSPACE_ROOT}/CLAUDE.md",
                 content=claude_md.encode("utf-8"),
             )
-            # TODO(phase2): sync trial/probe artifacts into the sandbox workspace
-            # via oddish.core (the experiment/task_probes file resolution that the
-            # ported start() did against a blob store + OddishClient + ProbeRun).
+            if upload_query_cli:
+                await self._upload_query_cli(sandbox)
         except Exception:
             await delete_sandbox_quietly(self._daytona, sandbox)
             raise
         return sandbox
+
+    async def _upload_query_cli(self, sandbox: CreatedSandbox) -> None:
+        """Upload the stdlib-only oddish-query CLI and make it executable."""
+        cli_bytes = resources.files("oddish").joinpath(
+            "cc_chat_query_cli.py"
+        ).read_bytes()
+        dest = f"{WORKSPACE_ROOT}/{QUERY_CLI_DEST}"
+        await self._daytona.upload_file(sandbox, dest_path=dest, content=cli_bytes)
+        await self._daytona.exec_sync(sandbox, command=f"chmod +x {dest}")
 
     async def start(
         self,
         *,
         org_id: str,
         user_id: str | None,
-        scope_kind: Literal["experiment", "task_probes"],
+        scope_kind: Literal["experiment", "task_probes", "task", "global"],
         scope_id: str,
         db_session_factory: Callable[[], object],
     ) -> str:
         session_id = generate_id()
+
+        claude_md, files = await self._resolve_scope_inputs(
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            org_id=org_id,
+            db_session_factory=db_session_factory,
+        )
+
+        # Global scope gets a read-only oddish-query credential minted just for
+        # this sandbox; the key id is recorded on the row so close() can revoke
+        # it. The 45-min expiry is the eviction backstop for any sandbox that
+        # escapes close().
+        extra_env: dict[str, str] = {}
+        query_api_key_id: str | None = None
+        if scope_kind == "global":
+            if not self._public_api_base_url:
+                raise RuntimeError(
+                    "ODDISH_PUBLIC_API_BASE_URL must be set for global-scope chat"
+                )
+            async with self._db(db_session_factory) as db:
+                api_key, raw_key = create_api_key(
+                    org_id=org_id,
+                    name=f"cc-chat:{session_id}",
+                    scope=APIKeyScope.READ,
+                    created_by_user_id=user_id,
+                    expires_at=_now() + timedelta(minutes=GLOBAL_QUERY_KEY_TTL_MINUTES),
+                    is_internal=True,
+                )
+                db.add(api_key)
+                await db.commit()
+                query_api_key_id = api_key.id
+            extra_env = {
+                "ODDISH_API_KEY": raw_key,
+                "ODDISH_API_BASE_URL": self._public_api_base_url,
+            }
+
         async with self._db(db_session_factory) as db:
             db.add(
                 ChatSession(
@@ -127,6 +240,7 @@ class ChatOrchestrator:
                     scope_kind=scope_kind,
                     scope_id=scope_id,
                     status=ChatStatus.provisioning.value,
+                    query_api_key_id=query_api_key_id,
                     created_at=_now(),
                     last_activity=_now(),
                 )
@@ -135,7 +249,11 @@ class ChatOrchestrator:
 
         try:
             sandbox = await self._provision_sandbox(
-                session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
+                session_id=session_id,
+                claude_md=claude_md,
+                files=files,
+                extra_env=extra_env,
+                upload_query_cli=scope_kind == "global",
             )
         except Exception:
             async with self._db(db_session_factory) as db:
@@ -172,10 +290,66 @@ class ChatOrchestrator:
                 raise SessionNotFound(session_id)
             scope_kind = row.scope_kind
             scope_id = row.scope_id
+            org_id = row.org_id
+            user_id = row.user_id
             claude_session_id = row.claude_session_id
+            prior_query_api_key_id = row.query_api_key_id
+
+        claude_md, files = await self._resolve_scope_inputs(
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            org_id=org_id,
+            db_session_factory=db_session_factory,
+        )
+
+        # A resumed global-scope sandbox needs a fresh oddish-query credential.
+        # The prior key is usually gone (revoked on close, or expired), but a
+        # session marked `broken` by send()'s error handler is never revoked, so
+        # hard-delete the existing key before re-pointing to avoid orphaning it.
+        # Then mint a new one and re-point the row at it.
+        extra_env: dict[str, str] = {}
+        new_query_api_key_id: str | None = None
+        if scope_kind == "global":
+            if not self._public_api_base_url:
+                raise RuntimeError(
+                    "ODDISH_PUBLIC_API_BASE_URL must be set for global-scope chat"
+                )
+            if prior_query_api_key_id is not None:
+                try:
+                    async with self._db(db_session_factory) as db:
+                        prior_key = await db.get(APIKeyModel, prior_query_api_key_id)
+                        if prior_key is not None:
+                            await db.delete(prior_key)
+                            await db.commit()
+                except Exception:
+                    log.exception(
+                        "prior query api-key delete failed: session=%s key=%s",
+                        session_id,
+                        prior_query_api_key_id,
+                    )
+            async with self._db(db_session_factory) as db:
+                api_key, raw_key = create_api_key(
+                    org_id=org_id,
+                    name=f"cc-chat:{session_id}",
+                    scope=APIKeyScope.READ,
+                    created_by_user_id=user_id,
+                    expires_at=_now() + timedelta(minutes=GLOBAL_QUERY_KEY_TTL_MINUTES),
+                    is_internal=True,
+                )
+                db.add(api_key)
+                await db.commit()
+                new_query_api_key_id = api_key.id
+            extra_env = {
+                "ODDISH_API_KEY": raw_key,
+                "ODDISH_API_BASE_URL": self._public_api_base_url,
+            }
 
         sandbox = await self._provision_sandbox(
-            session_id=session_id, scope_kind=scope_kind, scope_id=scope_id
+            session_id=session_id,
+            claude_md=claude_md,
+            files=files,
+            extra_env=extra_env,
+            upload_query_cli=scope_kind == "global",
         )
         try:
             if claude_session_id:
@@ -199,6 +373,8 @@ class ChatOrchestrator:
             row.error = None
             row.closed_at = None
             row.last_activity = _now()
+            if new_query_api_key_id is not None:
+                row.query_api_key_id = new_query_api_key_id
             await db.commit()
 
     async def send(
@@ -320,13 +496,31 @@ class ChatOrchestrator:
         if sandbox is not None:
             await delete_sandbox_quietly(self._daytona, sandbox)
 
+        query_api_key_id: str | None = None
         async with self._db(db_session_factory) as db:
             row = await db.get(ChatSession, session_id)
             if row is not None:
+                query_api_key_id = row.query_api_key_id
                 if row.status != ChatStatus.broken.value:
                     row.status = ChatStatus.closed.value
                 row.closed_at = _now()
                 await db.commit()
+
+        # Revoke the internal oddish-query key (global scope). Best-effort: the
+        # 45-min expiry is the backstop if this delete fails.
+        if query_api_key_id is not None:
+            try:
+                async with self._db(db_session_factory) as db:
+                    api_key = await db.get(APIKeyModel, query_api_key_id)
+                    if api_key is not None:
+                        await db.delete(api_key)
+                        await db.commit()
+            except Exception:
+                log.exception(
+                    "query api-key revoke failed: session=%s key=%s",
+                    session_id,
+                    query_api_key_id,
+                )
 
     async def export_skills(self, *, session_id: str) -> bytes:
         """Tar /home/daytona/workspace/.claude/skills/ from the sandbox and return bytes."""

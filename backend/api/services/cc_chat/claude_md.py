@@ -134,6 +134,44 @@ def render_task_probes_claude_md(
     return _PROBE_TEMPLATE.format(task_name=task_name, trial_list=trial_list)
 
 
+_TASK_CHAT_TEMPLATE = """# Task chat — {task_name}
+
+You are helping investigate the trial runs for this task. The trial logs are
+already in your workspace under `jobs/v<version>/<trial_id>/...`.
+
+**Current version: v{current_version} — focus here by default.** Past versions
+are also available in their own `jobs/v<N>/` folders; only look at them if the
+user asks about earlier runs or a comparison across versions.
+
+Each `jobs/v<version>/<trial_id>/` folder contains the usual Harbor trial tree
+(`config.json`, `result.json`, `trial.log`, `exception.txt`, `agent/`,
+`verifier/`). Read files on demand rather than assuming their contents.
+
+## Versions and trials in this workspace
+{version_block}
+"""
+
+
+def render_task_chat_claude_md(
+    *, task_name: str, current_version: int | None, version_trials: dict[int, list[str]]
+) -> str:
+    lines: list[str] = []
+    for v in sorted(version_trials, reverse=True):
+        tag = " (current)" if v == current_version else ""
+        lines.append(f"- **v{v}**{tag}:")
+        trials = sorted(version_trials[v])
+        if trials:
+            lines.extend(f"  - `{tid}`" for tid in trials)
+        else:
+            lines.append("  - _(no trials)_")
+    version_block = "\n".join(lines) if lines else _EMPTY_TRIAL_BLOCK
+    return _TASK_CHAT_TEMPLATE.format(
+        task_name=task_name,
+        current_version=current_version if current_version is not None else "?",
+        version_block=version_block,
+    )
+
+
 _GLOBAL_TEMPLATE = """\
 # Oddish tasks — org-wide chat
 
