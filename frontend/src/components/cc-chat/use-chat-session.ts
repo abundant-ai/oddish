@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatBubble, ChatScopeKind } from "@/lib/cc-chat-types";
 
 interface UseChatSession {
@@ -20,7 +20,7 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
-  const assistantRef = useRef<string>("");
+  const abortRef = useRef<AbortController | null>(null);
 
   const ensureSession = useCallback(async (): Promise<string | null> => {
     if (sessionId) return sessionId;
@@ -40,32 +40,60 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
     setError(null);
     const id = await ensureSession();
     if (!id) return;
+
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setBubbles((b) => [...b, { role: "user", text }]);
     setWorking(true);
-    assistantRef.current = "";
 
-    const res = await fetch(`/api/chat-sessions/${id}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: text }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`/api/chat-sessions/${id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text }),
+        signal: ac.signal,
+      });
+    } catch (e) {
+      setWorking(false);
+      if (!isAbort(e)) setError("Chat stream failed");
+      return;
+    }
     if (!res.ok || !res.body) { setWorking(false); setError("Chat stream failed"); return; }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    let startedAssistant = false;
 
     function handleFrame(frame: string) {
       const lines = frame.split("\n");
       const evType = lines.find((l) => l.startsWith("event:"))?.slice(6).trim();
       const dataLine = lines.find((l) => l.startsWith("data:"))?.slice(5).trim();
       if (!dataLine) return;
-      if (evType === "error") { setError("Chat error"); return; }
+      if (evType === "error") {
+        try { const d = JSON.parse(dataLine); setError((d && (d.detail || d.type)) || "Chat error"); }
+        catch { setError(dataLine || "Chat error"); }
+        return;
+      }
       if (evType === "done") return;
       try {
         const ev = JSON.parse(dataLine);
         const piece = extractAssistantText(ev);
-        if (piece) assistantRef.current += piece;
+        if (!piece) return;
+        if (!startedAssistant) {
+          setBubbles((b) => [...b, { role: "assistant", text: piece }]);
+          startedAssistant = true;
+        } else {
+          setBubbles((b) => {
+            const next = [...b];
+            const last = next[next.length - 1];
+            if (last && last.role === "assistant") next[next.length - 1] = { ...last, text: last.text + piece };
+            return next;
+          });
+        }
       } catch { /* ignore non-JSON keepalive */ }
     }
 
@@ -81,24 +109,30 @@ export function useChatSession(scopeKind: ChatScopeKind, scopeId: string): UseCh
           handleFrame(frame);
         }
       }
+    } catch (e) {
+      if (!isAbort(e)) setError("Chat stream failed");
     } finally {
-      if (assistantRef.current) {
-        const finalText = assistantRef.current;
-        setBubbles((b) => [...b, { role: "assistant", text: finalText }]);
-      }
       setWorking(false);
     }
   }, [ensureSession]);
 
+  useEffect(() => () => abortRef.current?.abort(), []);
+
   const reset = useCallback(() => {
+    abortRef.current?.abort();
     setSessionId(null); setBubbles([]); setError(null); setWorking(false);
   }, []);
 
   const adopt = useCallback((id: string) => {
+    abortRef.current?.abort();
     setSessionId(id); setBubbles([]); setError(null); setWorking(false);
   }, []);
 
   return { sessionId, bubbles, working, error, unavailable, send, reset, adopt };
+}
+
+function isAbort(e: unknown): boolean {
+  return e instanceof DOMException && e.name === "AbortError";
 }
 
 // stream-json assistant text lives in event.message.content[].text for
