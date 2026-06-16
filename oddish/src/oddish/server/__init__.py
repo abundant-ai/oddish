@@ -16,9 +16,7 @@ from rich.console import Console
 
 from oddish.core.endpoints import (
     browse_tasks_core,
-    cancel_task_analysis_core,
-    cancel_task_verdict_core,
-    cancel_trial_analysis_core,
+    cancel_task_qa_core,
     combine_experiments_core,
     create_task_sweep_core,
     get_task_detail_core,
@@ -28,9 +26,7 @@ from oddish.core.endpoints import (
     get_trial_for_org_core,
     list_task_versions_core,
     list_tasks_core,
-    rerun_task_analysis_core,
-    rerun_task_verdict_core,
-    rerun_trial_analysis_core,
+    rerun_task_qa_core,
     retry_trial_core,
 )
 
@@ -570,36 +566,23 @@ async def get_trial(task_id: str, index: int):
 
 
 # =============================================================================
-# Analysis & Verdict Retry
+# Task QA (trajectory analysis + verdict, one job)
 # =============================================================================
 
 
-@api.post("/tasks/{task_id}/analysis/retry")
-async def retry_task_analysis(task_id: str) -> dict:
-    """Queue analysis jobs for every completed trial in a task."""
+@api.post("/tasks/{task_id}/qa/retry")
+async def retry_task_qa(task_id: str) -> dict:
+    """(Re)run the single task-level QA job: classify every trial, then
+    synthesize the task verdict."""
     async with get_session() as session:
-        return await rerun_task_analysis_core(session, task_id=task_id)
+        return await rerun_task_qa_core(session, task_id=task_id)
 
 
-@api.post("/tasks/{task_id}/analysis/cancel")
-async def cancel_task_analysis(task_id: str) -> dict:
-    """Cancel active analysis jobs for a task without cancelling trials."""
+@api.post("/tasks/{task_id}/qa/cancel")
+async def cancel_task_qa(task_id: str) -> dict:
+    """Cancel a task's in-flight QA job."""
     async with get_session() as session:
-        return await cancel_task_analysis_core(session, task_id=task_id)
-
-
-@api.post("/tasks/{task_id}/verdict/retry")
-async def retry_task_verdict(task_id: str) -> dict:
-    """Queue a fresh verdict job for a task whose analyses are complete."""
-    async with get_session() as session:
-        return await rerun_task_verdict_core(session, task_id=task_id)
-
-
-@api.post("/tasks/{task_id}/verdict/cancel")
-async def cancel_task_verdict(task_id: str) -> dict:
-    """Cancel an active verdict job for a task."""
-    async with get_session() as session:
-        return await cancel_task_verdict_core(session, task_id=task_id)
+        return await cancel_task_qa_core(session, task_id=task_id)
 
 
 @api.post("/trials/{trial_id}/retry")
@@ -607,20 +590,6 @@ async def retry_trial(trial_id: str) -> dict:
     """Re-queue a failed or completed trial for another attempt."""
     async with get_session() as session:
         return await retry_trial_core(session, trial_id=trial_id)
-
-
-@api.post("/trials/{trial_id}/analysis/retry")
-async def retry_trial_analysis(trial_id: str) -> dict:
-    """Queue analysis for a completed trial and invalidate its task verdict."""
-    async with get_session() as session:
-        return await rerun_trial_analysis_core(session, trial_id=trial_id)
-
-
-@api.post("/trials/{trial_id}/analysis/cancel")
-async def cancel_trial_analysis(trial_id: str) -> dict:
-    """Cancel active analysis for one trial."""
-    async with get_session() as session:
-        return await cancel_trial_analysis_core(session, trial_id=trial_id)
 
 
 # =============================================================================

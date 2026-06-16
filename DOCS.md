@@ -82,7 +82,7 @@ Options
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
-- `--run-analysis` - Run trial analysis and compute a task verdict
+- `--run-analysis` - Run task-level QA (classify every trial's trajectory and compute the task verdict)
 - `--disable-verification` - Skip task verification or tests
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
@@ -94,8 +94,7 @@ Options
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
 - `--retry` - Re-run an existing target instead of submitting new work (see below)
-- `--analysis` - With `--retry`: re-run analysis instead of trials
-- `--verdict` - With `--retry`: re-run the task verdict instead of trials
+- `--qa` - With `--retry`: re-run the task-level QA job (classify every trial + synthesize the verdict) instead of retrying trials
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
 - `--api TEXT` - Override the API URL
 - `--json` - Emit JSON for scripts and CI; implies `--background`
@@ -116,9 +115,8 @@ oddish run <task_id> --retry -y
 # Retry all failed trials across an experiment
 oddish run <experiment_id> --retry -y
 
-# Re-run analysis or the task verdict instead of trials
-oddish run <task_id> --retry --analysis
-oddish run <task_id> --retry --verdict
+# Re-run the task-level QA job (classify every trial + synthesize the verdict)
+oddish run <task_id> --retry --qa
 
 # Machine-readable summary of what was queued
 oddish run <experiment_id> --retry -y --json
@@ -126,9 +124,10 @@ oddish run <experiment_id> --retry -y --json
 
 - Default (`--retry` alone) re-queues failed trials. For task and experiment
 targets, only trials currently in a `failed` state are retried.
-- `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
-task-wide); `--verdict` re-runs the task verdict.
-- `--analysis` and `--verdict` are mutually exclusive and require `--retry`.
+- `--qa` re-runs the single task-level QA job: it re-classifies every live trial
+and synthesizes a fresh task verdict. A trial-shaped id resolves to its parent
+task; experiment targets run QA for each task.
+- `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
 ### Sweep Config
@@ -213,23 +212,21 @@ Options
 
 Use `oddish cancel` to stop queued or running work without deleting the task
 itself. Completed trials are preserved. By default it cancels all active task
-runs; use `--analysis` or `--verdict` to cancel only that pipeline stage.
+runs; use `--qa` to cancel only the task-level QA job.
 
 ```bash
 # Cancel all active runs for a task
 oddish cancel <task_id>
 
-# Cancel active analysis or verdict jobs only
-oddish cancel <task_id> --analysis
-oddish cancel <trial_id> --analysis
-oddish cancel <task_id> --verdict
+# Cancel only the in-flight QA job (classification + verdict)
+oddish cancel <task_id> --qa
+oddish cancel <trial_id> --qa   # a trial id resolves to its parent task
 ```
 
 Options
 
-- `TASK_ID` - Task ID to cancel; with `--analysis`, a trial ID cancels one trial analysis
-- `--analysis` - Cancel active analysis jobs only
-- `--verdict` - Cancel the active task verdict only
+- `TASK_ID` - Task or trial ID to cancel; with `--qa`, a trial ID resolves to its parent task
+- `--qa` - Cancel the task's in-flight QA job only (classification + verdict)
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)

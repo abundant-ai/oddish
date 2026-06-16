@@ -363,22 +363,19 @@ def run(
                 "Re-run an existing target instead of submitting new work. "
                 "Pass a trial, task, or experiment id (positional, --task, or "
                 "--experiment). Retries failed trials by default; combine with "
-                "--analysis or --verdict to re-run those stages."
+                "--qa to re-run the task-level QA job (classify every trial + "
+                "synthesize the verdict)."
             ),
         ),
     ] = False,
-    retry_analysis: Annotated[
+    retry_qa: Annotated[
         bool,
         typer.Option(
-            "--analysis",
-            help="With --retry: re-run analysis instead of retrying trials.",
-        ),
-    ] = False,
-    retry_verdict: Annotated[
-        bool,
-        typer.Option(
-            "--verdict",
-            help="With --retry: re-run the task verdict instead of trials.",
+            "--qa",
+            help=(
+                "With --retry: re-run the task-level QA job (classify trials + "
+                "verdict) instead of retrying trials."
+            ),
         ),
     ] = False,
     yes: Annotated[
@@ -475,9 +472,9 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
-    # Retry mode: re-run existing trials / analysis / verdict for a target
-    # instead of submitting new work. Kept on `run` (rather than a separate
-    # command) so the CLI surface stays small.
+    # Retry mode: re-run existing trials, or the task-level QA job, for a
+    # target instead of submitting new work. Kept on `run` (rather than a
+    # separate command) so the CLI surface stays small.
     if retry:
         from oddish.cli.retry import run_retry
 
@@ -486,14 +483,13 @@ def run(
             target=str(path) if path is not None else None,
             task_id=existing_task_id,
             experiment_id=experiment_id,
-            do_analysis=retry_analysis,
-            do_verdict=retry_verdict,
+            do_qa=retry_qa,
             yes=yes,
             json_output=json_output,
         )
         return
-    if retry_analysis or retry_verdict:
-        error_console.print("[red]--analysis and --verdict require --retry.[/red]")
+    if retry_qa:
+        error_console.print("[red]--qa requires --retry.[/red]")
         raise typer.Exit(1)
 
     # Handle config file vs CLI mode for agent configs
