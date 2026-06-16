@@ -722,9 +722,14 @@ class Settings(BaseSettings):
     # token is a static bearer token, safe to use concurrently, so claude-code
     # is deliberately NOT listed here.)
     subscription_serialized_agents: str = "codex"
-    # Concurrency cap for the serialized ``sub-solo/<id>`` buckets above. An
-    # explicit per-key entry in ODDISH_MODEL_CONCURRENCY_OVERRIDES still wins.
-    subscription_queue_concurrency: int = 1
+    # Concurrency cap for the ``sub-solo/<id>`` buckets above. Within the token's
+    # no-refresh window each trial gets its own independent auth.json copy that
+    # never refreshes, so running several at once is safe; this cap only bounds
+    # the single-use-refresh-token race near the ~8-day boundary. Default 4;
+    # raise via ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY when the credential is
+    # unused elsewhere and freshly seeded. An explicit per-key
+    # ODDISH_MODEL_CONCURRENCY_OVERRIDES entry still wins.
+    subscription_queue_concurrency: int = 4
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
