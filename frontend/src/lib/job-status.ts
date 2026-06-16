@@ -16,33 +16,33 @@ const ACTIVE_VISIBLE_JOB_STATUSES = [
 
 function isActiveTrialStatus(status: string | null | undefined): boolean {
   return ACTIVE_TRIAL_STATUSES.includes(
-    status as (typeof ACTIVE_TRIAL_STATUSES)[number]
+    status as (typeof ACTIVE_TRIAL_STATUSES)[number],
   );
 }
 
 export function isActivePipelineStatus(
-  status: JobStatus | string | null | undefined
+  status: JobStatus | string | null | undefined,
 ): boolean {
   return ACTIVE_PIPELINE_STATUSES.includes(
-    status as (typeof ACTIVE_PIPELINE_STATUSES)[number]
+    status as (typeof ACTIVE_PIPELINE_STATUSES)[number],
   );
 }
 
 function isActiveVisibleJob(job: VisibleWorkerJob): boolean {
   return ACTIVE_VISIBLE_JOB_STATUSES.includes(
-    job.status as (typeof ACTIVE_VISIBLE_JOB_STATUSES)[number]
+    job.status as (typeof ACTIVE_VISIBLE_JOB_STATUSES)[number],
   );
 }
 
 function isActiveVisibleJobKind(
   job: VisibleWorkerJob,
-  kind: "trial" | "analysis" | "verdict"
+  kind: "trial" | "analysis" | "verdict",
 ): boolean {
   return job.kind === kind && isActiveVisibleJob(job);
 }
 
 export function trialHasActiveAnalysis(
-  trial: Trial | null | undefined
+  trial: Trial | null | undefined,
 ): boolean {
   if (!trial) return false;
   return (
@@ -56,7 +56,7 @@ export function taskHasActiveTrials(task: Task | null | undefined): boolean {
     task?.trials?.some(
       (trial) =>
         isActiveTrialStatus(trial.status) ||
-        trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial"))
+        trial.jobs?.some((job) => isActiveVisibleJobKind(job, "trial")),
     ) === true
   );
 }
@@ -90,7 +90,7 @@ export function taskHasCancellableWork(task: Task | null | undefined): boolean {
 
 function getActiveTrialCount(task: Task | null | undefined): number {
   return (task?.trials ?? []).filter((trial) =>
-    isActiveTrialStatus(trial.status)
+    isActiveTrialStatus(trial.status),
   ).length;
 }
 

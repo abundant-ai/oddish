@@ -163,8 +163,8 @@ export function TagChipEditor({
               {/* listRow first: after a 409 the list refetches, so a rename
                   that raced us shows its CURRENT name before the retry. */}
               Delete{" "}
-              <span className="font-medium">{listRow?.key ?? tag.key}</span>{" "}
-              for the entire org? Every item carrying this tag loses it.
+              <span className="font-medium">{listRow?.key ?? tag.key}</span> for
+              the entire org? Every item carrying this tag loses it.
             </p>
             {/* Usage shown before the destructive click — the Linear
                 pattern: give the number that should inform the decision.
@@ -172,7 +172,8 @@ export function TagChipEditor({
                 fanout can touch more items than this). */}
             <p className="text-[11px] text-muted-foreground">
               Used by {listRow?.usage_count ?? 0} direct{" "}
-              {(listRow?.usage_count ?? 0) === 1 ? "assignment" : "assignments"}.
+              {(listRow?.usage_count ?? 0) === 1 ? "assignment" : "assignments"}
+              .
             </p>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <div className="flex justify-end gap-2">

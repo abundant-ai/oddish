@@ -5,6 +5,7 @@ A probe is an ordinary sweep trial with ``extra_instructions`` set; the
 "probe"``. We enqueue through the low-level sweep path (not
 ``create_task_sweep_core``) so this never recurses into itself.
 """
+
 from __future__ import annotations
 
 import logging
@@ -120,4 +121,6 @@ async def maybe_enqueue_auto_probe(
             for trial in new_trials:
                 asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
     except Exception:  # noqa: BLE001 — best-effort; never fail the real sweep
-        logger.exception("auto-probe enqueue failed for task %s", getattr(task, "id", "?"))
+        logger.exception(
+            "auto-probe enqueue failed for task %s", getattr(task, "id", "?")
+        )

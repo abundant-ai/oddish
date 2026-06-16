@@ -24,9 +24,7 @@ def _assistant_tool_use(name: str, inp: dict) -> str:
     return json.dumps(
         {
             "type": "assistant",
-            "message": {
-                "content": [{"type": "tool_use", "name": name, "input": inp}]
-            },
+            "message": {"content": [{"type": "tool_use", "name": name, "input": inp}]},
         }
     )
 
@@ -144,8 +142,7 @@ def test_parse_captures_skill_body_injected_as_user_text(tmp_path):
     assert "Harbor Task Audit" in injected[0]["text"]
     # The launcher stub is still kept as a tool_result.
     assert any(
-        m["kind"] == "tool_result" and "Launching skill" in m["text"]
-        for m in messages
+        m["kind"] == "tool_result" and "Launching skill" in m["text"] for m in messages
     )
 
 
@@ -173,10 +170,20 @@ def test_summarize_counts_and_orders_by_first_appearance():
     messages = [
         {"kind": "tool_use", "tool_kind": "skill", "skill_name": "deep-research"},
         {"kind": "assistant_text", "text": "thinking"},
-        {"kind": "tool_use", "tool_kind": "mcp", "mcp_server": "gmail", "mcp_tool": "send"},
+        {
+            "kind": "tool_use",
+            "tool_kind": "mcp",
+            "mcp_server": "gmail",
+            "mcp_tool": "send",
+        },
         {"kind": "tool_use", "tool_kind": "skill", "skill_name": "deep-research"},
         {"kind": "tool_use", "tool_kind": "builtin", "name": "Bash"},
-        {"kind": "tool_use", "tool_kind": "mcp", "mcp_server": "gmail", "mcp_tool": "send"},
+        {
+            "kind": "tool_use",
+            "tool_kind": "mcp",
+            "mcp_server": "gmail",
+            "mcp_tool": "send",
+        },
     ]
     usage = _summarize_tool_usage(messages)
 

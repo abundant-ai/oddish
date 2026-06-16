@@ -46,7 +46,9 @@ def _doc_detail(doc: DocumentModel) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def search_documents(query: str = "", tags: list[str] | None = None) -> list[dict]:
+async def search_documents(
+    query: str = "", tags: list[str] | None = None
+) -> list[dict]:
     """Search the team doc-store. Returns lightweight cards (id, title, summary,
     tags) ranked with title matches first. Empty query lists recent docs. Use
     `get_document(id)` to read a result's full digest."""

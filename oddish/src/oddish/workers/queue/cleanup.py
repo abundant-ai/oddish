@@ -25,6 +25,7 @@ from typing import cast
 
 from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import SQLAlchemyError
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
@@ -57,6 +58,13 @@ STALE_HEARTBEAT_MINUTES = 15
 # enforcement; this reaper only catches deployments where that GUC is
 # ignored (older Supavisor, etc).
 ZOMBIE_IDLE_MINUTES = 10
+
+# Grace before a leased queue slot is reclaimed as orphaned. A worker takes its
+# slot lease just before claiming a job, so for a brief window the slot is held
+# with no RUNNING worker_jobs row pointing back at it. The reconciler runs every
+# few minutes, so 2 minutes comfortably clears that acquire->claim gap without
+# meaningfully delaying reclamation of genuinely leaked leases.
+ORPHANED_SLOT_GRACE_MINUTES = 2
 
 # Backstop for tasks wedged in ANALYZING because a live trial never produced an
 # analysis verdict. The stage-advance passes treat a live trial whose
@@ -137,6 +145,78 @@ async def reap_idle_in_transaction_zombies(
             f"idle>{idle_after_minutes}m)[/yellow]"
         )
     return terminated
+
+
+# Display-hygiene clear of stale claim metadata on terminal trials runs in its
+# own short, batched transactions rather than inline in the big reconciliation
+# transaction. An unbounded ``UPDATE trials ... WHERE status IN (terminal)``
+# grabs row locks in an arbitrary order and deadlocked head-on against the live
+# single-job workers writing the same rows (claim sets current_worker_id; the
+# dispatcher cleared it). Batching with a stable ORDER BY + FOR UPDATE SKIP
+# LOCKED means we only ever lock rows we can grab immediately, in a consistent
+# order, and commit each batch on its own -- so this can neither deadlock nor
+# roll back the rest of the sweep.
+TERMINAL_REF_CLEAR_BATCH_SIZE = 500
+TERMINAL_REF_CLEAR_MAX_BATCHES = 40
+
+
+async def clear_terminal_trial_runtime_refs(
+    *,
+    batch_size: int = TERMINAL_REF_CLEAR_BATCH_SIZE,
+    max_batches: int = TERMINAL_REF_CLEAR_MAX_BATCHES,
+) -> int:
+    """Null out ``current_worker_id`` / ``current_queue_slot`` on terminal trials.
+
+    Best-effort, batched, and deadlock-resistant: each batch runs in its own
+    transaction using ``FOR UPDATE SKIP LOCKED`` over an ordered candidate set,
+    so it never contends head-on with a worker mid-write. Stops early on the
+    first batch that clears fewer than ``batch_size`` rows (nothing left) or if
+    a transient DB error is hit (the next sweep retries).
+    """
+    total_cleared = 0
+    for _ in range(max_batches):
+        try:
+            async with get_session() as session:
+                result = cast(
+                    CursorResult,
+                    await session.execute(
+                        text(
+                            """
+                            WITH victims AS (
+                                SELECT id
+                                FROM   trials
+                                WHERE  status::text IN ('SUCCESS', 'FAILED')
+                                  AND  deleted_at IS NULL
+                                  AND  (
+                                      current_worker_id IS NOT NULL
+                                      OR current_queue_slot IS NOT NULL
+                                  )
+                                ORDER BY id
+                                FOR UPDATE SKIP LOCKED
+                                LIMIT :batch_size
+                            )
+                            UPDATE trials t
+                            SET    current_worker_id = NULL,
+                                   current_queue_slot = NULL
+                            FROM   victims v
+                            WHERE  t.id = v.id
+                            """
+                        ),
+                        {"batch_size": batch_size},
+                    ),
+                )
+                cleared = int(result.rowcount or 0)
+        except SQLAlchemyError as exc:
+            console.print(
+                f"[yellow]Terminal trial runtime-ref clear skipped: {exc}[/yellow]"
+            )
+            break
+
+        total_cleared += cleared
+        if cleared < batch_size:
+            break
+
+    return total_cleared
 
 
 async def cleanup_orphaned_queue_state(
@@ -587,35 +667,32 @@ async def cleanup_orphaned_queue_state(
                 )
 
         # -----------------------------------------------------------------
-        # 6. Clear stale claim metadata on terminal trials (pure
-        #    display-layer hygiene; scheduling state already lives on
-        #    worker_jobs).
+        # 6. (moved) Clearing stale claim metadata on terminal trials is
+        #    pure display-layer hygiene and used to deadlock against live
+        #    workers when run as one unbounded UPDATE inside this big
+        #    transaction. It now runs after this transaction commits, in
+        #    its own batched, SKIP-LOCKED helper -- see
+        #    ``clear_terminal_trial_runtime_refs`` below.
         # -----------------------------------------------------------------
-        terminal_trial_cleanup_result = cast(
-            CursorResult,
-            await session.execute(
-                text(
-                    """
-                    UPDATE trials
-                    SET    current_worker_id = NULL,
-                           current_queue_slot = NULL
-                    WHERE  status::text IN ('SUCCESS', 'FAILED')
-                      AND  deleted_at IS NULL
-                      AND  (
-                          current_worker_id IS NOT NULL
-                          OR current_queue_slot IS NOT NULL
-                      )
-                    """
-                )
-            ),
-        )
-        terminal_trial_runtime_refs_cleared = int(
-            terminal_trial_cleanup_result.rowcount or 0
-        )
 
         # -----------------------------------------------------------------
-        # 7. Release queue slot leases whose worker_jobs row is no
-        #    longer RUNNING on that key.
+        # 7. Release queue slot leases whose owning worker is dead.
+        #    A slot is reclaimable when no RUNNING worker_jobs row is
+        #    still owned by the worker that holds the lease
+        #    (``queue_slots.locked_by`` == ``worker_jobs.current_worker_id``).
+        #
+        #    This must be per-SLOT, not per-queue_key: the previous
+        #    version only released slots when *zero* jobs were RUNNING on
+        #    the whole queue_key, so on a busy key a single live job kept
+        #    every leaked lease (from a SIGKILLed/preempted worker) pinned
+        #    for the full ~12h lease. The slot pool then saturated while
+        #    only a handful of jobs actually ran, and the dispatcher --
+        #    which budgets on the (low) RUNNING count -- kept spawning
+        #    workers that all failed to acquire a slot.
+        #
+        #    ``locked_at`` grace avoids racing the brief acquire->claim
+        #    window: a freshly-acquired slot hasn't had its owning job
+        #    flip to RUNNING yet, so we leave very recent leases alone.
         # -----------------------------------------------------------------
         orphaned_slot_cleanup_result = cast(
             CursorResult,
@@ -624,18 +701,24 @@ async def cleanup_orphaned_queue_state(
                     """
                     UPDATE queue_slots qs
                     SET    locked_by = NULL,
-                           locked_until = NULL
+                           locked_until = NULL,
+                           locked_at = NULL
                     WHERE  qs.locked_by IS NOT NULL
-                      AND  qs.locked_until IS NOT NULL
-                      AND  qs.locked_until > NOW()
+                      AND  (
+                          qs.locked_at IS NULL
+                          OR qs.locked_at < NOW() - make_interval(
+                              mins => :slot_grace_minutes
+                          )
+                      )
                       AND  NOT EXISTS (
                           SELECT 1
                           FROM   worker_jobs wj
                           WHERE  wj.status::text = 'RUNNING'
-                            AND  wj.queue_key = qs.queue_key
+                            AND  wj.current_worker_id = qs.locked_by
                       )
                     """
-                )
+                ),
+                {"slot_grace_minutes": ORPHANED_SLOT_GRACE_MINUTES},
             ),
         )
         orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
@@ -702,6 +785,12 @@ async def cleanup_orphaned_queue_state(
 
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
+    # Display-hygiene clear of terminal-trial claim metadata runs *after* the
+    # main reconciliation transaction commits, in its own batched / SKIP-LOCKED
+    # transactions, so it can never deadlock against live workers or roll back
+    # the reconciliation work above (see note in step 6).
+    terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
 
     return {
         "worker_jobs_retried": worker_jobs_retried,

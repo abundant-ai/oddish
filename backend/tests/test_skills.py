@@ -1,6 +1,6 @@
 """Core CRUD tests for skills. Run with backend env sourced and skills tables present:
 
-    set -a && source .env && set +a && uv run pytest tests/test_skills.py
+set -a && source .env && set +a && uv run pytest tests/test_skills.py
 """
 
 import uuid
@@ -90,7 +90,9 @@ async def test_list_returns_org_skills(org_id):
 @pytest.mark.asyncio
 async def test_other_org_cannot_see(org_id):
     async with get_session() as session:
-        await create_skill_core(session, data=_payload("secret"), org_id=org_id, user_id="u")
+        await create_skill_core(
+            session, data=_payload("secret"), org_id=org_id, user_id="u"
+        )
         await session.commit()
     async with get_session() as session:
         skills = await list_skills_core(session, org_id="org_other")
@@ -100,7 +102,9 @@ async def test_other_org_cannot_see(org_id):
 @pytest.mark.asyncio
 async def test_update_replaces_files(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     new_md = "---\nname: my-skill\ndescription: changed\n---\nbody"
@@ -120,7 +124,9 @@ async def test_update_replaces_files(org_id):
 @pytest.mark.asyncio
 async def test_delete_soft_deletes(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     async with get_session() as session:
@@ -135,7 +141,9 @@ async def test_delete_soft_deletes(org_id):
 @pytest.mark.asyncio
 async def test_cannot_mutate_other_org(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     async with get_session() as session:
@@ -147,7 +155,9 @@ async def test_cannot_mutate_other_org(org_id):
 @pytest.mark.asyncio
 async def test_get_other_org_returns_404(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     async with get_session() as session:
@@ -159,7 +169,9 @@ async def test_get_other_org_returns_404(org_id):
 @pytest.mark.asyncio
 async def test_update_other_org_returns_404(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     async with get_session() as session:
@@ -173,7 +185,9 @@ async def test_update_other_org_returns_404(org_id):
 @pytest.mark.asyncio
 async def test_update_without_files_patches_fields(org_id):
     async with get_session() as session:
-        created = await create_skill_core(session, data=_payload(), org_id=org_id, user_id="u")
+        created = await create_skill_core(
+            session, data=_payload(), org_id=org_id, user_id="u"
+        )
         await session.commit()
         skill_id = created.id
     async with get_session() as session:
@@ -209,7 +223,10 @@ async def test_seed_skill_is_read_only():
         async with get_session() as session:
             with pytest.raises(HTTPException) as exc:
                 await update_skill_core(
-                    session, seed_id, data=SkillUpdate(description="hack"), org_id="any_org"
+                    session,
+                    seed_id,
+                    data=SkillUpdate(description="hack"),
+                    org_id="any_org",
                 )
             assert exc.value.status_code == 403
     finally:

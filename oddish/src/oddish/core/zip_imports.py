@@ -450,9 +450,7 @@ async def _upload_task_dir(
 # =============================================================================
 
 
-async def _resolve_task_id_or_name(
-    identifier: str, org_id: str | None
-) -> str | None:
+async def _resolve_task_id_or_name(identifier: str, org_id: str | None) -> str | None:
     """Resolve a target task identifier to its canonical ``task_id``.
 
     Tries the literal as a task ID first (cheap PK lookup), falls back
@@ -689,9 +687,7 @@ async def import_zip(
             )
             resolved_task_id = task_result.task_id
         elif target_task_id:
-            resolved_task_id = await _resolve_task_id_or_name(
-                target_task_id, org_id
-            )
+            resolved_task_id = await _resolve_task_id_or_name(target_task_id, org_id)
             if resolved_task_id is None:
                 raise HTTPException(
                     status_code=404,

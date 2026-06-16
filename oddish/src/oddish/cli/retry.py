@@ -233,7 +233,7 @@ def _run_trial_retries(
 
     # experiment
     tasks = get_experiment_tasks(api_url, target_id) or []
-    trial_ids: list[str] = []
+    trial_ids = []
     for task in tasks:
         trial_ids.extend(_failed_trial_ids(task))
     if not trial_ids:
