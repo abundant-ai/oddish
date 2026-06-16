@@ -13,7 +13,6 @@ from oddish.db.models import utcnow as _utcnow
 from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,
-    render_task_chat_claude_md,
     render_task_probes_claude_md,
 )
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
