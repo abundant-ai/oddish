@@ -62,18 +62,22 @@ def parse_digest_response(raw: str) -> DigestResult:
 async def generate_digest(
     *, title: str, text: str, model: str = DEFAULT_DIGEST_MODEL
 ) -> DigestResult:
-    """Run the Claude/Bedrock digest call. Impure (network)."""
-    from oddish.config import looks_like_bedrock_model_id, to_bedrock_model_id
+    """Run the Claude digest call on the direct Anthropic API. Impure (network).
 
-    resolved = to_bedrock_model_id(model) or model
-    if looks_like_bedrock_model_id(resolved):
-        from anthropic import AsyncAnthropicBedrock
+    Mirrors ``worker.probe_analysis._make_client``: oddish has no SigV4-capable
+    Bedrock credential in the API/worker (only an S3-scoped key plus a bearer
+    token the pinned SDK can't consume), so internal Claude calls go through the
+    direct Anthropic API (``ANTHROPIC_API_KEY``). Routing the digest through
+    ``AsyncAnthropicBedrock`` instead 500s every document upload. Normalize any
+    Bedrock inference-profile id back to its plain API id so the model reaching
+    the client is one the direct API accepts.
+    """
+    from anthropic import AsyncAnthropic
 
-        client = AsyncAnthropicBedrock()
-    else:
-        from anthropic import AsyncAnthropic
+    from oddish.config import to_anthropic_api_model_id
 
-        client = AsyncAnthropic()
+    resolved = to_anthropic_api_model_id(model) or model
+    client = AsyncAnthropic()
 
     msg = await client.messages.create(
         model=resolved,
