@@ -36,14 +36,17 @@ API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
-# Per-container request concurrency bounds the OOM blast radius. A single heavy
-# /tasks|/dashboard|/trials request can materialize a large experiment's trials
-# and push the 4 GiB container over its memory limit; the kernel then OOM-kills
-# the whole container, collaterally killing every co-resident in-flight request
-# (including the CLI's /tasks/upload/init). Lowering concurrency 8->3 (target
-# 4->2) means at most 3 requests share a container -- so an OOM kills at most 3
-# in-flight requests instead of 8, and each request gets a larger share of the
-# 4 GiB so heavy requests are less likely to trip the limit in the first place.
+# Per-container request concurrency bounds the OOM *blast radius* -- it is
+# defense in depth, not the primary fix. When any request pushes the 4 GiB
+# container over its memory limit, the kernel OOM-kills the whole container and
+# every co-resident in-flight request with it (this is how heavy
+# /tasks|/dashboard|/trials traffic was collaterally killing the CLI's
+# /tasks/upload/init). Lowering concurrency 8->3 (target 4->2) caps that to at
+# most 3 in-flight requests killed instead of 8 and gives each request a larger
+# share of the 4 GiB. The actual memory hog -- the experiment-scoped /tasks
+# path over-fetching every task's full trial set -- is fixed at the source in
+# oddish.core.endpoints.list_tasks_core (the trial selectin is now scoped to
+# the requested experiment in SQL), so this is the safety bound around that fix.
 # API_MAX_CONTAINERS is raised 24->64 to keep peak concurrency unchanged
 # (24*8 == 64*3 == 192 concurrent requests). The DB client-connection budget is
 # also preserved because endpoints.py sizes the per-container pool to
