@@ -483,7 +483,7 @@ async def list_tasks(
     compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=2000),
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
     """List tasks for the authenticated organization.
