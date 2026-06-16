@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -21,10 +21,12 @@ interface ExperimentDescriptionProps {
 const PILL_BUTTON_CLASS =
   "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)] disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-[color:var(--paper-line)] disabled:hover:bg-[color:var(--paper-surface)]";
 
-// Matches the meta strip (created · by · id) font so the show/hide toggle and
-// the "add a description" affordance sit naturally beneath it.
+// Matches the meta strip (created · by · id) font so the "…more"/"see less"
+// control and the "add a description" affordance sit naturally beneath it.
 const META_TEXT_CLASS =
   "w-fit cursor-pointer font-mono text-[11.5px] text-[color:var(--paper-ink-3)] transition-colors hover:text-[color:var(--paper-ink)]";
+
+const COLLAPSED_MAX_HEIGHT_PX = 104;
 
 function extractErrorMessage(data: unknown): string | null {
   if (!data || typeof data !== "object") return null;
@@ -51,12 +53,26 @@ export function ExperimentDescription({
   onSaved,
 }: ExperimentDescriptionProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isOverflowing, setIsOverflowing] = useState(false);
   const [draft, setDraft] = useState(description ?? "");
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const canEdit = !readOnly && Boolean(experimentId);
+
+  // Decide whether the rendered description overflows the collapsed height.
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const measure = () =>
+      setIsOverflowing(el.scrollHeight > COLLAPSED_MAX_HEIGHT_PX);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [description]);
 
   const startEditing = () => {
     setDraft(description ?? "");
@@ -164,35 +180,50 @@ export function ExperimentDescription({
     );
   }
 
-  // Has a description: a show/hide toggle styled like the meta strip, with the
-  // rendered markdown revealed when expanded.
+  // Has a description: render the markdown, truncated to ~3 lines of height with
+  // a bottom fade + "…more"/"see less" when it overflows that threshold.
+  const collapsed = !isExpanded && isOverflowing;
   return (
     <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={() => setIsExpanded((value) => !value)}
-        aria-expanded={isExpanded}
-        className={META_TEXT_CLASS}
+      <div
+        ref={cardRef}
+        className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]"
+        style={
+          collapsed
+            ? { maxHeight: COLLAPSED_MAX_HEIGHT_PX, overflow: "hidden" }
+            : undefined
+        }
       >
-        {isExpanded ? "hide description" : "show description"}
-      </button>
-      {isExpanded ? (
-        <div className="group relative rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <MarkdownRenderer content={description} />
-          {canEdit ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={startEditing}
-              className="absolute right-2 top-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] group-hover:opacity-100"
-              aria-label="Edit description"
-              title="Edit description"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </Button>
-          ) : null}
-        </div>
+        <MarkdownRenderer content={description} />
+        {canEdit ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            onClick={startEditing}
+            className="absolute right-2 top-2 h-6 w-6 rounded-sm text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] group-hover:opacity-100"
+            aria-label="Edit description"
+            title="Edit description"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        ) : null}
+        {collapsed ? (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-x-0 bottom-0 h-8 rounded-b-[10px] bg-gradient-to-t from-[color:var(--paper-surface)] to-transparent"
+          />
+        ) : null}
+      </div>
+      {isOverflowing ? (
+        <button
+          type="button"
+          onClick={() => setIsExpanded((value) => !value)}
+          aria-expanded={isExpanded}
+          className={META_TEXT_CLASS}
+        >
+          {collapsed ? "…more" : "see less"}
+        </button>
       ) : null}
     </div>
   );
