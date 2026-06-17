@@ -1,10 +1,11 @@
 "use client";
 
+import Image from "next/image";
 import {
   Anthropic,
   Baichuan,
-  ChatGLM,
   Cohere,
+  Cursor,
   DeepSeek,
   Gemini,
   Inflection,
@@ -39,8 +40,9 @@ type KnownProvider =
   | "xai"
   | "meta"
   | "cohere"
+  | "cursor"
   | "qwen"
-  | "glm"
+  | "zai"
   | "kimi"
   | "minimax"
   | "yi"
@@ -79,6 +81,13 @@ function matchProviderFromSource(raw: string): KnownProvider {
   if (probe.includes("deepseek")) {
     return "deepseek";
   }
+  // Cursor's CLI agent and its in-house Composer model family: `cursor`,
+  // `cursor-cli`, `composer-1`. Cursor runs on third-party models still get
+  // the model vendor's icon because resolveProvider() checks the model
+  // string before the agent name.
+  if (hasToken(probe, "cursor") || hasToken(probe, "composer")) {
+    return "cursor";
+  }
   // Alibaba's Qwen family: `qwen2.5-coder`, `Qwen/Qwen3-...`, `qwen3-coder-plus`.
   if (hasToken(probe, "qwen")) {
     return "qwen";
@@ -93,7 +102,7 @@ function matchProviderFromSource(raw: string): KnownProvider {
     probe.includes("zai/") ||
     probe.includes("z-ai/")
   ) {
-    return "glm";
+    return "zai";
   }
   // Moonshot's Kimi family: `kimi-k2`, `moonshot/kimi-...`, `moonshotai/...`.
   if (probe.includes("kimi") || probe.includes("moonshot")) {
@@ -222,6 +231,9 @@ export function QueueKeyIcon({
   if (resolvedProvider === "deepseek") {
     return <DeepSeek size={size} className={className} />;
   }
+  if (resolvedProvider === "cursor") {
+    return <Cursor size={size} className={className} />;
+  }
   if (resolvedProvider === "mistral") {
     return <Mistral size={size} className={className} />;
   }
@@ -237,8 +249,16 @@ export function QueueKeyIcon({
   if (resolvedProvider === "qwen") {
     return <Qwen size={size} className={className} />;
   }
-  if (resolvedProvider === "glm") {
-    return <ChatGLM size={size} className={className} />;
+  if (resolvedProvider === "zai") {
+    return (
+      <Image
+        src="/zai-logo.png"
+        alt="Z.ai"
+        width={size}
+        height={size}
+        className={className}
+      />
+    );
   }
   if (resolvedProvider === "kimi") {
     return <Kimi size={size} className={className} />;

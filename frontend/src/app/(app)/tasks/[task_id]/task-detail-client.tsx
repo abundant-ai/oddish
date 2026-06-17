@@ -20,6 +20,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { TagEditor } from "@/components/tag-editor";
+import { ChatButton } from "@/components/cc-chat/chat-button";
+import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
@@ -47,8 +50,15 @@ import type {
   TaskVersionSummary,
   Trial,
 } from "@/lib/types";
-import { formatRelativeTime } from "@/lib/utils";
-import { ArrowLeft, ChevronDown, FileText, Loader2 } from "lucide-react";
+import { formatRelativeTime, prBadge, taskPrUrl } from "@/lib/utils";
+import {
+  ArrowLeft,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  GitPullRequest,
+  Loader2,
+} from "lucide-react";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -56,18 +66,18 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  }
+  },
 );
 
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel
+      (mod) => mod.TrialDetailPanel,
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  }
+  },
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -200,35 +210,56 @@ function KpiTile({
 function TaskDetailHeader({
   task,
   onOpenTaskFiles,
+  tagEditor,
 }: {
   task: Task;
   onOpenTaskFiles: () => void;
+  tagEditor?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="font-mono truncate text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)]">
+            <h1 className="truncate font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)]">
               {task.name}
             </h1>
             <Badge variant="outline" className="font-mono text-[11px]">
               v{task.current_version ?? "—"}
             </Badge>
+            {tagEditor}
           </div>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
-          {task.experiment_name ? (
-            <>
-              <span>experiment</span>
-              <Link
-                href={`/experiments/${encodeURIComponent(encodeURIComponent(task.experiment_id))}`}
-                className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-              >
-                {task.experiment_name}
-              </Link>
-            </>
-          ) : null}
+          {(() => {
+            const affiliated = task.experiments?.length
+              ? task.experiments
+              : task.experiment_name
+                ? [{ id: task.experiment_id, name: task.experiment_name }]
+                : [];
+            if (affiliated.length === 0) return null;
+            return (
+              <>
+                <span>
+                  {affiliated.length > 1 ? "experiments" : "experiment"}
+                </span>
+                {affiliated.map((exp, i) => (
+                  <span
+                    key={exp.id}
+                    className="inline-flex items-center gap-x-2"
+                  >
+                    {i > 0 ? <span aria-hidden>·</span> : null}
+                    <Link
+                      href={`/experiments/${encodeURIComponent(encodeURIComponent(exp.id))}`}
+                      className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
+                    >
+                      {exp.name}
+                    </Link>
+                  </span>
+                ))}
+              </>
+            );
+          })()}
           {task.github_username || task.user ? (
             <>
               <span aria-hidden>·</span>
@@ -246,6 +277,39 @@ function TaskDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <ChatButton scopeKind="task" scopeId={task.name} />
+        {(() => {
+          const meta = task.github_meta;
+          const prUrl = taskPrUrl(task.link, meta);
+          if (!prUrl) return null;
+          const { label, number } = prBadge(prUrl, meta?.pr_number);
+          const title = meta?.pr_title;
+          return (
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={
+                title
+                  ? `${title} — view on GitHub`
+                  : "View pull request on GitHub"
+              }
+              className="inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors hover:bg-accent"
+            >
+              <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 truncate">
+                {label}
+                {number && (
+                  <span className="text-muted-foreground"> #{number}</span>
+                )}
+              </span>
+              <ExternalLink
+                className="h-3 w-3 shrink-0 opacity-50"
+                aria-hidden
+              />
+            </a>
+          );
+        })()}
         <Link href="/tasks">
           <Button
             type="button"
@@ -310,13 +374,13 @@ function VersionSwitcher({
         <Button
           type="button"
           variant="ghost"
-          className="font-mono h-8 w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]"
+          className="h-8 w-[220px] justify-between rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 font-mono text-[12px] text-[color:var(--paper-ink)] hover:bg-[color:var(--paper-surface-2)]"
         >
           <span className="truncate">{triggerLabel}</span>
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="font-mono w-[320px]">
+      <DropdownMenuContent align="start" className="w-[320px] font-mono">
         {versions.map((v) => {
           const label = v.is_current
             ? `v${v.version} · current`
@@ -365,7 +429,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
         <button
           type="button"
           onClick={onClick}
-          className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none transition ${config.matrixClass} ${
+          className={`flex h-[22px] w-[22px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold transition ${config.matrixClass} ${
             status === "partial"
               ? "text-[8px] tracking-[-0.03em]"
               : "text-[10px]"
@@ -592,8 +656,10 @@ export function TaskDetailClient({
 
   const trialsForVersion = useMemo(() => {
     if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
-  }, [task, selectedVersionId]);
+    return task.trials.filter(
+      (t) => t.task_version_id === selectedVersionId && !t.is_probe,
+    );
+  }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
   const versionSummary: TrialAggregate = useMemo(() => {
@@ -691,21 +757,21 @@ export function TaskDetailClient({
   }, [mutate]);
 
   const [isRunningJudge, setIsRunningJudge] = useState(false);
+  const [isCancellingJudge, setIsCancellingJudge] = useState(false);
   const [judgeError, setJudgeError] = useState<string | null>(null);
   const handleRunJudge = useCallback(async () => {
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
-    // analysis/retry queues per-trial classifications and flips
-    // task.run_analysis=True; the verdict auto-enqueues once they finish.
-    // verdict/retry alone 400s when no trial analyses exist yet.
+    // One task-level QA job: classify every trial, then synthesize the
+    // task verdict.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
         method: "POST",
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue judge");
+        throw new Error(data.detail || data.error || "Failed to queue QA");
       }
       void mutate();
     } catch (err) {
@@ -716,6 +782,25 @@ export function TaskDetailClient({
       setIsRunningJudge(false);
     }
   }, [task?.id, isRunningJudge, mutate]);
+  const handleCancelJudge = useCallback(async () => {
+    if (!task?.id || isCancellingJudge) return;
+    setIsCancellingJudge(true);
+    setJudgeError(null);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || data.error || "Failed to cancel QA");
+      }
+      void mutate();
+    } catch (err) {
+      setJudgeError(err instanceof Error ? err.message : "Failed to cancel QA");
+    } finally {
+      setIsCancellingJudge(false);
+    }
+  }, [task, isCancellingJudge, mutate]);
 
   const versionScopedScorePct =
     versionSummary.rewardTotal > 0
@@ -750,14 +835,18 @@ export function TaskDetailClient({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        <TaskDetailHeader task={task} onOpenTaskFiles={handleOpenTaskFiles} />
-
-        <TaskVerdictBadge
+        <TaskDetailHeader
           task={task}
-          variant="inline"
-          onRunJudge={handleRunJudge}
-          isRunning={isRunningJudge}
-          error={judgeError}
+          onOpenTaskFiles={handleOpenTaskFiles}
+          tagEditor={
+            <TagEditor
+              scope="TASK"
+              targetId={task.id}
+              taskId={task.id}
+              initialTags={task.user_tags ?? []}
+              onMutate={() => mutate()}
+            />
+          }
         />
 
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
@@ -852,12 +941,40 @@ export function TaskDetailClient({
               <Loader2 className="h-3 w-3 animate-spin text-[color:var(--paper-ink-3)]" />
             ) : null}
           </div>
-          <VersionSwitcher
-            versions={versions}
-            selectedVersionId={selectedVersionId}
-            onSelect={handleSelectVersion}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <VersionSwitcher
+              versions={versions}
+              selectedVersionId={selectedVersionId}
+              onSelect={handleSelectVersion}
+            />
+            {selectedVersionId ? (
+              <TagEditor
+                key={selectedVersionId}
+                scope="VERSION"
+                targetId={selectedVersionId}
+                taskId={task.id}
+                initialTags={selectedVersion?.user_tags ?? []}
+                onMutate={() => mutate()}
+              />
+            ) : null}
+          </div>
         </div>
+
+        <TaskProbeRunCard
+          taskId={task.id}
+          versionId={selectedVersionId}
+          headerSlot={
+            <TaskVerdictBadge
+              task={task}
+              variant="inline"
+              onRunJudge={handleRunJudge}
+              onCancelJudge={handleCancelJudge}
+              isRunning={isRunningJudge}
+              isCancelling={isCancellingJudge}
+              error={judgeError}
+            />
+          }
+        />
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">
@@ -906,6 +1023,7 @@ export function TaskDetailClient({
                 isOpen={true}
                 onClose={() => {}}
                 taskId={null}
+                probeTaskId={task.id}
                 filesUrl={`/api/tasks/${task.id}/files`}
                 apiBaseUrl="/api"
                 contentOnly={true}

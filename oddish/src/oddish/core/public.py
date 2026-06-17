@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
+from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -35,11 +38,41 @@ from oddish.db import (
 from oddish.schemas import (
     PublicExperimentListItem,
     PublicExperimentResponse,
+    TaskBrowseExperiment,
     TaskStatusResponse,
     TrialResponse,
+    UserTagRef,
 )
 
 router = APIRouter(tags=["Public"])
+
+
+async def _hydrate_public_user_tags(session, *, task_ids: list[str]) -> dict:
+    """Return the same UserTagView shape as the authenticated path but
+    filtered to ``tags.visibility = 'PUBLIC'``.
+
+    Public endpoints (``/share/*``, ``/datasets/*``) call this when
+    serializing a task DTO. PRIVATE tags simply don't appear.
+    """
+    return await list_effective_user_tags_for_task_versions(
+        session, task_ids=list(task_ids), public_only=True
+    )
+
+
+def _user_tag_refs(views) -> list[UserTagRef]:
+    """Map ``UserTagView`` rows from the resolver to ``UserTagRef`` DTOs."""
+    return [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in views
+    ]
 
 
 async def _get_detached_public_trial(trial_id: str) -> TrialModel:
@@ -127,7 +160,71 @@ async def get_public_experiment_info(public_token: str) -> PublicExperimentRespo
         return PublicExperimentResponse(
             name=experiment.name,
             public_token=experiment.public_token or public_token,
+            description=experiment.description,
         )
+
+
+async def _public_experiment_refs(
+    session, task_ids: list[str]
+) -> dict[str, list[tuple[str, str, datetime | None]]]:
+    """(id, name, created_at) of PUBLIC experiments per task.
+
+    The shared response builder fills ``experiments`` and the singular
+    ``experiment_*`` fields from every live membership, which is correct
+    for org-authenticated callers but would leak private experiment
+    names/ids on the anonymous public endpoints -- public responses get
+    both replaced via :func:`_apply_public_experiments`.
+    """
+    if not task_ids:
+        return {}
+    rows = await session.execute(
+        select(
+            task_experiments.c.task_id,
+            ExperimentModel.id,
+            ExperimentModel.name,
+            ExperimentModel.created_at,
+        )
+        .select_from(task_experiments)
+        .join(
+            ExperimentModel,
+            ExperimentModel.id == task_experiments.c.experiment_id,
+        )
+        .where(
+            task_experiments.c.task_id.in_(task_ids),
+            task_experiments.c.deleted_at.is_(None),
+            ExperimentModel.is_public == True,  # noqa: E712
+        )
+        .order_by(ExperimentModel.name.asc(), ExperimentModel.id.asc())
+    )
+    refs: dict[str, list[tuple[str, str, datetime | None]]] = {}
+    for task_id, experiment_id, experiment_name, experiment_created_at in rows.all():
+        refs.setdefault(str(task_id), []).append(
+            (str(experiment_id), str(experiment_name), experiment_created_at)
+        )
+    return refs
+
+
+def _apply_public_experiments(
+    response: TaskStatusResponse,
+    refs: list[tuple[str, str, datetime | None]],
+    *,
+    preferred_id: str | None = None,
+) -> None:
+    """Replace BOTH the experiments list and the singular experiment_*
+    fields with the public-only projection (the builder derives them from
+    all memberships, including private ones)."""
+    response.experiments = [
+        TaskBrowseExperiment(id=ref_id, name=ref_name) for ref_id, ref_name, _ in refs
+    ]
+    primary = None
+    if preferred_id is not None:
+        primary = next((r for r in refs if r[0] == preferred_id), None)
+    if primary is None:
+        primary = refs[0] if refs else None
+    response.experiment_id = primary[0] if primary else ""
+    response.experiment_name = primary[1] if primary else ""
+    response.experiment_is_public = primary is not None
+    response.experiment_created_at = primary[2] if primary else None
 
 
 @router.get(
@@ -184,7 +281,10 @@ async def list_public_experiment_tasks(
             session,
             trials=[trial for task in tasks for trial in task.trials],
         )
-        return [
+        user_tags_by_task = await _hydrate_public_user_tags(
+            session, task_ids=[task.id for task in tasks]
+        )
+        responses = [
             build_task_status_response(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
@@ -192,6 +292,15 @@ async def list_public_experiment_tasks(
             )
             for task in tasks
         ]
+        public_exps = await _public_experiment_refs(
+            session, [task.id for task in tasks]
+        )
+        for resp, task in zip(responses, tasks):
+            resp.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+            _apply_public_experiments(
+                resp, public_exps.get(task.id, []), preferred_id=exp_id
+            )
+        return responses
 
 
 @router.get("/public/tasks/{task_id}", response_model=TaskStatusResponse)
@@ -209,28 +318,46 @@ async def get_public_task_status(
                 session,
                 trials=task.trials,
             )
-            return build_task_status_response(
+            response = build_task_status_response(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
             )
+            user_tags_by_task = await _hydrate_public_user_tags(
+                session, task_ids=[task.id]
+            )
+            response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+            public_exps = await _public_experiment_refs(session, [task.id])
+            _apply_public_experiments(response, public_exps.get(task.id, []))
+            return response
 
-        return await get_task_status_counts(
+        response = await get_task_status_counts(
             session,
             task_id,
             filters=[ExperimentModel.is_public == True],  # noqa: E712
             join_experiment=True,
         )
+        user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task_id])
+        response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
+        public_exps = await _public_experiment_refs(session, [task_id])
+        _apply_public_experiments(response, public_exps.get(task_id, []))
+        return response
 
 
 @router.get("/public/tasks/{task_id}/trials", response_model=list[TrialResponse])
-async def list_public_task_trials(task_id: str) -> list[TrialResponse]:
+async def list_public_task_trials(
+    task_id: str,
+    probe: bool | None = Query(
+        None,
+        description="Filter by trial kind: true -> only probes, false -> only real attempts, omit -> all.",
+    ),
+) -> list[TrialResponse]:
     """List all trials for a public task."""
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        return await list_task_trials_for_task(session, task_id)
+        return await list_task_trials_for_task(session, task_id, probe=probe)
 
 
 @router.get("/public/trials/{trial_id}/logs")

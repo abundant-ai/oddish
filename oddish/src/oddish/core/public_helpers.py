@@ -135,6 +135,10 @@ async def get_task_status_counts(
             ExperimentModel.id == task_experiments.c.experiment_id,
         )
         query = query.where(task_experiments.c.deleted_at.is_(None))
+        # A task can belong to several matching experiments; without
+        # DISTINCT the join yields one row per membership and
+        # scalar_one_or_none() raises MultipleResultsFound.
+        query = query.distinct()
     for clause in filters:
         query = query.where(clause)
 
@@ -147,7 +151,7 @@ async def get_task_status_counts(
 
 
 async def list_task_trials_for_task(
-    session: AsyncSession, task_id: str
+    session: AsyncSession, task_id: str, *, probe: bool | None = None
 ) -> list[TrialResponse]:
     """List all trials for a task with their responses.
 
@@ -155,14 +159,20 @@ async def list_task_trials_for_task(
     hidden by default so the public trial list collapses the rerun
     chain down to the live attempt -- matching what
     ``get_task_status_trials`` returns for the dashboard.
+
+    ``probe`` filters by trial kind: True -> only probe trials, False ->
+    only real attempts, None -> all.
     """
+    conditions = [
+        TrialModel.task_id == task_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
+    if probe is not None:
+        conditions.append(TrialModel.is_probe == probe)
     result = await session.execute(
         select(TrialModel, TaskModel.task_path)
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
-        .where(
-            TrialModel.task_id == task_id,
-            TrialModel.superseded_by_trial_id.is_(None),
-        )
+        .where(*conditions)
         .order_by(TrialModel.created_at.asc())
     )
     rows = result.all()

@@ -19,6 +19,13 @@ def _env_int(name: str, default: int) -> int:
     return int(value)
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return float(value)
+
+
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
 RUNTIME_SECRET_NAME = "oddish-prod"
@@ -29,9 +36,36 @@ API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
-API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 16)
-API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 4)
-API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 8)
+# Per-container request concurrency bounds the OOM *blast radius* -- it is
+# defense in depth, not the primary fix. When any request pushes the 4 GiB
+# container over its memory limit, the kernel OOM-kills the whole container and
+# every co-resident in-flight request with it (this is how heavy
+# /tasks|/dashboard|/trials traffic was collaterally killing the CLI's
+# /tasks/upload/init). Lowering concurrency 8->3 (target 4->2) caps that to at
+# most 3 in-flight requests killed instead of 8 and gives each request a larger
+# share of the 4 GiB. The actual memory hog -- the experiment-scoped /tasks
+# path over-fetching every task's full trial set -- is fixed at the source in
+# oddish.core.endpoints.list_tasks_core (the trial selectin is now scoped to
+# the requested experiment in SQL), so this is the safety bound around that fix.
+# API_MAX_CONTAINERS is raised 24->64 to keep peak concurrency unchanged
+# (24*8 == 64*3 == 192 concurrent requests). The DB client-connection budget is
+# also preserved because endpoints.py sizes the per-container pool to
+# API_CONCURRENCY_MAX (64*3 == 24*8 == 192 client connections) -- see the
+# budget note there.
+API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 64)
+API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 2)
+API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
+
+# Per-function CPU/memory. ``cpu`` is a reservation floor (containers may burst
+# above it when the host has spare capacity); ``memory`` is in MiB. These were
+# previously unset on every function except the single-job worker, so the API
+# in particular ran on Modal's tiny default fractional-core reservation -- with
+# up to API_CONCURRENCY_MAX requests sharing one event loop, CPU-bound work
+# (Pydantic serialization, SQLAlchemy hydration, JWT verify) contended badly
+# under load and showed up as latency that looked like "slow DB". The API gets
+# the most headroom since it is the most concurrent, latency-sensitive surface.
+API_CPU = _env_float("ODDISH_MODAL_API_CPU", 2.0)
+API_MEMORY_MB = _env_int("ODDISH_MODAL_API_MEMORY_MB", 4096)
 LOCAL_DOTENV_PATH = Path(__file__).with_name(".env")
 LOCAL_DOTENV_VARS = {
     key: value
@@ -51,6 +85,20 @@ WORKER_TASK_MOUNT_KEY_PREFIX = "tasks/"
 
 # Worker configuration
 POLL_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_POLL_INTERVAL_SECONDS", 180)
+# The dispatcher (poll_queue) now only discovers active queue keys and spawns
+# job workers -- it no longer runs the heavy reconciliation sweep inline, so it
+# stays well under this timeout. Kept comfortably above 60s so spawning a large
+# batch via asyncio.gather can never be SIGKILLed mid-flight (a kill there used
+# to leave orphaned 'idle in transaction' locks that deadlocked the next poll).
+DISPATCHER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS", 120)
+# Queue-state reconciliation (stale-heartbeat reap, stage advances, orphaned
+# slot release, owner backfill) runs in its own scheduled function, decoupled
+# from dispatch. It gets a generous timeout so it is never SIGKILLed
+# mid-transaction; the interval is a little longer than the poll interval since
+# the stale-heartbeat threshold is 15 minutes and reconciliation does not need
+# to run as often as dispatch.
+CLEANUP_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS", 240)
+CLEANUP_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS", 600)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -62,21 +110,66 @@ WORKER_BUFFER_CONTAINERS = _env_int(
 WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
     "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
 )  # Keep idle workers warm for 5 minutes
+# Global cap on concurrent worker containers. This is the real safety bound on
+# DB client connections: each worker holds ~2 pooler client connections
+# (1 SQLAlchemy + 1 asyncpg), so the worst case is roughly
+# ``WORKER_MAX_CONTAINERS * 2 + API(16 * 8) + dispatcher/reconciler``. On the
+# 2XL Supabase tier (1500 max pooler clients, 380 Postgres max_connections,
+# transaction pool size 100) 512 workers -> ~512*2 + 128 = ~1152 clients, ~77%
+# of the 1500 cap, leaving margin for spikes/reconnects and direct connections.
+# Concurrent transaction *execution* is gated by the 100-backend pool, not this
+# count -- worker DB transactions (claim / heartbeat) are short, so a large
+# mostly-idle-on-DB fleet is fine.
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    320,
-)  # High global cap so several queue keys can scale, but still not unbounded.
+    512,
+)
 
 # Mark single-job worker containers as non-preemptible so Modal does not
 # interrupt long-running trials / analyses / verdicts mid-execution. Modal
 # applies a 3x CPU+memory price multiplier when this is enabled
-# (https://modal.com/docs/guide/preemption); keep it env-flagged so previews
-# or experiments can opt out.
+# (https://modal.com/docs/guide/preemption);
 WORKER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_WORKER_NONPREEMPTIBLE", True)
 DISPATCHER_NONPREEMPTIBLE = _env_flag("ODDISH_MODAL_DISPATCHER_NONPREEMPTIBLE", True)
 
-# Max number of workers spawned per poll cycle (rate limiter, global across all queue_keys)
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 64)
+# Per-function CPU/memory floors (see API_CPU/API_MEMORY_MB note above).
+# - Worker: keeps the historical 1 core / 3 GiB; Harbor scratch + log handling
+#   is the heaviest non-API workload.
+# - Dispatcher: lightweight (discover active keys + spawn); a modest floor is
+#   plenty now that it no longer runs the reconciliation sweep inline.
+# - Reconciler: DB-bound multi-pass sweep; give it a bit more memory than the
+#   dispatcher for the larger result sets it materializes.
+WORKER_CPU = _env_float("ODDISH_MODAL_WORKER_CPU", 1.0)
+WORKER_MEMORY_MB = _env_int("ODDISH_MODAL_WORKER_MEMORY_MB", 3072)
+DISPATCHER_CPU = _env_float("ODDISH_MODAL_DISPATCHER_CPU", 1.0)
+DISPATCHER_MEMORY_MB = _env_int("ODDISH_MODAL_DISPATCHER_MEMORY_MB", 1024)
+RECONCILER_CPU = _env_float("ODDISH_MODAL_RECONCILER_CPU", 1.0)
+RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
+
+# Max number of workers spawned per poll cycle (rate limiter, global across all
+# queue_keys). This is the dominant throughput ceiling: long agent trials hold a
+# slot for their full duration (often 10-30+ min), so the steady-state pool of
+# running workers is roughly (spawns_per_poll * trial_duration / poll_interval).
+# At 64/180s the global rate could not fill the per-model concurrency limits
+# (which sum into the hundreds), leaving most models far below their caps. The
+# per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
+# real safety bounds; this just stops the dispatcher from starving them.
+#
+# 192 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
+# per-poll spawn burst is also the per-poll claim burst (each spawned worker
+# runs one claim query), but claims are short and the 2XL box (8 dedicated
+# cores, transaction pool 100) absorbs ~192 concurrent short claims per
+# 180s tick comfortably.
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 192)
+
+# Wall-clock budget for how long one worker container keeps claiming and running
+# jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
+# nop-oracle, which finish well inside a single POLL_INTERVAL_SECONDS) batch
+# many per container instead of running one job and leaving the slot idle until
+# the next poll; long agent trials exceed it on their first job and so still run
+# one-per-container. Must stay well under WORKER_TIMEOUT_SECONDS and the slot
+# lease (WORKER_TIMEOUT_SECONDS + 30).
+WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
 
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
@@ -97,6 +190,16 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
+# Optional bring-your-own-credentials secret, layered alongside oddish-prod so
+# personal creds never go into the shared oddish-prod secret. Holds the
+# subscription tokens (CS_CLAUDE_CODE_OAUTH_TOKEN / CS_CODEX_AUTH_JSON_B64) and
+# is consumed only by the subscription auth route in harbor_runner. Set
+# ODDISH_EXTRA_SECRET_NAME (e.g. cs-creds) at deploy to enable; unset = no-op,
+# so this is inert for normal deploys. It is mounted ONLY on the trial worker
+# (see worker_secrets below), not the API or dispatcher, to keep the personal
+# tokens' blast radius minimal.
+EXTRA_SECRET_NAME = os.environ.get("ODDISH_EXTRA_SECRET_NAME", "")
+
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
@@ -110,11 +213,33 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
         )
     )
 
+# Trial-worker secret bundle = runtime_secrets plus the optional
+# bring-your-own-credentials secret. The CS_* subscription tokens are consumed
+# only by harbor_runner, so the extra secret is mounted ONLY on the trial worker
+# (process_single_job), never on the API or dispatcher. With EXTRA_SECRET_NAME
+# unset this is identical to runtime_secrets, so it is inert for normal deploys.
+worker_secrets = list(runtime_secrets)
+if EXTRA_SECRET_NAME:
+    worker_secrets.append(
+        modal.Secret.from_name(
+            EXTRA_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
-MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 32)
+MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
 NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+# Per-model queue-key concurrency overrides. Baked into the deploy so the
+# repo is the source of truth; operators can still override the whole JSON
+# via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
+MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+    '{"google/gemini-3.5-flash": 128, '
+    '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
+    '"openai/gpt-5.4-mini": 128}',
+)
 
 ENV_VARS = {
     "UV_LINK_MODE": "copy",
@@ -128,6 +253,22 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+    # Baked so the bring-your-own-creds secret gate (runtime_secrets) evaluates
+    # identically in the container and on the deploy host.
+    "ODDISH_EXTRA_SECRET_NAME": EXTRA_SECRET_NAME,
+    # Comma-separated agents whose trials use the personal-subscription auth
+    # route (Claude Code OAuth / Codex auth.json) instead of Bedrock/Azure.
+    # Lets the stored model id stay standard (e.g. claude-opus-4-8) while the
+    # agent still authenticates via the bring-your-own-creds secret above.
+    "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
+    # Concurrency cap for serialized subscription buckets (codex sub-solo/...).
+    # Defaults to 4: per-trial codex auth.json copies are independent within the
+    # token's refresh window, so a handful of concurrent trials is safe (matches
+    # the oddish.config.Settings default). Lower to 1 to fully serialize a shared
+    # refresh-sensitive credential.
+    "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY": os.environ.get(
+        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "4"
+    ),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -136,6 +277,7 @@ ENV_VARS = {
     "ODDISH_ASYNCPG_POOL_MIN_SIZE": "0",
     "ODDISH_ASYNCPG_POOL_MAX_SIZE": "1",
     "ODDISH_DEFAULT_MODEL_CONCURRENCY": str(MODEL_CONCURRENCY_DEFAULT),
+    "ODDISH_MODEL_CONCURRENCY_OVERRIDES": MODEL_CONCURRENCY_OVERRIDES,
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
     # pressure rather than provider rate limits.
     "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
@@ -247,6 +389,8 @@ image = (
         "api",
         "auth",
         "cloud_policy",
+        "dashboard_attribution",
+        "dashboard_owner_backfill",
         "endpoints",
         "modal_app",
         "models",

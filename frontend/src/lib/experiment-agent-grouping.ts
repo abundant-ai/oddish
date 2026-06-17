@@ -11,6 +11,20 @@ export type ExperimentAgentSummary = {
   isModelScoped: boolean;
 };
 
+// Baseline agents (nop / oracle) are deterministic validation runs, so they
+// are excluded from score aggregation and row-filter evaluation.
+export function isBaselineAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "nop" ||
+    lower === "oracle" ||
+    lower.startsWith("nop-") ||
+    lower.startsWith("oracle-") ||
+    lower.startsWith("agent-nop") ||
+    lower.startsWith("agent-oracle")
+  );
+}
+
 function getModelKey(model: string | null | undefined): string {
   const trimmed = model?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : DEFAULT_EXPERIMENT_MODEL_KEY;

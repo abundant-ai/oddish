@@ -1,11 +1,26 @@
 from oddish.config import Settings
 
-# Worker containers process one job each; keep DB pools minimal to avoid
-# exhausting connection limits when Modal bursts many containers.
-Settings.db_pool_size = 1
-Settings.db_pool_max_overflow = 0
+# Worker containers run ONE job for its full duration -- agent trials can run
+# for many minutes up to ~10 hours. A pooled (QueuePool) connection would be
+# opened by the first session (``_prepare_trial_run``) and then held *idle* for
+# the entire trial, even though the worker only touches the DB for a few ms
+# every 30s (heartbeats) plus a claim and a final write. Across a large fleet
+# that's hundreds of connections held idle for hours against the Supavisor
+# client cap.
+#
+# NullPool makes every SQLAlchemy session short-lived: open a connection, run
+# its quick transaction, close it. Combined with the runner's per-op asyncpg
+# connections (claim / heartbeat / outcome) and slots.py's per-op connections,
+# a worker holds *no* DB connection during the long Harbor run -- only the few
+# workers actively writing at any instant consume a client connection. This is
+# what lets the fleet scale past the naive ``workers × held_conns`` ceiling.
+# Supavisor transaction mode is built for exactly this transient-connection
+# pattern. The API keeps its QueuePool (see endpoints.py) because it is warm,
+# long-lived, and latency-sensitive.
+Settings.db_use_null_pool = True
 
 import asyncio
+import time
 from uuid import uuid4
 
 import modal
@@ -16,11 +31,21 @@ import modal
 from observability import span as _otel_span
 
 from modal_app import (
+    CLEANUP_INTERVAL_SECONDS,
+    CLEANUP_TIMEOUT_SECONDS,
+    DISPATCHER_CPU,
+    DISPATCHER_MEMORY_MB,
     DISPATCHER_NONPREEMPTIBLE,
+    DISPATCHER_TIMEOUT_SECONDS,
     MAX_WORKERS_PER_POLL,
     POLL_INTERVAL_SECONDS,
+    RECONCILER_CPU,
+    RECONCILER_MEMORY_MB,
+    WORKER_BATCH_BUDGET_SECONDS,
     WORKER_BUFFER_CONTAINERS,
+    WORKER_CPU,
     WORKER_MAX_CONTAINERS,
+    WORKER_MEMORY_MB,
     WORKER_MIN_CONTAINERS,
     WORKER_NONPREEMPTIBLE,
     WORKER_SCALEDOWN_WINDOW_SECONDS,
@@ -28,8 +53,10 @@ from modal_app import (
     app,
     image,
     runtime_secrets,
+    worker_secrets,
     worker_volumes,
 )
+from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
 from oddish.db import close_database_connections, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
@@ -39,6 +66,11 @@ from oddish.workers.queue.slots import (
     cleanup_stale_queue_slots,
     release_queue_slot,
 )
+from oddish.workers.queue.runtime_status import (
+    DISPATCHER_COMPONENT,
+    RECONCILER_COMPONENT,
+    record_queue_runtime_status,
+)
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
@@ -46,10 +78,10 @@ from oddish.workers.queue.worker_job_dispatcher import (
 )
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
-    run_single_worker_job,
+    drain_worker_jobs,
 )
 
-from .github import notify_github_analysis, notify_github_trial, notify_github_verdict
+from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
 
 # Register TRIAL / ANALYSIS / VERDICT handlers against the unified
@@ -59,29 +91,30 @@ from .runtime import configure_storage_paths, console
 ensure_builtin_handlers_registered()
 
 
-# Post-success hooks: fired after the worker_jobs row is in SUCCESS
-# state. Mirrors the ``on_trial_complete`` / ``on_analysis_complete`` /
-# ``on_verdict_complete`` hooks the legacy dispatcher passed through
-# ``run_single_job``. Hook exceptions are swallowed by the runner so a
-# GitHub API hiccup never corrupts scheduling state.
+# Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
+# The QA hook refreshes the whole PR comment (per-trial classifications +
+# task verdict) in one update. ``ANALYSIS`` is transitional -- it only fires
+# for legacy per-trial rows draining across a deploy. Hook exceptions are
+# swallowed by the runner so a GitHub API hiccup never corrupts scheduling
+# state.
 _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.TRIAL: notify_github_trial,
+    WorkerJobKind.QA: notify_github_qa,
     WorkerJobKind.ANALYSIS: notify_github_analysis,
-    WorkerJobKind.VERDICT: notify_github_verdict,
 }
 
 
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=runtime_secrets,
+    secrets=worker_secrets,
     min_containers=WORKER_MIN_CONTAINERS,
     buffer_containers=WORKER_BUFFER_CONTAINERS,
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
     max_containers=WORKER_MAX_CONTAINERS,
     timeout=WORKER_TIMEOUT_SECONDS,
-    cpu=1.0,
-    memory=3072,  # 3GB memory to prevent OOM issues
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
     nonpreemptible=WORKER_NONPREEMPTIBLE,
 )
 async def process_single_job(queue_key: str):
@@ -153,16 +186,22 @@ async def process_single_job(queue_key: str):
             f"[dim]Acquired queue slot {lock_slot + 1}/{queue_limit} (queue_key={queue_key})[/dim]"
         )
 
-        job_found = await run_single_worker_job(
-            queue_key=queue_key,
+        jobs_processed = await drain_worker_jobs(
+            queue_key,
             worker_id=worker_id,
             queue_slot=lock_slot,
+            budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
         )
-        if not job_found:
+        if jobs_processed == 0:
             console.print(
                 f"[dim]No job available after slot acquisition (queue_key={queue_key})[/dim]"
+            )
+        elif jobs_processed > 1:
+            console.print(
+                f"metric=worker_batch_drained queue_key={queue_key} "
+                f"jobs={jobs_processed}"
             )
 
     except asyncio.CancelledError:
@@ -192,7 +231,130 @@ async def process_single_job(queue_key: str):
     image=image,
     volumes=worker_volumes,
     secrets=runtime_secrets,
-    timeout=60,  # Dispatcher is lightweight, should complete quickly
+    timeout=CLEANUP_TIMEOUT_SECONDS,
+    cpu=RECONCILER_CPU,
+    memory=RECONCILER_MEMORY_MB,
+    min_containers=1,  # Keep one reconciler container warm.
+    max_containers=1,  # Singleton-ish: never run two sweeps at once.
+    schedule=modal.Period(seconds=CLEANUP_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
+)
+async def reconcile_queue_state():
+    """
+    Scheduled reconciliation sweep, decoupled from dispatch.
+
+    This used to run inline at the top of ``poll_queue`` under a 60s
+    timeout. The sweep does several near-full-table passes over
+    ``trials`` / ``tasks`` / ``worker_jobs`` and could (a) exceed the
+    dispatcher's tight timeout -- getting SIGKILLed mid-transaction and
+    leaving orphaned 'idle in transaction' locks -- and (b) deadlock
+    against the live single-job workers writing the same rows. Either
+    way the dispatcher's spawn step never ran, so the queue got *no*
+    new workers that cycle. Splitting it out means dispatch can never
+    be blocked by reconciliation, and the sweep gets a generous timeout
+    so it is never killed mid-transaction.
+
+    Each phase is wrapped defensively: a failure (e.g. a transient
+    deadlock) in one phase logs and is swallowed so the remaining
+    phases still run.
+    """
+    cycle_span = _otel_span("worker.reconcile_queue_state")
+    cycle_span.__enter__()
+    started = time.monotonic()
+    # Accumulated for the persisted heartbeat the admin dashboard reads back.
+    summary: dict[str, int] = {}
+    phase_errors: list[str] = []
+    try:
+        console.print("[cyan]Queue reconciler starting...[/cyan]")
+        await configure_storage_paths()
+
+        try:
+            stale_cleared = await cleanup_stale_queue_slots()
+            summary["stale_slots_cleared"] = stale_cleared
+            if stale_cleared > 0:
+                console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
+                console.print(
+                    f"[dim]Cleared {stale_cleared} stale queue slot lock(s)[/dim]"
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"stale_slot_cleanup: {e}")
+            console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
+
+        try:
+            cleanup_counts = await cleanup_orphaned_queue_state()
+            summary.update({k: int(v) for k, v in cleanup_counts.items()})
+            if any(cleanup_counts.values()):
+                console.print(
+                    "metric=orphaned_queue_cleanup "
+                    + " ".join(
+                        f"{key}={value}" for key, value in cleanup_counts.items()
+                    )
+                )
+                console.print(
+                    "[yellow]Reconciled orphaned queue state:[/yellow] "
+                    + ", ".join(
+                        f"{key}={value}"
+                        for key, value in cleanup_counts.items()
+                        if value > 0
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"orphaned_state: {e}")
+            console.print(
+                f"[yellow]Orphaned-state reconciliation skipped: {e}[/yellow]"
+            )
+
+        try:
+            backfill_counts = await backfill_experiment_owners()
+            summary.update({k: int(v) for k, v in backfill_counts.items()})
+            if any(backfill_counts.values()):
+                console.print(
+                    "metric=experiments_owner_backfill "
+                    + " ".join(
+                        f"{key}={value}" for key, value in backfill_counts.items()
+                    )
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"owner_backfill: {e}")
+            console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
+
+        # Persist a heartbeat the admin dashboard reads back. Keep only
+        # non-zero counters so the payload stays legible.
+        await record_queue_runtime_status(
+            RECONCILER_COMPONENT,
+            {
+                "ok": not phase_errors,
+                "duration_seconds": round(time.monotonic() - started, 2),
+                "errors": phase_errors,
+                "counts": {k: v for k, v in summary.items() if v},
+            },
+        )
+
+    except OSError as e:
+        console.print(
+            f"[yellow]Reconciler skipped (transient network error): {e}[/yellow]"
+        )
+    except Exception as e:
+        console.print(f"[red]Reconciler error: {e}[/red]")
+        raise
+    finally:
+        await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
+        console.print("[green]Reconciler complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=DISPATCHER_TIMEOUT_SECONDS,
+    cpu=DISPATCHER_CPU,
+    memory=DISPATCHER_MEMORY_MB,
     min_containers=1,  # Keep one dispatcher container warm.
     max_containers=1,  # Keep the scheduled dispatcher singleton-ish.
     schedule=modal.Period(seconds=POLL_INTERVAL_SECONDS),
@@ -203,44 +365,25 @@ async def poll_queue():
     Queue-aware dispatcher that spawns ``process_single_job`` workers
     based on per-queue-key depth in the unified ``worker_jobs`` table.
 
-    Runs every ``POLL_INTERVAL_SECONDS``:
-    1. Reaps orphaned ``queue_slots`` leases and stale ``worker_jobs``
-       rows so the queue can make forward progress.
-    2. Scans ``worker_jobs`` for active queue keys and their
+    Runs every ``POLL_INTERVAL_SECONDS`` and does only two things --
+    discover active queue keys and spawn workers. Reconciliation
+    (stale-heartbeat reap, stage advances, orphaned slot release, owner
+    backfill) lives in the separate ``reconcile_queue_state`` function
+    so a slow or deadlocking sweep can never block dispatch:
+
+    1. Scans ``worker_jobs`` for active queue keys and their
        queued/running counts.
-    3. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
+    2. Spawns up to ``MAX_WORKERS_PER_POLL`` ``process_single_job``
        workers, budgeted per queue_key against concurrency limits.
     """
-    # Open the span FIRST so the storage-path setup, cleanup,
-    # discovery, and spawn-plan queries all nest under one named
+    # Open the span FIRST so the storage-path setup, discovery, and
+    # spawn-plan queries all nest under one named
     # ``worker.poll_queue_cycle`` parent per tick.
     cycle_span = _otel_span("worker.poll_queue_cycle")
     cycle_span.__enter__()
     try:
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
-
-        stale_cleared = await cleanup_stale_queue_slots()
-        if stale_cleared > 0:
-            console.print(f"metric=queue_lock_stale_cleared count={stale_cleared}")
-            console.print(
-                f"[dim]Cleared {stale_cleared} stale queue slot lock(s)[/dim]"
-            )
-
-        cleanup_counts = await cleanup_orphaned_queue_state()
-        if any(cleanup_counts.values()):
-            console.print(
-                "metric=orphaned_queue_cleanup "
-                + " ".join(f"{key}={value}" for key, value in cleanup_counts.items())
-            )
-            console.print(
-                "[yellow]Reconciled orphaned queue state:[/yellow] "
-                + ", ".join(
-                    f"{key}={value}"
-                    for key, value in cleanup_counts.items()
-                    if value > 0
-                )
-            )
 
         queue_keys = await discover_active_worker_job_queue_keys()
         queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
@@ -284,6 +427,21 @@ async def poll_queue():
             running_by_queue=running_by_queue,
             concurrency_limits=concurrency_limits,
             max_workers=MAX_WORKERS_PER_POLL,
+        )
+
+        # Persist a heartbeat the admin dashboard reads back so operators can
+        # see the spawn rate (and whether it is pinned at the per-poll cap)
+        # without scraping Modal logs.
+        await record_queue_runtime_status(
+            DISPATCHER_COMPONENT,
+            {
+                "spawned": len(spawn_plan),
+                "max_workers_per_poll": MAX_WORKERS_PER_POLL,
+                "spawn_cap_reached": len(spawn_plan) >= MAX_WORKERS_PER_POLL,
+                "active_queue_keys": len(queue_keys),
+                "queued_total": sum(queued_by_queue.values()),
+                "running_total": sum(running_by_queue.values()),
+            },
         )
 
         if not spawn_plan:

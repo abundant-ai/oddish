@@ -8,10 +8,10 @@ state. This package is the seam: it owns
   ``JobOutcome`` result type that handlers return.
 - ``enqueue``: ``EnqueueRequest`` plus ``enqueue_worker_job`` which
   writes a ``worker_jobs`` row inside the caller's session.
-- ``handlers``: per-kind adapters (``TrialJobHandler`` /
-  ``AnalysisJobHandler`` / ``VerdictJobHandler`` / ``TaskExpandJobHandler``)
-  that delegate to the existing ``run_*_job`` bodies and map terminal
-  domain state back onto a ``JobOutcome``.
+- ``handlers``: per-kind adapters (``TrialJobHandler`` / ``QaJobHandler`` /
+  ``TaskExpandJobHandler`` / ``TagProjectJobHandler``, plus the transitional
+  ``AnalysisJobHandler``) that delegate to the existing ``run_*_job`` bodies
+  and map terminal domain state back onto a ``JobOutcome``.
 
 ``ensure_builtin_handlers_registered()`` wires every built-in handler
 into the global registry. Both the standalone worker and the backend
@@ -47,27 +47,31 @@ def ensure_builtin_handlers_registered() -> None:
     global _BUILTINS_REGISTERED
     required_kinds = {
         WorkerJobKind.TRIAL,
+        WorkerJobKind.QA,
         WorkerJobKind.ANALYSIS,
-        WorkerJobKind.VERDICT,
         WorkerJobKind.TASK_EXPAND,
+        WorkerJobKind.TAG_PROJECT,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
 
     # Lazy imports keep ``oddish.workers.queue`` off the critical
     # import path for code that only needs ``enqueue_worker_job``.
+    # ``AnalysisJobHandler`` is transitional (drains legacy ANALYSIS rows).
     from oddish.workers.jobs.handlers import (
         AnalysisJobHandler,
+        QaJobHandler,
+        TagProjectJobHandler,
         TaskExpandJobHandler,
         TrialJobHandler,
-        VerdictJobHandler,
     )
 
     for handler in (
         TrialJobHandler(),
+        QaJobHandler(),
         AnalysisJobHandler(),
-        VerdictJobHandler(),
         TaskExpandJobHandler(),
+        TagProjectJobHandler(),
     ):
         try:
             register(handler)

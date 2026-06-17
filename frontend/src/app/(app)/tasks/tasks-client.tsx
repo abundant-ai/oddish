@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,8 +15,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
+import { SavedFiltersMenu } from "@/components/saved-filters-menu";
+import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
+import { parseTaskSearch } from "@/lib/tag-query";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -27,11 +31,21 @@ import {
 } from "@/lib/status-config";
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
+  cn,
   encodeExperimentRouteParam,
   formatRelativeTime,
   formatShortDateTime,
+  prBadge,
+  taskPrUrl,
 } from "@/lib/utils";
-import { ChevronLeft, ChevronRight, Loader2 } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  CircleHelp,
+  ExternalLink,
+  GitPullRequest,
+  Loader2,
+} from "lucide-react";
 
 const PAGE_SIZE = 25;
 
@@ -47,6 +61,17 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   }, [delayMs, value]);
 
   return debouncedValue;
+}
+
+function SearchSyntaxRow({ example, hint }: { example: string; hint: string }) {
+  return (
+    <p className="flex items-baseline gap-2">
+      <code className="shrink-0 rounded bg-muted px-1 font-mono">
+        {example}
+      </code>
+      <span className="text-muted-foreground">{hint}</span>
+    </p>
+  );
 }
 
 function TaskCardsSkeleton() {
@@ -263,24 +288,80 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               <Badge variant="outline" className="w-fit font-mono text-[11px]">
                 v{task.current_version ?? "—"}
               </Badge>
+              {(() => {
+                const meta = task.github_meta;
+                const prUrl = taskPrUrl(task.link, meta);
+                if (!prUrl) return null;
+                const { label, number } = prBadge(prUrl, meta?.pr_number);
+                const title = meta?.pr_title;
+                return (
+                  <a
+                    href={prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={
+                      title
+                        ? `${title} — view on GitHub`
+                        : "View pull request on GitHub"
+                    }
+                    onClick={(e) => e.stopPropagation()}
+                    className={cn(
+                      badgeVariants({ variant: "outline" }),
+                      "w-fit gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                    )}
+                  >
+                    <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
+                    <span className="min-w-0 max-w-[140px] truncate">
+                      {label}
+                      {number && (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          #{number}
+                        </span>
+                      )}
+                    </span>
+                    <ExternalLink
+                      className="h-3 w-3 shrink-0 opacity-50"
+                      aria-hidden
+                    />
+                  </a>
+                );
+              })()}
             </div>
           </div>
-          <div className="shrink-0 text-right">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Last run
-            </div>
-            <div className="mt-1 text-xs">
-              {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
-            </div>
-            {task.last_run_at ? (
-              <div className="text-[11px] text-muted-foreground">
-                {formatShortDateTime(task.last_run_at)}
+          <div className="shrink-0 flex flex-col items-end gap-2">
+            <Link
+              href={`/tasks/${task.id}/probe`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+            >
+              Probe run →
+            </Link>
+            <div className="text-right">
+              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                Last run
               </div>
-            ) : null}
+              <div className="mt-1 text-xs">
+                {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
+              </div>
+              {task.last_run_at ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {formatShortDateTime(task.last_run_at)}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3 px-5 pb-5">
+        {(task.user_tags ?? []).length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {(task.user_tags ?? []).map((t) => (
+              <TagChip key={t.tag_id} tag={t} />
+            ))}
+          </div>
+        ) : null}
         <div className="space-y-1.5">
           <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Latest trials
@@ -313,13 +394,19 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
 export function TasksPageClient({
   initialData,
   initialQuery = "",
+  orgId = null,
 }: {
   initialData?: TaskBrowseResponse | null;
   initialQuery?: string;
+  orgId?: string | null;
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
+  const parsed = useMemo(
+    () => parseTaskSearch(debouncedQuery),
+    [debouncedQuery],
+  );
 
   useEffect(() => {
     setOffset(0);
@@ -330,11 +417,20 @@ export function TasksPageClient({
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
-    if (debouncedQuery) {
-      params.set("query", debouncedQuery);
+    if (parsed.text) {
+      params.set("query", parsed.text);
+    }
+    if (parsed.all.length) {
+      params.set("tags", parsed.all.join(","));
+    }
+    if (parsed.any.length) {
+      params.set("tags_any", parsed.any.join(","));
+    }
+    if (parsed.none.length) {
+      params.set("tags_none", parsed.none.join(","));
     }
     return `/api/tasks/browse?${params.toString()}`;
-  }, [debouncedQuery, offset]);
+  }, [offset, parsed]);
 
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TaskBrowseResponse>(swrKey, fetcher, {
@@ -373,11 +469,59 @@ export function TasksPageClient({
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <Input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Search tasks"
-                className="h-8 w-full border-[#6f88b4]/20 sm:w-[260px]"
+              {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
+              <div className="relative w-full sm:w-[260px]">
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder={'Search · word "phrase" -not tag:x'}
+                  className="h-8 w-full border-[#6f88b4]/20 pr-7"
+                />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Search syntax help"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      <CircleHelp className="h-3.5 w-3.5" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent
+                    side="bottom"
+                    align="end"
+                    className="max-w-[320px] space-y-1.5"
+                  >
+                    <p className="font-medium">Search syntax</p>
+                    <SearchSyntaxRow
+                      example="murmur x86"
+                      hint="every word must match, anywhere in the name"
+                    />
+                    <SearchSyntaxRow
+                      example={'"x86-32 conformance"'}
+                      hint="exact phrase"
+                    />
+                    <SearchSyntaxRow
+                      example="murmur OR polygon"
+                      hint="either word"
+                    />
+                    <SearchSyntaxRow example="-no-skill" hint="exclude" />
+                    <SearchSyntaxRow
+                      example="tag:a OR tag:b -tag:c"
+                      hint="filter by tags"
+                    />
+                    <p className="text-muted-foreground">
+                      Matching is case-insensitive; combine freely, e.g.{" "}
+                      <code className="rounded bg-muted px-1 font-mono">
+                        polygon -rel tag:smoke
+                      </code>
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
+              <SavedFiltersMenu
+                query={searchQuery}
+                onApply={(text) => setSearchQuery(text)}
               />
               <ImportDialog onImported={() => mutate()} />
             </div>

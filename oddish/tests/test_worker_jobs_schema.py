@@ -33,10 +33,14 @@ from oddish.db import (  # noqa: E402
 def test_worker_job_kind_members():
     assert {k.value for k in WorkerJobKind} == {
         "TRIAL",
+        # Single task-level QA job (classification + verdict).
+        "QA",
+        # Legacy kinds, kept on the enum for historical rows / drain.
         "ANALYSIS",
         "VERDICT",
         "QA_REVIEW",
         "TASK_EXPAND",
+        "TAG_PROJECT",
     }
 
 

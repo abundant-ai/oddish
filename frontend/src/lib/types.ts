@@ -20,7 +20,9 @@ type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-type VisibleJobKind = "trial" | "analysis" | "verdict";
+// "qa" is the single task-level QA job; "analysis" is legacy (drains
+// in-flight per-trial rows across a deploy).
+type VisibleJobKind = "trial" | "qa" | "analysis";
 
 type VisibleJobStatus =
   | "queued"
@@ -36,6 +38,8 @@ export interface VisibleWorkerJob {
   kind: VisibleJobKind | string;
   status: VisibleJobStatus | string;
   queue_key: string;
+  provider?: string | null;
+  external_id?: string | null;
   subject_table?: string | null;
   subject_id?: string | null;
   attempts: number;
@@ -57,6 +61,22 @@ export type AnalysisClassification =
   | "BAD_FAILURE"
   | "GOOD_SUCCESS"
   | "BAD_SUCCESS";
+
+export interface UserTagRef {
+  tag_id: string;
+  key: string;
+  value?: string | null;
+  color?: string | null;
+  visibility: "PRIVATE" | "PUBLIC";
+  current: boolean;
+  older: boolean;
+}
+
+export interface TagFilterAST {
+  all: string[];
+  any: string[];
+  none: string[];
+}
 
 // Trial analysis result
 interface TrialAnalysis {
@@ -110,6 +130,7 @@ export interface Trial {
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   has_trajectory?: boolean;
+  is_probe?: boolean;
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -159,11 +180,13 @@ export interface Task {
   user: string;
   github_username?: string | null;
   github_meta?: Record<string, string> | null;
+  link?: string | null;
   task_path: string;
   experiment_id: string;
   experiment_name: string;
   experiment_is_public: boolean;
   experiment_created_at?: string | null;
+  experiments?: { id: string; name: string }[];
   total: number;
   completed: number;
   failed: number;
@@ -172,6 +195,7 @@ export interface Task {
   reward_sum?: number | null;
   reward_total?: number | null;
   run_analysis?: boolean;
+  run_probe?: boolean;
   verdict_status?: JobStatus | null;
   verdict?: TaskVerdict | null;
   verdict_error?: string | null;
@@ -179,6 +203,7 @@ export interface Task {
   current_version?: number | null;
   current_version_id?: string | null;
   trials?: Trial[] | null;
+  user_tags?: UserTagRef[];
   created_at: string;
   started_at?: string | null;
   finished_at?: string | null;
@@ -210,8 +235,11 @@ export interface TaskBrowseItem {
   reward_sum: number;
   reward_total: number;
   last_run_at?: string | null;
+  link?: string | null;
+  github_meta?: Record<string, string> | null;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
+  user_tags: UserTagRef[];
 }
 
 export interface TaskBrowseResponse {
@@ -241,9 +269,11 @@ export interface TaskVersionSummary {
   cost_has_estimated: boolean;
   cost_has_native: boolean;
   last_run_at?: string | null;
+  // Direct VERSION-scope tags on this version.
+  user_tags?: UserTagRef[];
 }
 
-export interface TaskCostTotals {
+interface TaskCostTotals {
   cost_usd: number;
   cost_trial_count: number;
   cost_has_estimated: boolean;
@@ -312,10 +342,23 @@ export interface DashboardExperimentAuthor {
   source: "github" | "api";
 }
 
+// Organization member, as returned by GET /api/users. Used to populate
+// the dashboard experiments owner filter (member picker).
+export interface OrgUser {
+  id: string;
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+  org_id: string;
+  created_at: string;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
   is_public: boolean;
+  user_tags?: UserTagRef[];
   task_count: number;
   total_trials: number;
   completed_trials: number;
@@ -325,12 +368,20 @@ export interface DashboardExperiment {
   reward_success: number;
   reward_sum: number;
   reward_total: number;
+  /**
+   * Mean over tasks of the per-task mean reward across scored trials
+   * (partial credit included), excluding nop/oracle baselines.
+   */
+  avg_score: number | null;
   analysis_tasks: number;
   verdict_good: number;
   verdict_needs_review: number;
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
+  author: DashboardExperimentAuthor | null;
+  last_runner: DashboardExperimentAuthor | null;
+  /** @deprecated Use `last_runner`; kept for older clients. */
   last_author: DashboardExperimentAuthor | null;
   last_pr_url: string | null;
   last_pr_title: string | null;
@@ -517,6 +568,7 @@ export interface OrphanedStateResponse {
 // backend starts returning them before the frontend has opinions.
 export type WorkerJobKind =
   | "TRIAL"
+  | "QA"
   | "ANALYSIS"
   | "VERDICT"
   | "QA_REVIEW"
@@ -571,7 +623,67 @@ export interface WorkerJobsResponse {
   timestamp: string;
 }
 
+// ---------------------------------------------------------------------------
+// Queue health overview
+// ---------------------------------------------------------------------------
+
+interface QueueThroughputStat {
+  kind: WorkerJobKind;
+  started_5m: number;
+  started_15m: number;
+  started_60m: number;
+  finished_5m: number;
+  finished_15m: number;
+  finished_60m: number;
+}
+
+export interface QueueCapacityStat {
+  queue_key: string;
+  queued: number;
+  queued_scheduled: number;
+  running: number;
+  limit: number;
+  fill: number | null;
+  oldest_queued_age_seconds: number | null;
+  wait_p50_seconds: number | null;
+  wait_p95_seconds: number | null;
+}
+
+export interface QueueRuntimeComponentStatus {
+  component: string;
+  updated_at: string | null;
+  age_seconds: number | null;
+  payload: Record<string, unknown>;
+}
+
+export interface QueueHealthResponse {
+  totals_queued: number;
+  totals_running: number;
+  throughput: QueueThroughputStat[];
+  capacity: QueueCapacityStat[];
+  dispatcher: QueueRuntimeComponentStatus | null;
+  reconciler: QueueRuntimeComponentStatus | null;
+  timestamp: string;
+}
+
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;
+  description: string | null;
+}
+
+export interface ExperimentShareInfo {
+  name: string;
+  is_public: boolean;
+  public_token: string | null;
+  description: string | null;
+}
+
+export interface ExperimentProbeRow {
+  task_id: string;
+  task_name: string;
+  version: number | null;
+  model: string | null;
+  status: string;
+  probe_trial_id: string;
 }

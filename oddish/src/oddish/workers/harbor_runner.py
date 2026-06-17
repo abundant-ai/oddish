@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -10,6 +12,7 @@ import sys
 import tempfile
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -25,14 +28,44 @@ from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialHookEvent
 from harbor.models.job.result import JobResult
 
-from oddish.config import to_bedrock_model_id
+from oddish.config import (
+    BEDROCK_ENV_VARS,
+    MINIMAX_DEFAULT_BASE_URL,
+    MOONSHOT_DEFAULT_BASE_URL,
+    OPENAI_PROVIDER_AZURE,
+    OPENAI_PROVIDER_OPENAI,
+    ZAI_DEFAULT_BASE_URL,
+    is_minimax_model,
+    is_moonshot_model,
+    is_subscription_model,
+    is_zai_model,
+    minimax_api_model_id,
+    minimax_bare_model_id,
+    moonshot_bare_model_id,
+    settings,
+    subscription_bare_model_id,
+    to_bedrock_model_id,
+    to_minimax_model_id,
+    to_moonshot_model_id,
+    to_zai_model_id,
+    zai_bare_model_id,
+)
 from oddish.schemas import HarborConfig
-from oddish.task_timeouts import validate_task_timeout_config
+from oddish.worker.probe_staging import stage_org_skills
+from oddish.task_timeouts import (
+    PROBE_AGENT_TIMEOUT_SEC,
+    validate_task_timeout_config,
+)
+
+logger = logging.getLogger(__name__)
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _MIN_REQUIRED_FREE_GB = 5.0
 _MIN_REQUIRED_FREE_INODES = 1024
+_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
+_AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
+_ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.claude_code_agent:OddishClaudeCode"
 
 
 class _TeeTextIO:
@@ -520,11 +553,356 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
+    """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
+    agent_name = (agent_config.name or "").strip().lower()
+    model_name = (agent_config.model_name or "").strip().lower()
+    if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
+        return
+
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Claude Code prioritizes these ambient credentials when present in the
+    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
+# z.ai recommends these long-context / streaming settings for GLM under Claude
+# Code. They are applied with setdefault so a sweep can override any of them.
+_ZAI_RECOMMENDED_ENV: dict[str, str] = {
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
+    "API_TIMEOUT_MS": "3600000",
+    "CLAUDE_STREAM_IDLE_TIMEOUT_MS": "3600000",
+    "CLAUDE_CODE_EAGER_FLUSH": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "1000000",
+}
+
+
+def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to z.ai's GLM endpoint.
+
+    GLM is served over an Anthropic-compatible ``/messages`` API, so it runs on
+    the claude-code harness but must hit z.ai instead of the Bedrock route the
+    Modal image defaults to. Mirrors ``_apply_claude_code_openrouter_env``:
+    point Claude Code at the z.ai base URL, authenticate with ``${ZAI_API_KEY}``
+    (resolved by Harbor's Modal env at exec time, same as OpenRouter), blank the
+    ambient Bedrock/Anthropic credentials so the z.ai route wins, and pin the
+    model plus every size alias to the bare GLM id (the image runs in Bedrock
+    mode by default, so Claude Code would otherwise not set the aliases).
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_zai_model(agent_config.model_name):
+        return
+
+    bare_model = zai_bare_model_id(agent_config.model_name or "")
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${ZAI_API_KEY}")
+    env.setdefault("ENABLE_TOOL_SEARCH", "false")
+
+    # Pin the GLM id for the primary model and all size aliases that Claude Code
+    # may route to (Haiku/Sonnet/Opus/subagent), so a single account serves all.
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _ZAI_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    # The Modal image bakes in the Bedrock route; blank those ambient creds so
+    # the z.ai base-url/auth-token route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+    # z.ai recommends "max effort" with adaptive thinking. Harbor's claude-code
+    # agent renders these kwargs as `--effort max --thinking adaptive`. Set as
+    # defaults so a plain GLM run matches z.ai's recommended setup; a sweep can
+    # override either via agent kwargs.
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("thinking", "adaptive")
+    kwargs.setdefault("reasoning_effort", "max")
+    agent_config.kwargs = kwargs
+
+
+def _apply_claude_code_subscription_env(agent_config: AgentConfig) -> None:
+    """Authenticate claude-code via a personal Claude subscription OAuth token.
+
+    Mirrors ``_apply_claude_code_zai_env`` but for the official Anthropic
+    endpoint: set ``CLAUDE_CODE_OAUTH_TOKEN`` (the long-lived token from
+    ``claude setup-token``, resolved from the worker env / Modal secret at exec
+    time) and blank the ambient Bedrock + API-key credentials the Modal image
+    bakes in. ``ANTHROPIC_API_KEY`` in particular OVERRIDES the subscription in
+    non-interactive (``-p``) mode, so it must be blank. The model id is already
+    the bare subscription id; Harbor's claude-code agent sends it as
+    ``ANTHROPIC_MODEL``.
+
+    NOTE: defeating Bedrock *mode* also requires blanking
+    ``CLAUDE_CODE_USE_BEDROCK`` / ``AWS_BEARER_TOKEN_BEDROCK`` in the worker
+    PROCESS env (done in ``run_harbor_trial_async``), because Harbor's
+    ``_is_bedrock_mode()`` reads ``os.environ``, not the agent env.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    env = dict(agent_config.env or {})
+    env.setdefault("CLAUDE_CODE_OAUTH_TOKEN", "${CS_CLAUDE_CODE_OAUTH_TOKEN}")
+    # Blank the ambient creds so the OAuth subscription route wins.
+    env["ANTHROPIC_API_KEY"] = ""
+    env["ANTHROPIC_AUTH_TOKEN"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    # A stray ANTHROPIC_BASE_URL (like ANTHROPIC_AUTH_TOKEN above) routes the
+    # OAuth token at the wrong endpoint and 401s; blank it so Claude Code uses
+    # the official Anthropic endpoint.
+    env["ANTHROPIC_BASE_URL"] = ""
+    agent_config.env = env
+
+
+def _materialize_codex_auth_json(
+    agent_config: AgentConfig,
+) -> tempfile.TemporaryDirectory | None:
+    """Stage the operator's ChatGPT ``auth.json`` for Harbor's codex agent.
+
+    Harbor authenticates codex from a file on the *worker* (``CODEX_AUTH_JSON_PATH``
+    / ``CODEX_FORCE_AUTH_JSON``), then uploads it into the sandbox's
+    ``$CODEX_HOME``. Modal delivers secrets as env vars, not files, so this
+    decodes ``CS_CODEX_AUTH_JSON_B64`` (base64 of a ``codex login`` auth.json,
+    stored in the Modal runtime secret) to a worker-local temp file and points
+    ``CODEX_AUTH_JSON_PATH`` at it.
+
+    The file is written to the system temp dir -- deliberately OUTSIDE the Harbor
+    job dir -- so the credential is never swept up into the trial's S3 upload.
+    Returns the temp dir so the caller can clean it after the run, or ``None``
+    when nothing was staged (the caller already pointed at a local file, or no
+    secret was provided).
+    """
+    env = dict(agent_config.env or {})
+    if env.get("CODEX_AUTH_JSON_PATH") or env.get("CODEX_FORCE_AUTH_JSON"):
+        # Operator supplied an explicit path / force flag (e.g. a local worker
+        # with ~/.codex/auth.json). Respect it; nothing to materialize.
+        return None
+    b64 = os.environ.get("CS_CODEX_AUTH_JSON_B64")
+    if not b64:
+        raise RuntimeError(
+            "codex subscription route is enabled but CS_CODEX_AUTH_JSON_B64 is not "
+            "set. Provide the codex auth.json (base64 of a `codex login` auth.json) "
+            "via the bring-your-own-creds Modal secret (ODDISH_EXTRA_SECRET_NAME), "
+            "or remove codex from ODDISH_SUBSCRIPTION_AGENTS."
+        )
+    tmp = tempfile.TemporaryDirectory(prefix="oddish-codex-auth-")
+    try:
+        raw = base64.b64decode(b64)
+        auth_path = Path(tmp.name) / "auth.json"
+        auth_path.write_bytes(raw)
+        auth_path.chmod(0o600)
+    except Exception:
+        logger.exception(
+            "codex subscription route: failed to materialize auth.json"
+        )
+        tmp.cleanup()
+        return None
+    # Best-effort freshness probe. codex refreshes its token near ~8 days old;
+    # the per-trial re-seed discards refreshed tokens, so a refresh consumes the
+    # single-use refresh token and breaks later codex trials. Warn so the
+    # operator reseeds a fresh auth.json before a long run. Never block the run.
+    try:
+        import json
+        from datetime import datetime, timezone
+        last_refresh = json.loads(raw).get("last_refresh")
+        if isinstance(last_refresh, str) and last_refresh:
+            ts = datetime.fromisoformat(last_refresh.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_days = (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+            if age_days > 7:
+                logger.warning(
+                    "codex subscription auth.json is %.1f days old "
+                    "(last_refresh=%s); codex refreshes near ~8 days and the "
+                    "per-trial re-seed discards refreshed tokens, so a refresh can "
+                    "break subsequent codex trials. Reseed CS_CODEX_AUTH_JSON_B64 "
+                    "with a fresh `codex login` auth.json before a long run.",
+                    age_days, last_refresh,
+                )
+    except Exception:
+        pass
+    env["CODEX_AUTH_JSON_PATH"] = str(auth_path)
+    agent_config.env = env
+    return tmp
+
+
+# MiniMax's recommended long-context / streaming env for M-series models under
+# Claude Code. CLAUDE_CODE_AUTO_COMPACT_WINDOW matches MiniMax-M3's 512K window.
+_MINIMAX_RECOMMENDED_ENV: dict[str, str] = {
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "512000",
+}
+
+# Moonshot's recommended env for Kimi K2.7 Code under Claude Code.
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW matches K2.7's 256K window;
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS is K2.7's max output. K2.7 locks
+# temperature/top_p server-side and thinking is always on, so no sampling or
+# thinking kwargs are set.
+_MOONSHOT_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "262144",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "32768",
+}
+
+
+def _apply_claude_code_minimax_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to MiniMax's direct endpoint.
+
+    Mirrors ``_apply_claude_code_zai_env``: point Claude Code at MiniMax's
+    Anthropic-compatible base URL, authenticate with ``${MINIMAX_API_KEY}``,
+    blank the ambient Bedrock/Anthropic credentials so the MiniMax route wins,
+    and pin the model (re-cased to MiniMax's published id) plus every size alias.
+    MiniMax M3 enables extended thinking by default, so no thinking/effort kwargs
+    are set.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_minimax_model(agent_config.model_name):
+        return
+
+    bare_model = minimax_api_model_id(
+        minimax_bare_model_id(agent_config.model_name or "")
+    )
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("MINIMAX_BASE_URL") or MINIMAX_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MINIMAX_API_KEY}")
+
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _MINIMAX_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
+def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to Moonshot's Kimi endpoint.
+
+    Mirrors ``_apply_claude_code_zai_env``: point Claude Code at Moonshot's
+    Anthropic-compatible base URL, authenticate with ``${MOONSHOT_API_KEY}``,
+    blank the ambient Bedrock/Anthropic credentials so the Moonshot route wins,
+    and pin the model plus every size alias to the bare Kimi id. K2.7 locks
+    sampling params and thinking is always on, so no kwargs are set.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_moonshot_model(agent_config.model_name):
+        return
+
+    bare_model = moonshot_bare_model_id(agent_config.model_name or "")
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MOONSHOT_API_KEY}")
+
+    if bare_model:
+        env["ANTHROPIC_MODEL"] = bare_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, bare_model)
+
+    for key, value in _MOONSHOT_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
+def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
+    """Route Azure Codex trials through Oddish's transport-compatible wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+    if settings.get_openai_provider() != OPENAI_PROVIDER_AZURE:
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _AZURE_COMPAT_CODEX_IMPORT_PATH
+
+
+def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Codex trials through Oddish's compatibility wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "codex":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
+
+
+def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
+    """Install the harbor package in the sandbox for probe claude-code trials."""
+    if not is_probe or agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "claude-code":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
+
+
 def _build_agent_config(
     *,
     agent: str,
     model: str | None,
     raw_harbor_config: dict[str, Any],
+    is_probe: bool = False,
 ) -> AgentConfig:
     """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
     raw_agent_config = raw_harbor_config.get("agent_config")
@@ -567,16 +945,127 @@ def _build_agent_config(
     ):
         agent_config.max_timeout_sec = legacy_overrides["max_timeout_sec"]
 
+    # Probe trials inherit an existing task's task.toml, which may carry a
+    # multi-hour agent timeout (or none at all). Cap them at the probe default
+    # unless the trial explicitly set its own override above.
+    if is_probe and agent_config.override_timeout_sec is None:
+        agent_config.override_timeout_sec = PROBE_AGENT_TIMEOUT_SEC
+
     if agent_config.import_path is None:
         agent_config.name = agent
     if model is not None:
         agent_config.model_name = model
 
     # Trial rows should already store the runtime model id. Keep this as a
-    # defensive guard for legacy rows or rich AgentConfig payloads.
-    agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    # defensive guard for legacy rows or rich AgentConfig payloads. Explicit
+    # "openrouter/..." ids pass through here and the claude-code agent routes
+    # them through OpenRouter instead of the container's default transport.
+    # GLM/z.ai, MiniMax, and Moonshot/Kimi models canonicalize to
+    # "<provider>/<id>" (kept off the Bedrock route); everything else flows
+    # through the Bedrock chokepoint as before. Keeping the provider prefix on
+    # model_name lets Harbor's per-agent network allowlist resolve the direct
+    # endpoint for closed-internet tasks.
+    sub_route = is_subscription_model(agent_config.model_name) or (
+        settings._is_subscription_agent(agent)
+    )
+    if sub_route:
+        # Personal-subscription route: use the standard/bare id the agent CLI
+        # expects (strips a "sub/" prefix if present; a standard id passes
+        # through unchanged), and keep it off the Bedrock chokepoint.
+        agent_config.model_name = subscription_bare_model_id(
+            agent_config.model_name or ""
+        )
+    elif is_zai_model(agent_config.model_name):
+        agent_config.model_name = to_zai_model_id(agent_config.model_name)
+    elif is_minimax_model(agent_config.model_name):
+        agent_config.model_name = to_minimax_model_id(agent_config.model_name)
+    elif is_moonshot_model(agent_config.model_name):
+        agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
+    else:
+        agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    _apply_claude_code_openrouter_env(agent_config)
+    _apply_claude_code_zai_env(agent_config)
+    if sub_route:
+        # claude-code -> OAuth token env; codex auth.json is staged later in
+        # run_harbor_trial_async (it needs a temp file with a managed lifecycle).
+        _apply_claude_code_subscription_env(agent_config)
+    _apply_claude_code_minimax_env(agent_config)
+    _apply_claude_code_moonshot_env(agent_config)
+
+    # Subscription trials never use the Azure/OpenAI credential path -- codex
+    # authenticates from the staged auth.json, not OPENAI_API_KEY -- so skip the
+    # provider env injection that would otherwise require Azure config.
+    if not sub_route and _agent_uses_openai_provider(agent_config):
+        if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            warnings.warn(settings.get_public_openai_warning(), stacklevel=2)
+        else:
+            agent_config.model_name = settings.resolve_azure_openai_deployment(
+                agent_config.model_name
+            )
+            _apply_codex_azure_compat(agent_config)
+
+    _apply_codex_oddish_wrapper(agent_config)
+    _apply_claude_code_probe_harbor(agent_config, is_probe)
 
     return agent_config
+
+
+def _agent_uses_openai_provider(agent_config: AgentConfig) -> bool:
+    agent = getattr(agent_config, "name", None)
+    if not agent:
+        return False
+    return (
+        settings.get_provider_for_trial(
+            agent,
+            getattr(agent_config, "model_name", None),
+        )
+        == "openai"
+    )
+
+
+def _trial_requested_model(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+) -> tuple[str, str | None]:
+    raw_agent_config = raw_harbor_config.get("agent_config")
+    agent_name = agent
+    model_name = model
+    if isinstance(raw_agent_config, dict):
+        agent_name = str(raw_agent_config.get("name") or agent_name)
+        if model_name is None:
+            raw_model_name = raw_agent_config.get("model_name")
+            model_name = str(raw_model_name) if raw_model_name is not None else None
+    return agent_name, model_name
+
+
+def _trial_uses_openai_provider(
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+) -> bool:
+    agent_name, model_name = _trial_requested_model(
+        agent=agent,
+        model=model,
+        raw_harbor_config=raw_harbor_config,
+    )
+    return settings.get_provider_for_trial(agent_name, model_name) == "openai"
+
+
+@contextlib.contextmanager
+def _temporary_env(env: dict[str, str]) -> Iterator[None]:
+    old_values = {key: os.environ.get(key) for key in env}
+    try:
+        os.environ.update(env)
+        yield
+    finally:
+        for key, old_value in old_values.items():
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
 
 
 # =============================================================================
@@ -593,6 +1082,7 @@ async def run_harbor_trial_async(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
@@ -612,7 +1102,15 @@ async def run_harbor_trial_async(
     """
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
-    validate_task_timeout_config(task_path)
+
+    # Probes attach to an existing task and inherit its task.toml, which may
+    # predate the timeout requirement. Rather than hard-fail (the failure that
+    # broke probes in prod), skip strict validation and hand the probe a capped
+    # default agent timeout below -- mirroring ``worker.local_runner``, which
+    # never validated and already applies the same cap.
+    is_probe = raw.get("mode") == "probe"
+    if not is_probe:
+        validate_task_timeout_config(task_path)
 
     # ── Task patching ────────────────────────────────────────────────────
     needs_task_patch = bool(hc.docker_image or hc.mcp_servers)
@@ -637,6 +1135,7 @@ async def run_harbor_trial_async(
     unique_parent.mkdir(parents=True, exist_ok=True)
 
     task_tmpdir: tempfile.TemporaryDirectory | None = None
+    codex_auth_tmpdir: tempfile.TemporaryDirectory | None = None
     effective_task_path = task_path
 
     if needs_task_patch:
@@ -660,11 +1159,48 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
-        agent_config = _build_agent_config(
+        if environment == EnvironmentType.DAYTONA:
+            env_config.kwargs = {
+                "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
+                "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
+                "ephemeral": settings.daytona_ephemeral,
+                **env_config.kwargs,
+            }
+        uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
             raw_harbor_config=raw,
         )
+        _, openai_model = _trial_requested_model(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw,
+        )
+        agent_config = _build_agent_config(
+            agent=agent,
+            model=model,
+            raw_harbor_config=raw,
+            is_probe=is_probe,
+        )
+
+        # Personal-subscription auth route (Claude Code OAuth / Codex auth.json).
+        sub_route = (
+            is_subscription_model(model)
+            or is_subscription_model(openai_model)
+            or settings._is_subscription_agent(agent)
+        )
+        if sub_route and (agent or "").strip().lower() == "codex":
+            codex_auth_tmpdir = _materialize_codex_auth_json(agent_config)
+
+        # Stage the org's shared skills (+ global seeds) into a root under the
+        # job dir and hand it to Harbor via ``AgentConfig.skills``: Harbor uploads
+        # each ``<name>/`` skill into the sandbox and the claude-code agent
+        # registers them so the agent discovers them. Best-effort; never blocks.
+        if org_id is not None:
+            skills_root = unique_parent / "agent_skills"
+            n_skills = await stage_org_skills(skills_root, org_id=org_id)
+            if n_skills:
+                agent_config.skills = [*agent_config.skills, skills_root]
 
         job_config_kwargs: dict[str, Any] = {
             "tasks": [TaskConfig(path=effective_task_path)],
@@ -695,21 +1231,36 @@ async def run_harbor_trial_async(
 
         config = JobConfig(**job_config_kwargs)
 
-        job = await Job.create(config)
-        actual_job_dir = job.job_dir
+        openai_env = (
+            settings.get_openai_agent_env(model=openai_model)
+            if uses_openai_provider
+            else {}
+        )
+        runtime_env = dict(openai_env)
+        if sub_route and "claude-code" in (agent or "").strip().lower():
+            # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
+            # bakes in CLAUDE_CODE_USE_BEDROCK=1 + AWS_BEARER_TOKEN_BEDROCK.
+            # Blank them for this run so claude-code uses the OAuth token instead
+            # of Bedrock. _temporary_env restores them afterward.
+            runtime_env.update({var: "" for var in BEDROCK_ENV_VARS})
+        with _temporary_env(runtime_env):
+            job = await Job.create(config)
+            actual_job_dir = job.job_dir
 
-        if hook_callback:
-            job.on_trial_started(hook_callback)
-            job.on_environment_started(hook_callback)
-            job.on_agent_started(hook_callback)
-            job.on_verification_started(hook_callback)
-            job.on_trial_ended(hook_callback)
-            job.on_trial_cancelled(hook_callback)
+            if hook_callback:
+                job.on_trial_started(hook_callback)
+                job.on_environment_started(hook_callback)
+                job.on_agent_started(hook_callback)
+                job.on_verification_started(hook_callback)
+                job.on_trial_ended(hook_callback)
+                job.on_trial_cancelled(hook_callback)
 
-        with _capture_modal_output(actual_job_dir, environment) as captured_log_path:
-            modal_debug_log_path = captured_log_path
-            # Harbor's job.run() returns JobResult object directly
-            job_result = await job.run()
+            with _capture_modal_output(
+                actual_job_dir, environment
+            ) as captured_log_path:
+                modal_debug_log_path = captured_log_path
+                # Harbor's job.run() returns JobResult object directly
+                job_result = await job.run()
         duration = time.time() - start
 
         # Harbor creates job_dir = jobs_dir / job_name (job_name defaults to timestamp).
@@ -788,6 +1339,8 @@ async def run_harbor_trial_async(
     finally:
         if task_tmpdir is not None:
             task_tmpdir.cleanup()
+        if codex_auth_tmpdir is not None:
+            codex_auth_tmpdir.cleanup()
 
 
 def run_harbor_trial(
@@ -799,6 +1352,7 @@ def run_harbor_trial(
     hook_callback: HookCallback | None = None,
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
+    org_id: str | None = None,
 ) -> HarborOutcome:
     """Synchronous wrapper around run_harbor_trial_async."""
     try:
@@ -814,6 +1368,7 @@ def run_harbor_trial(
                 hook_callback=hook_callback,
                 trial_id=trial_id,
                 harbor_config=harbor_config,
+                org_id=org_id,
             )
         )
     raise RuntimeError("run_harbor_trial cannot be called from an active event loop.")

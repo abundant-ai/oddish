@@ -38,17 +38,26 @@ import type {
   DashboardResponse,
   JobUsage,
   ModelUsage,
+  OrgUser,
   QueueStats,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { encodeExperimentRouteParam, formatShortDateTime } from "@/lib/utils";
+import { parseTaskSearch } from "@/lib/tag-query";
+import { TagChip } from "@/components/tag-chip";
+import {
+  cn,
+  encodeExperimentRouteParam,
+  formatShortDateTime,
+  prBadge,
+} from "@/lib/utils";
 import {
   buildDashboardApiPath,
+  DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
   DASHBOARD_DEFAULT_USAGE_MINUTES,
   isDefaultDashboardExperimentsView,
 } from "@/lib/dashboard-request";
-import { Badge } from "@/components/ui/badge";
+import { Badge, badgeVariants } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -71,13 +80,16 @@ import {
   ChevronRight,
   Clock,
   Copy,
+  ExternalLink,
   Gavel,
+  GitPullRequest,
   Loader2,
   Microscope,
   Trash2,
   Globe,
   Key,
   Terminal,
+  Users,
 } from "lucide-react";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 
@@ -92,7 +104,7 @@ const STATUS_FILTER_OPTIONS = [
   { value: "retrying", label: "Retrying trials" },
   { value: "completed", label: "Completed" },
   { value: "needs-review", label: "Needs review" },
-  { value: "pending-verdict", label: "Pending verdict" },
+  { value: "pending-verdict", label: "QA pending" },
   { value: "failed", label: "Failures" },
 ] as const;
 
@@ -147,23 +159,31 @@ function useDashboardExperiments(
   experimentsOffset: number,
   experimentsQuery: string,
   experimentsStatus: string,
+  experimentsAuthor: string,
   fallbackData?: DashboardResponse | null,
 ) {
+  // tag:/-tag:/OR/NOT tokens filter server-side; remaining text keeps the
+  // name/id/author search semantics (same grammar as the /tasks page).
+  const parsedQuery = parseTaskSearch(experimentsQuery);
   const swrKey = buildDashboardApiPath({
     experiments_limit: experimentsLimit,
     experiments_offset: experimentsOffset,
-    experiments_query: experimentsQuery,
+    experiments_query: parsedQuery.text,
+    experiments_tags: parsedQuery.all.join(","),
+    experiments_tags_any: parsedQuery.any.join(","),
+    experiments_tags_none: parsedQuery.none.join(","),
     experiments_status: experimentsStatus,
+    experiments_author: experimentsAuthor,
     include_tasks: false,
     include_usage: false,
   });
   const hasFallbackData = fallbackData != null;
 
-  const { data, error, isLoading } = useSWR<DashboardResponse>(
+  const { data, error, isLoading, isValidating } = useSWR<DashboardResponse>(
     swrKey,
     fetcher,
     {
-      refreshInterval: 30000,
+      refreshInterval: 45000,
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
       revalidateIfStale: !hasFallbackData,
@@ -178,6 +198,7 @@ function useDashboardExperiments(
     swrKey,
     error,
     isLoading,
+    isValidating,
   };
 }
 
@@ -187,6 +208,22 @@ function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
     return `@${author.name.replace(/^@/, "")}`;
   }
   return author.name;
+}
+
+function memberDisplayName(member: OrgUser): string {
+  return member.name || member.github_username || member.email;
+}
+
+// Org member roster for the experiments owner filter. The backend gates
+// GET /users on admin/owner role, so non-admins simply get an empty list
+// and fall back to the Org / Mine toggle. Errors are swallowed for the
+// same reason -- the picker is progressive enhancement, not required.
+function useOrgMembers(): OrgUser[] {
+  const { data } = useSWR<OrgUser[]>("/api/users", fetcher, {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+  });
+  return Array.isArray(data) ? data : [];
 }
 
 function CommandSnippet({ command }: { command: string }) {
@@ -297,6 +334,34 @@ function EmptyExperimentsState() {
           </div>
           <CommandSnippet command="oddish run -p my-task -a codex -m openai/gpt-5.4" />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function MineEmptyExperimentsState({
+  onViewOrgExperiments,
+}: {
+  onViewOrgExperiments: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 p-6">
+      <div className="flex flex-col items-center text-center">
+        <Users className="mb-3 h-11 w-11 text-muted-foreground/70" />
+        <p className="text-base font-medium">No experiments of yours yet</p>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          Your organization may have other experiments. Switch to the org view
+          to browse everything, or submit a new job to get started.
+        </p>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-4"
+          onClick={onViewOrgExperiments}
+        >
+          View org experiments
+        </Button>
       </div>
     </div>
   );
@@ -417,19 +482,26 @@ const PIPELINE_KIND_DISPLAY: Record<
     accentText: "text-blue-500 dark:text-blue-300",
     accentBorder: "border-blue-500/30",
   },
-  ANALYSIS: {
-    label: "Trajectory Analysis",
-    description: "LLM classification per trial",
-    Icon: Microscope,
-    accentText: "text-purple-500 dark:text-purple-300",
-    accentBorder: "border-purple-500/30",
-  },
-  VERDICT: {
-    label: "QA Verdict",
-    description: "Cross-trial synthesis",
+  QA: {
+    label: "Task QA",
+    description: "Classify trials + synthesize verdict",
     Icon: Gavel,
     accentText: "text-amber-500 dark:text-amber-300",
     accentBorder: "border-amber-500/30",
+  },
+  VERDICT: {
+    label: "Task Verdict (legacy)",
+    description: "Folded into Task QA",
+    Icon: Gavel,
+    accentText: "text-amber-500/70 dark:text-amber-300/70",
+    accentBorder: "border-amber-500/30",
+  },
+  ANALYSIS: {
+    label: "Trial Analysis (legacy)",
+    description: "Folded into Task QA",
+    Icon: Microscope,
+    accentText: "text-purple-500 dark:text-purple-300",
+    accentBorder: "border-purple-500/30",
   },
 };
 
@@ -1106,8 +1178,8 @@ function UsageOverviewCard({
                     {formatCost(totals.cost)}
                   </span>
                   <span>
-                    Statuses include trial, analysis, and verdict jobs; token
-                    and cost metrics come from trial runs.
+                    Statuses include trial and task-QA jobs; token and cost
+                    metrics come from trial runs.
                   </span>
                 </div>
               )}
@@ -1129,6 +1201,9 @@ function RecentTasksCard({
   onSearchQueryChange,
   statusFilter,
   onStatusFilterChange,
+  authorFilter,
+  onAuthorFilterChange,
+  members,
   error,
   isLoading,
   hasMoreExperiments,
@@ -1137,12 +1212,16 @@ function RecentTasksCard({
   isPageTransitioning,
   onRefreshData,
   currentExperimentsPage,
+  onViewOrgExperiments,
 }: {
   experiments: DashboardExperiment[];
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
   statusFilter: string;
   onStatusFilterChange: (value: string) => void;
+  authorFilter: string;
+  onAuthorFilterChange: (value: string) => void;
+  members: OrgUser[];
   error: Error | undefined;
   isLoading: boolean;
   hasMoreExperiments: boolean;
@@ -1151,6 +1230,7 @@ function RecentTasksCard({
   isPageTransitioning: boolean;
   onRefreshData: () => Promise<void>;
   currentExperimentsPage: number;
+  onViewOrgExperiments: () => void;
 }) {
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string;
@@ -1160,10 +1240,18 @@ function RecentTasksCard({
   } | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
-  const hasFilters = searchQuery.trim().length > 0 || statusFilter !== "all";
+  const isMemberSelected = authorFilter !== "all" && authorFilter !== "me";
+  const hasFilters =
+    searchQuery.trim().length > 0 || statusFilter !== "all" || isMemberSelected;
   const statusFilterLabel =
     STATUS_FILTER_OPTIONS.find((option) => option.value === statusFilter)
       ?.label ?? "Filter status";
+  const selectedMember = isMemberSelected
+    ? members.find((member) => member.id === authorFilter)
+    : undefined;
+  const memberFilterLabel = selectedMember
+    ? memberDisplayName(selectedMember)
+    : "Members";
 
   const handleDeleteExperiment = async () => {
     if (!deleteTarget || isDeleting) return;
@@ -1207,10 +1295,75 @@ function RecentTasksCard({
           </div>
         </div>
         <div className="flex flex-1 flex-wrap gap-2 sm:justify-end">
+          {/* Owner filter: Org / Mine toggle + optional member picker. */}
+          <div className="flex items-center gap-0.5 rounded-md border border-[#6f88b4]/20 p-0.5">
+            <Button
+              type="button"
+              variant={authorFilter === "all" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2.5 text-[11px]"
+              onClick={() => onAuthorFilterChange("all")}
+              aria-pressed={authorFilter === "all"}
+            >
+              Org
+            </Button>
+            <Button
+              type="button"
+              variant={authorFilter === "me" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-7 px-2.5 text-[11px]"
+              onClick={() => onAuthorFilterChange("me")}
+              aria-pressed={authorFilter === "me"}
+            >
+              Mine
+            </Button>
+          </div>
+          {members.length > 0 && (
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant={isMemberSelected ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-8 w-full justify-between border-[#6f88b4]/20 sm:w-[180px]"
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <Users className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                    <span className="truncate">{memberFilterLabel}</span>
+                  </span>
+                  <ChevronDown className="h-4 w-4 opacity-50" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className="max-h-[320px] w-[240px] overflow-y-auto"
+              >
+                <DropdownMenuRadioGroup
+                  value={isMemberSelected ? authorFilter : ""}
+                  onValueChange={onAuthorFilterChange}
+                >
+                  {members.map((member) => (
+                    <DropdownMenuRadioItem key={member.id} value={member.id}>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate">
+                          {memberDisplayName(member)}
+                        </span>
+                        {member.github_username && (
+                          <span className="truncate text-[10px] text-muted-foreground">
+                            @{member.github_username}
+                          </span>
+                        )}
+                      </span>
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
           <Input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
-            placeholder="Search"
+            placeholder="Search · tag:x OR tag:y NOT tag:z"
             className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
           />
           <DropdownMenu modal={false}>
@@ -1244,183 +1397,250 @@ function RecentTasksCard({
         </div>
       </CardHeader>
       <CardContent>
-        {error ? (
+        {error && experiments.length === 0 ? (
           <Alert variant="destructive">
             <AlertTitle>Failed to load experiments</AlertTitle>
             <AlertDescription>
               Check the API connection and try again.
             </AlertDescription>
           </Alert>
-        ) : isLoading && experiments.length === 0 ? (
+        ) : isLoading ? (
           <p className="text-muted-foreground">Loading...</p>
-        ) : !isLoading &&
-          experiments.length === 0 &&
-          !hasMoreExperiments &&
-          !hasFilters ? (
-          <EmptyExperimentsState />
-        ) : experiments.length === 0 ? (
-          <div className="py-8 text-center text-muted-foreground">
-            <p>No experiments match the current filters.</p>
-          </div>
         ) : (
-          <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Experiment</TableHead>
-                  <TableHead>Author</TableHead>
-                  <TableHead>PR</TableHead>
-                  <TableHead>Tasks</TableHead>
-                  <TableHead>Trials</TableHead>
-                  <TableHead>Avg score</TableHead>
-                  <TableHead className="text-right">Last task</TableHead>
-                  <TableHead className="text-right">Delete</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="[&_td]:text-xs">
-                {experiments.map((experiment) => {
-                  const passRate =
-                    experiment.reward_total > 0
-                      ? Math.round(
-                          (experiment.reward_sum / experiment.reward_total) *
-                            100,
-                        )
-                      : null;
-                  const retryingTrials = Number(experiment.retrying_trials) || 0;
-
-                  return (
-                    <TableRow key={experiment.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-1.5">
-                          <Link
-                            href={`/experiments/${encodeExperimentRouteParam(
-                              experiment.id,
-                            )}`}
-                            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-                          >
-                            {experiment.name}
-                          </Link>
-                          {experiment.is_public && (
-                            <Globe
-                              className="h-3.5 w-3.5 text-muted-foreground"
-                              aria-label="Published experiment"
-                            />
-                          )}
-                        </div>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                        <span className="text-foreground/80">
-                          {formatTaskAuthor(experiment.last_author)}
-                        </span>
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs">
-                        {experiment.last_pr_url ? (
-                          <Link
-                            href={experiment.last_pr_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-                          >
-                            {experiment.last_pr_title
-                              ? experiment.last_pr_title
-                              : experiment.last_pr_number
-                                ? `PR #${experiment.last_pr_number}`
-                                : "PR"}
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>{experiment.task_count}</TableCell>
-                      <TableCell className="whitespace-nowrap font-mono text-xs">
-                        {experiment.completed_trials}/{experiment.total_trials}
-                        {retryingTrials > 0 && (
-                          <span className="text-amber-500 dark:text-amber-300">
-                            {" "}
-                            ({retryingTrials}R)
-                          </span>
-                        )}
-                        {experiment.failed_trials > 0 && (
-                          <span className="text-rose-400">
-                            {" "}
-                            ({experiment.failed_trials}F)
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {passRate === null ? (
-                          <span className="text-muted-foreground">—</span>
-                        ) : (
-                          <span
-                            className={
-                              passRate >= 80
-                                ? "text-[#5c8e43] dark:text-[#85b85c]"
-                                : passRate >= 35
-                                  ? "text-yellow-400"
-                                  : "text-rose-400"
-                            }
-                          >
-                            {passRate}%
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
-                        {experiment.last_created_at
-                          ? formatShortDateTime(experiment.last_created_at)
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setDeleteTarget({
-                              id: experiment.id,
-                              name: experiment.name,
-                              taskCount: experiment.task_count,
-                              totalTrials: experiment.total_trials,
-                            })
-                          }
-                          disabled={
-                            experiment.id === "uncategorized" ||
-                            experiment.name === "Uncategorized"
-                          }
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          aria-label={`Delete ${experiment.name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </TableCell>
+          <>
+            {error ? (
+              <p className="mb-2 text-xs text-destructive">
+                Refresh failed — showing the last loaded results.
+              </p>
+            ) : null}
+            {!isLoading &&
+            experiments.length === 0 &&
+            !hasMoreExperiments &&
+            !hasFilters ? (
+              authorFilter === "me" ? (
+                <MineEmptyExperimentsState
+                  onViewOrgExperiments={onViewOrgExperiments}
+                />
+              ) : (
+                <EmptyExperimentsState />
+              )
+            ) : experiments.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                <p>No experiments match the current filters.</p>
+              </div>
+            ) : (
+              <div className="max-h-[68vh] min-h-[560px] overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Experiment</TableHead>
+                      <TableHead>Author</TableHead>
+                      <TableHead>Last run</TableHead>
+                      <TableHead>PR</TableHead>
+                      <TableHead>Tasks</TableHead>
+                      <TableHead>Trials</TableHead>
+                      <TableHead
+                        className="cursor-help"
+                        title="Average of per-task average reward, nop/oracle excluded"
+                      >
+                        Avg score
+                      </TableHead>
+                      <TableHead className="text-right">Last task</TableHead>
+                      <TableHead className="text-right">Delete</TableHead>
                     </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-            <div className="mt-3 flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onPreviousExperimentsPage}
-                disabled={currentExperimentsPage <= 1 || isPageTransitioning}
-              >
-                <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-                Previous page
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-3 text-[11px]"
-                onClick={onNextExperimentsPage}
-                disabled={!hasMoreExperiments || isPageTransitioning}
-              >
-                Next page
-                <ChevronRight className="ml-1 h-3.5 w-3.5" />
-              </Button>
-            </div>
-          </div>
+                  </TableHeader>
+                  <TableBody className="[&_td]:text-xs">
+                    {experiments.map((experiment) => {
+                      const avgScorePct =
+                        experiment.avg_score != null
+                          ? Math.round(experiment.avg_score * 100)
+                          : null;
+                      const retryingTrials =
+                        Number(experiment.retrying_trials) || 0;
+
+                      return (
+                        <TableRow key={experiment.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-1.5">
+                              <Link
+                                href={`/experiments/${encodeExperimentRouteParam(
+                                  experiment.id,
+                                )}`}
+                                className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+                              >
+                                {experiment.name}
+                              </Link>
+                              {experiment.is_public && (
+                                <Globe
+                                  className="h-3.5 w-3.5 text-muted-foreground"
+                                  aria-label="Published experiment"
+                                />
+                              )}
+                            </div>
+                            {(experiment.user_tags?.length ?? 0) > 0 && (
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1">
+                                {experiment.user_tags!.map((t) => (
+                                  <TagChip key={t.tag_id} tag={t} />
+                                ))}
+                              </div>
+                            )}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            <span className="text-foreground/80">
+                              {formatTaskAuthor(
+                                experiment.author ?? experiment.last_author,
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                            <span className="text-foreground/80">
+                              {formatTaskAuthor(
+                                experiment.last_runner ??
+                                  experiment.last_author,
+                              )}
+                            </span>
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-xs">
+                            {experiment.last_pr_url ? (
+                              <Link
+                                href={experiment.last_pr_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={
+                                  experiment.last_pr_title
+                                    ? `${experiment.last_pr_title} — view on GitHub`
+                                    : "View pull request on GitHub"
+                                }
+                                className={cn(
+                                  badgeVariants({ variant: "outline" }),
+                                  "max-w-[200px] gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                                )}
+                              >
+                                <GitPullRequest
+                                  className="h-3 w-3 shrink-0"
+                                  aria-hidden
+                                />
+                                {(() => {
+                                  const { label, number } = prBadge(
+                                    experiment.last_pr_url,
+                                    experiment.last_pr_number,
+                                  );
+                                  return (
+                                    <span className="min-w-0 truncate">
+                                      {label}
+                                      {number && (
+                                        <span className="text-muted-foreground">
+                                          {" "}
+                                          #{number}
+                                        </span>
+                                      )}
+                                    </span>
+                                  );
+                                })()}
+                                <ExternalLink
+                                  className="h-3 w-3 shrink-0 opacity-50"
+                                  aria-hidden
+                                />
+                              </Link>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell>{experiment.task_count}</TableCell>
+                          <TableCell className="whitespace-nowrap font-mono text-xs">
+                            {experiment.completed_trials}/
+                            {experiment.total_trials}
+                            {retryingTrials > 0 && (
+                              <span className="text-amber-500 dark:text-amber-300">
+                                {" "}
+                                ({retryingTrials}R)
+                              </span>
+                            )}
+                            {experiment.failed_trials > 0 && (
+                              <span className="text-rose-400">
+                                {" "}
+                                ({experiment.failed_trials}F)
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {avgScorePct === null ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <span
+                                className={
+                                  avgScorePct >= 80
+                                    ? "text-[#5c8e43] dark:text-[#85b85c]"
+                                    : avgScorePct >= 35
+                                      ? "text-yellow-400"
+                                      : "text-rose-400"
+                                }
+                              >
+                                {avgScorePct}%
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="whitespace-nowrap text-right text-xs text-muted-foreground">
+                            {experiment.last_created_at
+                              ? formatShortDateTime(experiment.last_created_at)
+                              : "—"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() =>
+                                setDeleteTarget({
+                                  id: experiment.id,
+                                  name: experiment.name,
+                                  taskCount: experiment.task_count,
+                                  totalTrials: experiment.total_trials,
+                                })
+                              }
+                              disabled={
+                                experiment.id === "uncategorized" ||
+                                experiment.name === "Uncategorized"
+                              }
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              aria-label={`Delete ${experiment.name}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+                <div className="mt-3 flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onPreviousExperimentsPage}
+                    disabled={
+                      currentExperimentsPage <= 1 || isPageTransitioning
+                    }
+                  >
+                    <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                    Previous page
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 px-3 text-[11px]"
+                    onClick={onNextExperimentsPage}
+                    disabled={!hasMoreExperiments || isPageTransitioning}
+                  >
+                    Next page
+                    <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </CardContent>
       <AlertDialog
@@ -1483,19 +1703,25 @@ export function DashboardClient({
   const [searchQuery, setSearchQuery] = useState("");
   const deferredSearchQuery = useDeferredValue(searchQuery);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [authorFilter, setAuthorFilter] = useState(
+    DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
+  );
+  const members = useOrgMembers();
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
     usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES
       ? initialDashboardData
       : null;
-  const experimentsFallbackData = isDefaultDashboardExperimentsView(
-    experimentsOffset,
-    deferredSearchQuery,
-    statusFilter,
-  )
-    ? initialDashboardData
-    : null;
+  const experimentsFallbackData =
+    isDefaultDashboardExperimentsView(
+      experimentsOffset,
+      deferredSearchQuery,
+      statusFilter,
+      authorFilter,
+    ) && initialDashboardData?.experiments != null
+      ? initialDashboardData
+      : null;
   const {
     queues,
     modelUsage,
@@ -1510,27 +1736,30 @@ export function DashboardClient({
     swrKey: experimentsSwrKey,
     error: experimentsError,
     isLoading: isExperimentsLoading,
+    isValidating: isExperimentsValidating,
   } = useDashboardExperiments(
     EXPERIMENTS_PAGE_SIZE,
     experimentsOffset,
     deferredSearchQuery,
     statusFilter,
+    authorFilter,
     experimentsFallbackData,
   );
   const currentExperimentsPage =
     Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
-  const isDefaultExperimentsEmpty =
+  const isDefaultOrgExperimentsEmpty =
     experiments.length === 0 &&
     !hasMoreExperiments &&
     !isExperimentsLoading &&
     !experimentsError &&
     currentExperimentsPage === 1 &&
     deferredSearchQuery.trim().length === 0 &&
-    statusFilter === "all";
+    statusFilter === "all" &&
+    authorFilter === "all";
 
   useEffect(() => {
     setExperimentsOffset(0);
-  }, [deferredSearchQuery, statusFilter]);
+  }, [deferredSearchQuery, statusFilter, authorFilter]);
 
   const handlePreviousExperimentsPage = () => {
     setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
@@ -1547,7 +1776,7 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
-      {isDefaultExperimentsEmpty && <FirstRunCard />}
+      {isDefaultOrgExperimentsEmpty && <FirstRunCard />}
       <UsageOverviewCard
         queues={queues}
         modelUsage={modelUsage}
@@ -1564,14 +1793,18 @@ export function DashboardClient({
         onSearchQueryChange={setSearchQuery}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        authorFilter={authorFilter}
+        onAuthorFilterChange={setAuthorFilter}
+        members={members}
         error={experimentsError}
         isLoading={isExperimentsLoading}
         hasMoreExperiments={hasMoreExperiments}
         onPreviousExperimentsPage={handlePreviousExperimentsPage}
         onNextExperimentsPage={handleNextExperimentsPage}
-        isPageTransitioning={isExperimentsLoading}
+        isPageTransitioning={isExperimentsLoading || isExperimentsValidating}
         onRefreshData={handleRefreshCurrentPage}
         currentExperimentsPage={currentExperimentsPage}
+        onViewOrgExperiments={() => setAuthorFilter("all")}
       />
     </div>
   );
