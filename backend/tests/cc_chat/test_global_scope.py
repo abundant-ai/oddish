@@ -263,6 +263,10 @@ async def test_non_global_scope_mints_no_key(db, monkeypatch):
 
     monkeypatch.setattr(orchestrator_module, "create_api_key", boom_create_api_key)
 
+    class _Blob:
+        async def list_keys(self, prefix): return []
+        async def download_bytes(self, key): return b""
+
     fake = FakeDaytonaClient()
     orch = ChatOrchestrator(
         daytona=fake,
@@ -270,6 +274,7 @@ async def test_non_global_scope_mints_no_key(db, monkeypatch):
         transcript_buffer=SessionTranscriptBuffer(),
         anthropic_api_key="test",
         public_api_base_url="https://api.oddish.example",
+        blob_store=_Blob(),
     )
 
     await orch.start(
