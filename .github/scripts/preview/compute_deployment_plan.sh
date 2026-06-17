@@ -12,12 +12,12 @@
 #   EVENT_ACTION          - github.event.action
 #   BACKEND_BASE          - SHA of last successful backend deploy (or "")
 #   MIGRATIONS_BASE       - SHA of last successful migrations run (or "")
-#   BACKEND_CHANGED       - "true"/"false"/"" from filter_backend
-#   MIGRATIONS_CHANGED    - "true"/"false"/"" from filter_migrations
-#   PR_BACKEND_CHANGED    - "true"/"false" from full-PR fallback filter
-#   PR_MIGRATIONS_CHANGED - "true"/"false" from full-PR fallback filter
-#   PR_FRONTEND_CHANGED   - "true"/"false" from full-PR fallback filter
-#   WORKFLOW_CHANGED      - "true"/"false"/"" from filter_workflow
+#   BACKEND_CHANGED       - "true"/"false"/"" from find_last_deploys.py (diff vs backend base)
+#   MIGRATIONS_CHANGED    - "true"/"false"/"" from find_last_deploys.py (diff vs migrations base)
+#   PR_BACKEND_CHANGED    - "true"/"false" from full-PR fallback filter (filter_pr)
+#   PR_MIGRATIONS_CHANGED - "true"/"false" from full-PR fallback filter (filter_pr)
+#   PR_FRONTEND_CHANGED   - "true"/"false" from full-PR fallback filter (filter_pr)
+#   WORKFLOW_CHANGED      - "true"/"false"/"" from find_last_deploys.py (diff vs previous push)
 set -euo pipefail
 
 : "${EVENT_ACTION:?}"
