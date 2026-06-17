@@ -40,7 +40,7 @@ class InviteUserRequest(BaseModel):
 
     email: str
     name: str | None = None
-    role: str = "member"  # owner, admin, or member
+    role: str = "member"  # admin or member
 
 
 class InviteUserResponse(BaseModel):
