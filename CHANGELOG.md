@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [2026-06-17]
 
 ### Added
+- Fireworks routing: GLM / MiniMax / Kimi (and other open models) can run on the stock `claude-code` agent via Fireworks' single Anthropic-compatible endpoint. Opt in with an explicit `fireworks/` (or `fw/`) prefix (e.g. `fireworks/glm-5.2`, `fireworks/minimax-m3`, `fireworks/kimi-k2.7-code`), which gets its own `fireworks/<id>` provider/queue bucket and authenticates with `${FIREWORKS_API_KEY}`; bare `glm/minimax/kimi` ids keep their existing direct-provider routes. Default claude-code settings (no forced thinking/effort)
 - Global chat scope (`global`) with an `oddish-query` read-only CLI injected into the sandbox; the agent can search, inspect, and drill into trial logs across all org tasks; a short-lived internal API key is minted per-session (45-min TTL) for credential isolation; global-scope Chat button added to the tasks page (#332)
 
 ### Changed
