@@ -152,7 +152,37 @@ async def list_tasks_core(
         include_worker_jobs = False
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
-        trials_loader = selectinload(TaskModel.trials)
+        # When scoped to an experiment, push the trial filter into the
+        # selectin load so each task fetches only that experiment's non-probe
+        # trials instead of every trial across every version / experiment /
+        # superseded rerun. The former code loaded the full set and filtered
+        # in Python (below), which materialized far more rows than the view
+        # needs -- the memory spike that OOM-killed the API container. This is
+        # an exact in-SQL equivalent of that Python filter: ``experiment_id``
+        # and ``is_probe`` are both NOT NULL, so ``experiment_id == X``
+        # excludes legacy/NULL-experiment trials (``None == X`` is False in
+        # Python, ``NULL = X`` is not-true in SQL) and ``is_probe.is_(False)``
+        # matches ``not t.is_probe``. The effective-version resolution and the
+        # superseded/off-version drop stay in Python, computed from the scoped
+        # set exactly as before. The filtered selectin still runs inside the
+        # async session (eager, no lazy load -> no MissingGreenlet) and still
+        # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        #
+        # NOTE: this relies on ``task.trials`` being UNLOADED on the incoming
+        # session. A filtered selectin scopes the collection on first load but
+        # does NOT re-filter one already fully loaded in the same session. Every
+        # ``/tasks`` route calls this on a fresh per-request session, so it holds
+        # today; if this helper is ever reused after the full ``trials`` set was
+        # loaded on the same session, add ``populate_existing()`` (or re-scope in
+        # Python) or the filter will silently not apply.
+        if experiment_id:
+            trials_relationship = TaskModel.trials.and_(
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.is_probe.is_(False),
+            )
+        else:
+            trials_relationship = TaskModel.trials
+        trials_loader = selectinload(trials_relationship)
         experiments_loader = selectinload(TaskModel.experiments)
         if compact_trials:
             trials_loader = trials_loader.load_only(
@@ -183,11 +213,13 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                # Read both by the compact builder (``build_compact_trial_response``)
-                # and the experiment-scoped trial filter below. Must be loaded
-                # eagerly; otherwise accessing it triggers a lazy-load on this
-                # column outside the async greenlet and fails with MissingGreenlet
-                # (same reason ``origin`` / ``harbor_config`` are here).
+                # Read by the compact builder (``build_compact_trial_response``);
+                # the experiment-scoped path also filters on ``is_probe``, but
+                # that now happens in SQL via the filtered selectin above. Must
+                # still be loaded eagerly for the builder; otherwise accessing
+                # it triggers a lazy-load on this column outside the async
+                # greenlet and fails with MissingGreenlet (same reason
+                # ``origin`` / ``harbor_config`` are here).
                 TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
@@ -296,16 +328,14 @@ async def list_tasks_core(
 
         for task in tasks:
             if experiment_id:
-                # Probes have their own experiment tab (list_experiment_probes_core);
-                # keep them out of the main trial matrix so probe runs don't show up
-                # as if they were ordinary trials. Excluding them before resolving the
-                # effective version also stops a probe-only version from skewing it.
-                scoped_trials = [
-                    t
-                    for t in task.trials
-                    if t.experiment_id == experiment_id and not t.is_probe
-                ]
-                set_committed_value(task, "trials", scoped_trials)
+                # ``task.trials`` is already scoped to this experiment's
+                # non-probe trials by the filtered selectin load above (probes
+                # have their own tab via ``list_experiment_probes_core``, and
+                # excluding them before resolving the effective version stops a
+                # probe-only version from skewing it). Resolve the experiment's
+                # effective version from that scoped set, then drop superseded /
+                # off-version trials -- identical result to before, without
+                # re-filtering in Python.
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
@@ -1200,65 +1230,19 @@ def _has_active_verdict(task: TaskModel) -> bool:
     )
 
 
-async def cancel_trial_analysis_core(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None = None,
-) -> dict[str, str | int | list[str]]:
-    """Cancel in-flight analysis for one trial without cancelling the trial."""
-    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    now_value = utcnow()
-    rows = await _cancel_worker_jobs_for_kind(
-        session,
-        kind="ANALYSIS",
-        subject_table="trials",
-        subject_ids=[trial_id],
-        reason=USER_CANCELLED_MESSAGE,
-    )
-    had_active_analysis = _has_active_analysis(trial)
-    if rows or had_active_analysis:
-        trial.analysis_status = AnalysisStatus.FAILED
-        trial.analysis_error = USER_CANCELLED_MESSAGE
-        trial.analysis_finished_at = now_value
-
-    task_result = await session.execute(
-        select(TaskModel)
-        .options(selectinload(TaskModel.trials))
-        .where(TaskModel.id == trial.task_id)
-    )
-    task = task_result.scalar_one_or_none()
-    other_active_analysis = any(
-        other.id != trial_id
-        and other.superseded_by_trial_id is None
-        and _has_active_analysis(other)
-        for other in (task.trials if task else [])
-    )
-    if (
-        task
-        and task.status == TaskStatus.ANALYZING
-        and (rows or had_active_analysis)
-        and not other_active_analysis
-    ):
-        task.status = TaskStatus.FAILED
-        task.finished_at = now_value
-
-    await session.commit()
-    return {
-        "status": "cancelled",
-        "trial_id": trial_id,
-        "analysis_jobs_cancelled": len(rows),
-        **_collect_cancel_metadata(rows),
-    }
-
-
-async def cancel_task_analysis_core(
+async def cancel_task_qa_core(
     session: AsyncSession,
     *,
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int | list[str]]:
-    """Cancel in-flight analysis jobs for a task without cancelling trials."""
+    """Cancel a task's in-flight QA job.
+
+    There is one task-level QA job: it classifies every trial and then
+    synthesizes the verdict. Cancelling it stops that job and finalizes any
+    trial whose classification was mid-flight (left RUNNING by a killed
+    worker).
+    """
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
@@ -1268,54 +1252,10 @@ async def cancel_task_analysis_core(
     if not task or (org_id is not None and task.org_id != org_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    live_trials = [
-        trial for trial in task.trials or [] if trial.superseded_by_trial_id is None
-    ]
-    trial_ids = [trial.id for trial in live_trials]
     now_value = utcnow()
     rows = await _cancel_worker_jobs_for_kind(
         session,
-        kind="ANALYSIS",
-        subject_table="trials",
-        subject_ids=trial_ids,
-        reason=USER_CANCELLED_MESSAGE,
-    )
-    cancelled_subject_ids = {str(row["subject_id"]) for row in rows}
-    trials_updated = 0
-    for trial in live_trials:
-        if trial.id not in cancelled_subject_ids and not _has_active_analysis(trial):
-            continue
-        trial.analysis_status = AnalysisStatus.FAILED
-        trial.analysis_error = USER_CANCELLED_MESSAGE
-        trial.analysis_finished_at = now_value
-        trials_updated += 1
-
-    if task.status == TaskStatus.ANALYZING or trials_updated:
-        task.status = TaskStatus.FAILED
-        task.finished_at = now_value
-
-    await session.commit()
-    return {
-        "status": "cancelled",
-        "task_id": task_id,
-        "analysis_jobs_cancelled": len(rows),
-        "trials_cancelled": trials_updated,
-        **_collect_cancel_metadata(rows),
-    }
-
-
-async def cancel_task_verdict_core(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    org_id: str | None = None,
-) -> dict[str, str | int | list[str]]:
-    """Cancel an in-flight task verdict without cancelling trials or analysis."""
-    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
-    now_value = utcnow()
-    rows = await _cancel_worker_jobs_for_kind(
-        session,
-        kind="VERDICT",
+        kind="QA",
         subject_table="tasks",
         subject_ids=[task_id],
         reason=USER_CANCELLED_MESSAGE,
@@ -1324,6 +1264,13 @@ async def cancel_task_verdict_core(
         task.verdict_status = VerdictStatus.FAILED
         task.verdict_error = USER_CANCELLED_MESSAGE
         task.verdict_finished_at = now_value
+        # Finalize trials whose classification the QA job had in flight so
+        # they don't linger in a RUNNING analysis state.
+        for trial in task.trials or []:
+            if trial.superseded_by_trial_id is None and _has_active_analysis(trial):
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = USER_CANCELLED_MESSAGE
+                trial.analysis_finished_at = now_value
         if task.status == TaskStatus.VERDICT_PENDING:
             task.status = TaskStatus.FAILED
             task.finished_at = now_value
@@ -1332,7 +1279,7 @@ async def cancel_task_verdict_core(
     return {
         "status": "cancelled",
         "task_id": task_id,
-        "verdict_jobs_cancelled": len(rows),
+        "qa_jobs_cancelled": len(rows),
         **_collect_cancel_metadata(rows),
     }
 
@@ -1407,88 +1354,18 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     return int(count or 0)
 
 
-async def rerun_trial_analysis_core(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None = None,
-) -> dict[str, str]:
-    """Queue analysis for a completed trial and invalidate the task verdict."""
-    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    task = await session.get(TaskModel, trial.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-    if trial.superseded_by_trial_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This trial has been superseded by another retry "
-                f"({trial.superseded_by_trial_id}); analyze that one instead"
-            ),
-        )
-
-    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Can only run analysis for completed or failed trials "
-                f"(current: {trial.status.value})"
-            ),
-        )
-
-    if trial.analysis_status in (
-        AnalysisStatus.PENDING,
-        AnalysisStatus.QUEUED,
-        AnalysisStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Analysis is already in progress for this trial "
-                f"(current: {trial.analysis_status.value})"
-            ),
-        )
-
-    active_trials = await _count_active_trials(session, task_id=task.id)
-    if active_trials > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only run trial analysis after all trials for the task finish",
-        )
-
-    if task.verdict_status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot rerun analysis while the task verdict is still running",
-        )
-
-    _reset_trial_analysis(trial)
-    _reset_task_verdict(task)
-    task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
-    task.finished_at = None
-    trial.analysis_status = AnalysisStatus.QUEUED
-
-    from oddish.queue import enqueue_analysis_worker_job
-
-    await enqueue_analysis_worker_job(session, trial_id=trial_id, org_id=trial.org_id)
-
-    await session.commit()
-    return {"status": "queued", "trial_id": trial_id}
-
-
-async def rerun_task_analysis_core(
+async def rerun_task_qa_core(
     session: AsyncSession,
     *,
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int]:
-    """Queue analysis jobs for every trial in a finished task."""
+    """(Re)run the single task-level QA job for a finished task.
+
+    Resets every live trial's classification and the task verdict, then
+    enqueues one QA job that re-classifies all live trials and synthesizes a
+    fresh verdict.
+    """
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
@@ -1501,21 +1378,19 @@ async def rerun_task_analysis_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if not task.trials:
-        raise HTTPException(status_code=400, detail="Task has no trials to analyze")
+        raise HTTPException(status_code=400, detail="Task has no trials to QA")
 
     live_trials = [
         trial for trial in task.trials if trial.superseded_by_trial_id is None
     ]
     if not live_trials:
-        raise HTTPException(
-            status_code=400, detail="Task has no live trials to analyze"
-        )
+        raise HTTPException(status_code=400, detail="Task has no live trials to QA")
 
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
             status_code=400,
-            detail="Can only run task analysis after all trials finish",
+            detail="Can only run QA after all trials finish",
         )
 
     if any(
@@ -1525,7 +1400,7 @@ async def rerun_task_analysis_core(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Some trial analyses are already in progress for this task",
+            detail="QA is already in progress for this task",
         )
 
     if task.verdict_status in (
@@ -1535,22 +1410,21 @@ async def rerun_task_analysis_core(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Cannot rerun analysis while the task verdict is still running",
+            detail="QA is already in progress for this task",
         )
-
-    from oddish.queue import enqueue_analysis_worker_job
 
     for trial in live_trials:
         _reset_trial_analysis(trial)
-        trial.analysis_status = AnalysisStatus.QUEUED
-        await enqueue_analysis_worker_job(
-            session, trial_id=trial.id, org_id=trial.org_id
-        )
 
     _reset_task_verdict(task)
     task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
+    task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
+    task.verdict_status = VerdictStatus.QUEUED
+
+    from oddish.queue import enqueue_qa_worker_job
+
+    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
 
     await session.commit()
     return {
@@ -1558,76 +1432,6 @@ async def rerun_task_analysis_core(
         "task_id": task_id,
         "trial_count": len(live_trials),
     }
-
-
-async def rerun_task_verdict_core(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    org_id: str | None = None,
-) -> dict[str, str]:
-    """Queue a fresh verdict job for a finished task."""
-    result = await session.execute(
-        select(TaskModel)
-        .options(selectinload(TaskModel.trials))
-        .where(TaskModel.id == task_id)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    if org_id is not None and task.org_id != org_id:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-    if not task.trials:
-        raise HTTPException(status_code=400, detail="Task has no trials")
-
-    live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
-    ]
-    if not live_trials:
-        raise HTTPException(status_code=400, detail="Task has no live trials")
-
-    active_trials = await _count_active_trials(session, task_id=task.id)
-    if active_trials > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only run a task verdict after all trials finish",
-        )
-
-    if any(
-        trial.analysis_status
-        in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in live_trials
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="All trial analyses must finish before running a task verdict",
-        )
-
-    if task.verdict_status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Task verdict is already in progress",
-        )
-
-    _reset_task_verdict(task)
-    task.run_analysis = True
-    task.status = TaskStatus.VERDICT_PENDING
-    task.finished_at = None
-    task.verdict_status = VerdictStatus.QUEUED
-    task.verdict_started_at = None
-    task.verdict_finished_at = None
-
-    from oddish.queue import enqueue_verdict_worker_job
-
-    await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
-
-    await session.commit()
-    return {"status": "queued", "task_id": task_id}
 
 
 async def get_trial_logs_core(

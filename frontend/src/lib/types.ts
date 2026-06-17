@@ -20,7 +20,9 @@ type TrialStatus =
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-type VisibleJobKind = "trial" | "analysis" | "verdict";
+// "qa" is the single task-level QA job; "analysis" is legacy (drains
+// in-flight per-trial rows across a deploy).
+type VisibleJobKind = "trial" | "qa" | "analysis";
 
 type VisibleJobStatus =
   | "queued"
@@ -566,6 +568,7 @@ export interface OrphanedStateResponse {
 // backend starts returning them before the frontend has opinions.
 export type WorkerJobKind =
   | "TRIAL"
+  | "QA"
   | "ANALYSIS"
   | "VERDICT"
   | "QA_REVIEW"
@@ -666,6 +669,14 @@ export interface QueueHealthResponse {
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;
+  description: string | null;
+}
+
+export interface ExperimentShareInfo {
+  name: string;
+  is_public: boolean;
+  public_token: string | null;
+  description: string | null;
 }
 
 export interface ExperimentProbeRow {

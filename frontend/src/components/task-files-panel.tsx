@@ -22,7 +22,6 @@ import {
   RefreshCw,
   AlertCircle,
   Microscope,
-  CheckCircle2,
   Loader2,
   OctagonX,
   Eye,
@@ -311,14 +310,10 @@ export function TaskFilesPanel({
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
-  const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null,
-  );
-  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
-  const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null,
-  );
+  // Trajectory analysis is a single task-level QA job (classify every trial,
+  // then synthesize the verdict), surfaced as one Run QA action.
+  const [isRunningQA, setIsRunningQA] = useState(false);
+  const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
@@ -402,35 +397,19 @@ export function TaskFilesPanel({
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
     isActivePipelineStatus(trial.analysis_status),
   );
-  const allAnalysesComplete =
-    Boolean(task?.trials?.length) &&
-    (task?.trials ?? []).every(
-      (trial) =>
-        trial.analysis_status === "success" ||
-        trial.analysis_status === "failed",
-    );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
-  const canRunTaskAnalysis =
+  const canRunQA =
     allowRetry &&
     Boolean(task) &&
     allTrialsTerminal &&
     !hasAnalysisInFlight &&
     !verdictInFlight;
-  const canRunVerdict =
-    allowRetry &&
-    Boolean(task) &&
-    allTrialsTerminal &&
-    allAnalysesComplete &&
-    !verdictInFlight;
-  const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis,
-  )
-    ? "Rerun analyses"
-    : "Run analyses";
-  const verdictActionLabel =
-    verdictSource?.verdict_status || verdictSource?.verdict
-      ? "Rerun verdict"
-      : "Run verdict";
+  const qaActionLabel =
+    verdictSource?.verdict_status ||
+    verdictSource?.verdict ||
+    (task?.trials ?? []).some((trial) => trial.analysis_status || trial.analysis)
+      ? "Rerun QA"
+      : "Run QA";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -484,15 +463,13 @@ export function TaskFilesPanel({
       let body: string | undefined = JSON.stringify({
         task_ids: id ? [id] : [],
       });
-      if (id && !taskHasActiveTrials(task) && taskHasActiveVerdict(task)) {
-        path = `${baseUrl}/tasks/${id}/verdict/cancel`;
-        body = undefined;
-      } else if (
+      // No active trials but QA in flight -> cancel just the task QA job.
+      if (
         id &&
         !taskHasActiveTrials(task) &&
-        taskHasActiveAnalysis(task)
+        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
       ) {
-        path = `${baseUrl}/tasks/${id}/analysis/cancel`;
+        path = `${baseUrl}/tasks/${id}/qa/cancel`;
         body = undefined;
       }
       const res = await fetch(path, {
@@ -515,61 +492,36 @@ export function TaskFilesPanel({
     }
   };
 
-  const handleRunTaskAnalysis = async () => {
-    if (!task?.id || !canRunTaskAnalysis || isRunningAnalysis) return;
-    setIsRunningAnalysis(true);
-    setAnalysisActionError(null);
+  const handleRunQA = async () => {
+    if (!task?.id || !canRunQA || isRunningQA) return;
+    setIsRunningQA(true);
+    setQAActionError(null);
 
     try {
-      const res = await fetch(`${baseUrl}/tasks/${task.id}/analysis/retry`, {
+      // One task-level QA job: (re)classify every trial and then synthesize
+      // the task verdict.
+      const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to queue task analysis",
-        );
+        throw new Error(data.detail || data.error || "Failed to queue task QA");
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
-      setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis",
+      setQAActionError(
+        err instanceof Error ? err.message : "Failed to queue task QA",
       );
     } finally {
-      setIsRunningAnalysis(false);
-    }
-  };
-
-  const handleRunVerdict = async () => {
-    if (!task?.id || !canRunVerdict || isRunningVerdict) return;
-    setIsRunningVerdict(true);
-    setVerdictActionError(null);
-
-    try {
-      const res = await fetch(`${baseUrl}/tasks/${task.id}/verdict/retry`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue verdict");
-      }
-      onRetryComplete?.([task.id]);
-    } catch (err) {
-      setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict",
-      );
-    } finally {
-      setIsRunningVerdict(false);
+      setIsRunningQA(false);
     }
   };
 
   useEffect(() => {
     setRerunError(null);
     setIsRerunning(false);
-    setAnalysisActionError(null);
-    setIsRunningAnalysis(false);
-    setVerdictActionError(null);
-    setIsRunningVerdict(false);
+    setQAActionError(null);
+    setIsRunningQA(false);
   }, [taskId]);
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -858,10 +810,8 @@ export function TaskFilesPanel({
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
-      setAnalysisActionError(null);
-      setIsRunningAnalysis(false);
-      setVerdictActionError(null);
-      setIsRunningVerdict(false);
+      setQAActionError(null);
+      setIsRunningQA(false);
     }
   }, [isOpen, taskId]);
 
@@ -1342,8 +1292,7 @@ export function TaskFilesPanel({
         {(onNavigateToFirstTrial ||
           hasNavigation ||
           allowRetry ||
-          canRunTaskAnalysis ||
-          canRunVerdict) && (
+          canRunQA) && (
           <div className="text-muted-foreground space-y-2 pt-2 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
@@ -1456,47 +1405,26 @@ export function TaskFilesPanel({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={handleRunTaskAnalysis}
-                    disabled={!canRunTaskAnalysis || isRunningAnalysis}
+                    onClick={handleRunQA}
+                    disabled={!canRunQA || isRunningQA}
                     className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
-                    {isRunningAnalysis ? (
+                    {isRunningQA ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <Microscope className="mr-1 h-3.5 w-3.5" />
                     )}
-                    {isRunningAnalysis ? "Queueing..." : analysisActionLabel}
-                  </Button>
-                )}
-                {showAnalysis && task && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRunVerdict}
-                    disabled={!canRunVerdict || isRunningVerdict}
-                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
-                  >
-                    {isRunningVerdict ? (
-                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                    )}
-                    {isRunningVerdict ? "Queueing..." : verdictActionLabel}
+                    {isRunningQA ? "Queueing..." : qaActionLabel}
                   </Button>
                 )}
               </div>
             </div>
 
-            {(cancelError ||
-              rerunError ||
-              analysisActionError ||
-              verdictActionError) && (
+            {(cancelError || rerunError || qaActionError) && (
               <div className="flex flex-wrap items-center justify-end gap-3 text-red-500">
                 {cancelError && <span>{cancelError}</span>}
                 {rerunError && <span>{rerunError}</span>}
-                {analysisActionError && <span>{analysisActionError}</span>}
-                {verdictActionError && <span>{verdictActionError}</span>}
+                {qaActionError && <span>{qaActionError}</span>}
               </div>
             )}
           </div>

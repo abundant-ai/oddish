@@ -132,3 +132,94 @@ def render_task_probes_claude_md(
     else:
         trial_list = _EMPTY_TRIAL_BLOCK
     return _PROBE_TEMPLATE.format(task_name=task_name, trial_list=trial_list)
+
+
+_TASK_CHAT_TEMPLATE = """# Task chat — {task_name}
+
+You are helping investigate the trial runs for this task. The trial logs are
+already in your workspace under `jobs/v<version>/<trial_id>/...`.
+
+**Current version: v{current_version} — focus here by default.** Past versions
+are also available in their own `jobs/v<N>/` folders; only look at them if the
+user asks about earlier runs or a comparison across versions.
+
+Each `jobs/v<version>/<trial_id>/` folder contains the usual Harbor trial tree
+(`config.json`, `result.json`, `trial.log`, `exception.txt`, `agent/`,
+`verifier/`). Read files on demand rather than assuming their contents.
+
+## Regular runs vs probe runs
+
+Trials marked `(probe)` below are **probe runs**: a probe prepends extra
+operator instructions to the task prompt — typically to test whether the agent
+cheats, fails in interesting ways, or behaves differently under a nudge. A
+probe's behavior is therefore NOT directly comparable to a regular run; treat
+probes as a distinct category. To see the nudge applied to a probe, read its
+`config.json` -> `harbor_config.extra_instructions`. Unmarked trials are
+regular runs with no operator overlay.
+
+## Versions and trials in this workspace
+{version_block}
+"""
+
+
+def render_task_chat_claude_md(
+    *,
+    task_name: str,
+    current_version: int | None,
+    version_trials: dict[int, list[str]],
+    probe_trial_ids: set[str] | None = None,
+) -> str:
+    probes = probe_trial_ids or set()
+    lines: list[str] = []
+    for v in sorted(version_trials, reverse=True):
+        tag = " (current)" if v == current_version else ""
+        lines.append(f"- **v{v}**{tag}:")
+        trials = sorted(version_trials[v])
+        if trials:
+            lines.extend(
+                f"  - `{tid}`" + (" (probe)" if tid in probes else "")
+                for tid in trials
+            )
+        else:
+            lines.append("  - _(no trials)_")
+    version_block = "\n".join(lines) if lines else _EMPTY_TRIAL_BLOCK
+    return _TASK_CHAT_TEMPLATE.format(
+        task_name=task_name,
+        current_version=current_version if current_version is not None else "?",
+        version_block=version_block,
+    )
+
+
+_GLOBAL_TEMPLATE = """\
+# Oddish tasks — org-wide chat
+
+You help the user reason across ALL of this organization's Harbor tasks, and
+drill into an individual task's trials when they focus on one. You have a
+read-only CLI, `oddish-query`, that queries the oddish backend. Scope is the
+whole org; you cannot write anything.
+
+## Tool: `oddish-query` (call via Bash)
+
+Run it from the workspace dir as `./oddish-query` (it lives in the current directory).
+
+Start shallow, go deep only when the conversation does:
+
+- `./oddish-query tasks search [--q TEXT] [--tags-any a,b] [--tags-all a,b] [--tags-none a,b] [--limit 25] [--offset N]`
+  Compact cards: id, name, tags, total_trials, pass_rate, last_run_at. **Start here.**
+  Push filters into `--q`/`--tags-*` so the server returns ~25 relevant rows, not thousands.
+- `./oddish-query tasks get <id>` — one task's detail (versions, counts, description).
+- `./oddish-query tasks trials <id>` — that task's trial rows (status, reward, trial_id).
+- `./oddish-query trials logs <trial_id> [--trajectory]` — a single trial's logs. **Large — one trial at a time.**
+
+## Discipline
+
+- ALWAYS begin with `tasks search`. Judge relevance ("which of these are CAD?")
+  by reading the cards yourself — that is the search.
+- Only call `get`/`trials`/`logs` once the user has zoomed into a specific task.
+- Output is capped per call; if you see `{"_truncated": true}`, narrow your
+  filters or page with `--offset` rather than widening.
+"""
+
+
+def render_global_claude_md(*, org_id: str) -> str:
+    return _GLOBAL_TEMPLATE

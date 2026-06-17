@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
 # In preview Modal apps the seeded org is throwaway — let JIT-provisioned
-# users land as OWNER so they can create API keys etc. Prod stays MEMBER.
+# users land as ADMIN so they can manage users etc. Prod stays MEMBER.
 _DEFAULT_JIT_ROLE = (
-    UserRole.OWNER
+    UserRole.ADMIN
     if os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-")
     else UserRole.MEMBER
 )
@@ -255,7 +255,7 @@ async def get_or_create_user_in_org(
     user = result.scalar_one_or_none()
     if user:
         resolved_role = resolve_role(org_role, user.role)
-        if resolved_role != user.role and user.role != UserRole.OWNER:
+        if resolved_role != user.role:
             user.role = resolved_role
         await _refresh_user_github_identity(user)
         return user
@@ -271,10 +271,7 @@ async def get_or_create_user_in_org(
         if existing_user:
             existing_user.clerk_user_id = clerk_user_id
             resolved_role = resolve_role(org_role, existing_user.role)
-            if (
-                resolved_role != existing_user.role
-                and existing_user.role != UserRole.OWNER
-            ):
+            if resolved_role != existing_user.role:
                 existing_user.role = resolved_role
             await _refresh_user_github_identity(existing_user)
             return existing_user
