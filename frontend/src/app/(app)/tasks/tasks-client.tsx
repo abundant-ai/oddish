@@ -429,6 +429,9 @@ export function TasksPageClient({
     if (parsed.none.length) {
       params.set("tags_none", parsed.none.join(","));
     }
+    if (parsed.authors.length) {
+      params.set("author", parsed.authors.join(","));
+    }
     return `/api/tasks/browse?${params.toString()}`;
   }, [offset, parsed]);
 
@@ -474,7 +477,7 @@ export function TasksPageClient({
                 <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder={'Search · word "phrase" -not tag:x'}
+                  placeholder={'Search · github:user · "phrase" -not tag:x'}
                   className="h-8 w-full border-[#6f88b4]/20 pr-7"
                 />
                 <Tooltip>
