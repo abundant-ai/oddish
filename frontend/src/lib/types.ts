@@ -237,6 +237,10 @@ export interface TaskBrowseItem {
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];

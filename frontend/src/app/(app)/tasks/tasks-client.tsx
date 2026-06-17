@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,6 +21,7 @@ import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
 import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
+import { formatCostUsd } from "@/lib/format";
 import { parseTaskSearch } from "@/lib/tag-query";
 import {
   formatPartialRewardBadgeValue,
@@ -55,7 +57,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   useEffect(() => {
     const timeoutId = window.setTimeout(
       () => setDebouncedValue(value),
-      delayMs,
+      delayMs
     );
     return () => window.clearTimeout(timeoutId);
   }, [delayMs, value]);
@@ -66,7 +68,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
 function SearchSyntaxRow({ example, hint }: { example: string; hint: string }) {
   return (
     <p className="flex items-baseline gap-2">
-      <code className="shrink-0 rounded bg-muted px-1 font-mono">
+      <code className="bg-muted shrink-0 rounded px-1 font-mono">
         {example}
       </code>
       <span className="text-muted-foreground">{hint}</span>
@@ -80,7 +82,7 @@ function TaskCardsSkeleton() {
       {Array.from({ length: 6 }).map((_, index) => (
         <div
           key={index}
-          className="rounded-lg border border-[#6f88b4]/20 bg-card/95 p-4 shadow-xs"
+          className="bg-card/95 rounded-lg border border-[#6f88b4]/20 p-4 shadow-xs"
         >
           <div className="space-y-3">
             <div className="flex items-start justify-between gap-3">
@@ -110,7 +112,7 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   }
 
   return (
-    <div className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground">
+    <div className="text-muted-foreground flex flex-wrap gap-x-2 gap-y-1 text-xs">
       {task.experiments.map((experiment, index) => (
         <span key={experiment.id}>
           <Link
@@ -132,7 +134,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       const status = getMatrixStatus(
         trial.status,
         trial.reward,
-        trial.error_message,
+        trial.error_message
       );
       counts[status] += 1;
       return counts;
@@ -145,7 +147,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       pending: 0,
       queued: 0,
       running: 0,
-    } as Record<ReturnType<typeof getMatrixStatus>, number>,
+    } as Record<ReturnType<typeof getMatrixStatus>, number>
   );
 }
 
@@ -183,17 +185,17 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between gap-3">
-        <div className={`text-base font-medium leading-none ${toneClass}`}>
+        <div className={`text-base leading-none font-medium ${toneClass}`}>
           {avgScore == null ? "—" : `${avgScore}%`}
         </div>
-        <div className="text-[11px] leading-none text-muted-foreground">
+        <div className="text-muted-foreground text-[11px] leading-none">
           {hasScore
             ? `${rewardSum.toFixed(2)}/${task.reward_total}`
             : "No completed trials"}
         </div>
       </div>
       {task.latest_trials.length > 0 ? (
-        <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none text-muted-foreground">
+        <div className="text-muted-foreground flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none">
           {summaryItems.map((item) => {
             const config = STATUS_CONFIG[item.key];
             return (
@@ -205,13 +207,13 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
                   className={`inline-flex h-2 w-2 rounded-full ${config.bracketClass}`}
                 />
                 <span>{item.label}</span>
-                <span className="font-mono text-foreground">{item.count}</span>
+                <span className="text-foreground font-mono">{item.count}</span>
               </div>
             );
           })}
         </div>
       ) : (
-        <div className="text-[10px] leading-none text-muted-foreground">
+        <div className="text-muted-foreground text-[10px] leading-none">
           No latest-version trials
         </div>
       )}
@@ -222,7 +224,7 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
 function TrialGraphics({ task }: { task: TaskBrowseItem }) {
   if (task.latest_trials.length === 0) {
     return (
-      <div className="rounded-md border border-dashed border-border/70 px-3 py-3 text-center text-xs text-muted-foreground">
+      <div className="border-border/70 text-muted-foreground rounded-md border border-dashed px-3 py-3 text-center text-xs">
         No latest-version trials yet.
       </div>
     );
@@ -234,7 +236,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
         const status = getMatrixStatus(
           trial.status,
           trial.reward,
-          trial.error_message,
+          trial.error_message
         );
         const config = STATUS_CONFIG[status];
         const badgeLabel =
@@ -246,7 +248,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
           <Tooltip key={trial.id}>
             <TooltipTrigger asChild>
               <div
-                className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono font-semibold leading-none ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
+                className={`flex h-[18px] w-[18px] items-center justify-center rounded-[4px] border font-mono leading-none font-semibold ${config.matrixClass} ${status === "partial" ? "text-[7px] tracking-[-0.03em]" : ""}`}
                 style={getRewardStyle(trial.reward)}
                 aria-label={`${trial.name} ${config.shortLabel}`}
               >
@@ -272,16 +274,35 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
   );
 }
 
-function TaskCard({ task }: { task: TaskBrowseItem }) {
+function TaskCard({
+  task,
+  selected,
+  onToggleSelected,
+}: {
+  task: TaskBrowseItem;
+  selected: boolean;
+  onToggleSelected: (task: TaskBrowseItem) => void;
+}) {
   return (
-    <Card className="border-[#6f88b4]/20 bg-card/95 shadow-xs transition-colors hover:border-[#6f88b4]/40">
+    <Card
+      className={cn(
+        "bg-card/95 border-[#6f88b4]/20 shadow-xs transition-colors hover:border-[#6f88b4]/40",
+        selected && "border-[#6f88b4]/70 ring-1 ring-[#6f88b4]/40"
+      )}
+    >
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
         <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
+          <Checkbox
+            checked={selected}
+            onCheckedChange={() => onToggleSelected(task)}
+            aria-label={`Select ${task.name} for cost total`}
+            className="mt-0.5 shrink-0"
+          />
+          <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <Link
                 href={`/tasks/${encodeURIComponent(task.id)}`}
-                className="font-mono text-sm font-semibold text-foreground transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
+                className="text-foreground font-mono text-sm font-semibold transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
               >
                 {task.name}
               </Link>
@@ -307,11 +328,11 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
                       badgeVariants({ variant: "outline" }),
-                      "w-fit gap-1.5 font-mono text-[11px] transition-colors hover:bg-accent",
+                      "hover:bg-accent w-fit gap-1.5 font-mono text-[11px] transition-colors"
                     )}
                   >
                     <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />
-                    <span className="min-w-0 max-w-[140px] truncate">
+                    <span className="max-w-[140px] min-w-0 truncate">
                       {label}
                       {number && (
                         <span className="text-muted-foreground">
@@ -329,25 +350,40 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
               })()}
             </div>
           </div>
-          <div className="shrink-0 flex flex-col items-end gap-2">
+          <div className="flex shrink-0 flex-col items-end gap-2">
             <Link
               href={`/tasks/${task.id}/probe`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[11px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline"
+              className="text-muted-foreground hover:text-foreground text-[11px] font-medium underline-offset-2 hover:underline"
             >
               Probe run →
             </Link>
             <div className="text-right">
-              <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
                 Last run
               </div>
               <div className="mt-1 text-xs">
                 {task.last_run_at ? formatRelativeTime(task.last_run_at) : "—"}
               </div>
               {task.last_run_at ? (
-                <div className="text-[11px] text-muted-foreground">
+                <div className="text-muted-foreground text-[11px]">
                   {formatShortDateTime(task.last_run_at)}
+                </div>
+              ) : null}
+            </div>
+            <div className="text-right">
+              <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
+                Cost
+              </div>
+              <div className="mt-1 text-sm font-semibold tabular-nums">
+                {task.cost_trial_count > 0
+                  ? `${task.cost_has_estimated && !task.cost_has_native ? "~" : ""}${formatCostUsd(task.cost_usd)}`
+                  : "—"}
+              </div>
+              {task.cost_trial_count > 0 ? (
+                <div className="text-muted-foreground text-[11px]">
+                  {task.cost_trial_count} of {task.total_trials} priced
                 </div>
               ) : null}
             </div>
@@ -363,22 +399,22 @@ function TaskCard({ task }: { task: TaskBrowseItem }) {
           </div>
         ) : null}
         <div className="space-y-1.5">
-          <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
             Latest trials
           </div>
           <TrialGraphics task={task} />
         </div>
         <div className="grid gap-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)]">
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          <div className="border-border/60 bg-muted/30 rounded-md border px-3 py-2">
+            <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
               Avg score
             </div>
             <div className="mt-1 text-sm font-semibold">
               <PassRateCell task={task} />
             </div>
           </div>
-          <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          <div className="border-border/60 bg-muted/30 rounded-md border px-3 py-2">
+            <div className="text-muted-foreground text-[11px] tracking-wide uppercase">
               Experiments
             </div>
             <div className="mt-0.5">
@@ -402,10 +438,31 @@ export function TasksPageClient({
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [offset, setOffset] = useState(0);
+  // Multi-select cost tracking. Keyed by task id, stores enough to total
+  // across pages (the browse page only holds the current 25 items).
+  const [selectedCosts, setSelectedCosts] = useState<
+    Map<string, { name: string; cost: number; estimated: boolean }>
+  >(new Map());
+
+  const toggleSelected = (task: TaskBrowseItem) => {
+    setSelectedCosts((prev) => {
+      const next = new Map(prev);
+      if (next.has(task.id)) {
+        next.delete(task.id);
+      } else {
+        next.set(task.id, {
+          name: task.name,
+          cost: task.cost_usd,
+          estimated: task.cost_has_estimated && !task.cost_has_native,
+        });
+      }
+      return next;
+    });
+  };
   const debouncedQuery = useDebouncedValue(searchQuery.trim(), 300);
   const parsed = useMemo(
     () => parseTaskSearch(debouncedQuery),
-    [debouncedQuery],
+    [debouncedQuery]
   );
 
   useEffect(() => {
@@ -444,6 +501,15 @@ export function TasksPageClient({
     });
 
   const items = data?.items ?? [];
+  const selectedTotal = useMemo(() => {
+    let cost = 0;
+    let anyEstimated = false;
+    for (const entry of selectedCosts.values()) {
+      cost += entry.cost;
+      if (entry.estimated) anyEstimated = true;
+    }
+    return { count: selectedCosts.size, cost, anyEstimated };
+  }, [selectedCosts]);
   const hasMore = data?.has_more ?? false;
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
   const isRefreshing = !error && !isLoading && isValidating;
@@ -455,7 +521,7 @@ export function TasksPageClient({
           <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="space-y-1">
               <CardTitle className="text-base">Recent Tasks</CardTitle>
-              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+              <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
                 <span>
                   Showing {items.length}
                   {" • "}Page {currentPage}
@@ -482,7 +548,7 @@ export function TasksPageClient({
                     <button
                       type="button"
                       aria-label="Search syntax help"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                      className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2 transition-colors"
                     >
                       <CircleHelp className="h-3.5 w-3.5" />
                     </button>
@@ -512,7 +578,7 @@ export function TasksPageClient({
                     />
                     <p className="text-muted-foreground">
                       Matching is case-insensitive; combine freely, e.g.{" "}
-                      <code className="rounded bg-muted px-1 font-mono">
+                      <code className="bg-muted rounded px-1 font-mono">
                         polygon -rel tag:smoke
                       </code>
                     </p>
@@ -537,7 +603,7 @@ export function TasksPageClient({
             ) : isLoading && items.length === 0 ? (
               <TaskCardsSkeleton />
             ) : items.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-[#6f88b4]/30 bg-card/60 px-6 py-10 text-center text-sm text-muted-foreground">
+              <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
                 {debouncedQuery
                   ? "No tasks match the current search."
                   : "No tasks have been created yet."}
@@ -545,13 +611,18 @@ export function TasksPageClient({
             ) : (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {items.map((task) => (
-                  <TaskCard key={task.id} task={task} />
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    selected={selectedCosts.has(task.id)}
+                    onToggleSelected={toggleSelected}
+                  />
                 ))}
               </div>
             )}
 
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs text-muted-foreground">
+              <div className="text-muted-foreground text-xs">
                 {items.length > 0
                   ? `${offset + 1}-${offset + items.length}`
                   : "0"}{" "}
@@ -565,7 +636,7 @@ export function TasksPageClient({
                   className="h-8 px-3 text-[11px]"
                   onClick={() =>
                     setOffset((currentOffset) =>
-                      Math.max(currentOffset - PAGE_SIZE, 0),
+                      Math.max(currentOffset - PAGE_SIZE, 0)
                     )
                   }
                   disabled={offset === 0 || isValidating}
@@ -591,6 +662,30 @@ export function TasksPageClient({
           </CardContent>
         </Card>
       </div>
+      {selectedTotal.count > 0 ? (
+        <div className="bg-card/95 sticky bottom-4 z-20 mx-auto flex w-fit max-w-[95%] items-center gap-4 rounded-full border border-[#6f88b4]/40 px-5 py-2.5 shadow-lg backdrop-blur">
+          <span className="text-sm font-medium">
+            {selectedTotal.count} task{selectedTotal.count === 1 ? "" : "s"}{" "}
+            selected
+          </span>
+          <span className="text-sm">
+            <span className="text-muted-foreground">Total: </span>
+            <span className="font-semibold tabular-nums">
+              {selectedTotal.anyEstimated ? "~" : ""}
+              {formatCostUsd(selectedTotal.cost)}
+            </span>
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-[11px]"
+            onClick={() => setSelectedCosts(new Map())}
+          >
+            Clear
+          </Button>
+        </div>
+      ) : null}
     </TooltipProvider>
   );
 }
