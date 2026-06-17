@@ -34,43 +34,21 @@ jobs:
       # with conclusion=success, and use that run's head_sha as the diff
       # base. If a prior push failed mid-deploy, its broken state is not
       # recorded as a successful base, so the next push will still
-      # redeploy the affected component.
-      - name: Look up last-successful component SHAs
+      # redeploy the affected component. The same script then diffs each
+      # component's incremental window with the GitHub compare API and emits
+      # <component>_changed -- we do this instead of dorny/paths-filter
+      # because that action ignores its `base` input on pull_request events
+      # and would diff the whole PR, forcing the preview DB seed every push.
+      - name: Detect component changes since last successful deploy
         id: last_deployed
         if: github.event.action == 'synchronize'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER_REPO: ${{ github.repository }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/find_last_deploys.py"
-
-      - name: Detect backend code changes since last successful backend deploy
-        id: filter_backend
-        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.backend_base != ''
-        uses: dorny/paths-filter@v3
-        with:
-          base: ${{ steps.last_deployed.outputs.backend_base }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          filters: |
-            changed:
-              - 'backend/**'
-              - '!backend/alembic/**'
-              - '!backend/**/*.md'
-              - 'oddish/**'
-              - '!oddish/alembic/**'
-              - '!oddish/**/*.md'
-
-      - name: Detect migration changes since last successful migration run
-        id: filter_migrations
-        if: github.event.action == 'synchronize' && steps.last_deployed.outputs.migrations_base != ''
-        uses: dorny/paths-filter@v3
-        with:
-          base: ${{ steps.last_deployed.outputs.migrations_base }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          filters: |
-            changed:
-              - 'backend/alembic/**'
-              - 'oddish/alembic/**'
 
       - name: Detect PR component changes
         id: filter_pr
@@ -90,32 +68,18 @@ jobs:
             frontend:
               - 'frontend/**'
 
-      # Workflow / script changes are diffed against the previous push,
-      # not a per-component base, because they can affect any component.
-      - name: Detect workflow or preview-script changes since previous push
-        id: filter_workflow
-        if: github.event.action == 'synchronize'
-        uses: dorny/paths-filter@v3
-        with:
-          base: ${{ github.event.before }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          filters: |
-            changed:
-              - '.github/workflows/pr-preview.yml'
-              - '.github/scripts/preview/**'
-
       - name: Compute deployment plan
         id: compute
         env:
           EVENT_ACTION: ${{ github.event.action }}
           BACKEND_BASE: ${{ steps.last_deployed.outputs.backend_base }}
           MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
-          BACKEND_CHANGED: ${{ steps.filter_backend.outputs.changed }}
-          MIGRATIONS_CHANGED: ${{ steps.filter_migrations.outputs.changed }}
+          BACKEND_CHANGED: ${{ steps.last_deployed.outputs.backend_changed }}
+          MIGRATIONS_CHANGED: ${{ steps.last_deployed.outputs.migrations_changed }}
           PR_BACKEND_CHANGED: ${{ steps.filter_pr.outputs.backend }}
           PR_MIGRATIONS_CHANGED: ${{ steps.filter_pr.outputs.migrations }}
           PR_FRONTEND_CHANGED: ${{ steps.filter_pr.outputs.frontend }}
-          WORKFLOW_CHANGED: ${{ steps.filter_workflow.outputs.changed }}
+          WORKFLOW_CHANGED: ${{ steps.last_deployed.outputs.workflow_changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
   stop-previous-preview-backend:
