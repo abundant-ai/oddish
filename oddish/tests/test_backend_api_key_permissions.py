@@ -7,7 +7,6 @@ from typing import Any
 
 
 class _UserRole(str, Enum):
-    OWNER = "owner"
     ADMIN = "admin"
     MEMBER = "member"
 
@@ -87,17 +86,6 @@ def test_member_cannot_create_api_keys_even_with_abundant_email() -> None:
     )
 
     assert can_create_api_keys(auth) is False
-
-
-def test_legacy_owner_can_create_api_keys_with_any_email() -> None:
-    can_create_api_keys = _load_permissions()["can_create_api_keys"]
-
-    auth = _AuthStub(
-        org=_OrgStub(slug="customer-org"),
-        user=_UserStub(role=_UserRole.OWNER, email="owner@example.com"),
-    )
-
-    assert can_create_api_keys(auth) is True
 
 
 def test_cached_abundant_admin_can_create_api_keys() -> None:
