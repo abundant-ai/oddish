@@ -34,7 +34,7 @@ jobs:
       # capped (overrides below) so it can't run 48-wide against a single Claude
       # Max account.
       ODDISH_EXTRA_SECRET_NAME: cs-creds
-      ODDISH_MODEL_CONCURRENCY_OVERRIDES: '{"google/gemini-3.5-flash": 128, "global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, "openai/gpt-5.4-mini": 128, "sub/claude-opus-4-8": 4}'
+      ODDISH_MODEL_CONCURRENCY_OVERRIDES: '{"google/gemini-3.5-flash": 128, "global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, "openai/gpt-5.4-mini": 128, "sub/claude-opus-4-8": 8}'
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op
