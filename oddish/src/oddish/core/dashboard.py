@@ -558,6 +558,120 @@ def _build_experiments_author_filter(
     return or_(owner_match, legacy_match)
 
 
+def _build_primary_task_search_match(
+    user_ids: Sequence[str],
+    github_handles: Sequence[str],
+    *,
+    emails: Sequence[str] | None,
+):
+    """Primary-task author match for a *set* of identities, or ``None``.
+
+    Iterable sibling of ``_build_primary_task_author_match`` used by the
+    ``github:`` search qualifier (a handle can resolve to several users +
+    aliases). Same attribution precedence — ``github_username`` tag, then
+    legacy ``tasks.user`` (emails/handles), then ``created_by_user_id`` — but
+    every tier uses ``IN`` so collisions union. Returns ``None`` when no
+    identity was supplied.
+    """
+    lowered_handles = [handle.lower() for handle in github_handles if handle]
+    lowered_emails = [
+        email.strip().lower() for email in (emails or ()) if (email or "").strip()
+    ]
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    lowered_tag = func.lower(_task_github_tag_expr())
+    lowered_user = func.lower(TaskModel.user)
+
+    tiers = []
+    if lowered_handles:
+        tiers.append(lowered_tag.in_(lowered_handles))
+
+    legacy_user_matches = []
+    if lowered_emails:
+        legacy_user_matches.append(lowered_user.in_(lowered_emails))
+    if lowered_handles:
+        legacy_user_matches.append(lowered_user.in_(lowered_handles))
+    if legacy_user_matches:
+        tiers.append(and_(_empty_github_tag_clause(), or_(*legacy_user_matches)))
+
+    if normalized_user_ids:
+        tiers.append(
+            and_(
+                _empty_github_tag_clause(),
+                _absent_legacy_user_clause(),
+                TaskModel.created_by_user_id.in_(normalized_user_ids),
+            )
+        )
+
+    if not tiers:
+        return None
+    return or_(*tiers)
+
+
+def _build_experiments_search_author_filter(
+    user_ids: Sequence[str] | None,
+    github_usernames: Sequence[str] | None,
+    *,
+    org_id: str | None,
+    emails: Sequence[str] | None = None,
+    include_legacy_fallback: bool = True,
+):
+    """AND-able EXISTS clause for the ``github:`` search qualifier.
+
+    Sibling of ``_build_experiments_author_filter`` that accepts *iterables*
+    (resolved by ``resolve_search_authors``) and unions them with the same
+    primary-task attribution precedence the Members dropdown uses. It is
+    applied as an additional ``.where()`` so it ANDs with the owner control
+    and ``tag:`` filters.
+
+    Returns ``false()`` when nothing was resolved so the qualifier narrows to
+    an empty result rather than silently disappearing.
+    """
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    handles = [
+        handle
+        for handle in (
+            _normalize_github_handle(name) for name in (github_usernames or ())
+        )
+        if handle
+    ]
+    normalized_emails = [
+        email.strip() for email in (emails or ()) if (email or "").strip()
+    ]
+
+    if not normalized_user_ids and not handles and not normalized_emails:
+        return false()
+
+    tiers = []
+    # Fast path: indexed owner column when stamped at submit time.
+    if normalized_user_ids:
+        tiers.append(ExperimentModel.owner_user_id.in_(normalized_user_ids))
+
+    if include_legacy_fallback:
+        primary_match = _build_primary_task_search_match(
+            normalized_user_ids, handles, emails=normalized_emails
+        )
+        if primary_match is not None:
+            primary_task_id = _first_live_task_id_for_experiment()
+            legacy_exists = (
+                select(1)
+                .select_from(TaskModel)
+                .where(TaskModel.id == primary_task_id)
+                .where(primary_match)
+            )
+            if org_id is not None:
+                legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
+            tiers.append(
+                and_(
+                    ExperimentModel.owner_user_id.is_(None),
+                    legacy_exists.exists(),
+                )
+            )
+
+    if not tiers:
+        return false()
+    return or_(*tiers)
+
+
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
     if status_filter == "active":
         return int(row["active_trials"] or 0) > 0
@@ -694,6 +808,9 @@ async def load_dashboard_experiments(
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
+    experiments_search_author_user_ids: Sequence[str] | None = None,
+    experiments_search_author_github_usernames: Sequence[str] | None = None,
+    experiments_search_author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -748,8 +865,15 @@ async def load_dashboard_experiments(
         )
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
+    # The ``github:`` search qualifier ANDs an additional author predicate on
+    # top; both share the one unowned-experiments probe below.
+    has_search_author = bool(
+        (experiments_search_author_user_ids or ())
+        or (experiments_search_author_github_usernames or ())
+        or (experiments_search_author_emails or ())
+    )
     include_legacy_fallback = True
-    if experiments_author_user_id is not None:
+    if experiments_author_user_id is not None or has_search_author:
         probe_started_at = now()
         include_legacy_fallback = await _org_has_unowned_live_experiments(
             session, org_id
@@ -769,6 +893,18 @@ async def load_dashboard_experiments(
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
+    if has_search_author:
+        # ANDs with the owner filter above: with Org selected this is the only
+        # author predicate; with Mine selected it intersects (your work AND the
+        # searched author's), which is empty unless you are that author.
+        search_author_filter = _build_experiments_search_author_filter(
+            experiments_search_author_user_ids,
+            experiments_search_author_github_usernames,
+            org_id=org_id,
+            emails=experiments_search_author_emails,
+            include_legacy_fallback=include_legacy_fallback,
+        )
+        page_query = page_query.where(search_author_filter)
     tag_ast = TagFilterAST(
         all=[t.strip() for t in (experiments_tags or "").split(",") if t.strip()],
         any_=[t.strip() for t in (experiments_tags_any or "").split(",") if t.strip()],
@@ -1321,6 +1457,9 @@ async def get_dashboard_core(
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
+    experiments_search_author_user_ids: Sequence[str] | None = None,
+    experiments_search_author_github_usernames: Sequence[str] | None = None,
+    experiments_search_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -1346,6 +1485,9 @@ async def get_dashboard_core(
         f"{experiments_status}:{experiments_author_user_id}:"
         f"{','.join(experiments_author_github_usernames or ())}:"
         f"{','.join(experiments_author_emails or ())}:"
+        f"{','.join(experiments_search_author_user_ids or ())}:"
+        f"{','.join(experiments_search_author_github_usernames or ())}:"
+        f"{','.join(experiments_search_author_emails or ())}:"
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
     )
 
@@ -1481,6 +1623,9 @@ async def get_dashboard_core(
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_usernames=experiments_author_github_usernames,
                 experiments_author_emails=experiments_author_emails,
+                experiments_search_author_user_ids=experiments_search_author_user_ids,
+                experiments_search_author_github_usernames=experiments_search_author_github_usernames,
+                experiments_search_author_emails=experiments_search_author_emails,
                 record_timing=record_timing,
             )
         if record_timing is not None:

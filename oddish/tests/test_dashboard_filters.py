@@ -5,11 +5,17 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import asyncio
+
+from sqlalchemy.sql.elements import TextClause
+
 from oddish.core.dashboard import (
     EXPERIMENTS_UNATTRIBUTED_OWNER,
     UNRESOLVED_EXPERIMENTS_OWNER,
     _build_experiments_author_filter,
+    _build_experiments_search_author_filter,
     _experiment_row_passes_status_filter,
+    load_dashboard_experiments,
 )
 
 
@@ -239,3 +245,195 @@ def test_author_filter_never_matches_unattributed_sentinel() -> None:
         org_id="org_1",
     )
     assert "false" in _compile_sql(clause).lower()
+
+
+# ---------------------------------------------------------------------------
+# Search-author filter (the github:/author:/user: qualifier)
+# ---------------------------------------------------------------------------
+
+
+def test_search_author_filter_empty_matches_nothing() -> None:
+    clause = _build_experiments_search_author_filter((), (), org_id="org_1")
+    assert _compile_sql(clause).lower().strip() == "false"
+
+
+def test_search_author_filter_matches_handle_via_primary_task() -> None:
+    clause = _build_experiments_search_author_filter((), ("Bob",), org_id="org_1")
+    sql = _compile_sql(clause)
+    assert "EXISTS" in sql
+    assert "github_username" in sql
+    assert "lower(" in sql.lower()
+    assert "bob" in sql.lower()  # case-insensitive
+    assert "org_1" in sql
+    assert "deleted_at" in sql  # soft-deleted task links excluded
+
+
+def test_search_author_filter_unions_handle_collisions() -> None:
+    clause = _build_experiments_search_author_filter(
+        ("user_a", "user_b"), ("bob",), org_id="org_1"
+    )
+    sql = _compile_sql(clause)
+    # Both colliding users' experiments are reachable via the indexed owner seek.
+    assert "user_a" in sql and "user_b" in sql
+    assert "owner_user_id IN" in sql.upper().replace("  ", " ") or (
+        "user_a" in sql and "user_b" in sql
+    )
+
+
+def test_search_author_filter_matches_legacy_email() -> None:
+    clause = _build_experiments_search_author_filter(
+        (), (), org_id="org_1", emails=("ada@x.com",)
+    )
+    sql = _compile_sql(clause)
+    assert "ada@x.com" in sql
+    assert "EXISTS" in sql
+
+
+def test_search_author_filter_owner_only_when_fallback_disabled() -> None:
+    clause = _build_experiments_search_author_filter(
+        ("user_a",),
+        ("bob",),
+        org_id="org_1",
+        include_legacy_fallback=False,
+    )
+    sql = _compile_sql(clause)
+    assert "user_a" in sql
+    # Pure indexed owner seek -- no primary-task EXISTS fallback.
+    assert "EXISTS" not in sql
+
+
+def test_search_author_filter_handle_only_fallback_disabled_matches_nothing() -> None:
+    # A handle with no resolved user id + no NULL-owner rows in the org => empty.
+    clause = _build_experiments_search_author_filter(
+        (),
+        ("bob",),
+        org_id="org_1",
+        include_legacy_fallback=False,
+    )
+    assert _compile_sql(clause).lower().strip() == "false"
+
+
+# ---------------------------------------------------------------------------
+# Composition: the search filter ANDs with the owner (Org/Mine) + tag filters.
+# Driven through load_dashboard_experiments with a fake session that returns an
+# empty experiment page (early return) so we can compile the page query and
+# assert which predicates were ANDed onto it -- no live DB required.
+# ---------------------------------------------------------------------------
+
+
+class _FakeMappings:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _FakeResult:
+    def __init__(self, *, first=None, all_rows=None, mappings_rows=None):
+        self._first = first
+        self._all = all_rows or []
+        self._mappings_rows = mappings_rows or []
+
+    def first(self):
+        return self._first
+
+    def all(self):
+        return list(self._all)
+
+    def mappings(self):
+        return _FakeMappings(self._mappings_rows)
+
+
+class _CapturingExpSession:
+    """Returns: unowned-experiments probe = present, tag resolution rows for any
+    text() query, and an empty experiment page (-> early return). Records every
+    statement so the page query (the last one) can be compiled and asserted on.
+    """
+
+    def __init__(self, tag_rows):
+        self.statements: list[object] = []
+        self._tag_rows = tag_rows
+        self._select_count = 0
+
+    async def execute(self, statement, *args, **kwargs):
+        self.statements.append(statement)
+        if isinstance(statement, TextClause):
+            return _FakeResult(all_rows=self._tag_rows)
+        self._select_count += 1
+        if self._select_count == 1:
+            return _FakeResult(first=(1,))  # unowned-experiments probe -> True
+        return _FakeResult(mappings_rows=[])  # experiment page -> early return
+
+
+def test_search_author_ands_with_mine_as_intersection() -> None:
+    session = _CapturingExpSession(tag_rows=[])
+    asyncio.run(
+        load_dashboard_experiments(
+            session,
+            org_id="org_1",
+            experiments_limit=10,
+            experiments_offset=0,
+            experiments_query=None,
+            experiments_status="all",
+            experiments_tags=None,
+            experiments_author_user_id="me_user",  # Mine
+            experiments_search_author_user_ids=("bob_user",),
+            experiments_search_author_github_usernames=("bob",),
+        )
+    )
+    page_sql = _compile_sql(session.statements[-1]).lower()
+    # Both author predicates are ANDed onto the one page query, so Mine AND the
+    # searched author is an intersection (empty unless you ARE bob) -- intended.
+    assert "me_user" in page_sql  # Mine owner control
+    assert "bob_user" in page_sql  # searched author (owner seek)
+    assert "bob" in page_sql  # searched author (handle fallback)
+
+
+def test_search_author_ands_with_tag() -> None:
+    from sqlalchemy.dialects import postgresql
+
+    session = _CapturingExpSession(tag_rows=[("tag_xyz", "mytag", "tag_xyz")])
+    asyncio.run(
+        load_dashboard_experiments(
+            session,
+            org_id="org_1",
+            experiments_limit=10,
+            experiments_offset=0,
+            experiments_query=None,
+            experiments_status="all",
+            experiments_tags="tag_xyz",
+            experiments_author_user_id=None,  # Org, so author predicate is search-only
+            experiments_search_author_github_usernames=("bob",),
+        )
+    )
+    # The tag clause binds a Python list, which literal_binds can't render, so
+    # compile with bound params and inspect the values instead. (The JSON key
+    # 'github_username' is itself a bind param, hence checked in `bound`.)
+    compiled = session.statements[-1].compile(dialect=postgresql.dialect())
+    sql = str(compiled).lower()
+    bound = " ".join(str(v) for v in compiled.params.values()).lower()
+    assert "github_username" in bound  # searched-author predicate present
+    assert "bob" in bound  # ... bound to the handle
+    assert "tag_assignments" in sql  # tag: filter present on the same query
+    assert "tag_xyz" in bound  # ... bound to the resolved tag id
+
+
+def test_search_author_works_with_org_selected() -> None:
+    session = _CapturingExpSession(tag_rows=[])
+    asyncio.run(
+        load_dashboard_experiments(
+            session,
+            org_id="org_1",
+            experiments_limit=10,
+            experiments_offset=0,
+            experiments_query=None,
+            experiments_status="all",
+            experiments_tags=None,
+            experiments_author_user_id=None,  # Org (no owner predicate)
+            experiments_search_author_github_usernames=("bob",),
+        )
+    )
+    page_sql = _compile_sql(session.statements[-1]).lower()
+    assert "bob" in page_sql  # github:bob is the only author predicate
+    assert "exists" in page_sql  # via the primary-task fallback
