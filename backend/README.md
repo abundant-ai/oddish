@@ -50,8 +50,9 @@ Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
 1. `poll_queue()` runs on a 180s Modal schedule. It calls
    `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
-   stage safety nets, orphaned-slot release), discovers active queue keys
-   via `discover_active_worker_job_queue_keys`, and launches up to
+   stage safety nets, orphaned-slot release), runs the experiments owner
+   backfill (dashboard Mine fast path), discovers active queue keys via
+   `discover_active_worker_job_queue_keys`, and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers.
 2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
    queue key and calls `run_single_worker_job`, which atomically claims one
@@ -174,7 +175,8 @@ Common optional settings:
 - `CORS_ALLOWED_ORIGINS`
 - `CLERK_ISSUER`
 - `CLERK_JWT_AUDIENCE`
-- provider keys such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
+- provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
+- `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
 
 ### Observability (Pydantic Logfire)

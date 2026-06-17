@@ -62,11 +62,11 @@ oddish --help
 
 Available commands:
 
-- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials (also re-runs trials/analysis/verdict via `--retry`)
+- `oddish run` uploads a local task or dataset, downloads a registry dataset, or expands a sweep config into trials (also re-runs trials, or the task-level QA job, via `--retry`)
 - `oddish upload` registers task bundles (no trials) or uploads off-oddish Harbor trial results (logs, rewards, tokens) onto an existing task
 - `oddish ls` lists uploaded tasks with version, trial, reward, and experiment summaries
 - `oddish status` shows system, task, or experiment status
-- `oddish cancel` stops all in-flight runs for a task
+- `oddish cancel` stops in-flight task runs, or just the task-level QA job
 - `oddish pull` downloads logs, results, trajectories, and artifact files for a trial, task, or experiment
 - `oddish combine` merges several experiments into a new result experiment
 - `oddish delete` deletes a task or experiment from a self-hosted deployment
@@ -126,7 +126,7 @@ Common flags:
 - `--background` submits and returns immediately
 - `--json` emits machine-readable output and implies `--background`
 - `-q, --quiet` suppresses nonessential output
-- `--run-analysis` runs post-trial analysis and task verdict generation
+- `--run-analysis` runs the task-level QA job (classifies every trial's trajectory and synthesizes the task verdict)
 - `--publish` publishes the experiment for public read-only access
 - `--disable-verification` skips task verification
 - `--override-cpus`, `--override-memory-mb`, `--override-gpus`, `--override-storage-mb`, `--force-build`, and `--environment-kwarg KEY=VALUE` override environment settings
@@ -164,9 +164,8 @@ oddish run task_123 --retry -y
 # Retry all failed trials across an experiment
 oddish run my-experiment --retry -y
 
-# Re-run analysis or the task verdict instead of trials
-oddish run task_123 --retry --analysis
-oddish run task_123 --retry --verdict
+# Re-run the task-level QA job (classify every trial + synthesize the verdict)
+oddish run task_123 --retry --qa
 
 # Script-friendly summary of what was queued
 oddish run my-experiment --retry -y --json
@@ -174,9 +173,10 @@ oddish run my-experiment --retry -y --json
 
 - default (`--retry` alone) re-queues failed trials; for task / experiment
   targets only trials currently in a `failed` state are retried
-- `--analysis` re-runs trial analysis (per-trial for a trial target, otherwise
-  task-wide); `--verdict` re-runs the task verdict
-- `--analysis` and `--verdict` are mutually exclusive and require `--retry`
+- `--qa` re-runs the single task-level QA job: it re-classifies every live
+  trial and synthesizes a fresh task verdict (a trial id resolves to its
+  parent task; experiment targets run QA for each task)
+- `--qa` requires `--retry`
 - `-y, --yes` skips the confirmation prompt; `--json` implies non-interactive
 
 ### Sweep Configs
@@ -343,14 +343,16 @@ oddish status <task_id> --json
 
 ### `oddish cancel`
 
-Cancel all in-flight runs for a task without deleting any data. Queued jobs are
-removed, running trials are cancelled, and active Modal workers are terminated
-when applicable. Completed trials and their results are preserved.
+Cancel in-flight work without deleting any data. By default this cancels all
+active runs for a task. Use `--qa` to cancel only the task-level QA job.
+Completed trials and their results are preserved.
 
 ```bash
 oddish cancel <task_id>
 oddish cancel <task_id> --force   # skip confirmation
 oddish cancel <task_id> --json    # machine-readable result (implies --force)
+oddish cancel <task_id> --qa
+oddish cancel <trial_id> --qa     # a trial id resolves to its parent task
 ```
 
 ### `oddish pull`

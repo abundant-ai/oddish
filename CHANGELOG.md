@@ -6,6 +6,261 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-17]
+
+### Added
+- Global chat scope (`global`) with an `oddish-query` read-only CLI injected into the sandbox; the agent can search, inspect, and drill into trial logs across all org tasks; a short-lived internal API key is minted per-session (45-min TTL) for credential isolation; global-scope Chat button added to the tasks page (#332)
+
+### Changed
+- Chat sandbox provisioning now supports an optional pre-baked Daytona snapshot (`ODDISH_CC_CHAT_DAYTONA_SNAPSHOT`): `ClaudeCodeRuntime.install()` skips tools already present and installs any missing tools concurrently instead of sequentially, reducing provisioning from ~1 min to a few seconds when a snapshot is configured (#340)
+- API container concurrency reduced from 8 → 3 and max containers raised 24 → 64 (peak throughput unchanged at 192); experiment-scoped `GET /tasks` now loads only the requested experiment's non-probe trials in SQL instead of fetching every trial for each task and filtering in Python; `GET /tasks` limit parameter capped at 2000 (#337)
+
+### Fixed
+- Chat session creation (`POST /chat-sessions`) returned 500 in prod because the Daytona region only permits ephemeral sandboxes; `create_sandbox` now passes `ephemeral=True` (#333, #339)
+- Chat messages returned `session_not_found` when the API routed the request to a different autoscaled container than the one that provisioned the session; sandbox handles are now reconnected from the DB-persisted `sandbox_id` so any container can serve any session (#334, #339)
+- First chat message showed nothing for ~10 seconds during sandbox provisioning and the composer stayed live, allowing a second send to race in; user bubble is now echoed and composer locked before `ensureSession()` runs (#335)
+- Per-task Chat button showed "no trial data available yet" because it used the stub `task_probes` scope; button now uses the `task` scope with the full trial tree staged per version; probe trials are marked `(probe)` in the agent's `CLAUDE.md` with a "Regular runs vs probe runs" explanation (#336)
+- `GET /chat-sessions` (chat history list) took 19–43 s under prod DB load; a composite index on `(org_id, scope_kind, scope_id, last_activity desc)` now serves the filter and sort directly, and turn counts are batched into one grouped query instead of a correlated subquery per row (#338)
+- Claude Code ran headless (`--print`) without a permission flag, so every tool call (Bash, Read, etc.) blocked on an approval gate nothing could answer; `--permission-mode bypassPermissions` is now passed on both the chat (`stream_chat`) and probe (`run_once`) launch paths (#341)
+- After ~30 min idle, Daytona auto-stops and deletes the ephemeral sandbox; the next message raised `session_not_found`; `send()` now transparently self-heals by calling `resume()` to re-provision the sandbox and restore from the per-turn archive (#342)
+- Container startup sweep (`sweep_orphan_chat_sessions`) ran on every API container start and marked all active chats broken — since the API autoscales across many containers with no session affinity, any new container (autoscale-up or deploy rollout) was killing every live chat globally; startup sweep removed from lifespan; recovery is now lazy (reconnect by `sandbox_id`, self-heal via `resume()`, Daytona idle auto-stop as backstop) (#343)
+
+---
+
+## [2026-06-16]
+
+### Added
+- Claude Code chat sessions (Phase 1): durable `chat_session_events` append-only log and `chat_turns` table (one-running-turn-per-session enforced by a partial unique index) with a full orchestration engine — Daytona sandbox provisioner, Claude Code runtime, idle reaper, and restart sweep that marks orphaned running turns `failed` while preserving the event log; API routes `POST /chat-sessions`, `GET /chat-sessions/{id}`, SSE `POST /chat-sessions/{id}/messages`, events-replay `GET /chat-sessions/{id}/events?since=<seq>`, and `DELETE /chat-sessions/{id}`; sessions survive page refresh and backend container restarts (#306)
+- Chat `task` scope (Phase 2a): chat sessions scoped to a task download trial log files from S3 and upload them into the Daytona sandbox as `jobs/v{version}/{trial_id}/…` (byte-capped at 50 MB); a version-aware `CLAUDE.md` highlights the current version as the default focus and de-emphasizes past versions (#307)
+- Task detail page now shows a "Probe runs" card for the selected version: the latest probe run's agent/preset name, run status, cheat/blocked/neutral result, and prioritized action items from the analyzer; auto-polls while the probe is in-flight and links to the full probe result page (#310)
+- Admin `GET /queue-health` endpoint and dashboard overview card exposing throughput, per-queue-key capacity fill, and persisted dispatcher/reconciler heartbeats so operators can self-diagnose "queued but not running" without querying psql or Modal logs; backed by a new `queue_runtime_status` table written at the end of each dispatcher/reconciler cycle (#312)
+
+### Changed
+- Probe submit page now shows a prominent "Submit a probe run" button that expands to reveal the agent picker and form on click (previously the form rendered inline on agent selection); probe history list sorted newest-first; task ID on the probe run detail page rendered as a clickable link to the experiment page (#313)
+- Modal function CPU/memory resource floors now configurable via env vars (`ODDISH_MODAL_API_CPU`/`MEMORY_MB`, `ODDISH_MODAL_WORKER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_DISPATCHER_CPU`/`MEMORY_MB`, `ODDISH_MODAL_RECONCILER_CPU`/`MEMORY_MB`); API defaults to 2 CPU / 4 GiB (was unconstrained fractional-core), reducing latency spikes under concurrent load; `WORKER_MAX_CONTAINERS` raised 320 → 448 (#312)
+- Probe submit form converted to shadcn `Button`, `Input`, and `Select` components; unused frontend exports flagged by knip removed; pre-commit hooks (ruff, black, mypy, prettier) pass cleanly across the full repo; dead code removed: `TrialClassifier.classify_trials` batch method and `AUTO_PROBE_INSTRUCTIONS` constant (#311)
+
+### Fixed
+- Worker dispatcher no longer starved by a slow or deadlocking reconciliation sweep: `reconcile_queue_state` now runs as its own dedicated Modal scheduled function (240s interval, 600s timeout) instead of inline inside `poll_queue`; a SIGKILL mid-sweep previously left orphaned `idle in transaction` locks that deadlocked the next sweep cycle and spawned zero workers; `poll_queue` now only discovers queue keys and spawns workers, with `MAX_WORKERS_PER_POLL` raised 64 → 128 (#309)
+
+---
+
+## [2026-06-15]
+
+### Added
+- Copy button in the task file viewer header copies the raw file content to clipboard with a 2-second check-icon confirmation; resets on file switch and cleans up its timeout on unmount (#299)
+- Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
+
+### Changed
+- Trajectory analysis is now a single task-level `QA` worker job instead of one classification job per trial plus a separate verdict job: when every trial of a `run_analysis` task finishes, one `QA` job classifies all live trials (unchanged taxonomy/evidence/reasoning, still written to `trials.analysis`) and then synthesizes the task verdict (`tasks.verdict`), so a sweep of `T` tasks × `N` trials enqueues `T` jobs instead of `T × (N + 1)`. The whole surface uses one "QA" concept: worker-job kind `QA` (migration `qa01`/`qa02` adds it and repoints old `VERDICT` rows; `ANALYSIS`/`VERDICT` remain only as legacy enum values for historical/in-flight rows), one `run_task_qa_job` handler, one set of endpoints (`POST /tasks/{id}/qa/retry`, `POST /tasks/{id}/qa/cancel`), one CLI surface (`oddish run --retry --qa`, `oddish cancel --qa`), and one dashboard control (Run QA / Cancel QA). The per-trial analysis and separate verdict retry/cancel endpoints, CLI flags (`--analysis`/`--verdict`), and UI buttons were removed (#315) (#315)
+- Probe agent container now receives the full staged task directory via a Harbor `AGENT_START` hook, with all probe-only material (`tests/`, `solution/`, `harbor_src/`, `related_trials/`, `AGENT_BRIEF.md`) staged under `/probe-harness/` instead of `/app`, keeping the real agent's workspace pristine; probe instruction reframes the task spec as a "REAL AGENT BRIEF" with an auto-generated visibility map, eliminating false-positive vulnerability reports for files the real agent cannot access (#300, #301)
+- Probe analyzer prompt gains a SCOPE section instructing it not to emit recommendations premised on probe-only paths (under `/probe-harness/`) being agent-reachable, and to preserve the probe agent's own hedges rather than upgrading them to `must_fix` (#301)
+- Harbor bumped to `07a576944` picking up MiniMax M3 and Kimi K2.7 long-run hardening: streaming/timeout env vars (`API_TIMEOUT_MS=3.6M`, idle stream timeout, eager flush, max output tokens), Claude Code pinned to `2.1.167` (fixes MiniMax exit-137 mid-stream stalls), and plan-mode tools (`EnterPlanMode`, `ExitPlanMode`, `AskUserQuestion`) disabled for Kimi variants (fixes K2.7 plan-mode no-op bail) (#303)
+- QA Probe Runs listing (`/qa/runs`) now aggregates in SQL using window functions — one row per task — rather than fetching all probe trial rows and folding them in Python; backed by a new partial index on `(org_id, task_id, created_at DESC) WHERE is_probe`, making load time scale with tasks-per-org rather than total probe trial count (#286)
+
+---
+
+## [2026-06-14]
+
+### Added
+- Advanced free-text grammar for the task browser search box: space-separated terms AND together in any order, `"quoted text"` matches as a contiguous phrase, a leading `-` (or uppercase `NOT`) excludes a term, and uppercase `OR` makes either side of a group match; a `?` icon inside the input opens a syntax cheatsheet tooltip; `parse_search_query` lives in `oddish/core/helpers.py` so the dashboard, standalone server, and cloud API all share one grammar; LIKE metacharacters remain escaped as literals (preserving #285 semantics); needles capped at 16 (#295)
+- "Delete tag for everyone…" action in the tag chip editor: an inline confirm panel shows the tag's current name (refreshed after 409 races) and its direct-assignment count before the destructive click; sends `cascade=true` to flip ACTIVE assignments; `onDeleted` drops the chip locally without a redundant unassign call; `DELETE` passthrough added to the `/api/tags/[tag_id]` Next.js proxy route (#293)
+
+### Changed
+- Bake per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` defaults into the Modal deploy that raise the `global.anthropic.claude-haiku-4-5-20251001-v1:0` (also the analysis-model queue key) and `openai/gpt-5.4-mini` queue-key concurrency leases to 128 (up from the 48 default); trajectory analysis gets more headroom; operators can still override the whole JSON via the env var / `oddish-prod` secret (#297)
+
+### Fixed
+- `DELETE /tags/{id}` backend route now accepts a `?cascade=` query parameter so callers can consent to flipping ACTIVE assignments to REMOVED; previously the flag was unreachable from HTTP and tag deletion always failed for any still-assigned tag (#293)
+
+---
+
+## [2026-06-13]
+
+### Added
+- Task page now lists all affiliated experiments as linked chips (dot-separated) instead of just the primary one; public share view only exposes public experiment names to prevent private experiment name leakage, and `GET /public/tasks/{id}?include_trials=false` no longer 500s for tasks in multiple public experiments (#288)
+- Tag chips on dashboard experiment rows and `tag:` / `-tag:` / `OR` / `NOT` filter syntax in the experiments search box, matching the existing `/tasks` grammar; tag chips hydrated in a single batch query per page with graceful degradation on failure (#291)
+- Admin "Tag Policy" tab now fully functional: numeric limits, who-can-create and profanity-mode toggles, comma-list editors for reserved prefixes and allow/deny lists, and a 403 → "Admins only" error state (#291)
+- Probe summary now includes a prioritized "Action items" block with `must_fix` / `should_fix` / `optional` recommendations, color-coded and sorted by severity; an empty probe returns a "No fixes needed — task held up to probing" confirmation; legacy probe rows without the field render nothing (#284)
+- Probe trials now upload the staged task directory (including `related_trials/`, `harbor_src/`, `tests/`, `solution/`) into the agent container at start time via a Harbor `AGENT_START` hook, so the agent can actually access the reward-hack surface the probe instruction references (#282)
+- Skill create/edit form gains an "Upload folder" button that reads a `SKILL.md` plus supporting files and auto-fills the form; strips dotfiles and binary files; shows a "skipped N files" notice for anything dropped (#281)
+- Saved-filter bookmark menu beside the tasks search bar: lists org-shared and private saved filters, applies one as `tag:` search text, and saves the current query under a name with Private/Org visibility; filters persist stable tag IDs so they survive renames and merges; deletes are optimistic with SWR rollback on failure (#280)
+
+### Changed
+- Dashboard "Avg score" column and experiment page KPI tile now use a task-weighted average (mean over tasks of per-task mean reward) with nop/oracle baselines excluded everywhere; backend computes and returns this as a new `avg_score` field; a loading spinner is shown on the KPI tile while trial pages are still streaming in; both surfaces explain the calculation on hover (#292)
+- Tag mutations (assign, unassign, delete, archive, merge, set-visibility) now invalidate the dashboard cache, so tag chip and filter changes appear immediately without waiting for the 30-second TTL (#291)
+
+### Fixed
+- Probe runs no longer pollute the task browser: trial counts, reward stats, experiment chips, and `last_run_at` (which drives page ordering) now all exclude `is_probe` trials, consistent with probes having their own tab (#285)
+- LIKE wildcards in task browser and document search are now escaped as literals: searching `_` no longer matches every task, and `%` and `\` behave as plain characters (#285)
+- Browse page query performance improved: the org-wide trial aggregate now computes only the `max(activity)` needed for ordering; per-task counters are fetched as a separate targeted query over the visible page only, reducing latency ~40% at prod volume (#285)
+- `GET /tasks` no longer intermittently 500s with `MissingGreenlet`; `TrialModel.is_probe` added to the compact-trials `load_only` allowlist so it is loaded eagerly on the async path (#283)
+- Probe summarizer no longer reports "received no output" for skills: user-turn text blocks (the mechanism claude-code uses to deliver skill bodies) are now captured as `injected_context` so the summarizer sees the full skill content (#289)
+
+---
+
+## [2026-06-12]
+
+### Added
+- QA tab consolidating probe runs, presets, skills, and documents under a new `/qa` route group; includes a Probe Runs list (one row per task with probe activity, ordered most-recent-first), a full Presets CRUD management page, and a new org-wide `GET /probes` backend endpoint; old `/skills` and `/documents` routes redirect transparently to their new `/qa/*` homes (#266)
+- Probe run summary accessible from the experiment task-file drawer sidebar: a "Latest probe run" entry below the file tree opens a compact card with status, agent/model, headline, metric chips, and cheating verdict; links to the full probe detail page; hidden on public share view; auto-polls while the probe is still running (#265)
+
+### Changed
+- Auto-probe is now opt-in and off by default; `maybe_enqueue_auto_probe` previously fired unconditionally on every sweep; now gated on a new `run_probe: bool` field on `TaskSubmission`, `TaskSweepSubmission`, and `TaskStatusResponse`, a `run_probe` DB column with migration `run_probe_001`, and a `--run-probe` CLI flag on `oddish run`; append-mode submissions flip the flag on first opt-in, mirroring the existing `run_analysis` pattern (#271)
+- Org switcher moved from Settings > Workspace into the top nav bar so the active workspace is always visible and switchable; settings page retains a read-only current-workspace card with updated copy; SWR cache is flushed on org change to prevent stale data from the previous workspace leaking through (#274)
+- Nav "QA" label renamed to "Agents" (route, active-state checks, and `QA Verdict`/`QA Review` strings elsewhere are unchanged) (#270)
+- Probe run detail page and experiment task-drawer probe card now share a single `ProbeRunSummary` component, bringing the drawer card to full parity with the detail page; the card previously omitted `key_actions` and `tool_insights` sections (#269)
+- Preview environments now seeded with a pseudo-random, deterministic subset of real production data (rows drawn by `md5(id || PR_NUMBER)`) instead of curated fixtures; reviewers authenticate with their real org credentials in preview; in-flight tasks/trials are normalized to `FAILED` on import to prevent the preview's safety nets from enqueuing real analysis/verdict jobs; convergence tracked via a private `_preview_seed_state` table; per-row savepoints prevent a single constraint collision from aborting the run (#264)
+
+### Fixed
+- Probe trials no longer appear in the experiment trial matrix; filtered server-side in the `experiment_id` branch of `list_tasks` before version resolution, preventing probe runs from cluttering the main task grid and preventing a probe-only version from skewing the effective version display; public `/public/tasks/{task_id}/trials` endpoint gains an optional `?probe=` filter param (`true`/`false`/omit) (#276)
+- `?task=` deep links on the experiment page now fall back to matching by task name when no exact task ID is found, fixing hand-written links such as `?task=ghsa-rpfr-x88x-xwcw` that previously opened nothing (#275)
+- Task version badges (`v{n}`) in the public experiment table are now hidden for unauthenticated viewers; `oddish run` reproduction command in the trial drawer hidden on public share pages; timing row in the trial drawer now shows the viewer's local timezone abbreviation (e.g. `PDT`) (#277)
+- GLM/z.ai provider icon corrected from the ChatGLM mammoth glyph to the ZAI "Z" logo (#277)
+- Footer "by Abundant AI" link updated from `abundantdata.com` to `abundant.ai` (#277)
+
+---
+
+## [2026-06-11]
+
+### Added
+- Auto-enqueue one probe trial per task version on sweep submit using round-robin model rotation; new `GET /experiments/{experiment_id}/probes` endpoint lists the latest probe trial per task; experiment page fetches and displays the default probe preset (#248)
+- Dashboard experiment owner filter (Org / Mine / admin member picker) via `experiments_author` parameter on `/dashboard`; defaults the Recent Experiments table to the signed-in user's experiments; legacy rows matched via GitHub username and email for accurate attribution (#214)
+- Self-healing experiments owner backfill runs on every queue-poll tick, converging `owner_user_id` so the dashboard Mine filter stays on its indexed fast path; adaptive filter uses a pure indexed `owner_user_id` seek once all experiments in the org are attributed, with an `__unattributed__` sentinel for unowned rows (#255)
+- `ShareNav` component for public experiment share pages with Oddish logo, "by Abundant AI" branding, and theme toggle; replaces the full app `Nav` on share pages (#260)
+- Cursor provider icon support: `cursor` and `cursor-cli` agents and the `composer-*` model family now resolve to the Cursor icon in the queue key icon display (#260)
+- Claude Fable 5 mapped to Bedrock global cross-region inference profile (`global.anthropic.claude-fable-5`); note this is a Covered Model requiring AWS account data retention mode set to `provider_data_share` (#254)
+
+### Changed
+- Pass@k graph and leaderboard default to visible on public experiment share pages; authenticated views are unchanged (#256)
+- Tasks/Probe tab toggle hidden on public share view — probing requires an authenticated session (#260)
+- OpenRouter models (Gemini 2.5 Flash, DeepSeek Chat) removed from probe model rotation; only `claude-haiku-4-5` remains (#253)
+
+### Fixed
+- Pass@k calculation now uses per-agent per-task attempt count instead of the global maximum, fixing incorrect curves when agents in the same experiment have different trial counts (e.g. oracle with 1 trial shown as `33%/67%/100%` instead of its observed flat rate) (#258)
+- Dashboard Mine filter no longer degenerates into a near-full-table scan; an adaptive indexed owner seek is used once `owner_user_id` is backfilled; attribution profiles are served from cache instantly with background refresh; frontend keeps existing rows visible during polling revalidation instead of blanking to "Loading…" (#255)
+- GitHub PR branch link (experiment PR chip) hidden on public share view to avoid exposing internal repository context to anonymous viewers (#261)
+- `skills_001` and `documents_001` Alembic migrations made idempotent for data-less preview branches, fixing "relation already exists" errors that caused PR preview deploys to fail at `alembic upgrade head` (#251)
+
+---
+
+## [2026-06-10]
+
+### Added
+- Skills library and agent doc store: org-scoped skills with CRUD, a frontend Skills page, probe sandbox injection (`.claude/skills/` via overlay), and Harbor `AgentConfig.skills` delivery; a document library with text/markdown/PDF/CSV ingestion, LLM digest generation (summary + tags), and keyword+tag search; `oddish-docstore` MCP server exposes `search`, `get`, and `inspect` tools; Skills and Documents added to the app nav (#217)
+- `is_probe` boolean column on `trials` with migration and backfill from `harbor_config->>'mode'`; `?probe=true/false` filter on `GET /tasks/{id}/trials`; probe history table now filters server-side (`?probe=true`) instead of client-side; inline probe summary generated in the cloud trial handler after each probe trial completes (#231)
+- Probe skill and MCP tool usage captured as structured signal in probe artifacts: `_classify_tool_use` tags every transcript `tool_use` entry as `skill`, `mcp`, or `builtin`; `_summarize_tool_usage` produces a deterministic `tool_usage` roll-up (skill slugs and MCP server/tool pairs, ordered by first appearance) surfaced under `extract_probe_artifacts` (#244)
+- Probe summary "Tools & skills used" section: when an agent invoked skills or MCP servers, `run_probe_analyzer` appends per-tool `tool_insights` entries (name, kind, one-sentence note grounded in the transcript); rendered as a labeled list with `Skill`/`MCP` chips on the probe result page (#245)
+
+### Changed
+- PR preview databases switched from prod-clone (`--with-data`) to data-less Supabase branches populated by a deterministic seed (`backend/preview_seed.py`): reflection-driven, idempotent and convergent (upsert + full-PK reconcile), spanning both Alembic stacks without ORM imports; `seed-gate` CI job validates schema/seed drift on every PR; preview branch readiness deadline cut from 20 min to 5 min (#243)
+- Harbor dependency bumped to 0.13.1 (from 0.8.0), adding the `glm-claude-code` agent (z.ai base URL, `ZAI_API_KEY` auth, recommended streaming env, Claude Code version pin 2.1.167), closed-internet IPv4 fixes for `api.z.ai`, and harbor-framework v0.13.1 (#247)
+- `Settings` now auto-loads `.env.local` layered over `.env` for local backend development; later file wins on duplicate keys, exported env vars still outrank both (#230)
+
+### Fixed
+- Probe result page now shows agent transcript and verifier output for cloud trials; cloud runs do not inline `_artifacts` into `trial.result`, so a new `GET /trials/{id}/probe-artifacts` endpoint and BFF proxy download artifacts on demand from object storage and cache them for finished trials (#227)
+- Cloud probe summary no longer fails with auth errors (`PermissionDeniedError` / `TypeError`); the probe analyzer now always runs on the direct Anthropic API (`ANTHROPIC_API_KEY`) instead of Bedrock; Bedrock inference-profile model IDs are normalized to their plain API form via new `to_anthropic_api_model_id()` helper (#236)
+- Cloud probe summary `NameError` fixed: `extract_probe_artifacts` and `run_probe_analyzer` imports were missing from `trial_handler.py`, causing every cloud probe run's inline summary to fail with `NameError: name 'extract_probe_artifacts' is not defined` (#232)
+- Experiment page no longer returns 500 `MissingGreenlet` errors for tasks with trials; `TrialModel.harbor_config` and `TrialModel.is_probe` added to the compact-trials `load_only` allowlist so deferred JSONB columns are not lazy-loaded outside the async greenlet (#228, #235)
+- Preview branches stuck in `RESTORE_FAILED`, `INIT_FAILED`, or `PAUSE_FAILED` states are now detected immediately and torn down for recreation instead of polling until the 20-minute deadline; deadline timeouts also trigger delete-and-recreate; retry budget raised to 3; seed reclaims `clerk_org_id` from pre-existing rows on reused branches to avoid duplicate-key errors (#224)
+
+---
+
+## [2026-06-09]
+
+### Added
+- GLM / z.ai routing for the `claude-code` harness: GLM models (`zai/glm-x-preview[1m]`, bare `glm-...`, or `z-ai/`/`z.ai/` prefixes) canonicalize to a `zai/<id>` id so they get their own `zai` provider and `zai/<id>` queue bucket instead of inheriting claude-code's fixed Bedrock provider/queue (keeping GLM trials from contending with Bedrock traffic for concurrency slots); `harbor_runner` injects the z.ai Anthropic-skin env (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`, model + size aliases, z.ai's recommended long-context settings) and blanks the ambient Bedrock/Anthropic credentials so the z.ai route wins
+- `oddish probe` CLI command with full cloud probe agent support: probe presets stored in Postgres with CRUD backend endpoints and UI on task pages; probe trials bypass strict `task.toml` timeout validation and use a capped 30-minute agent timeout; local and cloud runners share the same probe implementation (#218)
+
+### Changed
+- Experiment trials table on the experiment page now defaults to A→Z task name sort instead of insertion order; the sort header toggle still cycles through all options (#220)
+
+### Fixed
+- Probe UI no longer shows "Failed to fetch" CORS errors; browser fetches for probe presets and sweep submissions moved from direct cross-origin backend calls to the same-origin Next.js BFF proxy (`/api/probe-presets`, `/api/tasks/sweep`), removing CORS as a failure point; reverts the hardcoded prod-origin CORS allowlist from #221 since it is no longer needed (#222)
+- Probe trials on tasks whose `task.toml` omits agent timeout settings no longer hard-fail validation; a shared `PROBE_AGENT_TIMEOUT_SEC` constant (default 30 min, overridable via `ODDISH_PROBE_AGENT_TIMEOUT_SEC`) is applied by both local and cloud runners (#225)
+- PR lineage badges now render consistently across dashboard, experiment page, task detail header, and task browser cards; fixed blank badge on the experiment page caused by `TaskModel.link` missing from the `compact_trials` `load_only` set; fixed missing badge on task cards when the PR URL lived only in `github_meta.pr_url`; added shared `taskPrUrl(link, github_meta)` resolver in `lib/utils.ts`; dashboard PR column now falls back to the `link` column when `github_meta` is absent (#197, #223)
+- Fresh-database `alembic upgrade head` no longer fails with duplicate column or foreign-key errors; three incremental migrations (`add_column last_activity_at`, `fk_tasks_current_version_id`, `fk_trials_experiment_id`) are now idempotent; a merge migration joins the two divergent heads into a single chain (#215)
+- Resolved Alembic double-head in the oddish migration chain caused by `probe_presets_001` and `dispatch_log` branching from the same migration tip; `probe_presets_001` re-parented onto `c1d2e3f4a5b6` to restore linear history (#219)
+
+### Removed
+- Repository dispatch emitter (`github/dispatch.py`) and `experiment_dispatch_log` table dropped; the `repository_dispatch` event path requires `Contents:write` permission that the production token lacks (#211)
+
+---
+
+## [2026-06-08]
+
+### Added
+- Fire a `repository_dispatch` webhook to consumer repos when all tasks in an experiment reach a terminal state; an `experiment_dispatch_log` table provides idempotent single-fire semantics; dispatch target and event type are read from `github_meta.dispatch` on task tags; gated by `GITHUB_DISPATCH_ALLOWED_REPOS` allowlist and authenticated via `GITHUB_DISPATCH_TOKEN` (falls back to `GITHUB_TOKEN`) (#206)
+
+### Changed
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `google/gemini-3.5-flash` queue-key concurrency lease to 128 (up from the 48 default); operators can still override the whole JSON via the env var / `oddish-prod` secret (#213)
+- Raise `ODDISH_DEFAULT_MODEL_CONCURRENCY` fallback from 32 to 48, increasing per-model queue-key concurrency in the Modal runtime without changing the per-poll spawn cap (#208)
+- Experiment trials table tooltip for truncated task names now shows the full task name instead of the generic "View task files" label, with responsive max-width and word-break styling for long names (#207)
+
+---
+
+## [2026-06-07]
+
+### Changed
+- Automated daily changelog updated with entries for 2026-06-06 changes (#202)
+
+---
+
+## [2026-06-06]
+
+### Added
+- Trial detail panel now shows a "Sandbox" button linking to the Daytona dashboard when a trial has an associated Daytona worker job; `provider` and `external_id` fields exposed in the worker job API response to enable this (#190)
+
+### Fixed
+- Codex workers running against Azure OpenAI endpoints no longer fail with 302 errors from the websocket Responses route; a new `AzureCompatibleCodex` runner disables the `unified_exec` websocket transport and injects an HTTP-only OpenAI-compatible provider config; trajectory is recovered from stdout JSONL as a fallback when the Codex session file is sparse (#193)
+- `enqueue_analysis_worker_job` now skips enqueueing analysis for trials with no stored result (neither S3 key nor local path), immediately marking analysis `FAILED` instead of burning all 6 retries on a doomed job; a staleness-gated cleanup backstop finalizes `ANALYZING` tasks with no live trials and cancels their dangling queued `ANALYSIS` worker jobs (#196)
+- Stuck-`ANALYZING` cleanup pass rescoped to correctly target tasks whose live trials have `analysis_status = NULL` (analysis was never enqueued) rather than tasks with no live trials at all; NULL analysis statuses are now marked terminal so `maybe_start_verdict_stage` can advance the task to `VERDICT_PENDING` instead of leaving it indefinitely blocked; tasks with no live trials are still finalized `FAILED` (#200)
+- Worker containers now drain short-job queues by claiming and running multiple jobs back-to-back on their held slot until the queue empties or a wall-clock budget (`ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS`, default 300s) expires; lifts utilization for analysis (~54s), verdict (~9s), and nop-oracle (~46s) queues toward 100% without changing global spawn rates or concurrency limits; long agent trials exceed the budget on the first job and continue to run one-per-container (#201)
+
+---
+
+## [2026-06-05]
+
+### Added
+- `oddish cancel` gains `--analysis` and `--verdict` flags to cancel active analysis or verdict jobs independently without stopping unrelated trials; new API endpoints `POST /tasks/{task_id}/analysis/cancel`, `POST /tasks/{task_id}/verdict/cancel`, and `POST /trials/{trial_id}/analysis/cancel`; dashboard adds per-trial, bulk-selection, and task-detail cancellation controls for both stages (#189)
+- `oddish run --link <url>` attaches a source URL (PR, issue, or CI run) to a task at submission time; auto-derived from `--github-meta` `pr_url` when `--link` is omitted; displayed in the task detail page header; re-runs update the link when a new value is provided and leave it unchanged when none is given (#178)
+
+### Fixed
+- Daytona sandbox creation no longer fails with "Only ephemeral sandboxes are permitted in this region"; a new `daytona_ephemeral` setting (default `True`) causes harbor trials to request ephemeral sandboxes, matching the Daytona region's configuration; harbor pin bumped to include matching ephemeral sandbox support (#188)
+- GitHub PR comment now auto-updates as trials, analyses, and verdicts complete; the previous implementation nested two DB sessions inside `notify_trial_update`, `notify_analysis_update`, and `notify_verdict_update`, deadlocking the worker's size-1 connection pool before the GitHub write was reached (#187)
+- `alembic upgrade head` no longer fails with "Multiple head revisions are present"; a merge migration (`74a0eab3e564`) joins the divergent `provider/external_id` and `task_link` heads into a single unified head (#186)
+
+---
+
+## [2026-06-04]
+
+### Fixed
+- `oddish run` no longer crashes when a task's `task.toml` omits the `gpus` field; `_task_config_requests_gpu` now treats an absent `gpus` as 0 GPUs instead of raising `TypeError: '>' not supported between 'NoneType' and 'int'` (#181)
+- Claude Code workers using an OpenRouter model now receive the correct Anthropic-skin environment (`ANTHROPIC_BASE_URL` pointing to the OpenRouter endpoint, `ANTHROPIC_AUTH_TOKEN` set to `${OPENROUTER_API_KEY}`); conflicting Bedrock and direct-Anthropic ambient credentials are blanked so the OpenRouter route takes effect (#175)
+
+---
+
+## [2026-06-03]
+
+### Added
+- OpenAI-family workers now route through Azure OpenAI by default; `ODDISH_OPENAI_PROVIDER` (default `azure`) selects the transport, with `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, and `ODDISH_AZURE_OPENAI_DEPLOYMENTS` for per-model deployment mapping; set `ODDISH_OPENAI_PROVIDER=openai` to use the public OpenAI API instead
+- Daytona sandboxes now auto-stop (30 min) and auto-delete (60 min) as a backstop for sandboxes that escape explicit teardown; `worker_jobs` gains `provider`/`external_id` columns and cancel/orphan-reap paths now terminate the underlying sandbox by ID, preventing idle sandbox accumulation
+
+### Changed
+- `to_bedrock_model_id()` now passes through any model ID with an explicit non-Anthropic provider prefix (e.g. `openrouter/anthropic/claude-opus-4.8`) unchanged so it runs through that provider rather than being rewritten to a Bedrock inference-profile ID; `claude-code` agent in harbor_runner updated to reflect the same pass-through semantics
+- Oddish GitHub PR comment now includes a "Performance: X/Y trials passed (Z%)" summary line and Status + Reward columns in the experiment trajectory table, surfacing actual agent scores alongside the existing classification status
+
+### Security
+- API key creation now requires the requesting user to be an admin of the Abundant organization; the API keys settings section is hidden in the UI for non-admins
+
+---
+
+## [2026-06-02]
+
+### Changed
+- `claude-opus-4-8` added to the Bedrock model ID mapping table, resolving to `global.anthropic.claude-opus-4-8`; `claude-opus-4-7` moved to the legacy section of the table; regression tests added for all resolution forms (bare, `anthropic/`-prefixed, dotted foundation-model id) (#169)
+
+---
+
 ## [2026-06-01]
 
 ### Changed

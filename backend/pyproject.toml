@@ -44,6 +44,9 @@ dependencies = [
     # Observability (Pydantic Logfire). Extras pull in the OpenTelemetry
     # instrumentations we wire up in ``backend/observability.py``.
     "logfire[asyncpg,fastapi,httpx,sqlalchemy,system-metrics]==4.33.0",
+
+    # Profanity filter for org-scoped tag naming policies.
+    "better-profanity>=0.7.0,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -66,6 +69,8 @@ harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 [tool.setuptools]
 py-modules = [
     "cloud_policy",
+    "dashboard_attribution",
+    "dashboard_owner_backfill",
     "deploy",
     "endpoints",
     "modal_app",
@@ -77,3 +82,13 @@ py-modules = [
 [tool.setuptools.packages.find]
 include = ["api*", "auth*", "worker*"]
 namespaces = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+# Async tests share a single event loop for the whole session so the
+# import-time SQLAlchemy engine + asyncpg pool (created on the first
+# loop they see) keep working across tests. Without this, the second
+# DB-touching test fails with `RuntimeError: Event loop is closed`.
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

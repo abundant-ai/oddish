@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import shutil
 import tarfile
 import tempfile
@@ -133,11 +134,7 @@ def get_task_paths_from_local(
     try:
         from harbor.models.job.config import DatasetConfig
     except ImportError:
-        task_paths = [
-            path
-            for path in dataset_path.iterdir()
-            if is_task_dir(path)
-        ]
+        task_paths = [path for path in dataset_path.iterdir() if is_task_dir(path)]
         if task_names:
             task_paths = [
                 path
@@ -328,8 +325,17 @@ def archive_task_dir(task_path: Path) -> Path:
     # Favor fast uploads in CI/cloud flows over maximum compression.
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
+        deref_symlinks = os.environ.get(
+            "ODDISH_ARCHIVE_DEREF_SYMLINKS", ""
+        ).strip().lower() in ("1", "true", "yes")
         for item in task_path.iterdir():
-            tar.add(item, arcname=item.name)
+            # Symlink dereference is opt-in (ODDISH_ARCHIVE_DEREF_SYMLINKS=1) so
+            # default uploads preserve symlink semantics and stay byte-identical
+            # to the pre-feature behavior. Enable it for symlinked task layouts
+            # (e.g. experiment task dirs linked into one task_path) so the
+            # tarball packages the real target dir instead of a broken symlink.
+            target = item.resolve() if deref_symlinks else item
+            tar.add(target, arcname=item.name)
 
     return tarball_path
 
@@ -678,6 +684,7 @@ def submit_sweep(
     experiment_id: str | None,
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
+    run_probe: bool = False,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
@@ -694,8 +701,22 @@ def submit_sweep(
     content_hash: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
+    extra_instructions: str | None = None,
+    result_focus: str | None = None,
+    evaluation_metric: str | None = None,
+    ratio_unit: str | None = None,
+    ratio_verb: str | None = None,
+    link: str | None = None,
 ) -> dict:
-    """Submit a task sweep to the API."""
+    """Submit a task sweep to the API.
+
+    Probe trials are ordinary sweeps with ``extra_instructions`` set: the
+    server sets ``mode: "probe"`` in harbor_config (see
+    ``queue._build_harbor_config_for_trial``) and the cloud worker applies the
+    instruction overlay. ``result_focus`` / ``evaluation_metric`` /
+    ``ratio_unit`` / ``ratio_verb`` are the same optional probe fields the UI
+    sends from a selected preset.
+    """
     env_value = environment.value if environment else None
 
     if env_value is not None:
@@ -742,6 +763,7 @@ def submit_sweep(
         "configs": configs,
         "priority": priority,
         "run_analysis": run_analysis,
+        "run_probe": run_probe,
     }
     if user:
         payload["user"] = user
@@ -763,6 +785,18 @@ def submit_sweep(
         payload["append_to_task"] = True
     if content_hash:
         payload["content_hash"] = content_hash
+    if extra_instructions:
+        payload["extra_instructions"] = extra_instructions
+    if result_focus:
+        payload["result_focus"] = result_focus
+    if evaluation_metric:
+        payload["evaluation_metric"] = evaluation_metric
+    if ratio_unit:
+        payload["ratio_unit"] = ratio_unit
+    if ratio_verb:
+        payload["ratio_verb"] = ratio_verb
+    if link:
+        payload["link"] = link
 
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()

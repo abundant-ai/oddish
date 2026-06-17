@@ -9,21 +9,39 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
+import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { fetcher } from "@/lib/api";
+import {
+  prBadge,
+  prNumberFromUrl,
+  taskPrUrl,
+  encodeExperimentRouteParam,
+} from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
-import type { Task, Trial } from "@/lib/types";
-import { Loader2 } from "lucide-react";
+import type { Task, Trial, ExperimentProbeRow, UserTagRef } from "@/lib/types";
+import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
+  isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 
@@ -32,12 +50,12 @@ type DrawerMode = "task" | "trial";
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel
+      (mod) => mod.TrialDetailPanel,
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  }
+  },
 );
 
 const TaskFilesPanel = dynamic(
@@ -46,7 +64,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  }
+  },
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -85,6 +103,7 @@ interface ExperimentDetailViewProps {
   headerLeft: React.ReactNode;
   headerStatus?: React.ReactNode;
   headerRight?: React.ReactNode;
+  headerDescription?: React.ReactNode;
   inlineAlert?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
@@ -98,12 +117,12 @@ interface ExperimentDetailViewProps {
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
 function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[]
+  summaries: ExperimentAgentSummary[],
 ): Set<string> {
   return new Set(
     summaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent)
+      .map((summary) => summary.agent),
   );
 }
 
@@ -111,6 +130,12 @@ type ExperimentSummary = {
   rewardSuccess: number;
   rewardSum: number;
   rewardTotal: number;
+  /**
+   * Mean over tasks of the per-task mean reward (scored trials only,
+   * nop/oracle baselines excluded). Null until at least one task has a
+   * scored trial.
+   */
+  avgScore: number | null;
   totalTrials: number;
   completedTrials: number;
   failedTrials: number;
@@ -135,11 +160,29 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let failedFallback = 0;
   let rewardSumFallback = 0;
   let rewardTotalFallback = 0;
+  // Per-task mean reward over scored trials (baselines excluded); the avg
+  // score is the mean of these so every task carries equal weight
+  // regardless of how many trials it ran.
+  let taskScoreSum = 0;
+  let taskScoreCount = 0;
 
   for (const task of tasksForExperiment) {
     const trials = task.trials ?? [];
     if (trials.length > 0) {
       for (const trial of trials) accumulateTrial(acc, trial);
+
+      let scoredRewardSum = 0;
+      let scoredCount = 0;
+      for (const trial of trials) {
+        if (isBaselineAgentName(trial.agent)) continue;
+        if (trial.status !== "success" || trial.reward == null) continue;
+        scoredRewardSum += trial.reward;
+        scoredCount += 1;
+      }
+      if (scoredCount > 0) {
+        taskScoreSum += scoredRewardSum / scoredCount;
+        taskScoreCount += 1;
+      }
     } else {
       rewardSuccess += task.reward_success ?? 0;
       rewardSumFallback += task.reward_sum ?? task.reward_success ?? 0;
@@ -154,6 +197,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     rewardSuccess: rewardSuccess + acc.passCount,
     rewardSum: acc.rewardSum + rewardSumFallback,
     rewardTotal: acc.rewardTotal + rewardTotalFallback,
+    avgScore: taskScoreCount > 0 ? taskScoreSum / taskScoreCount : null,
     totalTrials: acc.trialCount + totalTrialsFallback,
     completedTrials: acc.completed + completedFallback,
     failedTrials: acc.failed + failedFallback,
@@ -176,6 +220,7 @@ function ExperimentHeaderMeta({
   showPassAtK,
   onToggleShowPassAtK,
   headerRight,
+  prLink,
 }: {
   isLoading: boolean;
   isInitialLoading: boolean;
@@ -183,9 +228,11 @@ function ExperimentHeaderMeta({
   showPassAtK: boolean;
   onToggleShowPassAtK: () => void;
   headerRight?: React.ReactNode;
+  prLink?: React.ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -273,6 +320,74 @@ function pickExperimentCreationMeta(tasks: Task[]): {
   };
 }
 
+function pickExperimentPr(tasks: Task[]): {
+  prUrl: string | null;
+  prTitle: string | null;
+  prNumber: string | null;
+} {
+  // The URL can arrive two ways: structured `github_meta.pr_url`, or the
+  // canonical `task.link` column (set by `--link`, or auto-derived from
+  // github_meta on the backend). `link` is what the task page renders, so we
+  // treat it as a first-class source rather than relying on github_meta alone.
+  const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
+  const meta = task?.github_meta;
+  const prUrl = taskPrUrl(task?.link, meta);
+  return {
+    prUrl,
+    prTitle: meta?.pr_title ?? null,
+    prNumber: meta?.pr_number ?? prNumberFromUrl(prUrl),
+  };
+}
+
+// Dedicated header affordance linking an experiment back to the GitHub PR that
+// spawned it (lineage tracing). The PR URL rides in along every task's
+// `github_meta` (set via `oddish run --github-meta`); we surface the first task
+// that carries one. Renders nothing when no PR metadata is present.
+function ExperimentPrLink({
+  tasks,
+  isInitialLoading,
+}: {
+  tasks: Task[];
+  isInitialLoading: boolean;
+}) {
+  if (isInitialLoading) return null;
+  const { prUrl, prTitle, prNumber } = pickExperimentPr(tasks);
+  if (!prUrl) {
+    return (
+      <span
+        title="No pull request linked to this experiment"
+        className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60"
+      >
+        <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+        no PR linked
+      </span>
+    );
+  }
+
+  const { label, number } = prBadge(prUrl, prNumber);
+
+  return (
+    <a
+      href={prUrl}
+      target="_blank"
+      rel="noreferrer"
+      title={
+        prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"
+      }
+      className="inline-flex h-8 max-w-[200px] select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+    >
+      <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span className="min-w-0 truncate">
+        {label}
+        {number && (
+          <span className="text-[color:var(--paper-ink-3)]"> #{number}</span>
+        )}
+      </span>
+      <ExternalLink className="h-3 w-3 shrink-0 opacity-50" aria-hidden />
+    </a>
+  );
+}
+
 function ExperimentMetaStrip({
   tasks,
   isInitialLoading,
@@ -331,10 +446,12 @@ function ExperimentMetaStrip({
 
 function KpiTile({
   label,
+  labelInfo,
   children,
   className = "",
 }: {
   label: string;
+  labelInfo?: string;
   children: React.ReactNode;
   className?: string;
 }) {
@@ -342,8 +459,23 @@ function KpiTile({
     <div
       className={`flex flex-col gap-1.5 border-r border-[color:var(--paper-line-2)] px-4 py-3 last:border-r-0 ${className}`}
     >
-      <span className="font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+      <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
         {label}
+        {labelInfo && (
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info
+                  className="h-3 w-3 cursor-help text-[color:var(--paper-ink-3)]"
+                  aria-label={`How ${label} is calculated`}
+                />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs normal-case">
+                {labelInfo}
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
       </span>
       {children}
     </div>
@@ -354,10 +486,12 @@ function ExperimentSummaryBar({
   taskCount,
   summary,
   isInitialLoading,
+  isLoadingTrials,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
+  isLoadingTrials: boolean;
 }) {
   if (isInitialLoading) {
     return (
@@ -368,10 +502,7 @@ function ExperimentSummaryBar({
     );
   }
 
-  const scorePct =
-    summary.rewardTotal > 0
-      ? (summary.rewardSum / summary.rewardTotal) * 100
-      : null;
+  const scorePct = summary.avgScore != null ? summary.avgScore * 100 : null;
   const completionPct =
     summary.totalTrials > 0
       ? (summary.completedTrials / summary.totalTrials) * 100
@@ -392,9 +523,21 @@ function ExperimentSummaryBar({
 
   return (
     <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
-      <KpiTile label="Avg score">
+      <KpiTile
+        label="Avg score"
+        labelInfo="Average of per-task average reward, nop/oracle excluded"
+      >
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {scorePct != null ? `${scorePct.toFixed(1)}%` : "—"}
+          {isLoadingTrials ? (
+            // The score is computed from streamed trial pages; rendering an
+            // intermediate value would show a number that jumps once the
+            // remaining pages land.
+            <Loader2 className="h-5 w-5 animate-spin text-[color:var(--paper-ink-3)]" />
+          ) : scorePct != null ? (
+            `${scorePct.toFixed(1)}%`
+          ) : (
+            "—"
+          )}
         </span>
       </KpiTile>
       <KpiTile label="Completion">
@@ -509,6 +652,116 @@ function ExperimentSummaryBar({
   );
 }
 
+function statusLabel(status: string): string {
+  if (status === "queued" || status === "pending") return "queued";
+  if (status === "running") return "running";
+  if (status === "success" || status === "done") return "done";
+  if (status === "failed") return "failed";
+  return status;
+}
+
+function ExperimentProbeTab({ experimentId }: { experimentId?: string }) {
+  const encodedId = experimentId
+    ? encodeExperimentRouteParam(experimentId)
+    : null;
+  const url = encodedId ? `/api/experiments/${encodedId}/probes` : null;
+
+  const { data, error, isLoading } = useSWR<ExperimentProbeRow[]>(
+    url,
+    fetcher,
+    { refreshInterval: 15000 },
+  );
+
+  if (!experimentId) {
+    return (
+      <p className="text-sm text-[color:var(--paper-ink-3)]">
+        No experiment selected.
+      </p>
+    );
+  }
+
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Failed to load probes</AlertTitle>
+        <AlertDescription>
+          {error instanceof Error ? error.message : "Unknown error"}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (isLoading || !data) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-[color:var(--paper-ink-3)]">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span>Loading probes…</span>
+      </div>
+    );
+  }
+
+  if (data.length === 0) {
+    return (
+      <p className="text-sm text-[color:var(--paper-ink-3)]">No probes yet.</p>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)]">
+      <table className="w-full text-sm">
+        <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+          <tr>
+            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+              Task
+            </th>
+            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+              Version
+            </th>
+            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+              Model
+            </th>
+            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+              Status
+            </th>
+            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+              &nbsp;
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row) => (
+            <tr
+              key={row.probe_trial_id}
+              className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
+            >
+              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
+                {row.task_name}
+              </td>
+              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                {row.version != null ? `v${row.version}` : "—"}
+              </td>
+              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                {row.model ?? "—"}
+              </td>
+              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
+                {statusLabel(row.status)}
+              </td>
+              <td className="px-4 py-2.5 text-xs">
+                <Link
+                  href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
+                  className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
+                >
+                  View →
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function ExperimentDetailView({
   experimentId,
   tasksForExperiment,
@@ -520,6 +773,7 @@ export function ExperimentDetailView({
   headerLeft,
   headerStatus,
   headerRight,
+  headerDescription,
   inlineAlert,
   readOnly = false,
   allowRetry = true,
@@ -530,13 +784,24 @@ export function ExperimentDetailView({
   onRerun,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
+  // The experiment's own direct tags (the header editor chips); fetched
+  // separately because no experiment payload carries them.
+  const { data: experimentTags, mutate: mutateExperimentTags } = useSWR<
+    UserTagRef[]
+  >(
+    experimentId
+      ? `/api/tags/for-target?scope=EXPERIMENT&target_id=${encodeURIComponent(experimentId)}`
+      : null,
+    fetcher,
+    { revalidateOnFocus: false },
+  );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
-  const [showPassAtK, setShowPassAtK] = useState(false);
+  const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-task"
+        "oddish:trial-drawer-show-task",
       );
       // Default ON: only explicit "0" disables it.
       return stored !== "0";
@@ -548,7 +813,7 @@ export function ExperimentDetailView({
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-trial"
+        "oddish:trial-drawer-show-trial",
       );
       return stored !== "0";
     } catch {
@@ -562,7 +827,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-task",
-        next ? "1" : "0"
+        next ? "1" : "0",
       );
     } catch {
       // ignore
@@ -575,7 +840,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-trial",
-        next ? "1" : "0"
+        next ? "1" : "0",
       );
     } catch {
       // ignore
@@ -593,7 +858,7 @@ export function ExperimentDetailView({
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+    [deferredTasksForDerivedData],
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -602,7 +867,7 @@ export function ExperimentDetailView({
       agentSummaries.length > 0
         ? modelScopedAgents
         : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
   );
 
   useEffect(() => {
@@ -632,7 +897,7 @@ export function ExperimentDetailView({
     try {
       window.sessionStorage.setItem(
         agentSummaryStorageKey,
-        JSON.stringify(agentSummaries)
+        JSON.stringify(agentSummaries),
       );
     } catch {
       // Ignore storage failures; the live data still drives the table.
@@ -667,7 +932,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents]
+    [displayModelScopedAgents],
   );
 
   useEffect(() => {
@@ -705,7 +970,11 @@ export function ExperimentDetailView({
     const urlTrialId = searchParams.get("trial");
     if (!urlTaskId) return;
 
-    const task = tasksForExperiment.find((t) => t.id === urlTaskId);
+    // Fall back to task name so hand-written links like ?task=<name> work;
+    // the URL-sync effect rewrites the param to the canonical id on open.
+    const task =
+      tasksForExperiment.find((t) => t.id === urlTaskId) ??
+      tasksForExperiment.find((t) => t.name === urlTaskId);
     if (!task) return;
 
     const taskIndex = tasksForExperiment.indexOf(task);
@@ -752,7 +1021,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!drawerState) return;
     const liveTask = tasksForExperiment.find(
-      (t) => t.id === drawerState.task.id
+      (t) => t.id === drawerState.task.id,
     );
     if (!liveTask) return;
     const liveTrialCount = liveTask.trials?.length ?? 0;
@@ -788,7 +1057,7 @@ export function ExperimentDetailView({
 
   const summary = useMemo(
     () => buildExperimentSummary(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData]
+    [deferredTasksForDerivedData],
   );
 
   const closeDrawer = () => {
@@ -845,29 +1114,56 @@ export function ExperimentDetailView({
            * Fraunces display title, a dot-separated meta strip, with the
            * Show-graph + Publish actions parked top-right.
            */}
-          <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-1">
-              <div className="min-w-0">{headerLeft}</div>
-              <ExperimentMetaStrip
-                tasks={tasksForExperiment}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  {headerLeft}
+                  {experimentId && (
+                    <TagEditor
+                      scope="EXPERIMENT"
+                      targetId={experimentId}
+                      initialTags={experimentTags ?? []}
+                      experimentMode="living"
+                      onMutate={() => void mutateExperimentTags()}
+                    />
+                  )}
+                </div>
+                <ExperimentMetaStrip
+                  tasks={tasksForExperiment}
+                  isInitialLoading={isInitialLoading}
+                  experimentId={experimentId}
+                />
+              </div>
+              <ExperimentHeaderMeta
+                isLoading={isLoading}
                 isInitialLoading={isInitialLoading}
-                experimentId={experimentId}
+                headerStatus={headerStatus}
+                showPassAtK={showPassAtK}
+                onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
+                headerRight={headerRight}
+                prLink={
+                  // The PR chip links into GitHub for the experiment's source
+                  // branch — internal context that shouldn't surface on the
+                  // public share view.
+                  readOnly ? undefined : (
+                    <ExperimentPrLink
+                      tasks={tasksForExperiment}
+                      isInitialLoading={isInitialLoading}
+                    />
+                  )
+                }
               />
             </div>
-            <ExperimentHeaderMeta
-              isLoading={isLoading}
-              isInitialLoading={isInitialLoading}
-              headerStatus={headerStatus}
-              showPassAtK={showPassAtK}
-              onToggleShowPassAtK={() => setShowPassAtK((prev) => !prev)}
-              headerRight={headerRight}
-            />
+
+            {headerDescription}
           </div>
 
           <ExperimentSummaryBar
             taskCount={tasksForExperiment.length}
             summary={summary}
             isInitialLoading={isInitialLoading}
+            isLoadingTrials={isLoadingTrials}
           />
 
           {hasError ? (
@@ -876,57 +1172,71 @@ export function ExperimentDetailView({
               <AlertDescription>{errorDescription}</AlertDescription>
             </Alert>
           ) : (
-            <div className="space-y-3">
-              {inlineAlert}
-              <ExperimentTrialsTable
-                tasks={tasksForExperiment}
-                agentSummaries={displayAgentSummaries}
-                modelScopedAgents={displayModelScopedAgents}
-                isLoading={isLoading}
-                isLoadingTrials={isLoadingTrials}
-                showPassAtK={showPassAtK}
-                onTaskDelete={onTaskDelete}
-                onRerun={onRerun}
-                allowRerun={allowRetry}
-                readOnly={readOnly}
-                showAnalysis={showAnalysis}
-                onTrialSelect={(trial, task, context) => {
-                  const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id
-                  );
-                  setDrawerState({
-                    isOpen: true,
-                    mode: "trial",
-                    task,
-                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                    orderedTasks: tasksForExperiment,
-                    trial,
-                    trialIndex: context.trialIndex,
-                    orderedTrials: context.orderedTrials,
-                    trialGroups: context.trialGroups,
-                  });
-                }}
-                onTaskSelect={(task, context) => {
-                  const { trialGroups, orderedTrials } = buildTrialGroups(task);
-                  // If the task has trials, jump straight into the first one
-                  // so the user immediately sees results alongside the task
-                  // definition. They can navigate back to the task overview
-                  // with the in-drawer "View task" control.
-                  const firstTrial = orderedTrials[0] ?? null;
-                  setDrawerState({
-                    isOpen: true,
-                    mode: firstTrial ? "trial" : "task",
-                    task,
-                    taskIndex: context.taskIndex,
-                    orderedTasks: context.orderedTasks,
-                    trial: firstTrial,
-                    trialIndex: firstTrial ? 0 : null,
-                    orderedTrials,
-                    trialGroups,
-                  });
-                }}
-              />
-            </div>
+            <Tabs defaultValue="tasks" className="space-y-3">
+              {/* Probing requires an authenticated session, so the public
+                  share view renders the tasks content without the toggle. */}
+              {!readOnly && (
+                <TabsList>
+                  <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                  <TabsTrigger value="probe">Probe</TabsTrigger>
+                </TabsList>
+              )}
+              <TabsContent value="tasks" className="space-y-3">
+                {inlineAlert}
+                <ExperimentTrialsTable
+                  tasks={tasksForExperiment}
+                  agentSummaries={displayAgentSummaries}
+                  modelScopedAgents={displayModelScopedAgents}
+                  isLoading={isLoading}
+                  isLoadingTrials={isLoadingTrials}
+                  showPassAtK={showPassAtK}
+                  onTaskDelete={onTaskDelete}
+                  onRerun={onRerun}
+                  allowRerun={allowRetry}
+                  readOnly={readOnly}
+                  showAnalysis={showAnalysis}
+                  onTrialSelect={(trial, task, context) => {
+                    const taskIndex = tasksForExperiment.findIndex(
+                      (t) => t.id === task.id,
+                    );
+                    setDrawerState({
+                      isOpen: true,
+                      mode: "trial",
+                      task,
+                      taskIndex: taskIndex >= 0 ? taskIndex : 0,
+                      orderedTasks: tasksForExperiment,
+                      trial,
+                      trialIndex: context.trialIndex,
+                      orderedTrials: context.orderedTrials,
+                      trialGroups: context.trialGroups,
+                    });
+                  }}
+                  onTaskSelect={(task, context) => {
+                    const { trialGroups, orderedTrials } =
+                      buildTrialGroups(task);
+                    // If the task has trials, jump straight into the first one
+                    // so the user immediately sees results alongside the task
+                    // definition. They can navigate back to the task overview
+                    // with the in-drawer "View task" control.
+                    const firstTrial = orderedTrials[0] ?? null;
+                    setDrawerState({
+                      isOpen: true,
+                      mode: firstTrial ? "trial" : "task",
+                      task,
+                      taskIndex: context.taskIndex,
+                      orderedTasks: context.orderedTasks,
+                      trial: firstTrial,
+                      trialIndex: firstTrial ? 0 : null,
+                      orderedTrials,
+                      trialGroups,
+                    });
+                  }}
+                />
+              </TabsContent>
+              <TabsContent value="probe">
+                <ExperimentProbeTab experimentId={experimentId} />
+              </TabsContent>
+            </Tabs>
           )}
         </div>
       )}
@@ -945,8 +1255,10 @@ export function ExperimentDetailView({
               isOpen={true}
               onClose={() => {}}
               taskId={null}
+              probeTaskId={drawerState.task.id}
               filesUrl={`${apiBaseUrl}/tasks/${drawerState.task.id}/files`}
               apiBaseUrl={apiBaseUrl}
+              showAnalysis={showAnalysis}
               contentOnly={true}
             />
           }

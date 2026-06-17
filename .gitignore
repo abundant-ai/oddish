@@ -14,6 +14,9 @@ __pycache__/
 .env.*.local
 *.pem
 
+# Local MCP server registration (account/machine-specific: org id, local creds)
+.mcp.json
+
 # Build artifacts
 build/
 dist/
@@ -36,3 +39,9 @@ oddish-pulls/
 .oddish/
 **/.oddish/
 .cursor/
+
+# Git worktrees (local isolation)
+.worktrees/
+
+# Brainstorming visual companion
+.superpowers/

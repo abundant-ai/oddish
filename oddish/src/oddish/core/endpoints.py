@@ -17,6 +17,9 @@ from sqlalchemy.orm import aliased
 from sqlalchemy.orm import load_only, selectinload
 
 from oddish.core.helpers import (
+    escape_like,
+    parse_search_query,
+    _parse_github_meta,
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
@@ -29,6 +32,15 @@ from oddish.core.helpers import (
 )
 from collections.abc import Collection
 from harbor.models.environment_type import EnvironmentType
+from oddish.core.tag_filter_ast import (
+    TagFilterAST,
+    build_filter_predicates,
+    resolve_names_to_ids,
+)
+from oddish.core.tags_projection import (
+    list_direct_version_tags,
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.core.trial_io import (
     read_trial_logs,
     read_trial_logs_structured,
@@ -59,8 +71,12 @@ from oddish.schemas import (
     TaskVersionResponse,
     TaskVersionSummary,
     TrialResponse,
+    UserTagRef,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+USER_CANCELLED_MESSAGE = "Cancelled by user"
+_ACTIVE_WORKER_JOB_STATUSES_SQL = "'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'"
 
 
 async def _primary_experiment_for_task_model(
@@ -136,7 +152,37 @@ async def list_tasks_core(
         include_worker_jobs = False
     query = select(TaskModel).order_by(TaskModel.created_at.desc())
     if include_trials:
-        trials_loader = selectinload(TaskModel.trials)
+        # When scoped to an experiment, push the trial filter into the
+        # selectin load so each task fetches only that experiment's non-probe
+        # trials instead of every trial across every version / experiment /
+        # superseded rerun. The former code loaded the full set and filtered
+        # in Python (below), which materialized far more rows than the view
+        # needs -- the memory spike that OOM-killed the API container. This is
+        # an exact in-SQL equivalent of that Python filter: ``experiment_id``
+        # and ``is_probe`` are both NOT NULL, so ``experiment_id == X``
+        # excludes legacy/NULL-experiment trials (``None == X`` is False in
+        # Python, ``NULL = X`` is not-true in SQL) and ``is_probe.is_(False)``
+        # matches ``not t.is_probe``. The effective-version resolution and the
+        # superseded/off-version drop stay in Python, computed from the scoped
+        # set exactly as before. The filtered selectin still runs inside the
+        # async session (eager, no lazy load -> no MissingGreenlet) and still
+        # inherits the soft-delete ``deleted_at IS NULL`` criteria.
+        #
+        # NOTE: this relies on ``task.trials`` being UNLOADED on the incoming
+        # session. A filtered selectin scopes the collection on first load but
+        # does NOT re-filter one already fully loaded in the same session. Every
+        # ``/tasks`` route calls this on a fresh per-request session, so it holds
+        # today; if this helper is ever reused after the full ``trials`` set was
+        # loaded on the same session, add ``populate_existing()`` (or re-scope in
+        # Python) or the filter will silently not apply.
+        if experiment_id:
+            trials_relationship = TaskModel.trials.and_(
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.is_probe.is_(False),
+            )
+        else:
+            trials_relationship = TaskModel.trials
+        trials_loader = selectinload(trials_relationship)
         experiments_loader = selectinload(TaskModel.experiments)
         if compact_trials:
             trials_loader = trials_loader.load_only(
@@ -160,6 +206,21 @@ async def list_tasks_core(
                 TrialModel.harbor_stage,
                 TrialModel.reward,
                 TrialModel.error_message,
+                # Surfaced by ``build_compact_trial_response`` (probe
+                # trials read it on the experiment page). Must be loaded
+                # eagerly; otherwise the compact builder triggers a
+                # lazy-load on this deferred JSONB column outside the
+                # async greenlet and fails with MissingGreenlet (same
+                # reason ``origin`` / ``superseded_by_trial_id`` are here).
+                TrialModel.harbor_config,
+                # Read by the compact builder (``build_compact_trial_response``);
+                # the experiment-scoped path also filters on ``is_probe``, but
+                # that now happens in SQL via the filtered selectin above. Must
+                # still be loaded eagerly for the builder; otherwise accessing
+                # it triggers a lazy-load on this column outside the async
+                # greenlet and fails with MissingGreenlet (same reason
+                # ``origin`` / ``harbor_config`` are here).
+                TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
@@ -197,12 +258,25 @@ async def list_tasks_core(
                     TaskModel.priority,
                     TaskModel.user,
                     TaskModel.tags,
+                    TaskModel.link,
                     TaskModel.task_path,
                     TaskModel.current_version_id,
                     TaskModel.run_analysis,
+                    # Surfaced as ``run_probe`` on every task response. Must
+                    # be eagerly loaded; otherwise ``_build_task_status_response``
+                    # triggers a lazy-load on this deferred column outside the
+                    # async greenlet and the whole compact-trials fetch 500s
+                    # with MissingGreenlet (same reason ``link`` is here).
+                    TaskModel.run_probe,
                     TaskModel.verdict_status,
                     TaskModel.verdict,
                     TaskModel.verdict_error,
+                    # Read by the experiment page's PR badge
+                    # (``pickExperimentPr``). Must be eagerly loaded; otherwise
+                    # the response builder triggers a lazy-load on this deferred
+                    # column outside the async greenlet and fails with
+                    # MissingGreenlet (same reason ``origin`` is loaded above).
+                    TaskModel.link,
                     TaskModel.created_at,
                     TaskModel.started_at,
                     TaskModel.finished_at,
@@ -254,10 +328,14 @@ async def list_tasks_core(
 
         for task in tasks:
             if experiment_id:
-                scoped_trials = [
-                    t for t in task.trials if t.experiment_id == experiment_id
-                ]
-                set_committed_value(task, "trials", scoped_trials)
+                # ``task.trials`` is already scoped to this experiment's
+                # non-probe trials by the filtered selectin load above (probes
+                # have their own tab via ``list_experiment_probes_core``, and
+                # excluding them before resolving the effective version stops a
+                # probe-only version from skewing it). Resolve the experiment's
+                # effective version from that scoped set, then drop superseded /
+                # off-version trials -- identical result to before, without
+                # re-filtering in Python.
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
@@ -393,6 +471,9 @@ async def browse_tasks_core(
     limit: int = 25,
     offset: int = 0,
     query: str | None = None,
+    tags_all: list[str] | None = None,
+    tags_any: list[str] | None = None,
+    tags_none: list[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
@@ -407,6 +488,8 @@ async def browse_tasks_core(
             TaskModel.current_version_id.label("current_version_id"),
             current_version.version.label("current_version"),
             TaskModel.created_at.label("created_at"),
+            TaskModel.link.label("link"),
+            TaskModel.tags.label("tags"),
             func.row_number()
             .over(
                 partition_by=TaskModel.name,
@@ -424,7 +507,52 @@ async def browse_tasks_core(
     if org_id is not None:
         ranked_tasks = ranked_tasks.where(TaskModel.org_id == org_id)
     if normalized_query:
-        ranked_tasks = ranked_tasks.where(TaskModel.name.ilike(f"%{normalized_query}%"))
+        # Free-text grammar (parse_search_query): terms AND'd in any order,
+        # "quoted text" matches contiguously, OR makes either side of a group
+        # match, a leading - (or NOT) excludes. Each needle is literal, not a
+        # LIKE pattern: escape %, _ and backslash so e.g. searching "_"
+        # doesn't match every task.
+        terms = parse_search_query(normalized_query)
+        for group in terms.include:
+            ranked_tasks = ranked_tasks.where(
+                or_(
+                    *(
+                        TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+                        for needle in group
+                    )
+                )
+            )
+        for needle in terms.exclude:
+            ranked_tasks = ranked_tasks.where(
+                ~TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
+            )
+
+    # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
+    # predicates over ``tasks.effective_tag_ids``. The predicates reference the
+    # ``tasks`` table literally, and ``ranked_tasks`` uses
+    # ``select_from(TaskModel)`` (i.e. the ``tasks`` table), so the text
+    # predicates are applied here -- before the subquery is materialised.
+    # An unknown POSITIVE token (AND/OR) can never match any task, so the
+    # result is an empty page rather than an error -- this keeps type-ahead
+    # tag filtering in the dashboard search graceful. Unknown tokens in the
+    # NOT set exclude nothing and are simply dropped by the resolver.
+    if tags_all or tags_any or tags_none:
+        ast = TagFilterAST(
+            all=list(tags_all or []),
+            any_=list(tags_any or []),
+            none=list(tags_none or []),
+        )
+        resolved_filter, unknown_tokens = await resolve_names_to_ids(
+            session, org_id=org_id, ast=ast
+        )
+        if unknown_tokens & ({*ast.all} | {*ast.any_}):
+            return TaskBrowseResponse(
+                items=[], limit=limit, offset=offset, has_more=False
+            )
+        if not resolved_filter.is_empty():
+            for predicate in build_filter_predicates(resolved_filter):
+                ranked_tasks = ranked_tasks.where(predicate)
+
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -441,21 +569,21 @@ async def browse_tasks_core(
         func.coalesce(TrialModel.started_at, TrialModel.created_at),
         TrialModel.created_at,
     )
+    # The page ORDERING needs only max(activity) per (task, version); the
+    # heavy per-task counters are fetched afterwards for just the visible
+    # page. Folding them into this org-wide aggregate made every browse page
+    # compute eight aggregates over every trial in the org (~65% of page
+    # latency at prod volume) to display 25 rows.
     trial_agg_query = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.task_version_id.label("task_version_id"),
-        func.count(TrialModel.id).label("total_trials"),
-        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-            "completed_trials"
-        ),
-        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-            "failed_trials"
-        ),
-        func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-        func.sum(TrialModel.reward).label("reward_sum"),
-        func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         func.max(trial_activity_at).label("last_run_at"),
-    ).where(TrialModel.superseded_by_trial_id.is_(None))
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        # Probes have their own tab; keep them out of the browser's counts
+        # and out of last_run_at, which drives the page ordering.
+        TrialModel.is_probe.isnot(True),
+    )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
     trial_aggregates = trial_agg_query.group_by(
@@ -468,15 +596,9 @@ async def browse_tasks_core(
             ranked_tasks_subquery.c.name,
             ranked_tasks_subquery.c.current_version,
             ranked_tasks_subquery.c.current_version_id,
+            ranked_tasks_subquery.c.link,
+            ranked_tasks_subquery.c.tags,
             func.coalesce(version_counts.c.version_count, 0).label("version_count"),
-            func.coalesce(trial_aggregates.c.total_trials, 0).label("total_trials"),
-            func.coalesce(trial_aggregates.c.completed_trials, 0).label(
-                "completed_trials"
-            ),
-            func.coalesce(trial_aggregates.c.failed_trials, 0).label("failed_trials"),
-            func.coalesce(trial_aggregates.c.reward_success, 0).label("reward_success"),
-            func.coalesce(trial_aggregates.c.reward_sum, 0.0).label("reward_sum"),
-            func.coalesce(trial_aggregates.c.reward_total, 0).label("reward_total"),
             trial_aggregates.c.last_run_at.label("last_run_at"),
         )
         .select_from(ranked_tasks_subquery)
@@ -522,6 +644,7 @@ async def browse_tasks_core(
 
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
+    counters_by_task: dict[str, dict] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -529,6 +652,44 @@ async def browse_tasks_core(
     ]
 
     if task_version_pairs:
+        counters_query = (
+            select(
+                TrialModel.task_id.label("task_id"),
+                func.count(TrialModel.id).label("total_trials"),
+                func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+                    "completed_trials"
+                ),
+                func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+                    "failed_trials"
+                ),
+                func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+                func.sum(TrialModel.reward).label("reward_sum"),
+                func.count(case((TrialModel.reward.isnot(None), 1))).label(
+                    "reward_total"
+                ),
+            )
+            .where(
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
+                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                    task_version_pairs
+                ),
+            )
+            .group_by(TrialModel.task_id)
+        )
+        if org_id is not None:
+            counters_query = counters_query.where(TrialModel.org_id == org_id)
+        counters_started_at = now()
+        counter_rows = await session.execute(counters_query)
+        if record_timing is not None:
+            record_timing(
+                "browse_counters",
+                elapsed_ms(counters_started_at),
+                "Browse page trial counters",
+            )
+        counters_by_task = {
+            str(row["task_id"]): dict(row) for row in counter_rows.mappings()
+        }
         exp_join_condition = [ExperimentModel.id == TrialModel.experiment_id]
         if org_id is not None:
             exp_join_condition.append(ExperimentModel.org_id == org_id)
@@ -543,6 +704,7 @@ async def browse_tasks_core(
             .where(
                 TrialModel.experiment_id.isnot(None),
                 TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -583,6 +745,7 @@ async def browse_tasks_core(
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.is_probe.isnot(True),
                 tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
                     task_version_pairs
                 ),
@@ -614,6 +777,18 @@ async def browse_tasks_core(
                 )
             )
 
+    # Hydrate effective user tags for each visible task, batched in a
+    # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
+    # the browser can render the tag chips alongside the row.
+    visible_task_ids = [str(row["task_id"]) for row in visible_rows]
+    user_tags_by_task = (
+        await list_effective_user_tags_for_task_versions(
+            session, task_ids=visible_task_ids, public_only=False
+        )
+        if visible_task_ids
+        else {}
+    )
+
     build_started_at = now()
     response = TaskBrowseResponse(
         items=[
@@ -631,15 +806,49 @@ async def browse_tasks_core(
                     else None
                 ),
                 version_count=int(row["version_count"] or 0),
-                total_trials=int(row["total_trials"] or 0),
-                completed_trials=int(row["completed_trials"] or 0),
-                failed_trials=int(row["failed_trials"] or 0),
-                reward_success=int(row["reward_success"] or 0),
-                reward_sum=float(row["reward_sum"] or 0.0),
-                reward_total=int(row["reward_total"] or 0),
+                total_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("total_trials")
+                    or 0
+                ),
+                completed_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get(
+                        "completed_trials"
+                    )
+                    or 0
+                ),
+                failed_trials=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("failed_trials")
+                    or 0
+                ),
+                reward_success=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_success")
+                    or 0
+                ),
+                reward_sum=float(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_sum")
+                    or 0.0
+                ),
+                reward_total=int(
+                    counters_by_task.get(str(row["task_id"]), {}).get("reward_total")
+                    or 0
+                ),
                 last_run_at=row["last_run_at"],
+                link=row["link"],
+                github_meta=_parse_github_meta(row["tags"]),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
+                user_tags=[
+                    UserTagRef(
+                        tag_id=t.tag_id,
+                        key=t.key,
+                        value=t.value,
+                        color=t.color,
+                        visibility=t.visibility,
+                        current=t.current,
+                        older=t.older,
+                    )
+                    for t in user_tags_by_task.get(str(row["task_id"]), [])
+                ],
             )
             for row in visible_rows
         ],
@@ -840,6 +1049,7 @@ async def retry_trial_core(
         timeout_minutes=old_trial.timeout_minutes,
         environment=old_trial.environment,
         harbor_config=old_trial.harbor_config,
+        is_probe=old_trial.is_probe,
         max_attempts=old_trial.max_attempts,
         status=TrialStatus.QUEUED,
     )
@@ -937,6 +1147,143 @@ def _reset_task_verdict(task: TaskModel) -> None:
     task.verdict_finished_at = None
 
 
+def _collect_cancel_metadata(rows: Collection[object]) -> dict[str, list[str]]:
+    modal_fc_ids: list[str] = []
+    for row in rows:
+        get = getattr(row, "get", None)
+        fc = get("modal_function_call_id") if get else None
+        if fc:
+            modal_fc_ids.append(str(fc))
+    return {"modal_function_call_ids": list(dict.fromkeys(modal_fc_ids))}
+
+
+async def _cancel_worker_jobs_for_kind(
+    session: AsyncSession,
+    *,
+    kind: str,
+    subject_table: str,
+    subject_ids: Collection[str],
+    reason: str,
+):
+    if not subject_ids:
+        return []
+    rows = (
+        (
+            await session.execute(
+                text(
+                    f"""
+                WITH to_cancel AS (
+                    SELECT id,
+                           modal_function_call_id,
+                           provider,
+                           external_id
+                    FROM   worker_jobs
+                    WHERE  kind::text = :kind
+                      AND  subject_table = :subject_table
+                      AND  subject_id = ANY(:subject_ids)
+                      AND  status::text IN ({_ACTIVE_WORKER_JOB_STATUSES_SQL})
+                    FOR UPDATE
+                )
+                UPDATE worker_jobs AS w
+                SET    status = 'CANCELLED',
+                       finished_at = NOW(),
+                       error_message = :reason,
+                       current_worker_id = NULL,
+                       current_queue_slot = NULL,
+                       modal_function_call_id = NULL
+                FROM   to_cancel
+                WHERE  w.id = to_cancel.id
+                RETURNING w.id,
+                          w.subject_id,
+                          to_cancel.modal_function_call_id,
+                          to_cancel.provider,
+                          to_cancel.external_id
+                """
+                ),
+                {
+                    "kind": kind,
+                    "subject_table": subject_table,
+                    "subject_ids": list(dict.fromkeys(subject_ids)),
+                    "reason": reason,
+                },
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return rows
+
+
+def _has_active_analysis(trial: TrialModel) -> bool:
+    return trial.analysis_status in (
+        AnalysisStatus.PENDING,
+        AnalysisStatus.QUEUED,
+        AnalysisStatus.RUNNING,
+    )
+
+
+def _has_active_verdict(task: TaskModel) -> bool:
+    return task.verdict_status in (
+        VerdictStatus.PENDING,
+        VerdictStatus.QUEUED,
+        VerdictStatus.RUNNING,
+    )
+
+
+async def cancel_task_qa_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+) -> dict[str, str | int | list[str]]:
+    """Cancel a task's in-flight QA job.
+
+    There is one task-level QA job: it classifies every trial and then
+    synthesizes the verdict. Cancelling it stops that job and finalizes any
+    trial whose classification was mid-flight (left RUNNING by a killed
+    worker).
+    """
+    result = await session.execute(
+        select(TaskModel)
+        .options(selectinload(TaskModel.trials))
+        .where(TaskModel.id == task_id)
+    )
+    task = result.scalar_one_or_none()
+    if not task or (org_id is not None and task.org_id != org_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    now_value = utcnow()
+    rows = await _cancel_worker_jobs_for_kind(
+        session,
+        kind="QA",
+        subject_table="tasks",
+        subject_ids=[task_id],
+        reason=USER_CANCELLED_MESSAGE,
+    )
+    if rows or _has_active_verdict(task) or task.status == TaskStatus.VERDICT_PENDING:
+        task.verdict_status = VerdictStatus.FAILED
+        task.verdict_error = USER_CANCELLED_MESSAGE
+        task.verdict_finished_at = now_value
+        # Finalize trials whose classification the QA job had in flight so
+        # they don't linger in a RUNNING analysis state.
+        for trial in task.trials or []:
+            if trial.superseded_by_trial_id is None and _has_active_analysis(trial):
+                trial.analysis_status = AnalysisStatus.FAILED
+                trial.analysis_error = USER_CANCELLED_MESSAGE
+                trial.analysis_finished_at = now_value
+        if task.status == TaskStatus.VERDICT_PENDING:
+            task.status = TaskStatus.FAILED
+            task.finished_at = now_value
+
+    await session.commit()
+    return {
+        "status": "cancelled",
+        "task_id": task_id,
+        "qa_jobs_cancelled": len(rows),
+        **_collect_cancel_metadata(rows),
+    }
+
+
 def _task_has_active_analysis(task: TaskModel) -> bool:
     return any(
         trial.superseded_by_trial_id is None
@@ -1007,88 +1354,18 @@ async def _count_active_trials(session: AsyncSession, *, task_id: str) -> int:
     return int(count or 0)
 
 
-async def rerun_trial_analysis_core(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None = None,
-) -> dict[str, str]:
-    """Queue analysis for a completed trial and invalidate the task verdict."""
-    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    task = await session.get(TaskModel, trial.task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
-
-    if trial.superseded_by_trial_id is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "This trial has been superseded by another retry "
-                f"({trial.superseded_by_trial_id}); analyze that one instead"
-            ),
-        )
-
-    if trial.status not in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Can only run analysis for completed or failed trials "
-                f"(current: {trial.status.value})"
-            ),
-        )
-
-    if trial.analysis_status in (
-        AnalysisStatus.PENDING,
-        AnalysisStatus.QUEUED,
-        AnalysisStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Analysis is already in progress for this trial "
-                f"(current: {trial.analysis_status.value})"
-            ),
-        )
-
-    active_trials = await _count_active_trials(session, task_id=task.id)
-    if active_trials > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only run trial analysis after all trials for the task finish",
-        )
-
-    if task.verdict_status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot rerun analysis while the task verdict is still running",
-        )
-
-    _reset_trial_analysis(trial)
-    _reset_task_verdict(task)
-    task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
-    task.finished_at = None
-    trial.analysis_status = AnalysisStatus.QUEUED
-
-    from oddish.queue import enqueue_analysis_worker_job
-
-    await enqueue_analysis_worker_job(session, trial_id=trial_id, org_id=trial.org_id)
-
-    await session.commit()
-    return {"status": "queued", "trial_id": trial_id}
-
-
-async def rerun_task_analysis_core(
+async def rerun_task_qa_core(
     session: AsyncSession,
     *,
     task_id: str,
     org_id: str | None = None,
 ) -> dict[str, str | int]:
-    """Queue analysis jobs for every trial in a finished task."""
+    """(Re)run the single task-level QA job for a finished task.
+
+    Resets every live trial's classification and the task verdict, then
+    enqueues one QA job that re-classifies all live trials and synthesizes a
+    fresh verdict.
+    """
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
@@ -1101,21 +1378,19 @@ async def rerun_task_analysis_core(
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
     if not task.trials:
-        raise HTTPException(status_code=400, detail="Task has no trials to analyze")
+        raise HTTPException(status_code=400, detail="Task has no trials to QA")
 
     live_trials = [
         trial for trial in task.trials if trial.superseded_by_trial_id is None
     ]
     if not live_trials:
-        raise HTTPException(
-            status_code=400, detail="Task has no live trials to analyze"
-        )
+        raise HTTPException(status_code=400, detail="Task has no live trials to QA")
 
     active_trials = await _count_active_trials(session, task_id=task.id)
     if active_trials > 0:
         raise HTTPException(
             status_code=400,
-            detail="Can only run task analysis after all trials finish",
+            detail="Can only run QA after all trials finish",
         )
 
     if any(
@@ -1125,7 +1400,7 @@ async def rerun_task_analysis_core(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Some trial analyses are already in progress for this task",
+            detail="QA is already in progress for this task",
         )
 
     if task.verdict_status in (
@@ -1135,22 +1410,21 @@ async def rerun_task_analysis_core(
     ):
         raise HTTPException(
             status_code=400,
-            detail="Cannot rerun analysis while the task verdict is still running",
+            detail="QA is already in progress for this task",
         )
-
-    from oddish.queue import enqueue_analysis_worker_job
 
     for trial in live_trials:
         _reset_trial_analysis(trial)
-        trial.analysis_status = AnalysisStatus.QUEUED
-        await enqueue_analysis_worker_job(
-            session, trial_id=trial.id, org_id=trial.org_id
-        )
 
     _reset_task_verdict(task)
     task.run_analysis = True
-    task.status = TaskStatus.ANALYZING
+    task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
+    task.verdict_status = VerdictStatus.QUEUED
+
+    from oddish.queue import enqueue_qa_worker_job
+
+    await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
 
     await session.commit()
     return {
@@ -1158,76 +1432,6 @@ async def rerun_task_analysis_core(
         "task_id": task_id,
         "trial_count": len(live_trials),
     }
-
-
-async def rerun_task_verdict_core(
-    session: AsyncSession,
-    *,
-    task_id: str,
-    org_id: str | None = None,
-) -> dict[str, str]:
-    """Queue a fresh verdict job for a finished task."""
-    result = await session.execute(
-        select(TaskModel)
-        .options(selectinload(TaskModel.trials))
-        .where(TaskModel.id == task_id)
-    )
-    task = result.scalar_one_or_none()
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    if org_id is not None and task.org_id != org_id:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-
-    if not task.trials:
-        raise HTTPException(status_code=400, detail="Task has no trials")
-
-    live_trials = [
-        trial for trial in task.trials if trial.superseded_by_trial_id is None
-    ]
-    if not live_trials:
-        raise HTTPException(status_code=400, detail="Task has no live trials")
-
-    active_trials = await _count_active_trials(session, task_id=task.id)
-    if active_trials > 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Can only run a task verdict after all trials finish",
-        )
-
-    if any(
-        trial.analysis_status
-        in (None, AnalysisStatus.PENDING, AnalysisStatus.QUEUED, AnalysisStatus.RUNNING)
-        for trial in live_trials
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="All trial analyses must finish before running a task verdict",
-        )
-
-    if task.verdict_status in (
-        VerdictStatus.PENDING,
-        VerdictStatus.QUEUED,
-        VerdictStatus.RUNNING,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Task verdict is already in progress",
-        )
-
-    _reset_task_verdict(task)
-    task.run_analysis = True
-    task.status = TaskStatus.VERDICT_PENDING
-    task.finished_at = None
-    task.verdict_status = VerdictStatus.QUEUED
-    task.verdict_started_at = None
-    task.verdict_finished_at = None
-
-    from oddish.queue import enqueue_verdict_worker_job
-
-    await enqueue_verdict_worker_job(session, task_id=task_id, org_id=task.org_id)
-
-    await session.commit()
-    return {"status": "queued", "task_id": task_id}
 
 
 async def get_trial_logs_core(
@@ -1380,6 +1584,43 @@ async def get_task_detail_core(
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
     )
+
+    # Hydrate effective user tags so the detail page renders the same
+    # chips the browse list does.
+    user_tags_by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=[task.id], public_only=False
+    )
+    task_status.user_tags = [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in user_tags_by_task.get(task.id, [])
+    ]
+
+    # Per-version direct tags, so the version switcher's tag editor shows
+    # the selected version's own chips (distinct from the task-level union).
+    version_tags = await list_direct_version_tags(
+        session, version_ids=[v.id for v in versions_sorted]
+    )
+    for summary in versions_sorted:
+        summary.user_tags = [
+            UserTagRef(
+                tag_id=t.tag_id,
+                key=t.key,
+                value=t.value,
+                color=t.color,
+                visibility=t.visibility,
+                current=t.current,
+                older=t.older,
+            )
+            for t in version_tags.get(summary.id, [])
+        ]
 
     return TaskDetailResponse(
         task=task_status,
@@ -1891,6 +2132,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "timeout_minutes",
     "environment",
     "harbor_config",
+    "is_probe",
     "status",
     "origin",
     "attempts",
@@ -2213,6 +2455,17 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
+    from oddish.core.auto_probe import maybe_enqueue_auto_probe
+
+    # Default the task link to the GitHub PR URL when the caller didn't
+    # pass an explicit ``--link`` but the task carries GitHub PR metadata
+    # (set via ``--github-meta``). An explicit link always wins.
+    if not submission.link:
+        from oddish.integrations.github.client import GitHubMeta
+
+        github_meta = GitHubMeta.from_tags(submission.tags)
+        if github_meta and github_meta.pr_url:
+            submission = submission.model_copy(update={"link": github_meta.pr_url})
 
     # Auto-detect append mode if the task already exists in the DB for this org.
     if not submission.append_to_task:
@@ -2234,6 +2487,15 @@ async def create_task_sweep_core(
         # opt in without manual intervention.
         if submission.run_analysis and not task.run_analysis:
             task.run_analysis = True
+        # Same opt-in flip for auto-probe: a task first run without probes can
+        # later opt in on append. Off by default (probes are opt-in).
+        if submission.run_probe and not task.run_probe:
+            task.run_probe = True
+        # Update the link whenever a new submission carries one (explicit
+        # --link or derived from --github-meta above). A submission with no
+        # link leaves the existing value untouched rather than clearing it.
+        if submission.link:
+            task.link = submission.link
 
         new_experiment_id: str | None = None
         experiment: ExperimentModel | None = None
@@ -2295,6 +2557,7 @@ async def create_task_sweep_core(
                 "experiment_id": new_experiment_id or fallback_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
+                "run_probe": task.run_probe,
                 "user": task.user,
             }
         )
@@ -2308,6 +2571,21 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
+        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+        # to the in-process runner instead of going through the Modal queue.
+        from oddish.config import settings
+
+        if settings.local_mode:
+            import asyncio
+            from oddish.worker.local_runner import run_trial_locally
+
+            for trial in new_trials:
+                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+        if task.run_probe:
+            await maybe_enqueue_auto_probe(
+                session, task=task, experiment=experiment, org_id=org_id
+            )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2345,4 +2623,21 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
-    return task, list(task.trials), False, experiment
+    new_trials = list(task.trials)
+
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+    # to the in-process runner instead of going through the Modal queue.
+    from oddish.config import settings
+
+    if settings.local_mode:
+        import asyncio
+        from oddish.worker.local_runner import run_trial_locally
+
+        for trial in new_trials:
+            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+    if task.run_probe:
+        await maybe_enqueue_auto_probe(
+            session, task=task, experiment=experiment, org_id=org_id
+        )
+    return task, new_trials, False, experiment

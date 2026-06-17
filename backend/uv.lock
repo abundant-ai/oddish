@@ -226,6 +226,15 @@ wheels = [
 ]
 
 [[package]]
+name = "better-profanity"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b5/4a/52966c1c883819f0b48540312a4a7f63b5c49f4e5b1a10838ae7f06ebb3c/better_profanity-0.7.0.tar.gz", hash = "sha256:8a6fdc8606d7471e7b5f6801917eca98ec211098262e82f62da4f5de3a73145b", size = 29977, upload-time = "2020-11-02T10:49:57.54Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/dd/0b074d89e903cc771721cde2c4bf3d8c9d114b5bd791af5c62bcf5fb9459/better_profanity-0.7.0-py3-none-any.whl", hash = "sha256:bd4c529ea6aa2db1aaa50524be1ed14d0fe5c664f1fd88c8bc388c7e9f9f00e8", size = 46104, upload-time = "2020-11-02T10:49:56.066Z" },
+]
+
+[[package]]
 name = "boto3"
 version = "1.40.61"
 source = { registry = "https://pypi.org/simple" }
@@ -939,8 +948,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.8.0"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#1983240bea614fcc29ed20e0e66d318973b0b87c" }
+version = "0.13.1"
+source = { git = "https://github.com/rishidesai/harbor?branch=main#07a576944f95c3f57147ba35a7f3ec97910d6141" }
 dependencies = [
     { name = "claude-agent-sdk" },
     { name = "datasets" },
@@ -1643,6 +1652,7 @@ dependencies = [
     { name = "litellm" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "typer" },
 ]
@@ -1653,12 +1663,15 @@ all = [
     { name = "alembic" },
     { name = "anthropic" },
     { name = "asyncpg" },
+    { name = "better-profanity" },
     { name = "daytona" },
     { name = "fastapi" },
     { name = "google-generativeai" },
+    { name = "mcp" },
     { name = "modal" },
     { name = "openai" },
     { name = "pre-commit" },
+    { name = "pypdf" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "python-jose", extra = ["cryptography"] },
@@ -1674,12 +1687,14 @@ requires-dist = [
     { name = "alembic", marker = "extra == 'server'", specifier = "==1.18.1" },
     { name = "anthropic", marker = "extra == 'worker'", specifier = "==0.76.0" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = "==0.31.0" },
+    { name = "better-profanity", marker = "extra == 'server'", specifier = ">=0.7.0,<1.0" },
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.165.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
     { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "litellm", specifier = "==1.83.14" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=1.26" },
     { name = "modal", marker = "extra == 'worker'", specifier = "==1.4.2" },
     { name = "oddish", extras = ["server"], marker = "extra == 'worker'" },
     { name = "oddish", extras = ["worker", "dev"], marker = "extra == 'all'" },
@@ -1687,10 +1702,12 @@ requires-dist = [
     { name = "pre-commit", marker = "extra == 'dev'", specifier = "==4.5.1" },
     { name = "pydantic", specifier = "==2.12.5" },
     { name = "pydantic-settings", specifier = "==2.12.0" },
+    { name = "pypdf", marker = "extra == 'server'", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.3.0" },
     { name = "python-jose", extras = ["cryptography"], marker = "extra == 'server'", specifier = "==3.5.0" },
     { name = "python-multipart", marker = "extra == 'server'", specifier = "==0.0.21" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = "==14.3.1" },
     { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'server'", specifier = "==2.0.46" },
     { name = "twine", marker = "extra == 'dev'", specifier = "==6.2.0" },
@@ -1735,6 +1752,7 @@ name = "oddish-app"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "better-profanity" },
     { name = "httpx" },
     { name = "logfire", extra = ["asyncpg", "fastapi", "httpx", "sqlalchemy", "system-metrics"] },
     { name = "modal" },
@@ -1754,6 +1772,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "better-profanity", specifier = ">=0.7.0,<1.0" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "logfire", extras = ["asyncpg", "fastapi", "httpx", "sqlalchemy", "system-metrics"], specifier = "==4.33.0" },
     { name = "modal", specifier = "==1.4.2" },
@@ -2339,6 +2358,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f3/91/9c6ee907786a473bf81c5f53cf703ba0957b23ab84c264080fb5a450416f/pyparsing-3.3.2.tar.gz", hash = "sha256:c777f4d763f140633dcb6d8a3eda953bf7a214dc4eff598413c070bcdc117cbc", size = 6851574, upload-time = "2026-01-21T03:57:59.36Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/bd/c038d7cc38edc1aa5bf91ab8068b63d4308c66c4c8bb3cbba7dfbc049f9c/pyparsing-3.3.2-py3-none-any.whl", hash = "sha256:850ba148bd908d7e2411587e247a1e4f0327839c40e2e5e6d05a007ecc69911d", size = 122781, upload-time = "2026-01-21T03:57:55.912Z" },
+]
+
+[[package]]
+name = "pypdf"
+version = "6.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/70/79/9fd087fbff8300e5c2a9b2bd0200b75c6ef8c1f9a7a2cfe3df0659aa4025/pypdf-6.13.0.tar.gz", hash = "sha256:558683ec9daf6b91c280c322c84c32f5cc216afd3eaa3a37de5ae88ae0c3b787", size = 6476995, upload-time = "2026-06-05T10:12:05.568Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9d/70/16942ec95d32187d8679ce8419cee2d5c0dbe90fa3ac1b307daea4c86da9/pypdf-6.13.0-py3-none-any.whl", hash = "sha256:de1294ae49d6956edb4e5c41527fb9e8716ddd2b120f2185c68aab784d4ffe60", size = 345958, upload-time = "2026-06-05T10:12:03.453Z" },
 ]
 
 [[package]]

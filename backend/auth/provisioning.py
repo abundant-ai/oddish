@@ -23,9 +23,27 @@ _DEFAULT_JIT_ROLE = (
 )
 
 
-async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
+def _github_account_from_clerk_payload(data: dict) -> tuple[str | None, str | None]:
+    external_accounts = data.get("external_accounts") or []
+    for account in external_accounts:
+        if account.get("provider") != "oauth_github":
+            continue
+        username = account.get("username") or None
+        email = (
+            account.get("email_address")
+            or account.get("email")
+            or account.get("primary_email_address")
+        )
+        return username, email
+    return None, None
+
+
+async def fetch_github_identity_from_clerk(
+    clerk_user_id: str,
+) -> tuple[str | None, str | None]:
+    """Return ``(github_username, github_email)`` from Clerk external accounts."""
     if not CLERK_SECRET_KEY:
-        return None
+        return None, None
 
     url = f"https://api.clerk.com/v1/users/{clerk_user_id}"
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
@@ -37,13 +55,108 @@ async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
             data = response.json()
     except httpx.HTTPError as exc:
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
-        return None
+        return None, None
 
-    external_accounts = data.get("external_accounts") or []
-    for account in external_accounts:
-        if account.get("provider") == "oauth_github":
-            return account.get("username") or None
-    return None
+    return _github_account_from_clerk_payload(data)
+
+
+async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
+    username, _email = await fetch_github_identity_from_clerk(clerk_user_id)
+    return username
+
+
+def _seed_attribution_cache_from_github(
+    user: UserModel,
+    *,
+    github_username: str | None,
+    github_email: str | None,
+) -> None:
+    """Merge Clerk GitHub identity into the dashboard Mine alias cache."""
+    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    handles: list[str] = [
+        str(value).strip()
+        for value in (raw.get("github_handles") or ())
+        if str(value).strip()
+    ]
+    emails: list[str] = [
+        str(value).strip()
+        for value in (raw.get("legacy_emails") or ())
+        if str(value).strip()
+    ]
+    seen_handles = {handle.lower() for handle in handles}
+    seen_emails = {email.lower() for email in emails}
+
+    def _add_handle(value: str | None) -> None:
+        normalized = (value or "").strip().lstrip("@")
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen_handles:
+            return
+        seen_handles.add(key)
+        handles.append(normalized)
+
+    def _add_email(value: str | None) -> None:
+        normalized = (value or "").strip()
+        if not normalized or "@" not in normalized:
+            return
+        key = normalized.lower()
+        if key in seen_emails:
+            return
+        seen_emails.add(key)
+        emails.append(normalized)
+
+    _add_handle(github_username)
+    _add_email(user.email)
+    _add_email(github_email)
+    if not handles and not emails:
+        return
+    cache: dict[str, object] = {
+        "github_handles": handles,
+        "legacy_emails": emails,
+    }
+    prior_refreshed = raw.get("refreshed_at")
+    if isinstance(prior_refreshed, str):
+        # Preserve discovery timestamps; only _persist_profile sets a new one.
+        cache["refreshed_at"] = prior_refreshed
+    user.attribution_cache = cache
+
+
+async def _refresh_user_github_identity(user: UserModel) -> None:
+    if not user.clerk_user_id:
+        return
+    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    if user.github_username and isinstance(raw.get("refreshed_at"), str):
+        return
+    if user.github_username:
+        _seed_attribution_cache_from_github(
+            user,
+            github_username=user.github_username,
+            github_email=None,
+        )
+        return
+    username, github_email = await fetch_github_identity_from_clerk(user.clerk_user_id)
+    if username and not user.github_username:
+        user.github_username = username
+    if username or github_email:
+        _seed_attribution_cache_from_github(
+            user,
+            github_username=username or user.github_username,
+            github_email=github_email,
+        )
+
+
+async def ensure_user_github_identity(
+    session: AsyncSession,
+    user: UserModel,
+) -> None:
+    """Refresh ``github_username`` from Clerk when missing (one API call)."""
+    if not user.clerk_user_id or user.github_username:
+        return
+    username, _email = await fetch_github_identity_from_clerk(user.clerk_user_id)
+    if username:
+        user.github_username = username
+        await session.flush()
 
 
 async def fetch_clerk_org_ids_for_user(clerk_user_id: str) -> list[str]:
@@ -144,10 +257,7 @@ async def get_or_create_user_in_org(
         resolved_role = resolve_role(org_role, user.role)
         if resolved_role != user.role and user.role != UserRole.OWNER:
             user.role = resolved_role
-        if not user.github_username:
-            github_username = await fetch_github_username_from_clerk(clerk_user_id)
-            if github_username:
-                user.github_username = github_username
+        await _refresh_user_github_identity(user)
         return user
 
     if email:
@@ -166,10 +276,7 @@ async def get_or_create_user_in_org(
                 and existing_user.role != UserRole.OWNER
             ):
                 existing_user.role = resolved_role
-            if not existing_user.github_username:
-                github_username = await fetch_github_username_from_clerk(clerk_user_id)
-                if github_username:
-                    existing_user.github_username = github_username
+            await _refresh_user_github_identity(existing_user)
             return existing_user
 
     role = resolve_role(org_role, default_role)
@@ -183,10 +290,7 @@ async def get_or_create_user_in_org(
     session.add(user)
     await session.flush()
 
-    if not user.github_username:
-        github_username = await fetch_github_username_from_clerk(clerk_user_id)
-        if github_username:
-            user.github_username = github_username
+    await _refresh_user_github_identity(user)
 
     return user
 
@@ -231,12 +335,7 @@ async def get_or_create_user_from_clerk(
             org = org_result.scalar_one_or_none()
             if org:
                 user.clerk_user_id = clerk_user_id
-                if not user.github_username:
-                    github_username = await fetch_github_username_from_clerk(
-                        clerk_user_id
-                    )
-                    if github_username:
-                        user.github_username = github_username
+                await _refresh_user_github_identity(user)
                 return user, org
 
     if not clerk_org_id:

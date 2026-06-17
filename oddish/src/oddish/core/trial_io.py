@@ -15,16 +15,29 @@ from harbor.viewer.scanner import JobScanner
 
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
-from oddish.db.storage import StorageClient
+from oddish.db.storage import (
+    StorageClient,
+    _cleanup_temp_directory,
+    resolve_trial_directory,
+)
 
 
 _CACHE_TTL_SECONDS = 120.0
 _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[str, tuple[float, dict | None]] = {}
+_PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
+_PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
+
+_EMPTY_PROBE_ARTIFACTS: dict = {
+    "trajectory": None,
+    "verifier_stdout": None,
+    "agent_messages": [],
+    "watchdog_log": None,
+}
 
 
 def _cache_get(cache: MutableMapping[str, tuple[float, _T]], key: str) -> _T | None:
@@ -446,6 +459,66 @@ async def read_trial_logs_structured(trial: TrialModel) -> dict:
         result = await _read_trial_logs_structured_uncached(trial)
         if _should_cache_trial(trial):
             _cache_set(_STRUCTURED_LOGS_CACHE, cache_key, result)
+        return result
+
+
+async def _read_trial_probe_artifacts_uncached(trial: TrialModel) -> dict:
+    """Resolve the probe `_artifacts` blob (agent transcript, verifier stdout,
+    trajectory, watchdog log) that the probe result page renders.
+
+    The local runner inlines this into ``trial.result["_artifacts"]``; cloud
+    trials leave ``trial.result`` empty and keep the artifacts only in object
+    storage. This downloads the trial directory on demand and extracts the same
+    shape, so the UI shows the agent output for cloud trials too.
+    """
+    if isinstance(trial.result, dict):
+        inlined = trial.result.get("_artifacts")
+        if inlined:
+            return inlined
+
+    if not trial.trial_s3_key and not trial.harbor_result_path:
+        return _EMPTY_PROBE_ARTIFACTS
+
+    # Imported here (not at module load) to avoid pulling the worker analysis
+    # stack into every API import.
+    from oddish.worker.probe_analysis import extract_probe_artifacts
+
+    try:
+        trial_dir, temp_dir, _ = await resolve_trial_directory(
+            trial_id=trial.id,
+            trial_s3_key=trial.trial_s3_key,
+            trial_result_path=trial.harbor_result_path,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Could not resolve trial dir for probe artifacts %s: %s", trial.id, exc
+        )
+        return _EMPTY_PROBE_ARTIFACTS
+
+    try:
+        return extract_probe_artifacts(trial_dir)
+    finally:
+        if temp_dir is not None:
+            _cleanup_temp_directory(temp_dir)
+
+
+async def read_trial_probe_artifacts(trial: TrialModel) -> dict:
+    cache_key = trial.id
+    if _should_cache_trial(trial):
+        cached = _cache_get(_PROBE_ARTIFACTS_CACHE, cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+    lock = _get_lock(_PROBE_ARTIFACTS_LOCKS, cache_key)
+    async with lock:
+        if _should_cache_trial(trial):
+            cached = _cache_get(_PROBE_ARTIFACTS_CACHE, cache_key)
+            if cached is not None:
+                return cached  # type: ignore[return-value]
+
+        result = await _read_trial_probe_artifacts_uncached(trial)
+        if _should_cache_trial(trial):
+            _cache_set(_PROBE_ARTIFACTS_CACHE, cache_key, result)
         return result
 
 

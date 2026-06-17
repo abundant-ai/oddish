@@ -37,6 +37,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  ExternalLink,
   Route,
   Package,
   Trash2,
@@ -188,6 +189,19 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
+function getDaytonaSandboxUrl(trial: Trial): string | null {
+  const sandboxJob = trial.jobs?.find(
+    (job) =>
+      job.provider?.toLowerCase() === "daytona" &&
+      typeof job.external_id === "string" &&
+      job.external_id.length > 0,
+  );
+  if (!sandboxJob?.external_id) return null;
+  return `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
+    sandboxJob.external_id,
+  )}`;
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -221,8 +235,6 @@ export function TrialDetailPanel({
   const [showFullError, setShowFullError] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
-  const [analysisRunning, setAnalysisRunning] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -271,22 +283,6 @@ export function TrialDetailPanel({
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
   const canDelete = allowDelete && Boolean(onDelete) && Boolean(trial);
-  const taskHasActiveTrials =
-    task !== null
-      ? Math.max(0, task.total - task.completed - task.failed) > 0
-      : false;
-  const canRunAnalysis =
-    showAnalysis &&
-    allowRetry &&
-    !taskHasActiveTrials &&
-    (task?.run_analysis ||
-      trial?.analysis_status != null ||
-      trial?.analysis != null);
-  const analysisLabel =
-    trial?.analysis_status || trial?.analysis
-      ? "Rerun analysis"
-      : "Run analysis";
-
   const handleRetry = async () => {
     if (!trial || retrying || !allowRetry) return;
     setRetrying(true);
@@ -329,37 +325,6 @@ export function TrialDetailPanel({
     }
   };
 
-  const handleRunAnalysis = async () => {
-    if (!trial || !task || analysisRunning || !canRunAnalysis) return;
-    setAnalysisRunning(true);
-    setAnalysisError(null);
-
-    try {
-      const res = await fetch(
-        `${apiBaseUrl}/trials/${trial.id}/analysis/retry`,
-        {
-          method: "POST",
-        },
-      );
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to queue analysis",
-        );
-      }
-
-      onRetry?.([task.id]);
-      onClose();
-    } catch (err) {
-      setAnalysisError(
-        err instanceof Error ? err.message : "Failed to queue analysis",
-      );
-    } finally {
-      setAnalysisRunning(false);
-    }
-  };
-
   const STAGE_FILE_MAP: Record<string, string> = {
     starting: "agent/oracle.txt",
     trial_started: "agent/oracle.txt",
@@ -382,8 +347,6 @@ export function TrialDetailPanel({
       setShowFullError(false);
       setRetrying(false);
       setRetryError(null);
-      setAnalysisRunning(false);
-      setAnalysisError(null);
       setDeleteDialogOpen(false);
       setDeleting(false);
       setDeleteError(null);
@@ -473,6 +436,7 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
+  const daytonaSandboxUrl = getDaytonaSandboxUrl(trial);
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -508,7 +472,7 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
-          {trial.task_version != null && (
+          {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
             </span>
@@ -700,25 +664,21 @@ export function TrialDetailPanel({
                 )}
               </Button>
             )}
-            {canRunAnalysis && (
+            {daytonaSandboxUrl && (
               <Button
-                onClick={handleRunAnalysis}
-                disabled={analysisRunning}
+                asChild
                 variant="outline"
                 size="sm"
-                className="h-7 min-w-[148px] px-2 text-[10px] font-semibold tracking-wide uppercase"
+                className="h-7 min-w-[132px] px-2 text-[10px] font-semibold tracking-wide uppercase"
               >
-                {analysisRunning ? (
-                  <>
-                    <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    Queueing...
-                  </>
-                ) : (
-                  <>
-                    <Microscope className="mr-1 h-3.5 w-3.5" />
-                    {analysisLabel}
-                  </>
-                )}
+                <a
+                  href={daytonaSandboxUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                  Sandbox
+                </a>
               </Button>
             )}
             {canDelete && (
@@ -749,11 +709,6 @@ export function TrialDetailPanel({
         </div>
         {retryError && (
           <p className="pt-1 text-right text-xs text-red-500">{retryError}</p>
-        )}
-        {analysisError && (
-          <p className="pt-1 text-right text-xs text-red-500">
-            {analysisError}
-          </p>
         )}
       </DrawerHeader>
 
@@ -968,13 +923,15 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Discreet reproduction command */}
-              <CodeBlock
-                code={buildOddishRunCommand(trial, task)}
-                language="bash"
-                maxHeight="none"
-                className="opacity-60 transition-opacity hover:opacity-100"
-              />
+              {/* Discreet reproduction command — hidden from public viewers */}
+              {showAnalysis && (
+                <CodeBlock
+                  code={buildOddishRunCommand(trial, task)}
+                  language="bash"
+                  maxHeight="none"
+                  className="opacity-60 transition-opacity hover:opacity-100"
+                />
+              )}
             </div>
           </TabsContent>
 

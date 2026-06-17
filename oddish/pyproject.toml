@@ -47,6 +47,8 @@ dependencies = [
     # models not yet in the installed litellm release.  Bump this pin on a
     # regular cadence (e.g. weekly) to pick up newly-launched models.
     "litellm==1.83.14",
+    # YAML parsing for skill frontmatter (skills library).
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +64,13 @@ server = [
     "alembic==1.18.1",
     # S3-compatible storage
     "aioboto3==15.5.0",
+    # Document text extraction for the agent doc-store ingest pipeline.
+    "pypdf>=4.0",
+    # Doc-store MCP retrieval server (oddish.mcp.docstore_server).
+    "mcp>=1.26",
+    # Tag-name profanity screening (oddish.core.tag_profanity); same
+    # constraint as backend/pyproject.toml.
+    "better-profanity>=0.7.0,<1.0",
 ]
 worker = [
     "oddish[server]",
@@ -91,6 +100,7 @@ Documentation = "https://github.com/abundant-ai/oddish/blob/main/DOCS.md"
 
 [project.scripts]
 oddish = "oddish.cli:app"
+oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }

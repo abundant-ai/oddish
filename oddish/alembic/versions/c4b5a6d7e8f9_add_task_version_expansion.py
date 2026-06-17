@@ -38,14 +38,18 @@ def upgrade() -> None:
             "expanded_at",
             sa.DateTime(timezone=True),
             nullable=True,
-        ), if_not_exists=True)
+        ),
+        if_not_exists=True,
+    )
     op.add_column(
         "task_versions",
         sa.Column(
             "expanded_manifest_key",
             sa.Text,
             nullable=True,
-        ), if_not_exists=True)
+        ),
+        if_not_exists=True,
+    )
 
     # ------------------------------------------------------------------
     # worker_job_kind: add TASK_EXPAND

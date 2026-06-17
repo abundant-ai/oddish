@@ -12,9 +12,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -22,7 +24,7 @@ from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
 # Import shared base from OSS oddish
-from oddish.db.models import Base, TimestampedMixin
+from oddish.db.models import Base, TimestampedMixin, utcnow
 
 
 def generate_id() -> str:
@@ -136,11 +138,20 @@ class UserModel(TimestampedMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
+    attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # When true, tasks this user creates default to run_probe=True (auto-probe
+    # on submit) without the caller passing --run-probe. Only ever turns the
+    # flag ON; an explicit run_probe=True on the submission still wins. Set per
+    # user by an operator; there is no UI yet.
+    run_probe_default: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
     )
 
     # Relationships
@@ -212,6 +223,11 @@ class APIKeyModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Visibility
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     # Relationships
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
         "OrganizationModel", back_populates="api_keys", lazy="selectin"
@@ -224,6 +240,102 @@ class APIKeyModel(TimestampedMixin, Base):
         Index("idx_api_keys_org_id", "org_id"),
         Index("idx_api_keys_key_hash", "key_hash"),
     )
+
+
+# =============================================================================
+# Chat models
+# =============================================================================
+
+
+# Member names are intentionally lowercase: they mirror the stored string
+# values and are referenced as e.g. ChatStatus.active by the ported chat code.
+class ChatScopeKind(str, Enum):
+    experiment = "experiment"
+    task_probes = "task_probes"
+    task = "task"
+    global_ = "global"
+
+
+class ChatStatus(str, Enum):
+    provisioning = "provisioning"
+    active = "active"
+    closed = "closed"
+    broken = "broken"
+
+
+class ChatTurnStatus(str, Enum):
+    running = "running"
+    done = "done"
+    failed = "failed"
+    canceled = "canceled"
+
+
+# These chat tables deliberately do not use TimestampedMixin: they need no
+# updated_at/deleted_at, and their columns must mirror the raw-SQL migration exactly.
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    __table_args__ = (
+        Index("ix_chat_sessions_status_last_activity", "status", "last_activity"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sandbox_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Internal READ api-key minted for the global-scope sandbox callback.
+    # Intentionally unconstrained (no FK): the key is hard-deleted when the
+    # session closes and this id is never read afterward.
+    query_api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")  # "cc" is the default Daytona session id used by the chat orchestrator
+    claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ChatSessionEvent(Base):
+    __tablename__ = "chat_session_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_chat_session_events_session_seq"),
+        Index("ix_chat_session_events_session_seq", "session_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatTurn(Base):
+    __tablename__ = "chat_turns"
+    __table_args__ = (
+        Index(
+            "uq_chat_turns_one_running", "session_id",
+            unique=True, postgresql_where=text("status = 'running'"),
+        ),
+        Index("ix_chat_turns_session_seq", "session_id", "seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +368,7 @@ def create_api_key(
     scope: APIKeyScope = APIKeyScope.FULL,
     created_by_user_id: str | None = None,
     expires_at: datetime | None = None,
+    is_internal: bool = False,
 ) -> tuple[APIKeyModel, str]:
     """
     Create a new API key.
@@ -277,6 +390,7 @@ def create_api_key(
         scope=scope,
         created_by_user_id=created_by_user_id,
         expires_at=expires_at,
+        is_internal=is_internal,
     )
 
     return api_key, raw_key
