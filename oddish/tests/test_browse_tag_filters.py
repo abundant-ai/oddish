@@ -288,3 +288,148 @@ def test_standalone_server_tasks_browse_accepts_tag_query_params():
     sig = inspect.signature(standalone_browse)
     for name in ("tags", "tags_any", "tags_none"):
         assert name in sig.parameters
+
+
+# ---------------------------------------------------------------------------
+# Author filter for the task browser (the github:/author:/user: qualifier)
+# ---------------------------------------------------------------------------
+
+
+def _compile_sql(clause) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    return str(
+        clause.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).lower()
+
+
+def test_browse_author_filter_none_when_empty():
+    from oddish.core.endpoints import _build_browse_author_filter
+
+    assert _build_browse_author_filter((), (), ()) is None
+
+
+def test_browse_author_filter_matches_handle_case_insensitively():
+    from oddish.core.endpoints import _build_browse_author_filter
+
+    sql = _compile_sql(_build_browse_author_filter((), ("Bob",), ()))
+    # Matches the existing index expressions exactly so the planner can use them:
+    # idx_tasks_org_lower_github_tag_live on lower((tags ->> 'github_username'))
+    # and idx_tasks_org_lower_user_live on lower("user").
+    assert "lower((tasks.tags ->> 'github_username')) in ('bob')" in sql
+    assert "lower(tasks.\"user\") in ('bob')" in sql
+
+
+def test_browse_author_filter_matches_created_by_user_ids():
+    from oddish.core.endpoints import _build_browse_author_filter
+
+    sql = _compile_sql(_build_browse_author_filter(("user_a", "user_b"), (), ()))
+    assert "created_by_user_id in ('user_a', 'user_b')" in sql
+
+
+def test_browse_author_filter_matches_legacy_email_on_user():
+    from oddish.core.endpoints import _build_browse_author_filter
+
+    sql = _compile_sql(_build_browse_author_filter((), (), ("ada@x.com",)))
+    # Emails only match the legacy ``user`` string, never the github tag.
+    assert "lower(tasks.\"user\") in ('ada@x.com')" in sql
+    assert "github_username" not in sql
+
+
+def test_browse_author_filter_ors_all_identities():
+    from oddish.core.endpoints import _build_browse_author_filter
+
+    sql = _compile_sql(
+        _build_browse_author_filter(("user_a",), ("bob",), ("ada@x.com",))
+    )
+    assert "created_by_user_id" in sql
+    assert "github_username" in sql
+    assert " or " in sql  # the three branches are OR'd
+    # The legacy ``user`` match covers both the handle and the email.
+    assert "bob" in sql and "ada@x.com" in sql
+
+
+class _BrowseCaptureSession:
+    """Drives ``browse_tasks_core`` to its empty-page result, returning tag rows
+    for the resolver's text() query and an empty page for the paged select.
+    Records statements so the page query can be compiled and asserted on.
+    """
+
+    def __init__(self, tag_rows=None):
+        self.statements: list[object] = []
+        self._tag_rows = tag_rows or []
+
+    async def execute(self, statement, params=None):
+        from sqlalchemy.sql.elements import TextClause
+
+        self.statements.append(statement)
+        if isinstance(statement, TextClause):
+
+            class _R:
+                def __init__(self_inner, rows):
+                    self_inner.rows = rows
+
+                def all(self_inner):
+                    return self_inner.rows
+
+            return _R(self._tag_rows)
+
+        class _Mappings:
+            def all(self_inner):
+                return []
+
+        class _Result:
+            def mappings(self_inner):
+                return _Mappings()
+
+        return _Result()
+
+
+def _page_query_text(session) -> str:
+    from sqlalchemy.dialects import postgresql
+
+    compiled = session.statements[-1].compile(dialect=postgresql.dialect())
+    # The github_username JSON key + tag-id array are bind params, not inlined,
+    # so fold the bound values into the searchable text.
+    return (
+        str(compiled).lower()
+        + " "
+        + " ".join(str(v) for v in compiled.params.values()).lower()
+    )
+
+
+def test_browse_author_filter_restricts_page_query():
+    from oddish.core.endpoints import browse_tasks_core
+
+    session = _BrowseCaptureSession()
+    _run(
+        browse_tasks_core(
+            session,
+            org_id="org-1",
+            author_github_usernames=("bob",),
+        )
+    )
+    page = _page_query_text(session)
+    assert "github_username" in page  # author predicate applied to the page query
+    assert "bob" in page
+
+
+def test_browse_author_ands_with_tag():
+    from oddish.core.endpoints import browse_tasks_core
+
+    session = _BrowseCaptureSession(tag_rows=[("tag-flaky", "tag-flaky", "tag-flaky")])
+    _run(
+        browse_tasks_core(
+            session,
+            org_id="org-1",
+            tags_all=["tag-flaky"],
+            author_github_usernames=("bob",),
+        )
+    )
+    page = _page_query_text(session)
+    # Both predicates land on the same page query (ANDed via the ranked subquery).
+    assert "github_username" in page and "bob" in page  # author
+    assert "effective_tag_ids" in page and "tag-flaky" in page  # tag:

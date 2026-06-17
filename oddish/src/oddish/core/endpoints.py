@@ -30,7 +30,7 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.tag_filter_ast import (
     TagFilterAST,
@@ -464,6 +464,52 @@ async def list_tasks_core(
     return response
 
 
+def _build_browse_author_filter(
+    user_ids: Sequence[str] | None,
+    github_usernames: Sequence[str] | None,
+    emails: Sequence[str] | None,
+):
+    """Direct author predicate for the task browser, or ``None``.
+
+    Every column lives on ``TaskModel`` -- no join needed. The matches are
+    case-insensitive on ``lower(tags ->> 'github_username')`` and
+    ``lower(user)`` so they ride the existing partial indexes
+    ``idx_tasks_org_lower_github_tag_live`` / ``idx_tasks_org_lower_user_live``;
+    ``created_by_user_id`` rides ``idx_tasks_org_created_by_live``. The legacy
+    ``user`` string can hold either a handle or an email, so it is matched
+    against both. Returns ``None`` when no author was supplied (normal browse).
+    """
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    lowered_handles = [
+        handle
+        for handle in (
+            (name or "").strip().lstrip("@").lower() for name in (github_usernames or ())
+        )
+        if handle
+    ]
+    lowered_emails = [
+        email
+        for email in ((value or "").strip().lower() for value in (emails or ()))
+        if email
+    ]
+
+    clauses = []
+    if normalized_user_ids:
+        clauses.append(TaskModel.created_by_user_id.in_(normalized_user_ids))
+    if lowered_handles:
+        clauses.append(
+            func.lower(TaskModel.tags["github_username"].astext).in_(lowered_handles)
+        )
+    seen_handles = set(lowered_handles)
+    user_values = lowered_handles + [e for e in lowered_emails if e not in seen_handles]
+    if user_values:
+        clauses.append(func.lower(TaskModel.user).in_(user_values))
+
+    if not clauses:
+        return None
+    return or_(*clauses)
+
+
 async def browse_tasks_core(
     session: AsyncSession,
     *,
@@ -474,6 +520,9 @@ async def browse_tasks_core(
     tags_all: list[str] | None = None,
     tags_any: list[str] | None = None,
     tags_none: list[str] | None = None,
+    author_user_ids: Sequence[str] | None = None,
+    author_github_usernames: Sequence[str] | None = None,
+    author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
@@ -552,6 +601,15 @@ async def browse_tasks_core(
         if not resolved_filter.is_empty():
             for predicate in build_filter_predicates(resolved_filter):
                 ranked_tasks = ranked_tasks.where(predicate)
+
+    # Author filter (the github:/author:/user: qualifier): ANDs with the
+    # free-text and tag predicates above. Resolved upstream to matching org
+    # members + aliases; an unknown handle resolves to an empty page.
+    author_filter = _build_browse_author_filter(
+        author_user_ids, author_github_usernames, author_emails
+    )
+    if author_filter is not None:
+        ranked_tasks = ranked_tasks.where(author_filter)
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
