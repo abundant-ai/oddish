@@ -177,6 +177,10 @@ interface APIKey {
   created_at: string;
 }
 
+interface APIKeyPermissions {
+  can_create: boolean;
+}
+
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "—";
   return new Date(dateStr).toLocaleDateString(undefined, {
@@ -516,6 +520,13 @@ function APIKeysPanel() {
     error,
     isLoading,
   } = useSWR<APIKey[]>(`/api/settings/api-keys`, fetcher);
+  const { data: permissions } = useSWR<APIKeyPermissions>(
+    `/api/settings/api-keys/permissions`,
+    fetcher,
+  );
+  const canCreateAPIKeys = permissions?.can_create ?? false;
+  const createRestriction =
+    "Only @abundant.ai admins in the Abundant org can create API keys.";
 
   const handleRevoke = async () => {
     if (!revokeTarget) return;
@@ -547,14 +558,21 @@ function APIKeysPanel() {
         title="API keys"
         description="Used by the CLI and direct API integrations."
         action={
-          <Button size="sm" onClick={() => setShowCreateModal(true)}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            New key
-          </Button>
+          canCreateAPIKeys ? (
+            <Button size="sm" onClick={() => setShowCreateModal(true)}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              New key
+            </Button>
+          ) : null
         }
       />
 
       <div className="pt-4">
+        {permissions && !canCreateAPIKeys ? (
+          <Alert className="mb-4">
+            <AlertDescription>{createRestriction}</AlertDescription>
+          </Alert>
+        ) : null}
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>Failed to load API keys</AlertTitle>
@@ -579,18 +597,22 @@ function APIKeysPanel() {
                 No API keys yet
               </p>
               <p className="text-xs text-muted-foreground">
-                Create one to use the Oddish CLI from your laptop or CI.
+                {canCreateAPIKeys
+                  ? "Create one to use the Oddish CLI from your laptop or CI."
+                  : createRestriction}
               </p>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              className="mt-2"
-              onClick={() => setShowCreateModal(true)}
-            >
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Create your first key
-            </Button>
+            {canCreateAPIKeys ? (
+              <Button
+                size="sm"
+                variant="outline"
+                className="mt-2"
+                onClick={() => setShowCreateModal(true)}
+              >
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Create your first key
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
@@ -652,7 +674,7 @@ function APIKeysPanel() {
       </div>
 
       <CreateAPIKeyModal
-        isOpen={showCreateModal}
+        isOpen={showCreateModal && canCreateAPIKeys}
         onClose={() => setShowCreateModal(false)}
         onKeyCreated={(key) => {
           setNewKey(key);
