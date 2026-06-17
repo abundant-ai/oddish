@@ -86,7 +86,7 @@ async def _make_source_db():
                     "org_id": "org-a",
                     "email": "real-a1@corp.com",
                     "name": "Alice Real",
-                    "role": "owner",
+                    "role": "admin",
                     "github_username": "alice",
                     "clerk_user_id": "user_a1",
                 },
@@ -596,7 +596,7 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
                 text(
                     "insert into users (id, org_id, email, role, name, is_active,"
                     " created_at, updated_at) values ('jit-rev', 'org-a',"
-                    " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
+                    " 'reviewer@corp.com', 'admin', 'Reviewer', true, now(), now())"
                 )
             )
             await c.execute(
@@ -721,12 +721,12 @@ async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
                     "insert into users (id, org_id, email, role, name, is_active,"
                     " created_at, updated_at) values"
                     " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
-                    "  'owner', 'Preview Owner', true, now(), now()),"
+                    "  'admin', 'Preview Owner', true, now(), now()),"
                     " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
                     "  'Prod User x', true, now(), now()),"
                     # ... and a JIT-provisioned reviewer holding a real user's
                     # unique identity under a different primary key
-                    " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
+                    " ('jit-1', 'org-a', 'real-a1@corp.com', 'admin', 'Reviewer',"
                     "  true, now(), now())"
                 )
             )
