@@ -2745,17 +2745,36 @@ async def create_task_sweep_core(
         # Scoping to current_version_id is what makes a changed task (fresh
         # version -> 0 existing) correctly get a full N. The default ORM select
         # excludes soft-deleted rows, so tombstones never count toward live N.
+        #
+        # Scope the count to the experiment the new trials will actually be
+        # written to so the count scope matches the write scope: an explicit
+        # experiment when named, otherwise the task's primary (first-linked)
+        # experiment -- mirroring ``append_trials_to_task``'s own fallback. This
+        # keeps reconcile idempotent per-experiment: re-submitting the same
+        # experiment counts its own trials (shortfall 0), while submitting to a
+        # new experiment starts from 0 and gets a full N even when the same
+        # task+model already has trials in a different experiment. Counting
+        # task-wide would over-count on a task linked to several experiments and
+        # create too few (or zero) trials in the target.
         # ``--add`` / ``additive=True`` opts out: skip the count entirely and
         # fall back to the additive behavior (existing_counts=None -> +N).
+        target_experiment_id = new_experiment_id or (
+            primary_experiment.id if primary_experiment else None
+        )
         existing_counts: dict[tuple[str, str | None], int] | None = None
-        if not submission.additive:
+        if not submission.additive and task.current_version_id is not None:
+            reconcile_where = [
+                TrialModel.task_id == task.id,
+                TrialModel.task_version_id == task.current_version_id,
+                TrialModel.is_probe.is_(False),
+            ]
+            if target_experiment_id is not None:
+                reconcile_where.append(
+                    TrialModel.experiment_id == target_experiment_id
+                )
             existing_counts_result = await session.execute(
                 select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
-                .where(
-                    TrialModel.task_id == task.id,
-                    TrialModel.task_version_id == task.current_version_id,
-                    TrialModel.is_probe.is_(False),
-                )
+                .where(*reconcile_where)
                 .group_by(TrialModel.agent, TrialModel.model)
             )
             existing_counts = {
