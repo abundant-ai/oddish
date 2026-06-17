@@ -18,6 +18,10 @@ import {
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
+import {
+  SearchSyntaxHelp,
+  SearchSyntaxRow,
+} from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
@@ -41,7 +45,6 @@ import {
 import {
   ChevronLeft,
   ChevronRight,
-  CircleHelp,
   ExternalLink,
   GitPullRequest,
   Loader2,
@@ -61,17 +64,6 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   }, [delayMs, value]);
 
   return debouncedValue;
-}
-
-function SearchSyntaxRow({ example, hint }: { example: string; hint: string }) {
-  return (
-    <p className="flex items-baseline gap-2">
-      <code className="shrink-0 rounded bg-muted px-1 font-mono">
-        {example}
-      </code>
-      <span className="text-muted-foreground">{hint}</span>
-    </p>
-  );
 }
 
 function TaskCardsSkeleton() {
@@ -477,50 +469,39 @@ export function TasksPageClient({
                 <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder={'Search · github:user · "phrase" -not tag:x'}
+                  placeholder="Search users, tags, IDs, etc."
                   className="h-8 w-full border-[#6f88b4]/20 pr-7"
                 />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Search syntax help"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      <CircleHelp className="h-3.5 w-3.5" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent
-                    side="bottom"
-                    align="end"
-                    className="max-w-[320px] space-y-1.5"
-                  >
-                    <p className="font-medium">Search syntax</p>
-                    <SearchSyntaxRow
-                      example="murmur x86"
-                      hint="every word must match, anywhere in the name"
-                    />
-                    <SearchSyntaxRow
-                      example={'"x86-32 conformance"'}
-                      hint="exact phrase"
-                    />
-                    <SearchSyntaxRow
-                      example="murmur OR polygon"
-                      hint="either word"
-                    />
-                    <SearchSyntaxRow example="-no-skill" hint="exclude" />
-                    <SearchSyntaxRow
-                      example="tag:a OR tag:b -tag:c"
-                      hint="filter by tags"
-                    />
-                    <p className="text-muted-foreground">
-                      Matching is case-insensitive; combine freely, e.g.{" "}
-                      <code className="rounded bg-muted px-1 font-mono">
-                        polygon -rel tag:smoke
-                      </code>
-                    </p>
-                  </TooltipContent>
-                </Tooltip>
+                <SearchSyntaxHelp>
+                  <p className="font-medium">Search syntax</p>
+                  <SearchSyntaxRow
+                    example="murmur x86"
+                    hint="every word must match, anywhere in the name"
+                  />
+                  <SearchSyntaxRow
+                    example={'"x86-32 conformance"'}
+                    hint="exact phrase"
+                  />
+                  <SearchSyntaxRow
+                    example="murmur OR polygon"
+                    hint="either word"
+                  />
+                  <SearchSyntaxRow example="-no-skill" hint="exclude" />
+                  <SearchSyntaxRow
+                    example="github:alice"
+                    hint="by author — GitHub handle, email, or name"
+                  />
+                  <SearchSyntaxRow
+                    example="tag:a OR tag:b -tag:c"
+                    hint="filter by tags"
+                  />
+                  <p className="text-muted-foreground">
+                    Matching is case-insensitive; combine freely, e.g.{" "}
+                    <code className="rounded bg-muted px-1 font-mono">
+                      polygon github:alice tag:smoke
+                    </code>
+                  </p>
+                </SearchSyntaxHelp>
               </div>
               <SavedFiltersMenu
                 query={searchQuery}
