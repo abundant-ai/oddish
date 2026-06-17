@@ -18,11 +18,11 @@ def _normalized_org_slug(auth: AuthContext) -> str:
 
 
 def can_create_api_keys(auth: AuthContext) -> bool:
-    """Return whether this user may create organization API keys."""
-    role = auth.user.role if auth.user else auth.user_role
-    if role == UserRole.OWNER:
-        return True
+    """Return whether this user may create organization API keys.
 
+    Only admins with an @abundant.ai email in the main Abundant org qualify.
+    """
+    role = auth.user.role if auth.user else auth.user_role
     if role != UserRole.ADMIN:
         return False
 
