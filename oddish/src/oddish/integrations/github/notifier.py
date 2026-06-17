@@ -280,8 +280,13 @@ async def notify_analysis_update(trial_id: str) -> bool:
         return False
 
 
-async def notify_verdict_update(task_id: str) -> bool:
-    """Notify GitHub when a verdict completes."""
+async def notify_qa_update(task_id: str) -> bool:
+    """Notify GitHub when a task's QA job completes.
+
+    The QA job classifies every trial and synthesizes the task verdict, so a
+    single refresh re-renders the whole PR comment (per-trial classifications
+    plus the task verdict).
+    """
     try:
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
@@ -295,5 +300,5 @@ async def notify_verdict_update(task_id: str) -> bool:
         return await _update_pr_comment_for_task(task)
 
     except Exception as e:
-        logger.error(f"Error in notify_verdict_update for {task_id}: {e}")
+        logger.error(f"Error in notify_qa_update for {task_id}: {e}")
         return False

@@ -13,9 +13,9 @@ into two kind-agnostic passes now:
    retries remain) or FAILED. Per-kind domain-row cleanup is driven
    off the returned rows.
 
-The stage-transition helpers (``maybe_start_analysis_stage`` /
-``maybe_start_verdict_stage``) still run as a safety net so tasks
-with all trials done can't get stuck if a single stage-transition
+The stage-transition helpers (``maybe_start_qa_stage`` /
+``maybe_advance_legacy_analyzing_task``) still run as a safety net so
+tasks with all trials done can't get stuck if a single stage-transition
 flush failed at handler-commit time.
 """
 
@@ -79,6 +79,16 @@ ORPHANED_SLOT_GRACE_MINUTES = 2
 # over several ticks instead of one giant transaction.
 STUCK_ANALYZING_MINUTES = 15
 STUCK_ANALYZING_BATCH_LIMIT = 200
+
+# Backstop for tasks wedged in VERDICT_PENDING whose QA job is gone -- e.g. it
+# failed/exhausted without committing a terminal ``verdict_status`` (the old
+# unguarded verdict reconstruction crashed on probe-summary trials and rolled
+# back, leaving ``verdict_status='QUEUED'`` with no live worker_job). The
+# previous step-4 guard keyed off ``verdict_status NOT IN ('QUEUED','RUNNING')``
+# and so skipped exactly these rows, stranding them forever. We instead key off
+# "no live QA/VERDICT worker_job" and re-enqueue (or finalize) them. Batched so
+# a large backlog drains over several ticks instead of one giant burst.
+STALE_VERDICT_PENDING_BATCH_LIMIT = 200
 STUCK_ANALYZING_REASON = (
     "Analysis never produced a verdict for this trial; marked terminal by "
     "orphaned-pipeline cleanup so the task could leave the ANALYZING stage."
@@ -248,7 +258,10 @@ async def cleanup_orphaned_queue_state(
     # Lazy import: ``oddish.queue`` imports ``oddish.workers.jobs.enqueue``
     # which transitively imports this module, so a top-level import
     # would race with module initialization.
-    from oddish.queue import maybe_start_analysis_stage, maybe_start_verdict_stage
+    from oddish.queue import (
+        maybe_advance_legacy_analyzing_task,
+        maybe_start_qa_stage,
+    )
 
     async with get_session() as session:
         # -----------------------------------------------------------------
@@ -399,6 +412,7 @@ async def cleanup_orphaned_queue_state(
                     stale_trial_ids.append(trial.id)
 
             elif kind == "ANALYSIS":
+                # Legacy per-trial classification rows, drained across a deploy.
                 trial = await session.get(TrialModel, str(subject_id))
                 if trial is None:
                     continue
@@ -413,7 +427,7 @@ async def cleanup_orphaned_queue_state(
                     trial.analysis_status = AnalysisStatus.QUEUED
                     trial.analysis_error = row["error_message"]
 
-            elif kind == "VERDICT":
+            elif kind == "QA":
                 task = await session.get(TaskModel, str(subject_id))
                 if task is None:
                     continue
@@ -443,12 +457,12 @@ async def cleanup_orphaned_queue_state(
         # failed, in case the failure marks the task "all trials done"
         # for the first time.
         for trial_id in stale_trial_ids:
-            if await maybe_start_analysis_stage(session, trial_id):
+            if await maybe_start_qa_stage(session, trial_id):
                 tasks_progressed_to_analysis += 1
 
         # -----------------------------------------------------------------
         # 2. Tasks stuck in RUNNING where all trials finished -> advance.
-        #    Safety net in case a handler's ``maybe_start_analysis_stage``
+        #    Safety net in case a handler's ``maybe_start_qa_stage``
         #    call didn't run (e.g. the handler was killed between
         #    writing the trial terminal state and committing the stage
         #    transition).
@@ -474,11 +488,12 @@ async def cleanup_orphaned_queue_state(
         ).all()
 
         for (trial_id,) in tasks_ready_for_analysis:
-            if trial_id and await maybe_start_analysis_stage(session, str(trial_id)):
+            if trial_id and await maybe_start_qa_stage(session, str(trial_id)):
                 tasks_progressed_to_analysis += 1
 
         # -----------------------------------------------------------------
-        # 3. Tasks stuck in ANALYZING where all analyses finished -> advance.
+        # 3. Legacy tasks stuck in ANALYZING (pre-QA-refactor) where all
+        #    per-trial classifications finished -> advance to the QA job.
         # -----------------------------------------------------------------
         tasks_ready_for_verdict = (
             await session.execute(
@@ -502,34 +517,52 @@ async def cleanup_orphaned_queue_state(
         ).all()
 
         for (trial_id,) in tasks_ready_for_verdict:
-            if trial_id and await maybe_start_verdict_stage(session, str(trial_id)):
+            if trial_id and await maybe_advance_legacy_analyzing_task(
+                session, str(trial_id)
+            ):
                 tasks_progressed_to_verdict += 1
 
         # -----------------------------------------------------------------
-        # 4. VERDICT_PENDING tasks with no queued/running verdict_status.
-        #    Either their worker_jobs VERDICT row finished and we never
-        #    saw the hook, or the task was created before the unified
-        #    refactor and has no verdict row at all -- re-enqueue it so
-        #    the dispatcher has something to claim.
+        # 4. VERDICT_PENDING tasks with no LIVE QA job.
+        #    A task is wedged here when its QA (task-level) job is gone --
+        #    it finished/failed/exhausted (and we missed the hook, or it
+        #    rolled back before committing a terminal ``verdict_status``),
+        #    or the task predates the unified refactor and never had one.
+        #    The condition that matters is "no claimable QA/VERDICT
+        #    worker_job", NOT ``verdict_status``: a row stuck at
+        #    ``verdict_status='QUEUED'`` with no live job (the old
+        #    probe-summary KeyError left thousands of these) would never be
+        #    healed by a ``verdict_status``-keyed check. Re-enqueue so the
+        #    dispatcher has something to claim (or finalize if the verdict
+        #    is already terminal). ``ANALYSIS`` rows are intentionally
+        #    ignored here -- they no longer drive the verdict.
         # -----------------------------------------------------------------
         stale_verdict_pending = (
             await session.execute(
                 text(
                     """
-                    SELECT id
-                    FROM tasks
-                    WHERE status = 'VERDICT_PENDING'
-                      AND deleted_at IS NULL
-                      AND (
-                          verdict_status IS NULL
-                          OR verdict_status::text NOT IN ('QUEUED', 'RUNNING')
+                    SELECT t.id
+                    FROM tasks t
+                    WHERE t.status = 'VERDICT_PENDING'
+                      AND t.deleted_at IS NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM worker_jobs wj
+                          WHERE wj.subject_table = 'tasks'
+                            AND wj.subject_id = t.id
+                            AND wj.kind::text IN ('QA', 'VERDICT')
+                            AND wj.status::text IN (
+                                'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
+                            )
                       )
+                    ORDER BY t.updated_at ASC
+                    LIMIT :batch_limit
                     """
-                )
+                ),
+                {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
             )
         ).all()
 
-        from oddish.queue import enqueue_verdict_worker_job
+        from oddish.queue import enqueue_qa_worker_job
 
         for (task_id,) in stale_verdict_pending:
             task = await session.get(TaskModel, str(task_id))
@@ -544,7 +577,7 @@ async def cleanup_orphaned_queue_state(
                 task.verdict_error = None
                 task.verdict_started_at = None
                 task.verdict_finished_at = None
-                await enqueue_verdict_worker_job(
+                await enqueue_qa_worker_job(
                     session, task_id=task.id, org_id=task.org_id
                 )
 
@@ -634,7 +667,9 @@ async def cleanup_orphaned_queue_state(
                 if live_trial_id is None:
                     no_live_trial_ids.append(str(task_id))
                     continue
-                if await maybe_start_verdict_stage(session, str(live_trial_id)):
+                if await maybe_advance_legacy_analyzing_task(
+                    session, str(live_trial_id)
+                ):
                     stuck_analyzing_advanced += 1
 
             if no_live_trial_ids:

@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { ExternalLink, Microscope } from "lucide-react";
@@ -113,9 +114,11 @@ const fetcher = async (url: string) => {
 export function TaskProbeRunCard({
   taskId,
   versionId,
+  headerSlot,
 }: {
   taskId: string;
   versionId: string | null;
+  headerSlot?: ReactNode;
 }) {
   const { data } = useSWR<ProbeTrial[]>(
     `/api/tasks/${taskId}/trials?probe=true`,
@@ -135,7 +138,7 @@ export function TaskProbeRunCard({
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <h2 className="font-mono text-[12px] font-semibold tracking-[0.06em] text-[color:var(--paper-ink-2)] uppercase">
-          Probe runs
+          Task Analysis
         </h2>
         <Link
           href={`/tasks/${taskId}/probe`}
@@ -144,6 +147,8 @@ export function TaskProbeRunCard({
           View all →
         </Link>
       </div>
+
+      {headerSlot}
 
       {!latest ? (
         <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-6 text-center text-[12px] text-[color:var(--paper-ink-3)]">

@@ -5,7 +5,7 @@ to the target. The DEFINITION plane (rename / merge / delete / edit /
 manage-grants) is locked to the tag's owner, an org admin, or principals
 explicitly granted via ``tag_grants``.
 
-Admin bypass is exclusive to Clerk owner / admin roles — API-key auth
+Admin bypass is exclusive to the Clerk admin role — API-key auth
 falls back to scope checks, so a TASKS-scope key can apply existing tags
 but cannot e.g. RENAME a tag.
 
@@ -32,10 +32,10 @@ def _role_value(auth: Any) -> str | None:
 
 
 def is_org_admin(auth: Any) -> bool:
-    """True if the actor is an org admin or owner via Clerk JWT."""
+    """True if the actor is an org admin via Clerk JWT."""
     if getattr(auth, "method", None) == "api_key":
         return False
-    return _role_value(auth) in {"admin", "owner"}
+    return _role_value(auth) == "admin"
 
 
 def _is_oss_standalone(auth: Any) -> bool:

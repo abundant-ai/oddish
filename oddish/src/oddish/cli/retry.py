@@ -114,8 +114,8 @@ def _retry_trial_ids(api_url: str, trial_ids: list[str]) -> list[dict]:
 
 
 def _task_action(api_url: str, task_id: str, kind: str) -> dict:
-    """Run a task-level analysis or verdict retry."""
-    path = f"/tasks/{task_id}/{'analysis' if kind == 'analysis' else 'verdict'}/retry"
+    """Run a task-level QA retry (classify every trial + synthesize verdict)."""
+    path = f"/tasks/{task_id}/qa/retry"
     response = _post(api_url, path)
     ok = response.status_code == 200
     record: dict = {"task_id": task_id, "ok": ok, "status": response.status_code}
@@ -135,24 +135,15 @@ def run_retry(
     target: str | None,
     task_id: Optional[str],
     experiment_id: Optional[str],
-    do_analysis: bool,
-    do_verdict: bool,
+    do_qa: bool,
     yes: bool,
     json_output: bool,
 ) -> None:
-    """Re-run trials, analysis, or verdict for an existing target.
+    """Re-run trials, or the task-level QA job, for an existing target.
 
-    Backs ``oddish run <id> --retry`` (and ``--analysis`` / ``--verdict``).
+    Backs ``oddish run <id> --retry`` (and ``--qa``).
     """
-    if do_analysis and do_verdict:
-        message = "Use only one of --analysis or --verdict with --retry."
-        if json_output:
-            print_json({"error": message})
-        else:
-            error_console.print(f"[red]{message}[/red]")
-        raise typer.Exit(1)
-
-    kind = "analysis" if do_analysis else "verdict" if do_verdict else "trials"
+    kind = "qa" if do_qa else "trials"
 
     target_type, target_id = _resolve_target(
         api_url,
@@ -264,35 +255,9 @@ def _run_task_level_retries(
     yes: bool,
     json_output: bool,
 ) -> dict:
-    # Analysis/verdict are task-scoped; map a trial target to its parent task,
-    # except trial-level analysis which has its own endpoint.
+    # QA is task-scoped (one job per task classifies every trial and
+    # synthesizes the verdict); map a trial target to its parent task.
     if target_type == "trial":
-        if kind == "analysis":
-            _confirm(
-                f"Re-run analysis for trial {target_id}?",
-                yes=yes,
-                json_output=json_output,
-            )
-            response = _post(api_url, f"/trials/{target_id}/analysis/retry")
-            ok = response.status_code == 200
-            record: dict = {
-                "trial_id": target_id,
-                "ok": ok,
-                "status": response.status_code,
-            }
-            if ok:
-                try:
-                    record["response"] = response.json()
-                except ValueError:
-                    record["response"] = None
-            else:
-                record["error"] = response.text
-            return {
-                "kind": "analysis",
-                "target": {"type": "trial", "id": target_id},
-                "tasks": [record],
-            }
-        # verdict is not a per-trial concept: resolve the parent task.
         parent = _split_trial_id(target_id)
         if not parent:
             raise typer.BadParameter(

@@ -207,7 +207,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
     async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
         yield _Session(), trial
 
-    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+    async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
     async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
@@ -217,7 +217,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
-        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+        queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
     )
     monkeypatch.setattr(
         queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
@@ -280,7 +280,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
     async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
         yield _Session(), trial
 
-    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+    async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
     async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
@@ -290,7 +290,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
-        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+        queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
     )
     monkeypatch.setattr(
         queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
@@ -1138,7 +1138,7 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
     async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
         yield _Session(), trial
 
-    async def _fake_maybe_start_analysis_stage(session, trial_id: str) -> bool:
+    async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
     async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
@@ -1148,7 +1148,7 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
-        queue_module, "maybe_start_analysis_stage", _fake_maybe_start_analysis_stage
+        queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
     )
     monkeypatch.setattr(
         queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
