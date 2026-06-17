@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
+import { ChatButton } from "@/components/cc-chat/chat-button";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -34,7 +35,6 @@ import {
   formatDurationSec,
   trialDurationSec,
 } from "@/lib/format";
-import { taskHasActiveVerdict } from "@/lib/job-status";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -277,6 +277,7 @@ function TaskDetailHeader({
         </div>
       </div>
       <div className="flex flex-wrap items-center gap-2">
+        <ChatButton scopeKind="task" scopeId={task.name} />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);
@@ -762,16 +763,15 @@ export function TaskDetailClient({
     if (!task?.id || isRunningJudge) return;
     setIsRunningJudge(true);
     setJudgeError(null);
-    // analysis/retry queues per-trial classifications and flips
-    // task.run_analysis=True; the verdict auto-enqueues once they finish.
-    // verdict/retry alone 400s when no trial analyses exist yet.
+    // One task-level QA job: classify every trial, then synthesize the
+    // task verdict.
     try {
-      const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
         method: "POST",
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue judge");
+        throw new Error(data.detail || data.error || "Failed to queue QA");
       }
       void mutate();
     } catch (err) {
@@ -787,19 +787,16 @@ export function TaskDetailClient({
     setIsCancellingJudge(true);
     setJudgeError(null);
     try {
-      const stage = taskHasActiveVerdict(task) ? "verdict" : "analysis";
-      const res = await fetch(`/api/tasks/${task.id}/${stage}/cancel`, {
+      const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
         method: "POST",
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to cancel judge");
+        throw new Error(data.detail || data.error || "Failed to cancel QA");
       }
       void mutate();
     } catch (err) {
-      setJudgeError(
-        err instanceof Error ? err.message : "Failed to cancel judge",
-      );
+      setJudgeError(err instanceof Error ? err.message : "Failed to cancel QA");
     } finally {
       setIsCancellingJudge(false);
     }
@@ -850,16 +847,6 @@ export function TaskDetailClient({
               onMutate={() => mutate()}
             />
           }
-        />
-
-        <TaskVerdictBadge
-          task={task}
-          variant="inline"
-          onRunJudge={handleRunJudge}
-          onCancelJudge={handleCancelJudge}
-          isRunning={isRunningJudge}
-          isCancelling={isCancellingJudge}
-          error={judgeError}
         />
 
         <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
@@ -973,7 +960,21 @@ export function TaskDetailClient({
           </div>
         </div>
 
-        <TaskProbeRunCard taskId={task.id} versionId={selectedVersionId} />
+        <TaskProbeRunCard
+          taskId={task.id}
+          versionId={selectedVersionId}
+          headerSlot={
+            <TaskVerdictBadge
+              task={task}
+              variant="inline"
+              onRunJudge={handleRunJudge}
+              onCancelJudge={handleCancelJudge}
+              isRunning={isRunningJudge}
+              isCancelling={isCancellingJudge}
+              error={judgeError}
+            />
+          }
+        />
 
         <div className="space-y-3">
           <div className="flex items-baseline justify-between">

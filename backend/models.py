@@ -54,7 +54,6 @@ def generate_api_key() -> str:
 class UserRole(str, Enum):
     """User roles within an organization."""
 
-    OWNER = "owner"  # Developer/superuser — only assignable via direct DB edit
     ADMIN = "admin"  # Can manage users and settings
     MEMBER = "member"  # Can run evals, view results
 
@@ -223,6 +222,11 @@ class APIKeyModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Visibility
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     # Relationships
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
         "OrganizationModel", back_populates="api_keys", lazy="selectin"
@@ -247,6 +251,8 @@ class APIKeyModel(TimestampedMixin, Base):
 class ChatScopeKind(str, Enum):
     experiment = "experiment"
     task_probes = "task_probes"
+    task = "task"
+    global_ = "global"
 
 
 class ChatStatus(str, Enum):
@@ -279,10 +285,15 @@ class ChatSession(Base):
     scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
     sandbox_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Internal READ api-key minted for the global-scope sandbox callback.
+    # Intentionally unconstrained (no FK): the key is hard-deleted when the
+    # session closes and this id is never read afterward.
+    query_api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")  # "cc" is the default Daytona session id used by the chat orchestrator
     claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -356,6 +367,7 @@ def create_api_key(
     scope: APIKeyScope = APIKeyScope.FULL,
     created_by_user_id: str | None = None,
     expires_at: datetime | None = None,
+    is_internal: bool = False,
 ) -> tuple[APIKeyModel, str]:
     """
     Create a new API key.
@@ -377,6 +389,7 @@ def create_api_key(
         scope=scope,
         created_by_user_id=created_by_user_id,
         expires_at=expires_at,
+        is_internal=is_internal,
     )
 
     return api_key, raw_key

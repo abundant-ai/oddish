@@ -46,13 +46,6 @@ def test_is_org_admin_for_admin_role():
     assert is_org_admin(auth) is True
 
 
-def test_is_org_admin_for_owner_role():
-    from oddish.core.tag_permissions import is_org_admin
-
-    auth = _AuthLike(user=_User(id="u-1", role=_Role(value="owner")))
-    assert is_org_admin(auth) is True
-
-
 def test_is_org_admin_for_member_role_is_false():
     from oddish.core.tag_permissions import is_org_admin
 

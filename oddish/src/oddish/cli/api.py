@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import shutil
 import tarfile
 import tempfile
@@ -324,8 +325,17 @@ def archive_task_dir(task_path: Path) -> Path:
     # Favor fast uploads in CI/cloud flows over maximum compression.
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
+        deref_symlinks = os.environ.get(
+            "ODDISH_ARCHIVE_DEREF_SYMLINKS", ""
+        ).strip().lower() in ("1", "true", "yes")
         for item in task_path.iterdir():
-            tar.add(item, arcname=item.name)
+            # Symlink dereference is opt-in (ODDISH_ARCHIVE_DEREF_SYMLINKS=1) so
+            # default uploads preserve symlink semantics and stay byte-identical
+            # to the pre-feature behavior. Enable it for symlinked task layouts
+            # (e.g. experiment task dirs linked into one task_path) so the
+            # tarball packages the real target dir instead of a broken symlink.
+            target = item.resolve() if deref_symlinks else item
+            tar.add(target, arcname=item.name)
 
     return tarball_path
 
@@ -688,7 +698,6 @@ def submit_sweep(
     agent_kwargs: list[str] | None = None,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
-    additive: bool = False,
     content_hash: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
@@ -774,8 +783,6 @@ def submit_sweep(
         payload["harbor"] = harbor
     if append_to_task:
         payload["append_to_task"] = True
-    if additive:
-        payload["additive"] = True
     if content_hash:
         payload["content_hash"] = content_hash
     if extra_instructions:
