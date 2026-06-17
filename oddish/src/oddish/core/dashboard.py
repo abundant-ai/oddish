@@ -613,7 +613,6 @@ def _build_experiments_search_author_filter(
     *,
     org_id: str | None,
     emails: Sequence[str] | None = None,
-    include_legacy_fallback: bool = True,
 ):
     """AND-able EXISTS clause for the ``github:`` search qualifier.
 
@@ -622,6 +621,17 @@ def _build_experiments_search_author_filter(
     primary-task attribution precedence the Members dropdown uses. It is
     applied as an additional ``.where()`` so it ANDs with the owner control
     and ``tag:`` filters.
+
+    Unlike the owner filter, the primary-task fallback here is *always* emitted
+    and is not gated by the unowned-experiments probe. A handle search routinely
+    targets people who are **not** active org members (external GitHub
+    contributors), so there is no resolved ``user_id`` to seek on the indexed
+    ``owner_user_id`` -- the only way to reach their work is the primary-task
+    match. The fallback covers experiments whose owner is NULL **or** the
+    ``__unattributed__`` sentinel: the owner backfill stamps that sentinel on
+    experiments it can't attribute to any active member (again, the common case
+    for external contributors), so gating on ``owner_user_id IS NULL`` alone
+    silently dropped every such experiment once the backfill had converged.
 
     Returns ``false()`` when nothing was resolved so the qualifier narrows to
     an empty result rather than silently disappearing.
@@ -642,30 +652,34 @@ def _build_experiments_search_author_filter(
         return false()
 
     tiers = []
-    # Fast path: indexed owner column when stamped at submit time.
+    # Fast path: indexed owner column when the handle resolves to org members.
     if normalized_user_ids:
         tiers.append(ExperimentModel.owner_user_id.in_(normalized_user_ids))
 
-    if include_legacy_fallback:
-        primary_match = _build_primary_task_search_match(
-            normalized_user_ids, handles, emails=normalized_emails
+    # Primary-task fallback for experiments not owned by a resolved member --
+    # both NULL owners and the ``__unattributed__`` sentinel (see docstring).
+    primary_match = _build_primary_task_search_match(
+        normalized_user_ids, handles, emails=normalized_emails
+    )
+    if primary_match is not None:
+        primary_task_id = _first_live_task_id_for_experiment()
+        legacy_exists = (
+            select(1)
+            .select_from(TaskModel)
+            .where(TaskModel.id == primary_task_id)
+            .where(primary_match)
         )
-        if primary_match is not None:
-            primary_task_id = _first_live_task_id_for_experiment()
-            legacy_exists = (
-                select(1)
-                .select_from(TaskModel)
-                .where(TaskModel.id == primary_task_id)
-                .where(primary_match)
-            )
-            if org_id is not None:
-                legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
-            tiers.append(
-                and_(
+        if org_id is not None:
+            legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
+        tiers.append(
+            and_(
+                or_(
                     ExperimentModel.owner_user_id.is_(None),
-                    legacy_exists.exists(),
-                )
+                    ExperimentModel.owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER,
+                ),
+                legacy_exists.exists(),
             )
+        )
 
     if not tiers:
         return false()
@@ -867,13 +881,17 @@ async def load_dashboard_experiments(
     # experiments whose primary (oldest) live task belongs to the target author.
     # The ``github:`` search qualifier ANDs an additional author predicate on
     # top; both share the one unowned-experiments probe below.
+    # The owner control (Mine / member picker) can drop its primary-task EXISTS
+    # fallback once the org has zero NULL owners (pure indexed seek). The github:
+    # search filter does NOT share this optimization -- it always needs the
+    # primary-task match -- so the probe gates only the owner filter.
     has_search_author = bool(
         (experiments_search_author_user_ids or ())
         or (experiments_search_author_github_usernames or ())
         or (experiments_search_author_emails or ())
     )
     include_legacy_fallback = True
-    if experiments_author_user_id is not None or has_search_author:
+    if experiments_author_user_id is not None:
         probe_started_at = now()
         include_legacy_fallback = await _org_has_unowned_live_experiments(
             session, org_id
@@ -902,7 +920,6 @@ async def load_dashboard_experiments(
             experiments_search_author_github_usernames,
             org_id=org_id,
             emails=experiments_search_author_emails,
-            include_legacy_fallback=include_legacy_fallback,
         )
         page_query = page_query.where(search_author_filter)
     tag_ast = TagFilterAST(

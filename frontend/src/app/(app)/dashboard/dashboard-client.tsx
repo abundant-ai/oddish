@@ -43,6 +43,10 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
+import {
+  SearchSyntaxHelp,
+  SearchSyntaxRow,
+} from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
 import {
   cn,
@@ -1361,12 +1365,40 @@ function RecentTasksCard({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Input
-            value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
-            placeholder="Search · github:user · tag:x OR tag:y NOT tag:z"
-            className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
-          />
+          <div className="relative w-full sm:w-[220px]">
+            <Input
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+              placeholder="Search users, tags, IDs, etc."
+              className="h-8 w-full border-[#6f88b4]/20 pr-7"
+            />
+            <SearchSyntaxHelp>
+              <p className="font-medium">Search syntax</p>
+              <SearchSyntaxRow
+                example="payment-retry"
+                hint="match the experiment name or id"
+              />
+              <SearchSyntaxRow
+                example="github:alice"
+                hint="by author — GitHub handle, email, or name"
+              />
+              <SearchSyntaxRow
+                example={'"exact name"'}
+                hint="exact phrase"
+              />
+              <SearchSyntaxRow
+                example="tag:a OR tag:b"
+                hint="filter by tags"
+              />
+              <SearchSyntaxRow example="-tag:wip" hint="exclude a tag" />
+              <p className="text-muted-foreground">
+                Case-insensitive, e.g.{" "}
+                <code className="rounded bg-muted px-1 font-mono">
+                  github:alice tag:a
+                </code>
+              </p>
+            </SearchSyntaxHelp>
+          </div>
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button

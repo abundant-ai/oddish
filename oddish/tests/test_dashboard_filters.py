@@ -268,6 +268,22 @@ def test_search_author_filter_matches_handle_via_primary_task() -> None:
     assert "deleted_at" in sql  # soft-deleted task links excluded
 
 
+def test_search_author_filter_matches_unattributed_sentinel() -> None:
+    # Regression: the owner backfill stamps owner_user_id='__unattributed__' on
+    # experiments whose author is not an active org member (external GitHub
+    # contributors). A github:<handle> search must still reach them via the
+    # primary-task fallback -- gating on owner_user_id IS NULL alone dropped
+    # every such experiment once the backfill had converged.
+    clause = _build_experiments_search_author_filter(
+        (), ("rstar327",), org_id="org_1"
+    )
+    sql = _compile_sql(clause)
+    assert "'__unattributed__'" in sql
+    assert "owner_user_id IS NULL" in sql
+    assert "EXISTS" in sql
+    assert "rstar327" in sql
+
+
 def test_search_author_filter_unions_handle_collisions() -> None:
     clause = _build_experiments_search_author_filter(
         ("user_a", "user_b"), ("bob",), org_id="org_1"
@@ -289,28 +305,16 @@ def test_search_author_filter_matches_legacy_email() -> None:
     assert "EXISTS" in sql
 
 
-def test_search_author_filter_owner_only_when_fallback_disabled() -> None:
+def test_search_author_filter_owner_seek_unions_with_fallback() -> None:
+    # A resolved member is reachable both via the indexed owner seek AND via the
+    # primary-task fallback (for their NULL/sentinel-owned experiments).
     clause = _build_experiments_search_author_filter(
-        ("user_a",),
-        ("bob",),
-        org_id="org_1",
-        include_legacy_fallback=False,
+        ("user_a",), ("bob",), org_id="org_1"
     )
     sql = _compile_sql(clause)
-    assert "user_a" in sql
-    # Pure indexed owner seek -- no primary-task EXISTS fallback.
-    assert "EXISTS" not in sql
-
-
-def test_search_author_filter_handle_only_fallback_disabled_matches_nothing() -> None:
-    # A handle with no resolved user id + no NULL-owner rows in the org => empty.
-    clause = _build_experiments_search_author_filter(
-        (),
-        ("bob",),
-        org_id="org_1",
-        include_legacy_fallback=False,
-    )
-    assert _compile_sql(clause).lower().strip() == "false"
+    assert "user_a" in sql  # indexed owner seek
+    assert "EXISTS" in sql  # primary-task fallback always emitted
+    assert "'__unattributed__'" in sql  # ... covering sentinel-owned rows too
 
 
 # ---------------------------------------------------------------------------
