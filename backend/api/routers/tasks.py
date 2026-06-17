@@ -46,6 +46,7 @@ from api.schemas import (
     ExperimentUpdateResponse,
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from dashboard_attribution import resolve_search_authors
 from models import APIKeyModel, UserModel
 from oddish.core.tasks import (
     complete_task_upload,
@@ -561,6 +562,14 @@ async def browse_tasks(
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
     tags_none: str | None = Query(None),
+    author: str | None = Query(
+        None,
+        description=(
+            "Author search (the github:/author:/user: qualifier). Comma-separated "
+            "tokens, each resolved to matching org members + their aliases and "
+            "ANDed with the free-text and tag filters."
+        ),
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -574,6 +583,21 @@ async def browse_tasks(
             elapsed_ms(connect_started_at),
             "Browse DB connect",
         )
+        author_tokens = [
+            token.strip() for token in (author or "").split(",") if token.strip()
+        ]
+        if author_tokens:
+            (
+                author_user_ids,
+                author_github_usernames,
+                author_emails,
+            ) = await resolve_search_authors(
+                session, org_id=auth.org_id, tokens=author_tokens
+            )
+        else:
+            author_user_ids = ()
+            author_github_usernames = ()
+            author_emails = ()
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -583,6 +607,9 @@ async def browse_tasks(
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
             tags_none=_split_tag_csv(tags_none),
+            author_user_ids=author_user_ids,
+            author_github_usernames=author_github_usernames,
+            author_emails=author_emails,
             record_timing=_make_timing_recorder(request),
         )
 
