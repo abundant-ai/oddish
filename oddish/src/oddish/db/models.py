@@ -311,7 +311,7 @@ task_experiments = Table(
     Base.metadata,
     Column(
         "task_id",
-        String(64),
+        String(128),
         ForeignKey("tasks.id", ondelete="CASCADE"),
         primary_key=True,
     ),
@@ -481,7 +481,7 @@ class TaskModel(TimestampedMixin, Base):
     )
 
     # Override id to add auto-generation
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=generate_id)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # -------------------------------------------------------------------------
@@ -523,7 +523,7 @@ class TaskModel(TimestampedMixin, Base):
 
     # Versioning: points to the latest TaskVersionModel row
     current_version_id: Mapped[str | None] = mapped_column(
-        String(128),
+        String(160),
         ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
     )
@@ -615,9 +615,9 @@ class TaskVersionModel(TimestampedMixin, Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
     task_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     task_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -658,13 +658,13 @@ class TrialModel(TimestampedMixin, Base):
     __tablename__ = "trials"
 
     # Override id: Stable, human-friendly ID set manually as "{task_id}-{index}"
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     task_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
     task_version_id: Mapped[str | None] = mapped_column(
-        String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
     experiment_id: Mapped[str] = mapped_column(
         String(64),
@@ -819,7 +819,7 @@ class TrialModel(TimestampedMixin, Base):
     # the DB (for history / direct deep-links) but stop cluttering
     # default views, S3 file viewers, and verdict aggregation.
     superseded_by_trial_id: Mapped[str | None] = mapped_column(
-        String(128),
+        String(160),
         ForeignKey("trials.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -1253,8 +1253,8 @@ class TagAssignmentModel(TimestampedMixin, Base):
         ),
         nullable=False,
     )
-    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     state: Mapped[TagAssignmentState] = mapped_column(
         SQLEnum(
             TagAssignmentState,
@@ -1326,7 +1326,7 @@ class TagExclusionModel(TimestampedMixin, Base):
         ),
         nullable=False,
     )
-    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(160), nullable=False)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
@@ -1409,7 +1409,7 @@ class TagEventModel(Base):
         ),
         nullable=True,
     )
-    target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     actor_type: Mapped[TagEventActor] = mapped_column(
         SQLEnum(
