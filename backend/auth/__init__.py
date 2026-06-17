@@ -298,7 +298,7 @@ async def require_admin(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> AuthContext:
     """
-    Require admin or owner role for an endpoint.
+    Require the admin role for an endpoint.
 
     API keys are authorized via scope instead of user roles.
     """
@@ -307,37 +307,12 @@ async def require_admin(
         return auth
 
     role = auth.user.role if auth.user else auth.user_role
-    if role in {UserRole.ADMIN, UserRole.OWNER}:
+    if role == UserRole.ADMIN:
         return auth
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Admin or owner role required",
-    )
-
-
-async def require_owner(
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> AuthContext:
-    """
-    Require the owner (developer/superuser) role for an endpoint.
-
-    API key auth is rejected — only Clerk JWT users with the owner role
-    can access owner-gated endpoints.
-    """
-    if auth.method == AuthMethod.API_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Owner role required — API key auth is not sufficient",
-        )
-
-    role = auth.user.role if auth.user else auth.user_role
-    if role == UserRole.OWNER:
-        return auth
-
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Owner role required",
+        detail="Admin role required",
     )
 
 
@@ -347,9 +322,8 @@ async def require_api_key_creator(
     """
     Require a user that may create API keys.
 
-    API key auth is rejected so one key cannot mint another. Legacy DB owners
-    retain access, and admins can create keys only from abundant.ai accounts
-    in the main Abundant org.
+    API key auth is rejected so one key cannot mint another. Only admins with
+    an @abundant.ai email in the main Abundant org may create keys.
     """
     if auth.method == AuthMethod.API_KEY:
         raise HTTPException(
@@ -364,7 +338,7 @@ async def require_api_key_creator(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=(
             "API key creation requires an admin with an @abundant.ai email "
-            "in the Abundant org or a legacy owner role"
+            "in the Abundant org"
         ),
     )
 
@@ -377,6 +351,5 @@ __all__ = [
     "require_admin",
     "require_api_key_creator",
     "require_auth",
-    "require_owner",
     "get_auth_context",
 ]
