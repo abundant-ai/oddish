@@ -29,44 +29,28 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # For each component (backend, migrations) we find the most recent
-      # workflow run on this PR branch whose corresponding step finished
-      # with conclusion=success, and use that run's head_sha as the diff
-      # base. If a prior push failed mid-deploy, its broken state is not
-      # recorded as a successful base, so the next push will still
-      # redeploy the affected component. The same script then diffs each
-      # component's incremental window with the GitHub compare API and emits
-      # <component>_changed -- we do this instead of dorny/paths-filter
-      # because that action ignores its `base` input on pull_request events
-      # and would diff the whole PR, forcing the preview DB seed every push.
-      - name: Detect component changes since last successful deploy
+      # find_last_deploys.py emits all the change signals (see its docstring):
+      #   - pr_{backend,migrations,frontend}: does the whole PR touch each
+      #     component (diffed vs the PR base branch) -- used on opened/reopened
+      #     and as the no-base fallback.
+      #   - On synchronize: backend_base/migrations_base (last successful deploy
+      #     SHAs) + {backend,migrations,workflow}_changed (only this push's
+      #     files, diffed vs that base / the previous push).
+      # We compute these via the GitHub compare API instead of dorny/paths-filter
+      # because that action ignores its `base` input on pull_request events (so
+      # it diffs the whole PR) and, under its default `some` quantifier, its
+      # negated excludes match almost anything -- both forced the DB seed.
+      - name: Detect preview component changes
         id: last_deployed
-        if: github.event.action == 'synchronize'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER_REPO: ${{ github.repository }}
+          EVENT_ACTION: ${{ github.event.action }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: python "$GITHUB_WORKSPACE/.github/scripts/preview/find_last_deploys.py"
-
-      - name: Detect PR component changes
-        id: filter_pr
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            backend:
-              - 'backend/**'
-              - '!backend/alembic/**'
-              - '!backend/**/*.md'
-              - 'oddish/**'
-              - '!oddish/alembic/**'
-              - '!oddish/**/*.md'
-            migrations:
-              - 'backend/alembic/**'
-              - 'oddish/alembic/**'
-            frontend:
-              - 'frontend/**'
 
       - name: Compute deployment plan
         id: compute
@@ -76,9 +60,9 @@ jobs:
           MIGRATIONS_BASE: ${{ steps.last_deployed.outputs.migrations_base }}
           BACKEND_CHANGED: ${{ steps.last_deployed.outputs.backend_changed }}
           MIGRATIONS_CHANGED: ${{ steps.last_deployed.outputs.migrations_changed }}
-          PR_BACKEND_CHANGED: ${{ steps.filter_pr.outputs.backend }}
-          PR_MIGRATIONS_CHANGED: ${{ steps.filter_pr.outputs.migrations }}
-          PR_FRONTEND_CHANGED: ${{ steps.filter_pr.outputs.frontend }}
+          PR_BACKEND_CHANGED: ${{ steps.last_deployed.outputs.pr_backend }}
+          PR_MIGRATIONS_CHANGED: ${{ steps.last_deployed.outputs.pr_migrations }}
+          PR_FRONTEND_CHANGED: ${{ steps.last_deployed.outputs.pr_frontend }}
           WORKFLOW_CHANGED: ${{ steps.last_deployed.outputs.workflow_changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
