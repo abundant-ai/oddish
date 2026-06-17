@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-17]
+
+### Added
+- Global chat scope (`global`) with an `oddish-query` read-only CLI injected into the sandbox; the agent can search, inspect, and drill into trial logs across all org tasks; a short-lived internal API key is minted per-session (45-min TTL) for credential isolation; global-scope Chat button added to the tasks page (#332)
+
+### Changed
+- Chat sandbox provisioning now supports an optional pre-baked Daytona snapshot (`ODDISH_CC_CHAT_DAYTONA_SNAPSHOT`): `ClaudeCodeRuntime.install()` skips tools already present and installs any missing tools concurrently instead of sequentially, reducing provisioning from ~1 min to a few seconds when a snapshot is configured (#340)
+- API container concurrency reduced from 8 → 3 and max containers raised 24 → 64 (peak throughput unchanged at 192); experiment-scoped `GET /tasks` now loads only the requested experiment's non-probe trials in SQL instead of fetching every trial for each task and filtering in Python; `GET /tasks` limit parameter capped at 2000 (#337)
+
+### Fixed
+- Chat session creation (`POST /chat-sessions`) returned 500 in prod because the Daytona region only permits ephemeral sandboxes; `create_sandbox` now passes `ephemeral=True` (#333, #339)
+- Chat messages returned `session_not_found` when the API routed the request to a different autoscaled container than the one that provisioned the session; sandbox handles are now reconnected from the DB-persisted `sandbox_id` so any container can serve any session (#334, #339)
+- First chat message showed nothing for ~10 seconds during sandbox provisioning and the composer stayed live, allowing a second send to race in; user bubble is now echoed and composer locked before `ensureSession()` runs (#335)
+- Per-task Chat button showed "no trial data available yet" because it used the stub `task_probes` scope; button now uses the `task` scope with the full trial tree staged per version; probe trials are marked `(probe)` in the agent's `CLAUDE.md` with a "Regular runs vs probe runs" explanation (#336)
+- `GET /chat-sessions` (chat history list) took 19–43 s under prod DB load; a composite index on `(org_id, scope_kind, scope_id, last_activity desc)` now serves the filter and sort directly, and turn counts are batched into one grouped query instead of a correlated subquery per row (#338)
+- Claude Code ran headless (`--print`) without a permission flag, so every tool call (Bash, Read, etc.) blocked on an approval gate nothing could answer; `--permission-mode bypassPermissions` is now passed on both the chat (`stream_chat`) and probe (`run_once`) launch paths (#341)
+- After ~30 min idle, Daytona auto-stops and deletes the ephemeral sandbox; the next message raised `session_not_found`; `send()` now transparently self-heals by calling `resume()` to re-provision the sandbox and restore from the per-turn archive (#342)
+- Container startup sweep (`sweep_orphan_chat_sessions`) ran on every API container start and marked all active chats broken — since the API autoscales across many containers with no session affinity, any new container (autoscale-up or deploy rollout) was killing every live chat globally; startup sweep removed from lifespan; recovery is now lazy (reconnect by `sandbox_id`, self-heal via `resume()`, Daytona idle auto-stop as backstop) (#343)
+
+---
+
 ## [2026-06-16]
 
 ### Added
