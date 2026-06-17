@@ -228,6 +228,33 @@ async def _lookup_user_by_github_username(
     return user_result.scalar_one_or_none()
 
 
+async def _lookup_users_by_github_username(
+    session: AsyncSession,
+    *,
+    github_username: str,
+    org_id: str,
+) -> list[UserModel]:
+    """Plural sibling of ``_lookup_user_by_github_username``.
+
+    Two active members can share a GitHub handle, so search filters must
+    union *all* matches rather than assume a single owner. Uses
+    ``scalars().all()`` (not ``scalar_one_or_none()``, which raises on
+    duplicates) and reuses the same ``@``-strip + case-insensitive,
+    org-scoped, active-only normalization as the singular lookup.
+    """
+    normalized = (github_username or "").strip().lstrip("@")
+    if not normalized:
+        return []
+    result = await session.execute(
+        select(UserModel).where(
+            func.lower(UserModel.github_username) == normalized.lower(),
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
