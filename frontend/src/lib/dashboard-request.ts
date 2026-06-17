@@ -5,6 +5,10 @@ type DashboardRequestParams = {
   experiments_offset?: number;
   experiments_query?: string;
   experiments_status?: string;
+  experiments_tags?: string;
+  experiments_tags_any?: string;
+  experiments_tags_none?: string;
+  experiments_author?: string;
   usage_minutes?: number | null;
   include_tasks?: boolean;
   include_usage?: boolean;
@@ -14,6 +18,11 @@ type DashboardRequestParams = {
 export const DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT = 25;
 export const DASHBOARD_DEFAULT_USAGE_MINUTES = 1440;
 
+// Owner filter sentinel for the experiments table. "all" shows the whole
+// organization; "me" scopes to the current user; any other value is an
+// org member's user id.
+export const DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR = "me";
+
 export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
   Object.freeze({
     include_tasks: false,
@@ -21,6 +30,7 @@ export const DEFAULT_DASHBOARD_REQUEST_PARAMS: DashboardRequestParams =
     experiments_limit: DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
     experiments_offset: 0,
     experiments_status: "all",
+    experiments_author: DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   });
 
 function setBooleanParam(
@@ -53,10 +63,26 @@ function buildDashboardSearchParams(
   if (input.experiments_status) {
     params.set("experiments_status", input.experiments_status);
   }
+  // Emit "me" and member ids; omit only for org-wide ("all") so SSR/SWR match
+  // the backend filter when defaulting to Mine.
+  if (input.experiments_author && input.experiments_author !== "all") {
+    params.set("experiments_author", input.experiments_author);
+  }
 
   const trimmedQuery = input.experiments_query?.trim();
   if (trimmedQuery) {
     params.set("experiments_query", trimmedQuery);
+  }
+
+  for (const name of [
+    "experiments_tags",
+    "experiments_tags_any",
+    "experiments_tags_none",
+  ] as const) {
+    const value = input[name]?.trim();
+    if (value) {
+      params.set(name, value);
+    }
   }
 
   if (input.usage_minutes !== undefined && input.usage_minutes !== null) {
@@ -85,6 +111,12 @@ export function isDefaultDashboardExperimentsView(
   offset: number,
   query: string,
   status: string,
+  author: string = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
 ): boolean {
-  return offset === 0 && query.trim().length === 0 && status === "all";
+  return (
+    offset === 0 &&
+    query.trim().length === 0 &&
+    status === "all" &&
+    author === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
+  );
 }

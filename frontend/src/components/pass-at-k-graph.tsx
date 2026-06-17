@@ -41,6 +41,13 @@ interface PassAtKGraphProps {
   onHoverAgent?: (key: string | null) => void;
 }
 
+type TooltipValue = number | string | ReadonlyArray<number | string>;
+type TooltipName = number | string;
+
+// Cap the pass@k curve so the x-axis stays readable even when an agent has
+// many attempts per task.
+const PASS_AT_K_CAP = 10;
+
 function buildAgentStats(
   tasks: Task[],
   agentSummaries: AgentSummary[],
@@ -73,14 +80,14 @@ function buildAgentStats(
 
   const agentStats: Record<string, AgentPassAtKStats> = {};
   for (const summary of agentSummaries) {
-    const taskResults: { task: string; c: number }[] = [];
+    const taskResults: { task: string; n: number; c: number }[] = [];
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
       const c = trials.filter((t) => t.reward === 1).length;
-      taskResults.push({ task: task.id, c });
+      taskResults.push({ task: task.id, n: trials.length, c });
     }
-    agentStats[summary.key] = { n: maxN, taskResults };
+    agentStats[summary.key] = { taskResults };
   }
 
   return { agentStats, maxN };
@@ -122,7 +129,9 @@ export const PassAtKGraph = memo(function PassAtKGraph({
   const { data, maxK, hasMultipleAttempts, agentColorByKey, agentLabelByKey } =
     useMemo(() => {
       const { agentStats, maxN } = buildAgentStats(tasks, agentSummaries);
-      const curveData = maxN > 1 ? calculatePassAtKCurve(agentStats, maxN) : [];
+      const curveMaxK = Math.min(maxN, PASS_AT_K_CAP);
+      const curveData =
+        maxN > 1 ? calculatePassAtKCurve(agentStats, curveMaxK) : [];
 
       const colorMap: Record<string, string> = {};
       const labelMap: Record<string, string> = {};
@@ -141,7 +150,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     }, [tasks, agentSummaries]);
 
   const renderTooltip = useCallback(
-    (props: TooltipContentProps) => {
+    (props: TooltipContentProps<TooltipValue, TooltipName>) => {
       const { active, payload, label } = props;
       if (!active || !payload || payload.length === 0) return null;
 

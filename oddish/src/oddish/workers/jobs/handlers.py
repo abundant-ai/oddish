@@ -1,9 +1,9 @@
 """Per-kind ``JobHandler`` wrappers for the unified ``worker_jobs`` runner.
 
 These are thin adapters: they delegate to the existing
-``run_trial_job`` / ``run_analysis_job`` / ``run_verdict_job`` /
-``run_task_expand_job`` bodies and translate the resulting domain state
-into a ``JobOutcome`` for the runner to record.
+``run_trial_job`` / ``run_task_qa_job`` / ``run_task_expand_job`` bodies
+(plus the transitional ``run_analysis_job``) and translate the resulting
+domain state into a ``JobOutcome`` for the runner to record.
 
 Keeping the handlers in one module lets tests monkey-patch the
 ``get_session`` / ``run_*_job`` module globals without reaching into
@@ -23,13 +23,13 @@ from oddish.db import (
 )
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
+from oddish.workers.queue.qa_handler import run_task_qa_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
     is_modal_image_build_failure,
 )
-from oddish.workers.queue.verdict_handler import run_verdict_job
 
 
 class WorkerJobLike:
@@ -85,10 +85,10 @@ class TrialJobHandler:
                 )
             if trial.status == TrialStatus.FAILED:
                 error_message = trial.error_message or f"Trial {trial_id} marked FAILED"
-                if (
-                    getattr(trial, "harbor_stage", None)
-                    == MODAL_IMAGE_BUILD_FAILED_STAGE
-                    or is_modal_image_build_failure(trial.error_message)
+                if getattr(
+                    trial, "harbor_stage", None
+                ) == MODAL_IMAGE_BUILD_FAILED_STAGE or is_modal_image_build_failure(
+                    trial.error_message
                 ):
                     return _fail_permanent(error_message)
                 return _fail_retryable(error_message)
@@ -98,6 +98,13 @@ class TrialJobHandler:
 
 
 class AnalysisJobHandler:
+    """Transitional handler for legacy per-trial ANALYSIS rows.
+
+    Nothing enqueues ANALYSIS jobs anymore -- trajectory analysis is the
+    single task-level ``QA`` job (:class:`QaJobHandler`). This handler is kept
+    only so any ANALYSIS rows still in flight across a deploy can drain.
+    """
+
     kind = WorkerJobKind.ANALYSIS
 
     def default_queue_key(self, job: WorkerJobLike) -> str:
@@ -145,11 +152,14 @@ class AnalysisJobHandler:
             )
 
 
-class VerdictJobHandler:
-    kind = WorkerJobKind.VERDICT
+class QaJobHandler:
+    """The single task-level QA job: classify every trial, then synthesize
+    the task verdict. Backed by ``run_task_qa_job``."""
+
+    kind = WorkerJobKind.QA
 
     def default_queue_key(self, job: WorkerJobLike) -> str:
-        return job.queue_key or "verdict"
+        return job.queue_key or "qa"
 
     def validate_payload(self, payload: dict) -> dict:
         return payload
@@ -157,18 +167,18 @@ class VerdictJobHandler:
     async def run(self, job: WorkerJobLike) -> JobOutcome:
         task_id = job.subject_id or (job.payload or {}).get("task_id")
         if not task_id:
-            raise ValueError("VERDICT worker_job missing subject_id / payload.task_id")
+            raise ValueError("QA worker_job missing subject_id / payload.task_id")
 
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
             if task is None:
-                return _fail_permanent(f"Task {task_id} vanished before verdict")
+                return _fail_permanent(f"Task {task_id} vanished before QA")
             if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
                 task.verdict_status = VerdictStatus.QUEUED
                 task.verdict_error = None
                 task.verdict_finished_at = None
 
-        await run_verdict_job(
+        await run_task_qa_job(
             task_id,
             queue_key=job.queue_key,
             modal_function_call_id=job.modal_function_call_id,
@@ -178,15 +188,13 @@ class VerdictJobHandler:
         async with get_session() as session:
             task = await session.get(TaskModel, task_id)
             if task is None:
-                return _fail_permanent(f"Task {task_id} vanished mid-verdict")
+                return _fail_permanent(f"Task {task_id} vanished mid-QA")
             if task.verdict_status == VerdictStatus.SUCCESS:
                 return JobOutcome.ok()
             if task.verdict_status == VerdictStatus.FAILED:
-                return _fail_retryable(
-                    task.verdict_error or f"Verdict {task_id} FAILED"
-                )
+                return _fail_retryable(task.verdict_error or f"QA {task_id} FAILED")
             return _fail_retryable(
-                f"Verdict {task_id} left in non-terminal status "
+                f"QA {task_id} left in non-terminal status "
                 f"{task.verdict_status!r}"
             )
 
@@ -236,9 +244,39 @@ class TaskExpandJobHandler:
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 
 
+class TagProjectJobHandler:
+    """Adapter for the ``TAG_PROJECT`` kind.
+
+    Recompute-from-truth: the handler returns SUCCESS as long as the
+    underlying ``run_tag_project_job`` call completes; any raised
+    exception becomes a retryable failure (the operation is idempotent).
+    """
+
+    kind = WorkerJobKind.TAG_PROJECT
+
+    def default_queue_key(self, job: WorkerJobLike) -> str:
+        return job.queue_key or "tag-project"
+
+    def validate_payload(self, payload: dict) -> dict:
+        payload = dict(payload or {})
+        if not payload.get("scope"):
+            raise ValueError("TAG_PROJECT payload missing scope")
+        if not payload.get("target_id"):
+            raise ValueError("TAG_PROJECT payload missing target_id")
+        payload.setdefault("mode", "direct")
+        return payload
+
+    async def run(self, job: WorkerJobLike) -> JobOutcome:
+        from oddish.workers.queue.tag_project_handler import run_tag_project_job
+
+        summary = await run_tag_project_job(payload=job.payload or {})
+        return JobOutcome.ok(summary if isinstance(summary, dict) else None)
+
+
 __all__ = [
     "AnalysisJobHandler",
+    "QaJobHandler",
+    "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",
-    "VerdictJobHandler",
 ]

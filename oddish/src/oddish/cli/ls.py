@@ -92,6 +92,27 @@ def ls(
             help="Emit the raw JSON response",
         ),
     ] = False,
+    tag: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag",
+            help="Require this tag (repeatable; AND semantics).",
+        ),
+    ] = None,
+    tag_any: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--tag-any",
+            help="Match any of these tags (repeatable; OR semantics).",
+        ),
+    ] = None,
+    not_tag: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--not-tag",
+            help="Exclude tasks that carry any of these tags (repeatable).",
+        ),
+    ] = None,
     api_url: Annotated[
         str,
         typer.Option("--api", help="API URL"),
@@ -105,6 +126,12 @@ def ls(
     params: dict[str, int | str] = {"limit": limit, "offset": offset}
     if query:
         params["query"] = query
+    if tag:
+        params["tags"] = ",".join(tag)
+    if tag_any:
+        params["tags_any"] = ",".join(tag_any)
+    if not_tag:
+        params["tags_none"] = ",".join(not_tag)
 
     try:
         with httpx.Client(timeout=30.0, headers=get_auth_headers(api_url)) as client:
@@ -135,10 +162,20 @@ def ls(
     table.add_column("Reward", justify="right", no_wrap=True)
     table.add_column("Last", no_wrap=True)
     table.add_column("Exp")
+    table.add_column("Tags")
 
     for task in tasks:
         current_version = task.get("current_version")
         version = f"v{current_version}" if current_version is not None else "-"
+        user_tags = task.get("user_tags") or []
+        primary = [t["key"] for t in user_tags if t.get("current")]
+        older_only = [
+            t["key"] for t in user_tags if t.get("older") and not t.get("current")
+        ]
+        tag_label = ", ".join(primary)
+        if older_only:
+            older_str = "(" + ", ".join(older_only) + ")"
+            tag_label = f"{tag_label} {older_str}" if tag_label else older_str
         table.add_row(
             task.get("id", "-"),
             task.get("name") or "-",
@@ -147,6 +184,7 @@ def ls(
             _format_reward(task),
             _format_datetime(task.get("last_run_at")),
             _format_experiments(task),
+            tag_label or "-",
         )
 
     console.print(table)

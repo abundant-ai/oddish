@@ -13,12 +13,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Upload } from "lucide-react";
+import { TagPicker } from "@/components/tag-picker";
 
 type ImportTrial = {
   job_name: string;
@@ -159,6 +156,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResponse | null>(null);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
 
   function reset() {
     setTaskZip(null);
@@ -168,6 +166,7 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     setSubmitting(false);
     setError(null);
     setResult(null);
+    setSelectedTagIds([]);
   }
 
   function handleOpenChange(next: boolean) {
@@ -200,6 +199,9 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
     if (runZip) form.append("run_zip", runZip);
     if (taskId.trim()) form.append("task_id", taskId.trim());
     if (experiment.trim()) form.append("experiment", experiment.trim());
+    if (selectedTagIds.length > 0) {
+      form.append("tags", selectedTagIds.join(","));
+    }
 
     try {
       const res = await fetch("/api/imports/zip", {
@@ -243,8 +245,8 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
         <DialogHeader>
           <DialogTitle>Import from .zip</DialogTitle>
           <DialogDescription>
-            Drop a Harbor run zip; the target task is inferred from the
-            job-dir name. Same outcome as{" "}
+            Drop a Harbor run zip; the target task is inferred from the job-dir
+            name. Same outcome as{" "}
             <code className="font-mono">oddish upload</code>.
           </DialogDescription>
         </DialogHeader>
@@ -302,6 +304,18 @@ export function ImportDialog({ onImported }: { onImported?: () => void }) {
                 </div>
               </>
             ) : null}
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">
+                Tags <span className="text-muted-foreground">(optional)</span>
+              </Label>
+              <TagPicker
+                selectedTagIds={selectedTagIds}
+                onChange={setSelectedTagIds}
+                placeholder="Add tags…"
+                allowCreate
+              />
+            </div>
 
             <details className="text-xs">
               <summary className="cursor-pointer text-muted-foreground hover:text-foreground">

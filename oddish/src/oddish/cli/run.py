@@ -48,7 +48,10 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
         task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
     except Exception:
         return False
-    return task_config.environment.gpus > 0
+    # ``gpus`` is optional in the task schema (e.g. schema_version 1.2 leaves
+    # it unset -> None); treat an absent value as 0 GPUs instead of crashing
+    # on ``None > 0``.
+    return (task_config.environment.gpus or 0) > 0
 
 
 def _default_cloud_environment_for_task(
@@ -211,6 +214,13 @@ def run(
             help="JSON metadata to associate with this task (e.g. PR info).",
         ),
     ] = None,
+    link: Annotated[
+        Optional[str],
+        typer.Option(
+            "--link",
+            help="URL to associate with this task (e.g. PR, issue, CI run)",
+        ),
+    ] = None,
     publish: Annotated[
         bool,
         typer.Option(
@@ -248,6 +258,13 @@ def run(
         typer.Option(
             "--run-analysis",
             help="Run LLM analysis on each trial and compute task verdict",
+        ),
+    ] = False,
+    run_probe: Annotated[
+        bool,
+        typer.Option(
+            "--run-probe",
+            help="Auto-enqueue a probe trial for this task's version (off by default)",
         ),
     ] = False,
     disable_verification: Annotated[
@@ -346,22 +363,19 @@ def run(
                 "Re-run an existing target instead of submitting new work. "
                 "Pass a trial, task, or experiment id (positional, --task, or "
                 "--experiment). Retries failed trials by default; combine with "
-                "--analysis or --verdict to re-run those stages."
+                "--qa to re-run the task-level QA job (classify every trial + "
+                "synthesize the verdict)."
             ),
         ),
     ] = False,
-    retry_analysis: Annotated[
+    retry_qa: Annotated[
         bool,
         typer.Option(
-            "--analysis",
-            help="With --retry: re-run analysis instead of retrying trials.",
-        ),
-    ] = False,
-    retry_verdict: Annotated[
-        bool,
-        typer.Option(
-            "--verdict",
-            help="With --retry: re-run the task verdict instead of trials.",
+            "--qa",
+            help=(
+                "With --retry: re-run the task-level QA job (classify trials + "
+                "verdict) instead of retrying trials."
+            ),
         ),
     ] = False,
     yes: Annotated[
@@ -458,9 +472,9 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
-    # Retry mode: re-run existing trials / analysis / verdict for a target
-    # instead of submitting new work. Kept on `run` (rather than a separate
-    # command) so the CLI surface stays small.
+    # Retry mode: re-run existing trials, or the task-level QA job, for a
+    # target instead of submitting new work. Kept on `run` (rather than a
+    # separate command) so the CLI surface stays small.
     if retry:
         from oddish.cli.retry import run_retry
 
@@ -469,14 +483,13 @@ def run(
             target=str(path) if path is not None else None,
             task_id=existing_task_id,
             experiment_id=experiment_id,
-            do_analysis=retry_analysis,
-            do_verdict=retry_verdict,
+            do_qa=retry_qa,
             yes=yes,
             json_output=json_output,
         )
         return
-    if retry_analysis or retry_verdict:
-        error_console.print("[red]--analysis and --verdict require --retry.[/red]")
+    if retry_qa:
+        error_console.print("[red]--qa requires --retry.[/red]")
         raise typer.Exit(1)
 
     # Handle config file vs CLI mode for agent configs
@@ -509,6 +522,9 @@ def run(
         # Config can enable analysis
         if "run_analysis" in sweep_config:
             run_analysis = sweep_config["run_analysis"]
+        # Config can enable auto-probe
+        if "run_probe" in sweep_config:
+            run_probe = sweep_config["run_probe"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -626,6 +642,7 @@ def run(
             experiment_id=experiment_id,
             max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
+            run_probe=run_probe,
             github_username=github_user,
             tags=tags or None,
             publish_experiment=publish,
@@ -642,6 +659,7 @@ def run(
             artifact_paths=artifact_paths,
             append_to_task=append_to_task,
             content_hash=task_content_hash,
+            link=link,
         )
 
     # Phase 1: upload any local task directories (shared with

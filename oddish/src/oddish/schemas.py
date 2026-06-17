@@ -4,7 +4,6 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
-from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
 from harbor.models.task.config import MCPServerConfig as MCPServerSpec
@@ -15,7 +14,7 @@ from harbor.models.trial.config import (
     VerifierConfig as HarborVerifierConfig,
 )
 
-from oddish.config import normalize_model_id
+from oddish.config import is_nop_oracle_agent, normalize_model_id
 from oddish.db import (
     AnalysisStatus,
     Priority,
@@ -181,6 +180,10 @@ class TaskSubmission(BaseModel):
         False,
         description="If True, run LLM analysis on each trial after completion and compute task verdict",
     )
+    run_probe: bool = Field(
+        False,
+        description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
+    )
     github_username: str | None = Field(
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
@@ -193,12 +196,51 @@ class TaskSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
+    link: str | None = Field(
+        None,
+        description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
-        allowed_missing = {AgentName.NOP.value, AgentName.ORACLE.value}
         for trial in self.trials:
-            if trial.agent not in allowed_missing and not trial.model:
+            if not is_nop_oracle_agent(trial.agent) and not trial.model:
                 raise ValueError("Model is required for all agents except nop/oracle")
         return self
 
@@ -243,6 +285,42 @@ class TaskSweepSubmission(BaseModel):
     configs: list[AgentModelPair] = Field(
         ..., description="List of agent/model pairs with individual trial counts"
     )
+    extra_instructions: str | None = Field(
+        default=None,
+        description=(
+            "Operator-supplied prompt content to prepend to the task's instruction "
+            "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    probe_name: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable name for a probe run (e.g. the preset name the operator "
+            "selected). Surfaced in probe-history UIs in place of the model name."
+        ),
+    )
+    result_focus: str | None = Field(
+        default=None,
+        description=(
+            "Optional question the operator wants answered about this trial. "
+            "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    evaluation_metric: str | None = Field(
+        default=None,
+        description=(
+            "How to render the trial's result. One of 'cheat_ratio', "
+            "'result_focus', 'none'. Default null = no specific metric."
+        ),
+    )
+    ratio_unit: str | None = Field(
+        default=None,
+        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
+    )
+    ratio_verb: str | None = Field(
+        default=None,
+        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
+    )
 
     # Common fields
     user: str | None = Field(
@@ -271,6 +349,10 @@ class TaskSweepSubmission(BaseModel):
         False,
         description="If True, run LLM analysis on each trial after completion and compute task verdict",
     )
+    run_probe: bool = Field(
+        False,
+        description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
+    )
     github_username: str | None = Field(
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
@@ -287,12 +369,15 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
     )
+    link: str | None = Field(
+        None,
+        description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
 
     @model_validator(mode="after")
     def require_models(self):
-        allowed_missing = {AgentName.NOP.value, AgentName.ORACLE.value}
         for config in self.configs:
-            if config.agent not in allowed_missing and not config.model:
+            if not is_nop_oracle_agent(config.agent) and not config.model:
                 raise ValueError("Model is required for all agents except nop/oracle")
         return self
 
@@ -518,6 +603,9 @@ class TaskVersionSummary(BaseModel):
     cost_has_estimated: bool = False
     cost_has_native: bool = False
     last_run_at: datetime | None = None
+    # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
+    # defined below in the tag section; model_rebuild() runs after it).
+    user_tags: list["UserTagRef"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -543,6 +631,8 @@ class VisibleWorkerJob(BaseModel):
     kind: str
     status: str
     queue_key: str
+    provider: str | None = None
+    external_id: str | None = None
     subject_table: str | None = None
     subject_id: str | None = None
     attempts: int
@@ -591,6 +681,22 @@ class TrialResponse(BaseModel):
     )
     error_message: str | None
     result: dict | None
+    harbor_config: dict | None = Field(
+        None,
+        description=(
+            "Harbor passthrough config (agent env/kwargs, environment "
+            "resources, probe mode marker, extra_instructions, etc.). "
+            "Surfaced for clients that need to render mode-specific UI."
+        ),
+    )
+    is_probe: bool = Field(
+        False,
+        description=(
+            "True if this trial is a probe (operator-directed instruction "
+            "overlay) rather than a real solution attempt. Indexed for "
+            "server-side filtering."
+        ),
+    )
 
     # Token usage & cost
     input_tokens: int | None = Field(
@@ -661,6 +767,26 @@ class TrialResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserTagRef(BaseModel):
+    """Effective tag on a task, surfaced to API/CLI/frontend.
+
+    ``current=True`` -> tag is on the latest task version (primary chip).
+    ``older=True``   -> tag exists only on older versions (de-emphasized).
+    """
+
+    tag_id: str
+    key: str
+    value: str | None = None
+    color: str | None = None
+    visibility: str = "PRIVATE"
+    current: bool = False
+    older: bool = False
+
+
+# TaskVersionSummary forward-references UserTagRef (defined above only now).
+TaskVersionSummary.model_rebuild()
+
+
 class TaskResponse(BaseModel):
     id: str
     name: str
@@ -681,6 +807,7 @@ class TaskResponse(BaseModel):
             "submitted."
         ),
     )
+    user_tags: list[UserTagRef] = Field(default_factory=list)
 
 
 class TaskBatchCancelRequest(BaseModel):
@@ -747,8 +874,11 @@ class TaskBrowseItem(BaseModel):
     reward_sum: float
     reward_total: int
     last_run_at: datetime | None = None
+    link: str | None = None
+    github_meta: dict[str, str] | None = None
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+    user_tags: list[UserTagRef] = Field(default_factory=list)
 
 
 class TaskBrowseResponse(BaseModel):
@@ -766,11 +896,19 @@ class TaskStatusResponse(BaseModel):
     user: str
     github_username: str | None = None
     github_meta: dict[str, str] | None = None
+    link: str | None = None
     task_path: str
     experiment_id: str
     experiment_name: str
     experiment_is_public: bool = False
     experiment_created_at: datetime | None = None
+    experiments: list[TaskBrowseExperiment] = Field(
+        default_factory=list,
+        description=(
+            "All live experiments this task belongs to. The singular "
+            "experiment_* fields keep the primary one for compatibility."
+        ),
+    )
     current_version: int | None = None
     current_version_id: str | None = None
     total: int
@@ -781,6 +919,7 @@ class TaskStatusResponse(BaseModel):
     reward_sum: float | None = None
     reward_total: int | None = None
     run_analysis: bool = False
+    run_probe: bool = False
     verdict_status: VerdictStatus | None = None
     verdict: dict | None = None
     verdict_error: str | None = Field(
@@ -792,6 +931,7 @@ class TaskStatusResponse(BaseModel):
         description="Active/recent worker_jobs rows for this task and its trials",
     )
     trials: list[TrialResponse] | None = None
+    user_tags: list[UserTagRef] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
@@ -957,6 +1097,7 @@ class PublicExperimentResponse(BaseModel):
 
     name: str
     public_token: str
+    description: str | None = None
 
 
 class PublicExperimentListItem(BaseModel):
@@ -967,3 +1108,375 @@ class PublicExperimentListItem(BaseModel):
     public_token: str
     task_count: int
     created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Probe presets — operator-directive templates for probe trials.
+# ---------------------------------------------------------------------------
+class ProbePresetCreate(BaseModel):
+    """Request body to create a custom probe preset."""
+
+    name: str
+    agent: str
+    model: str
+    operator_prompt: str
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+
+
+class ProbePresetUpdate(BaseModel):
+    """Request body to update a custom probe preset. All fields optional;
+    only provided fields are applied."""
+
+    name: str | None = None
+    agent: str | None = None
+    model: str | None = None
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+
+
+class ProbePresetResponse(BaseModel):
+    """A probe preset as returned to the client."""
+
+    id: str
+    org_id: str | None = None
+    name: str
+    agent: str
+    model: str
+    operator_prompt: str
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
+    ratio_unit: str | None = None
+    ratio_verb: str | None = None
+    is_seed: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TagCreateRequest(BaseModel):
+    key: str
+    value: str | None = None
+    color: str | None = None
+    description: str | None = None
+    visibility: str = "PRIVATE"
+
+
+class TagUpdateRequest(BaseModel):
+    key: str | None = None
+    color: str | None = None
+    description: str | None = None
+    expected_row_version: int
+
+
+class TagSetVisibilityRequest(BaseModel):
+    visibility: str
+    expected_row_version: int
+
+
+class TagArchiveRequest(BaseModel):
+    expected_row_version: int
+
+
+class TagMergeRequest(BaseModel):
+    target_tag_id: str
+    expected_row_version: int | None = None
+
+
+class TagListItem(BaseModel):
+    id: str
+    key: str
+    value: str | None = None
+    color: str | None = None
+    visibility: str
+    state: str
+    usage_count: int = 0
+    row_version: int = 1
+    owner_user_id: str | None = None
+
+
+class TagListResponse(BaseModel):
+    items: list[TagListItem]
+
+
+class TagAssignRequest(BaseModel):
+    tag_id: str
+    scope: str
+    target_id: str
+    mode: str | None = None  # 'snapshot' | 'living' for EXPERIMENT
+    task_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self):
+        if self.scope not in {"VERSION", "TASK", "EXPERIMENT"}:
+            raise ValueError(
+                f"scope must be VERSION/TASK/EXPERIMENT (got {self.scope})"
+            )
+        if self.scope == "EXPERIMENT" and self.mode not in {"snapshot", "living"}:
+            raise ValueError("EXPERIMENT-scope apply requires mode='snapshot'|'living'")
+        return self
+
+
+class TagUnassignRequest(BaseModel):
+    tag_id: str
+    scope: str
+    target_id: str
+    task_id: str | None = None
+
+
+class TagAssignResponse(BaseModel):
+    tag_id: str
+    assignment_id: str | None = None
+    mode: str | None = None
+    materialized: int | None = None
+
+
+class TagExcludeRequest(BaseModel):
+    tag_id: str
+    experiment_id: str
+    scope: str
+    target_id: str
+    task_id: str | None = None
+
+
+class TagGrantCreateRequest(BaseModel):
+    principal_type: str
+    principal_user_id: str | None = None
+    capability: str
+
+
+class TagGrantListItem(BaseModel):
+    id: str
+    principal_type: str
+    principal_user_id: str | None = None
+    capability: str
+
+
+class TagGrantListResponse(BaseModel):
+    items: list[TagGrantListItem]
+
+
+class TagPolicyResponse(BaseModel):
+    org_id: str
+    max_tags_per_entity: int
+    name_max_len: int
+    name_charset: str
+    reserved_prefixes: list[str]
+    who_can_create: str
+    profanity_mode: str
+    profanity_allowlist: list[str]
+    profanity_denylist: list[str]
+
+
+class TagPolicyUpdateRequest(BaseModel):
+    max_tags_per_entity: int | None = None
+    name_max_len: int | None = None
+    name_charset: str | None = None
+    reserved_prefixes: list[str] | None = None
+    who_can_create: str | None = None
+    profanity_mode: str | None = None
+    profanity_allowlist: list[str] | None = None
+    profanity_denylist: list[str] | None = None
+
+
+class TagFilterASTDTO(BaseModel):
+    all: list[str] = Field(default_factory=list)
+    any_: list[str] = Field(default_factory=list)
+    none: list[str] = Field(default_factory=list)
+
+
+class SavedTagFilterCreateRequest(BaseModel):
+    name: str
+    filter_ast: dict
+    visibility: str = "PRIVATE"
+
+
+class SavedTagFilterUpdateRequest(BaseModel):
+    name: str | None = None
+    filter_ast: dict | None = None
+    visibility: str | None = None
+
+
+class SavedTagFilterItem(BaseModel):
+    id: str
+    name: str
+    filter_ast: dict
+    visibility: str
+    owner_user_id: str
+
+
+class SavedTagFilterListResponse(BaseModel):
+    items: list[SavedTagFilterItem]
+
+
+class ProfanityReportItem(BaseModel):
+    event_id: int
+    tag_id: str | None
+    org_id: str | None
+    actor_user_id: str | None
+    reason: str | None
+    payload: dict
+    occurred_at: datetime
+
+
+class ProfanityReportListResponse(BaseModel):
+    items: list[ProfanityReportItem]
+
+
+class ProfanityReportCreateRequest(BaseModel):
+    tag_id: str
+    reason: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Experiment probe rows — aggregated probe trial status per task.
+# ---------------------------------------------------------------------------
+
+
+class ExperimentProbeRow(BaseModel):
+    """One row per task in an experiment, summarising the most recent probe trial
+    for the task's current version.
+    """
+
+    task_id: str
+    task_name: str
+    version: int | None
+    model: str | None
+    status: str
+    probe_trial_id: str
+
+
+class OrgProbeRow(BaseModel):
+    """One row per task in the org that has at least one probe trial.
+
+    Summarises a task's probe activity for the QA "Probe Runs" listing:
+    total probe-run count plus the timestamp and status of the most recent
+    probe trial. Ordered most-recent-first by the core query.
+    """
+
+    task_id: str
+    task_name: str
+    run_count: int
+    last_run_at: datetime | None
+    last_status: str
+
+
+# Skills — custom agent skill bundles.
+# ---------------------------------------------------------------------------
+class SkillFile(BaseModel):
+    """One file inside a skill bundle.
+
+    ``from_attributes`` lets ``SkillResponse`` serialize the nested
+    ``SkillFileModel`` ORM rows (not just plain dicts on the request path)."""
+
+    relative_path: str
+    content: str
+
+    model_config = {"from_attributes": True}
+
+
+class SkillCreate(BaseModel):
+    """Request body to create a custom skill from its files.
+
+    ``name``/``description`` are authoritative for the row, but must agree
+    with the SKILL.md frontmatter (enforced by ``parse_skill``)."""
+
+    name: str
+    description: str
+    files: list[SkillFile]
+
+
+class SkillUpdate(BaseModel):
+    """Request body to update a custom skill. All fields optional; only
+    provided fields are applied. Providing ``files`` replaces the whole set."""
+
+    name: str | None = None
+    description: str | None = None
+    files: list[SkillFile] | None = None
+
+
+class SkillResponse(BaseModel):
+    """A skill as returned to the client."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    name: str
+    description: str
+    is_seed: bool
+    files: list[SkillFile]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Documents — agent doc-store.
+# ---------------------------------------------------------------------------
+class DocumentCreate(BaseModel):
+    """Request body to ingest a document.
+
+    Exactly one of ``content`` (text/paste) or ``file_b64`` (uploaded bytes)
+    must be provided. ``source_type`` selects the ingest path.
+    """
+
+    title: str | None = None  # falls back to filename / first line
+    source_type: str = "paste"  # upload|paste|link
+    source_url: str | None = None
+    content: str | None = None  # for paste/link text
+    file_b64: str | None = None  # base64 raw bytes for upload
+    raw_filename: str | None = None
+    raw_mime: str | None = None
+
+
+class DocumentUpdate(BaseModel):
+    """Edit metadata. All fields optional; only provided fields applied.
+    Set ``regenerate_digest=True`` to re-run the Claude digest step."""
+
+    title: str | None = None
+    summary: str | None = None
+    tags: list[str] | None = None
+    regenerate_digest: bool = False
+
+
+class DocumentCard(BaseModel):
+    """Cheap tier-1 list/search result — no digest/raw body."""
+
+    id: str
+    title: str
+    summary: str
+    tags: list[str]
+    source_type: str
+    source_url: str | None = None
+    created_by_user_id: str | None = None
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class DocumentResponse(BaseModel):
+    """Full document as returned to the client (includes the tier-2 digest,
+    excludes raw bytes — those come from the MCP ``inspect_source`` path)."""
+
+    id: str
+    org_id: str | None = None
+    created_by_user_id: str | None = None
+    title: str
+    source_type: str
+    source_url: str | None = None
+    summary: str
+    digest_text: str
+    tags: list[str]
+    raw_mime: str | None = None
+    raw_filename: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

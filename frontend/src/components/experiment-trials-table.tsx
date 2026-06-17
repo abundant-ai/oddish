@@ -22,10 +22,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TagPicker } from "@/components/tag-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -47,10 +56,13 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
   getExperimentAgentKey,
+  isBaselineAgentName,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
   isActivePipelineStatus,
+  taskHasActiveAnalysis,
+  taskHasActiveVerdict,
   taskHasCancellableWork,
 } from "@/lib/job-status";
 import {
@@ -196,20 +208,6 @@ const ROW_FILTER_VALUES = new Set<RowFilterMode>([
   "anyFail",
 ]);
 
-// Baseline agents (nop / oracle) are excluded from row-filter evaluation so
-// their deterministic behaviour doesn't influence real-agent analyses.
-function isBaselineAgentName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return (
-    lower === "nop" ||
-    lower === "oracle" ||
-    lower.startsWith("nop-") ||
-    lower.startsWith("oracle-") ||
-    lower.startsWith("agent-nop") ||
-    lower.startsWith("agent-oracle")
-  );
-}
-
 /**
  * Row-filter evaluation for a single (task, agent) cell.
  *
@@ -221,9 +219,7 @@ function isBaselineAgentName(name: string): boolean {
  * - `null` — agent has no terminal trials yet; skip this cell so still-
  *   running tasks aren't hidden prematurely.
  */
-function summarizeAgentRowFilterState(
-  trials: readonly Trial[] | undefined,
-): {
+function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
   hasError: boolean;
   status: "failed" | "scored" | null;
 } {
@@ -253,7 +249,7 @@ function summarizeAgentRowFilterState(
 /**
  * Reference-style inline action button: transparent by default, subtle
  * hover, disabled in ink-4. Used across the toolbar's "selected"
- * action row (Clear / Rerun / Cancel / Run analysis / Run verdict / Delete).
+ * action row (Clear / Rerun / Cancel / Run QA / Cancel QA / Delete).
  */
 function InlineBtn({
   onClick,
@@ -273,7 +269,7 @@ function InlineBtn({
       onClick={onClick}
       disabled={disabled}
       style={style}
-      className="h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium text-paper-ink-2 transition hover:bg-paper-surface-2 hover:text-paper-ink disabled:cursor-not-allowed disabled:text-paper-ink-4 disabled:hover:bg-transparent disabled:hover:text-paper-ink-4"
+      className="text-paper-ink-2 hover:bg-paper-surface-2 hover:text-paper-ink disabled:text-paper-ink-4 disabled:hover:text-paper-ink-4 h-auto gap-1.5 rounded-[5px] bg-transparent px-2 py-1 text-[11.5px] font-medium transition disabled:cursor-not-allowed disabled:hover:bg-transparent"
     >
       {children}
     </Button>
@@ -282,7 +278,7 @@ function InlineBtn({
 
 function InlineCount({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-[3px] bg-paper-bg-2 px-1.5 py-[1px] font-mono text-[10px] text-paper-ink-2">
+    <span className="bg-paper-bg-2 text-paper-ink-2 rounded-[3px] px-1.5 py-[1px] font-mono text-[10px]">
       {children}
     </span>
   );
@@ -466,7 +462,7 @@ export function ExperimentTrialsTable({
   const deferredTaskSearch = useDeferredValue(taskSearch);
   const [taskSort, setTaskSort] = useState<
     "default" | "name-asc" | "name-desc"
-  >("default");
+  >("name-asc");
   const [hiddenAgents, setHiddenAgents] = useState<Set<string>>(new Set());
   const [hoverAgent, setHoverAgent] = useState<string | null>(null);
   const [dimmedStatuses, setDimmedStatuses] = useState<Set<MatrixStatus>>(
@@ -477,9 +473,7 @@ export function ExperimentTrialsTable({
   >(new Set());
   const [rowFilterMode, setRowFilterMode] = useState<RowFilterMode>("none");
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
-  const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(
-    null,
-  );
+  const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(null);
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
     null,
   );
@@ -494,10 +488,18 @@ export function ExperimentTrialsTable({
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancellingSelected, setIsCancellingSelected] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
-  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
-  const [verdictError, setVerdictError] = useState<string | null>(null);
+  // Trajectory analysis is a single task-level QA job (classify every trial,
+  // then synthesize the verdict), so the toolbar exposes one Run QA / Cancel
+  // QA action rather than separate analysis + verdict controls.
+  const [isRunningQA, setIsRunningQA] = useState(false);
+  const [isCancellingQA, setIsCancellingQA] = useState(false);
+  const [qaError, setQAError] = useState<string | null>(null);
+  const [tagBulkOpen, setTagBulkOpen] = useState(false);
+  const [tagBulkMode, setTagBulkMode] = useState<"snapshot" | "living">(
+    "snapshot",
+  );
+  const [tagBulkError, setTagBulkError] = useState<string | null>(null);
+  const [isApplyingBulkTag, setIsApplyingBulkTag] = useState(false);
   const [taskColumnWidth, setTaskColumnWidth] = useState(DEFAULT_TASK_WIDTH);
   const [agentColumnWidths, setAgentColumnWidths] = useState<
     Record<string, number>
@@ -588,8 +590,7 @@ export function ExperimentTrialsTable({
   useEffect(() => {
     if (selectedTasks.size === 0) {
       setRerunError(null);
-      setAnalysisError(null);
-      setVerdictError(null);
+      setQAError(null);
     }
   }, [selectedTasks]);
 
@@ -892,7 +893,18 @@ export function ExperimentTrialsTable({
     [selectedTaskList],
   );
 
-  const selectedAnalysisRunnableTasks = useMemo(
+  // Tasks whose single task-level QA job is in flight (classifying trials or
+  // synthesizing the verdict) and can therefore be cancelled.
+  const selectedQACancellableTasks = useMemo(
+    () =>
+      selectedTaskList.filter(
+        (task) => taskHasActiveAnalysis(task) || taskHasActiveVerdict(task),
+      ),
+    [selectedTaskList],
+  );
+
+  // Tasks ready to (re)run QA: every trial terminal and no QA in flight.
+  const selectedQARunnableTasks = useMemo(
     () =>
       selectedTaskList.filter((task) => {
         const trials = task.trials ?? [];
@@ -905,25 +917,6 @@ export function ExperimentTrialsTable({
         );
         const verdictInFlight = isActivePipelineStatus(task.verdict_status);
         return allTrialsTerminal && !hasAnalysisInFlight && !verdictInFlight;
-      }),
-    [selectedTaskList],
-  );
-
-  const selectedVerdictRunnableTasks = useMemo(
-    () =>
-      selectedTaskList.filter((task) => {
-        const trials = task.trials ?? [];
-        if (trials.length === 0) return false;
-        const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
-        );
-        const allAnalysesComplete = trials.every(
-          (trial) =>
-            trial.analysis_status === "success" ||
-            trial.analysis_status === "failed",
-        );
-        const verdictInFlight = isActivePipelineStatus(task.verdict_status);
-        return allTrialsTerminal && allAnalysesComplete && !verdictInFlight;
       }),
     [selectedTaskList],
   );
@@ -1183,26 +1176,26 @@ export function ExperimentTrialsTable({
     }
   };
 
-  const handleRunAnalysisForSelectedTasks = async () => {
-    if (!canRerun || isRunningAnalysis) return;
-    if (selectedAnalysisRunnableTasks.length === 0) {
-      setAnalysisError("No tasks are ready for analysis.");
+  const handleCancelQAForSelectedTasks = async () => {
+    if (isCancellingQA || selectedQACancellableTasks.length === 0) {
       return;
     }
 
-    setIsRunningAnalysis(true);
-    setAnalysisError(null);
+    setIsCancellingQA(true);
+    setQAError(null);
 
     try {
       const results = await Promise.allSettled(
-        selectedAnalysisRunnableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/analysis/retry`, {
+        selectedQACancellableTasks.map(async (task) => {
+          // One task-level QA job; cancelling it stops both in-flight
+          // classification and verdict synthesis.
+          const res = await fetch(`/api/tasks/${task.id}/qa/cancel`, {
             method: "POST",
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task analysis",
+              data.detail || data.error || "Failed to cancel task QA",
             );
           }
         }),
@@ -1210,38 +1203,38 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setAnalysisError(
-          `Failed to queue analysis for ${failures.length} task(s).`,
-        );
+        setQAError(`Failed to cancel QA for ${failures.length} task(s).`);
       } else {
-        setAnalysisError(null);
+        setQAError(null);
       }
-      onRerun?.(selectedAnalysisRunnableTasks.map((task) => task.id));
+      onRerun?.(selectedQACancellableTasks.map((task) => task.id));
     } finally {
-      setIsRunningAnalysis(false);
+      setIsCancellingQA(false);
     }
   };
 
-  const handleRunVerdictForSelectedTasks = async () => {
-    if (!canRerun || isRunningVerdict) return;
-    if (selectedVerdictRunnableTasks.length === 0) {
-      setVerdictError("No tasks are ready for a verdict.");
+  const handleRunQAForSelectedTasks = async () => {
+    if (!canRerun || isRunningQA) return;
+    if (selectedQARunnableTasks.length === 0) {
+      setQAError("No tasks are ready for QA.");
       return;
     }
 
-    setIsRunningVerdict(true);
-    setVerdictError(null);
+    setIsRunningQA(true);
+    setQAError(null);
 
     try {
       const results = await Promise.allSettled(
-        selectedVerdictRunnableTasks.map(async (task) => {
-          const res = await fetch(`/api/tasks/${task.id}/verdict/retry`, {
+        selectedQARunnableTasks.map(async (task) => {
+          // One task-level QA job: (re)classify every trial, then synthesize
+          // the task verdict.
+          const res = await fetch(`/api/tasks/${task.id}/qa/retry`, {
             method: "POST",
           });
           if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(
-              data.detail || data.error || "Failed to queue task verdict",
+              data.detail || data.error || "Failed to queue task QA",
             );
           }
         }),
@@ -1249,15 +1242,83 @@ export function ExperimentTrialsTable({
 
       const failures = results.filter((result) => result.status === "rejected");
       if (failures.length > 0) {
-        setVerdictError(
-          `Failed to queue verdict for ${failures.length} task(s).`,
-        );
+        setQAError(`Failed to queue QA for ${failures.length} task(s).`);
       } else {
-        setVerdictError(null);
+        setQAError(null);
       }
-      onRerun?.(selectedVerdictRunnableTasks.map((task) => task.id));
+      onRerun?.(selectedQARunnableTasks.map((task) => task.id));
     } finally {
-      setIsRunningVerdict(false);
+      setIsRunningQA(false);
+    }
+  };
+
+  const handleApplyBulkTag = async (tagId: string) => {
+    if (isApplyingBulkTag || selectedTaskList.length === 0) return;
+    setIsApplyingBulkTag(true);
+    setTagBulkError(null);
+
+    try {
+      if (tagBulkMode === "snapshot") {
+        const results = await Promise.allSettled(
+          selectedTaskList.map(async (task) => {
+            const res = await fetch(`/api/tags/assign`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                tag_id: tagId,
+                scope: "TASK",
+                target_id: task.id,
+                task_id: task.id,
+              }),
+            });
+            if (!res.ok) {
+              const data = await res.json().catch(() => ({}));
+              throw new Error(
+                data.detail || data.error || "Failed to apply tag",
+              );
+            }
+          }),
+        );
+        const failures = results.filter(
+          (result) => result.status === "rejected",
+        );
+        if (failures.length > 0) {
+          setTagBulkError(`Failed to tag ${failures.length} task(s).`);
+        }
+      } else {
+        const experimentId = selectedTaskList[0]?.experiment_id;
+        if (!experimentId) {
+          setTagBulkError(
+            "No experiment id available for living-mode tagging.",
+          );
+          return;
+        }
+        const res = await fetch(`/api/tags/assign`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tag_id: tagId,
+            scope: "EXPERIMENT",
+            target_id: experimentId,
+            task_id: null,
+            mode: "living",
+          }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(
+            data.detail || data.error || "Failed to apply living tag",
+          );
+        }
+      }
+      onRerun?.(selectedTaskList.map((task) => task.id));
+      setTagBulkOpen(false);
+    } catch (error) {
+      setTagBulkError(
+        error instanceof Error ? error.message : "Failed to apply tag",
+      );
+    } finally {
+      setIsApplyingBulkTag(false);
     }
   };
 
@@ -1370,19 +1431,19 @@ export function ExperimentTrialsTable({
       <div className="space-y-4">
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
-            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
+            <div className="border-border bg-card rounded-lg border p-4 shadow-xs">
               <Skeleton className="h-5 w-36" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
-            <div className="rounded-lg border border-border bg-card p-4 shadow-xs">
+            <div className="border-border bg-card rounded-lg border p-4 shadow-xs">
               <Skeleton className="h-5 w-40" />
               <Skeleton className="mt-4 h-56 w-full" />
             </div>
           </div>
         ) : null}
 
-        <div className="max-w-full overflow-hidden rounded-lg border border-border bg-card shadow-xs">
-          <div className="relative z-30 space-y-3 border-b border-border bg-card/70 px-3 py-3">
+        <div className="border-border bg-card max-w-full overflow-hidden rounded-lg border shadow-xs">
+          <div className="border-border bg-card/70 relative z-30 space-y-3 border-b px-3 py-3">
             <div className="flex flex-wrap items-start gap-3">
               <Skeleton className="h-9 w-full sm:w-[320px]" />
               <div className="min-w-0 flex-1">
@@ -1402,7 +1463,7 @@ export function ExperimentTrialsTable({
                 </div>
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading experiment tasks and trial matrix...
               <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -1417,7 +1478,7 @@ export function ExperimentTrialsTable({
           <div className="overflow-x-auto p-3">
             <div className="w-full min-w-[960px] space-y-2">
               <div
-                className="grid gap-2 rounded-md bg-muted/40 p-2"
+                className="bg-muted/40 grid gap-2 rounded-md p-2"
                 style={{
                   gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
                 }}
@@ -1434,7 +1495,7 @@ export function ExperimentTrialsTable({
                 (_, rowIndex) => (
                   <div
                     key={rowIndex}
-                    className="grid gap-2 rounded-md border border-border/60 p-2"
+                    className="border-border/60 grid gap-2 rounded-md border p-2"
                     style={{
                       gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
                     }}
@@ -1480,7 +1541,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1517,7 +1578,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`h-auto select-none gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1538,7 +1599,7 @@ export function ExperimentTrialsTable({
   const renderLegendAnatomy = () => (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pl-1.5 pr-2.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
+        <div className="flex items-center gap-2.5 border-r border-dashed border-[color:var(--paper-line)] pr-2.5 pl-1.5 font-mono text-[9.5px] leading-tight text-[color:var(--paper-ink-3)]">
           <span className="relative inline-flex">
             <span
               className={`flex items-center justify-center border-transparent bg-[color:var(--paper-pass)] text-white ${STATUS_GLYPH_BOX}`}
@@ -1546,7 +1607,7 @@ export function ExperimentTrialsTable({
               <StatusIcon status="pass" />
             </span>
             {showAnalysis && (
-              <span className="absolute -right-[2px] -top-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
+              <span className="absolute -top-[2px] -right-[2px] h-[7px] w-[7px] rounded-full bg-[color:var(--paper-a-good)] ring-[1.5px] ring-[color:var(--paper-surface)]" />
             )}
           </span>
           <span className="flex flex-col gap-0.5">
@@ -1573,7 +1634,7 @@ export function ExperimentTrialsTable({
         <Button
           type="button"
           variant="ghost"
-          className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
         >
           Agents
           <InlineCount>
@@ -1583,7 +1644,7 @@ export function ExperimentTrialsTable({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="max-h-64 w-64 overflow-auto p-2">
-        <div className="flex items-center justify-between px-1 pb-2 text-[10px] text-muted-foreground">
+        <div className="text-muted-foreground flex items-center justify-between px-1 pb-2 text-[10px]">
           <span>Show/hide agent columns</span>
           <Button
             type="button"
@@ -1616,7 +1677,7 @@ export function ExperimentTrialsTable({
                 <span className={`${isVisible ? "" : "line-through"}`}>
                   {agent.label}
                 </span>
-                <span className="flex items-center gap-1 font-mono text-[10px] text-muted-foreground">
+                <span className="text-muted-foreground flex items-center gap-1 font-mono text-[10px]">
                   <QueueKeyIcon
                     queueKey={agent.queueKey}
                     model={agent.model}
@@ -1637,13 +1698,13 @@ export function ExperimentTrialsTable({
     const hasAgentsToFilter = rowFilterAgentKeys.length > 0;
     return (
       <div className="flex max-w-full items-center gap-2">
-        <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-[color:var(--paper-ink-3)]">
+        <span className="font-mono text-[10px] font-semibold tracking-[0.12em] text-[color:var(--paper-ink-3)] uppercase">
           View
         </span>
         <div
           role="group"
           aria-label="Row filter"
-          className="inline-flex min-w-0 max-w-full items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
+          className="inline-flex max-w-full min-w-0 items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
         >
           {ROW_FILTER_MODES.map((mode) => {
             const active = rowFilterMode === mode.value;
@@ -1657,7 +1718,7 @@ export function ExperimentTrialsTable({
                     size="sm"
                     disabled={disabled}
                     onClick={() => setRowFilterMode(mode.value)}
-                    className={`h-auto whitespace-nowrap rounded-[5px] px-2.5 py-1.5 text-[11px] font-medium leading-none transition-colors ${
+                    className={`h-auto rounded-[5px] px-2.5 py-1.5 text-[11px] leading-none font-medium whitespace-nowrap transition-colors ${
                       active
                         ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
                         : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
@@ -1682,7 +1743,7 @@ export function ExperimentTrialsTable({
       <div className="flex items-center gap-0.5 px-1">
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+            <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
               Trial outcome
             </span>
           </TooltipTrigger>
@@ -1694,10 +1755,10 @@ export function ExperimentTrialsTable({
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
       {showAnalysis && (
-        <div className="flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2 ml-1">
+        <div className="ml-1 flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2">
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="cursor-help whitespace-nowrap pr-2 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] text-[color:var(--paper-ink-3)]">
+              <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
                 Trial analysis
               </span>
             </TooltipTrigger>
@@ -1750,7 +1811,7 @@ export function ExperimentTrialsTable({
         ) : null}
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pb-3 pt-3.5">
+          <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pt-3.5 pb-3">
             <div className="flex flex-wrap items-start gap-3">
               <div className="w-full sm:w-[280px]">
                 <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
@@ -1779,7 +1840,7 @@ export function ExperimentTrialsTable({
                     >
                       Clear
                     </InlineBtn>
-                    <span className="select-none text-[color:var(--paper-line)]">
+                    <span className="text-[color:var(--paper-line)] select-none">
                       │
                     </span>
                     {canRerun && (
@@ -1814,40 +1875,51 @@ export function ExperimentTrialsTable({
                         </InlineCount>
                       </InlineBtn>
                     )}
-                    <span className="select-none text-[color:var(--paper-line)]">
+                    <InlineBtn
+                      onClick={() => {
+                        setTagBulkError(null);
+                        setTagBulkOpen(true);
+                      }}
+                      disabled={selectedTasks.size === 0}
+                    >
+                      Tag
+                      <InlineCount>{selectedTasks.size}</InlineCount>
+                    </InlineBtn>
+                    <span className="text-[color:var(--paper-line)] select-none">
                       │
                     </span>
                     {canRerun && (
                       <InlineBtn
-                        onClick={handleRunAnalysisForSelectedTasks}
+                        onClick={handleCancelQAForSelectedTasks}
                         disabled={
-                          isRunningAnalysis ||
-                          selectedAnalysisRunnableTasks.length === 0
+                          isCancellingQA ||
+                          selectedQACancellableTasks.length === 0
                         }
                       >
-                        {isRunningAnalysis ? "Queueing" : "Run analysis"}
+                        {isCancellingQA ? "Cancelling" : "Cancel QA"}
                         <InlineCount>
-                          {selectedAnalysisRunnableTasks.length}
+                          {selectedQACancellableTasks.length}
                         </InlineCount>
                       </InlineBtn>
                     )}
                     {canRerun && (
                       <InlineBtn
-                        onClick={handleRunVerdictForSelectedTasks}
+                        onClick={handleRunQAForSelectedTasks}
                         disabled={
-                          isRunningVerdict ||
-                          selectedVerdictRunnableTasks.length === 0
+                          isRunningQA ||
+                          isCancellingQA ||
+                          selectedQARunnableTasks.length === 0
                         }
                       >
-                        {isRunningVerdict ? "Queueing" : "Run verdict"}
+                        {isRunningQA ? "Queueing" : "Run QA"}
                         <InlineCount>
-                          {selectedVerdictRunnableTasks.length}
+                          {selectedQARunnableTasks.length}
                         </InlineCount>
                       </InlineBtn>
                     )}
                     {canDeleteTasks && (
                       <>
-                        <span className="select-none text-[color:var(--paper-line)]">
+                        <span className="text-[color:var(--paper-line)] select-none">
                           │
                         </span>
                         <InlineBtn
@@ -1879,14 +1951,9 @@ export function ExperimentTrialsTable({
                     {rerunError}
                   </span>
                 )}
-                {analysisError && (
+                {qaError && (
                   <span className="text-[10px] text-[color:var(--paper-fail)]">
-                    {analysisError}
-                  </span>
-                )}
-                {verdictError && (
-                  <span className="text-[10px] text-[color:var(--paper-fail)]">
-                    {verdictError}
+                    {qaError}
                   </span>
                 )}
               </div>
@@ -1899,7 +1966,7 @@ export function ExperimentTrialsTable({
                       type="button"
                       variant="ghost"
                       onClick={handleCopyTableAsTSV}
-                      className="h-auto select-none gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+                      className="h-auto gap-1.5 rounded-[5px] border border-[color:var(--paper-line)] bg-transparent px-2 py-1 text-[11.5px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
                     >
                       {copiedTable ? (
                         <>
@@ -1949,7 +2016,7 @@ export function ExperimentTrialsTable({
                     style={{ width: getDisplayedWidth("task") }}
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
+                      <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px]">
                         #
                       </span>
                       {!readOnly && (
@@ -1988,7 +2055,7 @@ export function ExperimentTrialsTable({
                               : "Clear sort (default order)"
                         }
                         aria-label="Toggle task sort"
-                        className="h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:bg-background/70 hover:text-blue-400 sm:text-sm"
+                        className="hover:bg-background/70 h-auto gap-1 rounded-sm bg-transparent px-1 py-0 text-xs font-normal transition hover:text-blue-400 sm:text-sm"
                       >
                         <span>Task</span>
                         {taskSort === "name-asc" ? (
@@ -1996,12 +2063,12 @@ export function ExperimentTrialsTable({
                         ) : taskSort === "name-desc" ? (
                           <ArrowDown className="h-3 w-3" />
                         ) : (
-                          <ArrowUpDown className="h-3 w-3 text-muted-foreground/60" />
+                          <ArrowUpDown className="text-muted-foreground/60 h-3 w-3" />
                         )}
                       </Button>
                     </div>
                     <div
-                      className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
+                      className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize"
                       onMouseDown={(event) =>
                         startResize(event, "task", taskColumnWidth)
                       }
@@ -2030,7 +2097,7 @@ export function ExperimentTrialsTable({
                                 onClick={() =>
                                   handleCopyAgentName(agent.key, agent.agent)
                                 }
-                                className="h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold text-foreground transition hover:bg-background/70 hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
+                                className="text-foreground hover:bg-background/70 h-auto max-w-[70px] gap-1 rounded-sm bg-transparent px-1 py-0 text-[10px] font-bold transition hover:text-blue-400 sm:max-w-[110px] sm:text-xs md:max-w-none"
                                 aria-label={`Copy agent name ${agent.agent}`}
                                 title="Copy agent name"
                               >
@@ -2066,7 +2133,7 @@ export function ExperimentTrialsTable({
                                       agent.model!,
                                     )
                                   }
-                                  className="h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal text-muted-foreground transition hover:bg-background/70 hover:text-foreground sm:text-[10px]"
+                                  className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
                                   aria-label={`Copy model id ${agent.model}`}
                                   title="Copy model id"
                                 >
@@ -2085,7 +2152,7 @@ export function ExperimentTrialsTable({
                                   </span>
                                 </Button>
                               ) : (
-                                <div className="flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal text-muted-foreground sm:text-[10px]">
+                                <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
                                   <span className="min-w-0 truncate">—</span>
                                 </div>
                               )}
@@ -2101,7 +2168,7 @@ export function ExperimentTrialsTable({
                       {agentIndex < renderedAgents.length - 1 &&
                         !showLoadingMatrixColumns && (
                           <div
-                            className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize"
+                            className="absolute top-0 right-0 h-full w-1.5 cursor-col-resize"
                             onMouseDown={(event) =>
                               startResize(
                                 event,
@@ -2154,13 +2221,13 @@ export function ExperimentTrialsTable({
                       className="group bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)] [&_td]:hover:!bg-[color:var(--paper-surface-2)]"
                     >
                       <TableCell
-                        className="sticky left-0 z-10 border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3.5"
+                        className="sticky left-0 z-10 border-r border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2.5 font-mono text-xs text-[color:var(--paper-ink)] [&:has([role=checkbox])]:pr-3.5"
                         style={{
                           width: getDisplayedWidth("task"),
                         }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
-                          <span className="w-5 shrink-0 text-right text-[10px] text-muted-foreground">
+                          <span className="text-muted-foreground w-5 shrink-0 text-right text-[10px]">
                             {index + 1}
                           </span>
                           {!readOnly && (
@@ -2198,7 +2265,9 @@ export function ExperimentTrialsTable({
                                     {task.name}
                                   </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>View task files</TooltipContent>
+                                <TooltipContent className="max-w-[min(80vw,48rem)] whitespace-normal break-all font-mono">
+                                  {task.name}
+                                </TooltipContent>
                               </Tooltip>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -2209,9 +2278,9 @@ export function ExperimentTrialsTable({
                                     onClick={(event) =>
                                       handleCopyTaskName(event, task)
                                     }
-                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 group-hover/task-name:opacity-100 ${
+                                    className={`h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition group-hover/task-name:opacity-100 hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100 ${
                                       copiedTaskNameId === task.id
-                                        ? "opacity-100 text-emerald-600"
+                                        ? "text-emerald-600 opacity-100"
                                         : ""
                                     }`}
                                     aria-label={`Copy task name ${task.name}`}
@@ -2235,8 +2304,8 @@ export function ExperimentTrialsTable({
                                 </TooltipContent>
                               </Tooltip>
                             </div>
-                            {task.current_version != null && (
-                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] font-medium leading-none text-[color:var(--paper-ink-3)]">
+                            {showAnalysis && task.current_version != null && (
+                              <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
                                 v{task.current_version}
                               </span>
                             )}
@@ -2248,7 +2317,7 @@ export function ExperimentTrialsTable({
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
-                            className="border-b border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center last:border-r-0"
+                            className="border-r border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3.5 py-2 text-center last:border-r-0"
                             style={{
                               width: getDisplayedWidth(agent.key),
                             }}
@@ -2260,7 +2329,7 @@ export function ExperimentTrialsTable({
                                   <Skeleton className="h-5 w-5 rounded-sm" />
                                 </div>
                               ) : (
-                                <span className="text-xs text-muted-foreground">
+                                <span className="text-muted-foreground text-xs">
                                   —
                                 </span>
                               )
@@ -2320,7 +2389,7 @@ export function ExperimentTrialsTable({
                                             trialGroups,
                                           });
                                         }}
-                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tabular-nums tracking-[-0.02em]" : ""}`}
+                                        className={`relative grid place-items-center gap-0 p-0 leading-none transition-transform hover:-translate-y-px ${STATUS_GLYPH_BOX} ${config.matrixClass} ${isPartial ? "font-mono text-[9.5px] font-semibold tracking-[-0.02em] tabular-nums" : ""}`}
                                         style={getRewardStyle(trial.reward)}
                                         aria-label={`Trial ${trialIndex + 1} ${config.shortLabel}`}
                                         title={fullTitle}
@@ -2334,7 +2403,7 @@ export function ExperimentTrialsTable({
                                       {analysisIndicator && (
                                         <span
                                           aria-hidden="true"
-                                          className={`pointer-events-none absolute -right-[1px] -top-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
+                                          className={`pointer-events-none absolute -top-[1px] -right-[1px] h-[4px] w-[4px] rounded-full ring-[1px] ring-[color:var(--paper-surface)] ${analysisIndicator.dotClass} ${analysisIndicator.animate ? "animate-pulse" : ""}`}
                                         />
                                       )}
                                     </span>
@@ -2364,7 +2433,7 @@ export function ExperimentTrialsTable({
                   <TableRow>
                     <TableCell
                       colSpan={Math.max(1, renderedAgents.length + 1)}
-                      className="py-8 text-center text-muted-foreground"
+                      className="text-muted-foreground py-8 text-center"
                     >
                       No tasks found for this experiment
                     </TableCell>
@@ -2375,6 +2444,55 @@ export function ExperimentTrialsTable({
           </div>
         </div>
       </div>
+      <Dialog
+        open={tagBulkOpen}
+        onOpenChange={(open) => {
+          if (!isApplyingBulkTag) {
+            setTagBulkOpen(open);
+            if (!open) setTagBulkError(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Tag selected tasks</DialogTitle>
+            <DialogDescription>
+              {tagBulkMode === "snapshot"
+                ? `Apply a tag to ${selectedTasks.size} selected task(s) at their current version.`
+                : "Apply a living tag at the experiment scope — it tracks newly added member tasks."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Tabs
+              value={tagBulkMode}
+              onValueChange={(value) =>
+                setTagBulkMode(value as "snapshot" | "living")
+              }
+            >
+              <TabsList>
+                <TabsTrigger value="snapshot">Snapshot</TabsTrigger>
+                <TabsTrigger value="living">Living</TabsTrigger>
+              </TabsList>
+            </Tabs>
+            <TagPicker
+              selectedTagIds={[]}
+              onChange={(picked) => {
+                if (picked[0]) {
+                  void handleApplyBulkTag(picked[0]);
+                }
+              }}
+              multi={false}
+              placeholder="Pick a tag…"
+            />
+            {tagBulkError && (
+              <Alert variant="destructive">
+                <AlertTitle>Tagging failed</AlertTitle>
+                <AlertDescription>{tagBulkError}</AlertDescription>
+              </Alert>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
       {canDeleteTasks && (
         <AlertDialog
           open={deleteTargets.length > 0}
@@ -2394,7 +2512,7 @@ export function ExperimentTrialsTable({
               </AlertDialogTitle>
               <AlertDialogDescription>
                 This permanently deletes{" "}
-                <span className="font-medium text-foreground">
+                <span className="text-foreground font-medium">
                   {deleteTargetSummary.label}
                 </span>{" "}
                 and removes {deleteTargetSummary.trialCount} trials. This action

@@ -38,9 +38,52 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-VERDICT_MODEL = "gpt-5.2"
+VERDICT_MODEL = "gpt-5.4"
+
+PROBE_MODEL_ROTATION: list[str] = [
+    "claude-haiku-4-5",
+]
+
+
+def next_probe_model(index: int) -> str:
+    """Round-robin selection over ``PROBE_MODEL_ROTATION``."""
+    return PROBE_MODEL_ROTATION[index % len(PROBE_MODEL_ROTATION)]
+
+
 NOP_ORACLE_QUEUE_KEY = "nop_oracle"
 _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
+# Suffixed/prefixed variants of the deterministic baseline agents (e.g.
+# "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
+# ``_baseline_agent_clause`` and the frontend's ``isBaselineAgentName`` so every
+# code path agrees on what counts as a nop/oracle baseline.
+_NOP_ORACLE_AGENT_PREFIXES: tuple[str, ...] = (
+    "nop-",
+    "oracle-",
+    "agent-nop",
+    "agent-oracle",
+)
+
+
+def is_nop_oracle_agent(agent: str | None) -> bool:
+    """Return True for the deterministic nop/oracle baseline agents.
+
+    Matches the exact ``nop``/``oracle`` names plus the common suffixed and
+    prefixed variants people use (``oracle-v2``, ``agent-nop``, ...). Every
+    baseline trial — whatever its agent variant — is then forced onto the
+    ``default`` model and the shared nop/oracle queue, instead of inheriting
+    whatever (often arbitrary) model string the caller happened to pass.
+    """
+    normalized = (agent or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized in _NOP_ORACLE_AGENTS:
+        return True
+    return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
+
+
+OPENAI_PROVIDER_AZURE = "azure"
+OPENAI_PROVIDER_OPENAI = "openai"
+_OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
 
 # Cross-region inference profile prefixes used for AWS Bedrock model ids, e.g.
 # "global.anthropic.claude-haiku-4-5-20251001-v1:0".
@@ -52,6 +95,216 @@ BEDROCK_ENV_VARS: tuple[str, ...] = (
     "AWS_BEARER_TOKEN_BEDROCK",
     "CLAUDE_CODE_USE_BEDROCK",
 )
+
+# z.ai / GLM routing. Z.ai's GLM models are served over an Anthropic-compatible
+# /messages endpoint, so they run on the claude-code harness -- but they must
+# NOT be bucketed under the Bedrock provider/queue (claude-code's fixed default
+# provider) or they would contend with heavy Bedrock/Anthropic traffic for the
+# same concurrency slots. We canonicalize every GLM/z.ai reference to a
+# ``zai/<id>`` id so provider detection, queue keys, and Harbor's per-agent
+# network allowlist all resolve to z.ai instead of falling through to Bedrock.
+ZAI_PROVIDER = "zai"
+ZAI_DEFAULT_BASE_URL = "https://api.z.ai/api/anthropic"
+# Provider prefixes that mean "this is a z.ai/GLM model". Canonicalized to
+# ``zai`` (the litellm provider id, which Harbor's allowlist also recognizes).
+_ZAI_PROVIDER_PREFIXES: frozenset[str] = frozenset({"zai", "z-ai", "z.ai"})
+
+
+def is_zai_model(model: str | None) -> bool:
+    """Return True if *model* should route to z.ai's GLM endpoint.
+
+    Matches an explicit ``zai/``/``z-ai/``/``z.ai/`` provider prefix or a bare
+    ``glm...`` model id (e.g. ``glm-x-preview[1m]``, ``glm-4.6``).
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
+        return True
+    tail = bare if provider_prefix else raw
+    return tail.split("/")[-1].startswith("glm")
+
+
+def zai_bare_model_id(model: str) -> str:
+    """Strip any z.ai provider prefix, returning the bare GLM model id.
+
+    ``zai/glm-x-preview[1m]`` -> ``glm-x-preview[1m]``; a bare id is returned
+    unchanged. This is the id Claude Code must send as ``ANTHROPIC_MODEL``.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
+        return bare.strip()
+    return raw
+
+
+def to_zai_model_id(model: str | None) -> str | None:
+    """Canonicalize a GLM/z.ai reference to ``zai/<bare-id>``.
+
+    Non-z.ai models are returned unchanged. This is the single chokepoint that
+    keeps GLM trials off the Bedrock provider/queue: the ``zai`` prefix is a
+    recognized litellm provider, so downstream provider detection and queue-key
+    derivation resolve to ``zai`` instead of claude-code's fixed Bedrock
+    fallback, and Harbor's network allowlist maps the ``zai`` prefix to
+    ``api.z.ai``.
+    """
+    if not is_zai_model(model):
+        return model
+    assert model is not None
+    return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
+
+
+# Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
+# auth.json). Lets the claude-code / codex agents authenticate with a Claude
+# Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API key. A
+# ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
+# Bedrock chokepoint and gets its own provider/queue bucket (so it never
+# contends for Bedrock/OpenAI slots and can be throttled independently), and
+# harbor_runner injects the subscription credentials while blanking the ambient
+# Bedrock/API creds the Modal image bakes in.
+SUBSCRIPTION_PROVIDER = "subscription"
+_SUBSCRIPTION_PREFIXES: tuple[str, ...] = ("sub/", "subscription/")
+
+
+def is_subscription_model(model: str | None) -> bool:
+    """Return True if *model* opts into the personal-subscription auth route."""
+    if not model:
+        return False
+    return model.strip().lower().startswith(_SUBSCRIPTION_PREFIXES)
+
+
+def subscription_bare_model_id(model: str) -> str:
+    """Strip the ``sub/``/``subscription/`` prefix, returning the bare model id.
+
+    ``sub/claude-opus-4-5`` -> ``claude-opus-4-5``. This is the id handed to the
+    agent CLI (``--model`` / ``ANTHROPIC_MODEL``). A bare id is returned as-is.
+    """
+    raw = model.strip()
+    low = raw.lower()
+    for prefix in _SUBSCRIPTION_PREFIXES:
+        if low.startswith(prefix):
+            return raw[len(prefix) :].strip()
+    return raw
+
+
+def to_subscription_model_id(model: str | None) -> str | None:
+    """Canonicalize a subscription reference to ``sub/<bare-id>``.
+
+    Non-subscription models are returned unchanged. The ``sub/`` prefix keeps the
+    trial off the Bedrock chokepoint and gives it a dedicated provider/queue
+    bucket (see ``get_provider_for_trial`` / ``normalize_queue_key``).
+    """
+    if not is_subscription_model(model):
+        return model
+    assert model is not None
+    return f"sub/{subscription_bare_model_id(model)}"
+
+
+# MiniMax / Moonshot (Kimi) routing. Like GLM/z.ai, these are served over an
+# Anthropic-compatible /messages endpoint and run on the claude-code harness,
+# but must NOT inherit claude-code's fixed Bedrock provider/queue. We
+# canonicalize each reference to ``<provider>/<id>`` so provider detection,
+# queue keys, and Harbor's per-agent network allowlist resolve to the direct
+# provider endpoint instead of Bedrock.
+MINIMAX_PROVIDER = "minimax"
+MINIMAX_DEFAULT_BASE_URL = "https://api.minimax.io/anthropic"
+# An explicit ``minimax/`` prefix or a bare ``minimax...`` model id (e.g.
+# ``MiniMax-M3``) routes to MiniMax direct.
+_MINIMAX_PROVIDER_PREFIXES: frozenset[str] = frozenset({"minimax"})
+# MiniMax publishes mixed-case ids; oddish lowercases every model id for
+# storage/queueing, so re-case the known ids to what the MiniMax endpoint
+# expects when handing the id to Claude Code.
+_MINIMAX_API_MODEL_IDS: dict[str, str] = {"minimax-m3": "MiniMax-M3"}
+
+MOONSHOT_PROVIDER = "moonshot"
+MOONSHOT_DEFAULT_BASE_URL = "https://api.moonshot.ai/anthropic"
+# An explicit ``moonshot/``/``moonshotai/``/``kimi/`` prefix or a truly bare
+# ``kimi-...`` id routes to Moonshot direct. A foreign provider prefix
+# (``openrouter/moonshotai/kimi-...``) is intentionally NOT matched so the
+# OpenRouter route keeps its own provider/queue bucket.
+_MOONSHOT_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    {"moonshot", "moonshotai", "kimi"}
+)
+
+
+def is_minimax_model(model: str | None) -> bool:
+    """Return True if *model* should route to MiniMax's direct endpoint."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _MINIMAX_PROVIDER_PREFIXES
+    return raw.startswith("minimax")
+
+
+def minimax_bare_model_id(model: str) -> str:
+    """Strip any MiniMax provider prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _MINIMAX_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def minimax_api_model_id(bare_model_id: str) -> str:
+    """Re-case a bare MiniMax id to the exact id the endpoint expects."""
+    return _MINIMAX_API_MODEL_IDS.get(bare_model_id.strip().lower(), bare_model_id)
+
+
+def to_minimax_model_id(model: str | None) -> str | None:
+    """Canonicalize a MiniMax reference to ``minimax/<bare-id>``."""
+    if not is_minimax_model(model):
+        return model
+    assert model is not None
+    return f"{MINIMAX_PROVIDER}/{minimax_bare_model_id(model)}"
+
+
+def is_moonshot_model(model: str | None) -> bool:
+    """Return True if *model* should route to Moonshot's direct endpoint.
+
+    Matches an explicit ``moonshot``/``moonshotai``/``kimi`` provider prefix or
+    a truly bare ``kimi-...`` model id. A foreign provider prefix such as
+    ``openrouter/`` is not matched, so OpenRouter-routed Kimi keeps its own
+    routing.
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _MOONSHOT_PROVIDER_PREFIXES
+    return raw.startswith("kimi-")
+
+
+def moonshot_bare_model_id(model: str) -> str:
+    """Strip any Moonshot/Kimi provider prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _MOONSHOT_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def to_moonshot_model_id(model: str | None) -> str | None:
+    """Canonicalize a Moonshot/Kimi reference to ``moonshot/<bare-id>``."""
+    if not is_moonshot_model(model):
+        return model
+    assert model is not None
+    return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
 
 
 def looks_like_bedrock_model_id(model: str | None) -> bool:
@@ -97,6 +350,13 @@ def looks_like_bedrock_model_id(model: str | None) -> bool:
 #   https://platform.claude.com/docs/en/build-with-claude/claude-on-amazon-bedrock-legacy
 _ANTHROPIC_TO_BEDROCK_MODEL_IDS: dict[str, str] = {
     # Current models
+    #
+    # Fable 5 is a Covered Model: Bedrock only serves it once the AWS
+    # account's data retention mode is set to "provider_data_share" (a
+    # one-time `PUT /data-retention` opt-in; API-only, no console UI).
+    # Without it, Bedrock rejects every call with "data retention mode
+    # 'default' is not available for this model".
+    "claude-fable-5": "global.anthropic.claude-fable-5",
     "claude-opus-4-8": "global.anthropic.claude-opus-4-8",
     "claude-sonnet-4-6": "global.anthropic.claude-sonnet-4-6",
     "claude-haiku-4-5": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -133,6 +393,9 @@ def to_bedrock_model_id(model: str | None) -> str | None:
 
       * ``None`` / blank -> returned unchanged
       * non-Claude models (``openai/...``, ``gemini-...``) -> returned unchanged
+      * an explicit non-Anthropic provider prefix (``openrouter/...``, etc.) ->
+        returned unchanged so it runs through that provider, even when the rest
+        of the id mentions Claude (``openrouter/anthropic/claude-opus-4.8``)
       * ARNs and inference-profile ids -> returned as-is (minus any leading
         ``bedrock/`` prefix)
       * everything else containing "claude" (``anthropic/claude-...``, bare
@@ -161,6 +424,17 @@ def to_bedrock_model_id(model: str | None) -> str | None:
     ):
         return stripped
 
+    # An explicit non-Anthropic provider prefix means the caller has chosen a
+    # specific transport (e.g. "openrouter/anthropic/claude-opus-4.8" must run
+    # through OpenRouter, not Bedrock). Honor it and pass the id through; only
+    # bare Claude ids and the "anthropic/"/"claude/" routes get Bedrock-mapped.
+    provider_prefix, _ = split_provider_model_name(stripped)
+    if provider_prefix and provider_prefix.strip().lower() not in {
+        "anthropic",
+        "claude",
+    }:
+        return stripped
+
     # Resolve everything else through the table, keyed by the lowercased id
     # with any "provider/" prefix removed. Non-Claude models route through
     # their own providers untouched.
@@ -185,6 +459,51 @@ def to_bedrock_model_id(model: str | None) -> str | None:
             "_ANTHROPIC_TO_BEDROCK_MODEL_IDS in oddish.config."
         )
     return bedrock_id
+
+
+# Reverse of _ANTHROPIC_TO_BEDROCK_MODEL_IDS, used to route a model back to the
+# direct Anthropic API. Several Anthropic ids (a dated alias and its dateless
+# form) map to one Bedrock id; prefer the shorter, dateless alias so callers get
+# the canonical API id (e.g. "claude-haiku-4-5", not "claude-haiku-4-5-20251001").
+_BEDROCK_TO_ANTHROPIC_MODEL_IDS: dict[str, str] = {}
+for _anthropic_id, _bedrock_id in _ANTHROPIC_TO_BEDROCK_MODEL_IDS.items():
+    _existing = _BEDROCK_TO_ANTHROPIC_MODEL_IDS.get(_bedrock_id)
+    if _existing is None or len(_anthropic_id) < len(_existing):
+        _BEDROCK_TO_ANTHROPIC_MODEL_IDS[_bedrock_id] = _anthropic_id
+del _anthropic_id, _bedrock_id, _existing
+
+
+def to_anthropic_api_model_id(model: str | None) -> str | None:
+    """Resolve a Claude model reference to its direct Anthropic API id.
+
+    The practical inverse of ``to_bedrock_model_id``: a Bedrock inference-profile
+    id (``global.anthropic.claude-haiku-4-5-20251001-v1:0``) maps back to the
+    plain API id (``claude-haiku-4-5``). Used by callers that run on the direct
+    Anthropic API (``ANTHROPIC_API_KEY``) rather than Bedrock -- e.g. the probe
+    summary analyzer. Plain Claude ids keep their value (minus an
+    ``anthropic/``/``claude/`` provider prefix); non-Claude ids pass through.
+    """
+    if model is None:
+        return None
+    stripped = model.strip()
+    if not stripped:
+        return model
+
+    # Drop a redundant "bedrock/" transport prefix before matching.
+    if stripped.lower().startswith("bedrock/"):
+        stripped = stripped.split("/", 1)[1]
+
+    # Known Bedrock inference-profile / foundation-model id -> plain API id.
+    mapped = _BEDROCK_TO_ANTHROPIC_MODEL_IDS.get(stripped.lower())
+    if mapped:
+        return mapped
+
+    # Strip an "anthropic/"/"claude/" provider prefix to expose a bare API id;
+    # any other provider prefix is a deliberate transport choice -- pass through.
+    provider_prefix, bare = split_provider_model_name(stripped)
+    if provider_prefix and provider_prefix.strip().lower() in {"anthropic", "claude"}:
+        return bare
+    return stripped
 
 
 def _to_bedrock_model_id_if_known(model: str) -> str:
@@ -259,6 +578,18 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "google": "gemini",
     "vertex_ai": "gemini",
     "palm": "gemini",
+    # z.ai / GLM. All spellings collapse to the canonical "zai" provider so
+    # GLM trials get their own queue/provider bucket instead of Bedrock's.
+    "zai": ZAI_PROVIDER,
+    "z-ai": ZAI_PROVIDER,
+    "z.ai": ZAI_PROVIDER,
+    "glm": ZAI_PROVIDER,
+    # MiniMax / Moonshot (Kimi). Same idea: direct-API models get their own
+    # provider/queue bucket instead of Bedrock's.
+    "minimax": MINIMAX_PROVIDER,
+    "moonshot": MOONSHOT_PROVIDER,
+    "moonshotai": MOONSHOT_PROVIDER,
+    "kimi": MOONSHOT_PROVIDER,
 }
 
 
@@ -313,13 +644,56 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return "anthropic"
     if lowered.startswith("gemini"):
         return "google"
+    if lowered.startswith("glm"):
+        return ZAI_PROVIDER
+    if lowered.startswith("minimax"):
+        return MINIMAX_PROVIDER
+    if lowered.startswith("kimi-"):
+        return MOONSHOT_PROVIDER
 
     return None
 
 
+# Canonical deployed-backend API base URLs (single source of truth; the CLI in
+# ``oddish.cli.config`` re-exports these). Forks override via the env vars.
+DEFAULT_API_URL = os.environ.get(
+    "ODDISH_DEFAULT_API_URL", "https://abundant-ai--api.modal.run"
+)
+# Format string for a PR-preview API URL. ``{n}`` is the PR number.
+PREVIEW_URL_TEMPLATE = os.environ.get(
+    "ODDISH_PREVIEW_URL_TEMPLATE",
+    "https://abundant-ai-preview--oddish-pr-{n}-api.modal.run",
+)
+
+
+def api_base_url_for_modal_app(app_name: str | None = None) -> str:
+    """Derive the deployed backend API base URL from the Modal app identity.
+
+    Keys off ``MODAL_APP_NAME`` (baked into every Modal container by
+    ``backend/modal_app.py``; unset in local dev). Returns ``""`` when not
+    running in Modal, so callers fall back or fail fast rather than silently
+    pointing a local sandbox at prod. ``oddish`` -> prod; ``oddish-pr-<n>`` ->
+    that PR's preview URL.
+    """
+    name = app_name if app_name is not None else os.environ.get("MODAL_APP_NAME")
+    if not name:
+        return ""
+    if name.startswith("oddish-pr-"):
+        suffix = name[len("oddish-pr-") :]
+        if suffix.isdigit():
+            return PREVIEW_URL_TEMPLATE.format(n=suffix)
+    return DEFAULT_API_URL
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Load .env first, then layer .env.local over it (later file wins on
+        # duplicate keys). Both are resolved relative to the process CWD, so a
+        # local backend run from backend/ picks up backend/.env and
+        # backend/.env.local automatically; in Modal containers neither file
+        # exists, so the entries are no-ops and config comes from real env vars.
+        # Exported process env vars still outrank both files.
+        env_file=(".env", ".env.local"),
         env_prefix="ODDISH_",
         extra="ignore",
     )
@@ -331,15 +705,49 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
+    # Local dev: dispatch trials to the in-process runner
+    # (``worker.local_runner``) instead of the Modal/cloud queue. Set
+    # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
+    local_mode: bool = False
+
     # Local execution scratch paths
     harbor_jobs_dir: str = "/tmp/harbor-jobs"
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
+    # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
+    # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
+    # This is the backstop for sandboxes that escape explicit teardown via
+    # ``cancel_job_by_worker``; 0 disables auto-stop, so keep it positive.
+    daytona_auto_stop_interval_mins: int = 30
+    daytona_auto_delete_interval_mins: int = 60
+
+    # Our Daytona region only permits ephemeral sandboxes -- ``daytona.create``
+    # rejects persistent ones with "Only ephemeral sandboxes are permitted in
+    # this region". Ephemeral sandboxes auto-delete when stopped, so harbor
+    # forces ``auto_delete_interval`` to 0 under this flag; the auto-stop above
+    # still applies as the idle backstop.
+    daytona_ephemeral: bool = True
+
+    # Name of a pre-baked Daytona snapshot for cc_chat sandboxes, with
+    # claude-code + harbor already installed. When set, sandboxes are created
+    # from it and ClaudeCodeRuntime.install() skips the npm/pip installs (~a
+    # minute of per-chat provisioning). Unset -> default base image + install
+    # at provision time. See docs/cc-chat-snapshot.md to build it.
+    cc_chat_daytona_snapshot: str = ""
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+
+    # Externally reachable base URL of the oddish backend API. Injected into
+    # global-scope cc_chat sandboxes (as ODDISH_API_BASE_URL) so the uploaded
+    # oddish-query CLI can call back into the backend. Optional override — when
+    # unset, the orchestrator derives it from MODAL_APP_NAME via
+    # api_base_url_for_modal_app(), so prod and PR previews work automatically.
+    public_api_base_url: str = ""
 
     # Database connection pools (constants — override on Settings class
     # in entry modules for different deployment targets)
@@ -351,6 +759,22 @@ class Settings(BaseSettings):
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 32
+    # Subscription agents whose shared credential is refresh-sensitive and so
+    # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
+    # its refresh token, so two concurrent Codex trials can invalidate each
+    # other's token. These agents get a serialized ``sub-solo/<id>`` queue
+    # bucket capped at ``subscription_queue_concurrency``. (Claude Code's OAuth
+    # token is a static bearer token, safe to use concurrently, so claude-code
+    # is deliberately NOT listed here.)
+    subscription_serialized_agents: str = "codex"
+    # Concurrency cap for the ``sub-solo/<id>`` buckets above. Within the token's
+    # no-refresh window each trial gets its own independent auth.json copy that
+    # never refreshes, so running several at once is safe; this cap only bounds
+    # the single-use-refresh-token race near the ~8-day boundary. Default 4;
+    # raise via ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY when the credential is
+    # unused elsewhere and freshly seeded. An explicit per-key
+    # ODDISH_MODEL_CONCURRENCY_OVERRIDES entry still wins.
+    subscription_queue_concurrency: int = 4
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -450,10 +874,28 @@ class Settings(BaseSettings):
     # tarball on every click.
     tasks_archive_cache_mb: int = 256
 
+    # OpenAI-family routing. Azure is the enterprise default; public OpenAI
+    # requires explicitly setting ODDISH_OPENAI_PROVIDER=openai.
+    openai_provider: str = OPENAI_PROVIDER_AZURE
+
     # API keys (read from env without ODDISH_ prefix)
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
+    azure_openai_endpoint: str | None = Field(
+        default=None, alias="AZURE_OPENAI_ENDPOINT"
+    )
+    azure_openai_api_version: str | None = Field(
+        default=None, alias="AZURE_OPENAI_API_VERSION"
+    )
+    azure_openai_deployments: dict[str, str] = Field(default_factory=dict)
+    # Deprecated compatibility field. Runtime routing should use
+    # ODDISH_AZURE_OPENAI_DEPLOYMENTS so each requested model maps to an
+    # explicit Azure deployment.
+    azure_openai_deployment: str | None = Field(
+        default=None, alias="AZURE_OPENAI_DEPLOYMENT"
+    )
 
     # ==========================================================================
     # Helper methods
@@ -462,22 +904,42 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
         raw = os.getenv("ODDISH_MODEL_CONCURRENCY_OVERRIDES")
-        if not raw:
-            return self
-        try:
-            parsed = json.loads(raw)
-        except Exception as exc:
-            raise ValueError(
-                "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be valid JSON"
-            ) from exc
-        if not isinstance(parsed, dict):
-            raise ValueError("ODDISH_MODEL_CONCURRENCY_OVERRIDES must be a JSON object")
-        normalized: dict[str, int] = {}
-        for key, value in parsed.items():
-            queue_key = self.normalize_queue_key(str(key))
-            normalized[queue_key] = int(value)
-        self.model_concurrency_overrides = normalized
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception as exc:
+                raise ValueError(
+                    "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be valid JSON"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "ODDISH_MODEL_CONCURRENCY_OVERRIDES must be a JSON object"
+                )
+            normalized: dict[str, int] = {}
+            for key, value in parsed.items():
+                queue_key = self.normalize_queue_key(str(key))
+                normalized[queue_key] = int(value)
+            self.model_concurrency_overrides = normalized
+
+        self.azure_openai_deployments = self._normalize_azure_openai_deployments(
+            self.azure_openai_deployments
+        )
         return self
+
+    @staticmethod
+    def _normalize_azure_openai_deployments(
+        deployments: dict[str, str],
+    ) -> dict[str, str]:
+        normalized: dict[str, str] = {}
+        if not isinstance(deployments, dict):
+            raise ValueError("ODDISH_AZURE_OPENAI_DEPLOYMENTS must be a JSON object")
+        for key, value in deployments.items():
+            model_key = normalize_model_id(str(key))
+            deployment = str(value).strip()
+            if not model_key or not deployment:
+                continue
+            normalized[model_key] = deployment
+        return normalized
 
     def get_provider_for_agent(self, agent: str) -> str:
         """Return provider for agent (with prefix matching fallback)."""
@@ -488,9 +950,38 @@ class Settings(BaseSettings):
                 return provider
         return "default"
 
+    # Agents that authenticate with the operator's personal subscription
+    # (Claude Pro/Max OAuth token / ChatGPT auth.json) instead of Bedrock/Azure.
+    # Comma-separated agent names, e.g. "claude-code,codex". When an agent is
+    # listed, its trials keep their STANDARD model id (no Bedrock/Azure mapping,
+    # no "sub/" prefix), get a dedicated subscription provider + queue bucket,
+    # and harbor_runner injects the subscription credentials at runtime.
+    subscription_agents: str = ""
+
+    def _is_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
+    def _is_serialized_subscription_agent(self, agent: str | None) -> bool:
+        names = {
+            a.strip().lower()
+            for a in (self.subscription_serialized_agents or "").split(",")
+            if a.strip()
+        }
+        return (agent or "").strip().lower() in names
+
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated provider so they never fall through
+        # to the fixed agent provider (e.g. codex -> "openai"), which would drag
+        # them onto the Azure/OpenAI credential path.
+        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
+            return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
             if provider:
@@ -501,16 +992,43 @@ class Settings(BaseSettings):
         """Canonicalize trial model input for storage/routing.
 
         - Treat '-', 'none', 'null', empty, etc as missing.
-        - For nop/oracle, always force model to 'default'.
+        - For nop/oracle, always force the model to the single canonical
+          ``nop_oracle`` id (same string as the queue key) so the stored model,
+          the queue key, and the concurrency bucket all agree -- one id, no
+          model/queue drift in bookkeeping.
         - Canonicalize Claude models to their Bedrock runtime id, since Oddish
           runs Claude through Bedrock and persists the same id it executes.
         - Otherwise return cleaned model (or None if missing).
         """
         cleaned = normalize_model_id(model)
 
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
-            return "default"
+        if is_nop_oracle_agent(agent):
+            return NOP_ORACLE_QUEUE_KEY
+
+        # Personal-subscription agents keep their STANDARD model id (no Bedrock
+        # mapping, no prefix) -- the route is selected by agent, not model name.
+        # The dedicated provider/queue bucket comes from get_provider_for_trial /
+        # get_queue_key_for_trial, which also key off the agent.
+        if self._is_subscription_agent(agent):
+            return cleaned
+
+        # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
+        # canonicalize BEFORE the Bedrock chokepoint so the trial stays off
+        # Bedrock and gets its own provider/queue bucket.
+        if is_subscription_model(cleaned):
+            return to_subscription_model_id(cleaned)
+
+        # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
+        # harness but route to their own direct endpoints, not Bedrock.
+        # Canonicalize to "<provider>/<id>" before the Bedrock chokepoint so
+        # they get their own provider/queue bucket instead of claude-code's
+        # fixed Bedrock fallback.
+        if is_zai_model(cleaned):
+            return to_zai_model_id(cleaned)
+        if is_minimax_model(cleaned):
+            return to_minimax_model_id(cleaned)
+        if is_moonshot_model(cleaned):
+            return to_moonshot_model_id(cleaned)
 
         return to_bedrock_model_id(cleaned)
 
@@ -524,6 +1042,16 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
+        # Subscription models keep their own ``sub/<id>`` bucket; serialized
+        # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
+        # auth.json refresh-token invalidation across concurrent workers. Both
+        # are already canonical queue keys, so pass them through untouched.
+        # Canonicalize the ``subscription/`` opt-in alias to ``sub/`` first so an
+        # override key written that way still matches the real ``sub/<id>`` key.
+        if normalized.startswith("subscription/"):
+            normalized = "sub/" + normalized[len("subscription/") :]
+        if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
+            return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
         normalized = _to_bedrock_model_id_if_known(normalized)
@@ -545,10 +1073,22 @@ class Settings(BaseSettings):
 
     def get_queue_key_for_trial(self, agent: str, model: str | None) -> str:
         """Resolve queue key from model first, fallback to provider bucket."""
-        normalized_agent = (agent or "").strip().lower()
-        if normalized_agent in _NOP_ORACLE_AGENTS:
+        if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
+        # Subscription trials get a dedicated internal queue bucket so their
+        # concurrency can be capped independently of the standard model id they
+        # still store. Both opt-in paths route here -- the agent flag and the
+        # explicit ``sub/<id>`` model prefix (mirroring get_provider_for_trial) --
+        # so a model-prefix opt-in can't escape the cap via normalize_queue_key.
+        # Agents whose shared credential is refresh-sensitive (codex auth.json)
+        # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
+        # safe concurrent) get a plain ``sub/<id>`` bucket.
+        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
+            bare = subscription_bare_model_id(normalized_model or "default") or "default"
+            if self._is_serialized_subscription_agent(agent):
+                return f"sub-solo/{bare}"
+            return f"sub/{bare}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
@@ -556,7 +1096,12 @@ class Settings(BaseSettings):
     def get_analysis_queue_key(self) -> str:
         return self.normalize_queue_key(self.analysis_model)
 
-    def get_verdict_queue_key(self) -> str:
+    def get_qa_queue_key(self) -> str:
+        """Concurrency bucket for the task-level QA job.
+
+        Keyed off ``verdict_model`` (the QA job's verdict-synthesis model) so
+        existing per-model concurrency overrides keep applying.
+        """
         return self.normalize_queue_key(self.verdict_model)
 
     def get_task_expand_queue_key(self) -> str:
@@ -575,16 +1120,180 @@ class Settings(BaseSettings):
             return max(int(override), 0)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
+        # Serialized subscription buckets (shared refresh-sensitive credential,
+        # e.g. codex auth.json) default to a low cap so concurrent trials can't
+        # race on the shared token, without relying on a per-key override. An
+        # explicit override above still wins. Plain ``sub/<id>`` subscription
+        # buckets (e.g. claude-code OAuth) are safe concurrent and NOT capped.
+        if normalized.startswith("sub-solo/"):
+            return max(int(self.subscription_queue_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:
         keys = {
             NOP_ORACLE_QUEUE_KEY,
             self.get_analysis_queue_key(),
-            self.get_verdict_queue_key(),
+            self.get_qa_queue_key(),
         }
         keys.update(self.model_concurrency_overrides.keys())
         return keys
+
+    def get_openai_provider(self) -> str:
+        provider = self.openai_provider.strip().lower()
+        if provider not in _OPENAI_PROVIDERS:
+            allowed = ", ".join(sorted(_OPENAI_PROVIDERS))
+            raise ValueError(
+                f"ODDISH_OPENAI_PROVIDER must be one of: {allowed}. "
+                f"Got {self.openai_provider!r}."
+            )
+        return provider
+
+    def get_public_openai_warning(self) -> str:
+        return (
+            "ODDISH_OPENAI_PROVIDER=openai routes OpenAI-family jobs to the "
+            "public OpenAI API. Azure OpenAI is the default for enterprise "
+            "deployments."
+        )
+
+    def require_azure_openai_config(self) -> dict[str, str]:
+        missing = [
+            name
+            for name, value in {
+                "AZURE_OPENAI_API_KEY": self.azure_openai_api_key,
+                "AZURE_OPENAI_ENDPOINT": self.azure_openai_endpoint,
+                "AZURE_OPENAI_API_VERSION": self.azure_openai_api_version,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                "Azure OpenAI is the default OpenAI-family provider. "
+                f"Set {', '.join(missing)} or explicitly set "
+                "ODDISH_OPENAI_PROVIDER=openai to use the public OpenAI API."
+            )
+        return {
+            "api_key": self.azure_openai_api_key or "",
+            "endpoint": self.azure_openai_endpoint or "",
+            "api_version": self.azure_openai_api_version or "",
+        }
+
+    def resolve_azure_openai_deployment(self, model: str | None) -> str:
+        normalized = normalize_model_id(model)
+        if not normalized:
+            raise ValueError(
+                "Azure OpenAI routing requires an OpenAI model id. Set a model "
+                "such as 'openai/gpt-5.2' and add it to "
+                "ODDISH_AZURE_OPENAI_DEPLOYMENTS."
+            )
+
+        lookup_keys = [normalized]
+        if normalized.startswith("openai/"):
+            lookup_keys.append(normalized.split("/", 1)[1])
+        elif "/" not in normalized:
+            lookup_keys.append(f"openai/{normalized}")
+
+        for key in lookup_keys:
+            deployment = self.azure_openai_deployments.get(key)
+            if deployment:
+                return deployment
+
+        examples = "', '".join(lookup_keys)
+        raise ValueError(
+            f"No Azure OpenAI deployment mapping for OpenAI model {normalized!r}. "
+            "Set ODDISH_AZURE_OPENAI_DEPLOYMENTS to a JSON object with a key "
+            f"for '{examples}'."
+        )
+
+    def get_azure_openai_base_url(self) -> str:
+        """Return the OpenAI-compatible Azure OpenAI v1 base URL.
+
+        Foundry project endpoints are for project/agent APIs. Oddish Harbor
+        jobs use the OpenAI SDK path, so configure the Azure OpenAI endpoint
+        shown for the deployment, typically ``*.openai.azure.com/openai/v1``.
+        """
+        azure = self.require_azure_openai_config()
+        endpoint = azure["endpoint"].rstrip("/")
+        if "/api/projects/" in endpoint:
+            raise RuntimeError(
+                "AZURE_OPENAI_ENDPOINT must be the OpenAI-compatible Azure "
+                "OpenAI endpoint, such as "
+                "'https://YOUR-RESOURCE.openai.azure.com/openai/v1'. "
+                "Do not use the Foundry project endpoint "
+                "'https://YOUR-RESOURCE.services.ai.azure.com/api/projects/...'."
+            )
+        if endpoint.endswith("/openai/v1"):
+            return endpoint
+        if "/openai/" in endpoint:
+            return endpoint
+        return f"{endpoint}/openai/v1"
+
+    def require_public_openai_config(
+        self, api_key: str | None = None
+    ) -> dict[str, str]:
+        key = api_key or self.openai_api_key
+        if not key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is required when "
+                "ODDISH_OPENAI_PROVIDER=openai. Azure OpenAI is the default; "
+                "set AZURE_OPENAI_* values to use Azure instead."
+            )
+        return {"api_key": key}
+
+    def get_openai_runtime_env(
+        self, *, model: str | None = None, api_key: str | None = None
+    ) -> dict[str, str]:
+        """Return process env vars for OpenAI-family provider clients.
+
+        In Azure mode this intentionally does not set ``OPENAI_API_KEY``.
+        If a downstream tool ignores Azure endpoint variables, failing closed is
+        safer than sending task data to the public OpenAI API with an Azure key.
+        """
+        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            public = self.require_public_openai_config(api_key=api_key)
+            return {"OPENAI_API_KEY": public["api_key"]}
+
+        azure = self.require_azure_openai_config()
+        deployment = self.resolve_azure_openai_deployment(model)
+        return {
+            "AZURE_OPENAI_API_KEY": azure["api_key"],
+            "AZURE_OPENAI_ENDPOINT": azure["endpoint"],
+            "AZURE_OPENAI_API_VERSION": azure["api_version"],
+            "AZURE_OPENAI_DEPLOYMENT": deployment,
+            # The OpenAI Python SDK reads OPENAI_API_VERSION for Azure clients;
+            # keep the Azure-prefixed name too for tools that prefer it.
+            "OPENAI_API_VERSION": azure["api_version"],
+            "OPENAI_API_TYPE": "azure",
+        }
+
+    def get_openai_agent_env(
+        self, *, model: str | None = None, api_key: str | None = None
+    ) -> dict[str, str]:
+        """Return env vars for OpenAI-family Harbor agents."""
+        if self.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
+            return self.get_openai_runtime_env(api_key=api_key)
+
+        azure = self.require_azure_openai_config()
+        deployment = self.resolve_azure_openai_deployment(model)
+        base_url = self.get_azure_openai_base_url()
+        return {
+            # Codex CLI expects OpenAI-compatible names and writes these into
+            # its sandbox-local auth/config files.
+            "OPENAI_API_KEY": azure["api_key"],
+            "OPENAI_BASE_URL": base_url,
+            # Harbor/LiteLLM-style Azure names for agents that support the
+            # explicit azure provider route.
+            "AZURE_API_KEY": azure["api_key"],
+            "AZURE_API_BASE": base_url,
+            "AZURE_API_VERSION": azure["api_version"],
+            # Azure OpenAI SDK-style names for agent implementations that use
+            # the official Python client directly.
+            "AZURE_OPENAI_API_KEY": azure["api_key"],
+            "AZURE_OPENAI_ENDPOINT": azure["endpoint"],
+            "AZURE_OPENAI_API_VERSION": azure["api_version"],
+            "AZURE_OPENAI_DEPLOYMENT": deployment,
+            "OPENAI_API_VERSION": azure["api_version"],
+            "OPENAI_API_TYPE": "azure",
+        }
 
 
 settings = Settings()

@@ -36,8 +36,7 @@ interface PassAtKDataPoint {
 }
 
 export interface AgentPassAtKStats {
-  n: number; // total attempts per task
-  taskResults: { task: string; c: number }[]; // correct count per task
+  taskResults: { task: string; n: number; c: number }[]; // attempts and correct count per task
 }
 
 /**
@@ -51,8 +50,11 @@ export function calculatePassAtKCurve(
   const agents = Object.keys(agentStats);
   if (agents.length === 0) return [];
 
-  // Find the maximum n across all agents to determine maxK
-  const maxN = Math.max(...Object.values(agentStats).map((s) => s.n));
+  // Find the maximum per-task attempt count across all agents to determine maxK
+  const attemptCounts = Object.values(agentStats).flatMap((s) =>
+    s.taskResults.map(({ n }) => n),
+  );
+  const maxN = attemptCounts.length > 0 ? Math.max(...attemptCounts) : 0;
   const effectiveMaxK = maxK ?? maxN;
 
   if (effectiveMaxK <= 0) return [];
@@ -70,8 +72,8 @@ export function calculatePassAtKCurve(
       }
 
       // Calculate average pass@k across all tasks for this agent
-      const passAtKValues = stats.taskResults.map(({ c }) =>
-        calculatePassAtK(stats.n, c, k),
+      const passAtKValues = stats.taskResults.map(({ n, c }) =>
+        calculatePassAtK(n, c, k),
       );
 
       // Average across tasks

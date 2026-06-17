@@ -84,7 +84,7 @@ FastAPI server — oddish standalone (python -m oddish.server)
         |
         v
 Postgres
-  - worker_jobs       # unified queue (TRIAL / ANALYSIS / VERDICT / …)
+  - worker_jobs       # unified queue (TRIAL / QA / …)
   - trials / tasks    # domain state + live UI columns
   - queue_slots       # per-queue-key concurrency leases
         |
@@ -98,13 +98,24 @@ Harbor task execution → logs/results/artifacts (S3)
 High-level flow:
 
 1. Upload a task bundle directly to S3 via a presigned PUT URL.
-2. Submit a sweep of agent/model trials for that task; each trial, analysis,
-   and verdict is enqueued as a row in `worker_jobs` in the same transaction
-   as its domain row. Set `max_trial_attempts` on a sweep submission or sweep
-   config to override the total attempt budget for newly-created trials.
+2. Submit a sweep of agent/model trials for that task; each trial is
+   enqueued as a `worker_jobs` row in the same transaction as its domain
+   row. Set `max_trial_attempts` on a sweep submission or sweep config to
+   override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
-   handler (`TRIAL` / `ANALYSIS` / `VERDICT`), write heartbeats, and exit.
-4. Use the CLI or dashboard to watch progress and pull logs/artifacts
+   handler (`TRIAL` / `QA`), write heartbeats, and exit.
+4. Trajectory analysis is **task-scoped**: when every trial of a
+   `run_analysis` task is terminal, a single `QA` job is enqueued. That one
+   job classifies every live trial's trajectory (same taxonomy / evidence /
+   reasoning, written to `trials.analysis`) and then synthesizes the task
+   verdict (`tasks.verdict`). A sweep of `T` tasks × `N` trials therefore
+   enqueues `T` QA jobs instead of `T × (N + 1)`. (The pre-refactor per-trial
+   `ANALYSIS` and per-task `VERDICT` kinds are kept as legacy enum values only
+   so historical / in-flight rows remain valid and drain across a deploy;
+   nothing enqueues them anymore. `trials.analysis` holds the per-trial
+   classification and `tasks.verdict` the task-level result — both are outputs
+   of the one QA job.)
+5. Use the CLI or dashboard to watch progress and pull logs/artifacts
    back locally.
 
 ## Package Boundaries
@@ -113,7 +124,10 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
- handler registry (`TrialJobHandler`, `AnalysisJobHandler`, `VerdictJobHandler`)
+ handler registry (`TrialJobHandler`, `QaJobHandler`, plus the legacy
+ `AnalysisJobHandler` kept to drain in-flight rows)
+- the task-level QA job (`run_task_qa_job`): classify every live trial via
+ the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
  per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
@@ -200,9 +214,11 @@ Behavior:
 |------|---------|
 | `worker_job_dispatcher.py` | `discover_active_worker_job_queue_keys`, `get_worker_job_org_queue_counts`, `build_spawn_plan` (org-first fair-share, with within-org round-robin across queue_keys) |
 | `worker_job_single_job.py` | `_CLAIM_WORKER_JOB_SQL`, `run_single_worker_job`, `heartbeat_worker_job` |
-| `trial_handler.py` / `analysis_handler.py` / `verdict_handler.py` | Per-kind execution bodies |
-| `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, orphaned-slot release |
-| `slots.py` | `queue_slots` lease acquire/release |
+| `trial_handler.py` | TRIAL execution body |
+| `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
+| `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
+| `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
+| `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |
 | `queue_manager.py` | Per-queue-key concurrency bookkeeping |
 | `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
 
@@ -278,13 +294,12 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/tasks/{task_id}` | Fetch a task with trials |
 | POST | `/tasks/cancel` | Cancel many tasks in one request |
 | DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
-| POST | `/tasks/{task_id}/analysis/retry` | Queue or rerun task-wide analysis jobs |
-| POST | `/tasks/{task_id}/verdict/retry` | Queue or rerun a task verdict |
+| POST | `/tasks/{task_id}/qa/retry` | (Re)run the single task-level QA job: reset every live trial's classification + the verdict, then classify all trials and synthesize a fresh verdict |
+| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
-| POST | `/trials/{trial_id}/analysis/retry` | Queue or rerun analysis for one trial |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
@@ -315,14 +330,42 @@ ODDISH_S3_ENDPOINT_URL=https://...
 
 # Provider credentials
 ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...
 GEMINI_API_KEY=...
+
+# OpenAI-family routing. Azure OpenAI is the default; public OpenAI requires
+# explicitly setting ODDISH_OPENAI_PROVIDER=openai and OPENAI_API_KEY.
+# Use an OpenAI-compatible endpoint such as *.openai.azure.com/openai/v1 or
+# *.services.ai.azure.com/openai/v1. Do not use the Foundry project endpoint
+# ending in /api/projects/<project>.
+ODDISH_OPENAI_PROVIDER=azure
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://YOUR-RESOURCE.openai.azure.com/openai/v1
+AZURE_OPENAI_API_VERSION=...
+ODDISH_AZURE_OPENAI_DEPLOYMENTS='{"openai/gpt-5.4":"azure-gpt-5-4","gpt-5.4":"azure-gpt-5-4"}'
 
 # AWS Bedrock — the default route for Claude models on the Modal
 # deployment (the image sets CLAUDE_CODE_USE_BEDROCK=1). Provide the
 # bearer token here; ANTHROPIC_API_KEY above is used as the fallback
 # route for `anthropic/...` model ids.
 AWS_BEARER_TOKEN_BEDROCK=...
+
+# z.ai / GLM — auth token for GLM models run on the claude-code harness
+# (model ids like `zai/glm-x-preview[1m]`). Referenced as ${ZAI_API_KEY}.
+# Optionally override the endpoint via ZAI_BASE_URL.
+ZAI_API_KEY=...
+# ZAI_BASE_URL=https://api.z.ai/api/anthropic
+
+# MiniMax — auth token for MiniMax M-series models on the claude-code harness
+# (model ids like `minimax/MiniMax-M3`). Referenced as ${MINIMAX_API_KEY}.
+# Optionally override the endpoint via MINIMAX_BASE_URL.
+MINIMAX_API_KEY=...
+# MINIMAX_BASE_URL=https://api.minimax.io/anthropic
+
+# Moonshot — auth token for Kimi K2.7 Code on the claude-code harness
+# (model ids like `moonshot/kimi-k2.7-code`). Referenced as ${MOONSHOT_API_KEY}.
+# Optionally override the endpoint via MOONSHOT_BASE_URL.
+MOONSHOT_API_KEY=...
+# MOONSHOT_BASE_URL=https://api.moonshot.ai/anthropic
 
 # Optional sandbox credentials
 DAYTONA_API_KEY=...
@@ -367,6 +410,115 @@ Concurrency limits are keyed off the full `provider/model` string.
 > Trial *analysis* (the `claude -p` classifier) uses its own `ANALYSIS_MODEL`
 > (`oddish/config.py`), which is already a `global.` inference profile id. It
 > is not wired through `to_bedrock_model_id`.
+
+### GLM / z.ai routing (Claude Code harness, non-Bedrock)
+
+z.ai's GLM models are served over an **Anthropic-compatible `/messages`
+endpoint**, so they run on the `claude-code` harness — but they must *not*
+inherit claude-code's fixed Bedrock provider/queue, or they would contend with
+heavy Bedrock/Anthropic traffic for the same concurrency slots. oddish handles
+this with a dedicated z.ai route:
+
+- **Canonical id.** Any GLM/z.ai reference is canonicalized to `zai/<id>` by
+  `oddish.config.to_zai_model_id` inside `normalize_trial_model`. Recognized
+  inputs: an explicit `zai/`/`z-ai/`/`z.ai/` prefix, or a bare `glm...` id
+  (e.g. `glm-x-preview[1m]`, `glm-4.6`). `zai` is a litellm provider id, so the
+  trial's `provider` resolves to `zai` and its `queue_key` to `zai/<id>` —
+  a separate concurrency bucket from any Bedrock model. The `zai/` prefix is
+  kept on the model id handed to Harbor so its per-agent network allowlist
+  resolves `api.z.ai` for closed-internet tasks.
+- **Env injection.** For a `claude-code` agent on a GLM model,
+  `harbor_runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
+  sets `ANTHROPIC_BASE_URL` (default `https://api.z.ai/api/anthropic`,
+  overridable via `ZAI_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`
+  (resolved by Harbor's Modal env at exec time), pins `ANTHROPIC_MODEL` and all
+  size aliases to the **bare** GLM id, applies z.ai's recommended long-context
+  settings (`CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `API_TIMEOUT_MS`,
+  `CLAUDE_STREAM_IDLE_TIMEOUT_MS`, `CLAUDE_CODE_EAGER_FLUSH`,
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), and blanks the ambient
+  `ANTHROPIC_API_KEY` / `CLAUDE_CODE_USE_BEDROCK` / `AWS_BEARER_TOKEN_BEDROCK`
+  so the z.ai route wins over the image's Bedrock defaults. Any of these can be
+  overridden per-trial via the sweep `env:` / CLI `--agent-env`.
+- **Secret.** Provide `ZAI_API_KEY` in the runtime Modal secret (or the worker
+  environment). It is referenced as `${ZAI_API_KEY}` and never persisted to the
+  trial row.
+
+- **Recommended thinking/effort.** z.ai recommends "max effort" with adaptive
+  thinking. Harbor's `claude-code` agent (pinned fork commit) already renders
+  the `thinking` and `reasoning_effort` kwargs as `--thinking adaptive
+  --effort max`, so the z.ai route sets those kwargs as defaults. Override
+  either per-trial via agent kwargs (`--agent-kwarg reasoning_effort=high`).
+- **Network allowlist.** The Harbor fork's per-agent allowlist already maps
+  `zai`/`z-ai`/`glm` model prefixes (and the `glm-claude-code` agent name) to
+  `api.z.ai`, so closed-internet tasks on the Modal environment reach z.ai
+  without further changes.
+
+Run GLM on a task: `oddish run -p <task> --agent claude-code --model
+zai/glm-x-preview[1m]` (bare `glm-x-preview[1m]` works too and is canonicalized
+to `zai/...`).
+
+### MiniMax / Moonshot (Kimi) routing (Claude Code harness, direct APIs)
+
+MiniMax and Moonshot both expose **Anthropic-compatible `/messages` endpoints**,
+so MiniMax M-series and Kimi K2.7 Code run on the `claude-code` harness against
+their official direct APIs — the same pattern as GLM/z.ai, and the reason these
+are preferred over the OpenRouter route (one stable endpoint per provider,
+trivially allowlisted on closed-internet tasks; no OpenRouter provider-routing
+variance). oddish gives each its own provider/queue bucket so they never contend
+with Bedrock for concurrency slots:
+
+- **Canonical id.** `oddish.config.normalize_trial_model` canonicalizes any
+  MiniMax reference to `minimax/<id>` (via `to_minimax_model_id`) and any
+  Moonshot/Kimi reference to `moonshot/<id>` (via `to_moonshot_model_id`).
+  - MiniMax inputs: an explicit `minimax/` prefix or a bare `minimax...` id
+    (e.g. `MiniMax-M3`). Model ids are lowercased for storage/queueing
+    (`minimax/minimax-m3`); the exact published casing (`MiniMax-M3`) is
+    restored only when the id is handed to Claude Code (`minimax_api_model_id`).
+  - Moonshot inputs: an explicit `moonshot/`/`moonshotai/`/`kimi/` prefix or a
+    truly bare `kimi-...` id (e.g. `kimi-k2.7-code`). **A foreign provider
+    prefix such as `openrouter/moonshotai/kimi-...` is intentionally *not*
+    matched**, so the OpenRouter route keeps its own provider/queue bucket and
+    both columns can run concurrently.
+  - `minimax`/`moonshot` resolve to their own `provider` and `queue_key`
+    (`moonshot` is a litellm provider id; `minimax` is an oddish alias). The
+    provider prefix is kept on the id handed to Harbor so its per-agent network
+    allowlist resolves the direct endpoint for closed-internet tasks.
+- **Env injection.** For a `claude-code` agent on a MiniMax/Moonshot model,
+  `harbor_runner._apply_claude_code_minimax_env` /
+  `_apply_claude_code_moonshot_env` mirror the z.ai path: they set
+  `ANTHROPIC_BASE_URL` (defaults `https://api.minimax.io/anthropic` /
+  `https://api.moonshot.ai/anthropic`, overridable via `MINIMAX_BASE_URL` /
+  `MOONSHOT_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${MINIMAX_API_KEY}` /
+  `${MOONSHOT_API_KEY}` (resolved by Harbor's Modal env at exec time), pin
+  `ANTHROPIC_MODEL` and all size aliases to the bare model id, apply each
+  provider's recommended long-context env (MiniMax:
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=512000` for M3's 512K window,
+  `API_TIMEOUT_MS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`; Moonshot:
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=262144` for K2.7's 256K window,
+  `ENABLE_TOOL_SEARCH=false`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS=32768`), and blank
+  the ambient `ANTHROPIC_API_KEY` / `CLAUDE_CODE_USE_BEDROCK` /
+  `AWS_BEARER_TOKEN_BEDROCK` so the direct route wins. **No thinking/effort
+  kwargs are set** — MiniMax M3 has thinking on by default and K2.7 locks
+  temperature/top_p server-side with thinking always on.
+- **Secret.** Provide `MINIMAX_API_KEY` / `MOONSHOT_API_KEY` in the runtime
+  Modal secret (or the worker environment). They are referenced as
+  `${MINIMAX_API_KEY}` / `${MOONSHOT_API_KEY}` and never persisted to the trial
+  row.
+- **Network allowlist.** The Harbor fork's per-agent allowlist maps the
+  `minimax` and `moonshot`/`moonshotai`/`kimi` model prefixes (and the
+  dedicated `minimax-claude-code` / `kimi-claude-code` agent names) to
+  `api.minimax.io` / `api.moonshot.ai`, so closed-internet tasks reach the
+  direct endpoints without further changes.
+
+Dedicated Harbor agents `minimax-claude-code` and `kimi-claude-code` (subclasses
+of `claude-code`, with closed-internet `*-api-key-no-search` variants) also
+exist for direct `harbor run` usage; the oddish production path uses the stock
+`claude-code` agent plus the env injection above.
+
+Run MiniMax / Kimi on a task: `oddish run -p <task> --agent claude-code --model
+minimax/MiniMax-M3` and `oddish run -p <task> --agent claude-code --model
+moonshot/kimi-k2.7-code` (bare `MiniMax-M3` / `kimi-k2.7-code` work too and are
+canonicalized).
 
 Storage defaults:
 
@@ -416,25 +568,108 @@ If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single e
 
 ### Worker Architecture
 
-Dispatcher + single-job pattern, backed by the unified `worker_jobs` table:
+Dispatcher + reconciler + single-job pattern, backed by the unified
+`worker_jobs` table. **Dispatch and reconciliation are deliberately separate
+scheduled functions** so a slow or deadlocking reconciliation sweep can never
+block worker spawning (previously they shared one function under a tight 60s
+timeout, so a sweep that timed out or deadlocked spawned zero workers that
+cycle — and a SIGKILL mid-sweep left orphaned `idle in transaction` locks that
+deadlocked the next sweep):
 
-1. `poll_queue()` runs on a 120s Modal schedule. It calls
+1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (180s) Modal schedule under
+   `DISPATCHER_TIMEOUT_SECONDS` (120s). It does only two things: discover active
+   queue keys via `discover_active_worker_job_queue_keys`, and launch up to
+   `MAX_WORKERS_PER_POLL` single-job containers via the org-first fair-share
+   `build_spawn_plan`. It runs no cleanup, so dispatch is never blocked by it.
+   `MAX_WORKERS_PER_POLL` is the dominant throughput ceiling: long agent trials
+   hold a `queue_slots` lease for their full duration, so steady-state running
+   workers ≈ `spawns_per_poll × trial_duration / poll_interval`. It must stay
+   high enough to fill the per-model concurrency limits (which sum into the
+   hundreds); the per-queue-key slot caps and `WORKER_MAX_CONTAINERS` remain the
+   real bounds.
+2. `reconcile_queue_state()` runs on its own `CLEANUP_INTERVAL_SECONDS` (240s)
+   schedule under a generous `CLEANUP_TIMEOUT_SECONDS` (600s) so it is never
+   SIGKILLed mid-transaction. It runs (each phase wrapped best-effort so one
+   failure doesn't abort the rest): stale `queue_slots` lease cleanup,
    `cleanup_orphaned_queue_state` (zombie-txn reap + stale-heartbeat sweep +
-   stage safety nets + orphaned slot release), discovers active queue keys
-   via `discover_active_worker_job_queue_keys`, and launches up to
-   `MAX_WORKERS_PER_POLL` single-job containers.
-2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
-   queue key and calls `run_single_worker_job`, which atomically claims one
-   row from `worker_jobs`, dispatches to the registered handler
-   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats on both
+   stage safety nets + **per-slot** orphaned slot release — see "Worker runtime
+   invariants" below), and the experiments owner
+   backfill (`dashboard_owner_backfill` — converges `owner_user_id` so the
+   dashboard Mine filter stays on its indexed fast path). The display-hygiene
+   clear of terminal-trial claim metadata
+   (`clear_terminal_trial_runtime_refs`) runs after the main reconciliation
+   transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
+   can neither deadlock against live workers nor roll back the sweep.
+3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
+   queue key (stamping `locked_by = <worker_id>`, `locked_at = NOW()`,
+   `locked_until = NOW() + WORKER_TIMEOUT + 30s`) and calls
+   `run_single_worker_job` → `drain_worker_jobs`, which atomically claims one or
+   more rows from `worker_jobs` (stamping `current_worker_id = <worker_id>`),
+   dispatches to the registered handler (`TRIAL` or the task-level `QA` job;
+   `ANALYSIS` only for legacy in-flight rows), writes heartbeats on both
    `worker_jobs.heartbeat_at` and the mirrored domain column, records the
    outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
-   post-success hook (GitHub notification) when applicable, and exits.
+   post-success hook (GitHub notification) when applicable, releases the slot
+   in its `finally`, and exits.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
-(`notify_github_trial`, `notify_github_analysis`, `notify_github_verdict`)
-are wired through `_POST_SUCCESS_HOOKS` in `worker/functions.py`.
+(`notify_github_trial`, `notify_github_qa`, and the transitional
+`notify_github_analysis`) are wired through `_POST_SUCCESS_HOOKS` in
+`worker/functions.py`. The task-level `QA` job fires `notify_github_qa`,
+which refreshes the whole PR comment (per-trial classifications + task
+verdict) in one update.
+
+### Worker Runtime Invariants & Pitfalls
+
+Load-bearing properties, several learned from incidents. Changing them naively
+silently breaks throughput or correctness — read before touching
+`worker/functions.py`, `slots.py`, `cleanup.py`, or the dispatcher.
+
+1. **Workers hold NO DB connection during the Harbor run.** A trial runs for
+   minutes to ~12h but only touches the DB for a few ms (claim, 30s heartbeats,
+   outcome), so workers use `NullPool` (`Settings.db_use_null_pool`) + per-op
+   `asyncpg` connections. ⚠️ Never introduce a pooled/long-lived connection or
+   open session spanning the run: it pins one idle connection per running trial
+   and exhausts the Supavisor/PgBouncer cap. (The API keeps a warm `QueuePool`
+   only because it's short-lived — that reasoning doesn't transfer to workers.)
+
+2. **`queue_slots` is the real concurrency gate.** Per-queue-key concurrency is
+   enforced by leasing a `queue_slots` row (`acquire_queue_slot`, `FOR UPDATE
+   SKIP LOCKED`), not by spawn count. The dispatcher budgets on `worker_jobs`
+   RUNNING (`limit - running`) while the worker gates on a free slot — if those
+   counters drift, the dispatcher over-spawns workers that exit immediately
+   (watch for `metric=queue_lock_contention` floods).
+
+3. **Slot leases can outlive their worker — reclaim per-slot.** The lease
+   (`locked_until`) is `WORKER_TIMEOUT_SECONDS + 30` (~12h); a SIGKILLed /
+   preempted worker never runs its `finally` release. `cleanup_orphaned_queue_state`
+   frees a slot whenever its `locked_by` has no `RUNNING` `worker_jobs` row on
+   `current_worker_id` (with a `locked_at` grace, `ORPHANED_SLOT_GRACE_MINUTES`,
+   for the acquire→claim gap). ⚠️ Never gate this per-queue_key (e.g. "release
+   only if zero jobs RUNNING on the key") — that was the original bug: one live
+   job pinned every leaked lease for ~12h and starved the queue. The link is
+   always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+
+4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
+   model under two keys gets the *sum* of both buckets against one provider quota
+   (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
+   `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
+   `normalize_queue_key`): nop/oracle + variants collapse to the single
+   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot map to
+   `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
+   `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
+   model across two buckets.
+
+5. **No provider-level concurrency cap.** Each Bedrock/Gemini model id is its own
+   bucket, but they share one AWS/Google account quota — the sum of per-model
+   limits can exceed account RPM/TPM with no global throttle (a source of 429s).
+
+6. **Stale-heartbeat reap can double-run a trial.** If heartbeats stall for
+   `STALE_HEARTBEAT_MINUTES` (15, e.g. a pooler blip), the reaper flips the live
+   trial to `RETRYING` and another worker may run it concurrently — no fencing
+   token. The window is a deliberate trade-off (raised from 10 after an incident);
+   shrink with care.
 
 ### Local Development
 
@@ -477,7 +712,7 @@ CORS_ALLOWED_ORIGINS=...
 CLERK_ISSUER=...
 CLERK_JWT_AUDIENCE=...
 ODDISH_S3_*=...
-OPENAI_API_KEY=... ANTHROPIC_API_KEY=... GEMINI_API_KEY=...
+AZURE_OPENAI_*=... ANTHROPIC_API_KEY=... GEMINI_API_KEY=...
 GITHUB_TOKEN=...
 ODDISH_DASHBOARD_URL=...
 ```
@@ -494,9 +729,20 @@ ODDISH_ENABLE_MODAL_WORKERS=...
 ODDISH_MODAL_API_MIN_CONTAINERS=...
 ODDISH_MODAL_API_MAX_CONTAINERS=...
 ODDISH_MODAL_POLL_INTERVAL_SECONDS=...
+ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS=...
+ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS=...
+ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS=...
 ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
 ODDISH_MODAL_WORKER_NONPREEMPTIBLE=...
-ODDISH_MODAL_MAX_WORKERS_PER_POLL=64
+ODDISH_MODAL_MAX_WORKERS_PER_POLL=128
+ODDISH_MODAL_API_CPU=2.0
+ODDISH_MODAL_API_MEMORY_MB=4096
+ODDISH_MODAL_WORKER_CPU=1.0
+ODDISH_MODAL_WORKER_MEMORY_MB=3072
+ODDISH_MODAL_DISPATCHER_CPU=1.0
+ODDISH_MODAL_DISPATCHER_MEMORY_MB=1024
+ODDISH_MODAL_RECONCILER_CPU=1.0
+ODDISH_MODAL_RECONCILER_MEMORY_MB=2048
 ODDISH_DEFAULT_MODEL_CONCURRENCY=...
 ODDISH_MODAL_NOP_ORACLE_CONCURRENCY=...
 MODAL_APP_NAME=...
@@ -530,7 +776,7 @@ uv run alembic upgrade head
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
 | `auth/verification.py` | API key + Clerk JWT verification |
-| `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic single-job runner |
+| `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | GitHub notification hooks used as post-success actions |
 
@@ -543,14 +789,15 @@ uv run alembic upgrade head
 - `/` — public landing page; signed-in users are redirected to `/dashboard`
 - `/dashboard` — main dashboard and experiment entrypoint
 - `/tasks` — authenticated task browser with search, pagination, version summaries
-- `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel
+- `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel. Trajectory QA is a single task-level action: the trials table toolbar exposes one **Run QA** / **Cancel QA** per selected task, `TaskFilesPanel` exposes one **Run QA** button, and `TaskVerdictBadge` renders the unified QA state (**Running QA…** / **QA failed** / **Task is good** / **Needs review**) with **Run QA** / **Cancel QA**. Per-trial analysis run/cancel controls were removed (the trial drawer still shows each trial's classification read-only); Run QA proxies to `POST /tasks/{id}/qa/retry` and Cancel QA to `POST /tasks/{id}/qa/cancel`.
 - `/settings` — organization and API key management
 - `/admin` — two tabs:
-  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix,
-    stale-RUNNING samples, recent failures/cancels, duration percentiles,
-    plus `OrphanedStateCard`
+  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix
+    (`Task QA` is the task-level `QA` job; `Task Verdict` and `Trial Analysis`
+    are shown as legacy and only drain in-flight rows), stale-RUNNING samples, recent
+    failures/cancels, duration percentiles, plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
-- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all trial-analysis and task-verdict UI (matrix analysis dots, the "Trial analysis" legend section, the trial analysis card, and the task verdict badge) from public viewers.
+- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all QA UI (matrix classification dots, the "Trial analysis" legend section, the trial classification card, and the task QA verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
 ### Request Flow

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import re
+
 import heapq
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
+from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,13 +25,41 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
+from oddish.core.tags_projection import (
+    list_effective_user_tags_for_task_versions,
+)
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import (
+    TaskBrowseExperiment,
     TaskStatusResponse,
     TrialQueueInfo,
     TrialResponse,
+    UserTagRef,
     VisibleWorkerJob,
 )
+
+
+logger = logging.getLogger(__name__)
+
+
+async def _hydrate_user_tags_for_task(
+    session, *, task_id: str, public_only: bool = False
+) -> list[UserTagRef]:
+    by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=[task_id], public_only=public_only
+    )
+    return [
+        UserTagRef(
+            tag_id=t.tag_id,
+            key=t.key,
+            value=t.value,
+            color=t.color,
+            visibility=t.visibility,
+            current=t.current,
+            older=t.older,
+        )
+        for t in by_task.get(task_id, [])
+    ]
 
 
 def _resolve_trial_cost(
@@ -254,6 +286,8 @@ def build_visible_worker_job(job: WorkerJobModel) -> VisibleWorkerJob:
         kind=_normalize_worker_job_kind(job.kind),
         status=_normalize_worker_job_status(job.status),
         queue_key=settings.normalize_queue_key(job.queue_key),
+        provider=job.provider,
+        external_id=job.external_id,
         subject_table=job.subject_table,
         subject_id=job.subject_id,
         attempts=job.attempts,
@@ -401,6 +435,8 @@ def build_trial_response(
         reward=trial.reward,
         error_message=trial.error_message,
         result=trial.result,
+        harbor_config=trial.harbor_config,
+        is_probe=trial.is_probe,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -468,6 +504,8 @@ def build_compact_trial_response(
         reward=trial.reward,
         error_message=trial.error_message,
         result=None,
+        harbor_config=trial.harbor_config,
+        is_probe=trial.is_probe,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
@@ -736,11 +774,20 @@ def _build_task_status_response(
         user=task.user,
         github_username=task.tags.get("github_username") if task.tags else None,
         github_meta=_parse_github_meta(task.tags) if task.tags else None,
+        link=task.link,
         task_path=task.task_path,
         experiment_id=experiment_id,
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
         experiment_created_at=experiment_created_at,
+        # Sorted (name, id) to match the browse chips and because the ORM
+        # relationship has no order_by -- DB return order is not stable.
+        experiments=[
+            TaskBrowseExperiment(id=exp.id, name=exp.name)
+            for exp in sorted(
+                task.experiments or [], key=lambda exp: (exp.name, exp.id)
+            )
+        ],
         current_version=current_version,
         current_version_id=current_version_id,
         total=total,
@@ -752,6 +799,7 @@ def _build_task_status_response(
         reward_sum=formatted_reward_sum,
         reward_total=formatted_reward_total,
         run_analysis=task.run_analysis,
+        run_probe=task.run_probe,
         verdict_status=task.verdict_status,
         verdict=task.verdict,
         verdict_error=task.verdict_error,
@@ -1008,10 +1056,30 @@ async def build_task_status_responses_from_counts(
     stats_result = await session.execute(stats_query)
     stats_map = {row.task_id: row for row in stats_result.all()}
 
+    # Hydrate effective user tags for every task in a single round-trip so
+    # batched list views surface tag chips without per-task fan-out.
+    user_tags_by_task = await list_effective_user_tags_for_task_versions(
+        session, task_ids=task_ids
+    )
+
     def _effective(task: TaskModel) -> str | None | object:
         return effective_map.get(task.id, _VERSION_ID_UNSET)
 
-    return [
+    def _user_tags(task_id: str) -> list[UserTagRef]:
+        return [
+            UserTagRef(
+                tag_id=t.tag_id,
+                key=t.key,
+                value=t.value,
+                color=t.color,
+                visibility=t.visibility,
+                current=t.current,
+                older=t.older,
+            )
+            for t in user_tags_by_task.get(task_id, [])
+        ]
+
+    responses = [
         _build_task_status_response(
             task,
             total=int(stats_map[task.id].total) if task.id in stats_map else 0,
@@ -1040,3 +1108,169 @@ async def build_task_status_responses_from_counts(
         )
         for task in tasks
     ]
+    for resp, task in zip(responses, tasks):
+        resp.user_tags = _user_tags(task.id)
+    return responses
+
+
+async def cancel_job_by_worker(
+    provider: str | None,
+    external_id: str | None,
+) -> bool:
+    """Best-effort terminate the remote sandbox backing a hanging job.
+
+    Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
+    matching ``harbor``'s ``provider_name``) and tears down the sandbox
+    identified by ``external_id``. Cancellation paths call this for rows
+    they have already marked terminal in the DB, so it never raises into
+    the caller -- failures are logged and reported via the return value.
+
+    Returns ``True`` when a terminate/delete call was issued successfully,
+    ``False`` when there was nothing to do or the teardown failed.
+    """
+    if not provider or not external_id:
+        return False
+
+    try:
+        env_type = EnvironmentType(provider.lower())
+    except ValueError:
+        logger.warning(
+            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            provider,
+            external_id,
+        )
+        return False
+
+    try:
+        # import would crash every one of those processes; importing here
+        # keeps the teardown deps confined to the worker context that
+        # actually has them installed.
+        if env_type == EnvironmentType.MODAL:
+            import modal
+
+            sandbox = await modal.Sandbox.from_id.aio(external_id)
+            await sandbox.terminate.aio()
+        elif env_type == EnvironmentType.DAYTONA:
+            from daytona import AsyncDaytona
+
+            client = AsyncDaytona()
+            try:
+                sandbox = await client.get(external_id)
+                await client.delete(sandbox)
+            finally:
+                await client.close()
+        else:
+            logger.warning(
+                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
+                provider,
+                external_id,
+            )
+            return False
+    except Exception:
+        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
+        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
+        logger.exception(
+            "cancel_job_by_worker: failed to terminate %s sandbox %s",
+            provider,
+            external_id,
+        )
+        return False
+
+    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
+    return True
+
+
+def escape_like(needle: str) -> str:
+    """Escape LIKE/ILIKE pattern metacharacters so user input matches
+    literally. Pair with ``.ilike(f"%{escape_like(q)}%", escape="\\")``."""
+    return re.sub(r"([\\%_])", r"\\\1", needle)
+
+
+@dataclass(frozen=True)
+class SearchTerms:
+    """A parsed free-text search. ``include`` is an AND of OR-groups: every
+    group must match, a group matches when any of its needles does. No
+    ``exclude`` needle may match. Needles are literal text — callers apply
+    their own matching (e.g. ILIKE for case-insensitivity) and must still
+    :func:`escape_like` each needle."""
+
+    include: tuple[tuple[str, ...], ...] = ()
+    exclude: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.include or self.exclude)
+
+
+# AND-ing dozens of ILIKEs is pointless and lets a pathological query inflate
+# the statement; needles beyond the cap are dropped.
+_MAX_SEARCH_TERMS = 16
+
+
+def parse_search_query(raw: str) -> SearchTerms:
+    """Parse a free-text search string into include groups and excludes.
+
+    Grammar: whitespace-separated terms are AND'd (each must match,
+    order-independent); ``"quoted text"`` keeps its spaces and matches as one
+    contiguous phrase; a leading ``-`` on a term or phrase excludes it.
+    Uppercase ``OR`` between two terms makes either match (AND binds tighter:
+    ``a OR b c`` means ``(a OR b) AND c``), uppercase ``NOT`` excludes the
+    next term, and uppercase ``AND`` is a no-op — lowercase and quoted forms
+    are ordinary literals, so ``"OR"`` searches for the text. Dangling
+    operators (leading/trailing, or OR next to an exclusion) are dropped. An
+    unterminated quote treats the rest of the string as the phrase so results
+    stay sensible while a phrase is being typed. To search a literal leading
+    ``-``, quote it: ``"-no-skill"``.
+    """
+    include: list[tuple[str, ...]] = []
+    exclude: list[str] = []
+    pending_or = False
+    negate_next = False
+    # OR only joins ADJACENT plain terms; an exclusion in between makes it
+    # dangling (`a -b OR c` is a AND c AND NOT b, not (a OR c) AND NOT b).
+    last_was_include = False
+    i, n = 0, len(raw)
+    while i < n and sum(map(len, include)) + len(exclude) < _MAX_SEARCH_TERMS:
+        if raw[i].isspace():
+            i += 1
+            continue
+        negated = False
+        if raw[i] == "-" and i + 1 < n and not raw[i + 1].isspace():
+            negated = True
+            i += 1
+        quoted = raw[i] == '"'
+        if quoted:
+            end = raw.find('"', i + 1)
+            if end == -1:
+                term, i = raw[i + 1 :], n
+            else:
+                term, i = raw[i + 1 : end], end + 1
+        else:
+            end = i
+            while end < n and not raw[end].isspace():
+                end += 1
+            term, i = raw[i:end], end
+        term = term.strip()
+        if not term:
+            continue
+        if not quoted and not negated:
+            if term == "AND":
+                continue
+            if term == "OR":
+                pending_or = last_was_include
+                continue
+            if term == "NOT":
+                negate_next = True
+                continue
+        if negated or negate_next:
+            exclude.append(term)
+            negate_next = False
+            pending_or = False
+            last_was_include = False
+        elif pending_or:
+            include[-1] = (*include[-1], term)
+            pending_or = False
+            last_was_include = True
+        else:
+            include.append((term,))
+            last_was_include = True
+    return SearchTerms(include=tuple(include), exclude=tuple(exclude))

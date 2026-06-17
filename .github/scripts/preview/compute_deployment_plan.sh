@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Decide which preview components to redeploy this push, based on:
 #   - the PR event action (opened/reopened/synchronize)
-#   - per-component change flags emitted by dorny/paths-filter steps,
+#   - per-component change flags emitted by find_last_deploys.py,
 #     each diffed against a per-component last-successful-deploy SHA
 #   - a workflow/scripts-changed flag (forces a full redeploy)
 #
@@ -12,12 +12,12 @@
 #   EVENT_ACTION          - github.event.action
 #   BACKEND_BASE          - SHA of last successful backend deploy (or "")
 #   MIGRATIONS_BASE       - SHA of last successful migrations run (or "")
-#   BACKEND_CHANGED       - "true"/"false"/"" from filter_backend
-#   MIGRATIONS_CHANGED    - "true"/"false"/"" from filter_migrations
-#   PR_BACKEND_CHANGED    - "true"/"false" from full-PR fallback filter
-#   PR_MIGRATIONS_CHANGED - "true"/"false" from full-PR fallback filter
-#   PR_FRONTEND_CHANGED   - "true"/"false" from full-PR fallback filter
-#   WORKFLOW_CHANGED      - "true"/"false"/"" from filter_workflow
+#   BACKEND_CHANGED       - "true"/"false"/"" from find_last_deploys.py (diff vs backend base)
+#   MIGRATIONS_CHANGED    - "true"/"false"/"" from find_last_deploys.py (diff vs migrations base)
+#   PR_BACKEND_CHANGED    - "true"/"false" whole-PR fallback (find_last_deploys.py, diff vs PR base)
+#   PR_MIGRATIONS_CHANGED - "true"/"false" whole-PR fallback (find_last_deploys.py, diff vs PR base)
+#   PR_FRONTEND_CHANGED   - "true"/"false" whole-PR fallback (find_last_deploys.py, diff vs PR base)
+#   WORKFLOW_CHANGED      - "true"/"false"/"" from find_last_deploys.py (diff vs previous push)
 set -euo pipefail
 
 : "${EVENT_ACTION:?}"

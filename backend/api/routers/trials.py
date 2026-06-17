@@ -9,13 +9,13 @@ from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
-    rerun_trial_analysis_core,
     retry_trial_core,
 )
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
     read_trial_logs_structured,
+    read_trial_probe_artifacts,
     read_trial_result,
     read_trial_trajectory,
 )
@@ -78,6 +78,10 @@ async def get_trial(
 async def list_task_trials(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    probe: bool | None = Query(
+        None,
+        description="Filter by trial kind: true=probes only, false=real attempts only, omitted=all.",
+    ),
 ) -> list[TrialResponse]:
     """List all trials for a task (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
@@ -85,7 +89,7 @@ async def list_task_trials(
     async with get_session() as session:
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
-        return await list_task_trials_for_task(session, task_id)
+        return await list_task_trials_for_task(session, task_id, probe=probe)
 
 
 # =============================================================================
@@ -169,20 +173,6 @@ async def delete_trial(
     }
 
 
-@router.post("/trials/{trial_id}/analysis/retry")
-async def retry_trial_analysis(
-    trial_id: str,
-    auth: Annotated[AuthContext, Depends(require_auth)],
-) -> dict:
-    """Queue analysis for a completed trial and invalidate its task verdict."""
-    auth.require_scope(APIKeyScope.TASKS)
-
-    async with get_session() as session:
-        return await rerun_trial_analysis_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
-
-
 @router.get("/trials/{trial_id}/logs")
 async def get_trial_logs(
     trial_id: str,
@@ -262,6 +252,22 @@ async def get_trial_file(
         pass
     content, media_type = await read_trial_agent_file(trial, file_path)
     return Response(content=content, media_type=media_type)
+
+
+@router.get("/trials/{trial_id}/probe-artifacts")
+async def get_trial_probe_artifacts(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Get the probe `_artifacts` blob (agent transcript, verifier stdout,
+    trajectory, watchdog log) for a trial.
+
+    Cloud trials never inline this into ``trial.result``; it's read on demand
+    from object storage so the probe result page can render the agent output.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    trial = await _get_authorized_trial(trial_id, auth)
+    return await read_trial_probe_artifacts(trial)
 
 
 @router.get("/trials/{trial_id}/trajectory")

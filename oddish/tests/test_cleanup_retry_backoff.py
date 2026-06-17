@@ -65,6 +65,9 @@ class _FakeSession:
             return _FakeResult(rowcount=1)
         return _FakeResult()
 
+    async def scalar(self, *args, **kwargs):
+        return None
+
     async def get(self, model, object_id: str):
         if model is TrialModel and object_id == self.trial.id:
             return self.trial
@@ -103,8 +106,10 @@ async def test_stale_trial_retry_cleanup_schedules_backoff(monkeypatch):
         "reap_idle_in_transaction_zombies",
         fake_reap_idle_in_transaction_zombies,
     )
-    monkeypatch.setattr("oddish.queue.maybe_start_analysis_stage", no_stage_transition)
-    monkeypatch.setattr("oddish.queue.maybe_start_verdict_stage", no_stage_transition)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", no_stage_transition)
+    monkeypatch.setattr(
+        "oddish.queue.maybe_advance_legacy_analyzing_task", no_stage_transition
+    )
     monkeypatch.setattr(
         cleanup,
         "calculate_trial_retry_delay_seconds",

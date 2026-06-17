@@ -1,0 +1,754 @@
+"""Seed PR preview databases with a faithful subset of production data.
+
+Runs in GitHub Actions after Alembic has applied both stacks to a data-less
+Supabase preview branch. The preview holds nothing but a pseudo-random
+subset of real production rows -- organizations, users, experiments, tasks,
+versions, trials, worker jobs, skills, documents, presets -- imported as-is,
+so the preview is indistinguishable from prod apart from being smaller.
+
+Reviewers authenticate exactly as in prod: the real ``organizations`` rows
+(with their real ``clerk_org_id``) are part of the subset, so a Clerk login
+resolves to the same org and the same user rows it would in production.
+
+Invariants:
+- Deterministic: the draw is ordered by ``md5(id || sample_key)`` with the
+  PR number as the key, so re-runs within a PR draw the same rows while
+  different PRs draw different ones.
+- Idempotent + convergent: rows upsert by primary key, and the previous
+  draw is recorded in a private ``_preview_seed_state`` table so rows that
+  drop out of the draw (prod drift) are deleted -- without ever touching
+  data a reviewer created in the preview by hand.
+- Never imports runnable work: in-flight tasks/trials are normalized to
+  FAILED on import and only terminal worker_jobs are taken, otherwise the
+  preview's own stage-transition safety nets would enqueue real analysis /
+  verdict jobs (and spend real tokens) against sampled tasks. This is the
+  single deliberate deviation from prod, inherited from the old
+  ``--with-data`` quiesce step.
+- Never fails the whole run on one row: every upsert runs in a savepoint;
+  a constraint surprise (e.g. a JIT-provisioned reviewer user already
+  holding a unique email/clerk id on a reused branch) skips that row with
+  a loud warning and the existing row wins.
+- Cross-stack via reflection: the live post-Alembic schema is reflected, so
+  inserts span both Alembic stacks in FK topological order without
+  importing any ORM models, and new tables join the draw automatically.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as _dt
+import json
+import sys
+
+from sqlalchemy import JSON, MetaData, delete, text, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
+
+# Prod-sample sizing: a generous slice of prod -- branch compute (Micro,
+# 8 GB disk) dwarfs the app dataset, so the caps are sized for feature
+# realism, not capacity. Loading stays fast because rows upsert in
+# multi-row batches (see _UPSERT_BATCH), not row-by-row.
+SAMPLE_RECENT_EXPERIMENTS = 2000
+SAMPLE_RANDOM_EXPERIMENTS = 4000
+# Per-user coverage: every distinct experiment owner contributes their K
+# most recent experiments, so per-user features (the dashboard "Mine"
+# filter) work in the preview for every member, exactly as in prod.
+SAMPLE_EXPERIMENTS_PER_OWNER = 5
+SAMPLE_EXTRA_TASKS = 3000
+SAMPLE_TRIALS_PER_EXPERIMENT = 100
+SAMPLE_SKILLS = 200
+SAMPLE_DOCUMENTS = 200
+SAMPLE_PROBE_PRESETS = 100
+
+# Multi-row upsert batching. Rows per statement are computed per table from
+# the column count against Postgres's 32767 bind-parameter limit (with
+# headroom), and batches are written over _LOAD_STREAMS concurrent
+# connections -- together cutting load time ~1000x versus row-by-row over
+# the pooler at six-figure row counts.
+_MAX_BIND_PARAMS = 28000
+_LOAD_STREAMS = 6
+
+_TERMINAL_TASK_STATUSES = ("COMPLETED", "FAILED")
+_TERMINAL_TRIAL_STATUSES = ("SUCCESS", "FAILED")
+_TERMINAL_JOB_STATUSES = ("SUCCESS", "FAILED", "CANCELLED")
+
+# Insert order is derived from reflection (topological); reconcile order is
+# this list reversed-children-first by construction.
+_RECONCILED_TABLES = (
+    "experiments",
+    "tasks",
+    "task_versions",
+    "task_experiments",
+    "trials",
+    "worker_jobs",
+    "skills",
+    "skill_files",
+    "documents",
+    "probe_presets",
+)
+
+# FK edges to ignore when topologically sorting reflected tables; the
+# linkage pass patches these columns after both endpoints exist.
+_BACKEDGES = {("tasks", "current_version_id")}
+
+# Columns owned by the linkage pass (sampled rows carry NULL for them, the
+# real pointer is applied afterwards). They are inserted for NEW rows but
+# excluded from merge updates/comparison -- otherwise every re-push would
+# see NULL != linked-value, rewrite the row, and re-link it.
+_LINKAGE_COLUMNS = {
+    "tasks": {"current_version_id"},
+    "trials": {"superseded_by_trial_id"},
+}
+
+# Bookkeeping table recording the previous draw, so reconcile deletes only
+# rows THIS seed imported -- never reviewer-created data. Lives only on
+# preview branches; prod never runs the seed.
+_STATE_TABLE = "_preview_seed_state"
+
+
+def _warn(message: str) -> None:
+    print(f"preview_seed: {message}", file=sys.stderr)
+
+
+async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
+    """Draw a deterministic pseudo-random subset of production data.
+
+    Read-only by construction: only SELECTs are issued, and the caller
+    builds the source engine with ``default_transaction_read_only=on``.
+
+    The core closure anchors on live experiments (recent + random) plus
+    extra random tasks, and walks task_experiments -> tasks -> versions ->
+    trials, then pulls every user and organization of the sampled orgs so
+    membership lists and authorship look exactly like prod. Coverage tables
+    (worker_jobs, skills, skill_files, documents, probe_presets) are each
+    guarded by a table-existence check and their own try/except, so one
+    section's failure never sinks the draw.
+
+    Returns ``{"rows": {table: [row, ...]}, "linkage": [(table, id, column,
+    value), ...]}`` for :func:`seed`.
+    """
+
+    async def rows_of(conn, sql: str, **params) -> list[dict]:
+        res = await conn.execute(text(sql), params)
+        return [dict(r._mapping) for r in res.fetchall()]
+
+    async def table_exists(conn, name: str) -> bool:
+        res = await conn.execute(
+            text("SELECT to_regclass(:qname) IS NOT NULL"),
+            {"qname": f"public.{name}"},
+        )
+        return bool(res.scalar_one())
+
+    rows: dict[str, list[dict]] = {}
+    async with source.connect() as conn:
+        # --- core closure: experiments -> links -> tasks -> versions -> trials
+        exps = await rows_of(
+            conn,
+            "SELECT * FROM experiments"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            " ORDER BY last_activity_at DESC NULLS LAST, created_at DESC"
+            " LIMIT :n",
+            n=SAMPLE_RECENT_EXPERIMENTS,
+        )
+        exps += await rows_of(
+            conn,
+            "SELECT * FROM experiments"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            key=sample_key,
+            n=SAMPLE_RANDOM_EXPERIMENTS,
+        )
+        # Per-owner anchor: each distinct owner's most recent experiments,
+        # so the dashboard "Mine" view has data for every member. Guarded:
+        # owner_user_id is a newer column and may be absent on older schemas.
+        try:
+            per_owner = await rows_of(
+                conn,
+                "SELECT * FROM ("
+                "  SELECT e.*, row_number() OVER ("
+                "    PARTITION BY e.owner_user_id"
+                "    ORDER BY e.last_activity_at DESC NULLS LAST,"
+                "             e.created_at DESC"
+                "  ) AS _rn FROM experiments e"
+                "  WHERE e.deleted_at IS NULL AND e.org_id IS NOT NULL"
+                "    AND e.owner_user_id IS NOT NULL"
+                ") s WHERE s._rn <= :k",
+                k=SAMPLE_EXPERIMENTS_PER_OWNER,
+            )
+            for e in per_owner:
+                e.pop("_rn", None)
+            exps += per_owner
+        except Exception as exc:  # noqa: BLE001 -- never sink the draw
+            _warn(f"per-owner experiment anchor skipped ({type(exc).__name__}: {exc})")
+        exps = list({e["id"]: e for e in exps}.values())
+        exp_ids = [e["id"] for e in exps]
+        if not exp_ids:
+            return {"rows": {}, "linkage": []}
+
+        links = await rows_of(
+            conn,
+            "SELECT * FROM task_experiments"
+            " WHERE experiment_id = ANY(:ids) AND deleted_at IS NULL",
+            ids=exp_ids,
+        )
+        task_ids = sorted({l["task_id"] for l in links})
+        tasks = (
+            await rows_of(
+                conn,
+                "SELECT * FROM tasks WHERE id = ANY(:ids) AND deleted_at IS NULL",
+                ids=task_ids,
+            )
+            if task_ids
+            else []
+        )
+        # Extra random tasks beyond the anchored experiments widen the task
+        # distribution (tasks outside any sampled experiment).
+        tasks += await rows_of(
+            conn,
+            "SELECT * FROM tasks"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            "   AND NOT (id = ANY(:ids))"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            ids=task_ids or [""],
+            key=sample_key,
+            n=SAMPLE_EXTRA_TASKS,
+        )
+        kept_task_ids = [t["id"] for t in tasks]
+        links = [l for l in links if l["task_id"] in set(kept_task_ids)]
+
+        versions = (
+            await rows_of(
+                conn,
+                "SELECT * FROM task_versions WHERE task_id = ANY(:ids)",
+                ids=kept_task_ids,
+            )
+            if kept_task_ids
+            else []
+        )
+
+        trials = (
+            await rows_of(
+                conn,
+                "SELECT * FROM ("
+                "  SELECT t.*, row_number() OVER ("
+                "    PARTITION BY t.experiment_id ORDER BY md5(t.id || :key)"
+                "  ) AS _rn FROM trials t"
+                "  WHERE t.experiment_id = ANY(:exp_ids)"
+                "    AND t.task_id = ANY(:task_ids)"
+                "    AND t.deleted_at IS NULL"
+                ") s WHERE s._rn <= :cap",
+                key=sample_key,
+                exp_ids=exp_ids,
+                task_ids=kept_task_ids,
+                cap=SAMPLE_TRIALS_PER_EXPERIMENT,
+            )
+            if kept_task_ids
+            else []
+        )
+        for t in trials:
+            t.pop("_rn", None)
+
+        # --- coverage tables, each independently best-effort.
+        trial_ids = {t["id"] for t in trials}
+        failures: dict[str, str] = {}
+
+        async def section(name: str, sql: str, **params):
+            try:
+                if not await table_exists(conn, name):
+                    return
+                rows[name] = await rows_of(conn, sql, **params)
+            except Exception as exc:  # noqa: BLE001 -- never sink the draw
+                failures[name] = f"{type(exc).__name__}: {exc}"
+                rows.pop(name, None)
+
+        await section(
+            "worker_jobs",
+            "SELECT * FROM worker_jobs"
+            " WHERE status::text = ANY(:statuses)"
+            "   AND subject_id = ANY(:subjects)",
+            statuses=list(_TERMINAL_JOB_STATUSES),
+            subjects=sorted(trial_ids | set(kept_task_ids)),
+        )
+        await section(
+            "skills",
+            "SELECT * FROM skills WHERE deleted_at IS NULL"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            key=sample_key,
+            n=SAMPLE_SKILLS,
+        )
+        if rows.get("skills"):
+            await section(
+                "skill_files",
+                "SELECT * FROM skill_files WHERE skill_id = ANY(:ids)",
+                ids=[s["id"] for s in rows["skills"]],
+            )
+        await section(
+            "documents",
+            "SELECT * FROM documents WHERE deleted_at IS NULL"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            key=sample_key,
+            n=SAMPLE_DOCUMENTS,
+        )
+        await section(
+            "probe_presets",
+            "SELECT * FROM probe_presets"
+            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
+            " ORDER BY md5(id || :key) LIMIT :n",
+            key=sample_key,
+            n=SAMPLE_PROBE_PRESETS,
+        )
+        for name, err in failures.items():
+            _warn(f"sample section {name!r} skipped ({err})")
+
+        # --- identity: import the sampled orgs IN FULL (org row + every
+        # member), as-is, so auth and the members list match prod exactly.
+        org_ids = sorted(
+            {
+                row["org_id"]
+                for group in [exps, tasks, trials, *rows.values()]
+                for row in group
+                if row.get("org_id")
+            }
+        )
+        orgs = (
+            await rows_of(
+                conn,
+                "SELECT * FROM organizations WHERE id = ANY(:ids)",
+                ids=org_ids,
+            )
+            if org_ids
+            else []
+        )
+        users = (
+            await rows_of(
+                conn,
+                "SELECT * FROM users WHERE org_id = ANY(:ids)",
+                ids=org_ids,
+            )
+            if org_ids
+            else []
+        )
+        # Plus any referenced author who sits outside the sampled orgs.
+        known_users = {u["id"] for u in users}
+        extra_user_ids = sorted(
+            {
+                v
+                for group in [exps, tasks, versions, trials, *rows.values()]
+                for row in group
+                for k, v in row.items()
+                if k.endswith("_user_id") and v and v not in known_users
+            }
+        )
+        if extra_user_ids:
+            users += await rows_of(
+                conn,
+                "SELECT * FROM users WHERE id = ANY(:ids)",
+                ids=extra_user_ids,
+            )
+
+    # --- transforms. The ONLY mutations are operational: in-flight statuses
+    # normalize to terminal so the preview never schedules real work, and
+    # self-referential FKs are deferred to the linkage pass because rows
+    # within one table upsert in arbitrary order.
+    linkage: list[tuple[str, str, str, str]] = []
+    version_ids = {v["id"] for v in versions}
+    for t in tasks:
+        if t["status"] not in _TERMINAL_TASK_STATUSES:
+            t["status"] = "FAILED"
+        if t.get("current_version_id") in version_ids:
+            linkage.append(
+                ("tasks", t["id"], "current_version_id", t["current_version_id"])
+            )
+        t["current_version_id"] = None
+    for t in trials:
+        if t["status"] not in _TERMINAL_TRIAL_STATUSES:
+            t["status"] = "FAILED"
+            t["current_worker_id"] = None
+            t["current_queue_slot"] = None
+        if t.get("superseded_by_trial_id") in trial_ids:
+            linkage.append(
+                (
+                    "trials",
+                    t["id"],
+                    "superseded_by_trial_id",
+                    t["superseded_by_trial_id"],
+                )
+            )
+        t["superseded_by_trial_id"] = None
+    job_ids = {j["id"] for j in rows.get("worker_jobs", [])}
+    for j in rows.get("worker_jobs", []):
+        j["current_worker_id"] = None
+        j["current_queue_slot"] = None
+        if j.get("parent_job_id") not in job_ids:
+            j["parent_job_id"] = None
+
+    rows.update(
+        {
+            "organizations": orgs,
+            "users": users,
+            "experiments": exps,
+            "tasks": tasks,
+            "task_versions": versions,
+            "task_experiments": links,
+            "trials": trials,
+        }
+    )
+    return {"rows": rows, "linkage": linkage}
+
+
+def _topo_order(md: MetaData) -> list:
+    """Kahn's topological sort of reflected tables, ignoring ``_BACKEDGES``.
+
+    SQLAlchemy's built-in ``sorted_tables`` reacts to a cycle by dropping
+    every FK on every table involved, which silently misorders unrelated
+    tables (e.g. pushes ``users`` after ``tasks`` because ``tasks <->
+    task_versions`` is cyclic). We only want to drop the documented
+    back-edge.
+    """
+    tables = list(md.tables.values())
+    deps: dict[str, set[str]] = {t.name: set() for t in tables}
+    for t in tables:
+        for fk in t.foreign_keys:
+            col = fk.parent
+            if (t.name, col.name) in _BACKEDGES:
+                continue
+            target = fk.column.table.name
+            if target != t.name:
+                deps[t.name].add(target)
+
+    ordered: list = []
+    remaining = {t.name: t for t in tables}
+    while remaining:
+        ready = sorted(
+            n for n, d in deps.items() if n in remaining and not (d & set(remaining))
+        )
+        if not ready:
+            # Defensive: if a real cycle remains beyond ``_BACKEDGES``, break
+            # ties by name so the order stays deterministic across runs.
+            ready = sorted(remaining)
+        for name in ready:
+            ordered.append(remaining.pop(name))
+    return ordered
+
+
+def _row_key(table, row: dict) -> str:
+    """Stable state-table identifier for a row: PK values joined by ':'."""
+    return ":".join(str(row[c.name]) for c in table.primary_key.columns)
+
+
+def _prepare_row(table, row: dict) -> dict:
+    """Filter a sampled row to the target table's columns and coerce JSON.
+
+    Prod may trail the branch schema (extra columns dropped with a warning),
+    and raw SELECTs return JSON/JSONB as strings, which a typed bind would
+    double-encode.
+    """
+    values = {}
+    for k, v in row.items():
+        col = table.columns.get(k)
+        if col is None:
+            _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
+            continue
+        if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                pass
+        values[k] = v
+    return values
+
+
+async def seed(engine: AsyncEngine, *, sampled: dict | None = None) -> None:
+    """Load the sampled prod subset into the branch DB.
+
+    Idempotent and convergent: rows upsert by primary key; rows imported by
+    a PREVIOUS run that are absent from the current draw are deleted (prod
+    drift), tracked via ``_preview_seed_state`` so reviewer-created data is
+    never touched. ``sampled=None`` leaves existing data alone entirely.
+
+    Loading is phased rather than one transaction: cleanup + drift reconcile
+    first, then each table's batches written over ``_LOAD_STREAMS`` parallel
+    connections (tables stay in FK topological order; rows within a table
+    commit per batch), then linkage + the state-table record last -- so an
+    interrupted run never marks rows as drawn, and the next run converges.
+    """
+    sample_rows = (sampled or {}).get("rows", {})
+    md = MetaData()
+    async with engine.begin() as conn:
+        await conn.run_sync(md.reflect)
+        ordered = _topo_order(md)
+
+        await conn.execute(
+            text(
+                f"CREATE TABLE IF NOT EXISTS {_STATE_TABLE}"
+                " (table_name text NOT NULL, row_id text NOT NULL,"
+                "  PRIMARY KEY (table_name, row_id))"
+            )
+        )
+        await _cleanup_legacy_fixture_rows(md, conn, ordered)
+        if sampled is None:
+            return
+        await _reconcile_previous_draw(md, conn, sample_rows)
+
+    # Parents-first across tables; parallel batch streams within a table.
+    for table in ordered:
+        rows = sample_rows.get(table.name, [])
+        if not rows:
+            continue
+        await _load_table(engine, table, rows)
+
+    async with engine.begin() as conn:
+        # Linkage pass: self/circular references deferred by the sampler.
+        # Conditional so an unchanged pointer doesn't rewrite the row on
+        # every re-push (which would defeat the delta merge above).
+        for table_name, row_id, column, value in (sampled or {}).get("linkage", []):
+            table = md.tables[table_name]
+            await conn.execute(
+                table.update()
+                .where(table.c.id == row_id)
+                .where(table.c[column].is_distinct_from(value))
+                .values(**{column: value})
+            )
+
+        # Record the current draw for the next run's reconcile.
+        await conn.execute(text(f"DELETE FROM {_STATE_TABLE}"))
+        for name in _RECONCILED_TABLES:
+            table = md.tables.get(name)
+            if table is None or not sample_rows.get(name):
+                continue
+            rids = [_row_key(table, row) for row in sample_rows[name]]
+            for start in range(0, len(rids), 10000):
+                await conn.execute(
+                    text(
+                        f"INSERT INTO {_STATE_TABLE} (table_name, row_id)"
+                        " SELECT :t, unnest(CAST(:rids AS text[]))"
+                        " ON CONFLICT DO NOTHING"
+                    ),
+                    {"t": name, "rids": rids[start : start + 10000]},
+                )
+
+
+async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
+    """Upsert one table's rows, fast path first.
+
+    Fast path: binary COPY into a temp staging table, then one server-side
+    INSERT ... SELECT ... ON CONFLICT merge -- asyncpg encodes the stream in
+    C and Postgres does the merge, so Python never builds statements with
+    tens of thousands of bound parameters (which is CPU-bound and was the
+    actual bottleneck; parallel connections changed nothing).
+
+    Fallback: if the merge trips anything (typically a SECONDARY unique
+    such as an imported user colliding with a JIT-provisioned reviewer
+    row -- PK conflicts are absorbed by the upsert), the whole table falls
+    back to multi-row batches over parallel connections, where a tripping
+    batch degrades further to per-row savepoints so only the colliding row
+    yields to the existing one.
+    """
+    prepared = [_prepare_row(table, row) for row in rows]
+    try:
+        await _load_table_copy_merge(engine, table, prepared)
+        return
+    except Exception as exc:  # noqa: BLE001 -- any failure downgrades, never aborts
+        _warn(
+            f"copy fast-path failed for {table.name} "
+            f"({type(exc).__name__}: {exc}); falling back to batched upserts"
+        )
+    await _load_table_batches(engine, table, prepared)
+
+
+async def _load_table_copy_merge(
+    engine: AsyncEngine, table, prepared: list[dict]
+) -> None:
+    cols = [c.name for c in table.columns]
+    pk_cols = [c.name for c in table.primary_key.columns]
+    # The asyncpg json/jsonb codec SQLAlchemy registers expects values
+    # already serialized to str (the ORM execute path does that itself, but
+    # raw COPY bypasses it), so serialize dict/list values here.
+    json_cols = {c.name for c in table.columns if isinstance(c.type, (JSONB, JSON))}
+
+    def _rec_value(name: str, value):
+        if name in json_cols and isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
+    records = [tuple(_rec_value(c, r.get(c)) for c in cols) for r in prepared]
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [c for c in cols if c not in pk_cols and c not in deferred]
+    set_clause = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk)
+    # Re-pushes mostly re-draw identical rows; IS DISTINCT FROM skips the
+    # rewrite (and its index churn / dead tuples) for unchanged rows, so the
+    # merge cost scales with the delta, not the draw.
+    tgt_tuple = ", ".join(f'"{table.name}"."{c}"' for c in non_pk)
+    exc_tuple = ", ".join(f'EXCLUDED."{c}"' for c in non_pk)
+    conflict = (
+        f"ON CONFLICT ({pk_list}) DO UPDATE SET {set_clause}"
+        f" WHERE ({tgt_tuple}) IS DISTINCT FROM ({exc_tuple})"
+        if set_clause
+        else f"ON CONFLICT ({pk_list}) DO NOTHING"
+    )
+    stage = f"_seed_stage_{table.name}"
+    async with engine.connect() as conn:
+        async with conn.begin():
+            await conn.execute(
+                text(
+                    f'CREATE TEMP TABLE "{stage}"'
+                    f' (LIKE "{table.name}" INCLUDING DEFAULTS) ON COMMIT DROP'
+                )
+            )
+            raw = (await conn.get_raw_connection()).driver_connection
+            await raw.copy_records_to_table(stage, records=records, columns=cols)
+            await conn.execute(
+                text(
+                    f'INSERT INTO "{table.name}" ({col_list})'
+                    f' SELECT {col_list} FROM "{stage}" {conflict}'
+                )
+            )
+
+
+async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) -> None:
+    pk_cols = [c.name for c in table.primary_key.columns]
+    batch_size = max(1, _MAX_BIND_PARAMS // max(1, len(table.columns)))
+    batches = [
+        prepared[start : start + batch_size]
+        for start in range(0, len(prepared), batch_size)
+    ]
+    queue: asyncio.Queue = asyncio.Queue()
+    for batch in batches:
+        queue.put_nowait(batch)
+
+    async def worker() -> None:
+        async with engine.connect() as conn:
+            while True:
+                try:
+                    chunk = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                async with conn.begin():
+                    await _upsert_batch(conn, table, pk_cols, chunk)
+
+    workers = min(_LOAD_STREAMS, len(batches))
+    await asyncio.gather(*[worker() for _ in range(workers)])
+
+
+def _changed(table, stmt, keys: list[str]):
+    """DO UPDATE predicate: rewrite only rows that actually differ."""
+    return tuple_(*[table.c[k] for k in keys]).is_distinct_from(
+        tuple_(*[stmt.excluded[k] for k in keys])
+    )
+
+
+async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+    deferred = _LINKAGE_COLUMNS.get(table.name, set())
+    non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
+    stmt = pg_insert(table).values(chunk)
+    set_ = {k: stmt.excluded[k] for k in non_pk}
+    try:
+        async with conn.begin_nested():
+            await conn.execute(
+                stmt.on_conflict_do_update(
+                    index_elements=pk_cols,
+                    set_=set_,
+                    where=_changed(table, stmt, non_pk),
+                )
+            )
+        return
+    except (IntegrityError, DBAPIError):
+        pass
+    for values in chunk:
+        non_pk = [k for k in values if k not in pk_cols and k not in deferred]
+        stmt = pg_insert(table).values(**values)
+        set_ = {k: stmt.excluded[k] for k in non_pk}
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    stmt.on_conflict_do_update(
+                        index_elements=pk_cols,
+                        set_=set_,
+                        where=_changed(table, stmt, non_pk),
+                    )
+                )
+        except (IntegrityError, DBAPIError) as exc:
+            _warn(
+                f"skipped {table.name} row {_row_key(table, values)} "
+                f"({type(exc.orig or exc).__name__}); existing row wins"
+            )
+
+
+async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> None:
+    """Delete rows the PREVIOUS draw imported that this draw no longer has.
+
+    Children-first via reversed ``_RECONCILED_TABLES``. Only rows recorded
+    in the state table are candidates, so reviewer-created data and
+    organizations/users (identity rows; negligible churn, may be referenced
+    by reviewer-created rows) are never deleted.
+    """
+    res = await conn.execute(text(f"SELECT table_name, row_id FROM {_STATE_TABLE}"))
+    previous: dict[str, set[str]] = {}
+    for table_name, row_id in res.fetchall():
+        previous.setdefault(table_name, set()).add(row_id)
+    if not previous:
+        return
+
+    for name in reversed(_RECONCILED_TABLES):
+        table = md.tables.get(name)
+        if table is None or name not in previous:
+            continue
+        current = {_row_key(table, row) for row in sample_rows.get(name, [])}
+        pk_cols = list(table.primary_key.columns)
+        stale = sorted(previous[name] - current)
+        if not stale:
+            continue
+        if len(pk_cols) == 1:
+            for start in range(0, len(stale), 5000):
+                await conn.execute(
+                    delete(table).where(pk_cols[0].in_(stale[start : start + 5000]))
+                )
+        else:
+            for stale_key in stale:
+                parts = stale_key.split(":", len(pk_cols) - 1)
+                stmt = delete(table)
+                for c, v in zip(pk_cols, parts):
+                    stmt = stmt.where(c == v)
+                await conn.execute(stmt)
+
+
+async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
+    """Remove artifacts of earlier seed versions from reused branches.
+
+    Earlier revisions seeded curated fixtures (ids prefixed ``seed-``) and
+    anonymized users (``...@preview.local``). Previews now hold prod data
+    only, so those rows are deleted children-first; each delete runs in a
+    savepoint so an unexpected reference never fails the run.
+    """
+    for table in reversed(ordered):
+        if table.name == _STATE_TABLE:
+            continue
+        str_pks = [
+            c
+            for c in table.primary_key.columns
+            if hasattr(c.type, "length") or str(c.type).lower().startswith("text")
+        ]
+        if not str_pks:
+            continue
+        conds = [c.like("seed-%") for c in str_pks]
+        try:
+            async with conn.begin_nested():
+                for cond in conds:
+                    await conn.execute(delete(table).where(cond))
+        except (IntegrityError, DBAPIError):
+            _warn(f"legacy cleanup skipped for {table.name} (still referenced)")
+    users = md.tables.get("users")
+    if users is not None:
+        try:
+            async with conn.begin_nested():
+                await conn.execute(
+                    delete(users).where(users.c.email.like("%@preview.local"))
+                )
+        except (IntegrityError, DBAPIError):
+            _warn("legacy cleanup skipped for anonymized users (referenced)")

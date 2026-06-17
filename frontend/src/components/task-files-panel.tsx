@@ -22,11 +22,12 @@ import {
   RefreshCw,
   AlertCircle,
   Microscope,
-  CheckCircle2,
   Loader2,
   OctagonX,
   Eye,
   Code,
+  Copy,
+  Check,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { fetcher } from "@/lib/api";
@@ -35,9 +36,15 @@ import {
   isBinaryRendererFile,
 } from "@/components/renderers/file-renderer";
 import type { Task, Trial } from "@/lib/types";
+import { TaskProbeSummary } from "@/components/task-probe-summary";
+import type { ProbeTrial } from "@/lib/probe-summary";
+import { isTerminalProbeStatus } from "@/lib/probe-summary";
 import {
   getCancelActionLabel,
   isActivePipelineStatus,
+  taskHasActiveAnalysis,
+  taskHasActiveTrials,
+  taskHasActiveVerdict,
   taskHasCancellableWork,
 } from "@/lib/job-status";
 
@@ -104,6 +111,12 @@ interface TaskFilesPanelProps {
    * Bump the value or pair with a counter to re-trigger navigation to the same path.
    */
   initialFilePath?: string | null;
+  /**
+   * Task id to source the PROBE entry from, for panes that drive file listing
+   * via `filesUrl` and pass `taskId={null}` (e.g. the side-by-side "Task
+   * definition" pane). Falls back to `taskId` when not set.
+   */
+  probeTaskId?: string | null;
 }
 
 function getNodeName(path: string): string {
@@ -267,8 +280,29 @@ export function TaskFilesPanel({
   contentOnly = false,
   filesUrl,
   initialFilePath,
+  probeTaskId,
 }: TaskFilesPanelProps) {
   const baseUrl = apiBaseUrl ?? "/api";
+  // The PROBE entry is keyed off the task even in filesUrl-driven panes (which
+  // pass taskId={null}); probeTaskId supplies the id there.
+  const effectiveProbeTaskId = taskId ?? probeTaskId ?? null;
+  const probeKey =
+    effectiveProbeTaskId && showAnalysis !== false
+      ? `${baseUrl}/tasks/${effectiveProbeTaskId}/trials?probe=true`
+      : null;
+  const { data: probeTrials } = useSWR<ProbeTrial[]>(probeKey, fetcher, {
+    // Poll while the newest probe is still running; stop once terminal.
+    refreshInterval: (data) => {
+      const latest = data && data.length > 0 ? data[data.length - 1] : null;
+      return latest && !isTerminalProbeStatus(latest.status) ? 5000 : 0;
+    },
+  });
+  // Backend returns probe trials ordered created_at ASC → last is the newest.
+  const latestProbe =
+    probeTrials && probeTrials.length > 0
+      ? probeTrials[probeTrials.length - 1]
+      : null;
+  const probeAvailable = showAnalysis !== false && latestProbe !== null;
   const resolvedFilesUrl = filesUrl ?? `${baseUrl}/tasks/${taskId}/files`;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -276,17 +310,14 @@ export function TaskFilesPanel({
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
-  const [isRunningAnalysis, setIsRunningAnalysis] = useState(false);
-  const [analysisActionError, setAnalysisActionError] = useState<string | null>(
-    null,
-  );
-  const [isRunningVerdict, setIsRunningVerdict] = useState(false);
-  const [verdictActionError, setVerdictActionError] = useState<string | null>(
-    null,
-  );
+  // Trajectory analysis is a single task-level QA job (classify every trial,
+  // then synthesize the verdict), surfaced as one Run QA action.
+  const [isRunningQA, setIsRunningQA] = useState(false);
+  const [qaActionError, setQAActionError] = useState<string | null>(null);
   const [fileTree, setFileTree] = useState<TreeNode[]>([]);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<TreeNode | null>(null);
+  const [probeSelected, setProbeSelected] = useState(false);
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileContentLoading, setFileContentLoading] = useState(false);
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -295,8 +326,10 @@ export function TaskFilesPanel({
   const [loadingFullFile, setLoadingFullFile] = useState(false);
   const [viewMode, setViewMode] = useState<"rendered" | "raw">("rendered");
   const [copiedTaskName, setCopiedTaskName] = useState(false);
+  const [copiedFileContent, setCopiedFileContent] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const copiedTaskNameTimeoutRef = useRef<number | null>(null);
+  const copiedFileContentTimeoutRef = useRef<number | null>(null);
   const verdictTaskKey =
     isOpen && taskId ? `${baseUrl}/tasks/${taskId}?include_trials=false` : null;
   const { data: verdictTask } = useSWR<Task>(verdictTaskKey, fetcher, {
@@ -364,35 +397,19 @@ export function TaskFilesPanel({
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
     isActivePipelineStatus(trial.analysis_status),
   );
-  const allAnalysesComplete =
-    Boolean(task?.trials?.length) &&
-    (task?.trials ?? []).every(
-      (trial) =>
-        trial.analysis_status === "success" ||
-        trial.analysis_status === "failed",
-    );
   const verdictInFlight = isActivePipelineStatus(verdictSource?.verdict_status);
-  const canRunTaskAnalysis =
+  const canRunQA =
     allowRetry &&
     Boolean(task) &&
     allTrialsTerminal &&
     !hasAnalysisInFlight &&
     !verdictInFlight;
-  const canRunVerdict =
-    allowRetry &&
-    Boolean(task) &&
-    allTrialsTerminal &&
-    allAnalysesComplete &&
-    !verdictInFlight;
-  const analysisActionLabel = (task?.trials ?? []).some(
-    (trial) => trial.analysis_status || trial.analysis,
-  )
-    ? "Rerun analyses"
-    : "Run analyses";
-  const verdictActionLabel =
-    verdictSource?.verdict_status || verdictSource?.verdict
-      ? "Rerun verdict"
-      : "Run verdict";
+  const qaActionLabel =
+    verdictSource?.verdict_status ||
+    verdictSource?.verdict ||
+    (task?.trials ?? []).some((trial) => trial.analysis_status || trial.analysis)
+      ? "Rerun QA"
+      : "Run QA";
 
   const navigateTo = useCallback(
     (nextIndex: number) => {
@@ -442,10 +459,23 @@ export function TaskFilesPanel({
 
     try {
       const id = task?.id ?? taskId;
-      const res = await fetch(`${baseUrl}/tasks/cancel`, {
+      let path = `${baseUrl}/tasks/cancel`;
+      let body: string | undefined = JSON.stringify({
+        task_ids: id ? [id] : [],
+      });
+      // No active trials but QA in flight -> cancel just the task QA job.
+      if (
+        id &&
+        !taskHasActiveTrials(task) &&
+        (taskHasActiveVerdict(task) || taskHasActiveAnalysis(task))
+      ) {
+        path = `${baseUrl}/tasks/${id}/qa/cancel`;
+        body = undefined;
+      }
+      const res = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ task_ids: id ? [id] : [] }),
+        body,
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -462,61 +492,36 @@ export function TaskFilesPanel({
     }
   };
 
-  const handleRunTaskAnalysis = async () => {
-    if (!task?.id || !canRunTaskAnalysis || isRunningAnalysis) return;
-    setIsRunningAnalysis(true);
-    setAnalysisActionError(null);
+  const handleRunQA = async () => {
+    if (!task?.id || !canRunQA || isRunningQA) return;
+    setIsRunningQA(true);
+    setQAActionError(null);
 
     try {
-      const res = await fetch(`${baseUrl}/tasks/${task.id}/analysis/retry`, {
+      // One task-level QA job: (re)classify every trial and then synthesize
+      // the task verdict.
+      const res = await fetch(`${baseUrl}/tasks/${task.id}/qa/retry`, {
         method: "POST",
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(
-          data.detail || data.error || "Failed to queue task analysis",
-        );
+        throw new Error(data.detail || data.error || "Failed to queue task QA");
       }
       onRetryComplete?.([task.id]);
     } catch (err) {
-      setAnalysisActionError(
-        err instanceof Error ? err.message : "Failed to queue task analysis",
+      setQAActionError(
+        err instanceof Error ? err.message : "Failed to queue task QA",
       );
     } finally {
-      setIsRunningAnalysis(false);
-    }
-  };
-
-  const handleRunVerdict = async () => {
-    if (!task?.id || !canRunVerdict || isRunningVerdict) return;
-    setIsRunningVerdict(true);
-    setVerdictActionError(null);
-
-    try {
-      const res = await fetch(`${baseUrl}/tasks/${task.id}/verdict/retry`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || data.error || "Failed to queue verdict");
-      }
-      onRetryComplete?.([task.id]);
-    } catch (err) {
-      setVerdictActionError(
-        err instanceof Error ? err.message : "Failed to queue verdict",
-      );
-    } finally {
-      setIsRunningVerdict(false);
+      setIsRunningQA(false);
     }
   };
 
   useEffect(() => {
     setRerunError(null);
     setIsRerunning(false);
-    setAnalysisActionError(null);
-    setIsRunningAnalysis(false);
-    setVerdictActionError(null);
-    setIsRunningVerdict(false);
+    setQAActionError(null);
+    setIsRunningQA(false);
   }, [taskId]);
 
   const isEditableTarget = (target: EventTarget | null) => {
@@ -543,6 +548,7 @@ export function TaskFilesPanel({
       setError(null);
       setFileTree([]);
       setSelectedFile(null);
+      setProbeSelected(false);
       setFileContent(null);
       setExpandedDirs(new Set());
       setLoadingDirs(new Set());
@@ -804,10 +810,8 @@ export function TaskFilesPanel({
       setIsTruncated(false);
       setFullFileSize(null);
       setLoadingFullFile(false);
-      setAnalysisActionError(null);
-      setIsRunningAnalysis(false);
-      setVerdictActionError(null);
-      setIsRunningVerdict(false);
+      setQAActionError(null);
+      setIsRunningQA(false);
     }
   }, [isOpen, taskId]);
 
@@ -846,6 +850,7 @@ export function TaskFilesPanel({
     }
 
     setSelectedFile(node);
+    setProbeSelected(false);
   }, [initialFilePath, fileTree, loadingDirs, loadDirectory]);
 
   useEffect(() => {
@@ -900,7 +905,7 @@ export function TaskFilesPanel({
   const renderFileTree = (nodes: TreeNode[], depth = 0) => {
     return nodes.map((node) => {
       const isExpanded = expandedDirs.has(node.path);
-      const isSelected = selectedFile?.path === node.path;
+      const isSelected = !probeSelected && selectedFile?.path === node.path;
       const isLoadingDir = loadingDirs.has(node.path);
       const Icon =
         node.type === "dir"
@@ -924,6 +929,7 @@ export function TaskFilesPanel({
                 }
               } else {
                 setSelectedFile(node);
+                setProbeSelected(false);
               }
             }}
             className={`h-auto w-full justify-start gap-1.5 rounded px-2 py-1 text-left font-mono text-xs transition-colors ${
@@ -936,9 +942,9 @@ export function TaskFilesPanel({
             {node.type === "dir" && (
               <span className="flex h-3 w-3 items-center justify-center">
                 {isExpanded ? (
-                  <ChevronDown className="h-3 w-3 text-muted-foreground" />
+                  <ChevronDown className="text-muted-foreground h-3 w-3" />
                 ) : (
-                  <ChevronRight className="h-3 w-3 text-muted-foreground" />
+                  <ChevronRight className="text-muted-foreground h-3 w-3" />
                 )}
               </span>
             )}
@@ -951,7 +957,7 @@ export function TaskFilesPanel({
               }`}
             />
             {node.type === "dir" && isLoadingDir && (
-              <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+              <Loader2 className="text-muted-foreground h-3 w-3 animate-spin" />
             )}
             <span className="truncate">{node.name}</span>
           </Button>
@@ -966,7 +972,7 @@ export function TaskFilesPanel({
   const renderFileContent = () => {
     if (!selectedFile) {
       return (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
           Select a file to view its contents
         </div>
       );
@@ -984,7 +990,7 @@ export function TaskFilesPanel({
 
     if (fileContent === null) {
       return (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <div className="text-muted-foreground flex h-full items-center justify-center text-sm">
           Unable to load file content
         </div>
       );
@@ -1016,8 +1022,8 @@ export function TaskFilesPanel({
           />
         </div>
         {!isBinary && isTruncated && (
-          <div className="flex items-center justify-between border-t border-border bg-muted/50 px-4 py-3">
-            <span className="text-xs text-muted-foreground">
+          <div className="border-border bg-muted/50 flex items-center justify-between border-t px-4 py-3">
+            <span className="text-muted-foreground text-xs">
               Showing first {formatFileSize(TRUNCATE_THRESHOLD)} of{" "}
               {fullFileSize ? formatFileSize(fullFileSize) : "large file"}
             </span>
@@ -1047,9 +1053,20 @@ export function TaskFilesPanel({
   }, [taskName]);
 
   useEffect(() => {
+    setCopiedFileContent(false);
+    if (copiedFileContentTimeoutRef.current !== null) {
+      window.clearTimeout(copiedFileContentTimeoutRef.current);
+      copiedFileContentTimeoutRef.current = null;
+    }
+  }, [selectedFile?.path]);
+
+  useEffect(() => {
     return () => {
       if (copiedTaskNameTimeoutRef.current !== null) {
         window.clearTimeout(copiedTaskNameTimeoutRef.current);
+      }
+      if (copiedFileContentTimeoutRef.current !== null) {
+        window.clearTimeout(copiedFileContentTimeoutRef.current);
       }
     };
   }, []);
@@ -1089,6 +1106,19 @@ export function TaskFilesPanel({
     }, 2000);
   };
 
+  const handleCopyFileContent = async () => {
+    if (fileContent === null) return;
+    await navigator.clipboard.writeText(fileContent);
+    setCopiedFileContent(true);
+    if (copiedFileContentTimeoutRef.current !== null) {
+      window.clearTimeout(copiedFileContentTimeoutRef.current);
+    }
+    copiedFileContentTimeoutRef.current = window.setTimeout(() => {
+      setCopiedFileContent(false);
+      copiedFileContentTimeoutRef.current = null;
+    }, 2000);
+  };
+
   const isListingLoading = loading;
   const listingError = error;
 
@@ -1096,7 +1126,7 @@ export function TaskFilesPanel({
     <>
       {isListingLoading ? (
         <div className="flex flex-1 items-center justify-center">
-          <div className="flex items-center gap-2 text-muted-foreground">
+          <div className="text-muted-foreground flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
             <span className="text-sm">Loading files...</span>
           </div>
@@ -1105,18 +1135,18 @@ export function TaskFilesPanel({
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
             <AlertCircle className="mx-auto h-8 w-8 text-red-500" />
-            <p className="text-sm text-muted-foreground">
+            <p className="text-muted-foreground text-sm">
               Unable to load files
             </p>
-            <p className="text-xs text-muted-foreground">{listingError}</p>
+            <p className="text-muted-foreground text-xs">{listingError}</p>
           </div>
         </div>
       ) : fileTree.length === 0 ? (
         <div className="flex flex-1 items-center justify-center p-4 sm:p-6">
           <div className="space-y-2 text-center">
-            <p className="text-sm text-muted-foreground">No files found</p>
+            <p className="text-muted-foreground text-sm">No files found</p>
             {!filesUrl && (
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 The task directory may be empty or not uploaded to S3
               </p>
             )}
@@ -1124,49 +1154,105 @@ export function TaskFilesPanel({
         </div>
       ) : (
         <div className="flex flex-1 flex-col overflow-hidden md:flex-row">
-          <div className="max-h-[30vh] w-full overflow-auto border-b border-border bg-muted/30 md:max-h-none md:w-56 md:border-b-0 md:border-r lg:w-64">
+          <div className="border-border bg-muted/30 max-h-[30vh] w-full overflow-auto border-b md:max-h-none md:w-56 md:border-r md:border-b-0 lg:w-64">
             <div className="p-2">
-              <div className="px-2 py-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-muted-foreground sm:text-xs">
+              <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
                 Files
               </div>
               {renderFileTree(fileTree)}
+              {showAnalysis !== false && effectiveProbeTaskId && (
+                <div className="border-border mt-2 border-t pt-2">
+                  <div className="text-muted-foreground px-2 py-2 font-mono text-[10px] font-semibold tracking-wide uppercase sm:text-xs">
+                    Probe
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!probeAvailable}
+                    onClick={() => probeAvailable && setProbeSelected(true)}
+                    className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-sm ${
+                      probeSelected
+                        ? "bg-primary/20 text-primary"
+                        : probeAvailable
+                          ? "hover:bg-muted/50 cursor-pointer"
+                          : "text-muted-foreground cursor-not-allowed opacity-60"
+                    }`}
+                    title={
+                      probeAvailable
+                        ? "View latest probe run"
+                        : "No probe run yet"
+                    }
+                  >
+                    <Microscope
+                      className="h-3.5 w-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span className="truncate">
+                      {probeAvailable ? "Latest probe run" : "No probe run yet"}
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex flex-1 flex-col overflow-hidden">
-            {selectedFile && (
-              <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 sm:px-4">
-                <div className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground sm:text-xs">
+            {!probeSelected && selectedFile && (
+              <div className="border-border bg-muted/30 flex items-center justify-between gap-2 border-b px-3 py-2 sm:px-4">
+                <div className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px] sm:text-xs">
                   {selectedFile.path}
                 </div>
                 {!isBinaryRendererFile(selectedFile.name) && (
-                  <Tabs
-                    value={viewMode}
-                    onValueChange={(v) =>
-                      setViewMode(v as "rendered" | "raw")
-                    }
-                  >
-                    <TabsList className="h-7">
-                      <TabsTrigger
-                        value="rendered"
-                        className="h-6 px-2 text-[10px]"
-                      >
-                        <Eye className="mr-1 h-3 w-3" />
-                        Rendered
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="raw"
-                        className="h-6 px-2 text-[10px]"
-                      >
-                        <Code className="mr-1 h-3 w-3" />
-                        Raw
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Tabs
+                      value={viewMode}
+                      onValueChange={(v) =>
+                        setViewMode(v as "rendered" | "raw")
+                      }
+                    >
+                      <TabsList className="h-7">
+                        <TabsTrigger
+                          value="rendered"
+                          className="h-6 px-2 text-[10px]"
+                        >
+                          <Eye className="mr-1 h-3 w-3" />
+                          Rendered
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="raw"
+                          className="h-6 px-2 text-[10px]"
+                        >
+                          <Code className="mr-1 h-3 w-3" />
+                          Raw
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleCopyFileContent}
+                      disabled={fileContent === null}
+                      className="h-auto w-7 self-stretch p-0"
+                      title="Copy raw content"
+                      aria-label="Copy raw content"
+                    >
+                      {copiedFileContent ? (
+                        <Check className="h-3 w-3" />
+                      ) : (
+                        <Copy className="h-3 w-3" />
+                      )}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}
-            <div ref={contentRef} className="flex-1 overflow-auto bg-card">
-              {renderFileContent()}
+            <div ref={contentRef} className="bg-card flex-1 overflow-auto">
+              {probeSelected && latestProbe ? (
+                <TaskProbeSummary
+                  trial={latestProbe}
+                  taskId={effectiveProbeTaskId ?? ""}
+                />
+              ) : (
+                renderFileContent()
+              )}
             </div>
           </div>
         </div>
@@ -1176,7 +1262,7 @@ export function TaskFilesPanel({
 
   const content = (
     <>
-      <DrawerHeader className="shrink-0 border-b border-border px-4 py-3">
+      <DrawerHeader className="border-border shrink-0 border-b px-4 py-3">
         <div className="mb-2 flex flex-wrap items-start justify-between gap-3 pr-20">
           <div className="min-w-0 flex-1">
             <DrawerTitle className="flex items-center gap-2 font-mono text-base font-semibold">
@@ -1184,14 +1270,14 @@ export function TaskFilesPanel({
                 type="button"
                 variant="ghost"
                 onClick={handleCopyTaskName}
-                className="h-auto min-w-0 max-w-full justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
+                className="h-auto max-w-full min-w-0 justify-start truncate bg-transparent p-0 text-left font-mono text-base font-semibold hover:bg-transparent hover:text-blue-400"
                 title="Copy task name"
                 aria-label={`Copy task name ${taskName}`}
               >
                 {taskName}
               </Button>
-              {currentVersion != null && (
-                <span className="inline-flex shrink-0 items-center rounded-md border border-border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground">
+              {showAnalysis !== false && currentVersion != null && (
+                <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
                   v{currentVersion}
                 </span>
               )}
@@ -1206,9 +1292,8 @@ export function TaskFilesPanel({
         {(onNavigateToFirstTrial ||
           hasNavigation ||
           allowRetry ||
-          canRunTaskAnalysis ||
-          canRunVerdict) && (
-          <div className="space-y-2 pt-2 text-xs text-muted-foreground">
+          canRunQA) && (
+          <div className="text-muted-foreground space-y-2 pt-2 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-3">
                 {/* Task list navigation with position indicator */}
@@ -1227,7 +1312,7 @@ export function TaskFilesPanel({
                       <ChevronUp className="h-4 w-4" />
                     </Button>
                     <span
-                      className="min-w-[52px] px-1 text-center font-mono text-[11px] tabular-nums text-muted-foreground"
+                      className="text-muted-foreground min-w-[52px] px-1 text-center font-mono text-[11px] tabular-nums"
                       aria-label={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
                       title={`Task ${resolvedIndex + 1} of ${orderedList.length}`}
                     >
@@ -1255,7 +1340,7 @@ export function TaskFilesPanel({
                     variant="outline"
                     size="sm"
                     onClick={onNavigateToFirstTrial}
-                    className="h-7 gap-1 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 gap-1 px-2 text-[10px] font-semibold tracking-wide uppercase"
                     aria-label="View trials for this task"
                     title="View trials (→)"
                   >
@@ -1266,15 +1351,15 @@ export function TaskFilesPanel({
               </div>
 
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                <div className="rounded-md border border-border bg-muted/30 px-3 py-1.5 text-right">
-                  <div className="text-[9px] uppercase leading-none tracking-wider text-muted-foreground">
+                <div className="border-border bg-muted/30 rounded-md border px-3 py-1.5 text-right">
+                  <div className="text-muted-foreground text-[9px] leading-none tracking-wider uppercase">
                     Avg score
                   </div>
                   <div className="mt-1 flex items-baseline justify-end gap-2">
-                    <span className="font-mono text-sm font-semibold leading-none">
+                    <span className="font-mono text-sm leading-none font-semibold">
                       {averageRewardPct !== null ? `${averageRewardPct}%` : "—"}
                     </span>
-                    <span className="text-[10px] leading-none text-muted-foreground">
+                    <span className="text-muted-foreground text-[10px] leading-none">
                       {rewardTotal && rewardTotal > 0 && rewardSuccess != null
                         ? `${rewardSuccess.toFixed(2)}/${rewardTotal}`
                         : "No results"}
@@ -1288,7 +1373,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleCancelTask}
                     disabled={isCancelling}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     {isCancelling ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
@@ -1305,7 +1390,7 @@ export function TaskFilesPanel({
                     size="sm"
                     onClick={handleRetryTask}
                     disabled={!canRetryTask || isRerunning}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
                     <RefreshCw
                       className={`mr-1 h-3.5 w-3.5 ${
@@ -1320,47 +1405,26 @@ export function TaskFilesPanel({
                     type="button"
                     variant="outline"
                     size="sm"
-                    onClick={handleRunTaskAnalysis}
-                    disabled={!canRunTaskAnalysis || isRunningAnalysis}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
+                    onClick={handleRunQA}
+                    disabled={!canRunQA || isRunningQA}
+                    className="h-7 px-2 text-[10px] font-semibold tracking-wide uppercase"
                   >
-                    {isRunningAnalysis ? (
+                    {isRunningQA ? (
                       <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
                     ) : (
                       <Microscope className="mr-1 h-3.5 w-3.5" />
                     )}
-                    {isRunningAnalysis ? "Queueing..." : analysisActionLabel}
-                  </Button>
-                )}
-                {showAnalysis && task && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleRunVerdict}
-                    disabled={!canRunVerdict || isRunningVerdict}
-                    className="h-7 px-2 text-[10px] font-semibold uppercase tracking-wide"
-                  >
-                    {isRunningVerdict ? (
-                      <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
-                    )}
-                    {isRunningVerdict ? "Queueing..." : verdictActionLabel}
+                    {isRunningQA ? "Queueing..." : qaActionLabel}
                   </Button>
                 )}
               </div>
             </div>
 
-            {(cancelError ||
-              rerunError ||
-              analysisActionError ||
-              verdictActionError) && (
+            {(cancelError || rerunError || qaActionError) && (
               <div className="flex flex-wrap items-center justify-end gap-3 text-red-500">
                 {cancelError && <span>{cancelError}</span>}
                 {rerunError && <span>{rerunError}</span>}
-                {analysisActionError && <span>{analysisActionError}</span>}
-                {verdictActionError && <span>{verdictActionError}</span>}
+                {qaActionError && <span>{qaActionError}</span>}
               </div>
             )}
           </div>
@@ -1369,7 +1433,7 @@ export function TaskFilesPanel({
 
       <div className="flex flex-1 flex-col overflow-hidden">
         {showAnalysis && verdictSource ? (
-          <div className="shrink-0 border-b border-border bg-muted/10">
+          <div className="border-border bg-muted/10 shrink-0 border-b">
             <div className="p-4 sm:p-6">
               <TaskVerdictBadge task={verdictSource} variant="card" />
             </div>

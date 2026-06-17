@@ -10,6 +10,8 @@ import {
   ServerTimingCollector,
 } from "@/lib/server-timing";
 
+export const maxDuration = 30;
+
 export async function GET(request: NextRequest) {
   const timings = new ServerTimingCollector();
   const requestStartedAt = performance.now();
@@ -46,6 +48,7 @@ export async function GET(request: NextRequest) {
     const experimentsOffset = searchParams.get("experiments_offset");
     const experimentsQuery = searchParams.get("experiments_query");
     const experimentsStatus = searchParams.get("experiments_status");
+    const experimentsAuthor = searchParams.get("experiments_author");
     const usageMinutes = searchParams.get("usage_minutes");
     const includeTasks = searchParams.get("include_tasks");
     const includeUsage = searchParams.get("include_usage");
@@ -57,7 +60,16 @@ export async function GET(request: NextRequest) {
     if (experimentsLimit) params.experiments_limit = experimentsLimit;
     if (experimentsOffset) params.experiments_offset = experimentsOffset;
     if (experimentsQuery) params.experiments_query = experimentsQuery;
+    for (const name of [
+      "experiments_tags",
+      "experiments_tags_any",
+      "experiments_tags_none",
+    ]) {
+      const value = searchParams.get(name);
+      if (value) params[name] = value;
+    }
     if (experimentsStatus) params.experiments_status = experimentsStatus;
+    if (experimentsAuthor) params.experiments_author = experimentsAuthor;
     if (usageMinutes) params.usage_minutes = usageMinutes;
     if (includeTasks) params.include_tasks = includeTasks;
     if (includeUsage) params.include_usage = includeUsage;
@@ -70,6 +82,7 @@ export async function GET(request: NextRequest) {
         fetch(url, {
           cache: "no-store",
           headers: getAuthHeaders(token),
+          signal: AbortSignal.timeout(25_000),
         }),
       "Backend fetch",
     );

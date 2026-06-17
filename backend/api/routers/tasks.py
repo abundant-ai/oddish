@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 import logging
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -15,6 +15,7 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    cancel_task_qa_core,
     combine_experiments_core,
     create_task_sweep_core,
     delete_experiment_core,
@@ -24,10 +25,16 @@ from oddish.core.endpoints import (
     get_task_version_core,
     list_tasks_core,
     list_task_versions_core,
-    rerun_task_analysis_core,
-    rerun_task_verdict_core,
+    rerun_task_qa_core,
 )
-from oddish.core.dashboard import invalidate_dashboard_cache
+from oddish.core.dashboard import (
+    EXPERIMENTS_UNATTRIBUTED_OWNER,
+    invalidate_dashboard_cache,
+)
+from oddish.core.experiments import (
+    list_experiment_probes_core,
+    list_org_probes_core,
+)
 from oddish.core.public_helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
@@ -56,6 +63,8 @@ from oddish.queue import (
 from oddish.schemas import (
     ExperimentCombineRequest,
     ExperimentCombineResponse,
+    ExperimentProbeRow,
+    OrgProbeRow,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -78,6 +87,10 @@ def _make_timing_recorder(request: Request) -> TimingRecorder:
         add_server_timing_metric(request, name, duration_ms, description)
 
     return _record
+
+
+def _split_tag_csv(csv: str | None) -> list[str]:
+    return [s.strip() for s in (csv or "").split(",") if s.strip()]
 
 
 MODAL_CANCEL_BATCH_SIZE = 32
@@ -196,11 +209,31 @@ async def _resolve_submission_identity(
     )
 
 
+async def _lookup_user_by_github_username(
+    session: AsyncSession,
+    *,
+    github_username: str,
+    org_id: str,
+) -> UserModel | None:
+    normalized = (github_username or "").strip().lstrip("@")
+    if not normalized:
+        return None
+    user_result = await session.execute(
+        select(UserModel).where(
+            func.lower(UserModel.github_username) == normalized.lower(),
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return user_result.scalar_one_or_none()
+
+
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> str | None:
+    """Who submitted the task (API key owner wins for CI/service accounts)."""
     if auth.api_key_id:
         api_key = auth.api_key
         if api_key is None:
@@ -209,18 +242,74 @@ async def _resolve_created_by_user_id(
             return api_key.created_by_user_id
 
     if submission.github_username:
-        user_result = await session.execute(
-            select(UserModel).where(
-                UserModel.github_username == submission.github_username,
-                UserModel.org_id == auth.org_id,
-                UserModel.is_active == True,  # noqa: E712
-            )
+        user = await _lookup_user_by_github_username(
+            session,
+            github_username=submission.github_username,
+            org_id=auth.org_id,
         )
-        user = user_result.scalar_one_or_none()
         if user:
             return user.id
 
+    if auth.user_id:
+        return auth.user_id
+
     return None
+
+
+async def _resolve_experiment_owner_user_id(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> str | None:
+    """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
+    if submission.github_username:
+        user = await _lookup_user_by_github_username(
+            session,
+            github_username=submission.github_username,
+            org_id=auth.org_id,
+        )
+        if user:
+            return user.id
+        # Explicit --github-user with no linked org member: leave owner unset so
+        # the legacy primary-task Mine filter can match the github tag.
+        return None
+
+    if auth.user_id:
+        return auth.user_id
+
+    if auth.api_key_id:
+        api_key = auth.api_key
+        if api_key is None:
+            api_key = await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return api_key.created_by_user_id
+
+    return None
+
+
+def _stamp_experiment_owner(
+    experiment: ExperimentModel | None,
+    owner_user_id: str | None,
+    *,
+    claim_unowned: bool = True,
+) -> None:
+    """Stamp the dashboard Mine owner on an experiment.
+
+    ``claim_unowned=False`` (append/rerun path) replaces only the sweep's
+    ``__unattributed__`` sentinel: a NULL owner means the sweep has not yet
+    attributed the experiment's primary task, and the appender is not
+    necessarily that author — claiming NULL here would race the sweep's
+    precedence-correct claim and hide the experiment from its real owner.
+    """
+    if experiment is None or not owner_user_id:
+        return
+    claimable = (
+        (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
+        if claim_unowned
+        else (EXPERIMENTS_UNATTRIBUTED_OWNER,)
+    )
+    if experiment.owner_user_id in claimable:
+        experiment.owner_user_id = owner_user_id
 
 
 async def _maybe_publish_experiment(
@@ -293,6 +382,26 @@ async def finalize_task_upload(
     )
 
 
+async def _apply_user_run_probe_default(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> None:
+    """Opt the creating user's NEW tasks into auto-probe per their default.
+
+    Only turns ``run_probe`` ON (an explicit ``run_probe=True`` already wins, so
+    we skip the lookup then) and only matters for task creation — append mode in
+    ``create_task_sweep_core`` preserves the existing task's flag, so a flipped
+    submission flag is a no-op there. Resolved in the backend because the
+    ``users`` table is a backend concept the oddish core must not import.
+    """
+    if submission.run_probe:
+        return
+    actor = await _resolve_actor_user(session, auth)
+    if actor is not None and actor.run_probe_default:
+        submission.run_probe = True
+
+
 @router.post("/tasks/sweep", response_model=TaskResponse)
 async def create_task_sweep(
     submission: TaskSweepSubmission,
@@ -308,6 +417,7 @@ async def create_task_sweep(
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
+        await _apply_user_run_probe_default(session, submission, auth)
 
         task, new_trials, is_append, experiment = await create_task_sweep_core(
             session,
@@ -316,6 +426,11 @@ async def create_task_sweep(
             default_environment=get_default_cloud_environment(submission),
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
         )
+
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
             created_by_user_id = await _resolve_created_by_user_id(
@@ -368,7 +483,7 @@ async def list_tasks(
     compact_tasks: bool = False,
     include_queue_info: bool = True,
     include_worker_jobs: bool = True,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=2000),
     offset: int = 0,
 ) -> list[TaskStatusResponse]:
     """List tasks for the authenticated organization.
@@ -416,6 +531,9 @@ async def browse_tasks(
     limit: int = Query(25, ge=1, le=100),
     offset: int = Query(0, ge=0),
     query: str | None = None,
+    tags: str | None = Query(None),
+    tags_any: str | None = Query(None),
+    tags_none: str | None = Query(None),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -435,6 +553,9 @@ async def browse_tasks(
             limit=limit,
             offset=offset,
             query=query,
+            tags_all=_split_tag_csv(tags),
+            tags_any=_split_tag_csv(tags_any),
+            tags_none=_split_tag_csv(tags_none),
             record_timing=_make_timing_recorder(request),
         )
 
@@ -492,6 +613,7 @@ async def get_experiment_share(
             name=experiment.name,
             is_public=bool(experiment.is_public),
             public_token=experiment.public_token,
+            description=experiment.description,
         )
 
 
@@ -504,10 +626,22 @@ async def update_experiment(
     payload: ExperimentUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_admin)],
 ) -> ExperimentUpdateResponse:
-    """Update experiment metadata."""
-    name = payload.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Experiment name cannot be empty")
+    """Update experiment metadata.
+
+    ``name`` and ``description`` are independently optional: a request may
+    update either or both. Only fields explicitly provided (``not None``) are
+    touched, so a description edit never clobbers the name and vice versa.
+    """
+    if payload.name is None and payload.description is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    name: str | None = None
+    if payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(
+                status_code=400, detail="Experiment name cannot be empty"
+            )
 
     async with get_session() as session:
         result = await session.execute(
@@ -520,10 +654,20 @@ async def update_experiment(
         if not experiment:
             raise HTTPException(status_code=404, detail="Experiment not found")
 
-        experiment.name = name
+        if name is not None:
+            experiment.name = name
+        if payload.description is not None:
+            # Treat blank/whitespace-only as "no description" so the empty
+            # state is uniform (NULL) regardless of how it was cleared.
+            cleaned = payload.description.strip()
+            experiment.description = cleaned or None
         await session.commit()
 
-        return ExperimentUpdateResponse(id=experiment.id, name=experiment.name)
+        return ExperimentUpdateResponse(
+            id=experiment.id,
+            name=experiment.name,
+            description=experiment.description,
+        )
 
 
 @router.delete("/experiments/{experiment_id}")
@@ -610,6 +754,57 @@ async def unpublish_experiment(
         )
 
 
+@router.get(
+    "/experiments/{experiment_id}/probes",
+    response_model=list[ExperimentProbeRow],
+)
+async def list_experiment_probes(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[ExperimentProbeRow]:
+    """List probe trials for each task in the experiment.
+
+    Returns at most one row per task — the most recent probe trial for the
+    task's current version.  Tasks with no probe trials are omitted.
+    Each row includes: ``task_id``, ``task_name``, ``version``, ``model``,
+    ``status``, ``probe_trial_id``.
+
+    Raises 404 if the experiment does not exist for the authenticated org.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(ExperimentModel).where(
+                ExperimentModel.id == experiment_id,
+                ExperimentModel.org_id == auth.org_id,
+            )
+        )
+        if result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        return await list_experiment_probes_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+        )
+
+
+@router.get("/probes", response_model=list[OrgProbeRow])
+async def list_org_probes(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[OrgProbeRow]:
+    """List the authenticated org's tasks that have probe runs.
+
+    One row per task with at least one probe trial — task id/name, total
+    probe-run count, and the timestamp + status of the most recent probe
+    trial. Ordered most-recent-first.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_org_probes_core(session, org_id=auth.org_id)
+
+
 @router.post("/tasks/cancel")
 async def cancel_tasks(
     payload: TaskBatchCancelRequest,
@@ -641,32 +836,38 @@ async def cancel_tasks(
     }
 
 
-@router.post("/tasks/{task_id}/analysis/retry")
-async def retry_task_analysis(
+@router.post("/tasks/{task_id}/qa/retry")
+async def retry_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Queue analysis jobs for every completed trial in a task."""
+    """(Re)run the single task-level QA job: classify every trial, then
+    synthesize the task verdict."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        return await rerun_task_analysis_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
 
 
-@router.post("/tasks/{task_id}/verdict/retry")
-async def retry_task_verdict(
+@router.post("/tasks/{task_id}/qa/cancel")
+async def cancel_task_qa(
     task_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Queue a fresh verdict job for a task whose analyses are complete."""
+    """Cancel a task's in-flight QA job."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        return await rerun_task_verdict_core(
+        result = await cancel_task_qa_core(
             session, task_id=task_id, org_id=auth.org_id
         )
+
+    modal_cancelled = await _cancel_modal_function_calls(
+        cast("list[str]", result.get("modal_function_call_ids", []))
+    )
+    return {
+        key: value for key, value in result.items() if key != "modal_function_call_ids"
+    } | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
