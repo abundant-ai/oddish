@@ -526,7 +526,7 @@ function APIKeysPanel() {
   );
   const canCreateAPIKeys = permissions?.can_create ?? false;
   const createRestriction =
-    "Only @abundant.ai admins in the Abundant org and legacy owners can create API keys.";
+    "Only @abundant.ai admins in the Abundant org can create API keys.";
 
   const handleRevoke = async () => {
     if (!revokeTarget) return;
