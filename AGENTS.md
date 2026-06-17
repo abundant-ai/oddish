@@ -558,7 +558,14 @@ The backend accepts auth from `Authorization`, `X-Clerk-Authorization`, or `X-Au
 - **API keys** (`ok_...`): stored hashed (SHA-256) in `api_keys`; scopes are `full`, `tasks`, `read`
 - **Clerk JWTs**: validated against Clerk JWKS; org context extracted from token claims
 
+There are exactly two org roles: `admin` (manage users/settings) and `member`
+(run evals, view results). New users default to `member`.
+
 Auth flow: read token → if `ok_` prefix validate API key → otherwise validate Clerk JWT and resolve org/user → return `AuthContext`.
+
+API key creation is user-auth only (API-key auth is rejected so one key cannot
+mint another) and requires an `admin` with an `@abundant.ai` email in the main
+Abundant org (`can_create_api_keys` / `require_api_key_creator`).
 
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 

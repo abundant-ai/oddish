@@ -138,7 +138,7 @@ async def _upsert_user(
             user.name = name
         if email and user.email != email:
             user.email = email
-        if role and user.role != role and user.role != UserRole.OWNER:
+        if role and user.role != role:
             user.role = role
         return user
 

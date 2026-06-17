@@ -54,7 +54,6 @@ def generate_api_key() -> str:
 class UserRole(str, Enum):
     """User roles within an organization."""
 
-    OWNER = "owner"  # Developer/superuser — only assignable via direct DB edit
     ADMIN = "admin"  # Can manage users and settings
     MEMBER = "member"  # Can run evals, view results
 

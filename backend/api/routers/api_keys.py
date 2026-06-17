@@ -6,8 +6,20 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 
-from api.schemas import APIKeyCreateResponse, APIKeyResponse, CreateAPIKeyRequest
-from auth import APIKeyScope, AuthContext, require_admin, require_owner
+from api.schemas import (
+    APIKeyCreateResponse,
+    APIKeyPermissionsResponse,
+    APIKeyResponse,
+    CreateAPIKeyRequest,
+)
+from auth import (
+    APIKeyScope,
+    AuthContext,
+    can_create_api_keys,
+    require_admin,
+    require_api_key_creator,
+    require_auth,
+)
 from models import APIKeyModel, create_api_key
 from oddish.db import get_session, utcnow
 
@@ -46,12 +58,20 @@ async def list_api_keys(
         ]
 
 
+@router.get("/permissions", response_model=APIKeyPermissionsResponse)
+async def get_api_key_permissions(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> APIKeyPermissionsResponse:
+    """Return API key creation capabilities for the current user."""
+    return APIKeyPermissionsResponse(can_create=can_create_api_keys(auth))
+
+
 @router.post("", response_model=APIKeyCreateResponse)
 async def create_api_key_endpoint(
     request: CreateAPIKeyRequest,
-    auth: Annotated[AuthContext, Depends(require_owner)],
+    auth: Annotated[AuthContext, Depends(require_api_key_creator)],
 ) -> APIKeyCreateResponse:
-    """Create a new API key for the organization. Requires owner (developer) role."""
+    """Create a new API key for the organization."""
 
     # Validate scope
     try:
