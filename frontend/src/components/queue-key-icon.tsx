@@ -7,12 +7,9 @@ import {
   Cohere,
   Cursor,
   DeepSeek,
-  Gemini,
   Inflection,
-  Kimi,
   Liquid,
   Meta,
-  Minimax,
   Mistral,
   NousResearch,
   OpenAI,
@@ -210,6 +207,28 @@ function resolveProvider({
   return "unknown";
 }
 
+function ProviderLogoImage({
+  src,
+  alt,
+  size,
+  className,
+}: {
+  src: string;
+  alt: string;
+  size: number;
+  className?: string;
+}) {
+  return (
+    <Image
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      className={className}
+    />
+  );
+}
+
 export function QueueKeyIcon({
   queueKey,
   model,
@@ -226,7 +245,14 @@ export function QueueKeyIcon({
     return <Anthropic size={size} className={className} />;
   }
   if (resolvedProvider === "gemini") {
-    return <Gemini size={size} className={className} />;
+    return (
+      <ProviderLogoImage
+        src="/google-gemini.svg"
+        alt="Google Gemini"
+        size={size}
+        className={className}
+      />
+    );
   }
   if (resolvedProvider === "deepseek") {
     return <DeepSeek size={size} className={className} />;
@@ -251,20 +277,33 @@ export function QueueKeyIcon({
   }
   if (resolvedProvider === "zai") {
     return (
-      <Image
+      <ProviderLogoImage
         src="/zai-logo.png"
         alt="Z.ai"
-        width={size}
-        height={size}
+        size={size}
         className={className}
       />
     );
   }
   if (resolvedProvider === "kimi") {
-    return <Kimi size={size} className={className} />;
+    return (
+      <ProviderLogoImage
+        src="/kimi-k-only.svg"
+        alt="Kimi"
+        size={size}
+        className={className}
+      />
+    );
   }
   if (resolvedProvider === "minimax") {
-    return <Minimax size={size} className={className} />;
+    return (
+      <ProviderLogoImage
+        src="/minimax-vertical.svg"
+        alt="MiniMax"
+        size={size}
+        className={className}
+      />
+    );
   }
   if (resolvedProvider === "yi") {
     return <Yi size={size} className={className} />;
