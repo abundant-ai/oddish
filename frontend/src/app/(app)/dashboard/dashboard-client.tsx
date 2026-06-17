@@ -172,6 +172,7 @@ function useDashboardExperiments(
     experiments_tags: parsedQuery.all.join(","),
     experiments_tags_any: parsedQuery.any.join(","),
     experiments_tags_none: parsedQuery.none.join(","),
+    experiments_author_query: parsedQuery.authors.join(","),
     experiments_status: experimentsStatus,
     experiments_author: experimentsAuthor,
     include_tasks: false,
@@ -1363,7 +1364,7 @@ function RecentTasksCard({
           <Input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
-            placeholder="Search · tag:x OR tag:y NOT tag:z"
+            placeholder="Search · github:user · tag:x OR tag:y NOT tag:z"
             className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
           />
           <DropdownMenu modal={false}>
