@@ -367,6 +367,14 @@ MINIMAX_API_KEY=...
 MOONSHOT_API_KEY=...
 # MOONSHOT_BASE_URL=https://api.moonshot.ai/anthropic
 
+# Fireworks — auth token for the consolidation route. GLM / MiniMax / Kimi (and
+# other open models) run on the claude-code harness via Fireworks' single
+# Anthropic-compatible endpoint (model ids like `fireworks/glm-5.2`,
+# `fireworks/minimax-m3`, `fireworks/kimi-k2.7-code`). Referenced as
+# ${FIREWORKS_API_KEY}. Optionally override the endpoint via FIREWORKS_BASE_URL.
+FIREWORKS_API_KEY=...
+# FIREWORKS_BASE_URL=https://api.fireworks.ai/inference
+
 # Optional sandbox credentials
 DAYTONA_API_KEY=...
 MODAL_TOKEN_ID=...
@@ -519,6 +527,62 @@ Run MiniMax / Kimi on a task: `oddish run -p <task> --agent claude-code --model
 minimax/MiniMax-M3` and `oddish run -p <task> --agent claude-code --model
 moonshot/kimi-k2.7-code` (bare `MiniMax-M3` / `kimi-k2.7-code` work too and are
 canonicalized).
+
+### Fireworks routing (claude-code harness, consolidation route)
+
+Fireworks serves GLM, MiniMax, Kimi (and many other open models) over a single
+**Anthropic-compatible `/messages` endpoint**, so they run on the stock
+`claude-code` harness against Fireworks instead of each model's own direct
+provider. This is the **consolidation route**: one provider/queue bucket and one
+secret cover all three, and you use the **plain `claude-code` agent** (no
+`glm-claude-code` / per-model agents) with default settings — the same way you
+run Claude/Opus.
+
+- **Opt in with an explicit `fireworks/` (or `fw/`) prefix.** Only an explicit
+  prefix routes to Fireworks; bare `glm.../minimax.../kimi-...` ids keep their
+  existing direct-provider routes (z.ai / MiniMax / Moonshot). `is_fireworks_model`
+  is checked **before** the z.ai/MiniMax/Moonshot checks in
+  `normalize_trial_model` / `_build_agent_config` so the prefix always wins (and
+  `is_zai_model` no longer hijacks a `fireworks/glm-…` id via its bare-`glm`
+  fallback).
+- **Canonical id / queue key.** `oddish.config.to_fireworks_model_id`
+  canonicalizes to `fireworks/<short>`, collapsing friendly spellings to the
+  Fireworks short id (`fireworks/glm-5.2` → `fireworks/glm-5p2`,
+  `fireworks/kimi-k2.7` → `fireworks/kimi-k2p7-code`,
+  `fireworks/minimax-m3` → `fireworks/minimax-m3`) via
+  `_FIREWORKS_SHORT_MODEL_IDS`. The trial's `provider` resolves to `fireworks`
+  and its `queue_key` to `fireworks/<short>` — a dedicated concurrency bucket,
+  separate from Bedrock and from the per-vendor direct buckets.
+- **Env injection.** For a `claude-code` agent on a `fireworks/` model,
+  `harbor_runner._apply_claude_code_fireworks_env` sets `ANTHROPIC_BASE_URL`
+  (default `https://api.fireworks.ai/inference` — **no `/v1` suffix**, the SDK
+  appends `/v1/messages`; overridable via `FIREWORKS_BASE_URL`),
+  `ANTHROPIC_AUTH_TOKEN=${FIREWORKS_API_KEY}` (resolved by Harbor's Modal env at
+  exec time), pins `ANTHROPIC_MODEL` and all size aliases to the **full**
+  Fireworks model path (`accounts/fireworks/models/<short>` via
+  `fireworks_api_model_id`), sets `ENABLE_TOOL_SEARCH=false` (non-first-party
+  host), and blanks the ambient `ANTHROPIC_API_KEY` / `CLAUDE_CODE_USE_BEDROCK`
+  / `AWS_BEARER_TOKEN_BEDROCK` so the Fireworks route wins. **No thinking/effort
+  kwargs are set** — it is the default claude-code agent, and Fireworks rejects
+  thinking params on some hosted models (e.g. Kimi).
+- **Escape hatch.** A full Fireworks path passed behind the prefix is forwarded
+  verbatim, so routers and arbitrary models work too:
+  `fireworks/accounts/fireworks/routers/kimi-k2p6-turbo`. Any other
+  `fireworks/<short>` is assumed to be a `accounts/fireworks/models/<short>`
+  serverless model.
+- **Secret.** Provide `FIREWORKS_API_KEY` in the runtime Modal secret
+  (`oddish-prod`) or the worker environment. It is referenced as
+  `${FIREWORKS_API_KEY}` and never persisted to the trial row.
+- **Known gap (network allowlist).** Harbor's per-agent network allowlist (in
+  the Harbor fork) does not yet map the `fireworks` prefix to
+  `api.fireworks.ai`, so **closed-internet tasks** will not reach Fireworks
+  until the fork adds it. Open-internet tasks are unaffected. The `fireworks/`
+  prefix is intentionally kept on `model_name` so the allowlist resolves once
+  the fork is updated.
+
+Run GLM 5.2 / MiniMax M3 / Kimi K2.7 via Fireworks: `oddish run -p <task>
+--agent claude-code --model fireworks/glm-5.2`, `… --model fireworks/minimax-m3`,
+`… --model fireworks/kimi-k2.7-code`.
 
 Storage defaults:
 
