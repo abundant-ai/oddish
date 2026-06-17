@@ -65,6 +65,15 @@ def build_trial_specs_from_sweep(
         if existing_counts is not None:
             from oddish.config import settings
 
+            # existing_counts is keyed by the trial's stored ``model`` column,
+            # which is written through ``normalize_trial_model`` (see the
+            # ``append_trials_to_task`` write path). Normalize the manifest's
+            # raw ``config.model`` the same way so the lookup key matches the
+            # stored (already-normalized) key. This match is the load-bearing
+            # invariant: every trial write MUST normalize ``model``, and
+            # ``normalize_trial_model`` MUST be idempotent. If a raw model ever
+            # lands in the column, this ``.get`` misses, ``existing`` reads 0,
+            # and reconcile silently re-appends a full N.
             norm_model = settings.normalize_trial_model(config.agent, config.model)
             existing = existing_counts.get((config.agent, norm_model), 0)
             n = max(0, config.n_trials - existing)
