@@ -13,6 +13,11 @@ class _FakeRuntime:
         return None
 
 
+class _FakeBlob:
+    async def list_keys(self, prefix): return []
+    async def download_bytes(self, key): return b""
+
+
 async def test_start_sets_auto_delete_and_labels(db):
     def factory():
         @asynccontextmanager
@@ -29,6 +34,7 @@ async def test_start_sets_auto_delete_and_labels(db):
         anthropic_api_key="test",
         chat_auto_stop_minutes=30,
         chat_auto_delete_minutes=60,
+        blob_store=_FakeBlob(),
     )
 
     session_id = await orch.start(

@@ -28,6 +28,7 @@ from api.services.cc_chat.claude_md import (
 from api.services.cc_chat.daytona_client import CreatedSandbox, DaytonaClient
 from api.services.cc_chat.events import append_event, prune_events
 from api.services.cc_chat.file_loader import upload_files
+from api.services.cc_chat.experiment_files import collect_experiment_files
 from api.services.cc_chat.task_files import collect_task_version_files
 from api.services.cc_chat.provisioner import Provisioner, delete_sandbox_quietly
 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
@@ -108,7 +109,24 @@ class ChatOrchestrator:
         """
         files: list[tuple[str, bytes]] = []
         if scope_kind == "experiment":
-            claude_md = render_experiment_claude_md(experiment_id=scope_id, trial_ids=[])
+            if self._blob is None:
+                raise RuntimeError(
+                    "blob_store is required for experiment-scope chat sessions"
+                )
+            async with self._db(db_session_factory) as db:
+                trial_ids, files, truncated, _probe_trial_ids = (
+                    await collect_experiment_files(
+                        db, self._blob, experiment_id=scope_id, org_id=org_id,
+                    )
+                )
+            if truncated:
+                log.warning(
+                    "cc_chat experiment-scope upload truncated at byte cap: experiment=%s",
+                    scope_id,
+                )
+            claude_md = render_experiment_claude_md(
+                experiment_id=scope_id, trial_ids=trial_ids
+            )
         elif scope_kind == "global":
             claude_md = render_global_claude_md(org_id=org_id or scope_id)
         elif scope_kind == "task":
