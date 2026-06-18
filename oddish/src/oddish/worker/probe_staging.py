@@ -25,12 +25,14 @@ from oddish.worker.probe_overlay import (
     AGENT_BRIEF_NAME,
     HARBOR_DIR_NAME,
     MAX_BYTES_PER_FILE,
+    MAX_EXPERIMENT_RELATED_TRIALS,
     MAX_FILES_PER_TRIAL,
     MAX_RELATED_TRIALS,
     PROBE_SYSTEM_FRAMING,
     RELATED_CONTAINER_DIR,
     RELATED_DIR_NAME,
     render_probe_instruction,
+    select_experiment_related_trials,
     select_related_trials,
 )
 from oddish.worker.skills_overlay import SkillBundle, materialize_skills
@@ -38,8 +40,30 @@ from oddish.worker.skills_overlay import SkillBundle, materialize_skills
 logger = logging.getLogger(__name__)
 
 
+async def _load_experiment_trials(current_trial_id: str):
+    """Return ``(current_trial, all_trials_in_its_experiment)``.
+
+    Returns ``(None, [])`` when the current trial is missing or has no
+    experiment, so the caller degrades to staging nothing.
+    """
+    async with get_session() as session:
+        current = await session.get(TrialModel, current_trial_id)
+        if current is None or current.experiment_id is None:
+            return None, []
+        result = await session.execute(
+            select(TrialModel).where(
+                TrialModel.experiment_id == current.experiment_id
+            )
+        )
+        return current, list(result.scalars().all())
+
+
 async def stage_related_trial_logs(
-    work_task_dir: Path, task_id: str, current_trial_id: str
+    work_task_dir: Path,
+    task_id: str,
+    current_trial_id: str,
+    *,
+    probe_scope: str = "task",
 ) -> bool:
     """Download prior real (non-probe) attempts' logs into the work dir.
 
@@ -47,16 +71,39 @@ async def stage_related_trial_logs(
     at :data:`RELATED_CONTAINER_DIR` once the runner uploads the work dir to the
     probe-harness root). The runner pulls the artifacts here, so no S3
     credentials enter the agent's container.
+
+    With ``probe_scope="experiment"`` the related set spans every task in the
+    trial's experiment (per-task balanced, larger cap); the default ``"task"``
+    scope stages same-task siblings only.
     Per-trial and per-file failures are logged and skipped; counts and sizes
     are capped. Returns True if anything was staged.
     """
-    async with get_session() as session:
-        result = await session.execute(
-            select(TrialModel).where(TrialModel.task_id == task_id)
+    if probe_scope == "experiment":
+        _current, all_trials = await _load_experiment_trials(current_trial_id)
+        eligible = select_related_trials(
+            all_trials, current_trial_id=current_trial_id
         )
-        siblings = list(result.scalars().all())
+        cap = MAX_EXPERIMENT_RELATED_TRIALS
+        related = select_experiment_related_trials(
+            all_trials, current_trial_id=current_trial_id, cap=cap
+        )
+        if len(eligible) > len(related):
+            logger.warning(
+                "probe: experiment scope dropped %d of %d related trials "
+                "(cap=%d, per-task balanced)",
+                len(eligible) - len(related),
+                len(eligible),
+                cap,
+            )
+    else:
+        async with get_session() as session:
+            result = await session.execute(
+                select(TrialModel).where(TrialModel.task_id == task_id)
+            )
+            siblings = list(result.scalars().all())
+        related = select_related_trials(siblings, current_trial_id=current_trial_id)
+        cap = MAX_RELATED_TRIALS
 
-    related = select_related_trials(siblings, current_trial_id=current_trial_id)
     if not related:
         return False
 
@@ -64,8 +111,9 @@ async def stage_related_trial_logs(
     dest_root = work_task_dir / RELATED_DIR_NAME
     staged_any = False
 
-    for trial in related[:MAX_RELATED_TRIALS]:
-        prefix = f"tasks/{task_id}/trials/{trial.id}/"
+    for trial in related[:cap]:
+        # Each trial lives under its own task_id (experiment scope spans tasks).
+        prefix = f"tasks/{trial.task_id}/trials/{trial.id}/"
         try:
             keys = await storage.list_keys(prefix)
         except Exception:
@@ -205,6 +253,7 @@ async def apply_probe_overlay(
     task_id: str,
     trial_id: str,
     extra_instructions: str,
+    probe_scope: str = "task",
     time_budget_sec: float | None = None,
 ) -> None:
     """Stage related logs and rewrite ``task_dir/instruction.md`` in place.
@@ -219,7 +268,9 @@ async def apply_probe_overlay(
     which Harbor never mounts into the container.)
     """
     try:
-        has_related = await stage_related_trial_logs(task_dir, task_id, trial_id)
+        has_related = await stage_related_trial_logs(
+            task_dir, task_id, trial_id, probe_scope=probe_scope
+        )
     except Exception:
         logger.exception("probe: staging related trial logs failed")
         has_related = False
