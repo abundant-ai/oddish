@@ -22,7 +22,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type EvaluationMetric = "ratio" | "result_focus" | "none";
+type EvaluationMetric = "result_focus" | "none";
 
 type Preset = {
   id: string;
@@ -31,18 +31,57 @@ type Preset = {
   model: string;
   operator_prompt: string;
   result_focus: string | null;
-  evaluation_metric: EvaluationMetric | "cheat_ratio";
-  ratio_unit?: string | null;
-  ratio_verb?: string | null;
+  evaluation_metric: EvaluationMetric | "cheat_ratio" | "ratio";
   is_seed: boolean;
   created_at: string;
   updated_at: string;
 };
 
-// Promote the legacy "cheat_ratio" metric to "ratio" with cheat-flavored
-// defaults — same normalization the submit form does at read time.
+function ResultFocusInput({
+  id,
+  value,
+  onChange,
+}: {
+  id?: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [isSchema, setIsSchema] = useState(false);
+
+  function handleBlur() {
+    try {
+      const parsed = JSON.parse(value);
+      setIsSchema(parsed !== null && typeof parsed === "object");
+    } catch {
+      setIsSchema(false);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={handleBlur}
+        className="h-8 border-[#6f88b4]/20 pr-28"
+      />
+      {isSchema && (
+        <span className="pointer-events-none absolute inset-y-0 right-2 flex items-center">
+          <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+            structured output
+          </span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Legacy "cheat_ratio" and "ratio" both fall back to "none".
 function normalizeMetric(p: Preset): EvaluationMetric {
-  return p.evaluation_metric === "cheat_ratio" ? "ratio" : p.evaluation_metric;
+  if (p.evaluation_metric === "cheat_ratio" || p.evaluation_metric === "ratio")
+    return "none";
+  return p.evaluation_metric;
 }
 
 interface FormProps {
@@ -61,16 +100,6 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
   const [resultFocus, setResultFocus] = useState(editing?.result_focus ?? "");
   const [metric, setMetric] = useState<EvaluationMetric>(
     editing ? normalizeMetric(editing) : "none",
-  );
-  const [ratioUnit, setRatioUnit] = useState(
-    editing?.evaluation_metric === "cheat_ratio"
-      ? editing.ratio_unit || "cheat"
-      : (editing?.ratio_unit ?? ""),
-  );
-  const [ratioVerb, setRatioVerb] = useState(
-    editing?.evaluation_metric === "cheat_ratio"
-      ? editing.ratio_verb || "succeeded"
-      : (editing?.ratio_verb ?? ""),
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +123,6 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
         operator_prompt: operatorPrompt,
         result_focus: resultFocus.trim() || null,
         evaluation_metric: metric === "none" ? null : metric,
-        ratio_unit: metric === "ratio" ? ratioUnit.trim() || null : null,
-        ratio_verb: metric === "ratio" ? ratioVerb.trim() || null : null,
       };
       const url = isEditCustom
         ? `/api/probe-presets/${editing.id}`
@@ -197,47 +224,12 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">None</SelectItem>
-                <SelectItem value="ratio">Ratio</SelectItem>
                 <SelectItem value="result_focus">Result focus</SelectItem>
               </SelectContent>
             </Select>
           </div>
         </div>
 
-        {metric === "ratio" && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label
-                htmlFor="preset-ratio-unit"
-                className="text-xs font-medium"
-              >
-                Ratio unit
-              </Label>
-              <Input
-                id="preset-ratio-unit"
-                value={ratioUnit}
-                onChange={(e) => setRatioUnit(e.target.value)}
-                placeholder="cheat"
-                className="h-8 border-[#6f88b4]/20"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label
-                htmlFor="preset-ratio-verb"
-                className="text-xs font-medium"
-              >
-                Ratio verb
-              </Label>
-              <Input
-                id="preset-ratio-verb"
-                value={ratioVerb}
-                onChange={(e) => setRatioVerb(e.target.value)}
-                placeholder="succeeded"
-                className="h-8 border-[#6f88b4]/20"
-              />
-            </div>
-          </div>
-        )}
 
         <div className="space-y-1.5">
           <Label htmlFor="preset-prompt" className="text-xs font-medium">
@@ -258,11 +250,14 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
             Result focus{" "}
             <span className="text-muted-foreground">(optional)</span>
           </Label>
-          <Input
+          <p className="text-[11px] text-muted-foreground">
+            Plain text = a question answered in prose. A JSON Schema =
+            structured JSON output.
+          </p>
+          <ResultFocusInput
             id="preset-focus"
             value={resultFocus}
-            onChange={(e) => setResultFocus(e.target.value)}
-            className="h-8 border-[#6f88b4]/20"
+            onChange={setResultFocus}
           />
         </div>
 

@@ -7,9 +7,8 @@ type Attempt = {
   success?: boolean | null;
 };
 
-// Keep "cheat_ratio" as a legacy alias — old DB rows still carry it.
-// Read sites normalize to "ratio" + cheat-flavored defaults.
-type EvaluationMetric = "ratio" | "result_focus" | "none" | "cheat_ratio";
+// "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
+type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
 
 type Analysis = {
   attempts?: Attempt[];
@@ -29,20 +28,10 @@ type Trial = {
   harbor_config?: {
     mode?: string;
     evaluation_metric?: EvaluationMetric;
-    ratio_unit?: string | null;
-    ratio_verb?: string | null;
     probe_name?: string | null;
   } | null;
   is_probe?: boolean;
 };
-
-function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
 
 // What to show in the run-identity column for a probe.
 // Newer probe runs carry the operator-selected preset name in
@@ -69,67 +58,10 @@ type ResultDisplay = {
 };
 
 function resultDisplay(t: Trial): ResultDisplay {
-  // Branch on metric first so a probe-agent type renders the SAME column
-  // shape regardless of trial state. Within each metric branch, status
-  // determines the placeholder vs. real content.
-  // Normalize legacy "cheat_ratio" to "ratio" with cheat-flavored defaults.
   const rawMetric = t.harbor_config?.evaluation_metric ?? "none";
-  const metric = rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
-  const unit =
-    t.harbor_config?.ratio_unit ??
-    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-  const verb =
-    t.harbor_config?.ratio_verb ??
-    (rawMetric === "cheat_ratio" ? "succeeded" : null);
-
-  if (metric === "ratio") {
-    const plural = pluralize(unit);
-    const verbStr = verb ? ` ${verb}` : "";
-    if (t.status === "queued" || t.status === "pending") {
-      return { text: `—/— ${plural}`, variant: "muted", title: "Trial queued" };
-    }
-    if (t.status === "running") {
-      return {
-        text: `—/— ${plural}`,
-        variant: "muted",
-        title: "Trial running",
-      };
-    }
-    if (t.status === "failed") {
-      return {
-        text: "harness error",
-        variant: "error",
-        title: t.error_message ?? "Trial failed before producing a result",
-      };
-    }
-    // status === "success"
-    if (t.analysis === null || t.analysis === undefined) {
-      return {
-        text: `—/— ${plural}`,
-        variant: "muted",
-        title: "Waiting for analyzer",
-      };
-    }
-    const all = t.analysis.attempts ?? [];
-    const succeeded = all.filter((a) => a.success === true).length;
-    const blocked = all.filter((a) => a.success === false).length;
-    const total = succeeded + blocked;
-    if (total === 0) {
-      return {
-        text: `0/0 ${plural}`,
-        variant: "neutral",
-        title: `Analyzer ran but found no ${plural} in the transcript`,
-      };
-    }
-    return {
-      text: `${succeeded}/${total} ${plural}${verbStr}`,
-      variant: succeeded > 0 ? "cheat" : "blocked",
-      title:
-        succeeded > 0
-          ? `${succeeded} of ${total} ${plural}${verbStr} — task is gameable`
-          : `All ${total} ${plural} were blocked — task is robust`,
-    };
-  }
+  // Legacy "cheat_ratio"/"ratio" fall back to "none".
+  const metric =
+    rawMetric === "result_focus" ? "result_focus" : ("none" as const);
 
   if (metric === "result_focus") {
     if (t.status === "queued" || t.status === "pending") {
