@@ -558,10 +558,11 @@ def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
     assert agent_config.override_timeout_sec is None
 
 
-def test_build_agent_config_claude_uses_bedrock_id_in_bedrock_mode(monkeypatch):
+def test_build_agent_config_claude_uses_bedrock_id_with_usable_credential(monkeypatch):
+    """A usable Bedrock credential (the bearer token) -> keep the Bedrock id."""
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
-    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
 
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",
@@ -570,6 +571,26 @@ def test_build_agent_config_claude_uses_bedrock_id_in_bedrock_mode(monkeypatch):
     )
 
     assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_build_agent_config_claude_uses_anthropic_id_when_flag_set_but_no_credential(
+    monkeypatch,
+):
+    """The actual prod bug: the Modal image bakes CLAUDE_CODE_USE_BEDROCK=1 into
+    every worker, but without a Bedrock bearer token the sandbox agent can't reach
+    Bedrock and falls back to ANTHROPIC_API_KEY. The flag alone must NOT keep the
+    Bedrock model id, or the direct API rejects it with HTTP 400."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "claude-sonnet-4-6"
 
 
 def test_build_agent_config_claude_uses_anthropic_api_id_without_bedrock_env(
@@ -592,6 +613,43 @@ def test_build_agent_config_claude_uses_anthropic_api_id_without_bedrock_env(
     )
 
     assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_probe_claude_code_forces_direct_api(monkeypatch):
+    """Probe claude-code can't use Bedrock in its DinD sandbox even with a bearer
+    token present (claude-code falls back to ANTHROPIC_API_KEY but keeps the
+    Bedrock model id -> 400). With an ANTHROPIC_API_KEY available, a probe must
+    emit the direct-API model id regardless of the Bedrock env."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_nonprobe_keeps_bedrock_with_credential(monkeypatch):
+    """Non-probe claude-code with a usable Bedrock credential is unchanged."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
 
 
 def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
