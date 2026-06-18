@@ -30,11 +30,15 @@ from harbor.models.job.result import JobResult
 
 from oddish.config import (
     BEDROCK_ENV_VARS,
+    FIREWORKS_DEFAULT_BASE_URL,
     MINIMAX_DEFAULT_BASE_URL,
     MOONSHOT_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
     OPENAI_PROVIDER_OPENAI,
     ZAI_DEFAULT_BASE_URL,
+    fireworks_api_model_id,
+    fireworks_bare_model_id,
+    is_fireworks_model,
     is_minimax_model,
     is_moonshot_model,
     is_subscription_model,
@@ -44,13 +48,16 @@ from oddish.config import (
     moonshot_bare_model_id,
     settings,
     subscription_bare_model_id,
+    to_anthropic_api_model_id,
     to_bedrock_model_id,
+    to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
     to_zai_model_id,
     zai_bare_model_id,
 )
 from oddish.schemas import HarborConfig
+from oddish.workers.harbor_patches import apply_harbor_patches
 from oddish.worker.probe_staging import stage_org_skills
 from oddish.task_timeouts import (
     PROBE_AGENT_TIMEOUT_SEC,
@@ -576,6 +583,66 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     agent_config.env = env
 
 
+# Fireworks env is kept deliberately minimal -- the default claude-code agent
+# settings (no forced thinking / effort), matching how the same agent runs
+# Claude/Opus. Fireworks also rejects thinking params on some hosted models
+# (e.g. Kimi), so a plain default is both the requested behavior and the safe
+# one. ``ENABLE_TOOL_SEARCH=false`` is set because the base URL is a
+# non-first-party host (Claude Code would otherwise defer MCP tools and can fail
+# on proxies that do not forward ``tool_reference`` blocks).
+_FIREWORKS_RECOMMENDED_ENV: dict[str, str] = {
+    "ENABLE_TOOL_SEARCH": "false",
+}
+
+
+def _apply_claude_code_fireworks_env(agent_config: AgentConfig) -> None:
+    """Apply the env Claude Code needs to talk to Fireworks' endpoint.
+
+    Fireworks serves GLM / MiniMax / Kimi (and more) over one
+    Anthropic-compatible ``/messages`` API, so they run on the claude-code
+    harness but must hit Fireworks instead of the Bedrock route the Modal image
+    defaults to. Mirrors the OpenRouter / z.ai injectors: point Claude Code at
+    the Fireworks base URL, authenticate with ``${FIREWORKS_API_KEY}`` (resolved
+    by Harbor's Modal env at exec time), blank the ambient Bedrock/Anthropic
+    credentials so the Fireworks route wins, and pin the full Fireworks model id
+    (``accounts/fireworks/models/<id>``) on the primary model plus every size
+    alias so a single account serves all of them.
+    """
+    agent_name = (agent_config.name or "").strip().lower()
+    if "claude-code" not in agent_name:
+        return
+    if not is_fireworks_model(agent_config.model_name):
+        return
+
+    api_model = fireworks_api_model_id(
+        fireworks_bare_model_id(agent_config.model_name or "")
+    )
+    env = dict(agent_config.env or {})
+    env.setdefault(
+        "ANTHROPIC_BASE_URL",
+        os.environ.get("FIREWORKS_BASE_URL") or FIREWORKS_DEFAULT_BASE_URL,
+    )
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${FIREWORKS_API_KEY}")
+
+    if api_model:
+        env["ANTHROPIC_MODEL"] = api_model
+        for alias in (
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL",
+            "CLAUDE_CODE_SUBAGENT_MODEL",
+        ):
+            env.setdefault(alias, api_model)
+
+    for key, value in _FIREWORKS_RECOMMENDED_ENV.items():
+        env.setdefault(key, value)
+
+    env["ANTHROPIC_API_KEY"] = ""
+    env["CLAUDE_CODE_USE_BEDROCK"] = ""
+    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
+    agent_config.env = env
+
+
 # z.ai recommends these long-context / streaming settings for GLM under Claude
 # Code. They are applied with setdefault so a sweep can override any of them.
 _ZAI_RECOMMENDED_ENV: dict[str, str] = {
@@ -897,6 +964,45 @@ def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -
     agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
 
 
+def _agent_uses_bedrock() -> bool:
+    """Whether the sandbox claude-code agent can actually reach AWS Bedrock.
+
+    Harbor's ``_is_bedrock_mode`` flips to Bedrock when ``CLAUDE_CODE_USE_BEDROCK``
+    is ``"1"`` OR ``AWS_BEARER_TOKEN_BEDROCK`` is set -- and the Modal worker image
+    bakes ``CLAUDE_CODE_USE_BEDROCK=1`` into every container. But the flag alone is
+    a trap: the only Bedrock credential the separate Daytona sandbox can use is the
+    bearer token (``AWS_BEARER_TOKEN_BEDROCK``); the ambient AWS SigV4 keys are
+    S3-scoped and 403 against Bedrock (see ``worker/probe_analysis.py``). With the
+    flag set but no bearer token, the sandbox agent cannot authenticate to Bedrock,
+    silently falls back to ``ANTHROPIC_API_KEY``, and still sends a Bedrock
+    inference-profile model id -- which the direct Anthropic API rejects with HTTP
+    400 "Operation not allowed".
+
+    So Bedrock is usable only when the bearer token is present. When it is absent
+    we route both the model id (here, via ``to_anthropic_api_model_id``) and the
+    transport (by clearing the baked-in Bedrock env at ``Job.create``) to the
+    direct Anthropic API, keeping id and transport consistent.
+    """
+    return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
+
+
+def _claude_code_forces_direct_api(is_probe: bool) -> bool:
+    """Whether a probe's claude-code agent must use the direct Anthropic API.
+
+    The worker carries a Bedrock bearer token, but in a probe's Daytona DinD
+    sandbox claude-code cannot authenticate to Bedrock with it -- it silently
+    falls back to ``ANTHROPIC_API_KEY`` while still sending the Bedrock inference-
+    profile model id, which the direct Anthropic API rejects with HTTP 400
+    "Operation not allowed" (verified empirically against trials -24..-28). The
+    provisioned ``ANTHROPIC_API_KEY`` *does* work against the direct API for
+    ``claude-sonnet-4-6`` (verified live), so route probe claude-code there:
+    translate the model id to the plain API form and clear the baked-in Bedrock
+    env so Harbor selects the direct transport. Scoped to probes to leave normal
+    trials' Bedrock routing untouched.
+    """
+    return is_probe and bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -975,15 +1081,28 @@ def _build_agent_config(
         agent_config.model_name = subscription_bare_model_id(
             agent_config.model_name or ""
         )
+    elif is_fireworks_model(agent_config.model_name):
+        agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
         agent_config.model_name = to_zai_model_id(agent_config.model_name)
     elif is_minimax_model(agent_config.model_name):
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
-    else:
+    elif _claude_code_forces_direct_api(is_probe):
+        # Probe claude-code can't use Bedrock in its DinD sandbox; route to the
+        # direct Anthropic API (transport is forced to match at Job.create).
+        agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
+    elif _agent_uses_bedrock():
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    else:
+        # No Bedrock env: Harbor's claude-code agent authenticates against the
+        # direct Anthropic API, which rejects a Bedrock inference-profile id
+        # ("global.anthropic.*") with HTTP 400 "Operation not allowed". Hand it
+        # the matching plain Anthropic API id instead.
+        agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     _apply_claude_code_openrouter_env(agent_config)
+    _apply_claude_code_fireworks_env(agent_config)
     _apply_claude_code_zai_env(agent_config)
     if sub_route:
         # claude-code -> OAuth token env; codex auth.json is staged later in
@@ -1100,6 +1219,8 @@ async def run_harbor_trial_async(
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
     """
+    apply_harbor_patches()
+
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
 
@@ -1237,11 +1358,19 @@ async def run_harbor_trial_async(
             else {}
         )
         runtime_env = dict(openai_env)
-        if sub_route and "claude-code" in (agent or "").strip().lower():
+        is_claude_code = "claude-code" in (agent or "").strip().lower()
+        if is_claude_code and (
+            sub_route
+            or not _agent_uses_bedrock()
+            or _claude_code_forces_direct_api(is_probe)
+        ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
-            # bakes in CLAUDE_CODE_USE_BEDROCK=1 + AWS_BEARER_TOKEN_BEDROCK.
-            # Blank them for this run so claude-code uses the OAuth token instead
-            # of Bedrock. _temporary_env restores them afterward.
+            # bakes in CLAUDE_CODE_USE_BEDROCK=1. Blank the Bedrock env for this
+            # run whenever claude-code should NOT use Bedrock -- either a
+            # subscription route (use the OAuth token) or no usable Bedrock
+            # credential (route to the direct Anthropic API, matching the model id
+            # _build_agent_config emitted; otherwise Harbor would ship a Bedrock
+            # transport with a non-Bedrock model id). _temporary_env restores them.
             runtime_env.update({var: "" for var in BEDROCK_ENV_VARS})
         with _temporary_env(runtime_env):
             job = await Job.create(config)
