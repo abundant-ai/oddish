@@ -273,7 +273,7 @@ function ExperimentHeaderMeta({
           <path d="M3 3v18h18" />
           <path d="M7 14l4-4 4 4 5-5" />
         </svg>
-        Pass@k graph
+        Pass/k graph
       </Button>
       {headerRight}
     </div>
@@ -753,7 +753,9 @@ function ExperimentProbeTab({
   if (data.length === 0) {
     return (
       <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-[color:var(--paper-ink-3)]">No probes yet.</p>
+        <p className="text-sm text-[color:var(--paper-ink-3)]">
+          No probes yet.
+        </p>
         {newProbeButton}
       </div>
     );
@@ -763,56 +765,56 @@ function ExperimentProbeTab({
     <div className="space-y-3">
       <div className="flex items-center justify-end">{newProbeButton}</div>
       <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)]">
-      <table className="w-full text-sm">
-        <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <tr>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Task
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Version
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Model
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Status
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              &nbsp;
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row) => (
-            <tr
-              key={row.probe_trial_id}
-              className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
-            >
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
-                {row.task_name}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                {row.version != null ? `v${row.version}` : "—"}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                {row.model ?? "—"}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
-                {statusLabel(row.status)}
-              </td>
-              <td className="px-4 py-2.5 text-xs">
-                <Link
-                  href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
-                  className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
-                >
-                  View →
-                </Link>
-              </td>
+        <table className="w-full text-sm">
+          <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+            <tr>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Task
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Version
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Model
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Status
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                &nbsp;
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr
+                key={row.probe_trial_id}
+                className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
+              >
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
+                  {row.task_name}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                  {row.version != null ? `v${row.version}` : "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                  {row.model ?? "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
+                  {statusLabel(row.status)}
+                </td>
+                <td className="px-4 py-2.5 text-xs">
+                  <Link
+                    href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
+                    className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
+                  >
+                    View →
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );
