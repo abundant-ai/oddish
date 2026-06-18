@@ -27,7 +27,6 @@ import {
   ChevronDown,
   FileText,
   LogOut,
-  SearchCheck,
   Shield,
   User,
 } from "lucide-react";
@@ -121,21 +120,6 @@ export function Nav() {
               >
                 <FileText className="h-4 w-4" />
                 <span>Tasks</span>
-              </Link>
-            </Button>
-            <Button
-              variant={pathname.startsWith("/qa") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/qa"
-                className="flex items-center gap-2"
-                data-active={pathname.startsWith("/qa")}
-              >
-                <SearchCheck className="h-4 w-4" />
-                <span>Agents</span>
               </Link>
             </Button>
           </div>
