@@ -121,11 +121,13 @@ def is_zai_model(model: str | None) -> bool:
     raw = model.strip().lower()
     if not raw:
         return False
-    provider_prefix, bare = split_provider_model_name(raw)
-    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
-        return True
-    tail = bare if provider_prefix else raw
-    return tail.split("/")[-1].startswith("glm")
+    provider_prefix, _ = split_provider_model_name(raw)
+    # An explicit provider prefix is authoritative: only a z.ai spelling routes
+    # to z.ai. A foreign prefix (e.g. ``fireworks/glm-5.2``) must NOT be hijacked
+    # here by the bare-``glm`` fallback -- it has chosen another transport.
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES
+    return raw.split("/")[-1].startswith("glm")
 
 
 def zai_bare_model_id(model: str) -> str:
@@ -305,6 +307,108 @@ def to_moonshot_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
+
+
+# Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
+# models) over a single Anthropic-compatible ``/messages`` endpoint, so they run
+# on the claude-code harness against Fireworks instead of each model's own direct
+# provider. This is the consolidation route: opt a trial in with an explicit
+# ``fireworks/`` (or ``fw/``) provider prefix and it gets its own
+# ``fireworks/<id>`` provider/queue bucket -- off the Bedrock chokepoint and the
+# per-vendor z.ai / MiniMax / Moonshot buckets. Bare ``glm.../minimax.../kimi-...``
+# ids keep their existing direct-provider routes; the ``fireworks/`` prefix is
+# the explicit switch onto Fireworks.
+FIREWORKS_PROVIDER = "fireworks"
+# Anthropic-compatible base URL. Claude Code / the Anthropic SDK append
+# ``/v1/messages`` themselves, so this must NOT carry the ``/v1`` suffix.
+FIREWORKS_DEFAULT_BASE_URL = "https://api.fireworks.ai/inference"
+_FIREWORKS_PROVIDER_PREFIXES: frozenset[str] = frozenset({"fireworks", "fw"})
+# Friendly spellings -> the canonical Fireworks "short" model id (the last
+# segment of the Fireworks model path). The short id is what oddish stores and
+# queues on (``fireworks/<short>``); the full
+# ``accounts/fireworks/models/<short>`` path is only built when handing the id to
+# Claude Code as ANTHROPIC_MODEL. Add an entry here to give a model a friendly
+# alias; any other bare id is assumed to already be a Fireworks short id (a full
+# ``accounts/fireworks/(models|routers)/<id>`` path can always be passed as an
+# escape hatch and is forwarded verbatim).
+_FIREWORKS_SHORT_MODEL_IDS: dict[str, str] = {
+    "glm-5.2": "glm-5p2",
+    "glm-5p2": "glm-5p2",
+    "minimax-m3": "minimax-m3",
+    "kimi-k2.7": "kimi-k2p7-code",
+    "kimi-k2.7-code": "kimi-k2p7-code",
+    "kimi-k2p7": "kimi-k2p7-code",
+    "kimi-k2p7-code": "kimi-k2p7-code",
+}
+
+
+def is_fireworks_model(model: str | None) -> bool:
+    """Return True if *model* should route to Fireworks' Anthropic endpoint.
+
+    Matches an explicit ``fireworks/``/``fw/`` provider prefix only. Bare GLM /
+    MiniMax / Kimi ids keep their existing direct-provider routes (z.ai /
+    MiniMax / Moonshot); the ``fireworks/`` prefix is the opt-in that
+    consolidates them onto Fireworks instead.
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    if not provider_prefix:
+        return False
+    return provider_prefix.strip().lower() in _FIREWORKS_PROVIDER_PREFIXES
+
+
+def fireworks_bare_model_id(model: str) -> str:
+    """Strip the ``fireworks/``/``fw/`` prefix, returning the remaining id.
+
+    ``fireworks/glm-5.2`` -> ``glm-5.2``;
+    ``fireworks/accounts/fireworks/models/glm-5p2`` ->
+    ``accounts/fireworks/models/glm-5p2``. A bare id is returned unchanged.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _FIREWORKS_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def fireworks_api_model_id(bare_model_id: str) -> str:
+    """Resolve a bare Fireworks reference to the model id the endpoint expects.
+
+    Friendly aliases (``glm-5.2``) and short ids (``glm-5p2``) expand to the full
+    ``accounts/fireworks/models/<short>`` path Fireworks requires. A value that
+    already contains a path segment (e.g. a full
+    ``accounts/fireworks/routers/<id>`` router path) is forwarded verbatim.
+    """
+    raw = bare_model_id.strip()
+    low = raw.lower()
+    if "/" in low:
+        return raw
+    short = _FIREWORKS_SHORT_MODEL_IDS.get(low, low)
+    return f"accounts/fireworks/models/{short}"
+
+
+def to_fireworks_model_id(model: str | None) -> str | None:
+    """Canonicalize a Fireworks reference to ``fireworks/<id>``.
+
+    Friendly aliases collapse to the canonical short id (``fireworks/glm-5.2`` ->
+    ``fireworks/glm-5p2``) so every spelling shares one queue/provider bucket; a
+    full ``accounts/...`` path is kept as-is behind the ``fireworks/`` prefix.
+    Non-Fireworks models are returned unchanged.
+    """
+    if not is_fireworks_model(model):
+        return model
+    assert model is not None
+    bare = fireworks_bare_model_id(model)
+    low = bare.strip().lower()
+    canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low, low)
+    return f"{FIREWORKS_PROVIDER}/{canonical}"
 
 
 def looks_like_bedrock_model_id(model: str | None) -> bool:
@@ -590,6 +694,11 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "moonshot": MOONSHOT_PROVIDER,
     "moonshotai": MOONSHOT_PROVIDER,
     "kimi": MOONSHOT_PROVIDER,
+    # Fireworks. The consolidation route: GLM / MiniMax / Kimi (and others)
+    # served over Fireworks' Anthropic-compatible endpoint get one shared
+    # ``fireworks`` provider bucket, distinct from the per-vendor direct routes.
+    "fireworks": FIREWORKS_PROVIDER,
+    "fw": FIREWORKS_PROVIDER,
 }
 
 
@@ -1023,6 +1132,12 @@ class Settings(BaseSettings):
         # Canonicalize to "<provider>/<id>" before the Bedrock chokepoint so
         # they get their own provider/queue bucket instead of claude-code's
         # fixed Bedrock fallback.
+        #
+        # Fireworks is checked first: an explicit ``fireworks/`` prefix
+        # consolidates GLM/MiniMax/Kimi onto Fireworks and must win over the
+        # bare-id direct-provider routes below.
+        if is_fireworks_model(cleaned):
+            return to_fireworks_model_id(cleaned)
         if is_zai_model(cleaned):
             return to_zai_model_id(cleaned)
         if is_minimax_model(cleaned):

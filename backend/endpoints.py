@@ -8,8 +8,8 @@ from oddish.config import Settings
 # for Supavisor transaction-mode compatibility.
 #
 # Connection budget is bounded by Supabase's two limits: the pooler's max
-# *client* connections (1500 on the 2XL tier) and the transaction-mode *pool
-# size* — the real Postgres backends behind it (100, within the 380
+# *client* connections (3000 on the 4XL tier) and the transaction-mode *pool
+# size* — the real Postgres backends behind it (~150-200, within the 480
 # max_connections). pool_size + max_overflow is sized to API_CONCURRENCY_MAX so
 # a fully-loaded container never has requests blocking on SQLAlchemy pool
 # checkout (the prior 4-conn pool vs 8 inputs caused checkout waits that looked
@@ -17,9 +17,12 @@ from oddish.config import Settings
 #
 # Client-connection budget (worst case):
 #   API:     64 containers × (pool_size 2 + max_overflow 1) = up to 192
-#   Workers: WORKER_MAX_CONTAINERS(512) × ~2 (1 SQLAlchemy + 1 asyncpg) ≈ 1024
-#   Total ≈ 1216 — ~81% of the 1500 client cap. Concurrent *execution* is gated
-#   by the 100-backend transaction pool, not these client counts.
+#   Workers: NullPool (worker/functions.py) → ~0 held during the long trial;
+#            only workers writing at a given instant + the
+#            <=MAX_WORKERS_PER_POLL claim burst consume client connections, so
+#            a 768-worker fleet stays far under the 3000 cap.
+#   Concurrent *execution* is gated by the ~150-200-backend transaction pool,
+#   not these client counts.
 #
 # API_CONCURRENCY_MAX was lowered 8->3 (with API_MAX_CONTAINERS raised 24->64)
 # to bound the OOM blast radius (the memory hog itself is fixed in

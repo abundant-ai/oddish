@@ -347,6 +347,95 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     assert "reasoning_effort" not in agent_config.kwargs
 
 
+def test_claude_code_fireworks_agent_config_sets_fireworks_skin_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="fireworks/glm-5.2",
+        raw_harbor_config={},
+    )
+
+    # Friendly alias collapses to the canonical short id; the ``fireworks/``
+    # prefix stays on model_name so Harbor's allowlist can resolve the Fireworks
+    # endpoint for closed-internet tasks (once the fork maps it).
+    assert agent_config.model_name == "fireworks/glm-5p2"
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
+    # Claude Code must send the full Fireworks model path, mirrored across every
+    # size alias since the image defaults to Bedrock mode.
+    expected = "accounts/fireworks/models/glm-5p2"
+    assert agent_config.env["ANTHROPIC_MODEL"] == expected
+    assert agent_config.env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == expected
+    assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == expected
+    assert agent_config.env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == expected
+    assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == expected
+    assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
+    # Ambient Bedrock/Anthropic creds blanked so the Fireworks route wins.
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
+    assert agent_config.env["AWS_BEARER_TOKEN_BEDROCK"] == ""
+    # Default claude-code agent -- no forced thinking/effort (also required since
+    # Fireworks rejects thinking params on some hosted models, e.g. Kimi).
+    assert "thinking" not in agent_config.kwargs
+    assert "reasoning_effort" not in agent_config.kwargs
+
+
+def test_claude_code_fireworks_kimi_and_minimax_full_paths(monkeypatch) -> None:
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+
+    for raw, expected_model in (
+        ("fireworks/kimi-k2.7-code", "accounts/fireworks/models/kimi-k2p7-code"),
+        ("fireworks/minimax-m3", "accounts/fireworks/models/minimax-m3"),
+    ):
+        agent_config = harbor_runner._build_agent_config(
+            agent="claude-code",
+            model=raw,
+            raw_harbor_config={},
+        )
+        assert agent_config.env["ANTHROPIC_MODEL"] == expected_model, raw
+        assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}", raw
+
+
+def test_claude_code_fireworks_does_not_trigger_zai_route(monkeypatch) -> None:
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+    monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+
+    # ``fireworks/glm-...`` must hit Fireworks, not z.ai -- the GLM id must not
+    # leak the trial back onto the z.ai base URL / token.
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="fireworks/glm-5.2",
+        raw_harbor_config={},
+    )
+
+    assert "fireworks" in agent_config.env["ANTHROPIC_BASE_URL"]
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
+
+
+def test_claude_code_fireworks_agent_config_preserves_explicit_env(monkeypatch) -> None:
+    monkeypatch.delenv("FIREWORKS_BASE_URL", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="fireworks/glm-5.2",
+        raw_harbor_config={
+            "agent_config": {
+                "env": {
+                    "ANTHROPIC_BASE_URL": "https://custom.example/anthropic",
+                    "ANTHROPIC_AUTH_TOKEN": "${CUSTOM_FW_TOKEN}",
+                }
+            }
+        },
+    )
+
+    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://custom.example/anthropic"
+    assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${CUSTOM_FW_TOKEN}"
+    assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+
+
 def test_claude_code_openrouter_kimi_is_not_routed_to_moonshot(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
 
