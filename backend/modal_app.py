@@ -115,16 +115,17 @@ WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
 # Harbor run -- a pooler client connection is opened only for the brief
 # claim / heartbeat / finalize writes. So this cap is NOT bound by the pooler
 # client limit anymore; the binding constraints are Modal cost, per-model
-# provider rate limits, the per-poll claim burst (MAX_WORKERS_PER_POLL), and
-# DB CPU. On the 4XL Supabase tier (3000 max pooler clients, 480 Postgres
-# max_connections, 16 dedicated cores) 768 workers are comfortable:
-# worst-case concurrent client connections are only the workers writing at a
-# given instant + the <=MAX_WORKERS_PER_POLL claim burst + API, far under the
-# 3000 cap. Concurrent transaction *execution* is gated by the transaction
-# pool size (~150-200 backends on 4XL), not this count.
+# provider rate limits, the per-poll claim burst (MAX_WORKERS_PER_POLL), and DB
+# CPU. On the 4XL Supabase tier (3000 max pooler clients, 480 Postgres
+# max_connections, 16 dedicated cores) 2688 workers still fit below the client
+# cap: worst-case concurrent client connections are roughly 2688 transient
+# worker writes + 192 API pool connections + the two singleton scheduled
+# functions (= 2882, leaving ~118 client slots). Concurrent transaction
+# *execution* is gated by the transaction pool size (~150-200 backends on 4XL),
+# not this count.
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    768,
+    2688,
 )
 
 # Mark single-job worker containers as non-preemptible so Modal does not
