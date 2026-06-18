@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AttributionProfile",
     "resolve_experiments_author",
+    "resolve_search_authors",
     "invalidate_attribution_cache",
 ]
 
@@ -461,3 +463,120 @@ async def resolve_experiments_author(
 
     profile = await _load_attribution_profile(session, user, org_id=auth.org_id)
     return user.id, profile.github_handles, profile.legacy_emails
+
+
+async def _match_authors_for_token(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    token: str,
+) -> list[UserModel]:
+    """Active org users matching a search token.
+
+    A token matches on ``github_username`` (the primary affordance) and,
+    because the ``author:`` / ``user:`` aliases let people type a teammate's
+    email or display name, also on ``email`` / ``name`` -- all
+    case-insensitively. The github match reuses the plural lookup so handle
+    collisions (two members, same handle) union rather than raise. The
+    ``api.routers.tasks`` import is local to avoid a module-load cycle
+    (that router imports this module at top level).
+    """
+    from api.routers.tasks import _lookup_users_by_github_username
+
+    matched: dict[str, UserModel] = {}
+    for user in await _lookup_users_by_github_username(
+        session, github_username=token, org_id=org_id
+    ):
+        matched[user.id] = user
+
+    token_lower = token.strip().lower()
+    if token_lower:
+        alias_rows = await session.execute(
+            select(UserModel).where(
+                UserModel.org_id == org_id,
+                UserModel.is_active == True,  # noqa: E712
+                or_(
+                    func.lower(UserModel.email) == token_lower,
+                    func.lower(UserModel.name) == token_lower,
+                ),
+            )
+        )
+        for user in alias_rows.scalars().all():
+            matched.setdefault(user.id, user)
+
+    return list(matched.values())
+
+
+async def resolve_search_authors(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    tokens: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Resolve search-bar author tokens to ``(user_ids, github_handles, emails)``.
+
+    For each token we:
+      * include the raw token itself as a literal handle (or email, if it
+        looks like one) so an unattributed-but-tagged task still matches;
+      * find every active org member the token resolves to (handle / email /
+        name) and union their ids plus each member's ``AttributionProfile``
+        handles and legacy emails.
+
+    An unknown token contributes no user ids and no profile aliases -- only
+    its literal value -- so it resolves to an empty result set unless some
+    task literally carries that handle.
+    """
+    user_ids: list[str] = []
+    handles: list[str] = []
+    emails: list[str] = []
+    seen_uids: set[str] = set()
+    seen_handles: set[str] = set()
+    seen_emails: set[str] = set()
+
+    def _add_uid(uid: str | None) -> None:
+        if uid and uid not in seen_uids:
+            seen_uids.add(uid)
+            user_ids.append(uid)
+
+    def _add_handle(raw: str | None) -> None:
+        normalized = _normalize_github_handle(raw)
+        if not normalized:
+            return
+        key = normalized.lower()
+        if key in seen_handles:
+            return
+        seen_handles.add(key)
+        handles.append(normalized)
+
+    def _add_email(raw: str | None) -> None:
+        value = (raw or "").strip()
+        if not value or not _looks_like_email(value):
+            return
+        key = value.lower()
+        if key in seen_emails:
+            return
+        seen_emails.add(key)
+        emails.append(value)
+
+    for raw_token in tokens or ():
+        token = (raw_token or "").strip()
+        if not token:
+            continue
+        # Literal token: emails feed the legacy ``tasks.user`` match, every
+        # other token feeds the ``github_username`` tag match.
+        if _looks_like_email(token):
+            _add_email(token)
+        else:
+            _add_handle(token)
+
+        for user in await _match_authors_for_token(
+            session, org_id=org_id, token=token
+        ):
+            _add_uid(user.id)
+            profile = await _load_attribution_profile(session, user, org_id=org_id)
+            for handle in profile.github_handles:
+                _add_handle(handle)
+            for email in profile.legacy_emails:
+                _add_email(email)
+
+    return tuple(user_ids), tuple(handles), tuple(emails)
