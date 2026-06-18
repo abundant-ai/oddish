@@ -4,7 +4,7 @@ import asyncio
 import logging
 import secrets
 from dataclasses import dataclass
-from typing import AsyncIterator, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 
 logger = logging.getLogger("oddish.cc_chat.daytona")
@@ -23,7 +23,7 @@ class CreatedSandbox:
     """Just the bits the orchestrator needs to keep around."""
 
     id: str
-    _sdk_handle: object  # opaque; used internally
+    _sdk_handle: Any  # Daytona's SDK handle is dynamic and used internally.
 
 
 class DaytonaClient(Protocol):
@@ -126,9 +126,7 @@ class RealDaytonaClient:
     ) -> None:
         await sandbox._sdk_handle.fs.upload_file(content, dest_path)
 
-    async def create_session(
-        self, sandbox: CreatedSandbox, *, session_id: str
-    ) -> None:
+    async def create_session(self, sandbox: CreatedSandbox, *, session_id: str) -> None:
         await sandbox._sdk_handle.process.create_session(session_id)
 
     async def exec_async(
@@ -213,9 +211,7 @@ class RealDaytonaClient:
                 last_stderr_len = len(stderr)
 
             try:
-                cmd = await process.get_session_command(
-                    daytona_session_id, cmd_id
-                )
+                cmd = await process.get_session_command(daytona_session_id, cmd_id)
                 consecutive_errors = 0
             except Exception:
                 consecutive_errors += 1
@@ -256,12 +252,8 @@ class RealDaytonaClient:
                     if len(fstderr) > last_stderr_len:
                         await on_stderr(fstderr[last_stderr_len:])
                 except Exception:
-                    logger.exception(
-                        "stream_logs: final flush failed cmd=%s", cmd_id
-                    )
-                logger.info(
-                    "stream_logs: cmd=%s exit_code=%s", cmd_id, cmd.exit_code
-                )
+                    logger.exception("stream_logs: final flush failed cmd=%s", cmd_id)
+                logger.info("stream_logs: cmd=%s exit_code=%s", cmd_id, cmd.exit_code)
                 return
 
             await asyncio.sleep(poll_interval)
@@ -272,9 +264,7 @@ class RealDaytonaClient:
         result = await sandbox._sdk_handle.process.exec(command)
         return result.exit_code, result.result
 
-    async def download_file(
-        self, sandbox: CreatedSandbox, *, src_path: str
-    ) -> bytes:
+    async def download_file(self, sandbox: CreatedSandbox, *, src_path: str) -> bytes:
         return await sandbox._sdk_handle.fs.download_file(src_path)
 
     async def delete_sandbox(self, sandbox: CreatedSandbox) -> None:
@@ -285,11 +275,13 @@ class FakeDaytonaClient:
     """In-memory test double for DaytonaClient. Records calls; serves canned data."""
 
     def __init__(self) -> None:
-        self.sandboxes: dict[str, dict] = {}            # sandbox_id -> {files, sessions, exec_log}
+        # sandbox_id -> {files, sessions, exec_log}
+        self.sandboxes: dict[str, dict] = {}
         self.deleted: set[str] = set()
         # Per-cmd_id pre-canned outputs for stream_logs
-        self.cmd_outputs: dict[str, dict] = {}          # cmd_id -> {"stdout": str, "stderr": str, "exit_code": int}
-        self.exec_sync_results: dict[str, tuple[int, str]] = {}  # command-substring -> (exit_code, output)
+        self.cmd_outputs: dict[str, dict] = {}
+        # command-substring -> (exit_code, output)
+        self.exec_sync_results: dict[str, tuple[int, str]] = {}
         self.next_cmd_id_seq = 0
 
     async def create_sandbox(
@@ -321,11 +313,17 @@ class FakeDaytonaClient:
     async def exec_async(self, sandbox, *, daytona_session_id, command) -> str:
         self.next_cmd_id_seq += 1
         cmd_id = f"cmd_{self.next_cmd_id_seq}"
-        self.sandboxes[sandbox.id]["exec_log"].append((daytona_session_id, command, cmd_id))
+        self.sandboxes[sandbox.id]["exec_log"].append(
+            (daytona_session_id, command, cmd_id)
+        )
         return cmd_id
 
-    async def stream_logs(self, sandbox, *, daytona_session_id, cmd_id, on_stdout, on_stderr) -> None:
-        canned = self.cmd_outputs.get(cmd_id, {"stdout": "", "stderr": "", "exit_code": 0})
+    async def stream_logs(
+        self, sandbox, *, daytona_session_id, cmd_id, on_stdout, on_stderr
+    ) -> None:
+        canned = self.cmd_outputs.get(
+            cmd_id, {"stdout": "", "stderr": "", "exit_code": 0}
+        )
         if canned["stdout"]:
             await on_stdout(canned["stdout"])
         if canned["stderr"]:
