@@ -67,6 +67,7 @@ Options
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
 - `--n-trials INTEGER` - Number of trials per task
+- `--add` - Append `--n-trials` _more_ trials instead of reconciling to `--n-trials`
 - `--max-trial-attempts INTEGER` - Override the maximum Oddish attempts per trial, including the initial run
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
@@ -123,10 +124,10 @@ oddish run <experiment_id> --retry -y --json
 ```
 
 - Default (`--retry` alone) re-queues failed trials. For task and experiment
-targets, only trials currently in a `failed` state are retried.
+  targets, only trials currently in a `failed` state are retried.
 - `--qa` re-runs the single task-level QA job: it re-classifies every live trial
-and synthesizes a fresh task verdict. A trial-shaped id resolves to its parent
-task; experiment targets run QA for each task.
+  and synthesizes a fresh task verdict. A trial-shaped id resolves to its parent
+  task; experiment targets run QA for each task.
 - `--qa` requires `--retry`.
 - `-y, --yes` skips the confirmation prompt; `--json` is always non-interactive.
 
@@ -313,8 +314,8 @@ Options
 - `SOURCE_EXPERIMENT_IDS...` - Two or more experiment IDs or names to combine
 - `--name`, `-n TEXT` - Name for the result experiment (auto-generated if omitted)
 - `--copy-artifacts / --no-copy-artifacts` - Duplicate each copied trial's
-artifacts so the result is fully independent (default), or reference the
-source artifacts in place (cheaper, shared storage)
+  artifacts so the result is fully independent (default), or reference the
+  source artifacts in place (cheaper, shared storage)
 - `--json` - Print the raw JSON response
 - `--api-url`, `-u TEXT` - Override the API URL
 
@@ -373,16 +374,16 @@ from the browser. Drop one or both of:
 
 - a Harbor task zip (e.g. `zip -r my-task.zip my-task`)
 - a Harbor run zip — either a single job dir (with `result.json`) or a
-parent dir of job dirs
+  parent dir of job dirs
 
 The dialog accepts:
 
 - **Task only** → registers a new task version (or no-op when content
-is unchanged).
+  is unchanged).
 - **Run only** → imports every Harbor trial in the zip into the target
-task ID you provide.
+  task ID you provide.
 - **Task + run** → uploads the task first, then imports the trials
-against it (the UI equivalent of `oddish upload ./jobs --path ./my-task`).
+  against it (the UI equivalent of `oddish upload ./jobs --path ./my-task`).
 
 The optional **Experiment name** field maps to `--experiment`; leaving
 it blank auto-generates a fresh experiment, matching the CLI default.
