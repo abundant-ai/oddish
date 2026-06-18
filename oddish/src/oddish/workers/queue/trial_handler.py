@@ -480,9 +480,6 @@ async def _generate_probe_summary_inline(
             verifier_stdout=artifacts["verifier_stdout"] or "",
             reward=reward,
             result_focus=harbor_config.get("result_focus") or "",
-            evaluation_metric=harbor_config.get("evaluation_metric") or "none",
-            ratio_unit=harbor_config.get("ratio_unit"),
-            ratio_verb=harbor_config.get("ratio_verb"),
             model=settings.analysis_model,
         )
         status = AnalysisStatus.SUCCESS
