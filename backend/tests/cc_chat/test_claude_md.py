@@ -5,9 +5,13 @@ from api.services.cc_chat.claude_md import (
 )
 
 
-def test_experiment_claude_md_mentions_experiment_id_and_trials():
-    out = render_experiment_claude_md(experiment_id="exp_abc", trial_ids=["t1", "t2"])
-    assert "exp_abc" in out and "t1" in out and "t2" in out
+def test_experiment_claude_md_documents_query_cli():
+    out = render_experiment_claude_md(experiment_id="exp_abc")
+    assert "exp_abc" in out
+    assert "oddish-query experiments trials" in out
+    assert "trajectory --summary" in out
+    # query-on-demand, not a mounted tree
+    assert "jobs/" not in out
 
 
 def test_task_probes_claude_md_mentions_task_name():

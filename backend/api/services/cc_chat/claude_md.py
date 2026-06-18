@@ -4,55 +4,42 @@ from __future__ import annotations
 _TEMPLATE = """\
 # Experiment {experiment_id}
 
-You are a Claude Code agent helping a user reason about the artifacts of
-an Oddish experiment. The experiment's full artifact tree is mounted at
-the current working directory under `jobs/{experiment_id}/`.
+You are a Claude Code agent helping a user reason about an Oddish experiment.
+You have a read-only CLI, `oddish-query`, that queries the oddish backend for
+this experiment's trials. Nothing is mounted — fetch only what the user's
+question needs. Scope is this experiment; you cannot write anything.
 
-## Layout
+## Tool: `oddish-query` (call via Bash)
 
-```
-jobs/{experiment_id}/
-  <trial_id>/
-    config.json          # trial config (task, agent, model, seed)
-    result.json          # final reward, status, durations
-    trial.log            # high-level trial events
-    exception.txt        # present if the trial errored
-    agent/
-      claude-code.txt    # raw stdout/stderr from the agent
-      trajectory.json    # parsed message+action timeline
-      sessions/          # raw Claude Code session state
-    verifier/
-      ctrf.json          # structured test results (CTRF format)
-      reward.txt         # numeric reward as a string
-      test-stdout.txt    # raw verifier stdout
-```
+Run it from the workspace dir as `./oddish-query` (it lives in the current directory).
 
-## How to navigate
+Start with the trial list, then drill into individual trials on demand:
 
-- Start with `jobs/{experiment_id}/<trial_id>/result.json` and
-  `jobs/{experiment_id}/<trial_id>/config.json` to get a trial's verdict
-  and inputs without reading anything heavy.
-- Use `Glob` and `Grep` to find things across trials. For example,
-  `Grep --files-with-matches "FAIL" jobs/{experiment_id}/`.
-- Only read full `trial.log` / `agent/claude-code.txt` / `agent/trajectory.json`
-  when the user has zoomed into a specific trial. These can be large.
-- `verifier/ctrf.json` is the canonical "did the test pass?" file.
+- `./oddish-query experiments trials {experiment_id}`
+  One row per trial: trial_id, task, status, reward, probe, has_trajectory. **Start here.**
+  Probe trials are flagged `probe: true` — treat them as a distinct category.
+- `./oddish-query trials result <trial_id>` — a trial's structured result/verdict.
+- `./oddish-query trials trajectory <trial_id> --summary` — `{{num_steps, num_tool_calls, final_metrics}}`.
+  Use this for step/tool-call counts (the full trajectory is large; `--summary` is exact and cheap).
+- `./oddish-query trials trajectory <trial_id>` — the full action trajectory (large; one trial at a time).
+- `./oddish-query trials logs <trial_id>` — a single trial's logs (large; one trial at a time).
+- `./oddish-query trials files <trial_id> [--prefix P] [--recursive]` — list a trial's artifact tree.
+- `./oddish-query trials file <trial_id> <path>` — fetch one artifact by path.
 
-## Trials in this experiment
-{trial_list}
+## Discipline
+
+- ALWAYS begin with `experiments trials {experiment_id}`; judge relevance from the rows yourself.
+- Only call `result`/`trajectory`/`logs`/`files` once the user has zoomed into specific trials.
+- For experiment-wide derived stats (e.g. average step count), loop `trajectory --summary`
+  over the relevant trials — fetch only the trials the question needs, not all of them.
+- Output is capped per call; if you see `{{"_truncated": true}}`, narrow rather than widen.
 """
 
 _EMPTY_TRIAL_BLOCK = "_(no trial data available yet)_"
 
 
-def render_experiment_claude_md(*, experiment_id: str, trial_ids: list[str]) -> str:
-    if trial_ids:
-        trial_list = "\n".join(f"- `{tid}`" for tid in sorted(trial_ids))
-    else:
-        trial_list = _EMPTY_TRIAL_BLOCK
-    return _TEMPLATE.format(
-        experiment_id=experiment_id, trial_list=trial_list
-    )
+def render_experiment_claude_md(*, experiment_id: str) -> str:
+    return _TEMPLATE.format(experiment_id=experiment_id)
 
 
 _PROBE_TEMPLATE = """\
