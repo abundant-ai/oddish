@@ -51,6 +51,7 @@ from oddish.config import (
     zai_bare_model_id,
 )
 from oddish.schemas import HarborConfig
+from oddish.workers.harbor_patches import apply_harbor_patches
 from oddish.worker.probe_staging import stage_org_skills
 from oddish.task_timeouts import (
     PROBE_AGENT_TIMEOUT_SEC,
@@ -1100,6 +1101,8 @@ async def run_harbor_trial_async(
     Returns:
         HarborOutcome with reward, error, tokens, cost, timing, trajectory, and paths
     """
+    apply_harbor_patches()
+
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
 
