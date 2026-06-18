@@ -15,7 +15,7 @@ type Analysis = {
   attempts?: Attempt[];
   cheating_attempted?: boolean | null;
   cheating_succeeded?: boolean | null;
-  result_focus_findings?: string | null;
+  result_focus_findings?: string | Record<string, unknown> | unknown[] | null;
 };
 
 type Trial = {
@@ -167,6 +167,14 @@ function resultDisplay(t: Trial): ResultDisplay {
         text: "awaiting answer",
         variant: "muted",
         title: "Analyzer ran but produced no answer",
+      };
+    }
+    if (typeof findings === "object") {
+      const keyCount = Object.keys(findings as Record<string, unknown>).length;
+      return {
+        text: `${keyCount} field${keyCount === 1 ? "" : "s"}`,
+        variant: "neutral",
+        title: "structured findings — open run for full detail",
       };
     }
     const truncated =
