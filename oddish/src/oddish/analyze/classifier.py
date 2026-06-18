@@ -18,6 +18,7 @@ from oddish.config import (
     VERDICT_MODEL,
     looks_like_bedrock_model_id,
     settings,
+    to_anthropic_api_model_id,
 )
 from oddish.analyze._sdk_utils import Colors, print_process_stream
 
@@ -39,6 +40,36 @@ _CLASSIFY_PROMPT = _CLASSIFY_PROMPT_PATH.read_text()
 
 _VERDICT_PROMPT_PATH = Path(__file__).parent / "verdict_prompt.txt"
 _VERDICT_PROMPT = _VERDICT_PROMPT_PATH.read_text()
+
+
+def _resolve_analysis_model_and_env(
+    model: str, base_env: dict[str, str]
+) -> tuple[str, dict[str, str]]:
+    """Pick the ``--model`` id and env for the analysis Claude CLI subprocess.
+
+    The Modal image bakes the Bedrock env vars so Claude Code defaults to
+    Bedrock, and the CLI picks its route from the environment (not ``--model``).
+    Two cases route this analysis call to the direct Anthropic API instead:
+
+    * a plain (non-Bedrock) analysis model id, or
+    * the force-direct incident toggle (``settings.claude_code_force_direct_api``,
+      default on; mirrors ``harbor_runner._claude_code_forces_direct_api``) when
+      an ``ANTHROPIC_API_KEY`` is present -- the workers' Bedrock credentials
+      can't run inference (400 "Operation not allowed"), so every Bedrock
+      analysis call fails until that flag is flipped off.
+
+    In both direct-API cases, normalize any Bedrock inference-profile id back to
+    its plain API id and strip the Bedrock signals so the CLI authenticates with
+    ``ANTHROPIC_API_KEY``. Otherwise keep the Bedrock id and env untouched.
+    """
+    env = dict(base_env)
+    has_api_key = bool(env.get("ANTHROPIC_API_KEY", "").strip())
+    force_direct = has_api_key and settings.claude_code_force_direct_api
+    if looks_like_bedrock_model_id(model) and not force_direct:
+        return model, env
+    for name in BEDROCK_ENV_VARS:
+        env.pop(name, None)
+    return (to_anthropic_api_model_id(model) or model), env
 
 
 _ORACLE_TRIAL_AGENT_CONTEXT = """
@@ -270,12 +301,13 @@ class TrialClassifier:
         """Run Claude Code in print mode and return structured output."""
         schema = json.dumps(TrialClassificationModel.model_json_schema())
         claude_bin = os.getenv("CC_LOGGER_REAL_CLAUDE") or "claude"
+        model_id, env = _resolve_analysis_model_and_env(self._model, dict(os.environ))
         command = [
             claude_bin,
             "-p",
             prompt,
             "--model",
-            self._model,
+            model_id,
             "--output-format",
             "json",
             "--json-schema",
@@ -294,20 +326,9 @@ class TrialClassifier:
 
         if self._verbose:
             print(
-                f"{Colors.CYAN}[Classifier] Claude CLI model={self._model} cwd={trial_dir}{Colors.RESET}",
+                f"{Colors.CYAN}[Classifier] Claude CLI model={model_id} cwd={trial_dir}{Colors.RESET}",
                 flush=True,
             )
-
-        # The Modal image sets the Bedrock env vars globally so trials default
-        # to Bedrock. Claude Code only inspects the environment, not --model, to
-        # decide its route, so a non-Bedrock analysis model id (e.g. the default
-        # "claude-haiku-4-5") would otherwise be sent to Bedrock, which expects
-        # a different id format. Strip the Bedrock signals here so the analysis
-        # CLI falls back to ANTHROPIC_API_KEY for non-Bedrock model ids.
-        env = os.environ.copy()
-        if not looks_like_bedrock_model_id(self._model):
-            for name in BEDROCK_ENV_VARS:
-                env.pop(name, None)
 
         process = await asyncio.create_subprocess_exec(
             *command,
