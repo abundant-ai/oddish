@@ -151,15 +151,59 @@ def test_files_maps_recursive_flag(monkeypatch):
     assert seen["params"]["recursive"] == "true"
 
 
-def test_file_fetches_by_path(monkeypatch):
+def test_files_omits_recursive_when_flag_absent(monkeypatch):
     seen = {}
 
     def fake_get(path, params=None):
-        seen["path"] = path
-        return {"content": "hello"}
+        seen["params"] = params
+        return {"files": []}
 
-    _run(monkeypatch, ["trials", "file", "tr1", "agent/trajectory.json"], fake_get)
-    assert seen["path"] == "/trials/tr1/files/agent/trajectory.json"
+    _run(monkeypatch, ["trials", "files", "tr1"], fake_get)
+    # Without --recursive, the CLI passes recursive=None (which _get drops).
+    assert seen["params"]["recursive"] is None
+
+
+class _FakeResp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_get_raw_returns_decoded_non_json_text(monkeypatch):
+    monkeypatch.setenv("ODDISH_API_BASE_URL", "http://localhost:8800")
+    body = b"line1\nline2 not json\n"
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(body)
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    out = []
+    monkeypatch.setattr(cli, "_print", out.append)
+    result = cli._get("/trials/tr1/files/trial.log", raw=True)
+    assert result == "line1\nline2 not json\n"
+    assert out == []  # no error dict emitted
+
+
+def test_file_fetches_by_path_raw(monkeypatch):
+    seen = {}
+
+    def fake_get(path, params=None, raw=False):
+        seen["path"] = path
+        seen["raw"] = raw
+        return "raw artifact contents\nnot json"
+
+    out = _run(monkeypatch, ["trials", "file", "tr1", "agent/claude-code.txt"], fake_get)
+    assert seen["path"] == "/trials/tr1/files/agent/claude-code.txt"
+    assert seen["raw"] is True
+    assert out == "raw artifact contents\nnot json"
 
 
 def test_trajectory_summary_counts_steps(monkeypatch):

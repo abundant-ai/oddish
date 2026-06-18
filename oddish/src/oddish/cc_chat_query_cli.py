@@ -29,7 +29,7 @@ def _die(msg: str, status: int) -> None:
     sys.exit(1)
 
 
-def _get(path: str, params: dict | None = None):
+def _get(path: str, params: dict | None = None, raw: bool = False):
     base = os.environ.get("ODDISH_API_BASE_URL", "").rstrip("/")
     key = os.environ.get("ODDISH_API_KEY", "")
     url = f"{base}{path}"
@@ -43,7 +43,11 @@ def _get(path: str, params: dict | None = None):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
+            body = r.read()
+            # The single-file endpoint returns raw artifact bytes, not JSON.
+            if raw:
+                return body.decode("utf-8", "replace")
+            return json.loads(body.decode("utf-8"))
     except urllib.error.HTTPError as e:
         _die("session credential expired" if e.code == 401 else str(e.reason), e.code)
     except Exception as e:
@@ -146,7 +150,7 @@ def _cmd_files(a) -> None:
 
 
 def _cmd_file(a) -> None:
-    data = _get(f"/trials/{a.trial_id}/files/{a.path}")
+    data = _get(f"/trials/{a.trial_id}/files/{a.path}", raw=True)
     text = data if isinstance(data, str) else json.dumps(data)
     if len(text) > LOG_HEAD + LOG_TAIL:
         text = text[:LOG_HEAD] + "\n…[truncated]…\n" + text[-LOG_TAIL:]
