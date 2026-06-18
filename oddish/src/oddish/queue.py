@@ -86,15 +86,7 @@ async def cancel_tasks_runs(
             "modal_function_call_ids": [],
         }
 
-    # Take domain-row locks before worker_jobs locks. Worker lifecycle hooks
-    # write trials/tasks and may then update worker_jobs, so cancelling in the
-    # opposite order can deadlock under concurrent trial progress.
-    query = (
-        select(TaskModel)
-        .where(TaskModel.id.in_(requested_task_ids))
-        .order_by(TaskModel.id)
-        .with_for_update()
-    )
+    query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
     if org_id:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -110,6 +102,10 @@ async def cancel_tasks_runs(
         task_id for task_id in requested_task_ids if task_id not in tasks_by_id
     ]
 
+    # Match worker domain-write order before touching worker_jobs:
+    # trial handlers update the trial row, then may lock/update the parent task
+    # as they advance task state. Locking tasks first can deadlock against a
+    # worker that already holds one of the child trials.
     trial_rows = await session.execute(
         select(TrialModel)
         .where(TrialModel.task_id.in_(found_task_ids))
@@ -118,6 +114,17 @@ async def cancel_tasks_runs(
     )
     trials = list(trial_rows.scalars().all())
     trial_ids = [trial.id for trial in trials]
+
+    locked_task_query = (
+        select(TaskModel)
+        .where(TaskModel.id.in_(found_task_ids))
+        .order_by(TaskModel.id)
+        .with_for_update()
+    )
+    if org_id:
+        locked_task_query = locked_task_query.where(TaskModel.org_id == org_id)
+    locked_task_rows = await session.execute(locked_task_query)
+    tasks = list(locked_task_rows.scalars().all())
 
     now = utcnow()
 
