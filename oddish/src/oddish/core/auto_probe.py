@@ -95,8 +95,6 @@ async def maybe_enqueue_auto_probe(
             probe_name=preset.name,
             result_focus=preset.result_focus,
             evaluation_metric=preset.evaluation_metric,
-            ratio_unit=preset.ratio_unit,
-            ratio_verb=preset.ratio_verb,
             experiment_id=(experiment.id if experiment is not None else None),
             user=task.user,
         )
