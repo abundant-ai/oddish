@@ -185,23 +185,19 @@ export function ProbeRunSummary({
               {summary.result_focus_question}
             </p>
           ) : null}
-          {summary.result_focus_findings ? (
-            <p className="text-sm">{summary.result_focus_findings}</p>
-          ) : (
-            <p className="text-sm italic text-muted-foreground">
-              awaiting answer
-            </p>
-          )}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
         </div>
       ) : summary.result_focus_question && summary.result_focus_findings ? (
         <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
             Result focus
           </p>
-          <p className="text-sm font-medium italic">
-            {summary.result_focus_question}
-          </p>
-          <p className="text-sm">{summary.result_focus_findings}</p>
+          {summary.result_focus_question ? (
+            <p className="text-sm font-medium italic">
+              {summary.result_focus_question}
+            </p>
+          ) : null}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
         </div>
       ) : null}
 
