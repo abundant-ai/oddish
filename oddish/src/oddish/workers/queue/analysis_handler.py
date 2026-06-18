@@ -193,7 +193,7 @@ async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
                 or "none",
                 ratio_unit=trial_harbor_config.get("ratio_unit"),
                 ratio_verb=trial_harbor_config.get("ratio_verb"),
-                model=settings.analysis_model,
+                model=settings.probe_analyzer_model,
             )
             console.print(
                 f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
