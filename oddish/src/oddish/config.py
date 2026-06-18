@@ -38,6 +38,12 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Model for the probe transcript summarizer. Deliberately larger than
+# ANALYSIS_MODEL: it reads the agent's full transcript (including the final
+# synthesis / audit JSON) and must summarize it reliably. Kept separate from
+# ANALYSIS_MODEL so it does not change the analysis queue key or the
+# TrialClassifier model. Normalized to a direct-API id at call time.
+PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
 
 PROBE_MODEL_ROTATION: list[str] = [
@@ -886,6 +892,7 @@ class Settings(BaseSettings):
     subscription_queue_concurrency: int = 4
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
+    probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
