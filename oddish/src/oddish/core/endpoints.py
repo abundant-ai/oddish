@@ -2477,6 +2477,18 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
+        # Serialize concurrent sweeps to the same task. The reconcile-to-N
+        # count below (existing_counts) and the subsequent append are a
+        # read-then-write: without a lock, two simultaneous submissions to
+        # the same task could both read the same pre-append count, each
+        # compute the full shortfall, and each append N -- defeating dedup
+        # and producing 2N trials (plus racing on the next trial index).
+        # ``refresh(with_for_update=True)`` takes the row lock (held until
+        # this transaction commits, so concurrent appends serialize) AND
+        # re-reads the row under that lock, so the reconcile decision below
+        # reads ``task.current_version_id`` / ``run_analysis`` from the
+        # post-lock committed snapshot rather than the pre-lock fetch above.
+        await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
         # task-level flag does not retroactively analyze pre-existing
