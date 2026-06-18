@@ -86,46 +86,6 @@ export function ProbeRunSummary({
         </div>
       </div>
 
-      {/* Always render the result_focus block when metric is result_focus,
-          even if findings are missing — show an "awaiting answer" placeholder.
-          Legacy rows (no metric set) still render it when both fields exist. */}
-      {metric === "result_focus" ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          {summary.result_focus_question ? (
-            <p className="text-sm font-medium italic">
-              {summary.result_focus_question}
-            </p>
-          ) : null}
-          {summary.result_focus_findings ? (
-            <p className="text-sm">{summary.result_focus_findings}</p>
-          ) : (
-            <p className="text-sm italic text-muted-foreground">
-              awaiting answer
-            </p>
-          )}
-        </div>
-      ) : summary.result_focus_question && summary.result_focus_findings ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          <p className="text-sm font-medium italic">
-            {summary.result_focus_question}
-          </p>
-          <p className="text-sm">{summary.result_focus_findings}</p>
-        </div>
-      ) : null}
-
-      {summary.headline ? (
-        <p className="text-base font-medium leading-snug">{summary.headline}</p>
-      ) : null}
-      {summary.summary ? (
-        <p className="text-sm leading-relaxed">{summary.summary}</p>
-      ) : null}
-
       {hasRecsField ? (
         <div className="rounded border bg-muted/20 p-3">
           <div className="mb-2 flex items-center gap-2">
@@ -169,6 +129,46 @@ export function ProbeRunSummary({
             </p>
           )}
         </div>
+      ) : null}
+
+      {/* Always render the result_focus block when metric is result_focus,
+          even if findings are missing — show an "awaiting answer" placeholder.
+          Legacy rows (no metric set) still render it when both fields exist. */}
+      {metric === "result_focus" ? (
+        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+            Result focus
+          </p>
+          {summary.result_focus_question ? (
+            <p className="text-sm font-medium italic">
+              {summary.result_focus_question}
+            </p>
+          ) : null}
+          {summary.result_focus_findings ? (
+            <p className="text-sm">{summary.result_focus_findings}</p>
+          ) : (
+            <p className="text-sm italic text-muted-foreground">
+              awaiting answer
+            </p>
+          )}
+        </div>
+      ) : summary.result_focus_question && summary.result_focus_findings ? (
+        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+            Result focus
+          </p>
+          <p className="text-sm font-medium italic">
+            {summary.result_focus_question}
+          </p>
+          <p className="text-sm">{summary.result_focus_findings}</p>
+        </div>
+      ) : null}
+
+      {summary.headline ? (
+        <p className="text-base font-medium leading-snug">{summary.headline}</p>
+      ) : null}
+      {summary.summary ? (
+        <p className="text-sm leading-relaxed">{summary.summary}</p>
       ) : null}
 
       {summary.key_actions && summary.key_actions.length > 0 ? (
