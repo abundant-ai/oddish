@@ -201,7 +201,14 @@ def test_claude_code_openrouter_agent_config_preserves_explicit_base_and_token(
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
 
 
-def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env() -> None:
+def test_non_openrouter_claude_code_agent_config_does_not_add_openrouter_env(
+    monkeypatch,
+) -> None:
+    # This test is about openrouter env injection, not Bedrock vs direct routing;
+    # pin the force-direct mitigation off and the Bedrock env on so the incidental
+    # model-id assertion exercises the Bedrock branch deterministically.
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",
         model="claude-opus-4-8",
