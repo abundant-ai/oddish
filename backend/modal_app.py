@@ -232,7 +232,7 @@ if EXTRA_SECRET_NAME:
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
-NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 # Per-model queue-key concurrency overrides. Baked into the deploy so the
 # repo is the source of truth; operators can still override the whole JSON
 # via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
