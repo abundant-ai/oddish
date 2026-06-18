@@ -703,6 +703,9 @@ class TrialResponse(BaseModel):
     )
     cache_tokens: int | None = Field(None, description="Cache tokens used")
     output_tokens: int | None = Field(None, description="Output tokens generated")
+    total_steps: int | None = Field(
+        None, description="Total agent trajectory steps, when available"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -980,6 +983,7 @@ class ImportedTrialSpec(BaseModel):
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
+    total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,

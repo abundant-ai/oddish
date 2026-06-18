@@ -102,6 +102,7 @@ def test_trial_response_exposes_is_probe():
         input_tokens=None,
         cache_tokens=None,
         output_tokens=None,
+        total_steps=None,
         cost_usd=None,
         phase_timing=None,
         has_trajectory=False,

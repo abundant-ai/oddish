@@ -369,6 +369,7 @@ async def _prepare_trial_run(
         trial.input_tokens = None
         trial.cache_tokens = None
         trial.output_tokens = None
+        trial.total_steps = None
         trial.cost_usd = None
         trial.phase_timing = None
         trial.has_trajectory = False
@@ -556,6 +557,7 @@ async def _store_trial_results(
             trial.input_tokens = outcome.input_tokens
             trial.cache_tokens = outcome.cache_tokens
             trial.output_tokens = outcome.output_tokens
+            trial.total_steps = outcome.total_steps
             trial.cost_usd = outcome.cost_usd
 
             # Store per-phase timing breakdown
