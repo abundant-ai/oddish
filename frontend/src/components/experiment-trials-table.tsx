@@ -170,7 +170,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "harness-error",
 ];
 
-// Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
+// Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
 // hide tasks based on failures or harness/infrastructure errors across the
 // visible non-baseline agent columns.
 type RowFilterMode = "none" | "anyError" | "allFail" | "anyFail";
@@ -1784,7 +1784,7 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        {/* Pass@k Graph - only shows when there are multiple trials per task-agent */}
+        {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <div className="h-full min-w-0">
@@ -2103,8 +2103,6 @@ export function ExperimentTrialsTable({
                               >
                                 <QueueKeyIcon
                                   agent={agent.agent}
-                                  model={agent.model}
-                                  queueKey={agent.queueKey}
                                   size={12}
                                   className="shrink-0"
                                 />

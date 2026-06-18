@@ -55,7 +55,7 @@ export function getExperimentAgentKey(
   if (!modelScopedAgents.has(trial.agent)) {
     return trial.agent;
   }
-  return `${trial.agent}@${getModelKey(trial.model)}`;
+  return `${trial.agent}/${getModelKey(trial.model)}`;
 }
 
 export function buildExperimentAgentSummaries(tasks: Task[]): {
