@@ -44,7 +44,7 @@ interface PassAtKGraphProps {
 type TooltipValue = number | string | ReadonlyArray<number | string>;
 type TooltipName = number | string;
 
-// Cap the pass@k curve so the x-axis stays readable even when an agent has
+// Cap the pass/k curve so the x-axis stays readable even when an agent has
 // many attempts per task.
 const PASS_AT_K_CAP = 10;
 
@@ -240,7 +240,7 @@ export const PassAtKGraph = memo(function PassAtKGraph({
     <div className="flex h-full min-w-0 flex-col rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-3">
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <h3 className="font-display text-[15px] font-medium tracking-[-0.01em] text-[color:var(--paper-ink)]">
-          Pass@k
+          Pass/k
         </h3>
         <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
           n = {maxK} · {tasks.length} tasks · {agentSummaries.length} agents

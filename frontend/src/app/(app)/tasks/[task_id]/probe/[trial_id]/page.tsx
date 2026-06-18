@@ -140,7 +140,6 @@ export default function ProbeResultPage({
   }
 
   const extra = trial.harbor_config?.extra_instructions ?? "";
-  const summary = trial.analysis;
   const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
