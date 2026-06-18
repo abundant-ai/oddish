@@ -32,7 +32,7 @@ class _Runtime:
 
 
 async def test_resume_restores_dead_sandbox(db):
-    await seed_session(db, status="broken")
+    await seed_session(db, status="broken", scope_kind="task_probes", scope_id="tp_task")
     async with db() as s:
         row = await s.get(ChatSession, "cs_1")
         row.claude_session_id = "claude-xyz"
@@ -59,7 +59,7 @@ async def test_resume_restores_dead_sandbox(db):
 
 
 async def test_resume_no_archive_raises(db):
-    await seed_session(db, status="broken")
+    await seed_session(db, status="broken", scope_kind="task_probes", scope_id="tp_task")
     async with db() as s:
         row = await s.get(ChatSession, "cs_1")
         row.claude_session_id = "claude-xyz"

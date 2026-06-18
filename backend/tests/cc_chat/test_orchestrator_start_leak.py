@@ -39,7 +39,7 @@ async def test_start_sets_auto_delete_and_labels(db):
 
     session_id = await orch.start(
         org_id=ORG, user_id="u1",
-        scope_kind="experiment", scope_id="exp_1",
+        scope_kind="task_probes", scope_id="tp_task",
         db_session_factory=factory,
     )
 

@@ -279,7 +279,7 @@ async def test_non_global_scope_mints_no_key(db, monkeypatch):
 
     await orch.start(
         org_id="org_cc_test", user_id=None,
-        scope_kind="experiment", scope_id="exp_1",
+        scope_kind="task_probes", scope_id="tp_task",
         db_session_factory=_factory(db),
     )
 
