@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, Request
 
 from auth import APIKeyScope, AuthContext, require_auth
-from dashboard_attribution import resolve_experiments_author
+from dashboard_attribution import resolve_experiments_author, resolve_search_authors
 from oddish.core.dashboard import get_dashboard_core
 from oddish.db import get_session
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
@@ -40,6 +40,14 @@ async def get_dashboard(
             "'me' for the current user, or an org member's user id."
         ),
     ),
+    experiments_author_query: str | None = Query(
+        None,
+        description=(
+            "Free author search for the experiments table (the github:/author:/"
+            "user: qualifier). Comma-separated tokens, each resolved to matching "
+            "org members + their aliases and ANDed with the owner/tag filters."
+        ),
+    ),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
@@ -64,6 +72,23 @@ async def get_dashboard(
         author_user_id, author_github_usernames, author_emails = (
             await resolve_experiments_author(session, auth, experiments_author)
         )
+        search_tokens = [
+            token.strip()
+            for token in (experiments_author_query or "").split(",")
+            if token.strip()
+        ]
+        if search_tokens:
+            (
+                search_author_user_ids,
+                search_author_github_usernames,
+                search_author_emails,
+            ) = await resolve_search_authors(
+                session, org_id=auth.org_id, tokens=search_tokens
+            )
+        else:
+            search_author_user_ids = ()
+            search_author_github_usernames = ()
+            search_author_emails = ()
         add_server_timing_metric(
             request,
             "dashboard_author_resolve",
@@ -85,6 +110,9 @@ async def get_dashboard(
             experiments_author_user_id=author_user_id,
             experiments_author_github_usernames=author_github_usernames,
             experiments_author_emails=author_emails,
+            experiments_search_author_user_ids=search_author_user_ids,
+            experiments_search_author_github_usernames=search_author_github_usernames,
+            experiments_search_author_emails=search_author_emails,
             usage_minutes=usage_minutes,
             include_tasks=include_tasks,
             include_usage=include_usage,
