@@ -836,7 +836,7 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
-    nop_oracle_concurrency: int = 32
+    nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
