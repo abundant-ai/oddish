@@ -19,7 +19,7 @@ from oddish.db import (
     get_storage_client,
     task_experiments,
 )
-from oddish.schemas import TaskStatusResponse, TrialResponse
+from oddish.schemas import ExperimentTrialSummary, TaskStatusResponse, TrialResponse
 
 
 def generate_public_token() -> str:
@@ -185,6 +185,46 @@ async def list_task_trials_for_task(
             queue_info=queue_info_by_trial_id.get(trial.id),
         )
         for trial, task_path in rows
+    ]
+
+
+async def list_experiment_trials(
+    session: AsyncSession, experiment_id: str, *, org_id: str
+) -> list[ExperimentTrialSummary]:
+    """Lean list of an experiment's non-superseded trials, org-scoped.
+
+    Same predicate the cc_chat mount collector used (experiment_id FK,
+    superseded hidden), projected to cheap stored columns so the experiment
+    chat can list trials over HTTP without downloading any artifacts.
+    """
+    rows = (
+        await session.execute(
+            select(TrialModel, TaskModel.name)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.org_id == org_id,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            .order_by(TrialModel.created_at.asc())
+        )
+    ).all()
+    return [
+        ExperimentTrialSummary(
+            trial_id=t.id,
+            task_name=name,
+            status=getattr(t.status, "value", t.status),
+            reward=t.reward,
+            is_probe=t.is_probe,
+            input_tokens=t.input_tokens,
+            output_tokens=t.output_tokens,
+            cost_usd=t.cost_usd,
+            phase_timing=t.phase_timing,
+            has_trajectory=t.has_trajectory,
+            started_at=t.started_at,
+            finished_at=t.finished_at,
+        )
+        for t, name in rows
     ]
 
 

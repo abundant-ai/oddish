@@ -766,6 +766,22 @@ class TrialResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExperimentTrialSummary(BaseModel):
+    """Lean per-trial summary for experiment-scope chat (cheap stored columns only)."""
+    trial_id: str
+    task_name: str
+    status: str
+    reward: float | None = None
+    is_probe: bool = False
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    phase_timing: dict | None = None
+    has_trajectory: bool = False
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class UserTagRef(BaseModel):
     """Effective tag on a task, surfaced to API/CLI/frontend.
 
