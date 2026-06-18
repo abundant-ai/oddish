@@ -110,19 +110,21 @@ WORKER_BUFFER_CONTAINERS = _env_int(
 WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
     "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
 )  # Keep idle workers warm for 5 minutes
-# Global cap on concurrent worker containers. This is the real safety bound on
-# DB client connections: each worker holds ~2 pooler client connections
-# (1 SQLAlchemy + 1 asyncpg), so the worst case is roughly
-# ``WORKER_MAX_CONTAINERS * 2 + API(16 * 8) + dispatcher/reconciler``. On the
-# 2XL Supabase tier (1500 max pooler clients, 380 Postgres max_connections,
-# transaction pool size 100) 512 workers -> ~512*2 + 128 = ~1152 clients, ~77%
-# of the 1500 cap, leaving margin for spikes/reconnects and direct connections.
-# Concurrent transaction *execution* is gated by the 100-backend pool, not this
-# count -- worker DB transactions (claim / heartbeat) are short, so a large
-# mostly-idle-on-DB fleet is fine.
+# Global cap on concurrent worker containers. Workers use NullPool (see
+# worker/functions.py), so they hold ~0 idle DB connections during the long
+# Harbor run -- a pooler client connection is opened only for the brief
+# claim / heartbeat / finalize writes. So this cap is NOT bound by the pooler
+# client limit anymore; the binding constraints are Modal cost, per-model
+# provider rate limits, the per-poll claim burst (MAX_WORKERS_PER_POLL), and
+# DB CPU. On the 4XL Supabase tier (3000 max pooler clients, 480 Postgres
+# max_connections, 16 dedicated cores) 768 workers are comfortable:
+# worst-case concurrent client connections are only the workers writing at a
+# given instant + the <=MAX_WORKERS_PER_POLL claim burst + API, far under the
+# 3000 cap. Concurrent transaction *execution* is gated by the transaction
+# pool size (~150-200 backends on 4XL), not this count.
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    512,
+    768,
 )
 
 # Mark single-job worker containers as non-preemptible so Modal does not
@@ -155,12 +157,12 @@ RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 # per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
 # real safety bounds; this just stops the dispatcher from starving them.
 #
-# 192 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
+# 256 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
 # per-poll spawn burst is also the per-poll claim burst (each spawned worker
-# runs one claim query), but claims are short and the 2XL box (8 dedicated
-# cores, transaction pool 100) absorbs ~192 concurrent short claims per
+# runs one claim query), but claims are short and the 4XL box (16 dedicated
+# cores, transaction pool ~150) absorbs ~256 concurrent short claims per
 # 180s tick comfortably.
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 192)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
 # jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
