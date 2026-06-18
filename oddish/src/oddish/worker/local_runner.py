@@ -363,6 +363,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         model_name = trial.model
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
+        probe_scope = harbor_config.get("probe_scope", "task")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -400,6 +401,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
+            probe_scope=probe_scope,
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
