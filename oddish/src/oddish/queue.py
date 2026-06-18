@@ -488,17 +488,11 @@ def _build_harbor_config_for_trial(
         base["extra_instructions"] = submission.extra_instructions
         if submission.probe_name:
             base["probe_name"] = submission.probe_name
+        if submission.probe_scope == "experiment":
+            base["probe_scope"] = "experiment"
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
-
-    if submission.evaluation_metric:
-        base["evaluation_metric"] = submission.evaluation_metric
-
-    if submission.ratio_unit:
-        base["ratio_unit"] = submission.ratio_unit
-    if submission.ratio_verb:
-        base["ratio_verb"] = submission.ratio_verb
 
     return base or None
 

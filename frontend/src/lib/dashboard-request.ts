@@ -9,6 +9,7 @@ type DashboardRequestParams = {
   experiments_tags_any?: string;
   experiments_tags_none?: string;
   experiments_author?: string;
+  experiments_author_query?: string;
   usage_minutes?: number | null;
   include_tasks?: boolean;
   include_usage?: boolean;
@@ -72,6 +73,11 @@ function buildDashboardSearchParams(
   const trimmedQuery = input.experiments_query?.trim();
   if (trimmedQuery) {
     params.set("experiments_query", trimmedQuery);
+  }
+
+  const trimmedAuthorQuery = input.experiments_author_query?.trim();
+  if (trimmedAuthorQuery) {
+    params.set("experiments_author_query", trimmedAuthorQuery);
   }
 
   for (const name of [

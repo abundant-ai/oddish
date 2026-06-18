@@ -6,9 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-18]
+
+### Changed
+- Official provider logo assets: Gemini, Kimi, and MiniMax now use official SVG assets (`google-gemini.svg`, `kimi-k-only.svg`, `minimax-vertical.svg`) instead of third-party icon library glyphs; a shared `ProviderLogoImage` component consolidates the rendering (#355)
+- Harbor pin updated to `beabbb7a` picking up the agent-tools image update that bakes `ripgrep` into closed-internet Codex trials so runtime installs are skipped when `codex` and `rg` are already prebaked (#357)
+- `sub/claude-opus-4-8` deploy-time concurrency raised 4 → 8 in `modal-deploy.yml`, roughly halving wall-clock for the claude-code eval arm running against the OAuth-multiplexed Claude Max subscription (#352)
+- Task and trial ID columns widened: `tasks.id` VARCHAR(64→128), `task_versions.id` VARCHAR(128→160), `trials.id` VARCHAR(128→160), and all FK references widened correspondingly; Alembic migration `long_task_ids_001` handles the resize under `ACCESS EXCLUSIVE` lock with FK rebuild (#354)
+- Org role model simplified to `admin` / `member`; the legacy `owner` role is removed (existing owners promoted to `admin` via migration `r4s5t6u7v8w9`) and API key creation is now gated to admins with an `@abundant.ai` email in the Abundant org; new `GET /api-keys/permissions` endpoint reports whether the current user may create keys (#170)
+- CI preview pipeline now computes component diffs via the GitHub compare API instead of `dorny/paths-filter`, which ignored its `base` input on `pull_request` events and always diffed the whole PR, forcing unnecessary ~15-min Supabase DB seed runs on frontend-only pushes (#346)
+
+### Fixed
+- Experiment-scope chat sessions now mount the jobs artifact tree inside the Daytona sandbox; previously the `experiment` branch of `_resolve_scope_inputs` left `files` empty so the sandbox only received `CLAUDE.md` and the agent reported "(no trial data available yet)"; new `collect_experiment_files` mirrors `collect_task_version_files` and uploads artifacts at `jobs/{experiment_id}/{trial_id}/…` as the CLAUDE.md template promises (#347)
+
+---
+
 ## [2026-06-17]
 
 ### Added
+- Fireworks routing: GLM / MiniMax / Kimi (and other open models) can run on the stock `claude-code` agent via Fireworks' single Anthropic-compatible endpoint. Opt in with an explicit `fireworks/` (or `fw/`) prefix (e.g. `fireworks/glm-5.2`, `fireworks/minimax-m3`, `fireworks/kimi-k2.7-code`), which gets its own `fireworks/<id>` provider/queue bucket and authenticates with `${FIREWORKS_API_KEY}`; bare `glm/minimax/kimi` ids keep their existing direct-provider routes. Default claude-code settings (no forced thinking/effort)
 - Global chat scope (`global`) with an `oddish-query` read-only CLI injected into the sandbox; the agent can search, inspect, and drill into trial logs across all org tasks; a short-lived internal API key is minted per-session (45-min TTL) for credential isolation; global-scope Chat button added to the tasks page (#332)
 
 ### Changed

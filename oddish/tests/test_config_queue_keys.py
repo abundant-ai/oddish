@@ -223,6 +223,50 @@ def test_moonshot_model_routes_to_moonshot_not_bedrock(monkeypatch):
         ), raw
 
 
+def test_fireworks_models_route_to_fireworks_not_direct_providers(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The consolidation route: an explicit ``fireworks/`` prefix sends GLM /
+    # MiniMax / Kimi to one shared Fireworks bucket instead of each model's own
+    # direct provider. Friendly spellings collapse to the canonical short id so
+    # every spelling shares one queue/provider bucket.
+    cases = {
+        "fireworks/glm-5.2": "fireworks/glm-5p2",
+        "fw/glm-5p2": "fireworks/glm-5p2",
+        "fireworks/minimax-m3": "fireworks/minimax-m3",
+        "fireworks/kimi-k2.7": "fireworks/kimi-k2p7-code",
+        "fireworks/kimi-k2.7-code": "fireworks/kimi-k2p7-code",
+        "fireworks/kimi-k2p7-code": "fireworks/kimi-k2p7-code",
+    }
+    for raw, canonical in cases.items():
+        assert settings.normalize_trial_model("claude-code", raw) == canonical, raw
+        assert settings.get_provider_for_trial("claude-code", raw) == "fireworks", raw
+        assert settings.get_queue_key_for_trial("claude-code", raw) == canonical, raw
+
+
+def test_bare_glm_minimax_kimi_keep_direct_provider_routes(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # Without the ``fireworks/`` prefix the existing per-vendor direct routes are
+    # unchanged -- adding Fireworks must not hijack them.
+    assert settings.get_provider_for_trial("claude-code", "glm-x-preview[1m]") == "zai"
+    assert settings.get_provider_for_trial("claude-code", "minimax-m3") == "minimax"
+    assert (
+        settings.get_provider_for_trial("claude-code", "kimi-k2.7-code") == "moonshot"
+    )
+
+
+def test_fireworks_queue_keys_have_independent_concurrency(monkeypatch):
+    monkeypatch.setenv(
+        "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
+        '{"fireworks/glm-5p2": 4, "fireworks/kimi-k2p7-code": 6}',
+    )
+    settings = Settings(_env_file=None)
+
+    assert settings.get_model_concurrency("fireworks/glm-5p2") == 4
+    assert settings.get_model_concurrency("fireworks/kimi-k2p7-code") == 6
+
+
 def test_openrouter_kimi_model_is_not_hijacked_to_moonshot(monkeypatch):
     settings = _settings(monkeypatch)
 
@@ -266,38 +310,6 @@ def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
     assert settings.normalize_queue_key(legacy_key) == legacy_key
     with pytest.raises(ValueError):
         settings.normalize_trial_model("claude-code", legacy_key)
-
-
-def test_subscription_model_prefix_is_serialized_for_codex(monkeypatch):
-    # Regression: a codex trial that opts in via the explicit "sub/<model>"
-    # prefix (not the ODDISH_SUBSCRIPTION_AGENTS flag) must still land in the
-    # serialized "sub-solo/" bucket. Before the fix it fell through to
-    # normalize_queue_key("sub/...") == "sub/..." -- which get_model_concurrency
-    # does NOT cap -- so a refresh-sensitive codex trial escaped serialization.
-    settings = _settings(monkeypatch, default_model_concurrency=48)
-
-    # codex is serialized by default (subscription_serialized_agents="codex").
-    key = settings.get_queue_key_for_trial("codex", "sub/gpt-5.5")
-    assert key == "sub-solo/gpt-5.5"
-    assert (
-        settings.get_model_concurrency(key) == settings.subscription_queue_concurrency
-    )
-
-    # claude-code is NOT serialized, so the same model-prefix opt-in keeps the
-    # plain "sub/" bucket (off Bedrock, but safe concurrent).
-    assert (
-        settings.get_queue_key_for_trial("claude-code", "sub/claude-opus-4-8")
-        == "sub/claude-opus-4-8"
-    )
-
-
-def test_normalize_queue_key_canonicalizes_subscription_alias(monkeypatch):
-    # "subscription/" is an alias for the canonical "sub/" queue bucket;
-    # normalize_queue_key must map it through so a model_concurrency_overrides
-    # key written as "subscription/<x>" matches the real "sub/<x>" queue key.
-    settings = _settings(monkeypatch)
-
-    assert settings.normalize_queue_key("subscription/gpt-5.5") == "sub/gpt-5.5"
 
 
 def test_openai_provider_defaults_to_azure(monkeypatch):

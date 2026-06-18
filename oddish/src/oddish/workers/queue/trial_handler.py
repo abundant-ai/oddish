@@ -480,9 +480,6 @@ async def _generate_probe_summary_inline(
             verifier_stdout=artifacts["verifier_stdout"] or "",
             reward=reward,
             result_focus=harbor_config.get("result_focus") or "",
-            evaluation_metric=harbor_config.get("evaluation_metric") or "none",
-            ratio_unit=harbor_config.get("ratio_unit"),
-            ratio_verb=harbor_config.get("ratio_verb"),
             model=settings.analysis_model,
         )
         status = AnalysisStatus.SUCCESS
@@ -986,6 +983,9 @@ async def run_trial_job(
     probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
         "extra_instructions"
     )
+    probe_scope = (prepared_trial.trial_harbor_config or {}).get(
+        "probe_scope", "task"
+    )
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -998,6 +998,7 @@ async def run_trial_job(
             task_id=prepared_trial.task_id,
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
+            probe_scope=probe_scope,
         )
 
     # Ensure Harbor scratch directories exist before execution starts.

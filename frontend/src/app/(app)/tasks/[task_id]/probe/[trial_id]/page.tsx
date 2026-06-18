@@ -38,10 +38,8 @@ type Trial = {
   harbor_config: {
     mode?: string;
     extra_instructions?: string;
-    // "cheat_ratio" kept as legacy alias — read sites normalize it.
-    evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
-    ratio_unit?: string | null;
-    ratio_verb?: string | null;
+    // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
+    evaluation_metric?: "result_focus" | "none" | "cheat_ratio" | "ratio";
   } | null;
   result: {
     _artifacts?: Artifacts;
@@ -146,8 +144,6 @@ export default function ProbeResultPage({
   const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
-  const cheatFound =
-    trial.reward !== null && trial.reward !== undefined && trial.reward >= 0.5;
 
   return (
     <div className="container mx-auto max-w-4xl py-8 space-y-6">
@@ -175,43 +171,13 @@ export default function ProbeResultPage({
         </p>
       </div>
 
-      {/* Status header */}
-      <section className="rounded border p-4">
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <span className="inline-block rounded bg-muted px-2 py-1 text-xs font-mono">
-            {trial.status}
-          </span>
-          <span>
-            agent: <code className="text-xs">{trial.agent}</code>
-          </span>
-          {trial.model ? (
-            <span>
-              model: <code className="text-xs">{trial.model}</code>
-            </span>
-          ) : null}
-          {trial.reward !== null && trial.reward !== undefined ? (
-            <span>
-              reward: <strong>{trial.reward.toFixed(2)}</strong>
-            </span>
-          ) : null}
-          {trial.reward !== null && trial.reward !== undefined ? (
-            cheatFound ? (
-              <span className="rounded bg-red-500/15 px-2 py-1 text-xs font-medium text-red-600">
-                Cheat may have succeeded
-              </span>
-            ) : (
-              <span className="rounded bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-700">
-                Verifier failed (reward &lt; 0.5)
-              </span>
-            )
-          ) : null}
-        </div>
-        {trial.error_message ? (
-          <p className="mt-2 text-sm text-red-500 break-words whitespace-pre-wrap">
+      {trial.error_message ? (
+        <section className="rounded border p-4">
+          <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
             {trial.error_message}
           </p>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
 
       <ProbeRunSummary trial={trial} />
 
@@ -222,137 +188,6 @@ export default function ProbeResultPage({
         </h2>
         {messages.length === 0 ? (
           <p className="text-xs text-muted-foreground">(no messages yet)</p>
-        ) : summary?.attempts && summary.attempts.length > 0 ? (
-          (() => {
-            const claimed = new Set<number>();
-            for (const a of summary.attempts ?? []) {
-              for (const idx of a.step_indices ?? []) {
-                if (
-                  Number.isInteger(idx) &&
-                  idx >= 0 &&
-                  idx < messages.length
-                ) {
-                  claimed.add(idx);
-                }
-              }
-            }
-            const ungrouped = messages
-              .map((m, i) => ({ m, i }))
-              .filter(({ i }) => !claimed.has(i));
-            return (
-              <div className="space-y-3">
-                {(summary.attempts ?? []).map((attempt, attemptIdx) => {
-                  const indices = (attempt.step_indices ?? []).filter(
-                    (idx) =>
-                      Number.isInteger(idx) &&
-                      idx >= 0 &&
-                      idx < messages.length,
-                  );
-                  return (
-                    <details
-                      key={attemptIdx}
-                      className="rounded border-2 border-primary/20 bg-primary/5 p-3"
-                    >
-                      <summary className="cursor-pointer">
-                        <span className="text-sm font-medium">
-                          Attempt {attemptIdx + 1}:{" "}
-                          {attempt.title || "(untitled)"}
-                        </span>
-                        {attempt.success === true ? (
-                          <span className="ml-2 rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-medium text-red-600">
-                            cheat succeeded
-                          </span>
-                        ) : attempt.success === false ? (
-                          <span className="ml-2 rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
-                            blocked
-                          </span>
-                        ) : (
-                          <span
-                            className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                            title="Not a cheat attempt — investigation/setup steps"
-                          >
-                            investigation
-                          </span>
-                        )}
-                        <span className="ml-2 text-xs text-muted-foreground">
-                          ({indices.length} step
-                          {indices.length === 1 ? "" : "s"})
-                        </span>
-                      </summary>
-                      <div className="mt-3 space-y-2">
-                        {attempt.rationale ? (
-                          <p className="text-xs">
-                            <strong>Rationale:</strong> {attempt.rationale}
-                          </p>
-                        ) : null}
-                        {attempt.outcome ? (
-                          <p className="text-xs">
-                            <strong>Outcome:</strong> {attempt.outcome}
-                          </p>
-                        ) : null}
-                        <div className="space-y-2">
-                          {indices.map((idx) => {
-                            const m = messages[idx];
-                            return (
-                              <details
-                                key={idx}
-                                className="rounded border bg-muted/30 p-2"
-                              >
-                                <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                                  Step {idx + 1} · {kindLabel(m)}
-                                  {m.text ? (
-                                    <span className="ml-2 font-normal text-muted-foreground/80">
-                                      {m.text.slice(0, 80)}
-                                      {m.text.length > 80 ? "…" : ""}
-                                    </span>
-                                  ) : null}
-                                </summary>
-                                <pre
-                                  className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
-                                >
-                                  {m.text}
-                                </pre>
-                              </details>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </details>
-                  );
-                })}
-                {ungrouped.length > 0 ? (
-                  <div className="space-y-2">
-                    <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                      Ungrouped steps
-                    </p>
-                    <div className="space-y-2">
-                      {ungrouped.map(({ m, i }) => (
-                        <details
-                          key={i}
-                          className="rounded border bg-muted/30 p-2"
-                        >
-                          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                            Step {i + 1} · {kindLabel(m)}
-                            {m.text ? (
-                              <span className="ml-2 font-normal text-muted-foreground/80">
-                                {m.text.slice(0, 80)}
-                                {m.text.length > 80 ? "…" : ""}
-                              </span>
-                            ) : null}
-                          </summary>
-                          <pre
-                            className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
-                          >
-                            {m.text}
-                          </pre>
-                        </details>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            );
-          })()
         ) : (
           <ol className="space-y-2 text-sm">
             {messages.map((m, i) => (
