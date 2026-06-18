@@ -105,9 +105,9 @@ export default function LandingPage() {
           <div className="grid items-center gap-6 md:grid-cols-[1.05fr_0.95fr]">
             <div className="text-center md:text-left">
               <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-                Batch run RL environments
+                Batch execution and
                 <span className="block text-[#5c8e43] dark:text-[#85b85c]">
-                  through continuous QA
+                  QA for RL environments
                 </span>
               </h1>
             </div>
