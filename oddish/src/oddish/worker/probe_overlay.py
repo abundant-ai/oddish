@@ -13,6 +13,7 @@ from typing import Any, Protocol
 
 class _TrialLike(Protocol):
     id: str
+    task_id: str
     harbor_config: dict[str, Any] | None
 
 
@@ -29,6 +30,9 @@ PROBE_HARNESS_DIR = "/probe-harness"
 RELATED_DIR_NAME = "related_trials"
 RELATED_CONTAINER_DIR = f"{PROBE_HARNESS_DIR}/{RELATED_DIR_NAME}"
 MAX_RELATED_TRIALS = 10
+# Experiment-scope probes can see trials across many tasks, so the budget is
+# larger and spread across tasks (see ``select_experiment_related_trials``).
+MAX_EXPERIMENT_RELATED_TRIALS = 30
 MAX_FILES_PER_TRIAL = 50
 MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
 
@@ -256,3 +260,32 @@ def select_related_trials(
             continue
         selected.append(trial)
     return selected
+
+
+def select_experiment_related_trials(
+    trials: list[_TrialLike],
+    *,
+    current_trial_id: str,
+    cap: int = MAX_EXPERIMENT_RELATED_TRIALS,
+) -> list[_TrialLike]:
+    """Pick real-attempt trials across an experiment, balanced per task.
+
+    Excludes the current trial and probe-mode trials (mirrors
+    :func:`select_related_trials`), then round-robins across each task's trials
+    so one high-volume task cannot crowd the others out of ``cap``.
+    """
+    eligible = select_related_trials(trials, current_trial_id=current_trial_id)
+
+    by_task: dict[str, list[_TrialLike]] = {}
+    for trial in eligible:
+        by_task.setdefault(trial.task_id, []).append(trial)
+
+    queues = list(by_task.values())
+    selected: list[_TrialLike] = []
+    idx = 0
+    while len(selected) < cap and any(queues):
+        q = queues[idx % len(queues)]
+        if q:
+            selected.append(q.pop(0))
+        idx += 1
+    return selected[:cap]
