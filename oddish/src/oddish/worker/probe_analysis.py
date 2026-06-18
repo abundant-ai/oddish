@@ -33,6 +33,15 @@ logger = logging.getLogger(__name__)
 # ``settings.analysis_model``).
 DEFAULT_ANALYZER_MODEL = "claude-sonnet-4-6"
 
+# Caps for the transcript handed to the summarizer. The agent's FINAL message is
+# the deliverable (for an audit probe, the verdict JSON), so it must survive:
+# keep per-line and result caps generous, and when the whole transcript exceeds
+# the budget keep BOTH ends rather than head-only. A head-only clip hid the
+# conclusion and made completed runs look "truncated mid-output / abandoned".
+_RESULT_TEXT_MAX_CHARS = 16000
+_TRANSCRIPT_LINE_MAX_CHARS = 16000
+_TRANSCRIPT_MAX_CHARS = 200000
+
 # Cap verifier stdout we keep, to bound the analyzer prompt and DB payload.
 _VERIFIER_STDOUT_CAP = 50_000
 _WATCHDOG_LOG_CAP = 20_000
@@ -226,12 +235,35 @@ def _parse_agent_messages(agent_log_path: Path) -> list[dict]:
                     {
                         "kind": "result",
                         "is_error": event.get("is_error", False),
-                        "text": event.get("result", "")[:1000],
+                        "text": event.get("result", "")[:_RESULT_TEXT_MAX_CHARS],
                     }
                 )
     except Exception:
         pass
     return agent_messages
+
+
+def _build_transcript(agent_messages: list[dict]) -> str:
+    """Render agent_messages into the text block the summarizer reads.
+
+    Preserves the agent's final synthesis: each line is capped generously, and an
+    over-long transcript keeps head + tail (never head-only) so the conclusion is
+    always visible. A head-only clip previously hid completed audits and made the
+    summarizer report a false "truncated mid-output / abandoned" verdict.
+    """
+    lines = []
+    for i, m in enumerate(agent_messages, 1):
+        kind = m.get("kind", "?")
+        text = str(m.get("text", ""))[:_TRANSCRIPT_LINE_MAX_CHARS]
+        lines.append(f"[{i}] {kind}: {text}")
+    transcript = "\n".join(lines)
+    if not transcript:
+        return "(empty transcript — agent produced no output)"
+    if len(transcript) <= _TRANSCRIPT_MAX_CHARS:
+        return transcript
+    head = transcript[: _TRANSCRIPT_MAX_CHARS * 2 // 3]
+    tail = transcript[-(_TRANSCRIPT_MAX_CHARS // 3) :]
+    return f"{head}\n...[transcript truncated to fit context; head+tail kept]...\n{tail}"
 
 
 def extract_probe_artifacts(trial_dir: Path) -> dict:
@@ -337,14 +369,7 @@ async def run_probe_analyzer(
     "why it was useful" bullet. Empty unless the agent actually used skills or
     MCP servers (external context / tools beyond the builtins).
     """
-    transcript_lines = []
-    for i, m in enumerate(agent_messages, 1):
-        kind = m.get("kind", "?")
-        text = m.get("text", "")
-        transcript_lines.append(f"[{i}] {kind}: {text[:1500]}")
-    transcript = "\n".join(transcript_lines) or (
-        "(empty transcript — agent produced no output)"
-    )
+    transcript = _build_transcript(agent_messages)
 
     prompt = (
         "You are reviewing a single trial run of a coding-agent task. The operator gave the agent "
@@ -364,7 +389,7 @@ async def run_probe_analyzer(
         f"</operator_result_focus>\n\n"
     )
     prompt += (
-        f"<agent_transcript>\n{transcript[:30000]}\n</agent_transcript>\n\n"
+        f"<agent_transcript>\n{transcript}\n</agent_transcript>\n\n"
         "Respond with ONLY a JSON object (no preamble, no code fences) matching this exact shape:\n"
         "{\n"
         '  "headline": "1-sentence TL;DR (max ~120 chars)",\n'
