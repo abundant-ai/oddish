@@ -982,6 +982,21 @@ def _agent_uses_bedrock() -> bool:
     return False
 
 
+def _claude_code_forces_direct_api(is_probe: bool) -> bool:
+    """Whether a probe's claude-code agent must use the direct Anthropic API.
+
+    The worker carries a Bedrock bearer token, but in a probe's Daytona DinD
+    sandbox claude-code cannot authenticate to Bedrock with it -- it silently
+    falls back to ``ANTHROPIC_API_KEY`` while still sending the Bedrock
+    inference-profile model id, which the direct Anthropic API rejects with HTTP
+    400 "Operation not allowed". With an ``ANTHROPIC_API_KEY`` available, route
+    probe claude-code to the direct API (plain model id here + Bedrock env
+    cleared at ``Job.create``). Scoped to probes so normal trials' Bedrock
+    routing is untouched.
+    """
+    return is_probe and bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -1068,6 +1083,11 @@ def _build_agent_config(
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
+    elif _claude_code_forces_direct_api(is_probe):
+        # Probe claude-code can't reach Bedrock in its DinD sandbox; route to the
+        # direct Anthropic API with a matching plain id (Bedrock env is cleared at
+        # Job.create so Harbor selects the direct transport).
+        agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
     else:
@@ -1333,11 +1353,17 @@ async def run_harbor_trial_async(
             else {}
         )
         runtime_env = dict(openai_env)
-        if sub_route and "claude-code" in (agent or "").strip().lower():
+        is_claude_code = "claude-code" in (agent or "").strip().lower()
+        if is_claude_code and (
+            sub_route or _claude_code_forces_direct_api(is_probe)
+        ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
-            # bakes in CLAUDE_CODE_USE_BEDROCK=1 + AWS_BEARER_TOKEN_BEDROCK.
-            # Blank them for this run so claude-code uses the OAuth token instead
-            # of Bedrock. _temporary_env restores them afterward.
+            # bakes in CLAUDE_CODE_USE_BEDROCK=1 + AWS_BEARER_TOKEN_BEDROCK. Blank
+            # them for this run when claude-code must not use Bedrock: a
+            # subscription route (use the OAuth token) or a probe forced to the
+            # direct Anthropic API (match the plain model id _build_agent_config
+            # emitted; otherwise Harbor ships a Bedrock transport with a
+            # non-Bedrock id). _temporary_env restores them afterward.
             runtime_env.update({var: "" for var in BEDROCK_ENV_VARS})
         with _temporary_env(runtime_env):
             job = await Job.create(config)
