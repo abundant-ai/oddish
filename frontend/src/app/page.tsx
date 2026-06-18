@@ -8,7 +8,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
 export default function LandingPage() {
-  const command = "oddish run -d terminal-bench@2.0 -c sweep.yaml";
+  const command = "oddish run -d terminal-bench@2.0 -c env-qa-sweep.yaml";
   const [typedCommand, setTypedCommand] = useState("");
   const [cursorVisible, setCursorVisible] = useState(true);
 
@@ -105,18 +105,9 @@ export default function LandingPage() {
           <div className="grid items-center gap-6 md:grid-cols-[1.05fr_0.95fr]">
             <div className="text-center md:text-left">
               <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-                Run{" "}
-                <a
-                  href="https://harborframework.com/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
-                >
-                  Harbor
-                </a>{" "}
-                tasks
+                Batch execution and QA for
                 <span className="block text-[#5c8e43] dark:text-[#85b85c]">
-                  on the cloud
+                  RL environments
                 </span>
               </h1>
             </div>
