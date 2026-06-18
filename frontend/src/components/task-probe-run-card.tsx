@@ -9,7 +9,6 @@ import {
   normalizeMetric,
   pluralize,
   PRIORITY_META,
-  ratioUnitVerb,
   sortRecommendations,
   tallyAttempts,
   type ProbeTrial,
@@ -40,7 +39,13 @@ function statusLabel(t: ProbeTrial): string {
 
 function resultDisplay(t: ProbeTrial): ResultDisplay {
   const metric = normalizeMetric(t.harbor_config?.evaluation_metric);
-  const { unit, verb } = ratioUnitVerb(t.harbor_config ?? null);
+  const rawMetric = t.harbor_config?.evaluation_metric ?? "none";
+  const unit =
+    t.harbor_config?.ratio_unit ??
+    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
+  const verb =
+    t.harbor_config?.ratio_verb ??
+    (rawMetric === "cheat_ratio" ? "succeeded" : null);
 
   if (!isTerminalProbeStatus(t.status)) {
     return { text: "—", variant: "muted", title: `Trial ${statusLabel(t)}` };
@@ -60,6 +65,14 @@ function resultDisplay(t: ProbeTrial): ResultDisplay {
   if (metric === "result_focus") {
     const findings = t.analysis.result_focus_findings;
     if (!findings) return { text: "awaiting answer", variant: "muted" };
+    if (typeof findings === "object") {
+      const keyCount = Object.keys(findings as Record<string, unknown>).length;
+      return {
+        text: `${keyCount} field${keyCount === 1 ? "" : "s"}`,
+        variant: "neutral",
+        title: "structured findings — open run for full detail",
+      };
+    }
     const truncated =
       findings.length > 80 ? `${findings.slice(0, 80)}…` : findings;
     return { text: truncated, variant: "neutral", title: findings };
