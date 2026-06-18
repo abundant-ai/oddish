@@ -774,6 +774,15 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
+    # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
+    # inference -- the bearer token returns 400 "Operation not allowed" and the
+    # SigV4 keys are rejected -- so every Bedrock claude-code call fails. While
+    # this is set, route ALL claude-code (not just probes) to the direct Anthropic
+    # API (ANTHROPIC_API_KEY) via _claude_code_forces_direct_api(). Set
+    # ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0 to restore Bedrock routing once the
+    # credentials are fixed.
+    claude_code_force_direct_api: bool = True
+
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set
     # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
