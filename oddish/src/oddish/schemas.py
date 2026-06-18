@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -217,6 +218,13 @@ class TaskSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
+        ),
+    )
     evaluation_metric: str | None = Field(
         default=None,
         description=(
@@ -304,6 +312,13 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Optional question the operator wants answered about this trial. "
             "The analyzer answers it in its result_focus_findings field."
+        ),
+    )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
         ),
     )
     evaluation_metric: str | None = Field(

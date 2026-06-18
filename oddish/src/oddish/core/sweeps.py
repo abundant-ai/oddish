@@ -92,6 +92,7 @@ def build_task_submission_from_sweep(
         extra_instructions=submission.extra_instructions,
         probe_name=submission.probe_name,
         result_focus=submission.result_focus,
+        probe_scope=submission.probe_scope,
         evaluation_metric=submission.evaluation_metric,
         ratio_unit=submission.ratio_unit,
         ratio_verb=submission.ratio_verb,
