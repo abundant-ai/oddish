@@ -483,7 +483,7 @@ async def _generate_probe_summary_inline(
             evaluation_metric=harbor_config.get("evaluation_metric") or "none",
             ratio_unit=harbor_config.get("ratio_unit"),
             ratio_verb=harbor_config.get("ratio_verb"),
-            model=settings.analysis_model,
+            model=settings.probe_analyzer_model,
         )
         status = AnalysisStatus.SUCCESS
         console.print(
