@@ -160,3 +160,35 @@ def test_file_fetches_by_path(monkeypatch):
 
     _run(monkeypatch, ["trials", "file", "tr1", "agent/trajectory.json"], fake_get)
     assert seen["path"] == "/trials/tr1/files/agent/trajectory.json"
+
+
+def test_trajectory_summary_counts_steps(monkeypatch):
+    traj = {
+        "steps": [
+            {"tool_calls": [{"name": "a"}, {"name": "b"}]},
+            {"tool_calls": [{"name": "c"}]},
+            {"tool_calls": []},
+        ],
+        "final_metrics": {"total_cost_usd": 0.5},
+    }
+    out = _run(monkeypatch, ["trials", "trajectory", "tr1", "--summary"],
+               lambda p, params=None: traj)
+    payload = json.loads(out.splitlines()[0])
+    assert payload == {
+        "num_steps": 3,
+        "num_tool_calls": 3,
+        "final_metrics": {"total_cost_usd": 0.5},
+    }
+
+
+def test_trajectory_summary_tolerates_missing_steps(monkeypatch):
+    out = _run(monkeypatch, ["trials", "trajectory", "tr1", "--summary"],
+               lambda p, params=None: {})
+    payload = json.loads(out.splitlines()[0])
+    assert payload == {"num_steps": 0, "num_tool_calls": 0, "final_metrics": None}
+
+
+def test_trajectory_full_truncates(monkeypatch):
+    big = {"steps": [{"x": "A" * 12000}]}
+    out = _run(monkeypatch, ["trials", "trajectory", "tr1"], lambda p, params=None: big)
+    assert "[truncated]" in out

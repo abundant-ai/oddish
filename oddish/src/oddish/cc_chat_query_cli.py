@@ -153,6 +153,27 @@ def _cmd_file(a) -> None:
     _print(text)
 
 
+def _cmd_trajectory(a) -> None:
+    data = _get(f"/trials/{a.trial_id}/trajectory")
+    if a.summary:
+        traj = data if isinstance(data, dict) else {}
+        steps = traj.get("steps")
+        steps = steps if isinstance(steps, list) else []
+        num_tool_calls = sum(
+            len(s.get("tool_calls") or []) for s in steps if isinstance(s, dict)
+        )
+        _print(json.dumps({
+            "num_steps": len(steps),
+            "num_tool_calls": num_tool_calls,
+            "final_metrics": traj.get("final_metrics"),
+        }, separators=(",", ":")))
+        return
+    text = data if isinstance(data, str) else json.dumps(data)
+    if len(text) > LOG_HEAD + LOG_TAIL:
+        text = text[:LOG_HEAD] + "\n…[truncated]…\n" + text[-LOG_TAIL:]
+    _print(text)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="oddish-query")
     sub = p.add_subparsers(dest="group", required=True)
@@ -190,6 +211,10 @@ def main(argv: list[str] | None = None) -> None:
     fl.add_argument("trial_id")
     fl.add_argument("path")
     fl.set_defaults(func=_cmd_file)
+    tj = trials.add_parser("trajectory")
+    tj.add_argument("trial_id")
+    tj.add_argument("--summary", action="store_true")
+    tj.set_defaults(func=_cmd_trajectory)
 
     experiments = sub.add_parser("experiments").add_subparsers(dest="cmd", required=True)
     et = experiments.add_parser("trials")
