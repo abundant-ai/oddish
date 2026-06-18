@@ -58,6 +58,14 @@ function resultDisplay(t: ProbeTrial): ResultDisplay {
     const findings = t.analysis.result_focus_findings;
     if (!findings) return { text: "awaiting answer", variant: "muted" };
     if (typeof findings === "object") {
+      if (Array.isArray(findings)) {
+        const len = findings.length;
+        return {
+          text: `${len} item${len === 1 ? "" : "s"}`,
+          variant: "neutral",
+          title: "structured findings — open run for full detail",
+        };
+      }
       const keyCount = Object.keys(findings as Record<string, unknown>).length;
       return {
         text: `${keyCount} field${keyCount === 1 ? "" : "s"}`,

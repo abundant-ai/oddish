@@ -576,7 +576,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               Plain text = a question answered in prose. A JSON Schema =
               structured JSON output.
             </p>
-            <ResultFocusTextarea value={result_focus} onChange={setResultFocus} />
+            <ResultFocusTextarea
+              value={result_focus}
+              onChange={setResultFocus}
+              placeholder="e.g. Did the agent find any ambiguities in the spec? Or paste a JSON Schema for structured output."
+            />
           </label>
           {error && (
             <p className="text-sm break-words whitespace-pre-wrap text-red-500">

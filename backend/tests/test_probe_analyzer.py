@@ -142,6 +142,8 @@ async def test_probe_analyzer_parses_json_response():
     assert result["attempts"][0]["success"] is False
     assert result["result_focus_findings"] == "found two ambiguities"
     assert result["result_focus_question"] == "Did the agent find spec ambiguities?"
+    # prose-mode result_focus must NOT trigger structured output enforcement
+    assert "output_config" not in fake_client.messages.create.await_args.kwargs
 
 
 @pytest.mark.asyncio

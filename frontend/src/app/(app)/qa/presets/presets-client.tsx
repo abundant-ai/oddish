@@ -230,7 +230,6 @@ function PresetForm({ editing, onSaved, onCancel }: FormProps) {
           </div>
         </div>
 
-
         <div className="space-y-1.5">
           <Label htmlFor="preset-prompt" className="text-xs font-medium">
             Operator prompt
