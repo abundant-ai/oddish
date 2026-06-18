@@ -67,10 +67,8 @@ type ProbeHarborConfig = {
   extra_instructions?: string;
   // Operator-selected preset name; absent on older / preset-less runs.
   probe_name?: string | null;
-  // "cheat_ratio" kept as a legacy alias.
-  evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
-  ratio_unit?: string | null;
-  ratio_verb?: string | null;
+  // "cheat_ratio"/"ratio" kept as legacy aliases — normalizeMetric maps them to "none".
+  evaluation_metric?: "result_focus" | "none" | "cheat_ratio" | "ratio";
 } | null;
 
 // A probe run is a trial row; this is the subset the probe UIs read.
@@ -89,14 +87,6 @@ export type ProbeTrial = {
   analysis_error: string | null;
   error_message?: string | null;
 };
-
-export function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
 
 export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";

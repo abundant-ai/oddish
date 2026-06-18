@@ -36,9 +36,9 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
   ],
 };
 
-// Keep "cheat_ratio" in the union as a legacy alias — old stored presets
-// and seeds may still carry it. We normalize to "ratio" at read time.
-type EvaluationMetric = "ratio" | "result_focus" | "none" | "cheat_ratio";
+// "cheat_ratio" is a legacy alias kept for backward compat when reading old
+// stored presets. "ratio" is no longer a valid new metric.
+type EvaluationMetric = "result_focus" | "none" | "cheat_ratio";
 
 type Preset = {
   id: string;
@@ -48,31 +48,59 @@ type Preset = {
   operator_prompt: string;
   result_focus: string | null;
   evaluation_metric: EvaluationMetric;
-  ratio_unit?: string | null;
-  ratio_verb?: string | null;
   is_seed: boolean;
   created_at: string;
   updated_at: string;
 };
 
-function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
+function ResultFocusTextarea({
+  value,
+  onChange,
+  rows = 3,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  rows?: number;
+  placeholder?: string;
+}) {
+  const [isSchema, setIsSchema] = useState(false);
+
+  function handleBlur() {
+    try {
+      const parsed = JSON.parse(value);
+      setIsSchema(parsed !== null && typeof parsed === "object");
+    } catch {
+      setIsSchema(false);
+    }
+  }
+
+  return (
+    <div className="relative mt-1">
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={handleBlur}
+        rows={rows}
+        placeholder={placeholder}
+        className="bg-background w-full rounded border px-2 py-1.5 font-mono text-sm"
+      />
+      {isSchema && (
+        <span className="absolute right-2 top-2 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+          structured output
+        </span>
+      )}
+    </div>
+  );
 }
 
 function normalizePreset(p: Preset): Preset {
-  // Accept legacy "cheat_ratio" from older stored presets / seeds and
-  // promote it to "ratio" with the cheat-flavored defaults.
-  if (p.evaluation_metric === "cheat_ratio") {
-    return {
-      ...p,
-      evaluation_metric: "ratio",
-      ratio_unit: p.ratio_unit ?? "cheat",
-      ratio_verb: p.ratio_verb ?? "succeeded",
-    };
+  // Legacy "cheat_ratio" (and any stale "ratio") fall back to "none".
+  if (
+    p.evaluation_metric === "cheat_ratio" ||
+    (p.evaluation_metric as string) === "ratio"
+  ) {
+    return { ...p, evaluation_metric: "none" };
   }
   return p;
 }
@@ -104,8 +132,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
   const [modalResultFocus, setModalResultFocus] = useState("");
   const [modalEvaluationMetric, setModalEvaluationMetric] =
     useState<EvaluationMetric>("none");
-  const [modalRatioUnit, setModalRatioUnit] = useState("");
-  const [modalRatioVerb, setModalRatioVerb] = useState("");
 
   const selectedPreset = presets.find((p) => p.id === selectedPresetId) ?? null;
 
@@ -161,8 +187,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalOperatorPrompt("");
     setModalResultFocus("");
     setModalEvaluationMetric("none");
-    setModalRatioUnit("attempt");
-    setModalRatioVerb("succeeded");
     setModalOpen(true);
   }
 
@@ -175,14 +199,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
     setModalOperatorPrompt(selectedPreset.operator_prompt);
     setModalResultFocus(selectedPreset.result_focus ?? "");
     setModalEvaluationMetric(selectedPreset.evaluation_metric ?? "none");
-    setModalRatioUnit(selectedPreset.ratio_unit ?? "");
-    setModalRatioVerb(selectedPreset.ratio_verb ?? "");
     setModalOpen(true);
   }
 
   async function savePresetFromModal() {
     if (!modalName.trim() || !modalOperatorPrompt.trim()) return;
-    if (modalEvaluationMetric === "ratio" && !modalRatioUnit.trim()) return;
     const body = {
       name: modalName.trim(),
       agent: modalAgent,
@@ -191,14 +212,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       result_focus: modalResultFocus.trim() || null,
       evaluation_metric:
         modalEvaluationMetric === "none" ? null : modalEvaluationMetric,
-      ratio_unit:
-        modalEvaluationMetric === "ratio"
-          ? modalRatioUnit.trim() || "attempt"
-          : null,
-      ratio_verb:
-        modalEvaluationMetric === "ratio"
-          ? modalRatioVerb.trim() || null
-          : null,
     };
     // Editing an existing custom preset updates in place (PUT). Creating
     // new — or forking a built-in seed — creates a fresh preset (POST); the
@@ -272,8 +285,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           probe_name: selectedPreset?.name ?? null,
           result_focus: result_focus.trim() || null,
           evaluation_metric: selectedPreset?.evaluation_metric ?? null,
-          ratio_unit: selectedPreset?.ratio_unit ?? null,
-          ratio_verb: selectedPreset?.ratio_verb ?? null,
         }),
       });
       if (!res.ok) {
@@ -432,11 +443,14 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 Result focus{" "}
                 <span className="text-muted-foreground">(optional)</span>
               </span>
-              <textarea
+              <p className="text-muted-foreground text-xs">
+                Plain text = a question answered in prose. A JSON Schema =
+                structured JSON output.
+              </p>
+              <ResultFocusTextarea
                 value={modalResultFocus}
-                onChange={(e) => setModalResultFocus(e.target.value)}
+                onChange={setModalResultFocus}
                 rows={2}
-                className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
                 placeholder="A specific question for the analyzer to answer"
               />
             </label>
@@ -457,9 +471,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">None — show raw reward</SelectItem>
-                  <SelectItem value="ratio">
-                    Ratio — count attempts the agent identified (X/Y units verb)
-                  </SelectItem>
                   <SelectItem value="result_focus">
                     Result focus — show the analyzer&apos;s answer to my
                     question
@@ -467,37 +478,6 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
                 </SelectContent>
               </Select>
             </label>
-            {modalEvaluationMetric === "ratio" ? (
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="text-sm font-medium">
-                    Unit (singular noun)
-                  </span>
-                  <Input
-                    type="text"
-                    value={modalRatioUnit}
-                    onChange={(e) => setModalRatioUnit(e.target.value)}
-                    maxLength={30}
-                    placeholder="cheat, bug, exploit, ambiguity..."
-                    className="mt-1"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium">
-                    Success verb{" "}
-                    <span className="text-muted-foreground">(optional)</span>
-                  </span>
-                  <Input
-                    type="text"
-                    value={modalRatioVerb}
-                    onChange={(e) => setModalRatioVerb(e.target.value)}
-                    maxLength={30}
-                    placeholder="succeeded, exploitable, confirmed..."
-                    className="mt-1"
-                  />
-                </label>
-              </div>
-            ) : null}
           </div>
           <DialogFooter>
             <Button
@@ -510,11 +490,7 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
             <Button
               type="button"
               onClick={() => void savePresetFromModal()}
-              disabled={
-                !modalName.trim() ||
-                !modalOperatorPrompt.trim() ||
-                (modalEvaluationMetric === "ratio" && !modalRatioUnit.trim())
-              }
+              disabled={!modalName.trim() || !modalOperatorPrompt.trim()}
             >
               Save
             </Button>
@@ -523,59 +499,21 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       </Dialog>
       {selectedPresetId ? (
         <>
-          {(() => {
-            if (!selectedPreset) return null;
-            const m = selectedPreset.evaluation_metric;
-            const metric = m === "cheat_ratio" ? "ratio" : m;
-            if (metric === "ratio") {
-              const unit =
-                selectedPreset.ratio_unit ??
-                (m === "cheat_ratio" ? "cheat" : "attempt");
-              const verb =
-                selectedPreset.ratio_verb ??
-                (m === "cheat_ratio" ? "succeeded" : null);
-              const plural = pluralize(unit);
-              const example = verb
-                ? `e.g. "2/5 ${plural} ${verb}"`
-                : `e.g. "2/5 ${plural}"`;
-              return (
-                <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
-                  <span className="text-foreground font-medium">
-                    Result column will show:
-                  </span>{" "}
-                  ratio of {plural}
-                  {verb ? ` ${verb}` : ""} ({example}).{" "}
-                  <Button
-                    type="button"
-                    variant="link"
-                    onClick={openEditModal}
-                    className="hover:text-foreground h-auto p-0 text-xs underline"
-                  >
-                    Edit
-                  </Button>{" "}
-                  to change.
-                </div>
-              );
-            }
-            if (metric === "result_focus") {
-              return (
-                <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
-                  <span className="text-foreground font-medium">
-                    Result column will show:
-                  </span>{" "}
-                  the analyzer's answer to your focus question.
-                </div>
-              );
-            }
-            return (
-              <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
-                <span className="text-foreground font-medium">
-                  Result column will show:
-                </span>{" "}
-                raw verifier reward (no specific evaluation metric).
-              </div>
-            );
-          })()}
+          {selectedPreset?.evaluation_metric === "result_focus" ? (
+            <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
+              <span className="text-foreground font-medium">
+                Result column will show:
+              </span>{" "}
+              the analyzer's answer to your focus question.
+            </div>
+          ) : (
+            <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
+              <span className="text-foreground font-medium">
+                Result column will show:
+              </span>{" "}
+              raw verifier reward (no specific evaluation metric).
+            </div>
+          )}
           <div className="flex gap-4">
             <label className="flex-1">
               <span className="text-sm font-medium">Agent</span>
@@ -634,13 +572,11 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
               A specific question you want the analyzer to answer about this
               trial. Shows as a callout on the result page.
             </p>
-            <textarea
-              value={result_focus}
-              onChange={(e) => setResultFocus(e.target.value)}
-              placeholder="e.g. Did the agent find any ambiguities in the spec? Or: Which anti-cheat layer was most effective?"
-              rows={3}
-              className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
-            />
+            <p className="text-muted-foreground text-xs">
+              Plain text = a question answered in prose. A JSON Schema =
+              structured JSON output.
+            </p>
+            <ResultFocusTextarea value={result_focus} onChange={setResultFocus} />
           </label>
           {error && (
             <p className="text-sm break-words whitespace-pre-wrap text-red-500">

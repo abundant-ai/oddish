@@ -5,7 +5,6 @@ import {
   type ProbeTrial,
   normalizeMetric,
   tallyAttempts,
-  pluralize,
   PRIORITY_META,
   sortRecommendations,
 } from "@/lib/probe-summary";
@@ -66,15 +65,6 @@ export function ProbeRunSummary({
   }
 
   const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
-  const rawMetric = trial.harbor_config?.evaluation_metric ?? "none";
-  const unit =
-    trial.harbor_config?.ratio_unit ??
-    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-  const verb =
-    trial.harbor_config?.ratio_verb ??
-    (rawMetric === "cheat_ratio" ? "succeeded" : null);
-  const plural = pluralize(unit);
-  const verbStr = verb ? ` ${verb}` : "";
   const { succeeded, blocked, investigation, cheatTotal } = tallyAttempts(
     summary.attempts,
   );
@@ -212,13 +202,11 @@ export function ProbeRunSummary({
         </div>
       ) : null}
 
-      {/* Non-ratio probes: render attempt chips only when classified attempts exist. */}
       {cheatTotal > 0 || investigation > 0 ? (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {succeeded > 0 ? (
             <span className="rounded bg-red-500/15 px-2 py-1 font-medium text-red-600">
-              {succeeded} {succeeded === 1 ? unit : plural}
-              {verbStr}
+              {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
             </span>
           ) : null}
           {blocked > 0 ? (

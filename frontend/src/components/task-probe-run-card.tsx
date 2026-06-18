@@ -7,7 +7,6 @@ import { ExternalLink, Microscope } from "lucide-react";
 import {
   isTerminalProbeStatus,
   normalizeMetric,
-  pluralize,
   PRIORITY_META,
   sortRecommendations,
   tallyAttempts,
@@ -39,13 +38,6 @@ function statusLabel(t: ProbeTrial): string {
 
 function resultDisplay(t: ProbeTrial): ResultDisplay {
   const metric = normalizeMetric(t.harbor_config?.evaluation_metric);
-  const rawMetric = t.harbor_config?.evaluation_metric ?? "none";
-  const unit =
-    t.harbor_config?.ratio_unit ??
-    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-  const verb =
-    t.harbor_config?.ratio_verb ??
-    (rawMetric === "cheat_ratio" ? "succeeded" : null);
 
   if (!isTerminalProbeStatus(t.status)) {
     return { text: "—", variant: "muted", title: `Trial ${statusLabel(t)}` };
@@ -78,9 +70,7 @@ function resultDisplay(t: ProbeTrial): ResultDisplay {
     return { text: truncated, variant: "neutral", title: findings };
   }
 
-  // ratio + none both report on cheat attempts.
-  const plural = pluralize(unit);
-  const verbStr = verb ? ` ${verb}` : "";
+  // metric === "none" — report on cheat attempts.
   const { succeeded, cheatTotal } = tallyAttempts(t.analysis.attempts);
 
   if (cheatTotal === 0) {
@@ -91,18 +81,18 @@ function resultDisplay(t: ProbeTrial): ResultDisplay {
         : { text: "cheat blocked", variant: "blocked" };
     }
     return {
-      text: `0/0 ${plural}`,
+      text: "no cheats found",
       variant: "neutral",
-      title: `Analyzer found no ${plural} in the transcript`,
+      title: "Analyzer found no cheat attempts in the transcript",
     };
   }
   return {
-    text: `${succeeded}/${cheatTotal} ${plural}${verbStr}`,
+    text: `${succeeded}/${cheatTotal} cheats succeeded`,
     variant: succeeded > 0 ? "cheat" : "blocked",
     title:
       succeeded > 0
-        ? `${succeeded} of ${cheatTotal} ${plural}${verbStr} — task is gameable`
-        : `All ${cheatTotal} ${plural} were blocked — task is robust`,
+        ? `${succeeded} of ${cheatTotal} cheats succeeded — task is gameable`
+        : `All ${cheatTotal} cheats were blocked — task is robust`,
   };
 }
 

@@ -38,10 +38,8 @@ type Trial = {
   harbor_config: {
     mode?: string;
     extra_instructions?: string;
-    // "cheat_ratio" kept as legacy alias — read sites normalize it.
-    evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
-    ratio_unit?: string | null;
-    ratio_verb?: string | null;
+    // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
+    evaluation_metric?: "result_focus" | "none" | "cheat_ratio" | "ratio";
   } | null;
   result: {
     _artifacts?: Artifacts;
