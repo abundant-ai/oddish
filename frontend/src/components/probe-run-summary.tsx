@@ -4,12 +4,24 @@ import type { ReactNode } from "react";
 import {
   type ProbeTrial,
   normalizeMetric,
-  ratioUnitVerb,
   tallyAttempts,
-  pluralize,
   PRIORITY_META,
   sortRecommendations,
 } from "@/lib/probe-summary";
+
+function ResultFocusFindings({ findings }: { findings: unknown }) {
+  if (findings == null) {
+    return <p className="text-sm italic text-muted-foreground">awaiting answer</p>;
+  }
+  if (typeof findings === "object") {
+    return (
+      <pre className="overflow-auto rounded bg-muted/50 p-2 text-xs font-mono whitespace-pre">
+        {JSON.stringify(findings, null, 2)}
+      </pre>
+    );
+  }
+  return <p className="text-sm">{String(findings)}</p>;
+}
 
 // The single probe-summary rendering, shared by the probe-run detail page and
 // the task-drawer probe card so both show exactly the same summary. `action`
@@ -53,9 +65,6 @@ export function ProbeRunSummary({
   }
 
   const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
-  const { unit, verb } = ratioUnitVerb(trial.harbor_config);
-  const plural = pluralize(unit);
-  const verbStr = verb ? ` ${verb}` : "";
   const { succeeded, blocked, investigation, cheatTotal } = tallyAttempts(
     summary.attempts,
   );
@@ -63,11 +72,7 @@ export function ProbeRunSummary({
   const recs = hasRecsField ? sortRecommendations(summary.recommendations) : [];
   const mustFixCount = recs.filter((r) => r.priority === "must_fix").length;
   const metricLabel =
-    metric === "ratio"
-      ? "ratio metric"
-      : metric === "result_focus"
-        ? "result focus metric"
-        : "no specific metric";
+    metric === "result_focus" ? "result focus metric" : "no specific metric";
 
   return (
     <section className="space-y-3 rounded border-2 border-primary/30 bg-primary/5 p-4">
@@ -85,6 +90,42 @@ export function ProbeRunSummary({
           {action}
         </div>
       </div>
+
+      {/* Always render the result_focus block when metric is result_focus,
+          even if findings are missing — show an "awaiting answer" placeholder.
+          Legacy rows (no metric set) still render it when both fields exist. */}
+      {metric === "result_focus" ? (
+        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+            Result focus
+          </p>
+          {summary.result_focus_question ? (
+            <p className="text-sm font-medium italic">
+              {summary.result_focus_question}
+            </p>
+          ) : null}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
+        </div>
+      ) : summary.result_focus_question && summary.result_focus_findings ? (
+        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
+          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+            Result focus
+          </p>
+          {summary.result_focus_question ? (
+            <p className="text-sm font-medium italic">
+              {summary.result_focus_question}
+            </p>
+          ) : null}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
+        </div>
+      ) : null}
+
+      {summary.headline ? (
+        <p className="text-base font-medium leading-snug">{summary.headline}</p>
+      ) : null}
+      {summary.summary ? (
+        <p className="text-sm leading-relaxed">{summary.summary}</p>
+      ) : null}
 
       {hasRecsField ? (
         <div className="rounded border bg-muted/20 p-3">
@@ -144,23 +185,19 @@ export function ProbeRunSummary({
               {summary.result_focus_question}
             </p>
           ) : null}
-          {summary.result_focus_findings ? (
-            <p className="text-sm">{summary.result_focus_findings}</p>
-          ) : (
-            <p className="text-sm italic text-muted-foreground">
-              awaiting answer
-            </p>
-          )}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
         </div>
       ) : summary.result_focus_question && summary.result_focus_findings ? (
         <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
           <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
             Result focus
           </p>
-          <p className="text-sm font-medium italic">
-            {summary.result_focus_question}
-          </p>
-          <p className="text-sm">{summary.result_focus_findings}</p>
+          {summary.result_focus_question ? (
+            <p className="text-sm font-medium italic">
+              {summary.result_focus_question}
+            </p>
+          ) : null}
+          <ResultFocusFindings findings={summary.result_focus_findings} />
         </div>
       ) : null}
 
@@ -201,52 +238,11 @@ export function ProbeRunSummary({
         </div>
       ) : null}
 
-      {/* Ratio probes render the breakdown chips even when attempts is empty so
-          the verdict shape stays consistent; other metrics only when classified
-          attempts exist. */}
-      {metric === "ratio" ? (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span
-            className={`rounded px-2 py-1 font-medium ${
-              succeeded > 0
-                ? "bg-red-500/15 text-red-600"
-                : "bg-muted text-muted-foreground"
-            }`}
-          >
-            {succeeded} {succeeded === 1 ? unit : plural}
-            {verbStr}
-          </span>
-          <span
-            className={`rounded px-2 py-1 font-medium ${
-              blocked > 0
-                ? "bg-emerald-500/15 text-emerald-700"
-                : "bg-muted text-muted-foreground"
-            }`}
-          >
-            {blocked} blocked
-          </span>
-          {investigation > 0 ? (
-            <span className="rounded bg-muted px-2 py-1 font-medium text-muted-foreground">
-              {investigation} investigation step
-              {investigation === 1 ? "" : "s"}
-            </span>
-          ) : null}
-          {cheatTotal > 0 ? (
-            <span className="text-muted-foreground">
-              {succeeded > 0 ? "task is gameable" : "task is robust"}
-            </span>
-          ) : (
-            <span className="italic text-muted-foreground">
-              no {plural} identified
-            </span>
-          )}
-        </div>
-      ) : cheatTotal > 0 || investigation > 0 ? (
+      {cheatTotal > 0 || investigation > 0 ? (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           {succeeded > 0 ? (
             <span className="rounded bg-red-500/15 px-2 py-1 font-medium text-red-600">
-              {succeeded} {succeeded === 1 ? unit : plural}
-              {verbStr}
+              {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
             </span>
           ) : null}
           {blocked > 0 ? (
