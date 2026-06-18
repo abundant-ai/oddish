@@ -50,6 +50,8 @@ from oddish.core.trial_io import (
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
+    TagModel,
+    TagState,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -464,6 +466,34 @@ async def list_tasks_core(
     return response
 
 
+def _task_freetext_match(needle: str):
+    """Broad match for one bare (un-prefixed) browse needle.
+
+    Matches the task name, the author (legacy ``user`` / ``github_username``
+    tag), OR a tag name -- so a plain word finds tasks by name, author, or tag
+    without the ``github:`` / ``tag:`` prefixes. The needle is literal text;
+    ``escape_like`` neutralizes %, _ and backslash.
+    """
+    pattern = f"%{escape_like(needle)}%"
+    tag_name_exists = (
+        select(1)
+        .select_from(TagModel)
+        # tags.id = ANY(tasks.effective_tag_ids) -- the row's current tag set.
+        .where(TaskModel.effective_tag_ids.any(TagModel.id))
+        .where(TagModel.deleted_at.is_(None))
+        .where(TagModel.state != TagState.DELETED)
+        .where(TagModel.key.ilike(pattern, escape="\\"))
+        .correlate(TaskModel)
+        .exists()
+    )
+    return or_(
+        TaskModel.name.ilike(pattern, escape="\\"),
+        TaskModel.user.ilike(pattern, escape="\\"),
+        TaskModel.tags["github_username"].astext.ilike(pattern, escape="\\"),
+        tag_name_exists,
+    )
+
+
 def _build_browse_author_filter(
     user_ids: Sequence[str] | None,
     github_usernames: Sequence[str] | None,
@@ -558,23 +588,17 @@ async def browse_tasks_core(
     if normalized_query:
         # Free-text grammar (parse_search_query): terms AND'd in any order,
         # "quoted text" matches contiguously, OR makes either side of a group
-        # match, a leading - (or NOT) excludes. Each needle is literal, not a
-        # LIKE pattern: escape %, _ and backslash so e.g. searching "_"
-        # doesn't match every task.
+        # match, a leading - (or NOT) excludes. Each bare needle matches the
+        # task name, author (legacy user / github_username tag), OR a tag name
+        # (see _task_freetext_match), so users can search without github:/tag:
+        # prefixes; the explicit qualifiers stay precise AND filters.
         terms = parse_search_query(normalized_query)
         for group in terms.include:
             ranked_tasks = ranked_tasks.where(
-                or_(
-                    *(
-                        TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
-                        for needle in group
-                    )
-                )
+                or_(*(_task_freetext_match(needle) for needle in group))
             )
         for needle in terms.exclude:
-            ranked_tasks = ranked_tasks.where(
-                ~TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
-            )
+            ranked_tasks = ranked_tasks.where(~_task_freetext_match(needle))
 
     # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
     # predicates over ``tasks.effective_tag_ids``. The predicates reference the

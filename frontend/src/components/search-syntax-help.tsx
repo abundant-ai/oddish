@@ -25,6 +25,32 @@ export function SearchSyntaxRow({
 }
 
 /**
+ * A syntax row whose left column stacks several equivalent code examples (e.g.
+ * the github:/author:/user: aliases), with the description centered vertically
+ * to their right.
+ */
+export function SearchSyntaxMultiRow({
+  examples,
+  hint,
+}: {
+  examples: string[];
+  hint: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex shrink-0 flex-col gap-1">
+        {examples.map((example) => (
+          <code key={example} className="w-fit rounded bg-muted px-1 font-mono">
+            {example}
+          </code>
+        ))}
+      </div>
+      <span className="text-muted-foreground">{hint}</span>
+    </div>
+  );
+}
+
+/**
  * A trailing "?" help icon for a search input that reveals the search-syntax
  * card on hover AND opens it instantly on click.
  *

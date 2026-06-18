@@ -45,6 +45,7 @@ import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
 import {
   SearchSyntaxHelp,
+  SearchSyntaxMultiRow,
   SearchSyntaxRow,
 } from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
@@ -1369,32 +1370,34 @@ function RecentTasksCard({
             <Input
               value={searchQuery}
               onChange={(event) => onSearchQueryChange(event.target.value)}
-              placeholder="Search users, tags, IDs, etc."
+              placeholder="Search anything..."
               className="h-8 w-full border-[#6f88b4]/20 pr-7"
             />
             <SearchSyntaxHelp>
               <p className="font-medium">Search syntax</p>
+              <p className="text-muted-foreground">
+                  Matches experiment name, author, or tags. Add a
+                  prefix below to specify filters.
+              </p>
               <SearchSyntaxRow
-                example="payment-retry"
-                hint="match the experiment name or id"
+                example="cybersecurity agent"
+                hint="every word must match (AND)"
               />
               <SearchSyntaxRow
-                example="github:alice"
+                example="daytona OR modal"
+                hint="either word (OR)"
+              />
+              <SearchSyntaxRow example={'"exact name"'} hint="exact phrase" />
+              <SearchSyntaxRow example="-wip" hint="exclude" />
+              <SearchSyntaxMultiRow
+                examples={["github:alice", "author:alice", "user:alice"]}
                 hint="by author — GitHub handle, email, or name"
               />
-              <SearchSyntaxRow
-                example={'"exact name"'}
-                hint="exact phrase"
-              />
-              <SearchSyntaxRow
-                example="tag:a OR tag:b"
-                hint="filter by tags"
-              />
-              <SearchSyntaxRow example="-tag:wip" hint="exclude a tag" />
+              <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
               <p className="text-muted-foreground">
-                Case-insensitive, e.g.{" "}
+                Filters stack (AND) and are case-insensitive, e.g. {" "}
                 <code className="rounded bg-muted px-1 font-mono">
-                  github:alice tag:a
+                  github:alice tag:smoke
                 </code>
               </p>
             </SearchSyntaxHelp>

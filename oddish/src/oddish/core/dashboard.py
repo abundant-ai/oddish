@@ -22,7 +22,11 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from oddish.core.helpers import build_task_status_responses_from_counts
+from oddish.core.helpers import (
+    build_task_status_responses_from_counts,
+    escape_like,
+    parse_search_query,
+)
 from oddish.core.tag_filter_ast import (
     ResolvedTagFilter,
     TagFilterAST,
@@ -36,6 +40,11 @@ from oddish.core.tags_projection import (
 from oddish.config import normalize_model_id
 from oddish.db import (
     ExperimentModel,
+    TagAssignmentModel,
+    TagAssignmentScope,
+    TagAssignmentState,
+    TagModel,
+    TagState,
     TaskModel,
     TaskStatus,
     TrialModel,
@@ -424,6 +433,64 @@ def _absent_legacy_user_clause():
         TaskModel.user.is_(None),
         TaskModel.user == "",
         func.lower(TaskModel.user) == "unknown",
+    )
+
+
+def _experiment_freetext_match(needle: str, *, org_id: str | None):
+    """Broad match for one bare (un-prefixed) search needle on an experiment.
+
+    Matches the experiment name/id, OR any of its live tasks' author fields
+    (legacy ``user`` / ``github_username`` tag), OR any of its tag names -- so
+    a plain word finds work by name, author, or tag without learning the
+    ``github:`` / ``tag:`` prefixes. Explicit qualifiers still route to their
+    own precise (AND-ed) filters.
+    """
+    pattern = f"%{escape_like(needle)}%"
+
+    author_exists = (
+        select(1)
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.deleted_at.is_(None))
+        .where(TaskModel.deleted_at.is_(None))
+        .where(
+            or_(
+                TaskModel.user.ilike(pattern, escape="\\"),
+                _task_github_tag_expr().ilike(pattern, escape="\\"),
+            )
+        )
+    )
+    if org_id is not None:
+        author_exists = author_exists.where(TaskModel.org_id == org_id)
+    author_exists = author_exists.correlate(ExperimentModel)
+
+    # Experiments carry tags only via tag_assignments (no effective_tag_ids
+    # column), so match the assigned tag's display key. Tags aren't registered
+    # for the soft-delete session filter, so exclude dead rows explicitly.
+    tag_exists = (
+        select(1)
+        .select_from(TagAssignmentModel)
+        .join(TagModel, TagModel.id == TagAssignmentModel.tag_id)
+        .where(TagAssignmentModel.scope == TagAssignmentScope.EXPERIMENT)
+        .where(TagAssignmentModel.state == TagAssignmentState.ACTIVE)
+        .where(TagAssignmentModel.deleted_at.is_(None))
+        .where(TagAssignmentModel.target_id == ExperimentModel.id)
+        .where(TagModel.deleted_at.is_(None))
+        .where(TagModel.state != TagState.DELETED)
+        .where(TagModel.key.ilike(pattern, escape="\\"))
+        .correlate(ExperimentModel)
+    )
+
+    return or_(
+        ExperimentModel.name.ilike(pattern, escape="\\"),
+        ExperimentModel.id.ilike(pattern, escape="\\"),
+        author_exists.exists(),
+        tag_exists.exists(),
     )
 
 
@@ -857,7 +924,7 @@ async def load_dashboard_experiments(
             _STATUS_FILTER_OVERFETCH_CEILING,
         )
 
-    normalized_query = (experiments_query or "").strip().lower()
+    normalized_query = (experiments_query or "").strip()
 
     page_query = select(
         ExperimentModel.id.label("experiment_id"),
@@ -868,15 +935,18 @@ async def load_dashboard_experiments(
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
     if normalized_query:
-        # Author search has to wait until the latest_task lookup runs
-        # (step 1.5) -- the index-friendly fields are name and id.
-        query_like = f"%{normalized_query}%"
-        page_query = page_query.where(
-            or_(
-                func.lower(ExperimentModel.name).like(query_like),
-                func.lower(ExperimentModel.id).like(query_like),
+        # Bare words match name / author / tag (each word ANDs, OR-groups and
+        # "phrases" and -exclusions per the shared grammar). github:/tag:
+        # qualifiers are parsed out client-side into their own precise filters.
+        terms = parse_search_query(normalized_query)
+        for group in terms.include:
+            page_query = page_query.where(
+                or_(*(_experiment_freetext_match(n, org_id=org_id) for n in group))
             )
-        )
+        for needle in terms.exclude:
+            page_query = page_query.where(
+                ~_experiment_freetext_match(needle, org_id=org_id)
+            )
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
     # The ``github:`` search qualifier ANDs an additional author predicate on
@@ -1126,19 +1196,6 @@ async def load_dashboard_experiments(
             merged["task_count"] = max(
                 int(agg["task_count"] or 0), int(agg["trial_task_count"] or 0)
             )
-
-        # Author-search post-filter: name/id matches already passed in
-        # step 1, so any miss here means the user typed an author and
-        # neither the primary owner nor the latest runner matched.
-        if normalized_query and not (
-            normalized_query in str(merged["experiment_name"] or "").lower()
-            or normalized_query in exp_id.lower()
-            or normalized_query in str(merged["primary_user"] or "").lower()
-            or normalized_query in str(merged["primary_github_username"] or "").lower()
-            or normalized_query in str(merged["last_user"] or "").lower()
-            or normalized_query in str(merged["last_github_username"] or "").lower()
-        ):
-            continue
 
         if not _experiment_row_passes_status_filter(
             merged, status_filter=experiments_status

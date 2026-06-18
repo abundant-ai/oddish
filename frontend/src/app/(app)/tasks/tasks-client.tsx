@@ -20,6 +20,7 @@ import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
 import {
   SearchSyntaxHelp,
+  SearchSyntaxMultiRow,
   SearchSyntaxRow,
 } from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
@@ -469,36 +470,37 @@ export function TasksPageClient({
                 <Input
                   value={searchQuery}
                   onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search users, tags, IDs, etc."
+                  placeholder="Search anything..."
                   className="h-8 w-full border-[#6f88b4]/20 pr-7"
                 />
                 <SearchSyntaxHelp>
                   <p className="font-medium">Search syntax</p>
+                  <p className="text-muted-foreground">
+                    Matches task name, author, or tags. Add a
+                    prefix below to specify filters.
+                  </p>
                   <SearchSyntaxRow
-                    example="murmur x86"
-                    hint="every word must match, anywhere in the name"
+                    example="node vulnerability"
+                    hint="every word must match (AND)"
                   />
                   <SearchSyntaxRow
-                    example={'"x86-32 conformance"'}
+                    example="auth OR rbac"
+                    hint="either word (OR)"
+                  />
+                  <SearchSyntaxRow
+                    example={'"command exec"'}
                     hint="exact phrase"
                   />
-                  <SearchSyntaxRow
-                    example="murmur OR polygon"
-                    hint="either word"
-                  />
                   <SearchSyntaxRow example="-no-skill" hint="exclude" />
-                  <SearchSyntaxRow
-                    example="github:alice"
+                  <SearchSyntaxMultiRow
+                    examples={["github:alice", "author:alice", "user:alice"]}
                     hint="by author — GitHub handle, email, or name"
                   />
-                  <SearchSyntaxRow
-                    example="tag:a OR tag:b -tag:c"
-                    hint="filter by tags"
-                  />
+                  <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
                   <p className="text-muted-foreground">
-                    Matching is case-insensitive; combine freely, e.g.{" "}
+                    Filters stack (AND) and are case-insensitive, e.g. {" "}
                     <code className="rounded bg-muted px-1 font-mono">
-                      polygon github:alice tag:smoke
+                      rbac github:alice tag:smoke
                     </code>
                   </p>
                 </SearchSyntaxHelp>

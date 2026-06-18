@@ -306,6 +306,20 @@ def _compile_sql(clause) -> str:
     ).lower()
 
 
+def test_browse_freetext_matches_name_author_and_tag():
+    from oddish.core.endpoints import _task_freetext_match
+
+    sql = _compile_sql(_task_freetext_match("alice"))
+    assert "tasks.name ilike" in sql
+    assert 'tasks."user" ilike' in sql  # legacy author string
+    assert "github_username" in sql  # github_username tag
+    # tag-name branch over the row's effective_tag_ids
+    assert "effective_tag_ids" in sql and "tags.key ilike" in sql
+    assert "alice" in sql
+    # User-typed wildcards stay literal (escape_like + ESCAPE clause).
+    assert "escape" in sql
+
+
 def test_browse_author_filter_none_when_empty():
     from oddish.core.endpoints import _build_browse_author_filter
 
