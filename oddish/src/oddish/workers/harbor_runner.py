@@ -44,6 +44,7 @@ from oddish.config import (
     moonshot_bare_model_id,
     settings,
     subscription_bare_model_id,
+    to_anthropic_api_model_id,
     to_bedrock_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
@@ -897,6 +898,24 @@ def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -
     agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
 
 
+def _agent_uses_bedrock() -> bool:
+    """Mirror Harbor's claude-code Bedrock-mode detection.
+
+    Harbor's installed claude-code agent decides Bedrock vs the direct Anthropic
+    API purely from the worker process environment (``_is_bedrock_mode`` reads
+    ``os.environ``), independent of the model id Oddish hands it. We read the same
+    signals so the model id we emit stays consistent with the transport Harbor
+    will actually use. The Modal worker image sets ``CLAUDE_CODE_USE_BEDROCK=1``,
+    so cloud runs take the Bedrock branch; absent it, the agent falls back to
+    ``ANTHROPIC_API_KEY``.
+    """
+    if os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1":
+        return True
+    if os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip():
+        return True
+    return False
+
+
 def _build_agent_config(
     *,
     agent: str,
@@ -981,8 +1000,14 @@ def _build_agent_config(
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
-    else:
+    elif _agent_uses_bedrock():
         agent_config.model_name = to_bedrock_model_id(agent_config.model_name)
+    else:
+        # No Bedrock env: Harbor's claude-code agent authenticates against the
+        # direct Anthropic API, which rejects a Bedrock inference-profile id
+        # ("global.anthropic.*") with HTTP 400 "Operation not allowed". Hand it
+        # the matching plain Anthropic API id instead.
+        agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     _apply_claude_code_openrouter_env(agent_config)
     _apply_claude_code_zai_env(agent_config)
     if sub_route:
