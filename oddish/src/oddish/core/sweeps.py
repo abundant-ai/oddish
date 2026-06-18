@@ -37,6 +37,7 @@ def build_trial_specs_from_sweep(
     *,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
+    existing_counts: dict[tuple[str, str | None], int] | None = None,
 ) -> list[TrialSpec]:
     trials: list[TrialSpec] = []
     effective_default_environment = submission.environment or default_environment
@@ -56,7 +57,28 @@ def build_trial_specs_from_sweep(
                 allowed_environments=allowed_environments,
             )
 
-        for _ in range(config.n_trials):
+        # Reconcile-to-N (declarative): in reconcile mode, emit only the
+        # shortfall needed to bring the live count for this (agent, model)
+        # up to the desired n_trials. In create mode (existing_counts is
+        # None) emit the full n_trials -- today's additive behavior.
+        n = config.n_trials
+        if existing_counts is not None:
+            from oddish.config import settings
+
+            # existing_counts is keyed by the trial's stored ``model`` column,
+            # which is written through ``normalize_trial_model`` (see the
+            # ``append_trials_to_task`` write path). Normalize the manifest's
+            # raw ``config.model`` the same way so the lookup key matches the
+            # stored (already-normalized) key. This match is the load-bearing
+            # invariant: every trial write MUST normalize ``model``, and
+            # ``normalize_trial_model`` MUST be idempotent. If a raw model ever
+            # lands in the column, this ``.get`` misses, ``existing`` reads 0,
+            # and reconcile silently re-appends a full N.
+            norm_model = settings.normalize_trial_model(config.agent, config.model)
+            existing = existing_counts.get((config.agent, norm_model), 0)
+            n = max(0, config.n_trials - existing)
+
+        for _ in range(n):
             trial_kwargs: dict = {
                 "agent": config.agent,
                 "model": config.model,

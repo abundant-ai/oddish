@@ -277,6 +277,17 @@ class TaskSweepSubmission(BaseModel):
             "a new task row"
         ),
     )
+    additive: bool = Field(
+        False,
+        description=(
+            "Append behavior when operating on an existing task. Default (False) "
+            "reconciles to N: only the shortfall needed to reach n_trials per "
+            "(agent, model) on the current version is appended, so re-triggering "
+            "an unchanged manifest is idempotent. When True, unconditionally "
+            "append n_trials more (the explicit 'add more trials' escape hatch). "
+            "Orthogonal to append_to_task, which selects the existing-task path."
+        ),
+    )
     name: str | None = Field(
         None,
         description="Human-readable task name (derived from task_id if not provided)",
