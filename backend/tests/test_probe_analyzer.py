@@ -14,6 +14,7 @@ import pytest
 
 from oddish.worker.probe_analysis import (
     _build_envelope_schema,
+    _coerce_analyzer_json,
     _normalize_probe_summary,
     run_probe_analyzer,
 )
@@ -232,6 +233,75 @@ def test_normalize_recommendations_drops_entries_without_action():
 def test_normalize_recommendations_missing_field_defaults_empty():
     out = _normalize({"headline": "hi"})
     assert out["recommendations"] == []
+
+
+# ---------------------------------------------------------------------------
+# _coerce_analyzer_json — tolerate a response truncated by the token cap
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_json_passes_through_valid():
+    assert _coerce_analyzer_json('{"headline": "ok", "attempts": []}') == {
+        "headline": "ok",
+        "attempts": [],
+    }
+
+
+def test_coerce_json_repairs_unterminated_string():
+    """The reported failure: the model ran out of tokens mid-string. We keep the
+    last complete value rather than dropping the whole summary."""
+    truncated = '{"headline": "agent audited the task", "summary": "it began to expla'
+    out = _coerce_analyzer_json(truncated)
+    assert out["headline"] == "agent audited the task"
+    assert "summary" not in out  # the incomplete value is dropped, not invented
+
+
+def test_coerce_json_repairs_truncated_attempts_array():
+    """A cut-off inside a nested array keeps the attempts that fully arrived."""
+    truncated = (
+        '{"headline": "h", "attempts": ['
+        '{"title": "first", "success": false}, '
+        '{"title": "seco'
+    )
+    out = _coerce_analyzer_json(truncated)
+    assert out["headline"] == "h"
+    assert [a["title"] for a in out["attempts"]] == ["first"]
+
+
+def test_coerce_json_unsalvageable_raises():
+    import json
+
+    with pytest.raises(json.JSONDecodeError):
+        _coerce_analyzer_json('{"headline": "no complete value yet')
+
+
+@pytest.mark.asyncio
+async def test_probe_analyzer_recovers_from_truncated_response():
+    """End to end: a max_tokens-truncated model response yields a summary instead
+    of bubbling a JSONDecodeError up as 'Summary failed'."""
+    fake_response = MagicMock()
+    fake_response.content = [
+        MagicMock(
+            text=(
+                '{"headline": "agent enumerated cheats", '
+                '"summary": "the agent read the verifier and then started to wri'
+            )
+        )
+    ]
+    fake_client = MagicMock()
+    fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+    with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+        result = await run_probe_analyzer(
+            extra_instructions="find cheats",
+            agent_messages=[{"kind": "assistant_text", "text": "..."}],
+            verifier_stdout="",
+            reward=0.0,
+            result_focus="",
+        )
+
+    assert result["kind"] == "probe_summary"
+    assert result["headline"] == "agent enumerated cheats"
 
 
 @pytest.mark.asyncio

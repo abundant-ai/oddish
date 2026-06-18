@@ -871,18 +871,31 @@ def _agent_uses_bedrock() -> bool:
 
 
 def _claude_code_forces_direct_api(is_probe: bool) -> bool:
-    """Whether a probe's claude-code agent must use the direct Anthropic API.
+    """Whether a claude-code agent must use the direct Anthropic API over Bedrock.
 
-    The worker carries a Bedrock bearer token, but in a probe's Daytona DinD
-    sandbox claude-code cannot authenticate to Bedrock with it -- it silently
-    falls back to ``ANTHROPIC_API_KEY`` while still sending the Bedrock
-    inference-profile model id, which the direct Anthropic API rejects with HTTP
-    400 "Operation not allowed". With an ``ANTHROPIC_API_KEY`` available, route
-    probe claude-code to the direct API (plain model id here + Bedrock env
-    cleared at ``Job.create``). Scoped to probes so normal trials' Bedrock
-    routing is untouched.
+    Two cases route claude-code off Bedrock and onto the direct API (emit the
+    plain model id here + clear the baked-in Bedrock env at ``Job.create`` so
+    Harbor selects the direct transport):
+
+    1. **Probes** -- in a probe's Daytona DinD sandbox claude-code cannot
+       authenticate to Bedrock with the bearer token; it silently falls back to
+       ``ANTHROPIC_API_KEY`` while still sending the Bedrock inference-profile
+       model id, which the direct API rejects with HTTP 400 "Operation not
+       allowed".
+    2. **Incident mitigation (2026-06)** -- the workers' Bedrock credentials
+       can no longer run inference (bearer token -> 400 "Operation not allowed",
+       SigV4 keys rejected), so *every* Bedrock claude-code call fails. While
+       ``settings.claude_code_force_direct_api`` is set (default on) route all
+       claude-code to the direct API. Flip ``ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0``
+       to restore Bedrock routing once the credentials are fixed.
+
+    Requires an ``ANTHROPIC_API_KEY`` (the direct-API credential); without one
+    this is a no-op and claude-code stays on its Bedrock route, so environments
+    that lack the key are unaffected.
     """
-    return is_probe and bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    if not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return False
+    return is_probe or settings.claude_code_force_direct_api
 
 
 def _build_agent_config(

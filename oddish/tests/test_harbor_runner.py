@@ -562,6 +562,8 @@ def test_build_agent_config_claude_uses_bedrock_id_in_bedrock_mode(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    # No direct-API key -> force-direct is a no-op, so this exercises Bedrock.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",
@@ -615,12 +617,53 @@ def test_build_agent_config_probe_claude_code_forces_direct_api(monkeypatch):
 
 
 def test_build_agent_config_non_probe_claude_code_keeps_bedrock_id(monkeypatch):
-    """Scoped to probes: a normal (non-probe) claude-code trial with Bedrock env
-    still routes to Bedrock even when an ANTHROPIC_API_KEY is present."""
+    """With the global force-direct flag OFF, routing is probe-scoped: a normal
+    (non-probe) claude-code trial with Bedrock env keeps the Bedrock id even when
+    an ANTHROPIC_API_KEY is present."""
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", False)
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_build_agent_config_non_probe_forces_direct_api_when_flag_set(monkeypatch):
+    """Incident mitigation: with the global force-direct flag ON (default) and an
+    ANTHROPIC_API_KEY available, a normal (non-probe) claude-code trial routes to
+    the direct Anthropic API -- the Bedrock id maps back to the plain API id."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-4-8",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "claude-opus-4-8"
+
+
+def test_build_agent_config_non_probe_keeps_bedrock_without_anthropic_key(monkeypatch):
+    """Force-direct is a no-op without an ANTHROPIC_API_KEY, even with the flag on,
+    so the Bedrock route (and id) is preserved for non-key environments."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
 
     agent_config = harbor_runner._build_agent_config(
         agent="claude-code",
