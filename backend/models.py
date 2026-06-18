@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -42,7 +43,7 @@ def generate_api_key() -> str:
     app_name = os.environ.get("MODAL_APP_NAME", "")
     env_marker = ""
     if app_name.startswith("oddish-pr-"):
-        env_marker = f"{app_name[len('oddish-'):]}_"
+        env_marker = f"{app_name[len('oddish-') :]}_"
     return f"ok_{env_marker}{secrets.token_hex(16)}"
 
 
@@ -279,7 +280,10 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -289,20 +293,30 @@ class ChatSession(Base):
     # Intentionally unconstrained (no FK): the key is hard-deleted when the
     # session closes and this id is never read afterward.
     query_api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")  # "cc" is the default Daytona session id used by the chat orchestrator
+    daytona_session_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="cc"
+    )  # "cc" is the default Daytona session id used by the chat orchestrator
     claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_activity: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ChatSessionEvent(Base):
     __tablename__ = "chat_session_events"
     __table_args__ = (
-        UniqueConstraint("session_id", "seq", name="uq_chat_session_events_session_seq"),
+        UniqueConstraint(
+            "session_id", "seq", name="uq_chat_session_events_session_seq"
+        ),
         Index("ix_chat_session_events_session_seq", "session_id", "seq"),
     )
 
@@ -312,15 +326,19 @@ class ChatSessionEvent(Base):
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     event: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class ChatTurn(Base):
     __tablename__ = "chat_turns"
     __table_args__ = (
         Index(
-            "uq_chat_turns_one_running", "session_id",
-            unique=True, postgresql_where=text("status = 'running'"),
+            "uq_chat_turns_one_running",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
         ),
         Index("ix_chat_turns_session_seq", "session_id", "seq"),
     )
@@ -332,9 +350,77 @@ class ChatTurn(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# =============================================================================
+# Request idempotency
+# =============================================================================
+
+
+class SubmissionIdempotency(Base):
+    """Idempotency record for a side-effecting submission (POST /tasks/sweep).
+
+    Subclasses ``Base`` directly (not ``TimestampedMixin``) and is deliberately
+    NOT registered for soft delete: an expired record is hard-deleted so the
+    unique slot is freed for a fresh submission with the same key. The record
+    stores a fingerprint of the original request (``request_hash``) to reject a
+    key replayed with a different body, and the original response
+    (``response_json``) to replay on a faithful retry. Records older than their
+    ``expires_at`` (24h) are pruned and re-runnable.
+    """
+
+    __tablename__ = "submission_idempotency"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    # Tenant scope; combined with route + key for uniqueness so different orgs
+    # may reuse the same client-supplied key without colliding.
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Logical endpoint the key was issued against.
+    route: Mapped[str] = mapped_column(String(64), nullable=False)
+    # SHA-256 of the client-supplied Idempotency-Key header.
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # SHA-256 fingerprint of the original request body.
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Lifecycle: 'in_progress' while the first request runs, 'completed' once the
+    # response is stored. Plain text + CHECK (not a PG enum) keeps the migration
+    # cleanly reversible.
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="in_progress"
+    )
+    # Stored response for replay; NULL until the request completes.
+    response_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_submission_idempotency_org_route_key",
+            "org_id",
+            "route",
+            "key_hash",
+            unique=True,
+        ),
+        # Supports pruning expired records.
+        Index("ix_submission_idempotency_expires_at", "expires_at"),
+        CheckConstraint(
+            "status IN ('in_progress', 'completed')",
+            name="ck_submission_idempotency_status",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
