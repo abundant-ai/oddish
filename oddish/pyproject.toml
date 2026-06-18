@@ -42,6 +42,8 @@ dependencies = [
     # [tool.uv.sources] below.  When bumping, run
     # ``uv lock --upgrade-package harbor`` to refresh the pinned commit.
     "harbor",
+    # JSON Schema validation (result_focus structured-output schema checks).
+    "jsonschema>=4.0",
     # Source-of-truth pricing table (`litellm.model_cost`) covering ~2,700
     # models.  See ``oddish.model_pricing`` for our fallback for brand-new
     # models not yet in the installed litellm release.  Bump this pin on a

@@ -1150,8 +1150,6 @@ class ProbePresetModel(TimestampedMixin, Base):
     operator_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     result_focus: Mapped[str | None] = mapped_column(Text, nullable=True)
     evaluation_metric: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    ratio_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    ratio_verb: Mapped[str | None] = mapped_column(String(30), nullable=True)
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 

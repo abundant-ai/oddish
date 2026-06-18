@@ -571,9 +571,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # Run the LLM analyzer.
     extra_instructions = harbor_config.get("extra_instructions") or ""
     result_focus = harbor_config.get("result_focus") or ""
-    evaluation_metric = harbor_config.get("evaluation_metric") or "none"
-    ratio_unit = harbor_config.get("ratio_unit")
-    ratio_verb = harbor_config.get("ratio_verb")
     analyzer_summary: dict | None = None
     analyzer_status = AnalysisStatus.FAILED
     analyzer_error: str | None = None
@@ -585,9 +582,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
             verifier_stdout=verifier_stdout or "",
             reward=reward_value,
             result_focus=result_focus,
-            evaluation_metric=evaluation_metric,
-            ratio_unit=ratio_unit,
-            ratio_verb=ratio_verb,
         )
         analyzer_status = AnalysisStatus.SUCCESS
     except Exception as exc:

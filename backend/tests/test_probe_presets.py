@@ -44,9 +44,7 @@ def _make(name: str) -> ProbePresetCreate:
         model="anthropic/claude-sonnet-4-6",
         operator_prompt="probe the task",
         result_focus="did it work?",
-        evaluation_metric="ratio",
-        ratio_unit="cheat",
-        ratio_verb="succeeded",
+        evaluation_metric="cheat_ratio",
     )
 
 

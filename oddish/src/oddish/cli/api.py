@@ -704,8 +704,6 @@ def submit_sweep(
     extra_instructions: str | None = None,
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
-    ratio_unit: str | None = None,
-    ratio_verb: str | None = None,
     link: str | None = None,
 ) -> dict:
     """Submit a task sweep to the API.
@@ -713,9 +711,8 @@ def submit_sweep(
     Probe trials are ordinary sweeps with ``extra_instructions`` set: the
     server sets ``mode: "probe"`` in harbor_config (see
     ``queue._build_harbor_config_for_trial``) and the cloud worker applies the
-    instruction overlay. ``result_focus`` / ``evaluation_metric`` /
-    ``ratio_unit`` / ``ratio_verb`` are the same optional probe fields the UI
-    sends from a selected preset.
+    instruction overlay. ``result_focus`` / ``evaluation_metric`` are the same
+    optional probe fields the UI sends from a selected preset.
     """
     env_value = environment.value if environment else None
 
@@ -791,10 +788,6 @@ def submit_sweep(
         payload["result_focus"] = result_focus
     if evaluation_metric:
         payload["evaluation_metric"] = evaluation_metric
-    if ratio_unit:
-        payload["ratio_unit"] = ratio_unit
-    if ratio_verb:
-        payload["ratio_verb"] = ratio_verb
     if link:
         payload["link"] = link
 
