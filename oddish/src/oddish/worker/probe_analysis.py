@@ -335,6 +335,120 @@ def _build_transcript(agent_messages: list[dict]) -> str:
     return f"{head}\n...[transcript truncated to fit context; head+tail kept]...\n{tail}"
 
 
+def _repair_truncated_json(s: str) -> str | None:
+    """Best-effort close a JSON object the token cap cut off mid-output.
+
+    The analyzer occasionally hits ``max_tokens`` partway through a value,
+    leaving an unterminated string and open brackets. We scan tracking string
+    state and the open-container stack, remember the last point at which a
+    *complete* value had just been emitted, then truncate there and append the
+    closing brackets. Returns a parseable string, or None if no complete value
+    was seen (nothing salvageable).
+    """
+    stack: list[str] = []  # 'obj' | 'arr', outermost first
+    member: list[str] = []  # per-frame state: 'key' | 'colon' | 'value' | 'comma'
+    in_string = False
+    escape = False
+    string_is_key = False
+    safe_pos = -1
+    safe_stack: list[str] = []
+
+    def mark_safe(pos: int) -> None:
+        nonlocal safe_pos, safe_stack
+        safe_pos = pos
+        safe_stack = list(stack)
+
+    def value_done() -> None:
+        if stack:
+            member[-1] = "comma"
+
+    i, n = 0, len(s)
+    while i < n:
+        ch = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+                if string_is_key:
+                    member[-1] = "colon"
+                else:
+                    value_done()
+                    mark_safe(i + 1)
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            escape = False
+            string_is_key = bool(stack) and stack[-1] == "obj" and member[-1] == "key"
+            i += 1
+            continue
+        if ch == "{":
+            stack.append("obj")
+            member.append("key")
+        elif ch == "[":
+            stack.append("arr")
+            member.append("value")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+                member.pop()
+            value_done()
+            mark_safe(i + 1)
+        elif ch == ":":
+            if stack and stack[-1] == "obj":
+                member[-1] = "value"
+        elif ch == ",":
+            if stack:
+                member[-1] = "key" if stack[-1] == "obj" else "value"
+        elif ch not in " \t\r\n":
+            # number / true / false / null — consume up to the next delimiter.
+            j = i
+            while j < n and s[j] not in " \t\r\n,}]":
+                j += 1
+            if j < n:  # only trust a literal terminated by a delimiter
+                value_done()
+                mark_safe(j)
+            i = j
+            continue
+        i += 1
+
+    if safe_pos < 0:
+        return None
+    out = s[:safe_pos].rstrip().rstrip(",")
+    closers = "".join("}" if t == "obj" else "]" for t in reversed(safe_stack))
+    return out + closers
+
+
+def _coerce_analyzer_json(raw_text: str) -> dict:
+    """Parse the analyzer's JSON, repairing a token-cap-truncated response.
+
+    A hard ``json.loads`` failure here used to surface to the operator as
+    "Summary failed: JSONDecodeError". We keep the partial summary instead by
+    closing the truncated structure at its last complete value.
+    """
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        repaired = _repair_truncated_json(raw_text)
+        if repaired is not None:
+            try:
+                parsed = json.loads(repaired)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, dict):
+                logger.warning(
+                    "probe analyzer JSON was truncated (%s); recovered %d of %d chars",
+                    exc.msg,
+                    len(repaired),
+                    len(raw_text),
+                )
+                return parsed
+        raise
+
+
 def extract_probe_artifacts(trial_dir: Path) -> dict:
     """Pull the structured artifacts the probe analyzer + result page need.
 
@@ -578,7 +692,10 @@ async def run_probe_analyzer(
     findings_schema = parse_result_focus(result_focus)
     create_kwargs: dict = {
         "model": model,
-        "max_tokens": 2048,
+        # Audit probes emit a large JSON object (summary + attempts[] + per-step
+        # indices + recommendations). At 2048 the response was truncated mid-
+        # string, raising a JSONDecodeError surfaced as "Summary failed".
+        "max_tokens": 8192,
         "messages": [{"role": "user", "content": prompt}],
     }
     if findings_schema is not None and _supports_structured_outputs(model):
@@ -598,7 +715,7 @@ async def run_probe_analyzer(
             raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text
         raw_text = raw_text.rsplit("```", 1)[0].strip()
 
-    parsed = json.loads(raw_text)
+    parsed = _coerce_analyzer_json(raw_text)
 
     return _normalize_probe_summary(parsed, result_focus=result_focus, model=model)
 
