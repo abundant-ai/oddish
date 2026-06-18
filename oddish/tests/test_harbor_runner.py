@@ -573,13 +573,16 @@ def test_build_agent_config_claude_uses_bedrock_id_with_usable_credential(monkey
     assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
 
 
-def test_build_agent_config_claude_uses_anthropic_id_when_flag_set_but_no_credential(
+def test_build_agent_config_nonprobe_keeps_bedrock_with_baked_flag(
     monkeypatch,
 ):
-    """The actual prod bug: the Modal image bakes CLAUDE_CODE_USE_BEDROCK=1 into
-    every worker, but without a Bedrock bearer token the sandbox agent can't reach
-    Bedrock and falls back to ANTHROPIC_API_KEY. The flag alone must NOT keep the
-    Bedrock model id, or the direct API rejects it with HTTP 400."""
+    """Regression (#363): a normal trial must keep its Bedrock routing from the
+    baked-in CLAUDE_CODE_USE_BEDROCK=1 flag even without a bearer token -- the
+    main worker's ambient AWS creds reach Bedrock, unlike a probe's DinD sandbox.
+    Narrowing _agent_uses_bedrock to require the bearer token wrongly diverted
+    normal claude-code trials to the direct Anthropic API. The probe sandbox case
+    is handled probe-scoped instead (see
+    test_build_agent_config_probe_claude_code_forces_direct_api)."""
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
@@ -588,9 +591,10 @@ def test_build_agent_config_claude_uses_anthropic_id_when_flag_set_but_no_creden
         agent="claude-code",
         model="global.anthropic.claude-sonnet-4-6",
         raw_harbor_config={},
+        is_probe=False,
     )
 
-    assert agent_config.model_name == "claude-sonnet-4-6"
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
 
 
 def test_build_agent_config_claude_uses_anthropic_api_id_without_bedrock_env(

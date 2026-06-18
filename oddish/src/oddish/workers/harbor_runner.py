@@ -965,24 +965,23 @@ def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -
 
 
 def _agent_uses_bedrock() -> bool:
-    """Whether the sandbox claude-code agent can actually reach AWS Bedrock.
+    """Mirror Harbor's claude-code Bedrock-mode detection.
 
     Harbor's ``_is_bedrock_mode`` flips to Bedrock when ``CLAUDE_CODE_USE_BEDROCK``
     is ``"1"`` OR ``AWS_BEARER_TOKEN_BEDROCK`` is set -- and the Modal worker image
-    bakes ``CLAUDE_CODE_USE_BEDROCK=1`` into every container. But the flag alone is
-    a trap: the only Bedrock credential the separate Daytona sandbox can use is the
-    bearer token (``AWS_BEARER_TOKEN_BEDROCK``); the ambient AWS SigV4 keys are
-    S3-scoped and 403 against Bedrock (see ``worker/probe_analysis.py``). With the
-    flag set but no bearer token, the sandbox agent cannot authenticate to Bedrock,
-    silently falls back to ``ANTHROPIC_API_KEY``, and still sends a Bedrock
-    inference-profile model id -- which the direct Anthropic API rejects with HTTP
-    400 "Operation not allowed".
+    bakes ``CLAUDE_CODE_USE_BEDROCK=1`` into every container. We read the same
+    signals so the model id we emit stays consistent with the transport Harbor
+    will actually use. Normal trials run on the main worker, whose ambient AWS
+    credentials can reach Bedrock, so the baked-in flag is a truthful signal for
+    them; absent both signals the agent falls back to ``ANTHROPIC_API_KEY``.
 
-    So Bedrock is usable only when the bearer token is present. When it is absent
-    we route both the model id (here, via ``to_anthropic_api_model_id``) and the
-    transport (by clearing the baked-in Bedrock env at ``Job.create``) to the
-    direct Anthropic API, keeping id and transport consistent.
+    The probe case is different -- a probe's Daytona DinD sandbox can't reach
+    Bedrock even with the flag set -- but that is handled separately and is
+    probe-scoped via ``_claude_code_forces_direct_api``; this helper must NOT
+    narrow normal trials' Bedrock routing.
     """
+    if os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1":
+        return True
     return bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
 
 
