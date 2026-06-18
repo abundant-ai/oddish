@@ -115,7 +115,7 @@ def test_submit_sweep_includes_max_trial_attempts_only_when_overridden(monkeypat
         def __exit__(self, *args):
             return None
 
-        def post(self, _url, json):
+        def post(self, _url, json, headers=None):
             captured.append(json)
             return _Response()
 
