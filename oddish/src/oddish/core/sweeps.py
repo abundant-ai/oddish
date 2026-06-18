@@ -93,7 +93,5 @@ def build_task_submission_from_sweep(
         probe_name=submission.probe_name,
         result_focus=submission.result_focus,
         evaluation_metric=submission.evaluation_metric,
-        ratio_unit=submission.ratio_unit,
-        ratio_verb=submission.ratio_verb,
         link=submission.link,
     )
