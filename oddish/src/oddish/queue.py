@@ -86,7 +86,15 @@ async def cancel_tasks_runs(
             "modal_function_call_ids": [],
         }
 
-    query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
+    # Take domain-row locks before worker_jobs locks. Worker lifecycle hooks
+    # write trials/tasks and may then update worker_jobs, so cancelling in the
+    # opposite order can deadlock under concurrent trial progress.
+    query = (
+        select(TaskModel)
+        .where(TaskModel.id.in_(requested_task_ids))
+        .order_by(TaskModel.id)
+        .with_for_update()
+    )
     if org_id:
         query = query.where(TaskModel.org_id == org_id)
     result = await session.execute(query)
@@ -103,7 +111,10 @@ async def cancel_tasks_runs(
     ]
 
     trial_rows = await session.execute(
-        select(TrialModel).where(TrialModel.task_id.in_(found_task_ids))
+        select(TrialModel)
+        .where(TrialModel.task_id.in_(found_task_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
     )
     trials = list(trial_rows.scalars().all())
     trial_ids = [trial.id for trial in trials]
@@ -119,24 +130,37 @@ async def cancel_tasks_runs(
             await session.execute(
                 text(
                     """
-                UPDATE worker_jobs
+                WITH to_cancel AS (
+                    SELECT id,
+                           kind::text AS kind,
+                           subject_id,
+                           modal_function_call_id,
+                           provider,
+                           external_id
+                    FROM   worker_jobs
+                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                      AND  (
+                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
+                      )
+                    ORDER BY id
+                    FOR UPDATE
+                )
+                UPDATE worker_jobs AS w
                 SET    status = 'CANCELLED',
                        finished_at = NOW(),
                        error_message = :cancel_msg,
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
-                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                  AND  (
-                      (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                      OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                  )
-                RETURNING id,
-                          kind::text AS kind,
-                          subject_id,
-                          modal_function_call_id,
-                          provider,
-                          external_id
+                FROM   to_cancel
+                WHERE  w.id = to_cancel.id
+                RETURNING w.id,
+                          to_cancel.kind,
+                          to_cancel.subject_id,
+                          to_cancel.modal_function_call_id,
+                          to_cancel.provider,
+                          to_cancel.external_id
                 """
                 ),
                 {
