@@ -30,7 +30,7 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.tag_filter_ast import (
     TagFilterAST,
@@ -50,6 +50,8 @@ from oddish.core.trial_io import (
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
+    TagModel,
+    TagState,
     TaskModel,
     TaskStatus,
     TaskVersionModel,
@@ -464,6 +466,80 @@ async def list_tasks_core(
     return response
 
 
+def _task_freetext_match(needle: str):
+    """Broad match for one bare (un-prefixed) browse needle.
+
+    Matches the task name, the author (legacy ``user`` / ``github_username``
+    tag), OR a tag name -- so a plain word finds tasks by name, author, or tag
+    without the ``github:`` / ``tag:`` prefixes. The needle is literal text;
+    ``escape_like`` neutralizes %, _ and backslash.
+    """
+    pattern = f"%{escape_like(needle)}%"
+    tag_name_exists = (
+        select(1)
+        .select_from(TagModel)
+        # tags.id = ANY(tasks.effective_tag_ids) -- the row's current tag set.
+        .where(TaskModel.effective_tag_ids.any(TagModel.id))
+        .where(TagModel.deleted_at.is_(None))
+        .where(TagModel.state != TagState.DELETED)
+        .where(TagModel.key.ilike(pattern, escape="\\"))
+        .correlate(TaskModel)
+        .exists()
+    )
+    return or_(
+        TaskModel.name.ilike(pattern, escape="\\"),
+        TaskModel.user.ilike(pattern, escape="\\"),
+        TaskModel.tags["github_username"].astext.ilike(pattern, escape="\\"),
+        tag_name_exists,
+    )
+
+
+def _build_browse_author_filter(
+    user_ids: Sequence[str] | None,
+    github_usernames: Sequence[str] | None,
+    emails: Sequence[str] | None,
+):
+    """Direct author predicate for the task browser, or ``None``.
+
+    Every column lives on ``TaskModel`` -- no join needed. The matches are
+    case-insensitive on ``lower(tags ->> 'github_username')`` and
+    ``lower(user)`` so they ride the existing partial indexes
+    ``idx_tasks_org_lower_github_tag_live`` / ``idx_tasks_org_lower_user_live``;
+    ``created_by_user_id`` rides ``idx_tasks_org_created_by_live``. The legacy
+    ``user`` string can hold either a handle or an email, so it is matched
+    against both. Returns ``None`` when no author was supplied (normal browse).
+    """
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    lowered_handles = [
+        handle
+        for handle in (
+            (name or "").strip().lstrip("@").lower() for name in (github_usernames or ())
+        )
+        if handle
+    ]
+    lowered_emails = [
+        email
+        for email in ((value or "").strip().lower() for value in (emails or ()))
+        if email
+    ]
+
+    clauses = []
+    if normalized_user_ids:
+        clauses.append(TaskModel.created_by_user_id.in_(normalized_user_ids))
+    if lowered_handles:
+        clauses.append(
+            func.lower(TaskModel.tags["github_username"].astext).in_(lowered_handles)
+        )
+    seen_handles = set(lowered_handles)
+    user_values = lowered_handles + [e for e in lowered_emails if e not in seen_handles]
+    if user_values:
+        clauses.append(func.lower(TaskModel.user).in_(user_values))
+
+    if not clauses:
+        return None
+    return or_(*clauses)
+
+
 async def browse_tasks_core(
     session: AsyncSession,
     *,
@@ -474,6 +550,9 @@ async def browse_tasks_core(
     tags_all: list[str] | None = None,
     tags_any: list[str] | None = None,
     tags_none: list[str] | None = None,
+    author_user_ids: Sequence[str] | None = None,
+    author_github_usernames: Sequence[str] | None = None,
+    author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser."""
@@ -509,23 +588,17 @@ async def browse_tasks_core(
     if normalized_query:
         # Free-text grammar (parse_search_query): terms AND'd in any order,
         # "quoted text" matches contiguously, OR makes either side of a group
-        # match, a leading - (or NOT) excludes. Each needle is literal, not a
-        # LIKE pattern: escape %, _ and backslash so e.g. searching "_"
-        # doesn't match every task.
+        # match, a leading - (or NOT) excludes. Each bare needle matches the
+        # task name, author (legacy user / github_username tag), OR a tag name
+        # (see _task_freetext_match), so users can search without github:/tag:
+        # prefixes; the explicit qualifiers stay precise AND filters.
         terms = parse_search_query(normalized_query)
         for group in terms.include:
             ranked_tasks = ranked_tasks.where(
-                or_(
-                    *(
-                        TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
-                        for needle in group
-                    )
-                )
+                or_(*(_task_freetext_match(needle) for needle in group))
             )
         for needle in terms.exclude:
-            ranked_tasks = ranked_tasks.where(
-                ~TaskModel.name.ilike(f"%{escape_like(needle)}%", escape="\\")
-            )
+            ranked_tasks = ranked_tasks.where(~_task_freetext_match(needle))
 
     # Resolve tag filters (ids or names) → tag IDs and append AND/OR/NOT
     # predicates over ``tasks.effective_tag_ids``. The predicates reference the
@@ -552,6 +625,15 @@ async def browse_tasks_core(
         if not resolved_filter.is_empty():
             for predicate in build_filter_predicates(resolved_filter):
                 ranked_tasks = ranked_tasks.where(predicate)
+
+    # Author filter (the github:/author:/user: qualifier): ANDs with the
+    # free-text and tag predicates above. Resolved upstream to matching org
+    # members + aliases; an unknown handle resolves to an empty page.
+    author_filter = _build_browse_author_filter(
+        author_user_ids, author_github_usernames, author_emails
+    )
+    if author_filter is not None:
+        ranked_tasks = ranked_tasks.where(author_filter)
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 

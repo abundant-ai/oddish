@@ -144,8 +144,6 @@ export default function ProbeResultPage({
   const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
-  const cheatFound =
-    trial.reward !== null && trial.reward !== undefined && trial.reward >= 0.5;
 
   return (
     <div className="container mx-auto max-w-4xl py-8 space-y-6">
@@ -173,43 +171,13 @@ export default function ProbeResultPage({
         </p>
       </div>
 
-      {/* Status header */}
-      <section className="rounded border p-4">
-        <div className="flex flex-wrap items-center gap-3 text-sm">
-          <span className="inline-block rounded bg-muted px-2 py-1 text-xs font-mono">
-            {trial.status}
-          </span>
-          <span>
-            agent: <code className="text-xs">{trial.agent}</code>
-          </span>
-          {trial.model ? (
-            <span>
-              model: <code className="text-xs">{trial.model}</code>
-            </span>
-          ) : null}
-          {trial.reward !== null && trial.reward !== undefined ? (
-            <span>
-              reward: <strong>{trial.reward.toFixed(2)}</strong>
-            </span>
-          ) : null}
-          {trial.reward !== null && trial.reward !== undefined ? (
-            cheatFound ? (
-              <span className="rounded bg-red-500/15 px-2 py-1 text-xs font-medium text-red-600">
-                Cheat may have succeeded
-              </span>
-            ) : (
-              <span className="rounded bg-emerald-500/15 px-2 py-1 text-xs font-medium text-emerald-700">
-                Verifier failed (reward &lt; 0.5)
-              </span>
-            )
-          ) : null}
-        </div>
-        {trial.error_message ? (
-          <p className="mt-2 text-sm text-red-500 break-words whitespace-pre-wrap">
+      {trial.error_message ? (
+        <section className="rounded border p-4">
+          <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
             {trial.error_message}
           </p>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
 
       <ProbeRunSummary trial={trial} />
 
