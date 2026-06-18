@@ -192,16 +192,6 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
-# Optional bring-your-own-credentials secret, layered alongside oddish-prod so
-# personal creds never go into the shared oddish-prod secret. Holds the
-# subscription tokens (CS_CLAUDE_CODE_OAUTH_TOKEN / CS_CODEX_AUTH_JSON_B64) and
-# is consumed only by the subscription auth route in harbor_runner. Set
-# ODDISH_EXTRA_SECRET_NAME (e.g. cs-creds) at deploy to enable; unset = no-op,
-# so this is inert for normal deploys. It is mounted ONLY on the trial worker
-# (see worker_secrets below), not the API or dispatcher, to keep the personal
-# tokens' blast radius minimal.
-EXTRA_SECRET_NAME = os.environ.get("ODDISH_EXTRA_SECRET_NAME", "")
-
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
@@ -212,19 +202,6 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
         modal.Secret.from_name(
             f"{MODAL_APP_NAME}-db",
             environment_name=os.environ.get("MODAL_ENVIRONMENT", "preview"),
-        )
-    )
-
-# Trial-worker secret bundle = runtime_secrets plus the optional
-# bring-your-own-credentials secret. The CS_* subscription tokens are consumed
-# only by harbor_runner, so the extra secret is mounted ONLY on the trial worker
-# (process_single_job), never on the API or dispatcher. With EXTRA_SECRET_NAME
-# unset this is identical to runtime_secrets, so it is inert for normal deploys.
-worker_secrets = list(runtime_secrets)
-if EXTRA_SECRET_NAME:
-    worker_secrets.append(
-        modal.Secret.from_name(
-            EXTRA_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
         )
     )
 
@@ -255,22 +232,6 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
-    # Baked so the bring-your-own-creds secret gate (runtime_secrets) evaluates
-    # identically in the container and on the deploy host.
-    "ODDISH_EXTRA_SECRET_NAME": EXTRA_SECRET_NAME,
-    # Comma-separated agents whose trials use the personal-subscription auth
-    # route (Claude Code OAuth / Codex auth.json) instead of Bedrock/Azure.
-    # Lets the stored model id stay standard (e.g. claude-opus-4-8) while the
-    # agent still authenticates via the bring-your-own-creds secret above.
-    "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
-    # Concurrency cap for serialized subscription buckets (codex sub-solo/...).
-    # Defaults to 4: per-trial codex auth.json copies are independent within the
-    # token's refresh window, so a handful of concurrent trials is safe (matches
-    # the oddish.config.Settings default). Lower to 1 to fully serialize a shared
-    # refresh-sensitive credential.
-    "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY": os.environ.get(
-        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "4"
-    ),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).

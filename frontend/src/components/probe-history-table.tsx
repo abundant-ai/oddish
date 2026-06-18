@@ -3,19 +3,16 @@
 import Link from "next/link";
 import useSWR from "swr";
 
-type Attempt = {
-  success?: boolean | null;
+// "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
+type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
+
+type Recommendation = {
+  priority?: "must_fix" | "should_fix" | "optional";
 };
 
-// Keep "cheat_ratio" as a legacy alias — old DB rows still carry it.
-// Read sites normalize to "ratio" + cheat-flavored defaults.
-type EvaluationMetric = "ratio" | "result_focus" | "none" | "cheat_ratio";
-
 type Analysis = {
-  attempts?: Attempt[];
-  cheating_attempted?: boolean | null;
-  cheating_succeeded?: boolean | null;
-  result_focus_findings?: string | null;
+  recommendations?: Recommendation[];
+  result_focus_findings?: string | Record<string, unknown> | unknown[] | null;
 };
 
 type Trial = {
@@ -29,20 +26,10 @@ type Trial = {
   harbor_config?: {
     mode?: string;
     evaluation_metric?: EvaluationMetric;
-    ratio_unit?: string | null;
-    ratio_verb?: string | null;
     probe_name?: string | null;
   } | null;
   is_probe?: boolean;
 };
-
-function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
 
 // What to show in the run-identity column for a probe.
 // Newer probe runs carry the operator-selected preset name in
@@ -64,72 +51,15 @@ function statusLabel(t: Trial): string {
 
 type ResultDisplay = {
   text: string;
-  variant: "cheat" | "blocked" | "neutral" | "muted" | "error";
+  variant: "attention" | "clean" | "neutral" | "muted" | "error";
   title?: string;
 };
 
 function resultDisplay(t: Trial): ResultDisplay {
-  // Branch on metric first so a probe-agent type renders the SAME column
-  // shape regardless of trial state. Within each metric branch, status
-  // determines the placeholder vs. real content.
-  // Normalize legacy "cheat_ratio" to "ratio" with cheat-flavored defaults.
   const rawMetric = t.harbor_config?.evaluation_metric ?? "none";
-  const metric = rawMetric === "cheat_ratio" ? "ratio" : rawMetric;
-  const unit =
-    t.harbor_config?.ratio_unit ??
-    (rawMetric === "cheat_ratio" ? "cheat" : "attempt");
-  const verb =
-    t.harbor_config?.ratio_verb ??
-    (rawMetric === "cheat_ratio" ? "succeeded" : null);
-
-  if (metric === "ratio") {
-    const plural = pluralize(unit);
-    const verbStr = verb ? ` ${verb}` : "";
-    if (t.status === "queued" || t.status === "pending") {
-      return { text: `—/— ${plural}`, variant: "muted", title: "Trial queued" };
-    }
-    if (t.status === "running") {
-      return {
-        text: `—/— ${plural}`,
-        variant: "muted",
-        title: "Trial running",
-      };
-    }
-    if (t.status === "failed") {
-      return {
-        text: "harness error",
-        variant: "error",
-        title: t.error_message ?? "Trial failed before producing a result",
-      };
-    }
-    // status === "success"
-    if (t.analysis === null || t.analysis === undefined) {
-      return {
-        text: `—/— ${plural}`,
-        variant: "muted",
-        title: "Waiting for analyzer",
-      };
-    }
-    const all = t.analysis.attempts ?? [];
-    const succeeded = all.filter((a) => a.success === true).length;
-    const blocked = all.filter((a) => a.success === false).length;
-    const total = succeeded + blocked;
-    if (total === 0) {
-      return {
-        text: `0/0 ${plural}`,
-        variant: "neutral",
-        title: `Analyzer ran but found no ${plural} in the transcript`,
-      };
-    }
-    return {
-      text: `${succeeded}/${total} ${plural}${verbStr}`,
-      variant: succeeded > 0 ? "cheat" : "blocked",
-      title:
-        succeeded > 0
-          ? `${succeeded} of ${total} ${plural}${verbStr} — task is gameable`
-          : `All ${total} ${plural} were blocked — task is robust`,
-    };
-  }
+  // Legacy "cheat_ratio"/"ratio" fall back to "none".
+  const metric =
+    rawMetric === "result_focus" ? "result_focus" : ("none" as const);
 
   if (metric === "result_focus") {
     if (t.status === "queued" || t.status === "pending") {
@@ -169,6 +99,22 @@ function resultDisplay(t: Trial): ResultDisplay {
         title: "Analyzer ran but produced no answer",
       };
     }
+    if (typeof findings === "object") {
+      if (Array.isArray(findings)) {
+        const len = findings.length;
+        return {
+          text: `${len} item${len === 1 ? "" : "s"}`,
+          variant: "neutral",
+          title: "structured findings — open run for full detail",
+        };
+      }
+      const keyCount = Object.keys(findings as Record<string, unknown>).length;
+      return {
+        text: `${keyCount} field${keyCount === 1 ? "" : "s"}`,
+        variant: "neutral",
+        title: "structured findings — open run for full detail",
+      };
+    }
     const truncated =
       findings.length > 60 ? `${findings.slice(0, 60)}…` : findings;
     return {
@@ -196,68 +142,40 @@ function resultDisplay(t: Trial): ResultDisplay {
     };
   }
 
-  // Prefer the analyzer's per-attempt cheat ratio.
-  // Counts: succeeded=success===true, blocked=success===false,
-  // investigation=success===null/undefined (not a cheat attempt at all).
-  const attempts = t.analysis?.attempts ?? [];
-  const succeeded = attempts.filter((a) => a.success === true).length;
-  const blocked = attempts.filter((a) => a.success === false).length;
-  const investigation = attempts.length - succeeded - blocked;
-  const cheatAttempts = succeeded + blocked;
-
-  if (cheatAttempts > 0) {
-    // Concise primary text + verbose tooltip. Color is operator-centric:
-    // any cheat that bypassed the verifier = red (task is gameable). All
-    // blocked = green (task is robust).
-    const text =
-      succeeded > 0
-        ? `${succeeded} cheat${succeeded === 1 ? "" : "s"} succeeded`
-        : `${blocked} blocked`;
-    const tipParts: string[] = [];
-    if (succeeded > 0)
-      tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
-    if (blocked > 0) tipParts.push(`${blocked} blocked by verifier`);
-    if (investigation > 0)
-      tipParts.push(
-        `${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`,
-      );
+  // Analyzer hasn't classified the run yet.
+  if (t.analysis === null || t.analysis === undefined) {
     return {
-      text,
-      variant: succeeded > 0 ? "cheat" : "blocked",
-      title: tipParts.join(" · "),
+      text: "awaiting analyzer",
+      variant: "muted",
+      title: "Analyzer hasn't classified this run yet",
     };
   }
 
-  // No structured attempt data. Fall back to top-level cheat verdict.
-  if (t.analysis?.cheating_attempted === true) {
-    return t.analysis.cheating_succeeded
-      ? { text: "cheat succeeded", variant: "cheat" }
-      : { text: "cheat blocked", variant: "blocked" };
-  }
-  if (t.analysis?.cheating_attempted === false) {
+  // Summarize the run by the action items it surfaced.
+  const recs = t.analysis.recommendations ?? [];
+  const mustFix = recs.filter((r) => r.priority === "must_fix").length;
+  if (recs.length === 0) {
     return {
-      text: "no cheat attempted",
-      variant: "neutral",
-      title:
-        "Agent did not attempt to cheat (may have done legitimate work or just analyzed)",
+      text: "no action items",
+      variant: "clean",
+      title: "Task held up to probing — no fixes recommended",
     };
   }
-
-  // Analyzer hasn't filled the trial yet, just show raw reward
-  if (t.reward === null || t.reward === undefined) {
-    return { text: "no result", variant: "muted" };
-  }
+  const count = `${recs.length} action item${recs.length === 1 ? "" : "s"}`;
   return {
-    text: `reward ${t.reward.toFixed(2)}`,
-    variant: "neutral",
-    title: "Analyzer hasn't classified this run yet — raw verifier reward",
+    text: mustFix > 0 ? `${count} · ${mustFix} must-fix` : count,
+    variant: mustFix > 0 ? "attention" : "neutral",
+    title:
+      mustFix > 0
+        ? `${recs.length} recommended fixes, ${mustFix} must-fix`
+        : `${recs.length} recommended fixes`,
   };
 }
 
 const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
-  cheat:
+  attention:
     "rounded bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600",
-  blocked:
+  clean:
     "rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700",
   neutral: "rounded bg-muted px-2 py-0.5 text-[11px] font-medium",
   muted: "text-[11px] text-muted-foreground",

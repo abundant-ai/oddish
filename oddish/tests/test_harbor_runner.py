@@ -558,6 +558,152 @@ def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
     assert agent_config.override_timeout_sec is None
 
 
+def test_build_agent_config_claude_uses_bedrock_id_in_bedrock_mode(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    # No direct-API key -> force-direct is a no-op, so this exercises Bedrock.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_build_agent_config_claude_uses_anthropic_api_id_without_bedrock_env(
+    monkeypatch,
+):
+    """Without Bedrock env, Harbor's claude-code agent authenticates against the
+    direct Anthropic API. The model id must follow that transport: a Bedrock
+    inference-profile id sent to the direct API is rejected with HTTP 400
+    "Operation not allowed" (the observed probe-agent crash)."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    # Trial rows persist the already-canonicalized Bedrock id; it must map back
+    # to the plain Anthropic API id when the agent runs off ANTHROPIC_API_KEY.
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_probe_claude_code_forces_direct_api(monkeypatch):
+    """A probe's claude-code agent can't authenticate to Bedrock in its Daytona
+    DinD sandbox; with an ANTHROPIC_API_KEY available it must use the direct
+    Anthropic API and a matching plain model id (a Bedrock inference-profile id
+    over the direct transport 400s with "Operation not allowed")."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_non_probe_claude_code_keeps_bedrock_id(monkeypatch):
+    """With the global force-direct flag OFF, routing is probe-scoped: a normal
+    (non-probe) claude-code trial with Bedrock env keeps the Bedrock id even when
+    an ANTHROPIC_API_KEY is present."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_build_agent_config_non_probe_forces_direct_api_when_flag_set(monkeypatch):
+    """Incident mitigation: with the global force-direct flag ON (default) and an
+    ANTHROPIC_API_KEY available, a normal (non-probe) claude-code trial routes to
+    the direct Anthropic API -- the Bedrock id maps back to the plain API id."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-4-8",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "claude-opus-4-8"
+
+
+def test_build_agent_config_non_probe_keeps_bedrock_without_anthropic_key(monkeypatch):
+    """Force-direct is a no-op without an ANTHROPIC_API_KEY, even with the flag on,
+    so the Bedrock route (and id) is preserved for non-key environments."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_build_agent_config_probe_claude_code_without_anthropic_key_uses_bedrock(
+    monkeypatch,
+):
+    """A probe only forces the direct API when an ANTHROPIC_API_KEY is available;
+    absent it, fall back to the Bedrock id (Bedrock routing is unchanged)."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-sonnet-4-6"
+
+
+def test_agent_uses_bedrock_unchanged_by_probe_scoping(monkeypatch):
+    """Guard: probe scoping must NOT narrow _agent_uses_bedrock(). The baked-in
+    CLAUDE_CODE_USE_BEDROCK=1 flag alone still counts as Bedrock for normal
+    trials, with or without a bearer token."""
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    assert harbor_runner._agent_uses_bedrock() is True
+
+
 def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
     monkeypatch.setattr(harbor_runner.settings, "azure_openai_api_key", "az-key")
