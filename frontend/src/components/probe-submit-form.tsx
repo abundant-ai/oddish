@@ -108,7 +108,6 @@ function normalizePreset(p: Preset): Preset {
 export function ProbeSubmitForm({
   taskId,
   scope = "task",
-  experimentId,
   onSubmitted,
 }: {
   taskId: string;
