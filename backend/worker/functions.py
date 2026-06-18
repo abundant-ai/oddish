@@ -53,7 +53,6 @@ from modal_app import (
     app,
     image,
     runtime_secrets,
-    worker_secrets,
     worker_volumes,
 )
 from dashboard_owner_backfill import backfill_experiment_owners
@@ -107,7 +106,7 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 @app.function(
     image=image,
     volumes=worker_volumes,
-    secrets=worker_secrets,
+    secrets=runtime_secrets,
     min_containers=WORKER_MIN_CONTAINERS,
     buffer_containers=WORKER_BUFFER_CONTAINERS,
     scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,

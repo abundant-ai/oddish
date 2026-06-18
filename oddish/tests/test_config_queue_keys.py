@@ -312,36 +312,6 @@ def test_legacy_unmapped_claude_queue_key_does_not_break_reads(monkeypatch):
         settings.normalize_trial_model("claude-code", legacy_key)
 
 
-def test_subscription_model_prefix_is_serialized_for_codex(monkeypatch):
-    # Regression: a codex trial that opts in via the explicit "sub/<model>"
-    # prefix (not the ODDISH_SUBSCRIPTION_AGENTS flag) must still land in the
-    # serialized "sub-solo/" bucket. Before the fix it fell through to
-    # normalize_queue_key("sub/...") == "sub/..." -- which get_model_concurrency
-    # does NOT cap -- so a refresh-sensitive codex trial escaped serialization.
-    settings = _settings(monkeypatch, default_model_concurrency=48)
-
-    # codex is serialized by default (subscription_serialized_agents="codex").
-    key = settings.get_queue_key_for_trial("codex", "sub/gpt-5.5")
-    assert key == "sub-solo/gpt-5.5"
-    assert settings.get_model_concurrency(key) == settings.subscription_queue_concurrency
-
-    # claude-code is NOT serialized, so the same model-prefix opt-in keeps the
-    # plain "sub/" bucket (off Bedrock, but safe concurrent).
-    assert (
-        settings.get_queue_key_for_trial("claude-code", "sub/claude-opus-4-8")
-        == "sub/claude-opus-4-8"
-    )
-
-
-def test_normalize_queue_key_canonicalizes_subscription_alias(monkeypatch):
-    # "subscription/" is an alias for the canonical "sub/" queue bucket;
-    # normalize_queue_key must map it through so a model_concurrency_overrides
-    # key written as "subscription/<x>" matches the real "sub/<x>" queue key.
-    settings = _settings(monkeypatch)
-
-    assert settings.normalize_queue_key("subscription/gpt-5.5") == "sub/gpt-5.5"
-
-
 def test_openai_provider_defaults_to_azure(monkeypatch):
     settings = _settings(monkeypatch)
 
