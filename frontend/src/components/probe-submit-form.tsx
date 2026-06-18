@@ -77,7 +77,17 @@ function normalizePreset(p: Preset): Preset {
   return p;
 }
 
-export function ProbeSubmitForm({ taskId }: { taskId: string }) {
+export function ProbeSubmitForm({
+  taskId,
+  scope = "task",
+  experimentId,
+  onSubmitted,
+}: {
+  taskId: string;
+  scope?: "task" | "experiment";
+  experimentId?: string;
+  onSubmitted?: () => void;
+}) {
   const router = useRouter();
   const [agent, setAgent] = useState("claude-code");
   const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
@@ -274,6 +284,9 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
           evaluation_metric: selectedPreset?.evaluation_metric ?? null,
           ratio_unit: selectedPreset?.ratio_unit ?? null,
           ratio_verb: selectedPreset?.ratio_verb ?? null,
+          ...(scope === "experiment"
+            ? { probe_scope: "experiment", experiment_id: experimentId }
+            : {}),
         }),
       });
       if (!res.ok) {
@@ -282,8 +295,13 @@ export function ProbeSubmitForm({ taskId }: { taskId: string }) {
       }
       const data = await res.json();
       const trialId = data.new_trial_ids?.[0];
-      if (trialId) router.push(`/tasks/${taskId}/probe/${trialId}`);
-      else router.refresh();
+      if (scope === "experiment") {
+        onSubmitted?.();
+      } else if (trialId) {
+        router.push(`/tasks/${taskId}/probe/${trialId}`);
+      } else {
+        router.refresh();
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
