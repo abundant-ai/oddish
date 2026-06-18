@@ -8,7 +8,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import Image from "next/image";
 
 export default function LandingPage() {
-  const command = "oddish run -d terminal-bench@2.0 -c sweep.yaml";
+  const command = "oddish run -d terminal-bench@2.0 -c env-qa-sweep.yaml";
   const [typedCommand, setTypedCommand] = useState("");
   const [cursorVisible, setCursorVisible] = useState(true);
 
@@ -105,20 +105,47 @@ export default function LandingPage() {
           <div className="grid items-center gap-6 md:grid-cols-[1.05fr_0.95fr]">
             <div className="text-center md:text-left">
               <h1 className="text-4xl font-bold tracking-tight sm:text-5xl">
-                Run{" "}
+                Batch run RL environments
+                <span className="block text-[#5c8e43] dark:text-[#85b85c]">
+                  through continuous QA
+                </span>
+              </h1>
+              <p className="mt-5 max-w-2xl text-base leading-7 text-muted-foreground sm:text-lg">
+                Oddish turns{" "}
                 <a
                   href="https://harborframework.com/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
+                  className="font-medium text-foreground transition-colors hover:text-[#5d77a5] dark:hover:text-[#a8b8d2]"
                 >
                   Harbor
                 </a>{" "}
-                tasks
-                <span className="block text-[#5c8e43] dark:text-[#85b85c]">
-                  on the cloud
-                </span>
-              </h1>
+                tasks into provider-aware sweeps: run frontier agents, keep
+                every trace, classify outcomes, and rerun the environments that
+                need revision.
+              </p>
+              <div className="mt-6 grid gap-3 text-left text-sm text-muted-foreground sm:grid-cols-3">
+                <div className="rounded-xl border border-[#85b85c]/20 bg-background/65 p-3 shadow-xs">
+                  <div className="font-medium text-foreground">
+                    Batch execution
+                  </div>
+                  <div>Launch thousands of trials across tasks and models.</div>
+                </div>
+                <div className="rounded-xl border border-[#6f88b4]/20 bg-background/65 p-3 shadow-xs">
+                  <div className="font-medium text-foreground">
+                    Trace-backed QA
+                  </div>
+                  <div>
+                    Inspect failures, shortcuts, brittleness, and passes.
+                  </div>
+                </div>
+                <div className="rounded-xl border border-[#85b85c]/20 bg-background/65 p-3 shadow-xs">
+                  <div className="font-medium text-foreground">
+                    Model queues
+                  </div>
+                  <div>Keep healthy providers moving under real limits.</div>
+                </div>
+              </div>
             </div>
             <div className="relative mx-auto w-full max-w-sm">
               <div

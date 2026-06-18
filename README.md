@@ -18,7 +18,7 @@
 
 # Oddish
 
-> Run evals on [Harbor](https://github.com/laude-institute/harbor) tasks in the cloud.
+> Batch execution and continuous QA for [Harbor](https://github.com/laude-institute/harbor) tasks.
 
 Oddish extends Harbor with:
 

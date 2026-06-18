@@ -31,8 +31,9 @@ const fraunces = Fraunces({
 
 const SITE_URL = process.env.NEXT_PUBLIC_APP_URL || "https://www.oddish.app";
 const SITE_NAME = "Oddish";
-const SITE_TITLE = "Oddish - Eval Scheduler";
-const SITE_DESCRIPTION = "Postgres-backed eval scheduler for Harbor tasks";
+const SITE_TITLE = "Oddish - Batch RL Environment Execution";
+const SITE_DESCRIPTION =
+  "Batch execution and continuous QA for Harbor-compatible RL environments";
 const SITE_OG_IMAGE = "/oddish.png";
 
 export const metadata: Metadata = {
