@@ -59,6 +59,9 @@ export type ProbeSummary = {
   model?: string;
   generated_at?: string;
   result_focus_question?: string | null;
+  // Plain-language recap of result_focus_findings (the JSON answer); shown as the
+  // result-focus body, with the structured findings behind a toggle.
+  result_focus_summary?: string | null;
   result_focus_findings?: string | Record<string, unknown> | unknown[] | null;
 };
 

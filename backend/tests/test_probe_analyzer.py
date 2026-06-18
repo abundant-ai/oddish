@@ -90,6 +90,34 @@ def test_normalize_prose_keeps_string_and_question():
     assert out["result_focus_question"] == "Any ambiguities?"
 
 
+def test_normalize_keeps_result_focus_summary():
+    out = _normalize_probe_summary(
+        {
+            "result_focus_summary": "  Verdict: solvable only by guessing; 3 blockers.  ",
+            "result_focus_findings": {"verdict": "guess"},
+        },
+        result_focus="{}",
+        model="m",
+    )
+    assert (
+        out["result_focus_summary"]
+        == "Verdict: solvable only by guessing; 3 blockers."
+    )
+
+
+def test_normalize_result_focus_summary_absent_is_none():
+    out = _normalize_probe_summary(
+        {"result_focus_findings": "x"}, result_focus="q?", model="m"
+    )
+    assert out["result_focus_summary"] is None
+
+
+def test_build_envelope_includes_result_focus_summary():
+    env = _build_envelope_schema(None)
+    assert env["properties"]["result_focus_summary"]["type"] == ["string", "null"]
+    assert "result_focus_summary" in env["required"]
+
+
 def test_build_envelope_nests_findings_schema():
     env = _build_envelope_schema({"type": "object", "properties": {}})
     assert env["additionalProperties"] is False
