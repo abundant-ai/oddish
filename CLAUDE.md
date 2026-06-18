@@ -12,7 +12,7 @@ create a branch and move the work onto it before committing.
 
 ## What this project is
 
-Oddish runs evals on [Harbor](https://github.com/laude-institute/harbor) tasks in the cloud: provider-aware queuing, real-time monitoring, Postgres-backed state, S3 log storage. End users replace `harbor run` with `oddish run`. The hosted layer (`backend/` + `frontend/`) is deployed on Modal and surfaces a dashboard at oddish.app.
+Oddish is a batch execution and continuous QA platform for [Harbor](https://github.com/laude-institute/harbor)-compatible RL environments: provider-aware queues, real-time monitoring, Postgres-backed state, S3 trace/log storage, and task-level verdicts for the environment revision loop. End users replace `harbor run` with `oddish run`. The hosted layer (`backend/` + `frontend/`) is deployed on Modal and surfaces a dashboard at oddish.app.
 
 ## Useful pointers
 
