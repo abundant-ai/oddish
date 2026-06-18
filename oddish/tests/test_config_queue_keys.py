@@ -67,11 +67,11 @@ def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):
     settings = _settings(
         monkeypatch,
         default_model_concurrency=8,
-        nop_oracle_concurrency=48,
+        nop_oracle_concurrency=256,
     )
 
     assert settings.get_model_concurrency("default") == 8
-    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 48
+    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 256
     assert NOP_ORACLE_QUEUE_KEY in settings.get_known_queue_keys()
 
 
@@ -249,11 +249,11 @@ def test_bare_glm_minimax_kimi_keep_direct_provider_routes(monkeypatch):
 
     # Without the ``fireworks/`` prefix the existing per-vendor direct routes are
     # unchanged -- adding Fireworks must not hijack them.
-    assert (
-        settings.get_provider_for_trial("claude-code", "glm-x-preview[1m]") == "zai"
-    )
+    assert settings.get_provider_for_trial("claude-code", "glm-x-preview[1m]") == "zai"
     assert settings.get_provider_for_trial("claude-code", "minimax-m3") == "minimax"
-    assert settings.get_provider_for_trial("claude-code", "kimi-k2.7-code") == "moonshot"
+    assert (
+        settings.get_provider_for_trial("claude-code", "kimi-k2.7-code") == "moonshot"
+    )
 
 
 def test_fireworks_queue_keys_have_independent_concurrency(monkeypatch):
