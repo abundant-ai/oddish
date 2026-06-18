@@ -9,18 +9,54 @@ import {
   sortRecommendations,
 } from "@/lib/probe-summary";
 
-function ResultFocusFindings({ findings }: { findings: unknown }) {
-  if (findings == null) {
-    return <p className="text-sm italic text-muted-foreground">awaiting answer</p>;
+// Pretty-print structured findings; for a string, parse JSON when possible so
+// it renders as formatted code, falling back to the verbatim text otherwise.
+function formatFindings(findings: unknown): string {
+  if (typeof findings === "object" && findings !== null) {
+    return JSON.stringify(findings, null, 2);
   }
-  if (typeof findings === "object") {
-    return (
-      <pre className="overflow-auto rounded bg-muted/50 p-2 text-xs font-mono whitespace-pre">
-        {JSON.stringify(findings, null, 2)}
-      </pre>
-    );
+  const text = String(findings);
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
   }
-  return <p className="text-sm">{String(findings)}</p>;
+}
+
+// The result-focus block: a plain-language summary of the findings up top, with
+// the structured JSON tucked behind a toggle (always formatted code, never a
+// <p>). Falls back to "awaiting answer" until the findings arrive.
+function ResultFocus({
+  summary,
+  findings,
+}: {
+  summary?: string | null;
+  findings: unknown;
+}) {
+  return (
+    <div className="space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+        Result focus
+      </p>
+      {findings == null ? (
+        <p className="text-sm italic text-muted-foreground">awaiting answer</p>
+      ) : (
+        <>
+          {summary ? (
+            <p className="text-sm leading-relaxed">{summary}</p>
+          ) : null}
+          <details className="group mt-1">
+            <summary className="cursor-pointer select-none text-xs font-medium text-amber-700 hover:underline">
+              Show structured JSON output
+            </summary>
+            <pre className="mt-2 overflow-auto rounded bg-muted/50 p-2 text-xs font-mono whitespace-pre">
+              {formatFindings(findings)}
+            </pre>
+          </details>
+        </>
+      )}
+    </div>
+  );
 }
 
 // The single probe-summary rendering, shared by the probe-run detail page and
@@ -91,42 +127,9 @@ export function ProbeRunSummary({
         </div>
       </div>
 
-      {/* Always render the result_focus block when metric is result_focus,
-          even if findings are missing — show an "awaiting answer" placeholder.
-          Legacy rows (no metric set) still render it when both fields exist. */}
-      {metric === "result_focus" ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          {summary.result_focus_question ? (
-            <p className="text-sm font-medium italic">
-              {summary.result_focus_question}
-            </p>
-          ) : null}
-          <ResultFocusFindings findings={summary.result_focus_findings} />
-        </div>
-      ) : summary.result_focus_question && summary.result_focus_findings ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          {summary.result_focus_question ? (
-            <p className="text-sm font-medium italic">
-              {summary.result_focus_question}
-            </p>
-          ) : null}
-          <ResultFocusFindings findings={summary.result_focus_findings} />
-        </div>
-      ) : null}
-
-      {summary.headline ? (
-        <p className="text-base font-medium leading-snug">{summary.headline}</p>
-      ) : null}
-      {summary.summary ? (
-        <p className="text-sm leading-relaxed">{summary.summary}</p>
-      ) : null}
-
+      {/* Action items first, then the result-focus recap (summary of the JSON
+          with the structured output behind a toggle), then the whole-session
+          summary. */}
       {hasRecsField ? (
         <div className="rounded border bg-muted/20 p-3">
           <div className="mb-2 flex items-center gap-2">
@@ -172,33 +175,15 @@ export function ProbeRunSummary({
         </div>
       ) : null}
 
-      {/* Always render the result_focus block when metric is result_focus,
-          even if findings are missing — show an "awaiting answer" placeholder.
-          Legacy rows (no metric set) still render it when both fields exist. */}
-      {metric === "result_focus" ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          {summary.result_focus_question ? (
-            <p className="text-sm font-medium italic">
-              {summary.result_focus_question}
-            </p>
-          ) : null}
-          <ResultFocusFindings findings={summary.result_focus_findings} />
-        </div>
-      ) : summary.result_focus_question && summary.result_focus_findings ? (
-        <div className="mb-2 space-y-2 rounded border-2 border-amber-500/30 bg-amber-500/5 p-3">
-          <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
-            Result focus
-          </p>
-          {summary.result_focus_question ? (
-            <p className="text-sm font-medium italic">
-              {summary.result_focus_question}
-            </p>
-          ) : null}
-          <ResultFocusFindings findings={summary.result_focus_findings} />
-        </div>
+      {/* Show the result-focus block when the metric asks for it (even before
+          findings arrive) or whenever a legacy row carries a summary/findings. */}
+      {metric === "result_focus" ||
+      summary.result_focus_summary ||
+      summary.result_focus_findings != null ? (
+        <ResultFocus
+          summary={summary.result_focus_summary}
+          findings={summary.result_focus_findings}
+        />
       ) : null}
 
       {summary.headline ? (
