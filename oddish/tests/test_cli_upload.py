@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 
 import httpx
+import pytest
+import typer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -84,3 +86,33 @@ def test_local_task_discovery_fallback_uses_task_model(
     task_paths = cli_api.get_task_paths_from_local(tmp_path)
 
     assert task_paths == [tmp_path / "valid-task"]
+
+
+def test_git_lfs_pointer_detection_finds_unresolved_pointer(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    asset_path = task_path / "environment" / "private_bundle.tar.gz.gpg"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text(
+        "\n".join(
+            [
+                "version https://git-lfs.github.com/spec/v1",
+                "oid sha256:662718d8a1aad9cd2594b91563dbc8384856141c6d4fe4660c8abc7f1c922996",
+                "size 1687021",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli_api.find_git_lfs_pointer_files(task_path) == [asset_path]
+    with pytest.raises(typer.Exit):
+        cli_api.validate_no_git_lfs_pointers(task_path)
+
+
+def test_git_lfs_pointer_detection_ignores_real_asset(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    asset_path = task_path / "environment" / "private_bundle.tar.gz.gpg"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_bytes(b"\x8c\r\x04\t\x03\n\xadU\x99\x81\xb7L")
+
+    assert cli_api.find_git_lfs_pointer_files(task_path) == []
