@@ -213,7 +213,7 @@ class ChatOrchestrator:
         if scope_kind in ("global", "experiment"):
             if not self._public_api_base_url:
                 raise RuntimeError(
-                    "ODDISH_PUBLIC_API_BASE_URL must be set for global-scope chat"
+                    f"ODDISH_PUBLIC_API_BASE_URL must be set for {scope_kind}-scope chat"
                 )
             async with self._db(db_session_factory) as db:
                 api_key, raw_key = create_api_key(
@@ -313,7 +313,7 @@ class ChatOrchestrator:
         if scope_kind in ("global", "experiment"):
             if not self._public_api_base_url:
                 raise RuntimeError(
-                    "ODDISH_PUBLIC_API_BASE_URL must be set for global-scope chat"
+                    f"ODDISH_PUBLIC_API_BASE_URL must be set for {scope_kind}-scope chat"
                 )
             if prior_query_api_key_id is not None:
                 try:
@@ -350,7 +350,7 @@ class ChatOrchestrator:
             claude_md=claude_md,
             files=files,
             extra_env=extra_env,
-            upload_query_cli=scope_kind == "global",
+            upload_query_cli=scope_kind in ("global", "experiment"),
         )
         try:
             if claude_session_id:
