@@ -67,11 +67,11 @@ def test_nop_oracle_queue_has_separate_default_concurrency(monkeypatch):
     settings = _settings(
         monkeypatch,
         default_model_concurrency=8,
-        nop_oracle_concurrency=48,
+        nop_oracle_concurrency=256,
     )
 
     assert settings.get_model_concurrency("default") == 8
-    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 48
+    assert settings.get_model_concurrency(NOP_ORACLE_QUEUE_KEY) == 256
     assert NOP_ORACLE_QUEUE_KEY in settings.get_known_queue_keys()
 
 
@@ -279,7 +279,9 @@ def test_subscription_model_prefix_is_serialized_for_codex(monkeypatch):
     # codex is serialized by default (subscription_serialized_agents="codex").
     key = settings.get_queue_key_for_trial("codex", "sub/gpt-5.5")
     assert key == "sub-solo/gpt-5.5"
-    assert settings.get_model_concurrency(key) == settings.subscription_queue_concurrency
+    assert (
+        settings.get_model_concurrency(key) == settings.subscription_queue_concurrency
+    )
 
     # claude-code is NOT serialized, so the same model-prefix opt-in keeps the
     # plain "sub/" bucket (off Bedrock, but safe concurrent).

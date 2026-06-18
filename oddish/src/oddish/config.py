@@ -758,7 +758,7 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
-    nop_oracle_concurrency: int = 32
+    nop_oracle_concurrency: int = 256
     # Subscription agents whose shared credential is refresh-sensitive and so
     # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
     # its refresh token, so two concurrent Codex trials can invalidate each
@@ -980,7 +980,9 @@ class Settings(BaseSettings):
         # Subscription trials get a dedicated provider so they never fall through
         # to the fixed agent provider (e.g. codex -> "openai"), which would drag
         # them onto the Azure/OpenAI credential path.
-        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
+        if is_subscription_model(normalized_model) or self._is_subscription_agent(
+            agent
+        ):
             return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
@@ -1084,8 +1086,12 @@ class Settings(BaseSettings):
         # Agents whose shared credential is refresh-sensitive (codex auth.json)
         # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
         # safe concurrent) get a plain ``sub/<id>`` bucket.
-        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
-            bare = subscription_bare_model_id(normalized_model or "default") or "default"
+        if self._is_subscription_agent(agent) or is_subscription_model(
+            normalized_model
+        ):
+            bare = (
+                subscription_bare_model_id(normalized_model or "default") or "default"
+            )
             if self._is_serialized_subscription_agent(agent):
                 return f"sub-solo/{bare}"
             return f"sub/{bare}"
