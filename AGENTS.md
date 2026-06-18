@@ -1022,3 +1022,133 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+---
+
+## Cursor Cloud specific instructions
+
+This monorepo lives at `/agent/repos/oddish` in the Cloud VM, alongside three
+sibling repos: `/agent/repos/harbor-lh`, `/agent/repos/swe-marathon` (uv-based
+Harbor task suites), and `/agent/repos/swe-marathon-site` (Vite/npm static
+site). Dependencies for all of these are refreshed automatically by the startup
+update script (`uv sync` per Python project, `pnpm install` for `frontend/`,
+`npm install` for the site). Toolchain (`uv`, Node 22 + `pnpm`/`npm`,
+PostgreSQL 16, MinIO, Docker) is baked into the VM snapshot — do not reinstall.
+
+### ⚠️ The VM injects PRODUCTION secrets that override repo `.env` files
+
+The VM sets real env vars (`ODDISH_DATABASE_URL`, `ODDISH_S3_*`,
+`ODDISH_API_KEY`, `ODDISH_HARBOR_ENVIRONMENT=modal`, `MODAL_TOKEN_*`, live
+`CLERK_*` keys, prod `NEXT_PUBLIC_API_URL`, cloud LLM keys). Both
+`pydantic-settings` (oddish/backend) and Next.js read real env vars with **higher
+precedence than `.env`/`.env.local`**. So running `python -m oddish.server`, the
+`oddish` CLI, or workers **as-is connects to PRODUCTION** — the local server will
+start claiming and failing live `worker_jobs`. Always neutralize these first.
+
+A ready-made override file lives at `~/oddish-local.env` (points DB/S3/Harbor at
+local services + a dummy API key). Source it before running anything locally:
+
+```bash
+set -a; source ~/oddish-local.env; set +a   # local Postgres + MinIO + docker env
+```
+
+If that file is missing, recreate it so it exports local overrides for the
+injected production vars (all local-only dev defaults — do not paste real
+values into the repo):
+
+- `ODDISH_DATABASE_URL` → the local Postgres `oddish` DB (role/password `oddish`
+  on `localhost:5432`, async driver).
+- `ODDISH_S3_*` → the local MinIO endpoint (`localhost:9000`), bucket `oddish`,
+  with MinIO's default root user/password as access/secret key.
+- `ODDISH_HARBOR_ENVIRONMENT` → `docker`.
+- `ODDISH_API_URL` → the local server (`localhost:8000`) plus any dummy
+  `ODDISH_API_KEY` (the standalone server has no auth, but the CLI requires a key).
+- `unset MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` so nothing reaches Modal.
+
+### Local services are NOT auto-started — start them per session
+
+The update script only refreshes deps. Start the backing services yourself:
+
+```bash
+sudo pg_ctlcluster 16 main start          # Postgres 16 (role oddish/oddish, db oddish, max_connections=500)
+minio server /tmp/minio-data --address :9000 --console-address :9001 &  # MinIO, default root creds  # pragma: allowlist secret
+mc alias set local http://localhost:9000 minioadmin minioadmin; mc mb --ignore-existing local/oddish  # pragma: allowlist secret
+sudo dockerd >/tmp/dockerd.log 2>&1 &     # Docker (needed only for local Harbor trials)
+sudo chmod 666 /var/run/docker.sock       # re-run after every dockerd (re)start
+```
+
+Then run the core stack per the "Local Development" section above (after sourcing
+`~/oddish-local.env`): `uv run python -m oddish.server` (API :8000 + in-process
+workers) and `uv run oddish status`.
+
+### Local Postgres schema / Alembic from-scratch replay bug
+
+The local DB is already migrated in the snapshot. Two gotchas if you reset it:
+
+- The standalone server's startup `create_all` does **not** create
+  migration-only partial unique indexes (e.g. `uq_worker_jobs_tag_project_active`),
+  so task creation fails with `no unique or exclusion constraint matching the ON
+  CONFLICT specification`. Always build the schema with **Alembic**
+  (`uv run alembic upgrade head`), not `create_all`.
+- `alembic upgrade head` from an empty DB currently fails on the
+  `probe_presets_001` seed migration (`column "ratio_unit" does not exist`,
+  because its `create_table(..., if_not_exists=True)` is skipped against an
+  already-present table). Workaround: when it fails, run
+  `ALTER TABLE probe_presets ADD COLUMN IF NOT EXISTS ratio_unit varchar(30), ADD COLUMN IF NOT EXISTS ratio_verb varchar(30);`
+  then re-run `uv run alembic upgrade head` (a later migration,
+  `r8a9drop_probe_ratio_001`, drops both columns again).
+
+### Running Harbor trials in local Docker (cgroup limitation)
+
+The VM's root cgroup is `domain threaded` and host-locked (cannot be changed),
+so **resource-limited containers fail to start** (`cannot enter cgroupv2
+"/sys/fs/cgroup/docker" with domain controllers -- it is in threaded mode`).
+Plain `docker run` works, but Harbor applies CPU/memory limits from `task.toml`.
+Run trials with the enforcement policy set to `ignore` so no cgroup limits are
+applied, and use the credential-free `oracle`/`nop` agents:
+
+```yaml
+# sweep.yaml
+agents:
+  - name: oracle
+    n_trials: 1
+harbor:
+  environment:
+    cpu_enforcement_policy: ignore
+    memory_enforcement_policy: ignore
+```
+
+```bash
+uv run oddish run -p <task-dir> -c sweep.yaml --env docker --background --experiment smoke
+```
+
+This is only for local smoke tests; production trials run on Modal. A verified
+end-to-end example: an `oracle` trial on a minimal Harbor task uploads to MinIO,
+expands into `worker_jobs`, runs in local Docker, and reports reward 1.0.
+
+### Frontend auth is limited to the public surface locally
+
+The injected `CLERK_*` keys are **production** (`pk_live_`/`sk_live_`,
+domain-locked to oddish.app); they do not authorize `localhost`, so the
+authenticated dashboard cannot run locally without Clerk **test** keys. The
+public landing page renders fine. `pnpm lint` and `pnpm build` pass. Point the
+frontend at the local API with `NEXT_PUBLIC_API_URL=http://localhost:8000 pnpm dev`
+(overrides the injected prod URL).
+
+### Lint / test notes
+
+- oddish lint (matches pre-commit): `uv run ruff check --select F401,F841 src` (passes).
+  `ruff format --check` may report diffs that are only ruff-version drift vs the
+  pinned pre-commit hook — not real failures.
+- oddish tests: `uv run pytest` — ~627 pass, with ~11 **pre-existing** failures
+  (test mocks out of sync with code, e.g. `SimpleNamespace` missing `.link`,
+  and storage-preflight expectations); unrelated to environment setup.
+
+### Sibling repos
+
+- `harbor-lh` / `swe-marathon`: uv Harbor task suites. Validate a task with the
+  CI scripts, e.g. `bash ci_checks/check-task-fields.sh tasks/<slug>`, then run it
+  via oddish (see README). `task-template/` intentionally fails some checks (it is
+  a placeholder).
+- `swe-marathon-site`: Vite static site — `npm run dev` (serves on :5173),
+  `npm run build` (outputs `dist/`).
