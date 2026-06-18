@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # one place. The model is still rotated per task version (see
 # ``next_probe_model``); only the preset's prompt/metadata are adopted. If the
 # row is missing the auto-probe is logged and skipped (no fallback) — seed it.
-GENERAL_PROBE_PRESET_ID = "general-probe"
+DEFAULT_PROBE_PRESET_ID = "774e69fa"  # Task Construction Auditor
 
 
 async def _version_already_probed(session: AsyncSession, version_id: str) -> bool:
@@ -71,7 +71,7 @@ async def maybe_enqueue_auto_probe(
 
         preset = await session.scalar(
             select(ProbePresetModel).where(
-                ProbePresetModel.id == GENERAL_PROBE_PRESET_ID
+                ProbePresetModel.id == DEFAULT_PROBE_PRESET_ID
             )
         )
         if preset is None:
@@ -81,7 +81,7 @@ async def maybe_enqueue_auto_probe(
                 "Default probe preset %r not found in probe_presets; "
                 "skipping auto-probe for task %s. Seed the preset to enable "
                 "auto-probing.",
-                GENERAL_PROBE_PRESET_ID,
+                DEFAULT_PROBE_PRESET_ID,
                 task.id,
             )
             return
