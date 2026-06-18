@@ -1644,6 +1644,7 @@ source = { editable = "." }
 dependencies = [
     { name = "harbor" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "litellm" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -1756,6 +1757,7 @@ requires-dist = [
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
     { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
     { name = "httpx", specifier = "==0.28.1" },
+    { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
     { name = "mcp", marker = "extra == 'server'", specifier = ">=1.26" },
     { name = "modal", marker = "extra == 'worker'", specifier = "==1.4.2" },
