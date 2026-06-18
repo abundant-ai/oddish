@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import {
   type ProbeTrial,
   normalizeMetric,
-  tallyAttempts,
   PRIORITY_META,
   sortRecommendations,
 } from "@/lib/probe-summary";
@@ -101,9 +100,6 @@ export function ProbeRunSummary({
   }
 
   const metric = normalizeMetric(trial.harbor_config?.evaluation_metric);
-  const { succeeded, blocked, investigation, cheatTotal } = tallyAttempts(
-    summary.attempts,
-  );
   const hasRecsField = Array.isArray(summary.recommendations);
   const recs = hasRecsField ? sortRecommendations(summary.recommendations) : [];
   const mustFixCount = recs.filter((r) => r.priority === "must_fix").length;
@@ -203,48 +199,6 @@ export function ProbeRunSummary({
               <li key={i}>{a}</li>
             ))}
           </ul>
-        </div>
-      ) : null}
-
-      {summary.cheating_attempted !== null &&
-      summary.cheating_attempted !== undefined ? (
-        <div className="flex gap-3 text-xs">
-          <span className="rounded bg-muted px-2 py-1">
-            cheating attempted:{" "}
-            <strong>{String(summary.cheating_attempted)}</strong>
-          </span>
-          {summary.cheating_succeeded !== null &&
-          summary.cheating_succeeded !== undefined ? (
-            <span className="rounded bg-muted px-2 py-1">
-              cheating succeeded:{" "}
-              <strong>{String(summary.cheating_succeeded)}</strong>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-
-      {cheatTotal > 0 || investigation > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          {succeeded > 0 ? (
-            <span className="rounded bg-red-500/15 px-2 py-1 font-medium text-red-600">
-              {succeeded} cheat{succeeded === 1 ? "" : "s"} succeeded
-            </span>
-          ) : null}
-          {blocked > 0 ? (
-            <span className="rounded bg-emerald-500/15 px-2 py-1 font-medium text-emerald-700">
-              {blocked} blocked
-            </span>
-          ) : null}
-          {investigation > 0 ? (
-            <span className="rounded bg-muted px-2 py-1 font-medium text-muted-foreground">
-              {investigation} investigation step{investigation === 1 ? "" : "s"}
-            </span>
-          ) : null}
-          {cheatTotal > 0 ? (
-            <span className="text-muted-foreground">
-              {succeeded > 0 ? "task is gameable" : "task is robust"}
-            </span>
-          ) : null}
         </div>
       ) : null}
 
