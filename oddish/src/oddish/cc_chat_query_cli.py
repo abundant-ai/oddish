@@ -117,6 +117,42 @@ def _cmd_logs(a) -> None:
     _print(text)
 
 
+def _cmd_experiment_trials(a) -> None:
+    data = _get(f"/experiments/{a.exp_id}/trials")
+    rows = data if isinstance(data, list) else (data.get("items") or [])
+    _emit_rows([
+        {
+            "trial_id": t.get("trial_id"),
+            "task": t.get("task_name"),
+            "status": t.get("status"),
+            "reward": t.get("reward"),
+            "probe": t.get("is_probe"),
+            "has_trajectory": t.get("has_trajectory"),
+        }
+        for t in rows
+    ])
+
+
+def _cmd_result(a) -> None:
+    _print(json.dumps(_get(f"/trials/{a.trial_id}/result"), separators=(",", ":"))[:MAX_BYTES])
+
+
+def _cmd_files(a) -> None:
+    data = _get(f"/trials/{a.trial_id}/files", {
+        "prefix": a.prefix,
+        "recursive": "true" if a.recursive else None,
+    })
+    _print(json.dumps(data, separators=(",", ":"))[:MAX_BYTES])
+
+
+def _cmd_file(a) -> None:
+    data = _get(f"/trials/{a.trial_id}/files/{a.path}")
+    text = data if isinstance(data, str) else json.dumps(data)
+    if len(text) > LOG_HEAD + LOG_TAIL:
+        text = text[:LOG_HEAD] + "\n…[truncated]…\n" + text[-LOG_TAIL:]
+    _print(text)
+
+
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(prog="oddish-query")
     sub = p.add_subparsers(dest="group", required=True)
@@ -142,6 +178,23 @@ def main(argv: list[str] | None = None) -> None:
     lg.add_argument("trial_id")
     lg.add_argument("--trajectory", action="store_true")
     lg.set_defaults(func=_cmd_logs)
+    rs = trials.add_parser("result")
+    rs.add_argument("trial_id")
+    rs.set_defaults(func=_cmd_result)
+    fls = trials.add_parser("files")
+    fls.add_argument("trial_id")
+    fls.add_argument("--prefix", default=None)
+    fls.add_argument("--recursive", action="store_true")
+    fls.set_defaults(func=_cmd_files)
+    fl = trials.add_parser("file")
+    fl.add_argument("trial_id")
+    fl.add_argument("path")
+    fl.set_defaults(func=_cmd_file)
+
+    experiments = sub.add_parser("experiments").add_subparsers(dest="cmd", required=True)
+    et = experiments.add_parser("trials")
+    et.add_argument("exp_id")
+    et.set_defaults(func=_cmd_experiment_trials)
 
     args = p.parse_args(argv)
     args.func(args)

@@ -107,3 +107,56 @@ def test_get_401_emits_credential_expired(monkeypatch):
         cli._get("/tasks/browse")
     payload = json.loads(out[-1])
     assert payload == {"error": "session credential expired", "status": 401}
+
+
+def test_experiment_trials_projects_rows(monkeypatch):
+    data = [
+        {"trial_id": "tr1", "task_name": "demo", "status": "SUCCESS",
+         "reward": 1.0, "is_probe": False, "has_trajectory": True,
+         "phase_timing": {"x": 1}, "cost_usd": 0.2},
+    ]
+    seen = {}
+
+    def fake_get(path, params=None):
+        seen["path"] = path
+        return data
+
+    out = _run(monkeypatch, ["experiments", "trials", "exp1"], fake_get)
+    assert seen["path"] == "/experiments/exp1/trials"
+    row = json.loads(out.splitlines()[0])
+    assert row == {
+        "trial_id": "tr1", "task": "demo", "status": "SUCCESS",
+        "reward": 1.0, "probe": False, "has_trajectory": True,
+    }
+    assert "phase_timing" not in out
+
+
+def test_result_budgets_output(monkeypatch):
+    out = _run(monkeypatch, ["trials", "result", "tr1"],
+               lambda p, params=None: {"reward": 1, "blob": "y" * 50000})
+    assert len(out) <= cli.MAX_BYTES
+
+
+def test_files_maps_recursive_flag(monkeypatch):
+    seen = {}
+
+    def fake_get(path, params=None):
+        seen["path"] = path
+        seen["params"] = params
+        return {"files": []}
+
+    _run(monkeypatch, ["trials", "files", "tr1", "--prefix", "agent/", "--recursive"], fake_get)
+    assert seen["path"] == "/trials/tr1/files"
+    assert seen["params"]["prefix"] == "agent/"
+    assert seen["params"]["recursive"] == "true"
+
+
+def test_file_fetches_by_path(monkeypatch):
+    seen = {}
+
+    def fake_get(path, params=None):
+        seen["path"] = path
+        return {"content": "hello"}
+
+    _run(monkeypatch, ["trials", "file", "tr1", "agent/trajectory.json"], fake_get)
+    assert seen["path"] == "/trials/tr1/files/agent/trajectory.json"
