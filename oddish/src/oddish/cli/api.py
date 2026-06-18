@@ -698,6 +698,7 @@ def submit_sweep(
     agent_kwargs: list[str] | None = None,
     artifact_paths: list[str] | None = None,
     append_to_task: bool = False,
+    additive: bool = False,
     content_hash: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     environment_kwargs: list[str] | None = None,
@@ -783,6 +784,8 @@ def submit_sweep(
         payload["harbor"] = harbor
     if append_to_task:
         payload["append_to_task"] = True
+    if additive:
+        payload["additive"] = True
     if content_hash:
         payload["content_hash"] = content_hash
     if extra_instructions:
