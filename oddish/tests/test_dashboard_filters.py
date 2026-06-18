@@ -14,6 +14,7 @@ from oddish.core.dashboard import (
     UNRESOLVED_EXPERIMENTS_OWNER,
     _build_experiments_author_filter,
     _build_experiments_search_author_filter,
+    _experiment_freetext_match,
     _experiment_row_passes_status_filter,
     load_dashboard_experiments,
 )
@@ -255,6 +256,23 @@ def test_author_filter_never_matches_unattributed_sentinel() -> None:
 def test_search_author_filter_empty_matches_nothing() -> None:
     clause = _build_experiments_search_author_filter((), (), org_id="org_1")
     assert _compile_sql(clause).lower().strip() == "false"
+
+
+def test_experiment_freetext_matches_name_author_and_tag() -> None:
+    # A bare (un-prefixed) word matches the experiment name/id, OR any task's
+    # author (legacy user / github_username tag), OR a tag name.
+    sql = _compile_sql(_experiment_freetext_match("alice", org_id="org_1")).lower()
+    assert "experiments.name ilike" in sql
+    assert "experiments.id ilike" in sql
+    # author branch over the experiment's live tasks
+    assert "task_experiments" in sql and 'tasks."user" ilike' in sql
+    assert "github_username" in sql
+    # tag-name branch over EXPERIMENT-scope assignments
+    assert "tag_assignments" in sql and "tags.key ilike" in sql
+    assert "alice" in sql  # the needle is bound into every branch
+    assert "org_1" in sql  # author EXISTS stays org-scoped
+    # User-typed wildcards stay literal (escape_like + ESCAPE clause).
+    assert "escape" in sql
 
 
 def test_search_author_filter_matches_handle_via_primary_task() -> None:
