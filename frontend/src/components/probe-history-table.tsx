@@ -3,17 +3,15 @@
 import Link from "next/link";
 import useSWR from "swr";
 
-type Attempt = {
-  success?: boolean | null;
-};
-
 // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
 type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
 
+type Recommendation = {
+  priority?: "must_fix" | "should_fix" | "optional";
+};
+
 type Analysis = {
-  attempts?: Attempt[];
-  cheating_attempted?: boolean | null;
-  cheating_succeeded?: boolean | null;
+  recommendations?: Recommendation[];
   result_focus_findings?: string | Record<string, unknown> | unknown[] | null;
 };
 
@@ -53,7 +51,7 @@ function statusLabel(t: Trial): string {
 
 type ResultDisplay = {
   text: string;
-  variant: "cheat" | "blocked" | "neutral" | "muted" | "error";
+  variant: "attention" | "clean" | "neutral" | "muted" | "error";
   title?: string;
 };
 
@@ -144,68 +142,40 @@ function resultDisplay(t: Trial): ResultDisplay {
     };
   }
 
-  // Prefer the analyzer's per-attempt cheat ratio.
-  // Counts: succeeded=success===true, blocked=success===false,
-  // investigation=success===null/undefined (not a cheat attempt at all).
-  const attempts = t.analysis?.attempts ?? [];
-  const succeeded = attempts.filter((a) => a.success === true).length;
-  const blocked = attempts.filter((a) => a.success === false).length;
-  const investigation = attempts.length - succeeded - blocked;
-  const cheatAttempts = succeeded + blocked;
-
-  if (cheatAttempts > 0) {
-    // Concise primary text + verbose tooltip. Color is operator-centric:
-    // any cheat that bypassed the verifier = red (task is gameable). All
-    // blocked = green (task is robust).
-    const text =
-      succeeded > 0
-        ? `${succeeded} cheat${succeeded === 1 ? "" : "s"} succeeded`
-        : `${blocked} blocked`;
-    const tipParts: string[] = [];
-    if (succeeded > 0)
-      tipParts.push(`${succeeded} succeeded (verifier was bypassed)`);
-    if (blocked > 0) tipParts.push(`${blocked} blocked by verifier`);
-    if (investigation > 0)
-      tipParts.push(
-        `${investigation} investigation step${investigation === 1 ? "" : "s"} (not cheat attempts)`,
-      );
+  // Analyzer hasn't classified the run yet.
+  if (t.analysis === null || t.analysis === undefined) {
     return {
-      text,
-      variant: succeeded > 0 ? "cheat" : "blocked",
-      title: tipParts.join(" · "),
+      text: "awaiting analyzer",
+      variant: "muted",
+      title: "Analyzer hasn't classified this run yet",
     };
   }
 
-  // No structured attempt data. Fall back to top-level cheat verdict.
-  if (t.analysis?.cheating_attempted === true) {
-    return t.analysis.cheating_succeeded
-      ? { text: "cheat succeeded", variant: "cheat" }
-      : { text: "cheat blocked", variant: "blocked" };
-  }
-  if (t.analysis?.cheating_attempted === false) {
+  // Summarize the run by the action items it surfaced.
+  const recs = t.analysis.recommendations ?? [];
+  const mustFix = recs.filter((r) => r.priority === "must_fix").length;
+  if (recs.length === 0) {
     return {
-      text: "no cheat attempted",
-      variant: "neutral",
-      title:
-        "Agent did not attempt to cheat (may have done legitimate work or just analyzed)",
+      text: "no action items",
+      variant: "clean",
+      title: "Task held up to probing — no fixes recommended",
     };
   }
-
-  // Analyzer hasn't filled the trial yet, just show raw reward
-  if (t.reward === null || t.reward === undefined) {
-    return { text: "no result", variant: "muted" };
-  }
+  const count = `${recs.length} action item${recs.length === 1 ? "" : "s"}`;
   return {
-    text: `reward ${t.reward.toFixed(2)}`,
-    variant: "neutral",
-    title: "Analyzer hasn't classified this run yet — raw verifier reward",
+    text: mustFix > 0 ? `${count} · ${mustFix} must-fix` : count,
+    variant: mustFix > 0 ? "attention" : "neutral",
+    title:
+      mustFix > 0
+        ? `${recs.length} recommended fixes, ${mustFix} must-fix`
+        : `${recs.length} recommended fixes`,
   };
 }
 
 const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
-  cheat:
+  attention:
     "rounded bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600",
-  blocked:
+  clean:
     "rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700",
   neutral: "rounded bg-muted px-2 py-0.5 text-[11px] font-medium",
   muted: "text-[11px] text-muted-foreground",

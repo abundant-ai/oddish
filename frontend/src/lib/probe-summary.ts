@@ -3,14 +3,6 @@
 
 type ProbeMetric = "result_focus" | "none";
 
-type Attempt = {
-  title?: string;
-  rationale?: string;
-  outcome?: string;
-  success?: boolean | null;
-  step_indices?: number[];
-};
-
 type ToolInsight = {
   name?: string;
   kind?: "skill" | "mcp";
@@ -51,10 +43,7 @@ export type ProbeSummary = {
   summary?: string;
   key_actions?: string[];
   recommendations?: Recommendation[];
-  cheating_attempted?: boolean | null;
-  cheating_succeeded?: boolean | null;
   evidence?: string;
-  attempts?: Attempt[];
   tool_insights?: ToolInsight[];
   model?: string;
   generated_at?: string;
@@ -95,21 +84,6 @@ export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";
   if (m === "result_focus") return "result_focus";
   return "none";
-}
-
-type AttemptTally = {
-  succeeded: number;
-  blocked: number;
-  investigation: number;
-  cheatTotal: number;
-};
-
-export function tallyAttempts(attempts: Attempt[] | undefined): AttemptTally {
-  const all = attempts ?? [];
-  const succeeded = all.filter((a) => a.success === true).length;
-  const blocked = all.filter((a) => a.success === false).length;
-  const investigation = all.length - succeeded - blocked;
-  return { succeeded, blocked, investigation, cheatTotal: succeeded + blocked };
 }
 
 export function isTerminalProbeStatus(status: string): boolean {
