@@ -363,6 +363,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         model_name = trial.model
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
+        probe_scope = harbor_config.get("probe_scope", "task")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -400,6 +401,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
+            probe_scope=probe_scope,
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
@@ -571,9 +573,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # Run the LLM analyzer.
     extra_instructions = harbor_config.get("extra_instructions") or ""
     result_focus = harbor_config.get("result_focus") or ""
-    evaluation_metric = harbor_config.get("evaluation_metric") or "none"
-    ratio_unit = harbor_config.get("ratio_unit")
-    ratio_verb = harbor_config.get("ratio_verb")
     analyzer_summary: dict | None = None
     analyzer_status = AnalysisStatus.FAILED
     analyzer_error: str | None = None
@@ -585,9 +584,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
             verifier_stdout=verifier_stdout or "",
             reward=reward_value,
             result_focus=result_focus,
-            evaluation_metric=evaluation_metric,
-            ratio_unit=ratio_unit,
-            ratio_verb=ratio_verb,
         )
         analyzer_status = AnalysisStatus.SUCCESS
     except Exception as exc:

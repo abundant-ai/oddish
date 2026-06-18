@@ -4,6 +4,11 @@
  * Grammar (whitespace-separated tokens):
  *  - `tag:<name>` is a tag token; `-tag:<name>` is a negated tag token. The
  *    `tag:` prefix is case-insensitive; the name keeps its original casing.
+ *  - `github:<handle>` (aliases `author:` / `user:`, all case-insensitive) is an
+ *    author token: the value is pulled out of the free text into `authors` and
+ *    forwarded to the backend author filter. Negation is not supported (the
+ *    backend filter is inclusive only), so a `-`-prefixed author token is left
+ *    as ordinary text.
  *  - Standalone `AND` / `OR` / `NOT` (case-insensitive) are operators ONLY when
  *    the next token is a tag token. `AND` is a no-op (the default). `NOT`
  *    negates the following tag token (→ `none`). `OR` between two tag tokens
@@ -32,6 +37,8 @@
  *      → { text: "not really tag related", all: [], any: [], none: [] }
  *  - `parseTaskSearch('"exact phrase" -noisy tag:smoke')`
  *      → { text: '"exact phrase" -noisy', all: ["smoke"], any: [], none: [] }
+ *  - `parseTaskSearch("github:octocat tag:smoke")`
+ *      → { text: "", all: ["smoke"], any: [], none: [], authors: ["octocat"] }
  */
 
 interface ParsedTaskSearch {
@@ -39,9 +46,21 @@ interface ParsedTaskSearch {
   all: string[];
   any: string[];
   none: string[];
+  authors: string[];
 }
 
 type TagToken = { name: string; negated: boolean };
+
+// `github:`/`author:`/`user:` (case-insensitive). The value after the colon is
+// the searched handle/email/name and keeps its original casing (the backend
+// lowercases when matching).
+const AUTHOR_PREFIX = /^(?:github|author|user):/i;
+
+function asAuthorToken(token: string): string | null {
+  if (!AUTHOR_PREFIX.test(token)) return null;
+  const value = token.slice(token.indexOf(":") + 1);
+  return value.length > 0 ? value : null;
+}
 
 function asTagToken(token: string): TagToken | null {
   let negated = false;
@@ -78,6 +97,7 @@ export function parseTaskSearch(raw: string): ParsedTaskSearch {
   const all: string[] = [];
   const any: string[] = [];
   const none: string[] = [];
+  const authors: string[] = [];
 
   // Operator queued up for the next tag token.
   let pendingOp: "OR" | "NOT" | null = null;
@@ -109,6 +129,16 @@ export function parseTaskSearch(raw: string): ParsedTaskSearch {
       continue;
     }
 
+    const author = asAuthorToken(token);
+    if (author) {
+      authors.push(author);
+      // Author tokens are filter tokens, not free text, and don't take part in
+      // tag OR/NOT chaining -- reset operator state like a plain-text token.
+      pendingOp = null;
+      prevTag = null;
+      continue;
+    }
+
     const op = asOperator(token);
     // Operators apply only when the next token is itself a tag token.
     if (op && i + 1 < tokens.length && asTagToken(tokens[i + 1])) {
@@ -121,7 +151,7 @@ export function parseTaskSearch(raw: string): ParsedTaskSearch {
     prevTag = null;
   }
 
-  return { text: textParts.join(" "), all, any, none };
+  return { text: textParts.join(" "), all, any, none, authors };
 }
 
 /**
@@ -129,11 +159,13 @@ export function parseTaskSearch(raw: string): ParsedTaskSearch {
  * text. Round-trips through the parser: ALL terms emit as bare `tag:` tokens,
  * ANY terms as an OR chain (the parser re-homes the chain head), NONE terms
  * as `NOT tag:` tokens. A single-element ANY parses back into ALL, which is
- * semantically identical for filtering.
+ * semantically identical for filtering. Authors emit as canonical `github:`
+ * tokens (the `author:`/`user:` aliases collapse to it on round-trip).
  */
 export function serializeTaskSearch(parsed: ParsedTaskSearch): string {
   const parts: string[] = [];
   if (parsed.text) parts.push(parsed.text);
+  for (const author of parsed.authors) parts.push(`github:${author}`);
   for (const name of parsed.all) parts.push(`tag:${name}`);
   if (parsed.any.length > 0) {
     parts.push(parsed.any.map((name) => `tag:${name}`).join(" OR "));

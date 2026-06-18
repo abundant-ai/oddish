@@ -49,6 +49,7 @@ export async function GET(request: NextRequest) {
     const experimentsQuery = searchParams.get("experiments_query");
     const experimentsStatus = searchParams.get("experiments_status");
     const experimentsAuthor = searchParams.get("experiments_author");
+    const experimentsAuthorQuery = searchParams.get("experiments_author_query");
     const usageMinutes = searchParams.get("usage_minutes");
     const includeTasks = searchParams.get("include_tasks");
     const includeUsage = searchParams.get("include_usage");
@@ -60,6 +61,8 @@ export async function GET(request: NextRequest) {
     if (experimentsLimit) params.experiments_limit = experimentsLimit;
     if (experimentsOffset) params.experiments_offset = experimentsOffset;
     if (experimentsQuery) params.experiments_query = experimentsQuery;
+    if (experimentsAuthorQuery)
+      params.experiments_author_query = experimentsAuthorQuery;
     for (const name of [
       "experiments_tags",
       "experiments_tags_any",

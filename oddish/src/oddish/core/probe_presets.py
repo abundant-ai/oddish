@@ -16,6 +16,11 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.result_focus_schema import (
+    UnsupportedSchemaError,
+    normalize_findings_schema,
+    parse_result_focus,
+)
 from oddish.db import ProbePresetModel, utcnow
 from oddish.schemas import ProbePresetCreate, ProbePresetUpdate
 
@@ -51,6 +56,13 @@ async def create_probe_preset_core(
     org_id: str | None = None,
 ) -> ProbePresetModel:
     """Create a custom (non-seed) preset owned by ``org_id``."""
+    spec = parse_result_focus(data.result_focus)
+    if spec is not None:
+        try:
+            normalize_findings_schema(spec)
+        except UnsupportedSchemaError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     preset = ProbePresetModel(
         org_id=org_id,
         name=data.name,
@@ -59,8 +71,6 @@ async def create_probe_preset_core(
         operator_prompt=data.operator_prompt,
         result_focus=data.result_focus,
         evaluation_metric=data.evaluation_metric,
-        ratio_unit=data.ratio_unit,
-        ratio_verb=data.ratio_verb,
         is_seed=False,
     )
     session.add(preset)
@@ -101,7 +111,15 @@ async def update_probe_preset_core(
 ) -> ProbePresetModel:
     """Apply provided fields to an org-owned custom preset."""
     preset = await _get_owned_preset(session, preset_id=preset_id, org_id=org_id)
-    for field, value in data.model_dump(exclude_unset=True).items():
+    updates = data.model_dump(exclude_unset=True)
+    if "result_focus" in updates:
+        spec = parse_result_focus(updates["result_focus"])
+        if spec is not None:
+            try:
+                normalize_findings_schema(spec)
+            except UnsupportedSchemaError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+    for field, value in updates.items():
         setattr(preset, field, value)
     await session.flush()
     return preset

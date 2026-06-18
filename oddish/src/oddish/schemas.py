@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -217,20 +218,19 @@ class TaskSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
+        ),
+    )
     evaluation_metric: str | None = Field(
         default=None,
         description=(
             "How to render the trial's result. One of 'cheat_ratio', "
             "'result_focus', 'none'. Default null = no specific metric."
         ),
-    )
-    ratio_unit: str | None = Field(
-        default=None,
-        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
-    )
-    ratio_verb: str | None = Field(
-        default=None,
-        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
     link: str | None = Field(
         None,
@@ -306,20 +306,19 @@ class TaskSweepSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
+        ),
+    )
     evaluation_metric: str | None = Field(
         default=None,
         description=(
             "How to render the trial's result. One of 'cheat_ratio', "
             "'result_focus', 'none'. Default null = no specific metric."
         ),
-    )
-    ratio_unit: str | None = Field(
-        default=None,
-        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
-    )
-    ratio_verb: str | None = Field(
-        default=None,
-        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
 
     # Common fields
@@ -1122,8 +1121,6 @@ class ProbePresetCreate(BaseModel):
     operator_prompt: str
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
 
 
 class ProbePresetUpdate(BaseModel):
@@ -1136,8 +1133,6 @@ class ProbePresetUpdate(BaseModel):
     operator_prompt: str | None = None
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
 
 
 class ProbePresetResponse(BaseModel):
@@ -1151,8 +1146,6 @@ class ProbePresetResponse(BaseModel):
     operator_prompt: str
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
     is_seed: bool
     created_at: datetime
     updated_at: datetime
