@@ -985,6 +985,10 @@ def submit_sweep(
     # of creating a second set of trials.
     idempotency_key = compute_sweep_idempotency_key(payload)
 
+    # Single POST, deliberately not wrapped in _retry_request: the adaptive
+    # limiter only throttles submission *concurrency*, it never replays a sweep.
+    # Client-side retry of /tasks/sweep is intentionally not added here; the
+    # idempotency key above is what makes a re-run safe to dedupe server-side.
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
     ) as client:
