@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -19,8 +18,14 @@ from rich.progress import (
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
+from oddish.cli._concurrency import (
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MIN_CONCURRENCY,
+    SUBMIT_CONCURRENCY_ENV_VAR,
+    map_with_adaptive_concurrency,
+    resolve_submit_concurrency,
+)
 from oddish.cli.api import (
-    TASK_UPLOAD_CONCURRENCY,
     get_experiment_share,
     get_task_summary,
     load_sweep_config,
@@ -393,6 +398,18 @@ def run(
             help="API URL (defaults to ODDISH_API_URL or Oddish Cloud)",
         ),
     ] = "",
+    submit_concurrency: Annotated[
+        Optional[int],
+        typer.Option(
+            "--submit-concurrency",
+            help=(
+                "Max parallel task uploads/submissions. Default: adaptive "
+                f"(grows on success, backs off under load, within "
+                f"[{DEFAULT_MIN_CONCURRENCY}, {DEFAULT_MAX_CONCURRENCY}]). "
+                f"Overrides ${SUBMIT_CONCURRENCY_ENV_VAR}."
+            ),
+        ),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option(
@@ -684,6 +701,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
+            concurrency=submit_concurrency,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
@@ -735,31 +753,26 @@ def run(
                 total_trials_submitted += result["trials_count"]
                 submit_progress.update(progress_task, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(submit_targets)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(
-                        submit_task,
-                        target_id,
-                        append_to_task=append,
-                        task_content_hash=content_hash,
-                        task_path=task_path,
-                    ): index
-                    for index, (
-                        target_id,
-                        append,
-                        content_hash,
-                        task_path,
-                    ) in enumerate(submit_targets)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    result = future.result()
-                    results_by_index[index] = result
-                    total_trials_submitted += result["trials_count"]
-                    submit_progress.update(progress_task, advance=1)
-            all_results = [r for r in results_by_index if r is not None]
+            submit_limiter = resolve_submit_concurrency(submit_concurrency)
+
+            def _submit_one(
+                target: tuple[str, bool, str | None, Path | None],
+            ) -> dict:
+                target_id, append, content_hash, target_path = target
+                return submit_task(
+                    target_id,
+                    append_to_task=append,
+                    task_content_hash=content_hash,
+                    task_path=target_path,
+                )
+
+            all_results = map_with_adaptive_concurrency(
+                submit_targets,
+                _submit_one,
+                submit_limiter,
+                on_complete=lambda: submit_progress.update(progress_task, advance=1),
+            )
+            total_trials_submitted += sum(r["trials_count"] for r in all_results)
 
     experiment_id_resolved: str | None = None
     experiment_name = ""
