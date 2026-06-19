@@ -37,6 +37,7 @@ from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
 from oddish.cli.config import get_auth_headers, error_console
+from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -831,10 +832,19 @@ def submit_sweep(
     if link:
         payload["link"] = link
 
+    # Stamp the submission with a stable idempotency key so a retried identical
+    # submission (e.g. after a network blip) is deduplicated server-side instead
+    # of creating a second set of trials.
+    idempotency_key = compute_sweep_idempotency_key(payload)
+
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
     ) as client:
-        response = client.post(f"{api_url}/tasks/sweep", json=payload)
+        response = client.post(
+            f"{api_url}/tasks/sweep",
+            json=payload,
+            headers={"Idempotency-Key": idempotency_key},
+        )
 
     if response.status_code != 200:
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")

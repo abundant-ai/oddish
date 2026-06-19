@@ -30,6 +30,7 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
+from collections import Counter
 from collections.abc import Collection, Sequence
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.tag_filter_ast import (
@@ -68,12 +69,21 @@ from oddish.schemas import (
     TaskBrowseTrial,
     TaskCostTotals,
     TaskDetailResponse,
+    TaskResponse,
     TaskStatusResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
     TaskVersionSummary,
     TrialResponse,
     UserTagRef,
+)
+from oddish.core.idempotency import (
+    SWEEP_ROUTE,
+    IdempotencyConflict,
+    IdempotencyStore,
+    Reservation,
+    compute_request_hash,
+    reserve_idempotency_slot,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -2511,6 +2521,36 @@ async def delete_trial_core(
     }
 
 
+def build_task_sweep_response(
+    task: TaskModel,
+    new_trials: list[TrialModel],
+    is_append: bool,
+    experiment: ExperimentModel | None,
+) -> TaskResponse:
+    """Build the ``TaskResponse`` for a sweep submission.
+
+    Shared by both ``POST /tasks/sweep`` routes and by the idempotency layer so
+    the response stored for replay is identical to the one a fresh submission
+    returns. For append submissions only the newly appended trials are counted;
+    for create submissions the task's full trial set is counted.
+    """
+    response_trials = new_trials if is_append else list(task.trials)
+    provider_counts: Counter[str] = Counter(trial.provider for trial in response_trials)
+    primary = experiment or (task.experiments[0] if task.experiments else None)
+    return TaskResponse(
+        id=task.id,
+        name=task.name,
+        status=task.status,
+        priority=task.priority,
+        trials_count=len(response_trials),
+        providers=dict(provider_counts),
+        experiment_id=primary.id if primary else None,
+        experiment_name=primary.name if primary else None,
+        created_at=task.created_at,
+        new_trial_ids=[trial.id for trial in response_trials],
+    )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -2518,12 +2558,29 @@ async def create_task_sweep_core(
     org_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
+    idempotency_key: str | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+    request_hash: str | None = None,
 ) -> tuple[TaskModel, list[TrialModel], bool, ExperimentModel | None]:
     """
     Expands a sweep submission into trials and either appends to an existing task
     or creates a new one.
 
     Returns a tuple of (task, new_trials, is_append, experiment).
+
+    When ``idempotency_key`` and ``idempotency_store`` are supplied (the cloud
+    backend wires both; the open-source server passes neither), the submission is
+    deduplicated: a faithful retry of a completed key raises ``IdempotencyReplay``
+    carrying the stored response, and a key reused with a different body -- or one
+    still in progress -- raises ``HTTPException(409)``. This short-circuits before
+    any trials are created, so a retried "create" never duplicates trials via the
+    auto-append flip below.
+
+    ``request_hash`` is the fingerprint used to detect a key reused with a
+    different body. Callers that mutate the submission before calling (the cloud
+    backend resolves identity / attribution / probe defaults) must pass a hash
+    of the *raw* client submission so an honest retry is not spuriously rejected;
+    when omitted it is computed from ``submission`` as received here.
     """
     from oddish.core.sweeps import (
         build_trial_specs_from_sweep,
@@ -2538,6 +2595,34 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.auto_probe import maybe_enqueue_auto_probe
+
+    # Reserve the idempotency slot before doing any work. The fingerprint comes
+    # from the caller's raw pre-mutation snapshot when supplied (the backend
+    # mutates the submission before calling), else from the submission as
+    # received here -- in both cases captured before the link defaulting and
+    # auto-append flip below mutate it, so the original create and a faithful
+    # retry fingerprint identically. ``reserve_idempotency_slot`` raises
+    # ``IdempotencyReplay`` on a matching retry (handled by the route) or
+    # ``IdempotencyConflict`` (mapped to 409 here) on a reused key / in-progress
+    # duplicate.
+    reservation: Reservation | None = None
+    if idempotency_store is not None and idempotency_key and org_id:
+        effective_request_hash = (
+            request_hash
+            if request_hash is not None
+            else compute_request_hash(submission)
+        )
+        try:
+            reservation = await reserve_idempotency_slot(
+                idempotency_store,
+                org_id=org_id,
+                route=SWEEP_ROUTE,
+                raw_key=idempotency_key,
+                request_hash=effective_request_hash,
+                now=utcnow(),
+            )
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Default the task link to the GitHub PR URL when the caller didn't
     # pass an explicit ``--link`` but the task carries GitHub PR metadata
@@ -2693,6 +2778,22 @@ async def create_task_sweep_core(
             await maybe_enqueue_auto_probe(
                 session, task=task, experiment=experiment, org_id=org_id
             )
+        if (
+            reservation is not None
+            and idempotency_store is not None
+            and org_id is not None
+        ):
+            # Flush so trial ids / timestamps are populated, then store the
+            # response for replay alongside the trials in this transaction.
+            await session.flush()
+            await idempotency_store.complete(
+                org_id,
+                SWEEP_ROUTE,
+                reservation.key_hash,
+                build_task_sweep_response(
+                    task, new_trials, True, experiment
+                ).model_dump(mode="json"),
+            )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -2746,5 +2847,17 @@ async def create_task_sweep_core(
     if task.run_probe:
         await maybe_enqueue_auto_probe(
             session, task=task, experiment=experiment, org_id=org_id
+        )
+    if reservation is not None and idempotency_store is not None and org_id is not None:
+        # Flush so trial ids / timestamps are populated, then store the
+        # response for replay alongside the trials in this transaction.
+        await session.flush()
+        await idempotency_store.complete(
+            org_id,
+            SWEEP_ROUTE,
+            reservation.key_hash,
+            build_task_sweep_response(task, new_trials, False, experiment).model_dump(
+                mode="json"
+            ),
         )
     return task, new_trials, False, experiment
