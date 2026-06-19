@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-19]
+
+### Added
+- Experiment-level probes: submit a probe whose agent can read artifacts from all trials in an experiment (per-task-balanced, up to 30 trials); "New probe" button added to the experiment Probe tab in both empty and populated states (#372)
+- Probe launch button in the experiment trials table (hover icon next to version badge) and task detail header (labeled "Launch probe"), both opening the probe submit form in a dialog (#385)
+- DinD Docker daemon failure diagnostics: when `dockerd` fails to start in a Harbor DinD worker, its logs (tail 200), process state, memory, and disk are captured from the still-alive VM and folded into `exception.txt` to aid root-cause analysis (#361)
+
+### Changed
+- All claude-code trials now route to the direct Anthropic API instead of Bedrock (Bedrock credentials were unavailable); trial classifier also switched off Bedrock to the direct Anthropic API (#374, #377)
+- claude-code model id now matches the transport: when Bedrock env signals are absent, `_build_agent_config` emits a plain Anthropic API model id (e.g. `claude-sonnet-4-6`) instead of a Bedrock inference-profile id (`global.anthropic.claude-sonnet-4-6`), preventing HTTP 400 "Operation not allowed" errors (#359)
+- Probe result-focus redesigned: `result_focus` is now a JSON-schema structure with enforced `ResultFocusFindings` fields; action items lead instead of free-form text; ratio metric removed; full JSON summary accessible via toggle (#370, #378)
+- Probe result display overhauled: cheating badges, "investigation steps," and "task is gameable" tally removed from the summary panel; summary row and latest-probe card now show action-items count (`no action items` / `N action items · M must-fix`) instead of cheat verdicts; `reward 0.0` fallback replaced with "awaiting analyzer" (#365, #379)
+- Probe transcripts no longer clipped before summarization; probe analyzer upgraded to a larger model (#364)
+- Auto-probe now defaults to the Task Construction Auditor preset (#376)
+- Subscription auth route (`sub/<model>` prefix, OAuth token / Codex auth.json path) and the `claude-opus-4-8` sub-bucket concurrency bump reverted; related config symbols, tests, and BYOC credential infrastructure removed (#371)
+- Modal worker container cap raised 768 → 2688; connection-budget comment updated to document the 2882/3000 worst-case client-connection estimate (#387)
+- nop/oracle queue concurrency default raised 32 → 256 in both core config and the Modal deployment (#380)
+- Harbor runner split into focused submodules (`harbor_agent_config.py`, `harbor_modal_debug.py`, `harbor_outcome.py`, `harbor_storage.py`); `harbor_runner.py` retained as an orchestration facade for backward-compat imports (#383)
+- Project repositioned as "batch execution and continuous QA for Harbor-compatible RL environments" in the landing page hero copy, README tagline, site metadata, and `pyproject.toml` keywords (#388)
+- API key creation permission check extended to recognize the Abundant production Clerk org ID (`org_39ufkEqie8rLlVhoK4YMm4IMx0L`) in addition to org slugs (#382)
+
+### Fixed
+- Cancel deadlocks with concurrent worker progress: `cancel_tasks_runs` now locks trial rows first then parent task rows (matching the worker domain-write order), and uses a `WITH … FOR UPDATE` CTE to lock matching `worker_jobs` rows before cancelling them (#393, #395)
+- Unresolved Git LFS pointer files are now detected before archiving and uploading a task directory; `oddish run` fails fast with the affected relative paths and a `git lfs pull` remediation hint (#394)
+- Probe summary crash on token-cap-truncated analyzer JSON (#375)
+- Probe build error: second result-focus panel now rendered via `ResultFocusFindings` (#373)
+- Experiment agent and model icons: agent-harness logos shown in experiment table column headers; model logos used for model rows and pass@k legend; `/` separator replaces `@` in model-scoped experiment labels (#381)
+
+---
+
 ## [2026-06-18]
 
 ### Changed
