@@ -316,6 +316,52 @@ def compute_task_content_hash(task_path: Path) -> str:
     return hasher.hexdigest()
 
 
+_GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
+
+
+def _is_git_lfs_pointer_file(file_path: Path) -> bool:
+    """Return True when a worktree file is an unresolved Git LFS pointer."""
+    try:
+        header = file_path.read_bytes()[:512]
+    except OSError:
+        return False
+    return (
+        header.startswith(_GIT_LFS_POINTER_PREFIX)
+        and b"\noid sha256:" in header
+        and b"\nsize " in header
+    )
+
+
+def find_git_lfs_pointer_files(task_path: Path) -> list[Path]:
+    """Find unresolved Git LFS pointers that would be uploaded as task files."""
+    pointers: list[Path] = []
+    for file_path in sorted(task_path.rglob("*")):
+        if file_path.is_file() and _is_git_lfs_pointer_file(file_path):
+            pointers.append(file_path)
+    return pointers
+
+
+def validate_no_git_lfs_pointers(task_path: Path) -> None:
+    pointers = find_git_lfs_pointer_files(task_path)
+    if not pointers:
+        return
+
+    shown = pointers[:10]
+    error_console.print(
+        f"[red]Task '{task_path.name}' contains unresolved Git LFS pointer "
+        "file(s).[/red]"
+    )
+    for file_path in shown:
+        rel = file_path.relative_to(task_path)
+        error_console.print(f"  [red]✗[/red] {rel}")
+    if len(pointers) > len(shown):
+        error_console.print(f"  [dim]... and {len(pointers) - len(shown)} more[/dim]")
+    error_console.print(
+        "\n[dim]Run `git lfs pull` in the task repository, then retry the upload.[/dim]"
+    )
+    raise typer.Exit(1)
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -398,6 +444,7 @@ def upload_task(
         error_console.print(f"[red]Invalid task timeout config:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    validate_no_git_lfs_pointers(task_path)
     content_hash = compute_task_content_hash(task_path)
     tarball_path = archive_task_dir(task_path)
 
