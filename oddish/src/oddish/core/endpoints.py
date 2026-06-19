@@ -30,7 +30,8 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
-from collections.abc import Collection, Sequence
+from collections import Counter
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.tag_filter_ast import (
     TagFilterAST,
@@ -68,7 +69,9 @@ from oddish.schemas import (
     TaskBrowseTrial,
     TaskCostTotals,
     TaskDetailResponse,
+    TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchItemResult,
     TaskSweepSubmission,
     TaskVersionResponse,
     TaskVersionSummary,
@@ -513,7 +516,8 @@ def _build_browse_author_filter(
     lowered_handles = [
         handle
         for handle in (
-            (name or "").strip().lstrip("@").lower() for name in (github_usernames or ())
+            (name or "").strip().lstrip("@").lower()
+            for name in (github_usernames or ())
         )
         if handle
     ]
@@ -2723,3 +2727,125 @@ async def create_task_sweep_core(
             session, task=task, experiment=experiment, org_id=org_id
         )
     return task, new_trials, False, experiment
+
+
+def _build_sweep_task_response(
+    task: TaskModel,
+    new_trials: list[TrialModel],
+    is_append: bool,
+    experiment: ExperimentModel | None,
+) -> TaskResponse:
+    """Project a created/appended task into the sweep ``TaskResponse``.
+
+    Mirrors the single-sweep route's response shaping so batch items return the
+    same payload a client would get from ``POST /tasks/sweep``.
+    """
+    response_trials = new_trials if is_append else list(task.trials)
+    provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
+    primary = experiment or (task.experiments[0] if task.experiments else None)
+    return TaskResponse(
+        id=task.id,
+        name=task.name,
+        status=task.status,
+        priority=task.priority,
+        trials_count=len(response_trials),
+        providers=dict(provider_counts),
+        experiment_id=primary.id if primary else None,
+        experiment_name=primary.name if primary else None,
+        created_at=task.created_at,
+        new_trial_ids=[t.id for t in response_trials],
+    )
+
+
+async def create_task_sweep_batch_core(
+    session: AsyncSession,
+    *,
+    submissions: Sequence[TaskSweepSubmission],
+    org_id: str | None = None,
+    default_environment: EnvironmentType | None = None,
+    allowed_environments: Collection[EnvironmentType] | None = None,
+    prepare: Callable[
+        [AsyncSession, TaskSweepSubmission], Awaitable[EnvironmentType | None]
+    ]
+    | None = None,
+    finalize: Callable[
+        [AsyncSession, TaskSweepSubmission, TaskModel, bool, ExperimentModel | None],
+        Awaitable[None],
+    ]
+    | None = None,
+) -> list[TaskSweepBatchItemResult]:
+    """Create several task sweeps in one transaction, best-effort.
+
+    Each submission runs inside its own SAVEPOINT (``session.begin_nested()``):
+    if an item fails, only that item is rolled back, leaving sibling items -- and
+    the rows they already inserted -- intact. The caller commits the outer
+    transaction once after this returns. Returns a per-item result list aligned
+    to ``submissions`` by ``index`` (best-effort / 207-style semantics).
+
+    Per-item creation reuses :func:`create_task_sweep_core`, so the same
+    single-statement bulk insert of trials and worker jobs (see
+    ``oddish.queue._bulk_insert_trials`` / ``bulk_enqueue_worker_jobs``) is used
+    here as on the single-sweep path.
+
+    ``prepare`` (optional) runs inside each item's savepoint before creation and
+    returns the default environment for that submission; it is where a caller
+    performs per-item, auth-aware setup (identity resolution, attribution).
+    ``finalize`` (optional) runs inside the savepoint after creation for
+    post-create stamping. Keeping both inside the savepoint preserves per-item
+    atomicity -- a failure in either rolls back just that item.
+
+    Per-item idempotency-key replay is intentionally out of scope: request-level
+    idempotency is separate in-flight work and will layer on top of this path.
+    """
+    from oddish.core.sweeps import validate_sweep_submission
+
+    results: list[TaskSweepBatchItemResult] = []
+    for index, submission in enumerate(submissions):
+        try:
+            async with session.begin_nested():
+                validate_sweep_submission(submission)
+                item_default_env = default_environment
+                if prepare is not None:
+                    item_default_env = await prepare(session, submission)
+                task, new_trials, is_append, experiment = await create_task_sweep_core(
+                    session,
+                    submission=submission,
+                    org_id=org_id,
+                    default_environment=item_default_env,
+                    allowed_environments=allowed_environments,
+                )
+                if finalize is not None:
+                    await finalize(session, submission, task, is_append, experiment)
+        except HTTPException as exc:
+            # Expected validation/lookup failures (e.g. missing task -> 404).
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=False,
+                    status_code=exc.status_code,
+                    error=str(exc.detail),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
+            # Any other error is contained to this item; the savepoint has been
+            # rolled back, so the session stays usable for the remaining items.
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=False,
+                    status_code=400,
+                    error=str(exc),
+                )
+            )
+        else:
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=True,
+                    status_code=200,
+                    task=_build_sweep_task_response(
+                        task, new_trials, is_append, experiment
+                    ),
+                )
+            )
+    return results
