@@ -73,6 +73,7 @@ py-modules = [
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
+    "idempotency_store",
     "modal_app",
     "models",
     "observability",
