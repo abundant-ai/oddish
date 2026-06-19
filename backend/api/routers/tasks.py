@@ -5,7 +5,8 @@ from collections import Counter
 import logging
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +18,7 @@ from oddish.core.endpoints import (
     browse_tasks_core,
     cancel_task_qa_core,
     combine_experiments_core,
+    create_task_sweep_batch_core,
     create_task_sweep_core,
     delete_experiment_core,
     get_task_detail_core,
@@ -74,6 +76,8 @@ from oddish.schemas import (
     TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchRequest,
+    TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
     UploadResponse,
@@ -494,6 +498,87 @@ async def create_task_sweep(
         )
 
 
+@router.post("/tasks/sweep/batch", response_model=TaskSweepBatchResponse)
+async def create_task_sweep_batch(
+    payload: TaskSweepBatchRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    response: Response,
+) -> TaskSweepBatchResponse:
+    """Submit several task sweeps in one request (best-effort, per-item status).
+
+    Each submission is created inside its own savepoint, so one bad item neither
+    aborts the batch nor rolls back items that already succeeded. ``results`` is
+    a per-item status array indexed to ``submissions``. Returns HTTP 200 when
+    every item succeeds and HTTP 207 Multi-Status when at least one item fails --
+    callers must inspect each item's ``success``/``status_code``.
+
+    Per-item idempotency-key replay is intentionally not handled here; request
+    idempotency is separate in-flight work and will layer on top of this path.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    if not payload.submissions:
+        raise HTTPException(
+            status_code=400, detail="Must specify at least one submission"
+        )
+
+    async def _prepare(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> EnvironmentType | None:
+        # Per-item, auth-aware setup. Runs inside the item's savepoint so a
+        # failure here rolls back only this item (mirrors the single-sweep route).
+        await _resolve_submission_identity(session, submission, auth)
+        _apply_github_attribution(submission)
+        await _apply_user_run_probe_default(session, submission, auth)
+        return get_default_cloud_environment(submission)
+
+    async def _finalize(
+        session: AsyncSession,
+        submission: TaskSweepSubmission,
+        task: TaskModel,
+        is_append: bool,
+        experiment: ExperimentModel | None,
+    ) -> None:
+        # Post-create stamping, inside the savepoint (mirrors the single route).
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
+        if not is_append:
+            created_by_user_id = await _resolve_created_by_user_id(
+                session, submission, auth
+            )
+            if created_by_user_id:
+                task.created_by_user_id = created_by_user_id
+            await _maybe_publish_experiment(session, task, submission, auth)
+        elif experiment and submission.publish_experiment:
+            await ensure_experiment_public(session, experiment)
+
+    async with get_session() as session:
+        results = await create_task_sweep_batch_core(
+            session,
+            submissions=payload.submissions,
+            org_id=auth.org_id,
+            allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+            prepare=_prepare,
+            finalize=_finalize,
+        )
+        await session.commit()
+
+    succeeded = sum(1 for r in results if r.success)
+    failed = len(results) - succeeded
+    # 207 Multi-Status whenever any item failed; the body carries per-item
+    # outcomes so the client never has to rely on the top-level status alone.
+    if failed:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    return TaskSweepBatchResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
+
+
 # =============================================================================
 # Task Listing and Retrieval
 # =============================================================================
@@ -912,9 +997,7 @@ async def cancel_task_qa(
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        result = await cancel_task_qa_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        result = await cancel_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
 
     modal_cancelled = await _cancel_modal_function_calls(
         cast("list[str]", result.get("modal_function_call_ids", []))
