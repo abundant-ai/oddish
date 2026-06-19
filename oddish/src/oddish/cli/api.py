@@ -446,7 +446,7 @@ def upload_task(
 
     validate_no_git_lfs_pointers(task_path)
     content_hash = compute_task_content_hash(task_path)
-    tarball_path = archive_task_dir(task_path)
+    tarball_path: Path | None = None
 
     init_body: dict[str, object] = {
         "name": task_path.name,
@@ -483,6 +483,8 @@ def upload_task(
                 )
                 raise typer.Exit(1)
 
+            tarball_path = archive_task_dir(task_path)
+
             _upload_to_presigned_url(
                 upload_url,
                 tarball_path,
@@ -513,7 +515,8 @@ def upload_task(
 
         return cast(dict, response.json())
     finally:
-        shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
+        if tarball_path is not None:
+            shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
 # Uploads are serialised to keep the presigned-PUT path simple and to avoid

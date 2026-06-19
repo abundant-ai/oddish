@@ -2644,6 +2644,7 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
+        await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
         # task-level flag does not retroactively analyze pre-existing
@@ -2710,18 +2711,42 @@ async def create_task_sweep_core(
             else default_environment
         )
 
+        target_experiment_id = new_experiment_id or (
+            primary_experiment.id if primary_experiment else None
+        )
+        existing_counts: dict[tuple[str, str | None], int] | None = None
+        if task.current_version_id is not None:
+            reconcile_where = [
+                TrialModel.task_id == task.id,
+                TrialModel.task_version_id == task.current_version_id,
+                TrialModel.is_probe.is_(False),
+            ]
+            if target_experiment_id is not None:
+                reconcile_where.append(
+                    TrialModel.experiment_id == target_experiment_id
+                )
+            existing_counts_result = await session.execute(
+                select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
+                .where(*reconcile_where)
+                .group_by(TrialModel.agent, TrialModel.model)
+            )
+            existing_counts = {
+                (agent, model): count
+                for agent, model, count in existing_counts_result.all()
+            }
+
         trials = build_trial_specs_from_sweep(
             submission,
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
+            existing_counts=existing_counts,
         )
 
-        fallback_experiment_id = primary_experiment.id if primary_experiment else None
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
                 "priority": task.priority,
-                "experiment_id": new_experiment_id or fallback_experiment_id,
+                "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
                 "run_probe": task.run_probe,
