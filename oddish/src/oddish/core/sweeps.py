@@ -5,6 +5,7 @@ from collections.abc import Collection
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
 
+from oddish.config import settings
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
@@ -63,8 +64,6 @@ def build_trial_specs_from_sweep(
         # None) emit the full n_trials -- today's additive behavior.
         n = config.n_trials
         if existing_counts is not None:
-            from oddish.config import settings
-
             # existing_counts is keyed by the trial's stored ``model`` column,
             # which is written through ``normalize_trial_model`` (see the
             # ``append_trials_to_task`` write path). Normalize the manifest's
