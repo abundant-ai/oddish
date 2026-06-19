@@ -21,12 +21,14 @@ from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
 from oddish.cli.api import (
     TASK_UPLOAD_CONCURRENCY,
+    build_sweep_payload,
     get_experiment_share,
     get_task_summary,
     load_sweep_config,
+    post_sweep_payload,
     print_final_results,
     resolve_local_task_paths,
-    submit_sweep,
+    submit_sweep_batch,
     upload_tasks_with_progress,
     watch_task,
 )
@@ -614,7 +616,7 @@ def run(
     total_trials_submitted = 0
     append_mode = bool(existing_task_ids)
 
-    def submit_task(
+    def build_task_payload(
         task_id: str,
         *,
         append_to_task: bool,
@@ -632,8 +634,7 @@ def run(
                 task_path,
                 override_gpus=override_gpus,
             )
-        return submit_sweep(
-            api_url=api_url,
+        return build_sweep_payload(
             task_id=task_id,
             configs=task_configs,
             environment=task_environment,
@@ -661,6 +662,21 @@ def run(
             content_hash=task_content_hash,
             link=link,
         )
+
+    def submit_task(
+        task_id: str,
+        *,
+        append_to_task: bool,
+        task_content_hash: str | None = None,
+        task_path: Path | None = None,
+    ) -> dict:
+        payload = build_task_payload(
+            task_id,
+            append_to_task=append_to_task,
+            task_content_hash=task_content_hash,
+            task_path=task_path,
+        )
+        return post_sweep_payload(api_url, payload)
 
     # Phase 1: upload any local task directories (shared with
     # ``oddish upload``). ``oddish run`` deliberately uses
@@ -736,30 +752,68 @@ def run(
                 submit_progress.update(progress_task, advance=1)
         else:
             results_by_index: list[dict | None] = [None] * len(submit_targets)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(
-                        submit_task,
-                        target_id,
-                        append_to_task=append,
-                        task_content_hash=content_hash,
-                        task_path=task_path,
-                    ): index
-                    for index, (
-                        target_id,
-                        append,
-                        content_hash,
-                        task_path,
-                    ) in enumerate(submit_targets)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    result = future.result()
-                    results_by_index[index] = result
-                    total_trials_submitted += result["trials_count"]
+            # Prefer the batch endpoint: one request for every task. Build all
+            # payloads up front, then post them together.
+            payloads = [
+                build_task_payload(
+                    target_id,
+                    append_to_task=append,
+                    task_content_hash=content_hash,
+                    task_path=task_path,
+                )
+                for target_id, append, content_hash, task_path in submit_targets
+            ]
+            batch_results = submit_sweep_batch(api_url, payloads)
+
+            if batch_results is not None:
+                # Best-effort: each item is independent. Surface failures by
+                # task id; keep the tasks that succeeded.
+                failures = 0
+                for item in batch_results:
+                    idx = item.get("index")
+                    if not isinstance(idx, int) or not 0 <= idx < len(submit_targets):
+                        continue
+                    if item.get("success") and item.get("task"):
+                        task_resp = item["task"]
+                        results_by_index[idx] = task_resp
+                        total_trials_submitted += task_resp.get("trials_count", 0)
+                    else:
+                        failures += 1
+                        error_console.print(
+                            f"[red]Failed to submit task {submit_targets[idx][0]}:"
+                            f"[/red] {item.get('error')}"
+                        )
                     submit_progress.update(progress_task, advance=1)
-            all_results = [r for r in results_by_index if r is not None]
+                all_results = [r for r in results_by_index if r is not None]
+                if failures and not all_results:
+                    raise typer.Exit(1)
+            else:
+                # Older server (no batch route) or the batch request never
+                # reached per-item processing: submit each task on its own.
+                max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    future_to_index = {
+                        executor.submit(
+                            submit_task,
+                            target_id,
+                            append_to_task=append,
+                            task_content_hash=content_hash,
+                            task_path=task_path,
+                        ): index
+                        for index, (
+                            target_id,
+                            append,
+                            content_hash,
+                            task_path,
+                        ) in enumerate(submit_targets)
+                    }
+                    for future in as_completed(future_to_index):
+                        index = future_to_index[future]
+                        result = future.result()
+                        results_by_index[index] = result
+                        total_trials_submitted += result["trials_count"]
+                        submit_progress.update(progress_task, advance=1)
+                all_results = [r for r in results_by_index if r is not None]
 
     experiment_id_resolved: str | None = None
     experiment_name = ""
