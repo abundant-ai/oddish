@@ -102,7 +102,6 @@ async def test_new_model_gets_full_n_trials(seeded_task_id):
         user="test",
     )
 
-    # First submission: model A only.
     async with get_session() as s:
         await create_task_sweep_core(s, submission=submission_a, org_id=None)
     async with get_session() as s:
@@ -116,7 +115,6 @@ async def test_new_model_gets_full_n_trials(seeded_task_id):
         f"expected 0 trials for model B before it was added, got {len(after_first_b)}"
     )
 
-    # Second submission: model A + model B.
     submission_ab = TaskSweepSubmission(
         task_id=seeded_task_id,
         append_to_task=True,
@@ -160,7 +158,6 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
         user="test",
     )
 
-    # First submission into experiment A.
     async with get_session() as s:
         await create_task_sweep_core(s, submission=submission_exp_a, org_id=None)
     async with get_session() as s:
@@ -169,7 +166,6 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
         f"expected {N_TRIALS} trials in exp-a, got {len(after_exp_a)}"
     )
 
-    # Second submission: same task+model, but a DIFFERENT experiment.
     submission_exp_b = TaskSweepSubmission(
         task_id=seeded_task_id,
         append_to_task=True,
@@ -185,7 +181,6 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
     async with get_session() as s:
         from oddish.config import settings
         norm = settings.normalize_trial_model(AGENT, MODEL_A)
-        # Count trials per experiment for this task+agent+model.
         result = await s.execute(
             select(TrialModel.experiment_id, TrialModel.id)
             .where(
@@ -200,7 +195,6 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
     from collections import Counter
     counts_by_exp = Counter(r[0] for r in rows)
 
-    # Resolve experiment IDs from the DB to find the ones we named.
     from oddish.queue import get_or_create_experiment
     async with get_session() as s:
         exp_a_obj = await get_or_create_experiment(s, exp_a, org_id=None)
