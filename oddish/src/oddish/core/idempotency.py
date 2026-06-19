@@ -33,6 +33,10 @@ IDEMPOTENCY_TTL = timedelta(hours=24)
 STATUS_IN_PROGRESS = "in_progress"
 STATUS_COMPLETED = "completed"
 
+# Bounded retries when the insert/prune race with a concurrent retry. Each loss
+# re-reads the winning row instead of spinning forever or creating a duplicate.
+_RESERVE_MAX_ATTEMPTS = 5
+
 
 def _canonical_digest(value: Any) -> str:
     """Return a stable SHA-256 hex digest of *value*.
@@ -133,8 +137,14 @@ class IdempotencyStore(Protocol):
         """Mark the slot completed and store its response for replay."""
         ...
 
-    async def discard(self, org_id: str, route: str, key_hash: str) -> None:
-        """Hard-delete the row (used to prune an expired slot)."""
+    async def discard(
+        self, org_id: str, route: str, key_hash: str, now: datetime
+    ) -> None:
+        """Hard-delete the row only if it is expired (``expires_at <= now``).
+
+        Scoping the delete to the stale row keeps a concurrent retry from
+        removing a fresh row it just inserted for the same key.
+        """
         ...
 
 
@@ -164,43 +174,46 @@ async def reserve_idempotency_slot(
     * completed key, same request -> :class:`IdempotencyReplay` (no re-execution).
     * completed/in-progress key, different request -> :class:`IdempotencyConflict`.
     * another request still in progress for the same body -> :class:`IdempotencyConflict`.
+
+    Concurrency-safe: the insert is unique-insert-wins, and pruning an expired
+    record deletes only that stale row -- never a fresh row a concurrent retry
+    just inserted. After losing the insert race we re-read the winning row and
+    replay / conflict against it rather than creating a duplicate.
     """
     key_hash = hash_idempotency_key(raw_key)
     expires_at = now + IDEMPOTENCY_TTL
 
-    # Unique-insert-wins: the first writer creates the row; everyone else loses
-    # the race atomically at the DB and falls through to inspect the winner.
-    if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
-        return Reservation(key_hash=key_hash)
-
-    existing = await store.get(org_id, route, key_hash)
-    if existing is None:
-        # The row was pruned between our failed insert and this read; try once
-        # more, otherwise treat the racing writer as an in-progress conflict.
+    for _ in range(_RESERVE_MAX_ATTEMPTS):
+        # Unique-insert-wins: the first writer creates the row; everyone else
+        # loses the race atomically at the DB and inspects the winner below.
         if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
             return Reservation(key_hash=key_hash)
-        raise IdempotencyConflict(
-            "A submission with this Idempotency-Key is already in progress."
-        )
 
-    if existing.expires_at <= now:
-        # Expired: prune the stale record and re-run as a fresh submission.
-        await store.discard(org_id, route, key_hash)
-        if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
-            return Reservation(key_hash=key_hash)
-        raise IdempotencyConflict(
-            "A submission with this Idempotency-Key is already in progress."
-        )
+        existing = await store.get(org_id, route, key_hash)
+        if existing is None:
+            # Pruned between our failed insert and this read; try to claim again.
+            continue
 
-    if existing.request_hash != request_hash:
-        raise IdempotencyConflict(
-            "This Idempotency-Key was already used with a different request."
-        )
+        if existing.expires_at <= now:
+            # Stale: prune only the expired row (scoped so a fresh row a
+            # concurrent retry inserted is never deleted), then claim again.
+            await store.discard(org_id, route, key_hash, now)
+            continue
 
-    if existing.status == STATUS_IN_PROGRESS:
-        raise IdempotencyConflict(
-            "A submission with this Idempotency-Key is still in progress."
-        )
+        # A live row owns the slot -- decide without creating anything.
+        if existing.request_hash != request_hash:
+            raise IdempotencyConflict(
+                "This Idempotency-Key was already used with a different request."
+            )
+        if existing.status == STATUS_IN_PROGRESS:
+            raise IdempotencyConflict(
+                "A submission with this Idempotency-Key is still in progress."
+            )
+        # Completed with a matching request fingerprint -> replay the result.
+        raise IdempotencyReplay(existing.response_json or {})
 
-    # Completed with a matching request fingerprint -> replay the stored result.
-    raise IdempotencyReplay(existing.response_json or {})
+    # Insert and prune kept racing past the retry budget; treat the contending
+    # writer as an in-progress duplicate rather than creating a second time.
+    raise IdempotencyConflict(
+        "A submission with this Idempotency-Key is already in progress."
+    )

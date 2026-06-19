@@ -93,11 +93,16 @@ class SubmissionIdempotencyStore:
             .values(status=STATUS_COMPLETED, response_json=response_json)
         )
 
-    async def discard(self, org_id: str, route: str, key_hash: str) -> None:
+    async def discard(
+        self, org_id: str, route: str, key_hash: str, now: datetime
+    ) -> None:
+        # Delete only the expired row: a concurrent retry may have already
+        # replaced it with a fresh (non-expired) row, which must survive.
         await self._session.execute(
             delete(SubmissionIdempotency).where(
                 SubmissionIdempotency.org_id == org_id,
                 SubmissionIdempotency.route == route,
                 SubmissionIdempotency.key_hash == key_hash,
+                SubmissionIdempotency.expires_at <= now,
             )
         )

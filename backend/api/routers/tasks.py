@@ -40,7 +40,7 @@ from oddish.core.public_helpers import (
     get_task_file_content_s3,
     list_task_files_s3,
 )
-from oddish.core.idempotency import IdempotencyReplay
+from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
 from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
@@ -449,6 +449,12 @@ async def create_task_sweep(
 
     validate_sweep_submission(submission)
 
+    # Fingerprint the raw client submission BEFORE the backend mutates it
+    # (identity / GitHub attribution / per-user probe default). Those defaults
+    # can resolve differently between attempts, so hashing post-mutation would
+    # spuriously 409 an honest retry; hashing the raw body keeps retries faithful.
+    request_hash = compute_request_hash(submission)
+
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
@@ -463,6 +469,7 @@ async def create_task_sweep(
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
                 idempotency_store=SubmissionIdempotencyStore(session),
+                request_hash=request_hash,
             )
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and

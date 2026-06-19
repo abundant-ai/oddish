@@ -26,10 +26,14 @@ from models import SubmissionIdempotency
 from idempotency_store import SubmissionIdempotencyStore
 from oddish.core.endpoints import create_task_sweep_core
 from oddish.core.idempotency import (
+    STATUS_COMPLETED,
+    STATUS_IN_PROGRESS,
     SWEEP_ROUTE,
     IdempotencyReplay,
+    StoredIdempotencyRecord,
     compute_request_hash,
     hash_idempotency_key,
+    reserve_idempotency_slot,
 )
 from oddish.db.models import Base, TaskModel, TrialModel, utcnow
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
@@ -185,6 +189,24 @@ async def _submit(session_maker, submission, key: str | None = KEY):
         return result
 
 
+async def _submit_with_hash(
+    session_maker, submission, request_hash: str, key: str | None = KEY
+):
+    """Like ``_submit`` but pins ``request_hash`` (as the backend route does from
+    a raw pre-mutation snapshot)."""
+    async with session_maker() as session:
+        result = await create_task_sweep_core(
+            session,
+            submission=submission,
+            org_id=ORG,
+            idempotency_key=key,
+            idempotency_store=SubmissionIdempotencyStore(session),
+            request_hash=request_hash,
+        )
+        await session.commit()
+        return result
+
+
 async def _trial_count(session_maker) -> int:
     async with session_maker() as session:
         result = await session.execute(
@@ -308,3 +330,175 @@ async def test_in_progress_key_conflicts(maker) -> None:
     assert excinfo.value.status_code == 409
     # The duplicate did not create a second set of trials.
     assert await _trial_count(maker) == 0
+
+
+# ---------------------------------------------------------------------------
+# Concurrency: expired-key prune race + faithful retry under backend mutation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_discard_only_removes_expired_row(maker) -> None:
+    """The scoped prune deletes a stale row but never a fresh one for the same
+    key -- so a concurrent retry's freshly-inserted record is not clobbered."""
+    key_hash = hash_idempotency_key(KEY)
+    now = utcnow()
+
+    async with maker() as session:
+        session.add(
+            SubmissionIdempotency(
+                org_id=ORG,
+                route=SWEEP_ROUTE,
+                key_hash=key_hash,
+                request_hash="rh",
+                status=STATUS_IN_PROGRESS,
+                expires_at=now + timedelta(hours=24),
+            )
+        )
+        await session.commit()
+
+    # Discarding while the row is fresh must be a no-op.
+    async with maker() as session:
+        await SubmissionIdempotencyStore(session).discard(
+            ORG, SWEEP_ROUTE, key_hash, now
+        )
+        await session.commit()
+    async with maker() as session:
+        count = (
+            await session.execute(
+                select(func.count()).select_from(SubmissionIdempotency)
+            )
+        ).scalar_one()
+    assert count == 1
+
+    # Once expired, the same discard removes it.
+    async with maker() as session:
+        await session.execute(
+            update(SubmissionIdempotency).values(expires_at=now - timedelta(seconds=1))
+        )
+        await session.commit()
+    async with maker() as session:
+        await SubmissionIdempotencyStore(session).discard(
+            ORG, SWEEP_ROUTE, key_hash, utcnow()
+        )
+        await session.commit()
+    async with maker() as session:
+        count = (
+            await session.execute(
+                select(func.count()).select_from(SubmissionIdempotency)
+            )
+        ).scalar_one()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expired_retries_create_once(maker) -> None:
+    """Two concurrent retries of an EXPIRED key: exactly one re-runs (creates a
+    fresh trial set); the other replays/conflicts instead of duplicating."""
+    async with maker() as session:
+        session.add(
+            SubmissionIdempotency(
+                org_id=ORG,
+                route=SWEEP_ROUTE,
+                key_hash=hash_idempotency_key(KEY),
+                request_hash=compute_request_hash(_submission()),
+                status=STATUS_COMPLETED,
+                response_json={"stale": True},
+                expires_at=utcnow() - timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    async def attempt():
+        try:
+            return await _submit(maker, _submission())
+        except (IdempotencyReplay, HTTPException) as exc:
+            return exc
+
+    results = await asyncio.gather(attempt(), attempt())
+
+    created = [r for r in results if isinstance(r, tuple)]
+    deduped = [r for r in results if isinstance(r, (IdempotencyReplay, HTTPException))]
+    assert len(created) == 1, results
+    assert len(deduped) == 1, results
+    # Exactly one fresh trial set, regardless of which attempt won the race.
+    assert await _trial_count(maker) == 1
+
+
+class _LostPruneRaceStore:
+    """Fake store where every insert loses: a stale row exists, and the instant
+    we prune it a concurrent writer wins the slot with a fresh COMPLETED row for
+    the same request. ``reserve_idempotency_slot`` must replay that row, not
+    create (``complete`` would fire)."""
+
+    def __init__(self, request_hash: str, response: dict) -> None:
+        self._request_hash = request_hash
+        self._response = response
+        self._pruned = False
+        self.begin_calls = 0
+
+    async def begin(self, org_id, route, key_hash, request_hash, now, expires_at):
+        self.begin_calls += 1
+        return False  # a row always already exists
+
+    async def get(self, org_id, route, key_hash):
+        if not self._pruned:
+            return StoredIdempotencyRecord(
+                request_hash=self._request_hash,
+                status=STATUS_IN_PROGRESS,
+                response_json=None,
+                expires_at=utcnow() - timedelta(seconds=1),  # stale
+            )
+        return StoredIdempotencyRecord(
+            request_hash=self._request_hash,
+            status=STATUS_COMPLETED,
+            response_json=self._response,
+            expires_at=utcnow() + timedelta(hours=24),  # fresh winner
+        )
+
+    async def discard(self, org_id, route, key_hash, now):
+        self._pruned = True
+
+    async def complete(self, *args, **kwargs):
+        raise AssertionError("must not complete after losing the re-insert race")
+
+
+@pytest.mark.asyncio
+async def test_lost_prune_race_replays_instead_of_creating() -> None:
+    response = {"trials_count": 1, "new_trial_ids": ["t-1"]}
+    store = _LostPruneRaceStore(request_hash="rh", response=response)
+
+    with pytest.raises(IdempotencyReplay) as excinfo:
+        await reserve_idempotency_slot(
+            store,
+            org_id=ORG,
+            route=SWEEP_ROUTE,
+            raw_key=KEY,
+            request_hash="rh",
+            now=utcnow(),
+        )
+
+    assert excinfo.value.response_json == response
+    # First insert lost, pruned the stale row, retried -- and lost again to the
+    # concurrent winner, then re-read it.
+    assert store.begin_calls >= 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_request_hash_keeps_retry_faithful_despite_mutation(
+    maker,
+) -> None:
+    """The backend fingerprints the RAW submission before applying defaults. A
+    retry whose server-resolved fields differ still replays (no spurious 409)
+    because the pinned request_hash matches."""
+    raw_hash = compute_request_hash(_submission(user=None))
+
+    # First attempt: identity resolved user to "alice"; hash pinned to the raw.
+    await _submit_with_hash(maker, _submission(user="alice"), raw_hash)
+    assert await _trial_count(maker) == 1
+
+    # Honest retry: same client body, but identity now resolves to "bob". The
+    # pinned raw hash still matches, so it replays rather than 409s.
+    with pytest.raises(IdempotencyReplay):
+        await _submit_with_hash(maker, _submission(user="bob"), raw_hash)
+    assert await _trial_count(maker) == 1

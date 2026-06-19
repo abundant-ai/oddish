@@ -2560,6 +2560,7 @@ async def create_task_sweep_core(
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    request_hash: str | None = None,
 ) -> tuple[TaskModel, list[TrialModel], bool, ExperimentModel | None]:
     """
     Expands a sweep submission into trials and either appends to an existing task
@@ -2574,6 +2575,12 @@ async def create_task_sweep_core(
     still in progress -- raises ``HTTPException(409)``. This short-circuits before
     any trials are created, so a retried "create" never duplicates trials via the
     auto-append flip below.
+
+    ``request_hash`` is the fingerprint used to detect a key reused with a
+    different body. Callers that mutate the submission before calling (the cloud
+    backend resolves identity / attribution / probe defaults) must pass a hash
+    of the *raw* client submission so an honest retry is not spuriously rejected;
+    when omitted it is computed from ``submission`` as received here.
     """
     from oddish.core.sweeps import (
         build_trial_specs_from_sweep,
@@ -2589,21 +2596,29 @@ async def create_task_sweep_core(
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.auto_probe import maybe_enqueue_auto_probe
 
-    # Reserve the idempotency slot before doing any work, fingerprinting the
-    # submission as received -- before the link defaulting and auto-append flip
-    # below mutate it -- so the original create and a faithful retry fingerprint
-    # identically. ``reserve_idempotency_slot`` raises ``IdempotencyReplay`` on a
-    # matching retry (handled by the route) or ``IdempotencyConflict`` (mapped to
-    # 409 here) on a reused key / in-progress duplicate.
+    # Reserve the idempotency slot before doing any work. The fingerprint comes
+    # from the caller's raw pre-mutation snapshot when supplied (the backend
+    # mutates the submission before calling), else from the submission as
+    # received here -- in both cases captured before the link defaulting and
+    # auto-append flip below mutate it, so the original create and a faithful
+    # retry fingerprint identically. ``reserve_idempotency_slot`` raises
+    # ``IdempotencyReplay`` on a matching retry (handled by the route) or
+    # ``IdempotencyConflict`` (mapped to 409 here) on a reused key / in-progress
+    # duplicate.
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
+        effective_request_hash = (
+            request_hash
+            if request_hash is not None
+            else compute_request_hash(submission)
+        )
         try:
             reservation = await reserve_idempotency_slot(
                 idempotency_store,
                 org_id=org_id,
                 route=SWEEP_ROUTE,
                 raw_key=idempotency_key,
-                request_hash=compute_request_hash(submission),
+                request_hash=effective_request_hash,
                 now=utcnow(),
             )
         except IdempotencyConflict as exc:
