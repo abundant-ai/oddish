@@ -104,10 +104,10 @@ async def _trial_count(maker, task_id: str) -> int:
 
 
 async def test_batch_one_bad_item_creates_valid_ones_and_reports_bad_index():
-    """A batch with one invalid item still creates the valid ones (THE case).
+    """A batch with one bad item in the middle still creates the others.
 
-    The bad item sits in the MIDDLE so a successful item follows it: that only
-    works if the savepoint rollback left the session usable for later items.
+    The items before and after the bad one still succeed, which only works if
+    the savepoint rollback left the session usable for the items that follow.
     """
     engine = create_async_engine(URL)
     maker = async_sessionmaker(engine, expire_on_commit=False)
