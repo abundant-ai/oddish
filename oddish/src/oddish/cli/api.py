@@ -8,8 +8,8 @@ import random
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -37,6 +37,11 @@ from harbor.models.trial.config import AgentConfig
 from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
+from oddish.cli._concurrency import (
+    map_with_adaptive_concurrency,
+    resolve_s3_put_concurrency,
+    resolve_submit_concurrency,
+)
 from oddish.cli.config import get_auth_headers, error_console
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
@@ -491,6 +496,25 @@ def _retry_request(
     return cast(httpx.Response, response)
 
 
+# Concurrent S3 presigned PUTs are capped by a process-wide semaphore, sized
+# separately from (and smaller than) the adaptive API limit. The object store is
+# a different service, so S3 saturation must not shrink the API limiter and vice
+# versa. Built lazily so ODDISH_TASK_S3_UPLOAD_CONCURRENCY is read at first use.
+_S3_PUT_SEMAPHORE: threading.BoundedSemaphore | None = None
+_S3_PUT_SEMAPHORE_LOCK = threading.Lock()
+
+
+def _get_s3_put_semaphore() -> threading.BoundedSemaphore:
+    global _S3_PUT_SEMAPHORE
+    if _S3_PUT_SEMAPHORE is None:
+        with _S3_PUT_SEMAPHORE_LOCK:
+            if _S3_PUT_SEMAPHORE is None:
+                _S3_PUT_SEMAPHORE = threading.BoundedSemaphore(
+                    resolve_s3_put_concurrency()
+                )
+    return _S3_PUT_SEMAPHORE
+
+
 def _upload_to_presigned_url(
     url: str, tarball_path: Path, headers: dict[str, str]
 ) -> None:
@@ -499,7 +523,12 @@ def _upload_to_presigned_url(
     retry_status_codes = {408, 425, 429, 500, 502, 503, 504}
     max_attempts = 3
 
-    with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
+    # Hold the S3 slot across the PUT and its retries so the bound counts
+    # concurrent upload operations, not just in-flight sockets.
+    with (
+        _get_s3_put_semaphore(),
+        httpx.Client(timeout=600.0, follow_redirects=True) as upload_client,
+    ):
         for attempt in range(1, max_attempts + 1):
             try:
                 with tarball_path.open("rb") as tarball:
@@ -639,12 +668,6 @@ def upload_task(
         shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
-# Uploads are serialised to keep the presigned-PUT path simple and to avoid
-# overwhelming the API's upload/init rate. Exported so callers
-# (``oddish run`` / ``oddish upload``) can override if needed.
-TASK_UPLOAD_CONCURRENCY = 1
-
-
 def upload_tasks_with_progress(
     api_url: str,
     task_paths: list[Path],
@@ -657,12 +680,18 @@ def upload_tasks_with_progress(
     json_output: bool = False,
     progress_label: str = "Uploading",
     force_new_version: bool = False,
+    concurrency: int | None = None,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
     Shared by ``oddish run`` (``register=False``-ish legacy mode -- the
     sweep endpoint creates the TaskModel) and ``oddish upload``
     (``register=True``, task becomes browsable immediately).
+
+    ``concurrency`` pins the number of parallel uploads; when ``None`` the limit
+    is adaptive (env ``ODDISH_TASK_UPLOAD_CONCURRENCY``, else an AIMD limiter that
+    grows on success and backs off under load). The S3 presigned-PUT step is
+    bounded separately and more tightly inside ``_upload_to_presigned_url``.
 
     Returns the upload response dicts in the same order as ``task_paths``.
     """
@@ -691,6 +720,7 @@ def upload_tasks_with_progress(
     )
 
     results: list[dict] = []
+    limiter = resolve_submit_concurrency(concurrency)
     with progress:
         progress_task = progress.add_task(
             f"{progress_label} {len(task_paths)} tasks...", total=len(task_paths)
@@ -700,18 +730,12 @@ def upload_tasks_with_progress(
                 results.append(_upload_one(task_path))
                 progress.update(progress_task, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(task_paths)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(_upload_one, task_path): index
-                    for index, task_path in enumerate(task_paths)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    results_by_index[index] = future.result()
-                    progress.update(progress_task, advance=1)
-            results = [r for r in results_by_index if r is not None]
+            results = map_with_adaptive_concurrency(
+                task_paths,
+                _upload_one,
+                limiter,
+                on_complete=lambda: progress.update(progress_task, advance=1),
+            )
 
     return results
 
