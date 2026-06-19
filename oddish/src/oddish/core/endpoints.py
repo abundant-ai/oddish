@@ -2687,12 +2687,13 @@ async def create_task_sweep_core(
             existing_counts=existing_counts,
         )
 
-        fallback_experiment_id = primary_experiment.id if primary_experiment else None
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
                 "priority": task.priority,
-                "experiment_id": new_experiment_id or fallback_experiment_id,
+                # Same value the reconcile count was scoped to, so the count
+                # scope and the write scope are guaranteed to match.
+                "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
                 "run_probe": task.run_probe,
