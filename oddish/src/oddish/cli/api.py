@@ -976,6 +976,11 @@ def submit_sweep(
     if link:
         payload["link"] = link
 
+    # Single, un-retried POST -- do NOT wrap this in _retry_request. /tasks/sweep
+    # is not idempotent: each call appends trials, so a replay after a transient
+    # failure would double-submit. Jittered retry here stays deferred until the
+    # server supports request idempotency (separate in-flight work). The adaptive
+    # limiter only throttles submission *concurrency*; it never replays a sweep.
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
     ) as client:
