@@ -67,7 +67,7 @@ Options
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
 - `--n-trials INTEGER` - Number of trials per task
-- `--add` - Append `--n-trials` _more_ trials instead of reconciling to `--n-trials`
+- `--add` - Always append and rerun `--n-trials` more trials. By default, re-running a manifest doesn't rerun trials that already exist
 - `--max-trial-attempts INTEGER` - Override the maximum Oddish attempts per trial, including the initial run
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
 - `--exclude-task-name`, `-x TEXT` - Exclude task glob filter; can be passed multiple times
