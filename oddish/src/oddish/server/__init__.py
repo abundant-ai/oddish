@@ -1,4 +1,3 @@
-from collections import Counter
 from contextlib import asynccontextmanager
 import argparse
 import asyncio
@@ -6,16 +5,17 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
-from typing import cast
+from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
     browse_tasks_core,
+    build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
     create_task_sweep_core,
@@ -356,13 +356,20 @@ async def finalize_trial_import(
 
 
 @api.post("/tasks/sweep", response_model=TaskResponse)
-async def create_task_sweep(submission: TaskSweepSubmission):
+async def create_task_sweep(
+    submission: TaskSweepSubmission,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
     """
     Submit the common pattern: one task_id expanded into many trials.
 
     The task_id should be from a previous /tasks/upload/init +
     /tasks/upload/complete flow.
     The task files are already stored (S3 if enabled, local directory otherwise).
+
+    The ``Idempotency-Key`` header is accepted for parity with the cloud API but
+    not persisted here: the idempotency record store is a backend-only table, so
+    this single-tenant open-source server runs every submission as received.
     """
 
     from oddish.core.sweeps import validate_sweep_submission
@@ -374,29 +381,14 @@ async def create_task_sweep(submission: TaskSweepSubmission):
             session,
             submission=submission,
             org_id=None,
+            idempotency_key=idempotency_key,
+            idempotency_store=None,
         )
 
         if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
-        provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = experiment or (task.experiments[0] if task.experiments else None)
-        resp_experiment_id = primary.id if primary else None
-        resp_experiment_name = primary.name if primary else None
-
-        return TaskResponse(
-            id=task.id,
-            name=task.name,
-            status=task.status,
-            priority=task.priority,
-            trials_count=len(response_trials),
-            providers=dict(provider_counts),
-            experiment_id=resp_experiment_id,
-            experiment_name=resp_experiment_name,
-            created_at=task.created_at,
-            new_trial_ids=[t.id for t in response_trials],
-        )
+        return build_task_sweep_response(task, new_trials, is_append, experiment)
 
 
 @api.get("/tasks", response_model=list[TaskStatusResponse])

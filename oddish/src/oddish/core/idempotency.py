@@ -115,11 +115,14 @@ class IdempotencyStore(Protocol):
         route: str,
         key_hash: str,
         request_hash: str,
+        now: datetime,
         expires_at: datetime,
     ) -> bool:
         """Atomically insert an ``in_progress`` row.
 
-        Returns ``True`` if this caller won the slot, ``False`` if a row for
+        ``created_at`` is anchored to ``now`` (the same instant ``expires_at``
+        is derived from) so the TTL invariant holds exactly. Returns ``True`` if
+        this caller won the slot, ``False`` if a row for
         ``(org_id, route, key_hash)`` already exists (unique-insert-wins).
         """
         ...
@@ -167,14 +170,14 @@ async def reserve_idempotency_slot(
 
     # Unique-insert-wins: the first writer creates the row; everyone else loses
     # the race atomically at the DB and falls through to inspect the winner.
-    if await store.begin(org_id, route, key_hash, request_hash, expires_at):
+    if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
         return Reservation(key_hash=key_hash)
 
     existing = await store.get(org_id, route, key_hash)
     if existing is None:
         # The row was pruned between our failed insert and this read; try once
         # more, otherwise treat the racing writer as an in-progress conflict.
-        if await store.begin(org_id, route, key_hash, request_hash, expires_at):
+        if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
             return Reservation(key_hash=key_hash)
         raise IdempotencyConflict(
             "A submission with this Idempotency-Key is already in progress."
@@ -183,7 +186,7 @@ async def reserve_idempotency_slot(
     if existing.expires_at <= now:
         # Expired: prune the stale record and re-run as a fresh submission.
         await store.discard(org_id, route, key_hash)
-        if await store.begin(org_id, route, key_hash, request_hash, expires_at):
+        if await store.begin(org_id, route, key_hash, request_hash, now, expires_at):
             return Reservation(key_hash=key_hash)
         raise IdempotencyConflict(
             "A submission with this Idempotency-Key is already in progress."

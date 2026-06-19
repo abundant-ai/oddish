@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 import logging
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,6 +14,7 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
     create_task_sweep_core,
@@ -40,6 +40,8 @@ from oddish.core.public_helpers import (
     get_task_file_content_s3,
     list_task_files_s3,
 )
+from oddish.core.idempotency import IdempotencyReplay
+from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
     ExperimentUpdateRequest,
@@ -434,8 +436,13 @@ async def _apply_user_run_probe_default(
 async def create_task_sweep(
     submission: TaskSweepSubmission,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TaskResponse:
-    """Submit a task sweep - expands a task_id into many trials."""
+    """Submit a task sweep - expands a task_id into many trials.
+
+    A retried submission carrying the same ``Idempotency-Key`` replays the
+    original response instead of creating duplicate trials.
+    """
     auth.require_scope(APIKeyScope.TASKS)
 
     from oddish.core.sweeps import validate_sweep_submission
@@ -447,13 +454,20 @@ async def create_task_sweep(
         _apply_github_attribution(submission)
         await _apply_user_run_probe_default(session, submission, auth)
 
-        task, new_trials, is_append, experiment = await create_task_sweep_core(
-            session,
-            submission=submission,
-            org_id=auth.org_id,
-            default_environment=get_default_cloud_environment(submission),
-            allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
-        )
+        try:
+            task, new_trials, is_append, experiment = await create_task_sweep_core(
+                session,
+                submission=submission,
+                org_id=auth.org_id,
+                default_environment=get_default_cloud_environment(submission),
+                allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+                idempotency_key=idempotency_key,
+                idempotency_store=SubmissionIdempotencyStore(session),
+            )
+        except IdempotencyReplay as replay:
+            # Faithful retry of a completed key: return the stored response and
+            # skip the owner-stamping / publish side effects below.
+            return TaskResponse.model_validate(replay.response_json)
 
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
@@ -474,24 +488,7 @@ async def create_task_sweep(
 
         await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
-        provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = experiment or (task.experiments[0] if task.experiments else None)
-        resp_experiment_id = primary.id if primary else None
-        resp_experiment_name = primary.name if primary else None
-
-        return TaskResponse(
-            id=task.id,
-            name=task.name,
-            status=task.status,
-            priority=task.priority,
-            trials_count=len(response_trials),
-            providers=dict(provider_counts),
-            experiment_id=resp_experiment_id,
-            experiment_name=resp_experiment_name,
-            created_at=task.created_at,
-            new_trial_ids=[t.id for t in response_trials],
-        )
+        return build_task_sweep_response(task, new_trials, is_append, experiment)
 
 
 # =============================================================================
