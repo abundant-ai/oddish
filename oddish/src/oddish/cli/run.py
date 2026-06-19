@@ -807,7 +807,8 @@ def run(
                 total_trials_submitted += result["trials_count"]
                 submit_progress.update(progress_task, advance=1)
         else:
-            # Prefer the batch endpoint: one request for every task. Build all
+            # Prefer the batch endpoint: submit every task in as few requests as
+            # possible (chunked under the server's per-request limit). Build all
             # payloads up front, then post them together.
             payloads = [
                 build_task_payload(
