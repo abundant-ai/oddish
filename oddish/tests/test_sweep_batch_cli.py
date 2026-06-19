@@ -21,15 +21,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import oddish.cli.api as api  # noqa: E402
 from oddish.cli.api import submit_sweep_batch  # noqa: E402
+from oddish.cli.run import _map_batch_sweep_results  # noqa: E402
 
 
 class _Resp:
-    def __init__(self, status_code, json_data=None, text=""):
+    def __init__(self, status_code, json_data=None, text="", json_exc=None):
         self.status_code = status_code
         self._json = json_data if json_data is not None else {}
         self.text = text
+        self._json_exc = json_exc
 
     def json(self):
+        if self._json_exc is not None:
+            raise self._json_exc
         return self._json
 
 
@@ -94,6 +98,20 @@ def test_unexpected_body_does_not_fall_back(monkeypatch):
         submit_sweep_batch("http://api", PAYLOADS)
 
 
+def test_invalid_json_body_does_not_fall_back(monkeypatch):
+    """A 200 whose body is not valid JSON is a clean exit, not a raw crash."""
+    _install(monkeypatch, _Resp(200, json_exc=ValueError("no json here")))
+    with pytest.raises(typer.Exit):
+        submit_sweep_batch("http://api", PAYLOADS)
+
+
+def test_non_object_body_does_not_fall_back(monkeypatch):
+    """A 207 whose JSON body is not an object (e.g. a list) is a clean exit."""
+    _install(monkeypatch, _Resp(207, json_data=[1, 2, 3]))
+    with pytest.raises(typer.Exit):
+        submit_sweep_batch("http://api", PAYLOADS)
+
+
 @pytest.mark.parametrize("status", [200, 207])
 def test_processed_batch_returns_results(monkeypatch, status):
     """200 (all ok) and 207 (mixed) both return the per-item results array."""
@@ -103,3 +121,28 @@ def test_processed_batch_returns_results(monkeypatch, status):
     ]
     _install(monkeypatch, _Resp(status, json_data={"results": results}))
     assert submit_sweep_batch("http://api", PAYLOADS) == results
+
+
+# ---------------------------------------------------------------------------
+# _map_batch_sweep_results (run.py): per-item mapping must not crash on junk.
+# ---------------------------------------------------------------------------
+
+_TARGETS = [("t-a", True, None, None), ("t-b", True, None, None)]
+
+
+def test_map_results_malformed_item_exits():
+    """A non-dict result item is a clean exit, not an AttributeError crash."""
+    with pytest.raises(typer.Exit):
+        _map_batch_sweep_results(["not-a-dict"], _TARGETS)
+
+
+def test_map_results_maps_success_and_failure():
+    """Well-formed items map to ordered task dicts, trial totals, and failures."""
+    results = [
+        {"index": 0, "success": True, "task": {"id": "t-a", "trials_count": 2}},
+        {"index": 1, "success": False, "error": "missing"},
+    ]
+    by_index, total, failed = _map_batch_sweep_results(results, _TARGETS)
+    assert by_index == [{"id": "t-a", "trials_count": 2}, None]
+    assert total == 2
+    assert failed == ["t-b"]
