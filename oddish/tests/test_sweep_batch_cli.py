@@ -146,3 +146,100 @@ def test_map_results_maps_success_and_failure():
     assert by_index == [{"id": "t-a", "trials_count": 2}, None]
     assert total == 2
     assert failed == ["t-b"]
+
+
+# ---------------------------------------------------------------------------
+# Chunking: a single unbounded batch is rejected (HTTP 303, nothing committed)
+# once it exceeds the server's per-request ceiling, so submit_sweep_batch splits
+# the payload into capped chunks and re-bases each item's index globally.
+# ---------------------------------------------------------------------------
+
+
+class _QueueClient:
+    """Fake httpx.Client returning a queued outcome per post() call."""
+
+    def __init__(self, outcomes):
+        self._outcomes = list(outcomes)
+        self.posted: list[list[dict]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def post(self, url, **kwargs):
+        self.posted.append(kwargs["json"]["submissions"])
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _install_queue(monkeypatch, outcomes) -> _QueueClient:
+    client = _QueueClient(outcomes)
+    monkeypatch.setattr(api.httpx, "Client", lambda *_a, **_k: client)
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    return client
+
+
+def _ok_chunk(n):
+    """A 200 response carrying chunk-local indices 0..n-1."""
+    return _Resp(
+        200,
+        json_data={
+            "results": [
+                {"index": i, "success": True, "task": {"id": f"local-{i}"}}
+                for i in range(n)
+            ]
+        },
+    )
+
+
+def test_large_batch_is_chunked_and_indices_rebased(monkeypatch):
+    """>cap payloads split into per-chunk requests; indices re-based globally."""
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "2")
+    client = _install_queue(monkeypatch, [_ok_chunk(2), _ok_chunk(2), _ok_chunk(1)])
+    payloads = [{"task_id": f"t-{i}", "configs": []} for i in range(5)]
+
+    out = submit_sweep_batch("http://api", payloads)
+
+    # Five payloads, cap 2 -> three requests of 2 + 2 + 1.
+    assert [len(s) for s in client.posted] == [2, 2, 1]
+    # Each chunk reports local indices; the aggregate is re-based onto 0..4.
+    assert [r["index"] for r in out] == [0, 1, 2, 3, 4]
+
+
+def test_first_chunk_missing_route_falls_back(monkeypatch):
+    """404 on the FIRST chunk -> None (nothing committed) so caller falls back."""
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "2")
+    client = _install_queue(monkeypatch, [_Resp(404)])
+    payloads = [{"task_id": f"t-{i}", "configs": []} for i in range(5)]
+
+    assert submit_sweep_batch("http://api", payloads) is None
+    assert len(client.posted) == 1  # stopped after the first chunk
+
+
+def test_later_chunk_failure_does_not_fall_back(monkeypatch):
+    """A later chunk failing after earlier chunks committed must surface, not None."""
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "2")
+    _install_queue(monkeypatch, [_ok_chunk(2), _Resp(500, text="boom")])
+    payloads = [{"task_id": f"t-{i}", "configs": []} for i in range(4)]
+
+    with pytest.raises(typer.Exit):
+        submit_sweep_batch("http://api", payloads)
+
+
+def test_out_of_range_chunk_index_is_rejected(monkeypatch):
+    """A per-chunk index outside [0, len(chunk)) is malformed -> surface, never
+    re-base it into a valid-but-wrong global index that mis-attributes a result."""
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "2")
+    bad = _Resp(
+        200,
+        json_data={"results": [{"index": 5, "success": True, "task": {"id": "x"}}]},
+    )
+    _install_queue(monkeypatch, [bad])
+    payloads = [{"task_id": f"t-{i}", "configs": []} for i in range(2)]
+
+    with pytest.raises(typer.Exit):
+        submit_sweep_batch("http://api", payloads)
