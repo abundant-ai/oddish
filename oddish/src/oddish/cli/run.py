@@ -68,6 +68,44 @@ def _default_cloud_environment_for_task(
     return EnvironmentType.DAYTONA
 
 
+def _map_batch_sweep_results(
+    batch_results: list,
+    submit_targets: list,
+) -> tuple[list[dict | None], int, list[str]]:
+    """Map per-item batch sweep results onto the submitted task order.
+
+    Returns ``(results_by_index, total_trials, failed_target_ids)``: each
+    successful item's task payload is placed at its request index, and failures
+    are reported by task id (best-effort). A malformed (non-dict) item raises
+    ``typer.Exit(1)`` -- the batch may already have committed, so surface the bad
+    response rather than crash or guess.
+    """
+    results_by_index: list[dict | None] = [None] * len(submit_targets)
+    total_trials = 0
+    failed_targets: list[str] = []
+    for item in batch_results:
+        if not isinstance(item, dict):
+            error_console.print(
+                "[red]Batch task submission returned a malformed item.[/red]\n"
+                "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+            )
+            raise typer.Exit(1)
+        idx = item.get("index")
+        if not isinstance(idx, int) or not 0 <= idx < len(submit_targets):
+            continue
+        task_resp = item.get("task")
+        if item.get("success") and isinstance(task_resp, dict):
+            results_by_index[idx] = task_resp
+            total_trials += task_resp.get("trials_count", 0)
+        else:
+            failed_targets.append(submit_targets[idx][0])
+            error_console.print(
+                f"[red]Failed to submit task {submit_targets[idx][0]}:[/red] "
+                f"{item.get('error')}"
+            )
+    return results_by_index, total_trials, failed_targets
+
+
 def run(
     path: Annotated[
         Optional[Path],
@@ -768,24 +806,13 @@ def run(
             if batch_results is not None:
                 # Best-effort: each item is independent. Surface failures by
                 # task id; keep the tasks that succeeded.
-                failures = 0
-                for item in batch_results:
-                    idx = item.get("index")
-                    if not isinstance(idx, int) or not 0 <= idx < len(submit_targets):
-                        continue
-                    if item.get("success") and item.get("task"):
-                        task_resp = item["task"]
-                        results_by_index[idx] = task_resp
-                        total_trials_submitted += task_resp.get("trials_count", 0)
-                    else:
-                        failures += 1
-                        error_console.print(
-                            f"[red]Failed to submit task {submit_targets[idx][0]}:"
-                            f"[/red] {item.get('error')}"
-                        )
-                    submit_progress.update(progress_task, advance=1)
+                results_by_index, batch_trials, failed_targets = (
+                    _map_batch_sweep_results(batch_results, submit_targets)
+                )
+                total_trials_submitted += batch_trials
+                submit_progress.update(progress_task, advance=len(submit_targets))
                 all_results = [r for r in results_by_index if r is not None]
-                if failures and not all_results:
+                if failed_targets and not all_results:
                     raise typer.Exit(1)
             else:
                 # submit_sweep_batch only returns None for HTTP 404/405 -- an

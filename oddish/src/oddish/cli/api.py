@@ -1097,11 +1097,15 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
         )
         raise typer.Exit(1)
 
-    data = response.json()
-    results = data.get("results")
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    results = data.get("results") if isinstance(data, dict) else None
     if not isinstance(results, list):
-        # A 200/207 means the batch was processed; an unexpected body is still
-        # ambiguous, so do not fall back.
+        # A 200/207 means the batch was processed; a malformed or unexpected
+        # body (invalid JSON, non-object, or missing results) is still
+        # ambiguous, so surface it cleanly and do not fall back.
         error_console.print(
             "[red]Batch task submission returned an unexpected response.[/red]\n"
             "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
