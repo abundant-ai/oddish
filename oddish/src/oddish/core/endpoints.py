@@ -2559,17 +2559,6 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
-        # Serialize concurrent sweeps to the same task. The reconcile-to-N
-        # count below (existing_counts) and the subsequent append are a
-        # read-then-write: without a lock, two simultaneous submissions to
-        # the same task could both read the same pre-append count, each
-        # compute the full shortfall, and each append N -- defeating dedup
-        # and producing 2N trials (plus racing on the next trial index).
-        # ``refresh(with_for_update=True)`` takes the row lock (held until
-        # this transaction commits, so concurrent appends serialize) AND
-        # re-reads the row under that lock, so the reconcile decision below
-        # reads ``task.current_version_id`` / ``run_analysis`` from the
-        # post-lock committed snapshot rather than the pre-lock fetch above.
         await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
@@ -2637,30 +2626,11 @@ async def create_task_sweep_core(
             else default_environment
         )
 
-        # Reconcile-to-N (default): count the live, non-probe trials already on
-        # the task's CURRENT version, grouped by (agent, model), so the sweep
-        # only tops up the shortfall instead of unconditionally appending N.
-        # Scoping to current_version_id is what makes a changed task (fresh
-        # version -> 0 existing) correctly get a full N. The default ORM select
-        # excludes soft-deleted rows, so tombstones never count toward live N.
-        #
-        # Scope the count to the experiment the new trials will actually be
-        # written to so the count scope matches the write scope: an explicit
-        # experiment when named, otherwise the task's primary (first-linked)
-        # experiment -- mirroring ``append_trials_to_task``'s own fallback. This
-        # keeps reconcile idempotent per-experiment: re-submitting the same
-        # experiment counts its own trials (shortfall 0), while submitting to a
-        # new experiment starts from 0 and gets a full N even when the same
-        # task+model already has trials in a different experiment. Counting
-        # task-wide would over-count on a task linked to several experiments and
-        # create too few (or zero) trials in the target.
-        # ``--add`` / ``additive=True`` opts out: skip the count entirely and
-        # fall back to the additive behavior (existing_counts=None -> +N).
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
         existing_counts: dict[tuple[str, str | None], int] | None = None
-        if not submission.additive and task.current_version_id is not None:
+        if task.current_version_id is not None:
             reconcile_where = [
                 TrialModel.task_id == task.id,
                 TrialModel.task_version_id == task.current_version_id,
@@ -2691,8 +2661,6 @@ async def create_task_sweep_core(
             update={
                 "name": task.name,
                 "priority": task.priority,
-                # Same value the reconcile count was scoped to, so the count
-                # scope and the write scope are guaranteed to match.
                 "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
