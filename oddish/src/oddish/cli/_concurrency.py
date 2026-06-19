@@ -22,7 +22,12 @@ logic is fully unit-testable. ``ConcurrencyGate`` / ``map_with_adaptive_concurre
 
 from __future__ import annotations
 
+import os
 import threading
+import time
+from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import TypeVar, cast
 
 import httpx
 
@@ -45,6 +50,23 @@ MIN_BACKOFF_FACTOR = 0.5
 # 4xx (400/401/403/404/409/422) are client errors -- replaying or backing off
 # won't help -- so they must NOT shrink the limit.
 BACKPRESSURE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
+# Env override for the adaptive API limit. An integer pins the limit (disables
+# adaptation); unset / non-numeric leaves it adaptive. The ``--submit-concurrency``
+# CLI flag takes precedence over this.
+SUBMIT_CONCURRENCY_ENV_VAR = "ODDISH_TASK_UPLOAD_CONCURRENCY"
+
+# A separate, smaller ceiling for the S3 presigned-PUT step. The object store is
+# a different service from the API, so its upload concurrency is bounded
+# independently and is never fed by (and never feeds) the API backpressure
+# signal. Clamped to a small band so it stays well under the API limit.
+DEFAULT_S3_PUT_CONCURRENCY = 4
+MIN_S3_PUT_CONCURRENCY = 1
+MAX_S3_PUT_CONCURRENCY = 6
+S3_PUT_CONCURRENCY_ENV_VAR = "ODDISH_TASK_S3_UPLOAD_CONCURRENCY"
+
+T = TypeVar("T")
+R = TypeVar("R")
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -189,3 +211,163 @@ class _LatencyMonitor:
             else:
                 self._ewma = self._alpha * sample + (1.0 - self._alpha) * self._ewma
             self._count += 1
+
+
+class ConcurrencyGate:
+    """Throttle concurrent work to a limiter's adaptive in-flight ceiling.
+
+    Wrap each unit of work with :meth:`run`: it blocks until in-flight is below
+    the current limit, runs the callable, times it, and feeds the outcome
+    (success vs. backpressure) back to the limiter. Built to drive a
+    ``ThreadPoolExecutor`` sized to ``limiter.max_limit`` -- the gate, not the
+    pool size, is the real throttle, so the limit can shrink below the pool size
+    under load.
+    """
+
+    def __init__(
+        self,
+        limiter: AdaptiveConcurrencyLimiter,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        latency_monitor: _LatencyMonitor | None = None,
+    ) -> None:
+        self._limiter = limiter
+        self._clock = clock
+        self._latency = (
+            latency_monitor if latency_monitor is not None else _LatencyMonitor()
+        )
+        self._cond = threading.Condition()
+        self._in_flight = 0
+
+    @property
+    def in_flight(self) -> int:
+        with self._cond:
+            return self._in_flight
+
+    def _acquire(self) -> int:
+        with self._cond:
+            while self._in_flight >= self._limiter.limit:
+                self._cond.wait()
+            self._in_flight += 1
+            return self._in_flight
+
+    def _release(self) -> None:
+        with self._cond:
+            self._in_flight -= 1
+            # The limit may have changed (grown or shrunk); wake every waiter so
+            # they re-check against the current value.
+            self._cond.notify_all()
+
+    def run(self, fn: Callable[..., R], /, *args: object, **kwargs: object) -> R:
+        """Run ``fn(*args, **kwargs)`` once a slot is free, recording the outcome."""
+        in_flight = self._acquire()
+        start = self._clock()
+        error: BaseException | None = None
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - reclassified for the limiter, then re-raised
+            error = exc
+            raise
+        finally:
+            latency = self._clock() - start
+            backpressure = classify_backpressure(
+                exception=error,
+                latency=latency,
+                slow_threshold=self._latency.slow_threshold(),
+            )
+            if backpressure:
+                self._limiter.record_backpressure()
+            else:
+                self._limiter.record_success(in_flight=in_flight)
+            self._latency.observe(latency)
+            self._release()
+
+
+def map_with_adaptive_concurrency(
+    items: Sequence[T],
+    worker: Callable[[T], R],
+    limiter: AdaptiveConcurrencyLimiter,
+    *,
+    gate: ConcurrencyGate | None = None,
+    on_complete: Callable[[], None] | None = None,
+) -> list[R]:
+    """Apply ``worker`` to each item, throttled to the limiter's in-flight limit.
+
+    Results are returned in input order. ``on_complete`` (if given) fires once
+    per finished item -- handy for advancing a progress bar. The thread pool is
+    sized to ``limiter.max_limit``; the :class:`ConcurrencyGate` does the actual
+    throttling, so an adaptive limit shrinks real concurrency below the pool
+    size under backpressure.
+    """
+    if not items:
+        return []
+    gate = gate if gate is not None else ConcurrencyGate(limiter)
+    results: list[R | None] = [None] * len(items)
+    max_workers = min(limiter.max_limit, len(items))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(gate.run, worker, item): index
+            for index, item in enumerate(items)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            results[index] = future.result()
+            if on_complete is not None:
+                on_complete()
+    return cast("list[R]", results)
+
+
+def _read_int_env(env_var: str) -> int | None:
+    """Read an int from ``env_var``; return ``None`` if unset/blank/non-numeric."""
+    raw = os.environ.get(env_var)
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def resolve_submit_concurrency(
+    explicit: int | None = None,
+    *,
+    env_var: str = SUBMIT_CONCURRENCY_ENV_VAR,
+    min_limit: int = DEFAULT_MIN_CONCURRENCY,
+    max_limit: int = DEFAULT_MAX_CONCURRENCY,
+) -> AdaptiveConcurrencyLimiter:
+    """Resolve the in-flight limiter for API-bound submit/upload work.
+
+    Precedence: ``explicit`` (the ``--submit-concurrency`` flag) > ``env_var`` >
+    adaptive default. An explicit value (flag or env) *pins* the limit
+    (``min == max``, no adaptation); the default returns an AIMD limiter clamped
+    to ``[min_limit, max_limit]`` and starting at the floor.
+    """
+    pinned = explicit if explicit is not None else _read_int_env(env_var)
+    if pinned is not None:
+        pinned = max(1, int(pinned))
+        return AdaptiveConcurrencyLimiter(
+            min_limit=pinned, max_limit=pinned, initial_limit=pinned
+        )
+    return AdaptiveConcurrencyLimiter(
+        min_limit=min_limit, max_limit=max_limit, initial_limit=min_limit
+    )
+
+
+def resolve_s3_put_concurrency(
+    explicit: int | None = None,
+    *,
+    env_var: str = S3_PUT_CONCURRENCY_ENV_VAR,
+) -> int:
+    """Resolve the bound for concurrent S3 presigned PUTs.
+
+    Precedence: ``explicit`` > ``env_var`` > :data:`DEFAULT_S3_PUT_CONCURRENCY`,
+    clamped to ``[MIN_S3_PUT_CONCURRENCY, MAX_S3_PUT_CONCURRENCY]``. This bound is
+    independent of the adaptive API limiter.
+    """
+    value = explicit if explicit is not None else _read_int_env(env_var)
+    if value is None:
+        value = DEFAULT_S3_PUT_CONCURRENCY
+    return int(_clamp(int(value), MIN_S3_PUT_CONCURRENCY, MAX_S3_PUT_CONCURRENCY))
