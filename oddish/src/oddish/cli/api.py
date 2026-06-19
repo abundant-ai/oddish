@@ -1102,20 +1102,26 @@ def submit_sweep(
     return post_sweep_payload(api_url, payload)
 
 
-def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
-    """Submit several task sweeps in one request via ``POST /tasks/sweep/batch``.
+# The server processes each /tasks/sweep/batch synchronously; past a per-request
+# size/time ceiling Modal rejects the call with a 303 and commits nothing, so a
+# single unbounded batch fails for large submissions. Cap tasks-per-request well
+# under that ceiling; tunable for heavier-load environments.
+_DEFAULT_SWEEP_BATCH_MAX_TASKS = 10
 
-    Returns a per-item results list aligned to ``payloads`` -- each item is
-    ``{"index", "success", "status_code", "task", "error"}`` -- on HTTP 200 (all
-    succeeded) or 207 Multi-Status (some failed).
+
+def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | None:
+    """POST one chunk to ``POST /tasks/sweep/batch``.
+
+    Returns the per-item results list -- each item ``{"index", "success",
+    "status_code", "task", "error"}`` -- on HTTP 200 (all succeeded) or 207
+    Multi-Status (some failed).
 
     Returns ``None`` ONLY for HTTP 404/405, the one case where we know the batch
-    route is absent (older server) and nothing was created, so the caller can
-    safely fall back to per-task submission.
+    route is absent (older server) and nothing was created.
 
     Every other failure is ambiguous: a read timeout, connection/network error,
-    5xx, or any other received status may land AFTER the server has already
-    committed the batch. Since idempotent replay is deferred, a per-task retry
+    5xx, an oversized-request 303, or any other status may land AFTER the server
+    committed the chunk. Since idempotent replay is deferred, a per-task retry
     there would double-submit, so we surface the error (``typer.Exit``) and let
     the operator decide rather than fall back.
     """
@@ -1143,8 +1149,8 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
         return None
 
     # 200 = all succeeded, 207 = mixed/partial; both carry per-item outcomes.
-    # Any other received status (5xx, 4xx, ...) may have committed some or all
-    # items, so do not fall back -- surface it instead.
+    # Any other received status (5xx, 4xx, an oversized-request 303, ...) may
+    # have committed some or all items, so do not fall back -- surface it.
     if response.status_code not in (200, 207):
         error_console.print(
             f"[red]Batch task submission failed (HTTP {response.status_code}):"
@@ -1168,6 +1174,66 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
         )
         raise typer.Exit(1)
     return results
+
+
+def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
+    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked.
+
+    The server runs each batch synchronously, so a single unbounded request is
+    rejected (HTTP 303, nothing committed) once it exceeds Modal's per-request
+    ceiling. We split ``payloads`` into chunks of at most
+    ``ODDISH_SWEEP_BATCH_MAX_TASKS`` (default ``_DEFAULT_SWEEP_BATCH_MAX_TASKS``)
+    and POST each in order, re-basing the per-item ``index`` back onto the
+    original payload order.
+
+    Returns the combined per-item results list aligned to ``payloads``, or
+    ``None`` when the batch route is absent (HTTP 404/405 on the *first* chunk,
+    before anything is committed) so the caller may fall back to per-task.
+    """
+    import os
+
+    try:
+        cap = int(
+            os.environ.get("ODDISH_SWEEP_BATCH_MAX_TASKS", "")
+            or _DEFAULT_SWEEP_BATCH_MAX_TASKS
+        )
+    except ValueError:
+        cap = _DEFAULT_SWEEP_BATCH_MAX_TASKS
+    cap = max(1, cap)
+
+    aggregated: list[dict] = []
+    for offset in range(0, len(payloads), cap):
+        chunk = payloads[offset : offset + cap]
+        chunk_results = _post_sweep_batch_chunk(api_url, chunk)
+        if chunk_results is None:
+            if offset == 0:
+                # No batch route, nothing committed -> caller falls back per-task.
+                return None
+            # The route served earlier chunks (already committed) but vanished
+            # mid-run; do not fall back -- that would double-submit.
+            error_console.print(
+                "[red]Batch route became unavailable after committing "
+                f"{offset} task(s).[/red]\n[yellow]Not retrying per task to avoid "
+                "duplicate trials; re-run to reconcile the remainder.[/yellow]"
+            )
+            raise typer.Exit(1)
+        # Re-base each chunk-local index onto the global payload order. The server
+        # enumerates submissions, so an index outside [0, len(chunk)) is a
+        # malformed response -- surface it rather than re-basing it into a valid
+        # but wrong global index that would mis-attribute the result.
+        for item in chunk_results:
+            index = item.get("index") if isinstance(item, dict) else None
+            if isinstance(index, int):
+                if not 0 <= index < len(chunk):
+                    error_console.print(
+                        "[red]Batch task submission returned an out-of-range "
+                        "item index.[/red]\n[yellow]Not retrying per task to avoid "
+                        "duplicate trials.[/yellow]"
+                    )
+                    raise typer.Exit(1)
+                item = {**item, "index": index + offset}
+            aggregated.append(item)
+    return aggregated
 
 
 def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
