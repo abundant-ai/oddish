@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
@@ -18,6 +18,7 @@ from oddish.core.endpoints import (
     build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
+    create_task_sweep_batch_core,
     create_task_sweep_core,
     get_task_detail_core,
     get_task_status_core,
@@ -91,6 +92,8 @@ from oddish.schemas import (
     TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchRequest,
+    TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
     TrialImportCompleteRequest,
@@ -389,6 +392,45 @@ async def create_task_sweep(
             await session.commit()
 
         return build_task_sweep_response(task, new_trials, is_append, experiment)
+
+
+@api.post("/tasks/sweep/batch", response_model=TaskSweepBatchResponse)
+async def create_task_sweep_batch(
+    payload: TaskSweepBatchRequest, response: Response
+) -> TaskSweepBatchResponse:
+    """Submit several task sweeps in one request (best-effort, per-item status).
+
+    Each submission is created inside its own savepoint, so one bad item neither
+    aborts the batch nor rolls back items that already succeeded. ``results`` is
+    a per-item status array indexed to ``submissions``; HTTP 207 Multi-Status is
+    returned when at least one item fails.
+
+    Per-item idempotency-key replay is intentionally not handled here; request
+    idempotency is separate in-flight work and will layer on top of this path.
+    """
+    if not payload.submissions:
+        raise HTTPException(
+            status_code=400, detail="Must specify at least one submission"
+        )
+
+    async with get_session() as session:
+        results = await create_task_sweep_batch_core(
+            session,
+            submissions=payload.submissions,
+            org_id=None,
+        )
+        await session.commit()
+
+    succeeded = sum(1 for r in results if r.success)
+    failed = len(results) - succeeded
+    if failed:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    return TaskSweepBatchResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
 
 
 @api.get("/tasks", response_model=list[TaskStatusResponse])

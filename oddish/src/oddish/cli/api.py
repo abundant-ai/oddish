@@ -871,8 +871,7 @@ def _build_harbor_payload(
     return harbor
 
 
-def submit_sweep(
-    api_url: str,
+def build_sweep_payload(
     task_id: str,
     configs: list[dict],
     environment: EnvironmentType | None,
@@ -903,7 +902,10 @@ def submit_sweep(
     evaluation_metric: str | None = None,
     link: str | None = None,
 ) -> dict:
-    """Submit a task sweep to the API.
+    """Build the JSON body for a single ``/tasks/sweep`` submission.
+
+    Split out from the network call so the same payload can be posted on its own
+    or bundled into a ``/tasks/sweep/batch`` request.
 
     Probe trials are ordinary sweeps with ``extra_instructions`` set: the
     server sets ``mode: "probe"`` in harbor_config (see
@@ -988,6 +990,11 @@ def submit_sweep(
     if link:
         payload["link"] = link
 
+    return payload
+
+
+def post_sweep_payload(api_url: str, payload: dict) -> dict:
+    """POST one prebuilt sweep payload to ``/tasks/sweep`` and return its body."""
     # Stamp the submission with a stable idempotency key so a retried identical
     # submission (e.g. after a network blip) is deduplicated server-side instead
     # of creating a second set of trials.
@@ -1019,6 +1026,148 @@ def submit_sweep(
 
     result: dict = response.json()
     return result
+
+
+def submit_sweep(
+    api_url: str,
+    task_id: str,
+    configs: list[dict],
+    environment: EnvironmentType | None,
+    user: str | None,
+    priority: str,
+    experiment_id: str | None,
+    max_trial_attempts: int | None = None,
+    run_analysis: bool = False,
+    run_probe: bool = False,
+    github_username: str | None = None,
+    tags: dict[str, str] | None = None,
+    publish_experiment: bool | None = False,
+    disable_verification: bool = False,
+    override_cpus: int | None = None,
+    override_memory_mb: int | None = None,
+    override_gpus: int | None = None,
+    override_storage_mb: int | None = None,
+    force_build: bool | None = None,
+    agent_env: list[str] | None = None,
+    agent_kwargs: list[str] | None = None,
+    artifact_paths: list[str] | None = None,
+    append_to_task: bool = False,
+    content_hash: str | None = None,
+    harbor_config: dict[str, Any] | None = None,
+    environment_kwargs: list[str] | None = None,
+    extra_instructions: str | None = None,
+    result_focus: str | None = None,
+    evaluation_metric: str | None = None,
+    link: str | None = None,
+) -> dict:
+    """Build and submit a single task sweep to ``/tasks/sweep``.
+
+    Convenience wrapper over :func:`build_sweep_payload` +
+    :func:`post_sweep_payload` for callers that build and submit one sweep in a
+    single step (e.g. the probe CLI). The explicit signature mirrors
+    :func:`build_sweep_payload` so existing positional and keyword callers keep
+    working unchanged.
+    """
+    payload = build_sweep_payload(
+        task_id=task_id,
+        configs=configs,
+        environment=environment,
+        user=user,
+        priority=priority,
+        experiment_id=experiment_id,
+        max_trial_attempts=max_trial_attempts,
+        run_analysis=run_analysis,
+        run_probe=run_probe,
+        github_username=github_username,
+        tags=tags,
+        publish_experiment=publish_experiment,
+        disable_verification=disable_verification,
+        override_cpus=override_cpus,
+        override_memory_mb=override_memory_mb,
+        override_gpus=override_gpus,
+        override_storage_mb=override_storage_mb,
+        force_build=force_build,
+        agent_env=agent_env,
+        agent_kwargs=agent_kwargs,
+        artifact_paths=artifact_paths,
+        append_to_task=append_to_task,
+        content_hash=content_hash,
+        harbor_config=harbor_config,
+        environment_kwargs=environment_kwargs,
+        extra_instructions=extra_instructions,
+        result_focus=result_focus,
+        evaluation_metric=evaluation_metric,
+        link=link,
+    )
+    return post_sweep_payload(api_url, payload)
+
+
+def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
+    """Submit several task sweeps in one request via ``POST /tasks/sweep/batch``.
+
+    Returns a per-item results list aligned to ``payloads`` -- each item is
+    ``{"index", "success", "status_code", "task", "error"}`` -- on HTTP 200 (all
+    succeeded) or 207 Multi-Status (some failed).
+
+    Returns ``None`` ONLY for HTTP 404/405, the one case where we know the batch
+    route is absent (older server) and nothing was created, so the caller can
+    safely fall back to per-task submission.
+
+    Every other failure is ambiguous: a read timeout, connection/network error,
+    5xx, or any other received status may land AFTER the server has already
+    committed the batch. Since idempotent replay is deferred, a per-task retry
+    there would double-submit, so we surface the error (``typer.Exit``) and let
+    the operator decide rather than fall back.
+    """
+    body = {"submissions": payloads}
+    try:
+        with httpx.Client(
+            timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
+        ) as client:
+            response = client.post(f"{api_url}/tasks/sweep/batch", json=body)
+    except httpx.HTTPError as exc:
+        # The request may have reached the server and committed before the error
+        # surfaced (e.g. a read timeout). Do not fall back -- that risks
+        # duplicate trials -- surface it so the operator can check and retry.
+        error_console.print(
+            f"[red]Batch task submission failed:[/red] {exc}\n"
+            "[yellow]The batch may already have been committed; not retrying "
+            "per task to avoid duplicate trials. Check the dashboard before "
+            "resubmitting.[/yellow]"
+        )
+        raise typer.Exit(1) from exc
+
+    # Older servers have no batch route; nothing was processed -> safe to fall
+    # back to per-task submission.
+    if response.status_code in (404, 405):
+        return None
+
+    # 200 = all succeeded, 207 = mixed/partial; both carry per-item outcomes.
+    # Any other received status (5xx, 4xx, ...) may have committed some or all
+    # items, so do not fall back -- surface it instead.
+    if response.status_code not in (200, 207):
+        error_console.print(
+            f"[red]Batch task submission failed (HTTP {response.status_code}):"
+            f"[/red] {response.text}\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        # A 200/207 means the batch was processed; a malformed or unexpected
+        # body (invalid JSON, non-object, or missing results) is still
+        # ambiguous, so surface it cleanly and do not fall back.
+        error_console.print(
+            "[red]Batch task submission returned an unexpected response.[/red]\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
+    return results
 
 
 def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
