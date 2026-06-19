@@ -1063,13 +1063,17 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
 
     Returns a per-item results list aligned to ``payloads`` -- each item is
     ``{"index", "success", "status_code", "task", "error"}`` -- on HTTP 200 (all
-    succeeded) or 207 Multi-Status (some failed). Returns ``None`` when the batch
-    endpoint is unavailable (older server) or the request never reached per-item
-    processing, so the caller can fall back to per-task submission without
-    risking a double submit of items the batch already created.
+    succeeded) or 207 Multi-Status (some failed).
 
-    Idempotent replay across retries is intentionally not handled here; request
-    idempotency is separate in-flight work that will layer on top of this path.
+    Returns ``None`` ONLY for HTTP 404/405, the one case where we know the batch
+    route is absent (older server) and nothing was created, so the caller can
+    safely fall back to per-task submission.
+
+    Every other failure is ambiguous: a read timeout, connection/network error,
+    5xx, or any other received status may land AFTER the server has already
+    committed the batch. Since idempotent replay is deferred, a per-task retry
+    there would double-submit, so we surface the error (``typer.Exit``) and let
+    the operator decide rather than fall back.
     """
     body = {"submissions": payloads}
     try:
@@ -1077,20 +1081,44 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
             timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
         ) as client:
             response = client.post(f"{api_url}/tasks/sweep/batch", json=body)
-    except httpx.HTTPError:
-        # Network/timeout before the batch was processed: safe to retry per-task.
+    except httpx.HTTPError as exc:
+        # The request may have reached the server and committed before the error
+        # surfaced (e.g. a read timeout). Do not fall back -- that risks
+        # duplicate trials -- surface it so the operator can check and retry.
+        error_console.print(
+            f"[red]Batch task submission failed:[/red] {exc}\n"
+            "[yellow]The batch may already have been committed; not retrying "
+            "per task to avoid duplicate trials. Check the dashboard before "
+            "resubmitting.[/yellow]"
+        )
+        raise typer.Exit(1) from exc
+
+    # Older servers have no batch route; nothing was processed -> safe to fall
+    # back to per-task submission.
+    if response.status_code in (404, 405):
         return None
 
-    # Older servers have no batch route; 200/207 mean the batch was processed and
-    # the body carries per-item outcomes. Anything else is a batch-level rejection
-    # (nothing created) -> fall back rather than guess at partial state.
+    # 200 = all succeeded, 207 = mixed/partial; both carry per-item outcomes.
+    # Any other received status (5xx, 4xx, ...) may have committed some or all
+    # items, so do not fall back -- surface it instead.
     if response.status_code not in (200, 207):
-        return None
+        error_console.print(
+            f"[red]Batch task submission failed (HTTP {response.status_code}):"
+            f"[/red] {response.text}\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
 
     data = response.json()
     results = data.get("results")
     if not isinstance(results, list):
-        return None
+        # A 200/207 means the batch was processed; an unexpected body is still
+        # ambiguous, so do not fall back.
+        error_console.print(
+            "[red]Batch task submission returned an unexpected response.[/red]\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
     return results
 
 

@@ -788,8 +788,10 @@ def run(
                 if failures and not all_results:
                     raise typer.Exit(1)
             else:
-                # Older server (no batch route) or the batch request never
-                # reached per-item processing: submit each task on its own.
+                # submit_sweep_batch only returns None for HTTP 404/405 -- an
+                # older server without the batch route, where nothing was
+                # created -- so it is safe to submit each task on its own.
+                # (Ambiguous failures raise instead of returning None.)
                 max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     future_to_index = {
