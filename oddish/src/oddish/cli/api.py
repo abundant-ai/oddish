@@ -1203,9 +1203,8 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
 
     aggregated: list[dict] = []
     for offset in range(0, len(payloads), cap):
-        chunk_results = _post_sweep_batch_chunk(
-            api_url, payloads[offset : offset + cap]
-        )
+        chunk = payloads[offset : offset + cap]
+        chunk_results = _post_sweep_batch_chunk(api_url, chunk)
         if chunk_results is None:
             if offset == 0:
                 # No batch route, nothing committed -> caller falls back per-task.
@@ -1218,10 +1217,21 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
                 "duplicate trials; re-run to reconcile the remainder.[/yellow]"
             )
             raise typer.Exit(1)
-        # Re-base each item's index onto the global payload order.
+        # Re-base each chunk-local index onto the global payload order. The server
+        # enumerates submissions, so an index outside [0, len(chunk)) is a
+        # malformed response -- surface it rather than re-basing it into a valid
+        # but wrong global index that would mis-attribute the result.
         for item in chunk_results:
-            if isinstance(item, dict) and isinstance(item.get("index"), int):
-                item = {**item, "index": item["index"] + offset}
+            index = item.get("index") if isinstance(item, dict) else None
+            if isinstance(index, int):
+                if not 0 <= index < len(chunk):
+                    error_console.print(
+                        "[red]Batch task submission returned an out-of-range "
+                        "item index.[/red]\n[yellow]Not retrying per task to avoid "
+                        "duplicate trials.[/yellow]"
+                    )
+                    raise typer.Exit(1)
+                item = {**item, "index": index + offset}
             aggregated.append(item)
     return aggregated
 

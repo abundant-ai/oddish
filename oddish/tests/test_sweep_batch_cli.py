@@ -228,3 +228,18 @@ def test_later_chunk_failure_does_not_fall_back(monkeypatch):
 
     with pytest.raises(typer.Exit):
         submit_sweep_batch("http://api", payloads)
+
+
+def test_out_of_range_chunk_index_is_rejected(monkeypatch):
+    """A per-chunk index outside [0, len(chunk)) is malformed -> surface, never
+    re-base it into a valid-but-wrong global index that mis-attributes a result."""
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "2")
+    bad = _Resp(
+        200,
+        json_data={"results": [{"index": 5, "success": True, "task": {"id": "x"}}]},
+    )
+    _install_queue(monkeypatch, [bad])
+    payloads = [{"task_id": f"t-{i}", "configs": []} for i in range(2)]
+
+    with pytest.raises(typer.Exit):
+        submit_sweep_batch("http://api", payloads)
