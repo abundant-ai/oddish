@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import random
 import shutil
 import tarfile
 import tempfile
@@ -377,6 +378,120 @@ def archive_task_dir(task_path: Path) -> Path:
     return tarball_path
 
 
+# Transient HTTP statuses worth retrying on the idempotent upload calls.
+# Other 4xx (400/401/403/404/409/422...) are deterministic client errors:
+# the identical request will fail identically, so we surface them at once.
+_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_RETRY_BASE_DELAY = 0.1  # seconds
+_RETRY_MAX_DELAY = 25.0  # backoff ceiling (seconds)
+_RETRY_MAX_ATTEMPTS = 5
+
+
+class _RetryBudget:
+    """Token-bucket retry budget that caps retries to a fraction of requests.
+
+    Starts full at ``max_tokens``; each failed attempt costs one token and
+    each success refunds ``token_ratio``. Retries are suppressed once the
+    bucket falls to half capacity, so a sustained outage can't amplify into a
+    retry storm. The default ratio (0.1) keeps retries under ~10% of requests.
+    Mirrors the gRPC retry-throttling design.
+    """
+
+    def __init__(self, max_tokens: float = 10.0, token_ratio: float = 0.1) -> None:
+        self._max = max_tokens
+        self._ratio = token_ratio
+        self._threshold = max_tokens / 2.0
+        self._tokens = max_tokens
+
+    def can_retry(self) -> bool:
+        return self._tokens > self._threshold
+
+    def record_failure(self) -> None:
+        self._tokens = max(0.0, self._tokens - 1.0)
+
+    def record_success(self) -> None:
+        self._tokens = min(self._max, self._tokens + self._ratio)
+
+
+_DEFAULT_RETRY_BUDGET = _RetryBudget()
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds or HTTP-date) to seconds."""
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    from datetime import timezone
+
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(when.tzinfo)).total_seconds())
+
+
+def _full_jitter_delay(attempt: int, rng=random) -> float:
+    """Capped exponential backoff with full jitter: uniform in [0, ceiling]."""
+    ceiling = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+    return rng.uniform(0, ceiling)
+
+
+def _retry_request(
+    send,
+    *,
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+    budget: _RetryBudget | None = None,
+    sleep=time.sleep,
+    rng=random,
+) -> httpx.Response:
+    """Call ``send`` (returning an ``httpx.Response``), retrying transient failures.
+
+    Retries on 429/500/502/503/504 and transport errors with capped
+    exponential backoff + full jitter, honoring ``Retry-After`` and a
+    token-bucket retry budget. Non-retryable responses (other 4xx, and any
+    2xx/3xx) are returned immediately; the last response is returned once the
+    attempt or budget limit is hit. **For idempotent requests only** -- callers
+    that can duplicate a server-side effect on replay must not use this.
+    """
+    if budget is None:
+        budget = _DEFAULT_RETRY_BUDGET
+
+    response: httpx.Response | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = send()
+        except httpx.TransportError:
+            budget.record_failure()
+            if attempt >= max_attempts or not budget.can_retry():
+                raise
+            sleep(_full_jitter_delay(attempt, rng))
+            continue
+
+        if response.status_code not in _RETRY_STATUS_CODES:
+            budget.record_success()
+            return response
+
+        budget.record_failure()
+        if attempt >= max_attempts or not budget.can_retry():
+            return response
+        retry_after = _parse_retry_after(response)
+        delay = (
+            retry_after if retry_after is not None else _full_jitter_delay(attempt, rng)
+        )
+        sleep(delay)
+
+    return cast(httpx.Response, response)
+
+
 def _upload_to_presigned_url(
     url: str, tarball_path: Path, headers: dict[str, str]
 ) -> None:
@@ -459,9 +574,14 @@ def upload_task(
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            init_response = client.post(
-                f"{api_url}/tasks/upload/init",
-                json=init_body,
+            # init is retry-safe: a content-hash match short-circuits and a new
+            # task gets a fresh task id allocated server-side, so a retry after
+            # a transient 5xx/429 can't duplicate trials.
+            init_response = _retry_request(
+                lambda: client.post(
+                    f"{api_url}/tasks/upload/init",
+                    json=init_body,
+                )
             )
 
             if init_response.status_code != 200:
@@ -504,9 +624,13 @@ def upload_task(
                 complete_body["user"] = user
             if priority:
                 complete_body["priority"] = priority
-            response = client.post(
-                f"{api_url}/tasks/upload/complete",
-                json=complete_body,
+            # complete is keyed on (task_id, version, content_hash); replaying
+            # it after a transient failure resolves to the same version.
+            response = _retry_request(
+                lambda: client.post(
+                    f"{api_url}/tasks/upload/complete",
+                    json=complete_body,
+                )
             )
 
         if response.status_code != 200:
