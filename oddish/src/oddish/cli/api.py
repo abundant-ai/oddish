@@ -39,6 +39,7 @@ from harbor.viewer.scanner import JobScanner
 
 from oddish.cli._concurrency import (
     map_with_adaptive_concurrency,
+    report_api_call,
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
@@ -471,6 +472,7 @@ def _retry_request(
 
     response: httpx.Response | None = None
     for attempt in range(1, max_attempts + 1):
+        call_start = time.monotonic()
         try:
             response = send()
         except httpx.TransportError:
@@ -480,7 +482,13 @@ def _retry_request(
             sleep(_full_jitter_delay(attempt, rng))
             continue
 
-        if response.status_code not in _RETRY_STATUS_CODES:
+        # Feed the API-call latency + transient status to any active limiter slot
+        # (no-op outside a submit/upload pool). A transient status counts as
+        # backpressure even when a later retry succeeds.
+        transient = response.status_code in _RETRY_STATUS_CODES
+        report_api_call(time.monotonic() - call_start, backpressure=transient)
+
+        if not transient:
             budget.record_success()
             return response
 
@@ -981,10 +989,17 @@ def submit_sweep(
     # failure would double-submit. Jittered retry here stays deferred until the
     # server supports request idempotency (separate in-flight work). The adaptive
     # limiter only throttles submission *concurrency*; it never replays a sweep.
+    sweep_start = time.monotonic()
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
     ) as client:
         response = client.post(f"{api_url}/tasks/sweep", json=payload)
+    # Report the sweep latency + transient status to any active limiter slot
+    # before surfacing an error, so a 429/5xx shrinks the in-flight limit.
+    report_api_call(
+        time.monotonic() - sweep_start,
+        backpressure=response.status_code in _RETRY_STATUS_CODES,
+    )
 
     if response.status_code != 200:
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")

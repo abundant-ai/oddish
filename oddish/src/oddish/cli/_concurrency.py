@@ -22,9 +22,9 @@ logic is fully unit-testable. ``ConcurrencyGate`` / ``map_with_adaptive_concurre
 
 from __future__ import annotations
 
+import contextvars
 import os
 import threading
-import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypeVar, cast
@@ -213,26 +213,76 @@ class _LatencyMonitor:
             self._count += 1
 
 
+class _SlotOutcome:
+    """Per-call outcome reported by the API layer while inside a gate slot."""
+
+    __slots__ = ("api_calls", "api_latency", "backpressure")
+
+    def __init__(self) -> None:
+        self.backpressure = False
+        self.api_latency = 0.0
+        self.api_calls = 0
+
+
+# Ambient handle to the active gate slot. ``ConcurrencyGate.run`` installs one
+# for the duration of each unit of work; the API layer reports each request's
+# latency and status through it (see ``report_api_call``). A ContextVar keeps the
+# reporting decoupled from the deep call stack (no gate handle to thread through
+# upload_task / submit_sweep / _retry_request) and isolated per worker thread.
+_CURRENT_SLOT: contextvars.ContextVar[_SlotOutcome | None] = contextvars.ContextVar(
+    "oddish_concurrency_slot", default=None
+)
+
+
+def report_backpressure() -> None:
+    """Signal API backpressure to the active gate slot (no-op outside one)."""
+    slot = _CURRENT_SLOT.get()
+    if slot is not None:
+        slot.backpressure = True
+
+
+def report_api_call(latency: float, *, backpressure: bool = False) -> None:
+    """Report one API request to the active gate slot.
+
+    ``latency`` (seconds) feeds the API-only latency signal -- callers must NOT
+    include time spent on the S3 presigned PUT, which is bounded separately and
+    would otherwise pollute the API backpressure signal. Set ``backpressure`` for
+    a transient status (429/5xx) so the limiter backs off even when a retry
+    ultimately succeeds. No-op outside a gate slot (e.g. the single-item path).
+    """
+    slot = _CURRENT_SLOT.get()
+    if slot is None:
+        return
+    slot.api_latency += latency
+    slot.api_calls += 1
+    if backpressure:
+        slot.backpressure = True
+
+
 class ConcurrencyGate:
     """Throttle concurrent work to a limiter's adaptive in-flight ceiling.
 
     Wrap each unit of work with :meth:`run`: it blocks until in-flight is below
-    the current limit, runs the callable, times it, and feeds the outcome
-    (success vs. backpressure) back to the limiter. Built to drive a
-    ``ThreadPoolExecutor`` sized to ``limiter.max_limit`` -- the gate, not the
-    pool size, is the real throttle, so the limit can shrink below the pool size
-    under load.
+    the current limit, runs the callable, and feeds the outcome back to the
+    limiter. The outcome is reported by the API layer through
+    :func:`report_api_call` / :func:`report_backpressure` (HTTP status + API-only
+    latency), not inferred from wall-clock time, so the S3 PUT step never trips
+    the API backpressure signal. A clean success grows the limit; a transient
+    status, timeout, slow pool checkout, or high API latency shrinks it; any
+    other failure (deterministic 4xx, bugs) is neutral and leaves it unchanged.
+
+    Built to drive a ``ThreadPoolExecutor`` sized to ``limiter.max_limit`` -- the
+    gate, not the pool size, is the real throttle, so the limit can shrink below
+    the pool size under load.
     """
 
     def __init__(
         self,
         limiter: AdaptiveConcurrencyLimiter,
         *,
-        clock: Callable[[], float] = time.monotonic,
         latency_monitor: _LatencyMonitor | None = None,
     ) -> None:
         self._limiter = limiter
-        self._clock = clock
         self._latency = (
             latency_monitor if latency_monitor is not None else _LatencyMonitor()
         )
@@ -261,25 +311,32 @@ class ConcurrencyGate:
     def run(self, fn: Callable[..., R], /, *args: object, **kwargs: object) -> R:
         """Run ``fn(*args, **kwargs)`` once a slot is free, recording the outcome."""
         in_flight = self._acquire()
-        start = self._clock()
+        slot = _SlotOutcome()
+        token = _CURRENT_SLOT.set(slot)
         error: BaseException | None = None
         try:
             return fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - reclassified for the limiter, then re-raised
+        except BaseException as exc:  # noqa: BLE001 - reclassified for the limiter, then re-raised
             error = exc
             raise
         finally:
-            latency = self._clock() - start
-            backpressure = classify_backpressure(
+            _CURRENT_SLOT.reset(token)
+            # Latency sample is the API-only time the worker reported (excludes
+            # the S3 PUT); ``None`` when the worker made no API calls.
+            api_latency = slot.api_latency if slot.api_calls else None
+            backpressure = slot.backpressure or classify_backpressure(
                 exception=error,
-                latency=latency,
+                latency=api_latency,
                 slow_threshold=self._latency.slow_threshold(),
             )
             if backpressure:
                 self._limiter.record_backpressure()
-            else:
+            elif error is None:
                 self._limiter.record_success(in_flight=in_flight)
-            self._latency.observe(latency)
+            # else: a non-load failure (deterministic 4xx, a bug) -- neutral, so
+            # the limit is neither grown nor shrunk.
+            if api_latency is not None:
+                self._latency.observe(api_latency)
             self._release()
 
 

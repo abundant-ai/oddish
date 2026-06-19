@@ -7,11 +7,13 @@ into the upload/submit pools:
   precedence and clamping (the ``--submit-concurrency`` flag and
   ``ODDISH_TASK_UPLOAD_CONCURRENCY`` / ``ODDISH_TASK_S3_UPLOAD_CONCURRENCY`` env
   vars resolve through these).
-* ``ConcurrencyGate`` -- in-flight throttle + success/backpressure feedback.
+* ``ConcurrencyGate`` -- in-flight throttle + success/backpressure feedback,
+  including reported HTTP statuses, API-only latency, and neutral failures.
 * ``map_with_adaptive_concurrency`` -- order preservation + honoring the limit.
 * The upload pool (``upload_tasks_with_progress``) honoring a pinned value via
   flag and via env.
-* The S3 presigned-PUT step being bounded by its own, separate semaphore.
+* The S3 presigned-PUT step being bounded by its own, separate semaphore and
+  kept out of the API latency signal.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+import typer
 
 import oddish.cli.api as api
 from oddish.cli._concurrency import (
@@ -32,7 +35,10 @@ from oddish.cli._concurrency import (
     SUBMIT_CONCURRENCY_ENV_VAR,
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
+    _LatencyMonitor,
     map_with_adaptive_concurrency,
+    report_api_call,
+    report_backpressure,
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
@@ -113,6 +119,36 @@ def _raise(exc: BaseException):
         raise exc
 
     return _fn
+
+
+class _FakeStatusClient:
+    """httpx.Client stand-in whose POST returns a fixed status."""
+
+    def __init__(self, status: int) -> None:
+        self._status = status
+
+    def __enter__(self) -> _FakeStatusClient:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def post(self, url: str, **kwargs: object) -> httpx.Response:
+        return httpx.Response(status_code=self._status, text="overloaded")
+
+
+def _resp(status: int) -> httpx.Response:
+    return httpx.Response(status_code=status)
+
+
+def _scripted_send(responses):
+    """Zero-arg send() that yields the given responses in order."""
+    seq = list(responses)
+
+    def send():
+        return seq.pop(0)
+
+    return send
 
 
 # ---------------------------------------------------------------------------
@@ -209,12 +245,64 @@ def test_gate_backs_off_on_pool_timeout():
     assert limiter.limit < 8
 
 
-def test_gate_does_not_back_off_on_client_error():
-    limiter = AdaptiveConcurrencyLimiter(min_limit=4, max_limit=16, initial_limit=8)
+def test_gate_treats_non_load_failure_as_neutral():
+    # A non-load failure (a deterministic 4xx surfaced as an exception, or a bug)
+    # must be neutral: it neither shrinks the limit nor counts as a success that
+    # grows it -- even when utilization would otherwise allow growth.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=2)
     gate = ConcurrencyGate(limiter)
     with pytest.raises(ValueError):
         gate.run(_raise(ValueError("bug")))
-    assert limiter.limit == 8  # neutral outcome, util-gated -> unchanged
+    assert limiter.limit == 2  # in_flight*2 >= limit, yet no growth
+
+
+def test_gate_backs_off_on_reported_status_then_success():
+    # A transient status reported during the call shrinks the limit even though
+    # the call ultimately returns (e.g. a 503 that a retry recovered from).
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=8)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        report_api_call(0.01, backpressure=True)
+        return "done"
+
+    assert gate.run(worker) == "done"
+    assert limiter.limit < 8
+
+
+def test_gate_backs_off_on_reported_status_then_exit():
+    # upload_task / submit_sweep report backpressure, then raise typer.Exit on a
+    # 5xx; the limit must shrink despite the swallowed status.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=8)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        report_backpressure()
+        raise typer.Exit(1)
+
+    with pytest.raises(typer.Exit):
+        gate.run(worker)
+    assert limiter.limit < 8
+
+
+def test_gate_observes_only_reported_api_latency():
+    # The latency signal is built from reported API time, never wall-clock time,
+    # so a slow S3 PUT inside the worker can't trip the API limiter.
+    monitor = _LatencyMonitor(warmup=1, slow_multiplier=2.0)
+    gate = ConcurrencyGate(resolve_submit_concurrency(8), latency_monitor=monitor)
+
+    def worker():
+        report_api_call(0.05)  # API-only time; any S3-PUT time is never reported
+        return "ok"
+
+    gate.run(worker)
+    assert monitor.slow_threshold() == pytest.approx(0.10)  # 2 * 0.05
+
+
+def test_report_helpers_are_noop_outside_gate():
+    # Reporting outside any gate slot must not raise.
+    report_backpressure()
+    report_api_call(0.01, backpressure=True)
 
 
 def test_gate_caps_in_flight_below_pool_size():
@@ -332,3 +420,56 @@ def test_s3_put_acquires_separate_semaphore(monkeypatch, tmp_path):
 
     assert sem.entered == 1
     assert sem.exited == 1
+
+
+def test_s3_put_excluded_from_api_latency_signal(monkeypatch, tmp_path):
+    # The S3 PUT must report no API call, so its (potentially slow) wall-time
+    # never feeds the API latency monitor.
+    monkeypatch.setattr(api, "_get_s3_put_semaphore", _RecordingSemaphore)
+    monkeypatch.setattr(api.httpx, "Client", _FakeS3Client)
+    monitor = _LatencyMonitor(warmup=1)
+    gate = ConcurrencyGate(resolve_submit_concurrency(4), latency_monitor=monitor)
+    tarball = tmp_path / "task.tar.gz"
+    tarball.write_bytes(b"payload")
+
+    gate.run(lambda: api._upload_to_presigned_url("http://s3/put", tarball, {}))
+
+    assert monitor.slow_threshold() is None  # no API call observed -> still warming up
+
+
+# ---------------------------------------------------------------------------
+# HTTP-status backpressure reaches the limiter through the API layer
+# ---------------------------------------------------------------------------
+
+
+def test_retry_request_reports_backpressure_within_gate():
+    # init/complete go through _retry_request; a 503 it recovers from must still
+    # shrink the in-flight limit.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=8)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        send = _scripted_send([_resp(503), _resp(200)])
+        return api._retry_request(
+            send, budget=api._RetryBudget(), sleep=lambda _s: None
+        )
+
+    resp = gate.run(worker)
+    assert resp.status_code == 200
+    assert limiter.limit < 8
+
+
+def test_submit_sweep_reports_backpressure_status(monkeypatch):
+    # submit_sweep does a single un-retried POST; a 503 must shrink the limit
+    # before the typer.Exit it raises.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=8)
+    gate = ConcurrencyGate(limiter)
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(api.httpx, "Client", lambda *a, **k: _FakeStatusClient(503))
+
+    def worker():
+        return api.submit_sweep("http://api", "t1", [{}], None, None, "normal", None)
+
+    with pytest.raises(typer.Exit):
+        gate.run(worker)
+    assert limiter.limit < 8
