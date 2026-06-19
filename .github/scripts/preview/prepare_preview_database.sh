@@ -56,6 +56,11 @@ load_env_file "$supabase_env"
 branch_ref="$(read_output_value "$supabase_output" branch_ref)"
 branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
+# bootstrap_preview_db.py stamps the inherited schema to the parent's revision
+# only for a brand-new branch (so the upgrade applies just this PR's migrations
+# instead of replaying history). Export the flag so it reaches that subprocess.
+export BRANCH_WAS_CREATED="$branch_was_created"
+
 if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
 fi
