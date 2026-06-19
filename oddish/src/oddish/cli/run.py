@@ -101,10 +101,8 @@ def run(
         typer.Option(
             "--add",
             help=(
-                "Add n_trials MORE trials to an existing task instead of "
-                "reconciling to n_trials. Without --add, re-running a manifest "
-                "is idempotent: only the shortfall needed to reach n_trials is "
-                "appended. With --add, every run appends another batch."
+                "Always append and rerun n_trials more trials. By default, "
+                "re-running a manifest doesn't rerun trials that already exist."
             ),
         ),
     ] = False,
