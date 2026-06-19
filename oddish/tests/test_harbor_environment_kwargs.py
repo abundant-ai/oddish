@@ -33,7 +33,9 @@ class _SubmittingClient:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def post(self, _url: str, *, json: dict) -> httpx.Response:
+    def post(
+        self, _url: str, *, json: dict, headers: dict | None = None
+    ) -> httpx.Response:
         self.payloads.append(json)
         return httpx.Response(200, json={"task_id": "task-123"})
 
