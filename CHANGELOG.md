@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-20]
+
+### Added
+- `POST /tasks/sweep/batch` endpoint on cloud and standalone servers for submitting N task-sweeps in one request with per-item partial-success; each item runs inside its own savepoint so a failure in one item neither aborts the batch nor rolls back siblings; returns HTTP 207 Multi-Status when at least one item fails; CLI prefers the batch path and falls back to per-task only on 404/405 (#406)
+- Adaptive AIMD in-flight limiter for `oddish run` task submission: replaces fixed one-at-a-time concurrency with an additive-increase/multiplicative-decrease controller clamped to [4, 16]; backs off on 429/5xx, request timeouts, slow pool checkouts, and EWMA latency overshoot; S3 presigned-PUT step uses a separate smaller bound ([1, 6]) to avoid polluting the API backpressure signal; configurable via `--submit-concurrency` flag or `ODDISH_TASK_UPLOAD_CONCURRENCY` env (#404)
+- Submission idempotency for `POST /tasks/sweep`: CLI stamps a stable `Idempotency-Key` (canonical digest of experiment + task_id + sweep spec) on every sweep call; server deduplicates retried submissions and replays the stored response from a new `submission_idempotency` table (24h TTL, unique-insert-wins savepoint); same key + different body → 409 Conflict; prevents duplicate trials on transient 5xx retries (#399)
+- Opt-in task-submission timing harness in `oddish/tests/perf/` measuring throughput (tasks/min), per-call latency (p50/p95/max per phase), 5xx count, and client-vs-server split; skipped in CI unless `ODDISH_PERF` and `ODDISH_API_URL` are both set (#391)
+
+### Changed
+- Batch sweep submission now chunks payloads client-side into groups of at most `ODDISH_SWEEP_BATCH_MAX_TASKS` (default 10, tunable via env) to stay under Modal's per-request ceiling; first-chunk 404/405 still falls back to per-task; later-chunk failures surface as an error to prevent double-submission after earlier chunks already committed (#407)
+- Task tarballing in `upload_task` is now deferred until the server returns a presigned upload URL; dedup hits (content-hash match on `/tasks/upload/init`) skip archiving entirely, saving CPU on re-runs where the task content hasn't changed (#390)
+- Sweep re-runs reconcile to exactly k trials per task in the target experiment: unchanged tasks (same version) count existing live trials and only add the shortfall; changed tasks (new version) still get a full k; the `--add` opt-out flag is removed — reconcile-to-N is now unconditional (#386)
+
+### Fixed
+- `/tasks/sweep` server-side DB round-trips cut: deduplicated browse-projection recompute in `create_task` (was running twice — once on incomplete pre-version state, once after trials); per-row `session.add` loops replaced with a single `INSERT … SELECT unnest(…) WITH ORDINALITY` statement for both trials and worker_jobs, keeping the statement shape constant under Supavisor transaction pooling (#397)
+- Upload `init` and `complete` calls now retry on 429/500/502/503/504 with capped exponential backoff, full jitter, `Retry-After` header support, and a token-bucket retry budget (≤10% of requests); transient blips no longer abort a submission entirely (#397)
+- `probe_presets_001` Alembic migration now adds `ratio_unit` and `ratio_verb` columns idempotently before the bulk seed insert, fixing `alembic upgrade head` failures on fresh databases where `000_initial_schema` creates `probe_presets` from current models that no longer carry those columns (#401)
+
+---
+
 ## [2026-06-19]
 
 ### Added
