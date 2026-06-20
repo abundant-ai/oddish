@@ -55,6 +55,10 @@ async def _parent_revisions(parent_url: str) -> dict[str, str]:
         connect_args={
             "statement_cache_size": 0,
             "server_settings": {"default_transaction_read_only": "on"},
+            # Bound the parent read so a hung pooler connection can't wedge the
+            # job up to GitHub's 6h ceiling (mirrors oddish/alembic/env.py).
+            "timeout": 30,
+            "command_timeout": 30,
         },
         poolclass=pool.NullPool,
     )
@@ -100,13 +104,18 @@ def main() -> None:
             try:
                 _alembic(project, "stamp", rev)
             except subprocess.CalledProcessError:
-                # The parent is at a revision this PR branch doesn't contain yet
-                # (the branch is behind production). Stamp the branch's own head
-                # instead: the inherited schema already includes everything the
-                # branch knows, so this still skips the replay without failing.
+                # The parent revision isn't in this branch's history. Usually the
+                # branch is simply *behind* production, where stamping the branch's
+                # own head is safe -- the inherited schema is a superset of what the
+                # branch knows. Two known gaps tracked for follow-up: (1) a
+                # *diverged* branch (cut before a prod revision, then given its own
+                # tip) can be left with version_num ahead of the inherited schema;
+                # (2) this also catches any other non-zero alembic exit (bad config,
+                # connectivity, broken graph), so a real failure is masked here
+                # rather than surfaced.
                 print(
-                    f"{table}: parent revision {rev} is unknown to this branch; "
-                    "stamping branch head instead (branch is behind production)",
+                    f"{table}: parent revision {rev} not in this branch's history; "
+                    "stamping branch head instead (branch behind or diverged)",
                     file=sys.stderr,
                 )
                 _alembic(project, "stamp", "head")
