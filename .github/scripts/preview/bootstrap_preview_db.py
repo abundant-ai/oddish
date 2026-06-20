@@ -35,8 +35,6 @@ from pathlib import Path
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-# (project dir, Alembic version table) for each stack, in apply order. The two
-# stacks share one Postgres but track their revisions in separate tables.
 STACKS = (
     (Path.cwd().parent / "oddish", "alembic_version_oddish"),
     (Path.cwd(), "alembic_version_backend"),
@@ -48,15 +46,14 @@ async def _parent_revisions(parent_url: str) -> dict[str, str]:
 
     The parent is a Supavisor pooler URL, so mirror seed_preview_db.py: disable
     asyncpg's prepared-statement cache, use NullPool, and pin the transaction
-    read-only since we only ever SELECT here.
+    read-only since we only ever SELECT here. The timeouts bound the read so a
+    hung pooler connection can't wedge the job up to GitHub's 6h ceiling.
     """
     engine = create_async_engine(
         parent_url,
         connect_args={
             "statement_cache_size": 0,
             "server_settings": {"default_transaction_read_only": "on"},
-            # Bound the parent read so a hung pooler connection can't wedge the
-            # job up to GitHub's 6h ceiling (mirrors oddish/alembic/env.py).
             "timeout": 30,
             "command_timeout": 30,
         },
@@ -66,9 +63,6 @@ async def _parent_revisions(parent_url: str) -> dict[str, str]:
     try:
         async with engine.connect() as conn:
             for _, table in STACKS:
-                # to_regclass returns NULL (not an error) for a missing table,
-                # so a stack the parent has never run is simply absent here.
-                # The table name is a trusted constant from STACKS, not input.
                 if await conn.scalar(text("SELECT to_regclass(:t)"), {"t": table}) is None:
                     continue
                 rev = await conn.scalar(text(f"SELECT version_num FROM {table}"))
@@ -87,11 +81,6 @@ def main() -> None:
     branch_was_created = os.environ.get("BRANCH_WAS_CREATED") == "true"
     parent_url = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL")
 
-    # On a freshly created branch, stamp the inherited schema to the parent's
-    # revision so the upgrade applies only this PR's new migrations instead of
-    # replaying the whole history. Without a parent URL we can't know that
-    # revision (local runs) -- fall back to the plain upgrade, which on an empty
-    # DB correctly self-bootstraps from 000_initial_schema.
     if branch_was_created and parent_url:
         revisions = asyncio.run(_parent_revisions(parent_url))
         for project, table in STACKS:
@@ -104,15 +93,6 @@ def main() -> None:
             try:
                 _alembic(project, "stamp", rev)
             except subprocess.CalledProcessError:
-                # The parent revision isn't in this branch's history. Usually the
-                # branch is simply *behind* production, where stamping the branch's
-                # own head is safe -- the inherited schema is a superset of what the
-                # branch knows. Two known gaps tracked for follow-up: (1) a
-                # *diverged* branch (cut before a prod revision, then given its own
-                # tip) can be left with version_num ahead of the inherited schema;
-                # (2) this also catches any other non-zero alembic exit (bad config,
-                # connectivity, broken graph), so a real failure is masked here
-                # rather than surfaced.
                 print(
                     f"{table}: parent revision {rev} not in this branch's history; "
                     "stamping branch head instead (branch behind or diverged)",
