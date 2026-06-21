@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-21]
+
+### Changed
+
+- Automated daily changelog updated with entries for 2026-06-20 changes (#409)
+
+---
+
 ## [2026-06-20]
 
 ### Added
