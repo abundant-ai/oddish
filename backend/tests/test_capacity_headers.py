@@ -18,11 +18,17 @@ def _snapshot(ceiling: int = 48, pressure: float = 0.25) -> LoadSnapshot:
     )
 
 
+async def _noop_persist(value):
+    """Stand-in for ``_maybe_persist_sweep_rtt`` so header tests never touch the DB."""
+    return None
+
+
 def _app(monkeypatch) -> FastAPI:
     async def fake_snap():
         return _snapshot()
 
     monkeypatch.setattr(capacity_headers, "get_cached_load_snapshot", fake_snap)
+    monkeypatch.setattr(capacity_headers, "_maybe_persist_sweep_rtt", _noop_persist)
     app = FastAPI()
     app.middleware("http")(capacity_headers.capacity_header_middleware)
 
@@ -65,6 +71,7 @@ async def test_header_omitted_when_snapshot_fails(monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(capacity_headers, "get_cached_load_snapshot", boom)
+    monkeypatch.setattr(capacity_headers, "_maybe_persist_sweep_rtt", _noop_persist)
     app = FastAPI()
     app.middleware("http")(capacity_headers.capacity_header_middleware)
 
@@ -77,6 +84,43 @@ async def test_header_omitted_when_snapshot_fails(monkeypatch):
         resp = await client.post("/tasks/sweep")
     assert resp.status_code == 200
     assert "Oddish-Submit-Concurrency" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_middleware_records_latency_on_sweep(monkeypatch):
+    """The sweep path feeds the latency EWMA and invokes the (throttled) persist."""
+    persisted = []
+
+    async def spy_persist(value):
+        persisted.append(value)
+
+    async def fake_snap():
+        return _snapshot()
+
+    monkeypatch.setattr(capacity_headers, "get_cached_load_snapshot", fake_snap)
+    monkeypatch.setattr(capacity_headers, "_maybe_persist_sweep_rtt", spy_persist)
+    capacity_headers._sweep_rtt_ewma = None
+
+    app = FastAPI()
+    app.middleware("http")(capacity_headers.capacity_header_middleware)
+
+    @app.post("/tasks/sweep")
+    async def sweep():
+        return {"ok": True}
+
+    @app.get("/tasks/browse")
+    async def browse():
+        return {"ok": True}
+
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        sweep_resp = await client.post("/tasks/sweep")
+        browse_resp = await client.get("/tasks/browse")
+
+    assert sweep_resp.status_code == 200 and browse_resp.status_code == 200
+    # Invoked exactly once — on the sweep path, not the off-path browse request.
+    assert len(persisted) == 1
+    assert isinstance(persisted[0], float) and persisted[0] >= 0.0
 
 
 @pytest.mark.asyncio
