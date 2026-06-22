@@ -124,5 +124,8 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert bundle.model_env.get("ANTHROPIC_API_KEY") == "sk-ant"
     assert bundle.s3_write_prefix == "tasks/task_abc/trials/task_abc-0/"
     assert bundle.expires_at == _now() + timedelta(seconds=3600)
-    # only the hash is persistable; it matches the bundle's (in-memory) raw token
-    assert token_hash == job_tokens.hash_token(bundle.token)
+    # build_bundle returns the persistable token hash (a sha256 hex digest);
+    # the raw token is discarded, not carried on the bundle.
+    assert isinstance(token_hash, str) and len(token_hash) == 64
+    assert not hasattr(bundle, "token")
+    assert not hasattr(bundle, "metadata")

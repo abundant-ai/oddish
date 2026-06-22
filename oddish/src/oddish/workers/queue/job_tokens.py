@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
@@ -34,11 +34,9 @@ DEFAULT_TTL_SECONDS = 14400  # 4h: covers queue wait + run; trial timeouts are u
 class JobCredentialBundle:
     """The credentials handed to a worker for one claimed job."""
 
-    token: str
     model_env: Mapping[str, str]
     s3_write_prefix: str
     expires_at: datetime
-    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 def mint_token() -> tuple[str, str]:
@@ -128,10 +126,15 @@ def build_bundle(
     now: datetime,
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
 ) -> tuple[JobCredentialBundle, str]:
-    """Assemble a job-scoped bundle and its persistable token hash."""
-    raw, token_hash = mint_token()
+    """Assemble a job-scoped bundle and its persistable token hash.
+
+    Returns the bundle (model env + S3 prefix the worker uses) and the token
+    hash (the revocable handle persisted on the row). The raw token is hashed
+    and discarded -- it is not held by the worker today (in-process verification
+    is not wired; the worker writes state to Postgres directly).
+    """
+    _, token_hash = mint_token()
     bundle = JobCredentialBundle(
-        token=raw,
         model_env=scoped_model_env(agent=agent, model=model, settings=settings),
         s3_write_prefix=s3_write_prefix_for(trial_id),
         expires_at=now + timedelta(seconds=ttl_seconds),
