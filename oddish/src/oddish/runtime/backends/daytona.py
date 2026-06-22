@@ -39,8 +39,24 @@ class DaytonaBackend:
         }
 
     async def teardown(self, external_id: str) -> bool:
-        # Implemented in Task 5.
-        raise NotImplementedError
+        if not external_id:
+            return False
+        try:
+            from daytona import AsyncDaytona
+
+            client = AsyncDaytona()
+            try:
+                sandbox = await client.get(external_id)
+                await client.delete(sandbox)
+            finally:
+                await client.close()
+        except Exception:
+            logger.exception(
+                "DaytonaBackend.teardown: failed to terminate %s", external_id
+            )
+            return False
+        logger.info("DaytonaBackend.teardown: terminated %s", external_id)
+        return True
 
     @contextlib.contextmanager
     def capture_diagnostics(self, job_dir: Path) -> Iterator[Path | None]:

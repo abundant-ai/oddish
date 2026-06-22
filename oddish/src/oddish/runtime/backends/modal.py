@@ -36,8 +36,20 @@ class ModalBackend:
         return dict(base_kwargs)
 
     async def teardown(self, external_id: str) -> bool:
-        # Implemented in Task 5.
-        raise NotImplementedError
+        if not external_id:
+            return False
+        try:
+            import modal
+
+            sandbox = await modal.Sandbox.from_id.aio(external_id)
+            await sandbox.terminate.aio()
+        except Exception:
+            logger.exception(
+                "ModalBackend.teardown: failed to terminate %s", external_id
+            )
+            return False
+        logger.info("ModalBackend.teardown: terminated %s", external_id)
+        return True
 
     @contextlib.contextmanager
     def capture_diagnostics(self, job_dir: Path) -> Iterator[Path | None]:
