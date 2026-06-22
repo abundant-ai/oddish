@@ -878,10 +878,8 @@ class Settings(BaseSettings):
     # --- Configurable Harbor source (override which Harbor runs a trial) ---
     # Single CLI spec mirror (env ODDISH_HARBOR). Parsed via parse_harbor_spec.
     harbor: str | None = None
-    # Gate: until the execution engines (Phases B/C) land, a resolved non-default
-    # pin is rejected at submit. Default OFF keeps the default path unchanged.
-    harbor_overrides_enabled: bool = False
-    # Comma-separated case-insensitive URL globs of allowed override sources.
+    # Comma-separated case-insensitive URL globs of allowed override sources. The
+    # allowlist is the safety boundary: a source outside it is rejected at submit.
     harbor_allowed_sources: str = (
         "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
     )

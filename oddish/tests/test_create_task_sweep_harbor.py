@@ -45,8 +45,11 @@ async def test_default_submission_stamps_default_sha():
         assert trials and all(t.harbor_sha == HARBOR_DEFAULT_SHA for t in trials)
 
 
-async def test_non_default_pin_rejected_with_422(monkeypatch):
+async def test_allowlisted_non_default_pin_is_stamped_on_trials_and_jobs(monkeypatch):
     import oddish.core.harbor_source as hs
+    from sqlalchemy import select
+
+    from oddish.db import WorkerJobModel
 
     monkeypatch.setattr(
         hs, "resolve_harbor_pin", lambda s, r: hs.ResolvedPin(s, "c" * 40)
@@ -63,14 +66,50 @@ async def test_non_default_pin_rejected_with_422(monkeypatch):
             )
         )
         await session.flush()
+        _task, trials, _is_append, _exp = await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id="hsweep-task2",
+                configs=[AgentModelPair(agent="nop", n_trials=1)],
+                harbor=HarborConfig(
+                    source="https://github.com/dot-agi/harbor", ref="main"
+                ),
+            ),
+        )
+        # The allowed override is resolved + stamped (no longer rejected), and the
+        # ephemeral variant rides onto the worker_jobs dispatch key.
+        assert trials and all(t.harbor_sha == "c" * 40 for t in trials)
+        variants = (
+            await session.execute(
+                select(WorkerJobModel.harbor_variant_id).where(
+                    WorkerJobModel.subject_id.in_([t.id for t in trials])
+                )
+            )
+        ).scalars().all()
+        assert variants and all(v == "ephemeral" for v in variants)
+
+
+async def test_disallowed_source_rejected_with_422():
+    async with get_session() as session:
+        await _cleanup(session, "hsweep-task3")
+        session.add(
+            TaskModel(
+                id="hsweep-task3",
+                name="hsweep-task3",
+                user="t",
+                org_id=None,
+                task_path="p",
+            )
+        )
+        await session.flush()
         with pytest.raises(HTTPException) as exc:
             await create_task_sweep_core(
                 session,
                 submission=TaskSweepSubmission(
-                    task_id="hsweep-task2",
+                    task_id="hsweep-task3",
                     configs=[AgentModelPair(agent="nop", n_trials=1)],
                     harbor=HarborConfig(
-                        source="https://github.com/dot-agi/harbor", ref="main"
+                        source="https://github.com/evil/harbor", ref="main"
                     ),
                 ),
             )

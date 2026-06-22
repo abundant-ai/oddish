@@ -2,7 +2,7 @@ import pytest
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE, Settings
 from oddish.core.harbor_source import (
-    HarborOverrideDisabledError,
+    HarborSourceError,
     resolve_and_gate_harbor,
 )
 from oddish.schemas import HarborConfig
@@ -23,20 +23,7 @@ def test_default_pin_passes_and_is_stamped_without_network():
     assert hc.source == HARBOR_DEFAULT_SOURCE
 
 
-def test_non_default_pin_rejected_when_overrides_disabled(monkeypatch):
-    import oddish.core.harbor_source as hs
-
-    monkeypatch.setattr(
-        hs, "resolve_harbor_pin", lambda s, r: hs.ResolvedPin(s, "c" * 40)
-    )
-    with pytest.raises(HarborOverrideDisabledError):
-        resolve_and_gate_harbor(
-            HarborConfig(source="https://github.com/dot-agi/harbor", ref="main"),
-            settings=_settings(harbor_overrides_enabled=False),
-        )
-
-
-def test_non_default_pin_allowed_when_enabled_is_stamped(monkeypatch):
+def test_allowlisted_non_default_pin_is_resolved_and_stamped(monkeypatch):
     import oddish.core.harbor_source as hs
 
     monkeypatch.setattr(
@@ -44,8 +31,26 @@ def test_non_default_pin_allowed_when_enabled_is_stamped(monkeypatch):
     )
     hc, variant = resolve_and_gate_harbor(
         HarborConfig(source="https://github.com/dot-agi/harbor", ref="main"),
-        settings=_settings(harbor_overrides_enabled=True),
+        settings=_settings(),
     )
+    # Not the default and not a blessed variant -> ephemeral, stamped, executable.
     assert variant == "ephemeral"
     assert hc.resolved_sha == "c" * 40
     assert hc.variant_id == "ephemeral"
+    assert hc.source == "https://github.com/dot-agi/harbor"
+
+
+def test_disallowed_source_is_rejected(monkeypatch):
+    import oddish.core.harbor_source as hs
+
+    # The allowlist is the gate: a disallowed source raises before any resolve.
+    monkeypatch.setattr(
+        hs,
+        "resolve_harbor_pin",
+        lambda s, r: (_ for _ in ()).throw(AssertionError("must not resolve")),
+    )
+    with pytest.raises(HarborSourceError):
+        resolve_and_gate_harbor(
+            HarborConfig(source="https://github.com/evil/harbor", ref="main"),
+            settings=_settings(),
+        )
