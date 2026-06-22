@@ -150,6 +150,32 @@ async def get_task_status_counts(
     return (await build_task_status_responses_from_counts(session, tasks=[task]))[0]
 
 
+async def list_experiment_trials_for_org(
+    session: AsyncSession, experiment_id: str, org_id: str | None
+) -> list[TrialResponse]:
+    """List non-superseded trials for an experiment (org-scoped)."""
+    conditions = [
+        TrialModel.experiment_id == experiment_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+    ]
+    if org_id is not None:
+        conditions.append(TrialModel.org_id == org_id)
+    result = await session.execute(
+        select(TrialModel, TaskModel.task_path)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(*conditions)
+        .order_by(TrialModel.created_at.asc())
+    )
+    rows = result.all()
+    trials = [trial for trial, _ in rows]
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    return [
+        build_trial_response(trial, task_path,
+                             queue_info=queue_info_by_trial_id.get(trial.id))
+        for trial, task_path in rows
+    ]
+
+
 async def list_task_trials_for_task(
     session: AsyncSession, task_id: str, *, probe: bool | None = None
 ) -> list[TrialResponse]:
