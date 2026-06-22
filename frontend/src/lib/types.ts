@@ -111,6 +111,7 @@ export interface Trial {
   max_attempts: number;
   harbor_stage: string | null;
   harbor_sha?: string | null;
+  harbor_source?: string | null;
   reward: number | null;
   error_message?: string | null;
   result?: Record<string, unknown> | null;

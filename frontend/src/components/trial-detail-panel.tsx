@@ -202,6 +202,22 @@ function getDaytonaSandboxUrl(trial: Trial): string | null {
   )}`;
 }
 
+/**
+ * Short "org/repo" label for the Harbor source a trial executed against.
+ * Strips a leading git+ and the github host so the drawer shows the ACTUAL
+ * source (default, a blessed variant, or an arbitrary override), not a
+ * hardcoded fork. Falls back to "harbor" for legacy rows with no stamped source.
+ */
+function harborRepoLabel(source: string | null | undefined): string {
+  if (!source) return "harbor";
+  return (
+    source
+      .replace(/^git\+/, "")
+      .replace(/^https?:\/\/github\.com\//i, "")
+      .replace(/\.git$/, "") || "harbor"
+  );
+}
+
 export function TrialDetailPanel({
   isOpen,
   onClose,
@@ -874,14 +890,12 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
-              {/* Phase B: the hardcoded "rishidesai/harbor@" prefix must use the
-                  ACTUAL trial source once TrialResponse exposes it. In Phase A
-                  only the default source is ever stamped, so it is correct. */}
               {trial.harbor_sha && (
                 <div className="text-muted-foreground px-4 py-1 text-[11px]">
                   Harbor:{" "}
                   <span className="font-mono">
-                    rishidesai/harbor@{trial.harbor_sha.slice(0, 7)}
+                    {harborRepoLabel(trial.harbor_source)}@
+                    {trial.harbor_sha.slice(0, 7)}
                   </span>
                 </div>
               )}

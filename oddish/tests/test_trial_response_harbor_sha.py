@@ -24,6 +24,7 @@ def _trial() -> TrialModel:
         is_probe=False,
         has_trajectory=False,
         harbor_sha="e" * 40,
+        harbor_config={"source": "https://github.com/dot-agi/harbor"},
         created_at=datetime(2026, 1, 1),
     )
 
@@ -34,3 +35,13 @@ def test_full_mapper_carries_harbor_sha():
 
 def test_compact_mapper_carries_harbor_sha():
     assert build_compact_trial_response(_trial(), task_path="p").harbor_sha == "e" * 40
+
+
+def test_full_mapper_carries_harbor_source():
+    resp = build_trial_response(_trial(), task_path="p")
+    assert resp.harbor_source == "https://github.com/dot-agi/harbor"
+
+
+def test_compact_mapper_carries_harbor_source():
+    resp = build_compact_trial_response(_trial(), task_path="p")
+    assert resp.harbor_source == "https://github.com/dot-agi/harbor"
