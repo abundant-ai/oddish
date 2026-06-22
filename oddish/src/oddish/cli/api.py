@@ -39,12 +39,10 @@ from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
 from oddish.cli._concurrency import (
-    SUBMIT_CONCURRENCY_HEADER,
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
     map_with_adaptive_concurrency,
-    parse_submit_concurrency_header,
-    report_advertised_ceiling,
+    report_advertised_ceiling_from_response,
     report_api_call,
     report_backpressure,
     resolve_s3_put_concurrency,
@@ -495,11 +493,7 @@ def _retry_request(
         # backpressure even when a later retry succeeds.
         transient = response.status_code in _RETRY_STATUS_CODES
         report_api_call(time.monotonic() - call_start, backpressure=transient)
-        report_advertised_ceiling(
-            parse_submit_concurrency_header(
-                response.headers.get(SUBMIT_CONCURRENCY_HEADER)
-            )
-        )
+        report_advertised_ceiling_from_response(response)
 
         if not transient:
             budget.record_success()
@@ -1031,9 +1025,7 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
         time.monotonic() - sweep_start,
         backpressure=response.status_code in _RETRY_STATUS_CODES,
     )
-    report_advertised_ceiling(
-        parse_submit_concurrency_header(response.headers.get(SUBMIT_CONCURRENCY_HEADER))
-    )
+    report_advertised_ceiling_from_response(response)
 
     if response.status_code != 200:
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
@@ -1168,9 +1160,7 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
         time.monotonic() - call_start,
         backpressure=response.status_code in _RETRY_STATUS_CODES,
     )
-    report_advertised_ceiling(
-        parse_submit_concurrency_header(response.headers.get(SUBMIT_CONCURRENCY_HEADER))
-    )
+    report_advertised_ceiling_from_response(response)
 
     # Older servers have no batch route; nothing was processed -> safe to fall
     # back to per-task submission.

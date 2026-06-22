@@ -409,6 +409,22 @@ def report_advertised_ceiling(ceiling: int | None) -> None:
         slot.advertised_ceiling = ceiling
 
 
+def report_advertised_ceiling_from_response(response: object) -> None:
+    """Parse the advertised ceiling off an HTTP response and report it.
+
+    Convenience wrapper for the API call sites: reads the
+    ``Oddish-Submit-Concurrency`` header off ``response`` (tolerating a response
+    object with no ``headers`` mapping -- treated as no advice) and forwards the
+    parsed ceiling to the active gate slot.
+    """
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return
+    report_advertised_ceiling(
+        parse_submit_concurrency_header(headers.get(SUBMIT_CONCURRENCY_HEADER))
+    )
+
+
 class ConcurrencyGate:
     """Throttle concurrent work to a limiter's adaptive in-flight ceiling.
 
