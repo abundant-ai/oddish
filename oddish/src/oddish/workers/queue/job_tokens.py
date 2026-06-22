@@ -6,15 +6,18 @@ bundle instead of the worker reading the blanket ``oddish-prod`` secret:
 * the **model API key(s) for this job's provider only** — a Claude job's bundle
   carries the Anthropic key, never the OpenAI/Gemini keys — injected into the
   agent env in place of the blanket key set;
-* an **S3 write prefix** the trial's uploads are restricted to (enforced in the
-  upload path, so a worker cannot write beyond its job's prefix);
+* an **S3 write prefix** that scopes oddish's *own* trial-artifact uploads to
+  this trial's prefix — an oddish-side check in ``StorageClient`` (defense in
+  depth against a path-traversal escape on that upload path). It does **not**
+  cover Harbor's or other tools' uploads (they use their own credentials); full
+  cross-path write isolation would need IAM/STS-scoped S3 credentials (§14.2);
 * a random **token** whose SHA-256 hash is persisted on the ``worker_jobs`` row
   (the raw token is never stored) as the revocable credential handle, revoked on
   terminal status.
 
 This module is pure (no DB / network). The gated wiring lives in the trial
 handler (issue the bundle, inject the scoped model env, revoke on terminal) and
-``StorageClient`` (enforce the S3 prefix), behind
+``StorageClient`` (enforce the prefix on oddish's trial uploads), behind
 ``settings.job_scoped_tokens_enabled`` (default off; dual-read hedge: bundle if
 present, else the blanket secret).
 """
@@ -50,7 +53,7 @@ def hash_token(token: str) -> str:
 
 
 def s3_write_prefix_for(trial_id: str) -> str:
-    """The S3 prefix a trial's worker may write under.
+    """The oddish S3 prefix that oddish's trial-artifact uploads are scoped to.
 
     Mirrors ``StorageClient._trial_prefix`` so the scope matches where artifacts
     are actually uploaded (``tasks/{task_id}/trials/{trial_id}/``).
