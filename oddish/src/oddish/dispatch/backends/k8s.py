@@ -138,6 +138,26 @@ class K8sJobDispatcher:
             )
         return handles
 
+    async def list_managed(self) -> list[WorkerHandle]:
+        """List every Job this dispatcher manages (by label selector).
+
+        The tag-based reclamation source (spec §6.5): cross-reference against
+        live ``worker_jobs`` rows to find leaks. (Jobs also self-clean via
+        ``ttlSecondsAfterFinished``, so this is a backstop.)
+        """
+        api = self._api()
+        resp = await asyncio.to_thread(
+            api.list_namespaced_job,
+            namespace=self._namespace,
+            label_selector=f"{MANAGED_LABEL_KEY}=true",
+        )
+        return [
+            WorkerHandle(
+                provider=self.name, queue_key="", id=item.metadata.name
+            )
+            for item in resp.items
+        ]
+
     async def check_active(
         self, handles: Sequence[WorkerHandle]
     ) -> AsyncIterator[WorkerHandle]:

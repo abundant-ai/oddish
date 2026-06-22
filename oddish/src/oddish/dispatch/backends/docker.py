@@ -98,6 +98,20 @@ class DockerPoolDispatcher:
             )
         return handles
 
+    async def list_managed(self) -> list[WorkerHandle]:
+        """List every running container this dispatcher manages (by label).
+
+        The tag-based reclamation source (spec §6.5): cross-reference against
+        live ``worker_jobs`` rows to find leaks. (Containers also self-clean via
+        ``--rm`` on exit, so this is a backstop.)
+        """
+        out = await self._run(["ps", "-q", "--filter", f"label={MANAGED_LABEL}"])
+        return [
+            WorkerHandle(provider=self.name, queue_key="", id=cid.strip())
+            for cid in out.splitlines()
+            if cid.strip()
+        ]
+
     async def check_active(
         self, handles: Sequence[WorkerHandle]
     ) -> AsyncIterator[WorkerHandle]:
