@@ -17,6 +17,7 @@ documented interim that sidesteps the Supavisor LISTEN/NOTIFY caveat.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Collection, Sequence
 
@@ -24,8 +25,11 @@ from oddish.dispatch.ports import Dispatcher, WorkerHandle
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
+    fetch_running_worker_handles,
     get_worker_job_org_queue_counts,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -181,6 +185,37 @@ async def run_dispatch_cycle(
     )
 
 
+FetchHandlesFn = Callable[[], Awaitable[list[tuple[str, str]]]]
+
+
+async def reattach_in_flight_workers(
+    dispatcher: Dispatcher,
+    *,
+    _fetch: FetchHandlesFn = fetch_running_worker_handles,
+) -> list[WorkerHandle]:
+    """Reattach durable in-flight worker handles after a control-plane restart.
+
+    Reads the persisted handles of RUNNING ``worker_jobs`` and calls
+    ``Dispatcher.recover`` for each (the Nomad ``RecoverTask`` step), so a
+    restarted dispatcher reacquires its in-flight workers instead of orphaning
+    them. Backends whose handles are not durable return ``None`` from
+    ``recover`` and are skipped (lease expiry + re-claim covers them, §14.3).
+    """
+    recovered: list[WorkerHandle] = []
+    for queue_key, handle_id in await _fetch():
+        handle = await dispatcher.recover(
+            WorkerHandle(
+                provider=dispatcher.name,
+                queue_key=queue_key,
+                id=handle_id,
+                provisional=False,
+            ).serialize()
+        )
+        if handle is not None:
+            recovered.append(handle)
+    return recovered
+
+
 async def reclaim_leaked_workers(
     dispatcher: Dispatcher, *, alive: Collection[str]
 ) -> int:
@@ -268,6 +303,18 @@ async def run_dispatch_loop(
 ) -> None:
     """Drive ``run_dispatch_cycle`` forever, woken by the trigger or fallback."""
     trigger = get_dispatch_trigger(fallback_interval=fallback_interval)
+
+    # Control-plane restart: reattach in-flight workers before the first tick so
+    # a restarted dispatcher reacquires (not orphans) them. Best-effort.
+    try:
+        recovered = await reattach_in_flight_workers(dispatcher)
+        if recovered:
+            logger.info(
+                "reattached %d in-flight worker(s) on startup", len(recovered)
+            )
+    except Exception as exc:  # noqa: BLE001 - reattach must not block startup
+        logger.warning("startup reattach skipped: %r", exc)
+
     while not _stop():
         await run_dispatch_cycle(
             dispatcher,

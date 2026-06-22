@@ -31,9 +31,35 @@ from oddish.db import get_pool
 __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
+    "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
     "stamp_dispatch_stage",
 ]
+
+
+async def fetch_running_worker_handles() -> list[tuple[str, str]]:
+    """``(queue_key, durable handle id)`` for RUNNING jobs with a persisted handle.
+
+    Source for control-plane-restart reattach (``Dispatcher.recover``). Today the
+    only persisted worker-container handle is ``modal_function_call_id`` (the
+    Modal worker self-reports it at claim); backends whose handles are not durable
+    leave it NULL and are skipped here, falling back to lease expiry + re-claim
+    (design spec §14.3).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT queue_key, modal_function_call_id
+        FROM   worker_jobs
+        WHERE  status::text = 'RUNNING'
+          AND  modal_function_call_id IS NOT NULL
+        """
+    )
+    return [
+        (str(row["queue_key"]), str(row["modal_function_call_id"]))
+        for row in rows
+        if row["modal_function_call_id"]
+    ]
 
 
 async def stamp_dispatch_stage(
