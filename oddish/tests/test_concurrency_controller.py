@@ -158,14 +158,14 @@ def test_dead_band_holds_no_flap():
 
 def test_growth_requires_sustained_demand():
     # First bottleneck vote: demand 0 -> 1, not yet sustained -> hold.
-    d1 = _step(fill=0.95, queued=5, prev_limit=10, demand=0)
-    assert d1.error == 1
-    assert d1.demand == 1
-    assert d1.new_limit == 10  # N_SUSTAIN not reached
+    first = _step(fill=0.95, queued=5, prev_limit=10, demand=0)
+    assert first.error == 1
+    assert first.demand == 1
+    assert first.new_limit == 10  # N_SUSTAIN not reached
     # Second consecutive vote: demand 1 -> 2 -> grow by K_UP.
-    d2 = _step(fill=0.95, queued=5, prev_limit=10, demand=1)
-    assert d2.demand >= N_SUSTAIN
-    assert d2.new_limit == 10 + K_UP
+    second = _step(fill=0.95, queued=5, prev_limit=10, demand=1)
+    assert second.demand >= N_SUSTAIN
+    assert second.new_limit == 10 + K_UP
 
 
 def test_saturation_cuts_multiplicatively_and_latches_cooldown():

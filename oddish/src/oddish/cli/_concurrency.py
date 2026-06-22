@@ -166,7 +166,8 @@ class AdaptiveConcurrencyLimiter:
         self.smoothing = float(smoothing)
         start = self.min_limit if initial_limit is None else int(initial_limit)
         self._limit = float(_clamp(float(start), self.min_limit, self.max_limit))
-        # Server-advertised upper clamp (D1 header); None until one is seen.
+        # Server-advertised upper clamp (from the response header); None until
+        # one is seen.
         self._advertised_max: float | None = None
         self._monitor = (
             latency_monitor if latency_monitor is not None else _LatencyMonitor()

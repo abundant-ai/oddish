@@ -141,7 +141,7 @@ def test_sustained_load_keeps_gradient_below_one():
 
 
 # ---------------------------------------------------------------------------
-# AdaptiveConcurrencyLimiter: advertised-max clamp (D1 header)
+# AdaptiveConcurrencyLimiter: advertised-max clamp (from the response header)
 # ---------------------------------------------------------------------------
 
 
@@ -326,7 +326,7 @@ def test_noload_window_reprobes_as_samples_expire():
 
 
 # ---------------------------------------------------------------------------
-# parse_submit_concurrency_header (D1 advertised ceiling)
+# parse_submit_concurrency_header (advertised ceiling)
 # ---------------------------------------------------------------------------
 
 

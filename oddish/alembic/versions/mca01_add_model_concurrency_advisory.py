@@ -5,8 +5,8 @@ limit. The reconciler recomputes one row per ``queue_key`` each cycle (the
 feed-forward provider-limit ceiling trimmed by a queue-feedback AIMD loop); the
 dispatcher reads the advisory limit when it is fresh and falls back to the static
 ``get_model_concurrency`` value otherwise. The static config stays the hard
-ceiling and the fallback -- this table is only ever advisory (the senpai guard:
-never mutate a limit you must refresh). ``state`` carries the controller's
+ceiling and the fallback -- this table is only ever advisory (the controller
+never mutates the hard limit it must refresh). ``state`` carries the controller's
 cross-cycle hysteresis (cooldown latch + sustained-demand counter).
 
 Idempotent (CREATE TABLE IF NOT EXISTS) and self-contained, mirroring
