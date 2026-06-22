@@ -906,3 +906,73 @@ def compute_submit_ceiling(pressure: float) -> int:
     """Recommended client in-flight submission ceiling: full when idle, floor when saturated."""
     raw = round(CLIENT_CEILING_MAX * (1.0 - pressure))
     return int(max(CLIENT_FLOOR, min(CLIENT_CEILING_MAX, raw)))
+
+
+class LoadTotals(BaseModel):
+    queued: int
+    running: int
+
+
+class LoadQueue(BaseModel):
+    queue_key: str
+    queued: int
+    running: int
+    limit: int
+    fill: float | None
+    wait_p95_seconds: float | None
+    advisory_limit: int  # == limit until a dynamic advisory limit lands
+    limit_source: str  # "static" until a dynamic advisory limit lands
+
+
+class LoadSnapshot(BaseModel):
+    submit_ceiling: int
+    pressure: float
+    ttl_seconds: int
+    totals: LoadTotals
+    queues: list[LoadQueue]
+    timestamp: str
+
+
+async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
+    """Derive the slim load snapshot from the existing queue-health aggregate."""
+    health = await get_queue_health_core(session)
+
+    # Lazy import keeps the worker-only chain out of the server-only install
+    # (mirrors get_queue_health_core).
+    from oddish.workers.queue.runtime_status import get_queue_runtime_statuses
+
+    statuses = await get_queue_runtime_statuses(session)
+    submit_row = statuses.get(SUBMIT_LATENCY_COMPONENT) or {}
+    sweep_rtt = (submit_row.get("payload") or {}).get("sweep_rtt_p95_ewma")
+
+    wait_values = [
+        c.wait_p95_seconds for c in health.capacity if c.wait_p95_seconds is not None
+    ]
+    wait_p95_max = max(wait_values) if wait_values else None
+
+    pressure = compute_pressure(
+        wait_p95_max=wait_p95_max,
+        totals_queued=health.totals_queued,
+        sweep_rtt_p95_ewma=float(sweep_rtt) if sweep_rtt is not None else None,
+    )
+    queues = [
+        LoadQueue(
+            queue_key=c.queue_key,
+            queued=c.queued,
+            running=c.running,
+            limit=c.limit,
+            fill=c.fill,
+            wait_p95_seconds=c.wait_p95_seconds,
+            advisory_limit=c.limit,
+            limit_source="static",
+        )
+        for c in health.capacity
+    ]
+    return LoadSnapshot(
+        submit_ceiling=compute_submit_ceiling(pressure),
+        pressure=pressure,
+        ttl_seconds=int(LOAD_CACHE_TTL_SECONDS),
+        totals=LoadTotals(queued=health.totals_queued, running=health.totals_running),
+        queues=queues,
+        timestamp=health.timestamp,
+    )
