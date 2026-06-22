@@ -13,8 +13,32 @@ import types
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
+from oddish.dispatch.backends.k8s import K8sJobDispatcher
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
+
+
+class _FakeBatchApi:
+    """Minimal in-memory kubernetes BatchV1Api so the k8s backend runs hermetically."""
+
+    def __init__(self) -> None:
+        self.jobs: dict[str, types.SimpleNamespace] = {}
+
+    def create_namespaced_job(self, *, namespace, body):
+        name = body["metadata"]["name"]
+        self.jobs[name] = types.SimpleNamespace(
+            status=types.SimpleNamespace(active=1)
+        )
+        return self.jobs[name]
+
+    def read_namespaced_job_status(self, *, name, namespace):
+        if name not in self.jobs:
+            raise RuntimeError("not found")
+        return self.jobs[name]
+
+    def delete_namespaced_job(self, *, name, namespace, **kwargs):
+        if self.jobs.pop(name, None) is None:
+            raise RuntimeError("not found")
 
 
 class _FakeDockerCLI:
@@ -79,6 +103,7 @@ def _noop_dispatchers() -> list[Dispatcher]:
         InProcessDispatcher(run_job=_noop_run_job),
         _hermetic_modal_dispatcher(),
         DockerPoolDispatcher(image="oddish-worker:test", run_command=_FakeDockerCLI()),
+        K8sJobDispatcher(image="oddish-worker:test", batch_api=_FakeBatchApi()),
     ]
 
 
