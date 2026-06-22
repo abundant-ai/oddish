@@ -819,7 +819,13 @@ def run(
                 )
                 for target_id, append, content_hash, task_path in submit_targets
             ]
-            batch_results = submit_sweep_batch(api_url, payloads)
+            # Route the batch chunks through the same adaptive limiter as the
+            # upload pool, so the (previously ungated) batch path honors the
+            # server-advertised ceiling and backs off under load.
+            submit_limiter = resolve_submit_concurrency(submit_concurrency)
+            batch_results = submit_sweep_batch(
+                api_url, payloads, limiter=submit_limiter
+            )
 
             if batch_results is not None:
                 # Best-effort: each item is independent. Surface failures by
@@ -836,11 +842,8 @@ def run(
                 # submit_sweep_batch only returns None for HTTP 404/405 -- an
                 # older server without the batch route, where nothing was
                 # created -- so it is safe to submit each task on its own.
-                # (Ambiguous failures raise instead of returning None.)
-                # Throttle this legacy path with the adaptive submit limiter,
-                # mirroring the upload pool, so a busy API still shapes
-                # submission concurrency.
-                submit_limiter = resolve_submit_concurrency(submit_concurrency)
+                # (Ambiguous failures raise instead of returning None.) Reuse the
+                # same adaptive limiter so a busy API still shapes this path.
 
                 def _submit_one(
                     target: tuple[str, bool, str | None, Path | None],
