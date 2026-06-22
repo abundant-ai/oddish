@@ -548,8 +548,9 @@ class StorageClient:
         """Upload a directory tree to S3 with bounded concurrency.
 
         When ``authorized_prefix`` is set (a job-scoped credential is active),
-        any key that would fall outside it is refused rather than written, so a
-        worker cannot write beyond its job's S3 prefix (spec §6.6).
+        any key that would fall outside it is refused rather than written, so
+        this oddish upload path cannot write outside the job's prefix
+        (defense in depth against a path-traversal escape; spec §6.6).
         """
         file_paths = [path for path in local_path.rglob("*") if path.is_file()]
         if not file_paths:
