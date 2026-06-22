@@ -187,6 +187,10 @@ def test_worker_jobs_partial_claim_index_is_scoped():
     # Partial index predicate lives in dialect_options['postgresql']['where'].
     where_clause = str(claim_idx.dialect_options["postgresql"]["where"])
     assert "QUEUED" in where_clause and "RETRYING" in where_clause
+    # The claim predicate now filters on (queue_key, harbor_variant_id), so both
+    # must lead the index or the hot claim path loses coverage and table-scans.
+    cols = [c.name for c in claim_idx.columns]
+    assert cols[:2] == ["queue_key", "harbor_variant_id"], cols
 
 
 def test_worker_jobs_partial_heartbeat_index_is_scoped():
