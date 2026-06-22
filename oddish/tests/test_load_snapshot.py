@@ -1,7 +1,14 @@
+import asyncio
+
 import pytest
 
 from oddish.core import admin
-from oddish.core.admin import QueueCapacityStat, QueueHealthResponse
+from oddish.core.admin import (
+    LoadSnapshot,
+    LoadTotals,
+    QueueCapacityStat,
+    QueueHealthResponse,
+)
 
 
 def test_compute_submit_ceiling_idle_is_max():
@@ -94,3 +101,57 @@ async def test_build_load_snapshot_maps_health(monkeypatch):
     assert q.queued == 600 and q.running == 10 and q.limit == 48
     assert q.wait_p95_seconds == 30.0
     assert q.advisory_limit == 48 and q.limit_source == "static"
+
+
+def _stub_snapshot() -> LoadSnapshot:
+    return LoadSnapshot(
+        submit_ceiling=64,
+        pressure=0.0,
+        ttl_seconds=5,
+        totals=LoadTotals(queued=0, running=0),
+        queues=[],
+        timestamp="2026-06-22T00:00:00",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cache_single_flight_one_refresh_under_burst(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_refresh():
+        calls["n"] += 1
+        await asyncio.sleep(0)  # yield so concurrent callers pile onto the lock
+        return _stub_snapshot()
+
+    admin._load_cache = None
+    admin._load_cache_at = 0.0
+    monkeypatch.setattr(admin, "_refresh_load_snapshot", fake_refresh)
+
+    results = await asyncio.gather(
+        *[admin.get_cached_load_snapshot() for _ in range(50)]
+    )
+    assert calls["n"] == 1
+    assert all(r is results[0] for r in results)
+
+
+@pytest.mark.asyncio
+async def test_cache_refreshes_after_ttl(monkeypatch):
+    calls = {"n": 0}
+
+    async def fake_refresh():
+        calls["n"] += 1
+        return _stub_snapshot()
+
+    clock = {"t": 1000.0}
+    admin._load_cache = None
+    admin._load_cache_at = 0.0
+    monkeypatch.setattr(admin, "_refresh_load_snapshot", fake_refresh)
+    monkeypatch.setattr(admin, "_monotonic", lambda: clock["t"])
+
+    await admin.get_cached_load_snapshot(ttl=5.0)
+    await admin.get_cached_load_snapshot(ttl=5.0)  # within ttl -> cached
+    assert calls["n"] == 1
+
+    clock["t"] += 6.0
+    await admin.get_cached_load_snapshot(ttl=5.0)  # past ttl -> one refresh
+    assert calls["n"] == 2
