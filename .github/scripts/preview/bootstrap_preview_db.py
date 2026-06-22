@@ -57,12 +57,14 @@ def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
         raise subprocess.CalledProcessError(
             proc.returncode, proc.args, proc.stdout, proc.stderr
         )
-    print(
-        f"{table}: parent revision {rev} not in this branch's history; "
-        "stamping branch head instead (branch behind or diverged)",
-        file=sys.stderr,
+    raise SystemExit(
+        f"{table}: parent revision {rev} is not in this branch's Alembic "
+        "history, so this branch is behind or diverged from the schema "
+        "source. Stamping head here would assert a schema state nothing "
+        "verified and silently corrupt the branch. Fix: merge `main` into "
+        "this branch (or otherwise reconcile migrations) so its history "
+        f"contains {rev}, then recreate the preview branch."
     )
-    _alembic(project, "stamp", "head")
 
 
 def main() -> None:

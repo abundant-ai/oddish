@@ -114,6 +114,9 @@ def _warn(message: str) -> None:
     print(f"preview_seed: {message}", file=sys.stderr)
 
 
+_warned_dropped_columns: set[tuple[str, str]] = set()
+
+
 async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
     """Draw a deterministic pseudo-random subset of production data.
 
@@ -451,7 +454,9 @@ def _prepare_row(table, row: dict) -> dict:
     for k, v in row.items():
         col = table.columns.get(k)
         if col is None:
-            _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
+            if (table.name, k) not in _warned_dropped_columns:
+                _warned_dropped_columns.add((table.name, k))
+                _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
             continue
         if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
             try:
