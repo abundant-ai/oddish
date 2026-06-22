@@ -1070,6 +1070,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
+            "harbor_variant_id",
             "priority",
             "available_after",
             "created_at",
