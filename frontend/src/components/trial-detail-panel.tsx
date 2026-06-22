@@ -874,6 +874,9 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
+              {/* Phase B: the hardcoded "rishidesai/harbor@" prefix must use the
+                  ACTUAL trial source once TrialResponse exposes it. In Phase A
+                  only the default source is ever stamped, so it is correct. */}
               {trial.harbor_sha && (
                 <div className="text-muted-foreground px-4 py-1 text-[11px]">
                   Harbor:{" "}

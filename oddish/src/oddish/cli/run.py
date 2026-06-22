@@ -172,6 +172,10 @@ def run(
             help=(
                 "Override Harbor source/ref for this run, e.g. 'main', "
                 "'v0.13.1', a 40-hex SHA, 'org/repo@ref', or a git URL@ref. "
+                "A bare 'org/repo' (no '@') is a BRANCH on the default fork, "
+                "not another repo — use 'org/repo@ref' or a full URL to point "
+                "elsewhere. For a ref or URL containing a literal '@', use the "
+                "oddish.toml [harbor] source/ref escape hatch. "
                 "Default: the locked fork commit. (env: ODDISH_HARBOR)"
             ),
         ),

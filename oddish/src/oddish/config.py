@@ -101,9 +101,10 @@ def parse_harbor_spec(spec: str) -> tuple[str, str]:
 
     First match wins:
     - R1 URL form (``git+``/``http://``/``https://``/``ssh://`` or scp
-      ``git@host:org/repo``): source = the URL; ref = the segment after the
-      LAST ``@`` that follows the host, else "" (caller resolves default-branch
-      HEAD).
+      ``git@host:org/repo``): source = the URL; ref = the segment after a ``@``
+      in the PATH (after the host), else "" (caller resolves default-branch
+      HEAD). A userinfo ``@`` (``user:token@host`` / ``git@host``) is part of
+      the source and is never treated as the ref delimiter.
     - R2 ``org/repo@ref``: source = ``https://github.com/<org>/<repo>``; ref =
       after the ``@``.
     - R3 bare ref (anything else, incl. a bare ``org/repo`` with NO ``@``):
@@ -115,12 +116,14 @@ def parse_harbor_spec(spec: str) -> tuple[str, str]:
     """
     spec = spec.strip()
 
-    # R1: URL form. Split off a ref only if an '@' appears AFTER the host.
+    # R1: URL form. Split a ref off only when an '@' falls AFTER the host (in
+    # the path), never on a userinfo '@' (``user:token@host`` / ``git@host``).
     if spec.startswith(_HARBOR_URL_PREFIXES):
         scheme, rest = spec.split("://", 1)
-        if "@" in rest:
-            host_and_path, ref = rest.rsplit("@", 1)
-            return f"{scheme}://{host_and_path}", ref
+        host, sep, path = rest.partition("/")
+        if sep and "@" in path:
+            path_no_ref, ref = path.rsplit("@", 1)
+            return f"{scheme}://{host}{sep}{path_no_ref}", ref
         return spec, ""
     # R1: scp-style git@host:org/repo[@ref]
     if spec.startswith("git@") and ":" in spec:

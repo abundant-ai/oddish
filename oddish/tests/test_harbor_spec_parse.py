@@ -52,3 +52,43 @@ def test_default_sha_matches_uv_lock_pin():
     assert HARBOR_DEFAULT_SHA in lock, "HARBOR_DEFAULT_SHA drifted from oddish/uv.lock"
     assert re.fullmatch(r"[0-9a-f]{40}", HARBOR_DEFAULT_SHA)
     assert HARBOR_DEFAULT_SOURCE == FORK
+
+
+def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():
+    # A userinfo '@' (user:token@host) must NOT be treated as the ref delimiter;
+    # the source URL is kept intact and the ref is empty (default-branch HEAD).
+    assert parse_harbor_spec("https://user:token@github.com/dot-agi/harbor") == (
+        "https://user:token@github.com/dot-agi/harbor",
+        "",
+    )
+
+
+def test_r1_url_with_userinfo_and_trailing_ref():
+    # userinfo '@' kept in source; only the trailing '@ref' in the path is split.
+    assert parse_harbor_spec("https://user:token@github.com/dot-agi/harbor@abc123") == (
+        "https://user:token@github.com/dot-agi/harbor",
+        "abc123",
+    )
+
+
+def test_r1_ssh_url_with_userinfo():
+    assert parse_harbor_spec("ssh://git@github.com/dot-agi/harbor") == (
+        "ssh://git@github.com/dot-agi/harbor",
+        "",
+    )
+    assert parse_harbor_spec("ssh://git@github.com/dot-agi/harbor@v2") == (
+        "ssh://git@github.com/dot-agi/harbor",
+        "v2",
+    )
+
+
+def test_r1_scp_form_git_at_host():
+    # scp-style git@host:org/repo[@ref] — userinfo 'git@' before the ':' is kept.
+    assert parse_harbor_spec("git@github.com:dot-agi/harbor@v2") == (
+        "git@github.com:dot-agi/harbor",
+        "v2",
+    )
+    assert parse_harbor_spec("git@github.com:dot-agi/harbor") == (
+        "git@github.com:dot-agi/harbor",
+        "",
+    )
