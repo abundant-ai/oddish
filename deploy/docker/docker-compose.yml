@@ -1,0 +1,87 @@
+# Self-hostable oddish core, off Modal: Postgres + API + a worker pool.
+#
+# The control plane (FastAPI ``create_app()``) and the worker runtime are the
+# identical code that runs under Modal; only the host/scaler differ. The worker
+# pool here long-polls the Postgres ``worker_jobs`` queue (outbound-only,
+# stateless, reattachable) instead of being fanned out by a Modal cron.
+#
+#   docker compose -f deploy/docker/docker-compose.yml up --build
+#
+# Prove portability in a container (enqueue -> claim -> verdict, with ``import
+# modal`` poisoned -- exits 0 only if the hot path never imports modal):
+#
+#   docker compose -f deploy/docker/docker-compose.yml run --rm proof
+#
+# Build context is the repo root so the shared backend image (oddish + backend)
+# is reused for every service.
+
+x-image: &image
+  build:
+    context: ../..
+    dockerfile: backend/Dockerfile
+  environment:
+    ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@db:5432/oddish
+    # Workers run NullPool + per-op asyncpg; keep auto-start off so the
+    # dedicated worker service owns draining.
+    ODDISH_AUTO_START_WORKERS: "false"
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: oddish
+      POSTGRES_PASSWORD: oddish
+      POSTGRES_DB: oddish
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oddish"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    # Not published to the host by default (avoids clashing with a local
+    # Postgres on 5432); services reach it over the compose network at db:5432.
+    # Add a ``ports: ["5432:5432"]`` override if you want host access.
+
+  # One-shot: apply the oddish core schema (worker_jobs / trials / tasks /
+  # queue_slots ...). Runs the same ``alembic upgrade head`` as production.
+  migrate:
+    <<: *image
+    command: ["sh", "-c", "cd /oddish && /app/.venv/bin/alembic upgrade head"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *image
+    command:
+      ["uv", "run", "uvicorn", "serve:api", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+
+  # The off-Modal worker pool: each replica long-polls every active queue_key.
+  # Scale with ``--scale worker=N``.
+  worker:
+    <<: *image
+    command: ["uv", "run", "python", "-m", "oddish.workers.queue.worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    deploy:
+      replicas: 2
+
+  # Portability proof (run on demand via ``compose run``, not part of ``up``).
+  # Self-sufficient: creates its own schema, so it does not depend on migrate.
+  proof:
+    <<: *image
+    command: ["uv", "run", "python", "/oddish/tests/_offmodal_proof.py"]
+    profiles: ["proof"]
+    depends_on:
+      db:
+        condition: service_healthy
