@@ -1,24 +1,27 @@
 """Job-scoped credential bundles (design spec §5.4 / §6.6).
 
-A claimed job can be issued a short-lived, **least-privilege** credential bundle
-instead of the worker reading the blanket ``oddish-prod`` secret:
+A claimed trial can be issued a short-lived, **least-privilege** credential
+bundle instead of the worker reading the blanket ``oddish-prod`` secret:
 
-* a random **token** whose SHA-256 hash is persisted on the ``worker_jobs`` row
-  (the raw token is never stored), so it can be verified and revoked;
 * the **model API key(s) for this job's provider only** — a Claude job's bundle
-  carries the Anthropic key, never the OpenAI/Gemini keys;
-* an **S3 write prefix** scoping artifact uploads to this trial's prefix.
+  carries the Anthropic key, never the OpenAI/Gemini keys — injected into the
+  agent env in place of the blanket key set;
+* an **S3 write prefix** the trial's uploads are restricted to (enforced in the
+  upload path, so a worker cannot write beyond its job's prefix);
+* a random **token** whose SHA-256 hash is persisted on the ``worker_jobs`` row
+  (the raw token is never stored) as the revocable credential handle, revoked on
+  terminal status.
 
-This module is pure (no DB / network); the gated wiring (issue at claim, use in
-the runner, revoke on terminal status) lives in the trial handler + harbor
-runner, behind ``settings.job_scoped_tokens_enabled`` (default off, dual-read
-hedge: bundle if present, else the blanket secret).
+This module is pure (no DB / network). The gated wiring lives in the trial
+handler (issue the bundle, inject the scoped model env, revoke on terminal) and
+``StorageClient`` (enforce the S3 prefix), behind
+``settings.job_scoped_tokens_enabled`` (default off; dual-read hedge: bundle if
+present, else the blanket secret).
 """
 
 from __future__ import annotations
 
 import hashlib
-import hmac
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -46,25 +49,6 @@ def mint_token() -> tuple[str, str]:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def verify_token(
-    *,
-    presented: str,
-    stored_hash: str | None,
-    expires_at: datetime | None,
-    revoked_at: datetime | None,
-    now: datetime,
-) -> bool:
-    """True iff ``presented`` matches the stored hash and is live (not expired,
-    not revoked). Constant-time hash comparison."""
-    if not presented or not stored_hash:
-        return False
-    if revoked_at is not None:
-        return False
-    if expires_at is not None and now >= expires_at:
-        return False
-    return hmac.compare_digest(hash_token(presented), stored_hash)
 
 
 def s3_write_prefix_for(trial_id: str) -> str:

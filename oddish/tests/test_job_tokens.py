@@ -15,67 +15,13 @@ def _now() -> datetime:
 
 
 # --------------------------------------------------------------------------
-# Token lifecycle: issue -> verify -> revoke / expire
+# Token mint + hash (the revocable credential handle)
 # --------------------------------------------------------------------------
 def test_mint_returns_raw_token_and_hash() -> None:
     raw, hashed = job_tokens.mint_token()
     assert isinstance(raw, str) and len(raw) >= 32
     assert hashed == job_tokens.hash_token(raw)
     assert hashed != raw  # the raw secret is never stored
-
-
-def test_verify_accepts_valid_unexpired_unrevoked() -> None:
-    raw, hashed = job_tokens.mint_token()
-    ok = job_tokens.verify_token(
-        presented=raw,
-        stored_hash=hashed,
-        expires_at=_now() + timedelta(hours=1),
-        revoked_at=None,
-        now=_now(),
-    )
-    assert ok is True
-
-
-def test_verify_rejects_wrong_token() -> None:
-    _raw, hashed = job_tokens.mint_token()
-    assert (
-        job_tokens.verify_token(
-            presented="not-the-token",
-            stored_hash=hashed,
-            expires_at=_now() + timedelta(hours=1),
-            revoked_at=None,
-            now=_now(),
-        )
-        is False
-    )
-
-
-def test_verify_rejects_expired() -> None:
-    raw, hashed = job_tokens.mint_token()
-    assert (
-        job_tokens.verify_token(
-            presented=raw,
-            stored_hash=hashed,
-            expires_at=_now() - timedelta(seconds=1),
-            revoked_at=None,
-            now=_now(),
-        )
-        is False
-    )
-
-
-def test_verify_rejects_revoked() -> None:
-    raw, hashed = job_tokens.mint_token()
-    assert (
-        job_tokens.verify_token(
-            presented=raw,
-            stored_hash=hashed,
-            expires_at=_now() + timedelta(hours=1),
-            revoked_at=_now() - timedelta(minutes=1),
-            now=_now(),
-        )
-        is False
-    )
 
 
 # --------------------------------------------------------------------------
@@ -178,12 +124,5 @@ def test_build_bundle_assembles_scoped_credentials() -> None:
     assert bundle.model_env.get("ANTHROPIC_API_KEY") == "sk-ant"
     assert bundle.s3_write_prefix == "tasks/task_abc/trials/task_abc-0/"
     assert bundle.expires_at == _now() + timedelta(seconds=3600)
+    # only the hash is persistable; it matches the bundle's (in-memory) raw token
     assert token_hash == job_tokens.hash_token(bundle.token)
-    # verifying the bundle's own token against its hash round-trips
-    assert job_tokens.verify_token(
-        presented=bundle.token,
-        stored_hash=token_hash,
-        expires_at=bundle.expires_at,
-        revoked_at=None,
-        now=_now(),
-    )
