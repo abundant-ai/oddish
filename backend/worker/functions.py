@@ -79,6 +79,7 @@ from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
 )
+from oddish.dispatch.backends.modal import ModalDispatcher
 
 from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
@@ -449,13 +450,11 @@ async def poll_queue():
 
         console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
 
-        # Use Modal's async spawn interface inside this async function to avoid
-        # blocking the event loop and spurious AsyncUsageWarning noise.
-        await asyncio.gather(
-            *(
-                process_single_job.spawn.aio(queue_key=queue_key)
-                for queue_key in spawn_plan
-            )
+        # Fan out through the ModalDispatcher port. It issues the identical
+        # ``process_single_job.spawn.aio(queue_key=...)`` calls the inline
+        # gather did -- this only names the seam; behavior is unchanged.
+        await ModalDispatcher(spawn_function=process_single_job).spawn(
+            spawn_plan=spawn_plan
         )
         for i, queue_key in enumerate(spawn_plan, start=1):
             console.print(
