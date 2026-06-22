@@ -61,6 +61,37 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     return (task_config.environment.gpus or 0) > 0
 
 
+def _read_harbor_manifest(*candidates: Path | None) -> dict[str, str] | None:
+    """Read a ``[harbor] source/ref`` table from an ``oddish.toml`` sidecar.
+
+    Checks each candidate task path (dir -> ``<dir>/oddish.toml``, file ->
+    sibling); the first sidecar found wins. This is the manifest precedence
+    layer (below CLI/env, above the locked default) and the escape hatch for
+    refs/URLs containing a literal ``@``. Returns None when there's no sidecar.
+    """
+    import tomllib
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        base = candidate if candidate.is_dir() else candidate.parent
+        toml_path = base / "oddish.toml"
+        if not toml_path.is_file():
+            continue
+        try:
+            data = tomllib.loads(toml_path.read_text())
+        except (OSError, tomllib.TOMLDecodeError):
+            return None
+        harbor_table = data.get("harbor")
+        if isinstance(harbor_table, dict):
+            return {
+                key: str(harbor_table[key])
+                for key in ("source", "ref")
+                if harbor_table.get(key) is not None
+            }
+    return None
+
+
 def _default_cloud_environment_for_task(
     task_path: Path | None,
     *,
@@ -637,13 +668,11 @@ def run(
     from oddish.config import resolve_harbor_layers
     from oddish.config import settings as _settings
 
-    _harbor_manifest = (
-        None  # Phase A: oddish.toml [harbor] read is wired in a follow-up.
-    )
+    _harbor_manifest = _read_harbor_manifest(path, path_option)
     _src, _ref = resolve_harbor_layers(
         flag=harbor, env=_settings.harbor, manifest=_harbor_manifest
     )
-    if (harbor and harbor.strip()) or _settings.harbor:
+    if (harbor and harbor.strip()) or _settings.harbor or _harbor_manifest:
         harbor_config = {**(harbor_config or {}), "source": _src, "ref": _ref}
 
     # Determine task sources using Harbor's dataset models
