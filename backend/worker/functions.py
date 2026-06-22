@@ -57,9 +57,14 @@ from modal_app import (
 )
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
-from oddish.db import close_database_connections, WorkerJobKind
+from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
+from oddish.workers.queue.concurrency_controller import (
+    get_advisory_limits,
+    merge_advisory_over_static,
+    recompute_advisory_limits,
+)
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
@@ -317,6 +322,19 @@ async def reconcile_queue_state():
             phase_errors.append(f"owner_backfill: {e}")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
 
+        # Recompute the self-tuning per-model concurrency advisory (default off).
+        # A defensive phase like the others: a failure logs and is swallowed so
+        # the rest of the reconcile sweep still runs, and the static limits stay
+        # the fallback.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory = await recompute_advisory_limits(session)
+                summary["advisory_limits_updated"] = len(advisory)
+            except Exception as e:  # noqa: BLE001 - best-effort phase
+                phase_errors.append(f"concurrency_controller: {e}")
+                console.print(f"[yellow]Concurrency controller skipped: {e}[/yellow]")
+
         # Persist a heartbeat the admin dashboard reads back. Keep only
         # non-zero counters so the payload stays legible.
         await record_queue_runtime_status(
@@ -392,6 +410,19 @@ async def poll_queue():
             queue_key: settings.get_model_concurrency(queue_key)
             for queue_key in queue_keys
         }
+        # Single injection point for the self-tuning controller: when enabled,
+        # overlay the fresh per-queue advisory limit on the static one (a stale,
+        # missing, or errored advisory decays to the static value). Best-effort:
+        # a read failure must never block dispatch.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory_limits = await get_advisory_limits(session)
+                concurrency_limits = merge_advisory_over_static(
+                    concurrency_limits, advisory_limits
+                )
+            except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+                console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
 
         # Per-queue_key summary (aggregated across orgs) is still the
         # useful operator-facing view.

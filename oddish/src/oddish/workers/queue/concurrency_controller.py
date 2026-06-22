@@ -44,6 +44,7 @@ __all__ = [
     "controller_step",
     "recompute_advisory_limits",
     "get_advisory_limits",
+    "merge_advisory_over_static",
 ]
 
 # --- feedback AIMD gains + hysteresis (spec defaults; retune from telemetry) ---
@@ -390,3 +391,20 @@ async def get_advisory_limits(
         row.queue_key: int(_clamp(int(row.advisory_limit), FLOOR, global_max))
         for row in rows
     }
+
+
+def merge_advisory_over_static(
+    static: dict[str, int], advisory: dict[str, int]
+) -> dict[str, int]:
+    """Overlay fresh advisory limits onto the static per-queue limits.
+
+    Advisory wins for an active queue (a key present in ``static``); an
+    advisory-only key (a queue not active this cycle) is ignored, and an
+    un-advised active queue keeps its static value. This is the dispatcher's
+    single injection point for the controller.
+    """
+    merged = dict(static)
+    for queue_key, limit in advisory.items():
+        if queue_key in merged:
+            merged[queue_key] = limit
+    return merged

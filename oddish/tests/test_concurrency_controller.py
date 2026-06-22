@@ -357,3 +357,38 @@ def _make_async(value, *, record=None):
         return value
 
     return _fn
+
+
+# ---------------------------------------------------------------------------
+# merge_advisory_over_static -- the dispatcher's effective-limit overlay
+# ---------------------------------------------------------------------------
+
+
+def test_merge_advisory_overrides_only_active_static_keys():
+    static = {"openai/gpt-5.2": 8, "anthropic/opus": 8}
+    advisory = {"openai/gpt-5.2": 40, "google/gemini-3": 99}
+    merged = cc.merge_advisory_over_static(static, advisory)
+    # advisory wins for an active queue; an advisory-only key (not currently
+    # active) is ignored; an un-advised active queue keeps its static value.
+    assert merged == {"openai/gpt-5.2": 40, "anthropic/opus": 8}
+
+
+def test_merge_empty_advisory_is_static():
+    static = {"openai/gpt-5.2": 8}
+    assert cc.merge_advisory_over_static(static, {}) == {"openai/gpt-5.2": 8}
+
+
+@pytest.mark.asyncio
+async def test_enabled_dispatcher_path_uses_advisory(monkeypatch):
+    # End-to-end of the ENABLED dispatcher read: a fresh advisory limit overrides
+    # the static one for an active queue.
+    from types import SimpleNamespace
+
+    queue_keys = ["openai/gpt-5.2", "anthropic/opus"]
+    static = {qk: 8 for qk in queue_keys}
+    session = _FakeSession(
+        state_rows=[SimpleNamespace(queue_key="openai/gpt-5.2", advisory_limit=40)]
+    )
+    advisory = await cc.get_advisory_limits(session)
+    effective = cc.merge_advisory_over_static(static, advisory)
+    assert effective == {"openai/gpt-5.2": 40, "anthropic/opus": 8}
