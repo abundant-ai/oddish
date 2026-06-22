@@ -33,10 +33,16 @@ if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
 
 import asyncio  # noqa: E402
 import json  # noqa: E402
+import logging  # noqa: E402
+import shlex  # noqa: E402
 import time  # noqa: E402
 import traceback  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Any  # noqa: E402
+
+from harbor.agents.installed.claude_code import ClaudeCode  # noqa: E402
+
+logger = logging.getLogger("oddish.harbor_entry")
 
 # Event sentinel so the parent can distinguish our NDJSON event lines from any
 # other stdout Harbor (or its deps) may emit.
@@ -113,6 +119,40 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
     return _hook
 
 
+class _ProbeClaudeCode(ClaudeCode):
+    """Claude Code that also installs the override Harbor into the sandbox.
+
+    The in-process / blessed paths use ``OddishClaudeCode`` for this, but the
+    ephemeral child runs ``uv run --no-project`` so oddish is absent. Instead we
+    subclass Harbor's own ClaudeCode HERE (Harbor is the only dependency) and
+    point ``AgentConfig.import_path`` at this class; Harbor resolves it via
+    ``importlib`` against the running module, no oddish import needed. The parent
+    supplies the exact git requirement (``harbor @ git+<source>@<sha>``) so the
+    in-sandbox agent imports the SAME Harbor that scored the trial (S3).
+    """
+
+    def __init__(self, *args: Any, harbor_requirement: str | None = None, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._harbor_requirement = harbor_requirement
+
+    async def install(self, environment: Any) -> None:
+        await super().install(environment)
+        if not self._harbor_requirement:
+            return
+        # Best-effort: a harbor-install failure must not fail the whole trial
+        # (mirrors OddishClaudeCode / stage_harbor_source).
+        command = (
+            f"pip install --user --quiet {shlex.quote(self._harbor_requirement)}"
+        )
+        try:
+            await self.exec_as_agent(environment, command=command)
+        except Exception:
+            logger.exception(
+                "probe: failed to install %s into the ephemeral sandbox",
+                self._harbor_requirement,
+            )
+
+
 def _build_job_config(payload: dict[str, Any]):
     from harbor import JobConfig
     from harbor.models.environment_type import EnvironmentType
@@ -129,13 +169,27 @@ def _build_job_config(payload: dict[str, Any]):
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
         env_config.kwargs = {**payload["daytona_kwargs"], **(env_config.kwargs or {})}
 
-    agent_kwargs: dict[str, Any] = {"name": payload["agent"]}
+    agent_kwargs: dict[str, Any] = {}
     if payload.get("model"):
         agent_kwargs["model_name"] = payload["model"]
     if payload.get("extra_agent_env"):
         # Minted read-only oddish CLI creds for probe trials (parent-supplied).
         agent_kwargs["env"] = dict(payload["extra_agent_env"])
-    agent_config = AgentConfig(**agent_kwargs)
+
+    agent_harbor_requirement = payload.get("agent_harbor_requirement")
+    if agent_harbor_requirement:
+        # Probe claude-code trial on an override ref: route the in-sandbox agent
+        # through the installing subclass so it imports the override Harbor. The
+        # import_path is resolved against THIS module (``__main__`` in the child),
+        # so no oddish import is needed.
+        agent_config = AgentConfig(
+            name=None,
+            import_path=f"{__name__}:_ProbeClaudeCode",
+            kwargs={"harbor_requirement": agent_harbor_requirement},
+            **agent_kwargs,
+        )
+    else:
+        agent_config = AgentConfig(name=payload["agent"], **agent_kwargs)
 
     kwargs: dict[str, Any] = {
         "tasks": [TaskConfig(path=Path(payload["task_path"]))],

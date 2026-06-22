@@ -30,6 +30,7 @@ from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.workers._harbor_entry import EVENT_SENTINEL
+from oddish.workers.claude_code_agent import _pinned_harbor_requirement
 from oddish.workers.harbor_agent_config import (
     _claude_code_forces_direct_api,
     _trial_requested_model,
@@ -141,7 +142,32 @@ def _build_payload(
         # Minted read-only oddish CLI creds (probe trials); merged onto the
         # child's AgentConfig env, never persisted.
         "extra_agent_env": extra_agent_env or {},
+        # Git requirement so the in-sandbox claude-code agent installs the SAME
+        # (override) Harbor that scored the trial (probe + claude-code only).
+        "agent_harbor_requirement": _agent_harbor_requirement(
+            agent=agent,
+            is_probe=is_probe,
+            source=raw_harbor_config.get("source"),
+            sha=raw_harbor_config.get("resolved_sha"),
+        ),
     }
+
+
+def _agent_harbor_requirement(
+    *, agent: str, is_probe: bool, source: str | None, sha: str | None
+) -> str | None:
+    """The git requirement the in-sandbox claude-code agent should install.
+
+    Mirrors the in-process probe path (``_apply_claude_code_probe_harbor``): only
+    probe + claude-code trials install harbor into the sandbox. Emits the override
+    pin as ``harbor @ git+<source>@<sha>`` so the agent imports the SAME Harbor
+    the ephemeral child scored the trial with (S3); other trials get nothing.
+    """
+    if not is_probe or "claude-code" not in (agent or "").strip().lower():
+        return None
+    if not source or not sha:
+        return None
+    return _pinned_harbor_requirement(source, sha)
 
 
 def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamespace:

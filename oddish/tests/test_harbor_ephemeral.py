@@ -19,7 +19,7 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 
 from oddish.workers import harbor_ephemeral
-from oddish.workers._harbor_entry import _build_job_config
+from oddish.workers._harbor_entry import _ProbeClaudeCode, _build_job_config
 from oddish.workers.harbor_ephemeral import (
     HarborOverrideImportError,
     _bridge_event,
@@ -149,6 +149,126 @@ def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
         }
     )
     assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
+
+
+# --------------------------------------------------------------------------- #
+# S3: the override Harbor reaches the in-sandbox agent on the ephemeral path
+# --------------------------------------------------------------------------- #
+
+from pathlib import Path  # noqa: E402
+
+from harbor.models.environment_type import EnvironmentType  # noqa: E402
+
+from oddish.core.harbor_source import harbor_git_requirement  # noqa: E402
+
+_SOURCE = "https://github.com/dot-agi/harbor"
+_SHA = "a" * 40  # equals _EPHEMERAL_HC["resolved_sha"] / trial.harbor_sha
+
+
+def _payload(**over):
+    base = dict(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="claude-sonnet-4-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config={"source": _SOURCE, "resolved_sha": _SHA},
+        is_probe=True,
+    )
+    base.update(over)
+    return _build_payload(**base)
+
+
+def test_payload_agent_harbor_requirement_is_override_git_req_for_probe_claude_code():
+    req = _payload()["agent_harbor_requirement"]
+    # Equals the override git requirement, and the sha matches trial.harbor_sha.
+    assert req == harbor_git_requirement(_SOURCE, _SHA)
+    assert req == f"harbor @ git+{_SOURCE}@{_SHA}"
+    assert _SHA in req
+
+
+def test_payload_no_agent_harbor_requirement_for_non_probe():
+    assert _payload(is_probe=False)["agent_harbor_requirement"] is None
+
+
+def test_payload_no_agent_harbor_requirement_for_non_claude_code_agent():
+    assert _payload(agent="codex")["agent_harbor_requirement"] is None
+
+
+def test_child_routes_probe_agent_through_installing_subclass(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    req = harbor_git_requirement(_SOURCE, _SHA)
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": "claude-sonnet-4-5",
+            "environment": "docker",
+            "environment_config": {},
+            "verifier": {},
+            "artifacts": [],
+            "agent_harbor_requirement": req,
+        }
+    )
+    ac = config.agents[0]
+    assert ac.name is None
+    assert ac.import_path.endswith(":_ProbeClaudeCode")
+    assert ac.kwargs["harbor_requirement"] == req
+    # The import_path resolves to the installing subclass (no oddish import).
+    from harbor.utils.import_path import import_class
+
+    assert import_class(ac.import_path) is _ProbeClaudeCode
+
+
+def test_child_default_agent_not_routed_through_subclass(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": "claude-sonnet-4-5",
+            "environment": "docker",
+            "environment_config": {},
+            "verifier": {},
+            "artifacts": [],
+        }
+    )
+    ac = config.agents[0]
+    assert ac.name == "claude-code"
+    assert ac.import_path is None
+
+
+@pytest.mark.asyncio
+async def test_probe_claude_code_installs_override_harbor(tmp_path, monkeypatch):
+    req = harbor_git_requirement(_SOURCE, _SHA)
+    agent = _ProbeClaudeCode(
+        logs_dir=tmp_path, model_name="claude-sonnet-4-5", harbor_requirement=req
+    )
+
+    calls: list[str] = []
+
+    async def _fake_super_install(self, environment):
+        calls.append("super")
+
+    async def _fake_exec(self, environment, *, command):
+        calls.append(command)
+
+    monkeypatch.setattr(
+        "harbor.agents.installed.claude_code.ClaudeCode.install", _fake_super_install
+    )
+    monkeypatch.setattr(_ProbeClaudeCode, "exec_as_agent", _fake_exec)
+
+    await agent.install(environment=object())
+
+    assert calls[0] == "super"  # stock CLI install runs first
+    assert "pip install --user --quiet" in calls[1]
+    assert req in calls[1]  # the override git req (with the trial's sha)
+    assert _SHA in calls[1]
 
 
 def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):
