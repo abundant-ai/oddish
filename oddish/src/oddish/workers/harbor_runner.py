@@ -134,6 +134,25 @@ async def run_harbor_trial_async(
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
 
+    # An allowlisted override that is neither the locked default nor a blessed
+    # image variant runs out-of-process against its own Harbor: a different
+    # Harbor than the one baked into this container cannot be swapped in-process
+    # (sys.modules caches it), so route to the child-interpreter engine.
+    if hc.variant_id == "ephemeral":
+        from oddish.workers.harbor_ephemeral import run_ephemeral_harbor_trial
+
+        return await run_ephemeral_harbor_trial(
+            task_path=task_path,
+            agent=agent,
+            jobs_dir=jobs_dir,
+            model=model,
+            environment=environment,
+            hook_callback=hook_callback,
+            trial_id=trial_id,
+            harbor_config=harbor_config,
+            org_id=org_id,
+        )
+
     # Probes attach to an existing task and inherit its task.toml, which may
     # predate the timeout requirement. Rather than hard-fail, skip strict
     # validation and hand the probe a capped default agent timeout below.
