@@ -78,6 +78,11 @@ from oddish.schemas import (
     TrialResponse,
     UserTagRef,
 )
+from oddish.core.harbor_source import (
+    HarborOverrideDisabledError,
+    HarborSourceError,
+    resolve_and_gate_harbor,
+)
 from oddish.core.idempotency import (
     SWEEP_ROUTE,
     IdempotencyConflict,
@@ -2626,6 +2631,21 @@ async def create_task_sweep_core(
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # Resolve the Harbor pin to a concrete SHA and gate it BEFORE any task
+    # mutation (append/create). The default pin does no network I/O; a
+    # non-default pin is rejected until ODDISH_HARBOR_OVERRIDES_ENABLED is on.
+    from oddish.config import settings
+
+    try:
+        stamped_harbor, _variant = resolve_and_gate_harbor(
+            submission.harbor, settings=settings
+        )
+    except HarborOverrideDisabledError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except HarborSourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    submission = submission.model_copy(update={"harbor": stamped_harbor})
+
     # Default the task link to the GitHub PR URL when the caller didn't
     # pass an explicit ``--link`` but the task carries GitHub PR metadata
     # (set via ``--github-meta``). An explicit link always wins.
@@ -2724,9 +2744,7 @@ async def create_task_sweep_core(
                 TrialModel.is_probe.is_(False),
             ]
             if target_experiment_id is not None:
-                reconcile_where.append(
-                    TrialModel.experiment_id == target_experiment_id
-                )
+                reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
             existing_counts_result = await session.execute(
                 select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
                 .where(*reconcile_where)
