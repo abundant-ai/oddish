@@ -1,43 +1,38 @@
 """Unit tests for the pure probe-overlay helpers (no DB/S3/filesystem)."""
 
-from types import SimpleNamespace
-
 from oddish.worker.probe_overlay import (
     AGENT_BRIEF_CONTAINER_PATH,
     PROBE_HARNESS_DIR,
-    RELATED_CONTAINER_DIR,
+    QUERY_CLI_CONTAINER_PATH,
     render_probe_instruction,
     render_visibility_map,
-    select_related_trials,
 )
 
 
-def _render(has_related: bool) -> str:
+def _render() -> str:
     return render_probe_instruction(
         "FRAMING-TEXT",
         "DIRECTIVE-TEXT",
         "ORIGINAL-TEXT",
-        related_dir=RELATED_CONTAINER_DIR,
-        has_related=has_related,
         probe_only_paths=["tests/", "solution/"],
     )
 
 
 def test_render_includes_all_sections():
-    out = _render(has_related=True)
+    out = _render()
     assert "DIRECTIVE-TEXT" in out
     # The original spec is relabeled as the real agent's brief, not the probe's.
     assert "REAL AGENT BRIEF" in out
     assert "ORIGINAL-TEXT" in out
     assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
     assert "## RUNNING TESTS" in out
-    assert "## RELATED TRIAL LOGS" in out
+    assert "## TRIAL DATA" in out
 
 
 def test_render_does_not_label_spec_as_probes_own_task():
     # Regression: the old "THIS IS THE TASK:" framing made the probe adopt the
     # solving-agent persona and flag its own staged files as vulnerabilities.
-    out = _render(has_related=True)
+    out = _render()
     assert "THIS IS THE TASK" not in out
     assert AGENT_BRIEF_CONTAINER_PATH in out
 
@@ -64,7 +59,7 @@ def test_visibility_map_handles_empty_harness():
 
 
 def test_running_tests_points_at_harness_not_app():
-    out = _render(has_related=True)
+    out = _render()
     assert f"{PROBE_HARNESS_DIR}/tests/" in out
     # Still names multiple possible verifier scripts rather than one hard path.
     assert "run_tests.sh" in out
@@ -73,36 +68,8 @@ def test_running_tests_points_at_harness_not_app():
     assert "stale" in out
 
 
-def test_render_related_section_present_when_staged():
-    out = _render(has_related=True)
-    assert RELATED_CONTAINER_DIR in out
-    assert "read-only" in out
-
-
-def test_render_related_section_softened_when_none():
-    out = _render(has_related=False)
-    assert "No prior non-probe attempts were available" in out
-    # Should not claim a staged directory exists.
-    assert RELATED_CONTAINER_DIR not in out
-
-
-def test_select_excludes_current_and_probes():
-    trials = [
-        SimpleNamespace(id="t-0", harbor_config=None),  # real attempt
-        SimpleNamespace(id="t-1", harbor_config={"mode": "probe"}),  # probe
-        SimpleNamespace(id="t-2", harbor_config={"extra_instructions": "x"}),  # real
-        SimpleNamespace(
-            id="t-3", harbor_config={"mode": "probe"}
-        ),  # current (also probe)
-    ]
-    selected = select_related_trials(trials, current_trial_id="t-3")
-    ids = [t.id for t in selected]
-    assert ids == ["t-0", "t-2"]
-
-
-def test_select_empty_when_only_probes_and_self():
-    trials = [
-        SimpleNamespace(id="me", harbor_config={"mode": "probe"}),
-        SimpleNamespace(id="other-probe", harbor_config={"mode": "probe"}),
-    ]
-    assert select_related_trials(trials, current_trial_id="me") == []
+def test_render_cli_section_present():
+    out = _render()
+    assert QUERY_CLI_CONTAINER_PATH in out
+    assert "node /probe-harness/oddish-query" in out
+    assert "RELATED TRIAL LOGS" not in out

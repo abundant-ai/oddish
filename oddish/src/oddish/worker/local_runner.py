@@ -478,7 +478,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # We target ``PROBE_HARNESS_DIR`` (e.g. /probe-harness) so /app stays
     # pixel-identical to a real run: the probe-only verifier + reference solution
     # land at the exact paths the probe instruction references
-    # (RELATED_CONTAINER_DIR, HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH),
+    # (HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH, oddish-query CLI),
     # plainly separated from the agent's own workspace. Best-effort: a failure
     # here must never block the probe (mirrors apply_probe_overlay).
     if work_root is not None:

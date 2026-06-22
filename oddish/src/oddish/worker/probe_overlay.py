@@ -1,20 +1,11 @@
 """Pure helpers for the probe instruction overlay.
 
-Kept free of DB/S3/filesystem side effects so the rendering and trial
-selection logic can be unit-tested directly. ``local_runner`` wires these
-into the live trial: it stages related-trial logs to disk and renders the
-mutated ``instruction.md``.
+Kept free of DB/S3/filesystem side effects so the rendering logic can be
+unit-tested directly. ``local_runner`` wires these into the live trial and
+renders the mutated ``instruction.md``.
 """
 
 from __future__ import annotations
-
-from typing import Any, Protocol
-
-
-class _TrialLike(Protocol):
-    id: str
-    task_id: str
-    harbor_config: dict[str, Any] | None
 
 
 # Out-of-band mount for ALL probe-only material. The real agent's container is
@@ -26,15 +17,8 @@ class _TrialLike(Protocol):
 # the "what the real agent sees" boundary a path, not a prose disclaimer.
 PROBE_HARNESS_DIR = "/probe-harness"
 
-# Prior real-attempt logs, staged under the probe-harness root.
-RELATED_DIR_NAME = "related_trials"
-RELATED_CONTAINER_DIR = f"{PROBE_HARNESS_DIR}/{RELATED_DIR_NAME}"
-MAX_RELATED_TRIALS = 10
-# Experiment-scope probes can see trials across many tasks, so the budget is
-# larger and spread across tasks (see ``select_experiment_related_trials``).
-MAX_EXPERIMENT_RELATED_TRIALS = 30
-MAX_FILES_PER_TRIAL = 50
-MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MiB
+QUERY_CLI_NAME = "oddish-query"
+QUERY_CLI_CONTAINER_PATH = f"{PROBE_HARNESS_DIR}/{QUERY_CLI_NAME}"
 
 # Harbor's own source, staged so it is readable inside the (network-isolated)
 # sandbox at /probe-harness/harbor_src. The probe exposes the grading harness's
@@ -110,20 +94,20 @@ def _time_budget_section(time_budget_sec: float) -> str:
     )
 
 
-def _related_logs_section(related_dir: str, has_related: bool) -> str:
-    if not has_related:
-        return (
-            "## RELATED TRIAL LOGS\n\n"
-            "No prior non-probe attempts were available to stage for this task."
-        )
+def _trial_data_section() -> str:
     return (
-        "## RELATED TRIAL LOGS\n\n"
-        f"Logs from prior real (non-probe) attempts at this task have been "
-        f"staged read-only under `{related_dir}`. Each subdirectory is one "
-        "trial and contains that run's agent transcript and result/reward. "
-        "Use them as reference — to see how earlier agents approached the "
-        "task, where they passed or failed, and what the verifier rewarded. "
-        "They are copies; editing them has no effect on scoring."
+        "## TRIAL DATA — oddish-query\n\n"
+        f"You can pull trial-level data from the oddish backend with a read-only "
+        f"CLI staged at `{QUERY_CLI_CONTAINER_PATH}`. Run it as "
+        f"`node {QUERY_CLI_CONTAINER_PATH} <cmd>`:\n"
+        "- `experiments trials <experiment_id>` — trials in an experiment "
+        "(trial_id, task, status, reward, is_probe). Usually the experiment your "
+        "real attempts belong to.\n"
+        "- `tasks trials <task_id>` — a task's trials.\n"
+        "- `trials logs <trial_id> [--trajectory]` — one trial's logs (large; one at a time).\n"
+        "- `tasks search [--q TEXT]` — find tasks.\n\n"
+        "Use prior real (non-probe) attempts as reference — how earlier agents "
+        "approached the task, where they passed or failed, what the verifier rewarded."
     )
 
 
@@ -187,8 +171,6 @@ def render_probe_instruction(
     directive: str,
     original: str,
     *,
-    related_dir: str,
-    has_related: bool,
     time_budget_sec: float | None = None,
     probe_only_paths: list[str] | None = None,
 ) -> str:
@@ -197,8 +179,8 @@ def render_probe_instruction(
     Layout: the operator directive (the real goal), the original task brief
     relabeled as the *real agent's* brief (context, not the probe's own
     instructions), the visibility map (what the real agent sees vs what the
-    probe sees), then the always-appended sections (running tests + related
-    trial logs).
+    probe sees), then the always-appended sections (running tests + trial data
+    CLI).
     """
     # NOTE (experiment): present the operator directive as the natural top of
     # instruction.md flowing straight into the task -- the shape proven to work
@@ -237,55 +219,7 @@ def render_probe_instruction(
         f"{budget_block}"
         f"{_RUNNING_TESTS_SECTION}\n\n"
         f"---\n\n"
-        f"{_related_logs_section(related_dir, has_related)}"
+        f"{_trial_data_section()}"
     )
 
 
-def select_related_trials(
-    trials: list[_TrialLike],
-    *,
-    current_trial_id: str,
-) -> list[_TrialLike]:
-    """Pick the "real attempt" siblings whose logs are worth staging.
-
-    Excludes the current trial and any other probe-mode trial
-    (``harbor_config.mode == "probe"``), leaving genuine solution attempts.
-    """
-    selected = []
-    for trial in trials:
-        if trial.id == current_trial_id:
-            continue
-        config = getattr(trial, "harbor_config", None) or {}
-        if config.get("mode") == "probe":
-            continue
-        selected.append(trial)
-    return selected
-
-
-def select_experiment_related_trials(
-    trials: list[_TrialLike],
-    *,
-    current_trial_id: str,
-    cap: int = MAX_EXPERIMENT_RELATED_TRIALS,
-) -> list[_TrialLike]:
-    """Pick real-attempt trials across an experiment, balanced per task.
-
-    Excludes the current trial and probe-mode trials (mirrors
-    :func:`select_related_trials`), then round-robins across each task's trials
-    so one high-volume task cannot crowd the others out of ``cap``.
-    """
-    eligible = select_related_trials(trials, current_trial_id=current_trial_id)
-
-    by_task: dict[str, list[_TrialLike]] = {}
-    for trial in eligible:
-        by_task.setdefault(trial.task_id, []).append(trial)
-
-    queues = list(by_task.values())
-    selected: list[_TrialLike] = []
-    idx = 0
-    while len(selected) < cap and any(queues):
-        q = queues[idx % len(queues)]
-        if q:
-            selected.append(q.pop(0))
-        idx += 1
-    return selected[:cap]
