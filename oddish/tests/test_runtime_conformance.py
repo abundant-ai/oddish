@@ -8,11 +8,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest
 
 from oddish.runtime.ports import Capabilities, ExecutionBackend, GpuSupport
+from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
 from oddish.runtime.backends.modal import ModalBackend
 
 # Real backends are added to this list as they are implemented.
-CONFORMANCE_BACKENDS: list[ExecutionBackend] = [FakeBackend(), ModalBackend()]
+CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
+    FakeBackend(),
+    ModalBackend(),
+    DaytonaBackend(),
+]
 
 _COLD_START = {"instant", "seconds", "minutes"}
 _EGRESS = {"deny", "allow", "configurable"}
