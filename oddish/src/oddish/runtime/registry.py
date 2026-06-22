@@ -28,5 +28,8 @@ def get_backend(name: str | None) -> ExecutionBackend | None:
 
 
 def ordered_backends() -> list[ExecutionBackend]:
-    """Backends in cheap-first order: Daytona (CPU) then Modal (GPU/private)."""
-    return [_DAYTONA, _MODAL]
+    """Backends in cheap-first order: Daytona (CPU) then Modal (GPU/private).
+
+    Sourced from ``REGISTERED_BACKENDS`` (insertion-ordered cheap-first) so the
+    resolution set and the routing order never desync."""
+    return list(REGISTERED_BACKENDS.values())
