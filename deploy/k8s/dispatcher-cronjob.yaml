@@ -1,0 +1,50 @@
+# Queue-depth trigger for the off-Modal Kubernetes scaler.
+#
+# The CronJob runs one core dispatch cycle each minute: it reads queue depth
+# from worker_jobs, computes the spawn plan (capped by ODDISH_DISPATCH_MAX_WORKERS,
+# the queue-depth -> Jobs mapping), and creates one worker Job per planned slot
+# via K8sJobDispatcher. This is the *fallback* trigger; the event-driven wake
+# (enqueue / slot-release) is the in-process fast path on the API/worker side.
+#
+#   kubectl apply -f deploy/k8s/rbac.yaml
+#   kubectl apply -f deploy/k8s/dispatcher-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oddish-dispatcher
+  namespace: oddish
+spec:
+  schedule: "* * * * *" # every minute (fallback cadence)
+  concurrencyPolicy: Forbid # never run two dispatch cycles at once
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 120
+      template:
+        spec:
+          serviceAccountName: oddish-dispatcher
+          restartPolicy: Never
+          containers:
+            - name: dispatcher
+              image: oddish-worker:latest # the oddish image (worker + dispatcher)
+              command: ["python", "-m", "oddish.dispatch.runner"]
+              env:
+                - name: ODDISH_DISPATCH_ONCE
+                  value: "1"
+                - name: ODDISH_DISPATCHER
+                  value: "k8s"
+                - name: ODDISH_WORKER_IMAGE
+                  value: "oddish-worker:latest"
+                - name: ODDISH_K8S_NAMESPACE
+                  value: "oddish"
+                - name: ODDISH_K8S_SERVICE_ACCOUNT
+                  value: "oddish-dispatcher"
+                - name: ODDISH_DISPATCH_MAX_WORKERS
+                  value: "256"
+                - name: ODDISH_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: oddish
+                      key: database-url

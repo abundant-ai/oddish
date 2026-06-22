@@ -1,0 +1,33 @@
+# Reference shape of a worker Job (what K8sJobDispatcher.spawn creates per
+# queue_key at runtime; this YAML documents the contract and is not applied
+# directly). Each Job drains one queue_key then exits.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: oddish-worker-
+  namespace: oddish
+  labels:
+    app: oddish-worker
+    oddish_managed: "true"
+spec:
+  backoffLimit: 0 # the queue re-claims on lease expiry; no in-Job retries
+  ttlSecondsAfterFinished: 300 # auto-GC finished Jobs
+  template:
+    metadata:
+      labels:
+        app: oddish-worker
+        oddish_managed: "true"
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: worker
+          image: oddish-worker:latest
+          command: ["python", "-m", "oddish.workers.queue.worker"]
+          env:
+            - name: ODDISH_WORKER_QUEUE_KEY
+              value: "<queue_key>" # set per Job by the dispatcher
+            - name: ODDISH_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: oddish
+                  key: database-url
