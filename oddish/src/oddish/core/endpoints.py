@@ -1227,6 +1227,8 @@ async def retry_trial_core(
         queue_key=new_trial.queue_key,
         org_id=new_trial.org_id,
         max_attempts=new_trial.max_attempts,
+        harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
+        or "default",
     )
 
     await session.commit()
