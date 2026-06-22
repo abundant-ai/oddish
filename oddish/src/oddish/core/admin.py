@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
 from typing import Any
@@ -976,3 +977,34 @@ async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
         queues=queues,
         timestamp=health.timestamp,
     )
+
+
+_load_cache: LoadSnapshot | None = None
+_load_cache_at: float = 0.0
+_load_cache_lock = asyncio.Lock()
+
+
+async def _refresh_load_snapshot() -> LoadSnapshot:
+    """Open a session and rebuild the snapshot (the only DB-touching seam)."""
+    from oddish.db import get_session
+
+    async with get_session() as session:
+        return await build_load_snapshot(session)
+
+
+async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadSnapshot:
+    """Return the slim load snapshot, refreshing at most once per ``ttl`` seconds.
+
+    Single-flighted: under a burst, exactly one coroutine refreshes while the
+    rest wait on the lock and then read the just-refreshed value, so the
+    underlying queue-health query runs at most once per ttl per container.
+    """
+    global _load_cache, _load_cache_at
+    if _load_cache is not None and _monotonic() - _load_cache_at < ttl:
+        return _load_cache
+    async with _load_cache_lock:
+        if _load_cache is not None and _monotonic() - _load_cache_at < ttl:
+            return _load_cache
+        _load_cache = await _refresh_load_snapshot()
+        _load_cache_at = _monotonic()
+        return _load_cache
