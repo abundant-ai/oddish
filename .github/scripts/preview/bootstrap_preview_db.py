@@ -1,8 +1,3 @@
-"""Bootstrap the PR's data-less Supabase preview branch: it inherits the parent's
-schema but an empty ``alembic_version_*``, so stamp each stack to the parent's
-current revision before ``alembic upgrade head`` to apply only this PR's migrations.
-"""
-
 import asyncio
 import os
 import subprocess
@@ -19,13 +14,6 @@ STACKS = (
 
 
 async def _parent_revisions(parent_url: str) -> dict[str, str]:
-    """Read each stack's current revision from the parent (production) DB.
-
-    The parent is a Supavisor pooler URL, so mirror seed_preview_db.py: disable
-    asyncpg's prepared-statement cache, use NullPool, and pin the transaction
-    read-only since we only ever SELECT here. The timeouts bound the read so a
-    hung pooler connection can't wedge the job up to GitHub's 6h ceiling.
-    """
     engine = create_async_engine(
         parent_url,
         connect_args={
@@ -54,21 +42,10 @@ def _alembic(project: Path, *args: str) -> None:
     subprocess.run(["alembic", *args], cwd=project, check=True)
 
 
-# alembic emits this when asked to stamp a revision absent from the branch's
-# history -- on stdout (via util.err) and stderr (via its root logger). Match it
-# to distinguish "branch behind/diverged" from a genuine stamp failure.
 _REVISION_NOT_FOUND = "Can't locate revision"
 
 
 def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
-    """Stamp the branch's empty version table to the parent's revision.
-
-    If that revision predates this branch's history (branch behind/diverged),
-    alembic can't locate it -- fall back to the branch's own head so only this
-    PR's migrations replay. Any *other* stamp failure (unreachable DB, bad
-    config, ambiguous heads) is a real error: surface alembic's output and
-    re-raise rather than masking it as a no-op success.
-    """
     proc = subprocess.run(
         ["alembic", "stamp", rev], cwd=project, text=True, capture_output=True
     )
