@@ -266,26 +266,41 @@ def _health(capacity):
     return SimpleNamespace(capacity=capacity)
 
 
-def _cap(queue_key, *, fill, queued, wait_p95):
+def _cap(queue_key, *, running, queued, wait_p95):
     from types import SimpleNamespace
 
     return SimpleNamespace(
-        queue_key=queue_key, fill=fill, queued=queued, wait_p95_seconds=wait_p95
+        queue_key=queue_key, running=running, queued=queued, wait_p95_seconds=wait_p95
     )
 
 
-def _cal(queue_key, *, throttle_rate=0.0, avg_trial_seconds=120.0, r_tokens=5000.0):
+def _cal(
+    queue_key,
+    *,
+    throttle_rate=0.0,
+    avg_trial_seconds=120.0,
+    r_tokens=5000.0,
+    token_coverage=1.0,
+):
     from oddish.core.calibration import QueueCalibration
 
     return QueueCalibration(
         queue_key=queue_key,
         provider="openai",
         trials=100,
-        token_coverage=1.0,
+        token_coverage=token_coverage,
         avg_trial_seconds=avg_trial_seconds,
         r_tokens=r_tokens,
         throughput_per_min=1.0,
         throttle_rate=throttle_rate,
+    )
+
+
+def _state_row(queue_key, advisory_limit, **state):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        queue_key=queue_key, advisory_limit=advisory_limit, state=state
     )
 
 
@@ -295,7 +310,7 @@ async def test_recompute_upserts_shrink_for_idle_queue(monkeypatch):
         cc,
         "get_queue_health_core",
         _make_async(
-            _health([_cap("openai/gpt-5.2", fill=0.1, queued=0, wait_p95=0.0)])
+            _health([_cap("openai/gpt-5.2", running=0, queued=0, wait_p95=0.0)])
         ),
     )
     monkeypatch.setattr(
@@ -308,7 +323,7 @@ async def test_recompute_upserts_shrink_for_idle_queue(monkeypatch):
         _make_async(None, record=recorded),
     )
     # Defaults: no override -> base = default_model_concurrency (8); no provider
-    # bucket -> ceiling = min(base*2, GLOBAL_MAX) = 16; idle fill -> shrink.
+    # bucket -> ceiling = min(base*2, GLOBAL_MAX) = 16; no running -> idle -> shrink.
     session = _FakeSession(state_rows=[])  # no prior advisory -> prev_limit = base 8
     updated = await cc.recompute_advisory_limits(session)
 
@@ -320,11 +335,94 @@ async def test_recompute_upserts_shrink_for_idle_queue(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_recompute_fill_is_relative_to_advisory_not_static(monkeypatch):
+    # Advisory already trimmed to 4 (below static 8) and fully utilized (running 4)
+    # with a backlog: utilization must read as full (4/4), NOT idle (4/8), so the
+    # controller does not wrongly shrink it.
+    monkeypatch.setattr(
+        cc,
+        "get_queue_health_core",
+        _make_async(
+            _health([_cap("openai/gpt-5.2", running=4, queued=10, wait_p95=0.0)])
+        ),
+    )
+    monkeypatch.setattr(
+        cc, "calibrate_model_concurrency", _make_async([_cal("openai/gpt-5.2")])
+    )
+    monkeypatch.setattr(cc, "record_queue_runtime_status", _make_async(None))
+    session = _FakeSession(state_rows=[_state_row("openai/gpt-5.2", 4, demand=0)])
+    updated = await cc.recompute_advisory_limits(session)
+    # full advisory + backlog -> bottleneck vote (held this cycle, NOT cut to 2).
+    assert updated == {"openai/gpt-5.2": 4}
+
+
+@pytest.mark.asyncio
+async def test_recompute_low_token_coverage_drops_tpm_bound(monkeypatch):
+    captured = {}
+
+    def fake_ceiling(**kwargs):
+        captured.update(kwargs)
+        return 16
+
+    monkeypatch.setattr(cc, "compute_ceiling", fake_ceiling)
+    monkeypatch.setattr(
+        cc,
+        "get_queue_health_core",
+        _make_async(
+            _health([_cap("openai/gpt-5.2", running=0, queued=0, wait_p95=0.0)])
+        ),
+    )
+    monkeypatch.setattr(
+        cc,
+        "calibrate_model_concurrency",
+        _make_async([_cal("openai/gpt-5.2", token_coverage=0.2)]),  # sparse tokens
+    )
+    monkeypatch.setattr(cc, "record_queue_runtime_status", _make_async(None))
+    session = _FakeSession(state_rows=[])
+    await cc.recompute_advisory_limits(session)
+    assert captured["tokens_per_trial"] is None  # dropped: lean on RPM
+
+
+@pytest.mark.asyncio
+async def test_recompute_skips_statically_disabled_queue(monkeypatch):
+    # A statically-disabled queue (get_model_concurrency == 0) must not get an
+    # advisory above zero -- the operator's off switch is honored.
+    class _StubSettings:
+        model_concurrency_overrides: dict = {}
+
+        def get_model_concurrency(self, queue_key):
+            return 0  # disabled
+
+        def normalize_queue_key(self, queue_key):
+            return queue_key
+
+        def get_provider_rate_limit(self, queue_key):
+            return None
+
+    monkeypatch.setattr(cc, "settings", _StubSettings())
+    monkeypatch.setattr(
+        cc,
+        "get_queue_health_core",
+        _make_async(
+            _health([_cap("disabled/model", running=0, queued=0, wait_p95=0.0)])
+        ),
+    )
+    monkeypatch.setattr(
+        cc, "calibrate_model_concurrency", _make_async([_cal("disabled/model")])
+    )
+    monkeypatch.setattr(cc, "record_queue_runtime_status", _make_async(None))
+    session = _FakeSession(state_rows=[])
+    updated = await cc.recompute_advisory_limits(session)
+    assert updated == {}  # disabled queue skipped
+    assert session.upserts == []
+
+
+@pytest.mark.asyncio
 async def test_recompute_is_best_effort_on_error(monkeypatch):
     monkeypatch.setattr(
         cc,
         "get_queue_health_core",
-        _make_async(_health([_cap("q", fill=0.1, queued=0, wait_p95=0.0)])),
+        _make_async(_health([_cap("q", running=0, queued=0, wait_p95=0.0)])),
     )
     monkeypatch.setattr(cc, "calibrate_model_concurrency", _make_async([_cal("q")]))
     session = _FakeSession(fail=True)  # every execute raises

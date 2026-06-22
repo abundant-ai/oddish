@@ -63,6 +63,9 @@ FLOOR = 1  # advisory never drops below one slot
 DEFAULT_HEADROOM = 0.6  # fraction of the provider limit we aim to use
 DEFAULT_R_CALLS = 1.0  # estimated LLM calls per trial (RPM-bound denominator)
 GLOBAL_MAX = 256  # absolute per-queue advisory cap (bounds the spawn count)
+# Below this token-coverage fraction the TPM bound is distrusted (the zero-filled
+# r_tokens average understates per-trial tokens), so the ceiling leans on RPM.
+TOKEN_COVERAGE_MIN = 0.5
 
 # --- cadence-derived guards ---
 # Recompute the feed-forward ceiling on the long calibration window so it is not
@@ -310,23 +313,40 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
         for cap in health.capacity:
             queue_key = cap.queue_key
             base = settings.get_model_concurrency(queue_key)
+            # A statically-disabled queue (limit 0) stays disabled: never advise
+            # it above zero, so the operator's off switch is honored.
+            if base <= 0:
+                continue
             normalized = settings.normalize_queue_key(queue_key)
             override = settings.model_concurrency_overrides.get(normalized)
             cal = ceiling_cal.get(queue_key)
+            # Distrust the TPM bound where token telemetry is sparse (the
+            # zero-filled r_tokens average understates per-trial tokens and would
+            # overstate the TPM ceiling): drop it and lean on RPM (spec §6).
+            tokens_per_trial = (
+                cal.r_tokens
+                if cal and cal.token_coverage >= TOKEN_COVERAGE_MIN
+                else None
+            )
             ceiling = compute_ceiling(
                 base=base,
                 bucket=settings.get_provider_rate_limit(queue_key),
                 trial_seconds=cal.avg_trial_seconds if cal else None,
-                tokens_per_trial=cal.r_tokens if cal else None,
+                tokens_per_trial=tokens_per_trial,
                 override=override,
             )
             prev = prior.get(queue_key, {})
+            prev_limit = int(prev.get("advisory_limit", base))
             recent = recent_cal.get(queue_key)
+            # Utilization must be measured against the limit the controller is
+            # actually enforcing (the advisory), NOT the static one health uses:
+            # a full advisory below the static limit would otherwise read as idle.
+            effective_fill = cap.running / prev_limit if prev_limit > 0 else 0.0
             decision = controller_step(
-                prev_limit=int(prev.get("advisory_limit", base)),
+                prev_limit=prev_limit,
                 cooldown=bool(prev.get("cooldown", False)),
                 demand=int(prev.get("demand", 0)),
-                fill=cap.fill,
+                fill=effective_fill,
                 queued=cap.queued,
                 wait_p95=cap.wait_p95_seconds,
                 throttle_rate=recent.throttle_rate if recent else 0.0,
@@ -337,7 +357,7 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
             log.append(
                 {
                     "queue_key": queue_key,
-                    "old": int(prev.get("advisory_limit", base)),
+                    "old": prev_limit,
                     "new": decision.new_limit,
                     "ceiling": ceiling,
                     "error": decision.error,
