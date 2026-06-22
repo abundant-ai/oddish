@@ -5,9 +5,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pytest
+
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.runtime.routing import (
+    NoEligibleBackendError,
     allowed_cloud_environments,
     default_cloud_environment,
     select_backend,
@@ -39,3 +42,12 @@ def test_select_backend_private_registry_picks_modal() -> None:
 
 def test_select_backend_plain_cpu_picks_daytona() -> None:
     assert select_backend().name == "daytona"
+
+
+def test_select_backend_raises_when_no_eligible_backend(monkeypatch) -> None:
+    # With nothing registered, negotiation has nothing to return -> fail fast.
+    import oddish.runtime.routing as routing
+
+    monkeypatch.setattr(routing, "ordered_backends", lambda: [])
+    with pytest.raises(NoEligibleBackendError):
+        routing.select_backend(requires_gpu=True)
