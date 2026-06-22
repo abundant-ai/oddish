@@ -210,6 +210,7 @@ def create_app() -> FastAPI:
         documents,
         github_webhooks,
         imports,
+        load,
         orgs,
         probe_presets,
         skills,
@@ -228,6 +229,7 @@ def create_app() -> FastAPI:
     api.include_router(tasks.router)
     api.include_router(trials.router)
     api.include_router(imports.router)
+    api.include_router(load.router)
     api.include_router(probe_presets.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
