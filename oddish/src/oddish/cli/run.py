@@ -66,11 +66,12 @@ def _default_cloud_environment_for_task(
     *,
     override_gpus: int | None,
 ) -> EnvironmentType:
+    from oddish.runtime.routing import default_cloud_environment
+
     if override_gpus is not None:
-        return EnvironmentType.MODAL if override_gpus > 0 else EnvironmentType.DAYTONA
-    if task_path is not None and _task_config_requests_gpu(task_path):
-        return EnvironmentType.MODAL
-    return EnvironmentType.DAYTONA
+        return default_cloud_environment(requires_gpu=override_gpus > 0)
+    requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+    return default_cloud_environment(requires_gpu=requires_gpu)
 
 
 def _map_batch_sweep_results(
