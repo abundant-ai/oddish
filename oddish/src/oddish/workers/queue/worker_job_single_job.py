@@ -173,11 +173,13 @@ WHERE  id = (
         WHERE  wj2.kind::text = 'TRIAL'
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
+          AND  wj2.harbor_variant_id = $5
           AND  tr2.deleted_at IS NULL
           AND  tk2.deleted_at IS NULL
         GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
+      AND  wj.harbor_variant_id = $5
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
       -- Defense in depth: ``delete_*_core`` already cancels matching
@@ -196,7 +198,8 @@ WHERE  id = (
     FOR    UPDATE OF wj SKIP LOCKED
 )
 RETURNING id, kind::text AS kind, subject_table, subject_id, payload,
-          attempts, max_attempts, queue_key, org_id, parent_job_id;
+          attempts, max_attempts, queue_key, org_id, parent_job_id,
+          harbor_variant_id;
 """
 
 
@@ -221,6 +224,7 @@ class ClaimedWorkerJob:
     max_attempts: int
     org_id: str | None
     parent_job_id: str | None
+    harbor_variant_id: str = "default"
     worker_id: str | None = None
     queue_slot: int | None = None
     modal_function_call_id: str | None = None
@@ -284,12 +288,14 @@ async def claim_single_worker_job(
     worker_id: str,
     queue_slot: int,
     modal_function_call_id: str | None = None,
+    harbor_variant_id: str = "default",
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
-    Returns ``None`` if no row was available. The returned row is in
-    ``RUNNING`` state with ``attempts`` incremented and claim metadata
-    stamped.
+    Returns ``None`` if no row was available. The claim is scoped to
+    ``harbor_variant_id`` so a worker only picks up jobs of the Harbor variant
+    it was spawned for. The returned row is in ``RUNNING`` state with
+    ``attempts`` incremented and claim metadata stamped.
     """
     connection = await _open_connection()
     try:
@@ -299,6 +305,7 @@ async def claim_single_worker_job(
             worker_id,
             queue_slot,
             modal_function_call_id,
+            harbor_variant_id,
         )
     finally:
         await connection.close()
@@ -327,6 +334,7 @@ async def claim_single_worker_job(
         max_attempts=int(row["max_attempts"]),
         org_id=row["org_id"],
         parent_job_id=row["parent_job_id"],
+        harbor_variant_id=str(row["harbor_variant_id"]),
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
@@ -459,6 +467,7 @@ async def run_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    harbor_variant_id: str = "default",
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
 
@@ -480,6 +489,7 @@ async def run_single_worker_job(
         worker_id=worker_id,
         queue_slot=queue_slot,
         modal_function_call_id=modal_function_call_id,
+        harbor_variant_id=harbor_variant_id,
     )
     if job is None:
         return False
@@ -565,6 +575,7 @@ async def drain_worker_jobs(
     budget_seconds: float,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
+    harbor_variant_id: str = "default",
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
 ) -> int:
@@ -597,6 +608,7 @@ async def drain_worker_jobs(
             queue_slot=queue_slot,
             modal_function_call_id=modal_function_call_id,
             post_success_hooks=post_success_hooks,
+            harbor_variant_id=harbor_variant_id,
         )
         if not job_found:
             break
