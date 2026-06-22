@@ -1150,7 +1150,13 @@ async def run_trial_job(
             try:
                 storage = get_storage_client()
                 trial_s3_key = await storage.upload_trial_results(
-                    trial_id, execution.outcome.job_dir
+                    trial_id,
+                    execution.outcome.job_dir,
+                    authorized_prefix=(
+                        job_scoped_bundle.s3_write_prefix
+                        if job_scoped_bundle is not None
+                        else None
+                    ),
                 )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
