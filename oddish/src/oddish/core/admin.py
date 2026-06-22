@@ -943,6 +943,9 @@ async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
     from oddish.workers.queue.runtime_status import get_queue_runtime_statuses
 
     statuses = await get_queue_runtime_statuses(session)
+    # `sweep_rtt_p95_ewma` is a contract-mandated key name: the value is actually a
+    # smoothed MEAN of submission-handler latency (an EWMA, not a true p95) and pools
+    # /tasks/sweep with /tasks/upload/*. Kept verbatim so the read/write keys match.
     submit_row = statuses.get(SUBMIT_LATENCY_COMPONENT) or {}
     sweep_rtt = (submit_row.get("payload") or {}).get("sweep_rtt_p95_ewma")
 

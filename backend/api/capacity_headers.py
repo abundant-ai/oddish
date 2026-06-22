@@ -18,6 +18,7 @@ from oddish.core.admin import (
     get_cached_load_snapshot,
 )
 
+# Prefix-matched so /tasks/sweep and /tasks/sweep/batch both qualify.
 _CAPACITY_PATHS = (
     "/tasks/sweep",
     "/tasks/upload/init",
@@ -32,7 +33,7 @@ _monotonic = time.monotonic
 
 
 def _is_capacity_path(path: str) -> bool:
-    return any(path == p or path.startswith(p) for p in _CAPACITY_PATHS)
+    return any(path.startswith(p) for p in _CAPACITY_PATHS)
 
 
 def _update_sweep_rtt_ewma(latency_s: float) -> float:
@@ -55,6 +56,9 @@ async def _maybe_persist_sweep_rtt(value: float) -> None:
     _sweep_rtt_persisted_at = now
     from oddish.workers.queue.runtime_status import record_queue_runtime_status
 
+    # `sweep_rtt_p95_ewma` is a contract-mandated key name: `value` is actually a
+    # smoothed MEAN of submission-handler latency (the EWMA above, not a true p95)
+    # and pools /tasks/sweep with /tasks/upload/*. Kept verbatim so the snapshot reads it.
     await record_queue_runtime_status(
         SUBMIT_LATENCY_COMPONENT, {"sweep_rtt_p95_ewma": value}
     )
