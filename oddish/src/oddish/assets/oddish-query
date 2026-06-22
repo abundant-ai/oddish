@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+'use strict';
+
+const MAX_BYTES = 16000, LOG_HEAD = 4000, LOG_TAIL = 4000;
+const BASE = (process.env.ODDISH_API_BASE_URL || '').replace(/\/+$/, '');
+const KEY = process.env.ODDISH_API_KEY || '';
+
+function out(line) { process.stdout.write(line + '\n'); }
+function die(msg, status) { out(JSON.stringify({ error: msg, status })); process.exit(1); }
+
+async function get(path, params) {
+  const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
+  if (fixture) {
+    const f = JSON.parse(fixture);
+    if (f.__status === 401) die('session credential expired', 401);
+    return f[path];
+  }
+  const url = new URL(BASE + path);
+  for (const [k, v] of Object.entries(params || {})) {
+    if (v !== null && v !== undefined && v !== '') url.searchParams.set(k, v);
+  }
+  let r;
+  try { r = await fetch(url, { headers: { Authorization: `Bearer ${KEY}` } }); }
+  catch (e) { die(String(e), 0); }
+  if (r.status === 401) die('session credential expired', 401);
+  if (!r.ok) die(r.statusText || `HTTP ${r.status}`, r.status);
+  return r.json();
+}
+
+function emitRows(rows) {
+  let total = 0, shown = 0;
+  for (const row of rows) {
+    const line = JSON.stringify(row);
+    if (total + line.length > MAX_BYTES) { out(JSON.stringify({ _truncated: true, _shown: shown })); return true; }
+    out(line); total += line.length; shown += 1;
+  }
+  return false;
+}
+
+const card = (i) => ({
+  id: i.id, name: i.name,
+  tags: (i.user_tags || []).map((t) => t.name),
+  total_trials: i.total_trials,
+  pass_rate: i.reward_total ? Math.round((i.reward_success / i.reward_total) * 1000) / 1000 : null,
+  last_run_at: i.last_run_at,
+});
+const trialRow = (t) => ({
+  trial_id: t.id || t.trial_id, task: t.task_id, status: t.status,
+  reward: t.reward, is_probe: t.is_probe,
+});
+
+async function cmdSearch(a) {
+  const data = await get('/tasks/browse', {
+    query: a.q, tags: a.tagsAll, tags_any: a.tagsAny, tags_none: a.tagsNone,
+    limit: a.limit, offset: a.offset });
+  const truncated = emitRows((data.items || []).map(card));
+  if (!truncated && data.has_more) out(JSON.stringify({ _has_more: true }));
+}
+async function cmdGet(a) { out(JSON.stringify(await get(`/tasks/${a.id}/detail`)).slice(0, MAX_BYTES)); }
+async function cmdTaskTrials(a) {
+  const data = await get(`/tasks/${a.id}/trials`);
+  emitRows((Array.isArray(data) ? data : data.trials || data.items || []).map(trialRow));
+}
+async function cmdExpTrials(a) {
+  const data = await get(`/experiments/${a.id}/trials`);
+  emitRows((Array.isArray(data) ? data : data.trials || data.items || []).map(trialRow));
+}
+async function cmdLogs(a) {
+  const data = await get(`/trials/${a.trialId}/${a.trajectory ? 'trajectory' : 'logs'}`);
+  let text = typeof data === 'string' ? data : JSON.stringify(data);
+  if (text.length > LOG_HEAD + LOG_TAIL) text = text.slice(0, LOG_HEAD) + '\n…[truncated]…\n' + text.slice(-LOG_TAIL);
+  out(text);
+}
+
+function parse(argv) {
+  const pos = [], opt = {};
+  for (let i = 0; i < argv.length; i++) {
+    const t = argv[i];
+    if (t.startsWith('--')) {
+      const k = t.slice(2);
+      if (k === 'trajectory') opt.trajectory = true;
+      else opt[k] = argv[++i];
+    } else pos.push(t);
+  }
+  return { pos, opt };
+}
+
+async function main() {
+  const { pos, opt } = parse(process.argv.slice(2));
+  const [group, cmd, id] = pos;
+  const a = { id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
+    tagsNone: opt['tags-none'], limit: opt.limit || 25, offset: opt.offset || 0,
+    trajectory: !!opt.trajectory };
+  if (group === 'tasks' && cmd === 'search') return cmdSearch(a);
+  if (group === 'tasks' && cmd === 'get') return cmdGet(a);
+  if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
+  if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
+  if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
+  die(`unknown command: ${group} ${cmd}`, 2);
+}
+main();
