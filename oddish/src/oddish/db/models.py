@@ -1123,6 +1123,18 @@ class WorkerJobModel(TimestampedMixin, Base):
     # "capability-rejected: <table>", ...
     admission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Job-scoped credential token lifecycle (spec §6.6). Only the SHA-256 hash is
+    # persisted; the raw token + scoped bundle (model keys, S3 prefix) are
+    # returned to the worker at claim and held in memory. Revoked on terminal
+    # status. Gated by settings.job_scoped_tokens_enabled (default off).
+    job_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_token_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class APIKeyModel(TimestampedMixin, Base):
     """API key for programmatic access.
