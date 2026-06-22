@@ -34,6 +34,7 @@ async def test_start_sets_auto_delete_and_labels(db):
         anthropic_api_key="test",
         chat_auto_stop_minutes=30,
         chat_auto_delete_minutes=60,
+        public_api_base_url="https://api.oddish.example",
         blob_store=_FakeBlob(),
     )
 
