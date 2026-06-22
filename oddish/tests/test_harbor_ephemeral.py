@@ -196,6 +196,16 @@ def test_payload_no_agent_harbor_requirement_for_non_claude_code_agent():
     assert _payload(agent="codex")["agent_harbor_requirement"] is None
 
 
+def test_payload_agent_harbor_requirement_is_exact_match_not_substring():
+    # The reroute swaps the agent class, so a substring match must NOT trigger
+    # (parity with the in-process _apply_claude_code_probe_harbor exact gate).
+    assert _payload(agent="claude-code-custom")["agent_harbor_requirement"] is None
+    assert _payload(agent="my-claude-code")["agent_harbor_requirement"] is None
+    assert _payload(agent="Claude-Code")["agent_harbor_requirement"] == (
+        harbor_git_requirement(_SOURCE, _SHA)
+    )
+
+
 def test_child_routes_probe_agent_through_installing_subclass(tmp_path):
     task_dir = tmp_path / "task"
     task_dir.mkdir()
@@ -269,6 +279,31 @@ async def test_probe_claude_code_installs_override_harbor(tmp_path, monkeypatch)
     assert "pip install --user --quiet" in calls[1]
     assert req in calls[1]  # the override git req (with the trial's sha)
     assert _SHA in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_probe_claude_code_install_is_best_effort_on_failure(tmp_path, monkeypatch):
+    # A harbor pip-install failure must NOT fail the probe trial (parallel to the
+    # in-process test_install_is_best_effort_on_failure).
+    agent = _ProbeClaudeCode(
+        logs_dir=tmp_path,
+        model_name="claude-sonnet-4-5",
+        harbor_requirement=harbor_git_requirement(_SOURCE, _SHA),
+    )
+
+    async def _fake_super_install(self, environment):
+        pass
+
+    async def _boom_exec(self, environment, *, command):
+        raise RuntimeError("sandbox pip is down")
+
+    monkeypatch.setattr(
+        "harbor.agents.installed.claude_code.ClaudeCode.install", _fake_super_install
+    )
+    monkeypatch.setattr(_ProbeClaudeCode, "exec_as_agent", _boom_exec)
+
+    # Must NOT raise.
+    await agent.install(environment=object())
 
 
 def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):

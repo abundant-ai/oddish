@@ -162,8 +162,10 @@ def _agent_harbor_requirement(
     probe + claude-code trials install harbor into the sandbox. Emits the override
     pin as ``harbor @ git+<source>@<sha>`` so the agent imports the SAME Harbor
     the ephemeral child scored the trial with (S3); other trials get nothing.
+    Exact-match the agent name (not substring) since this reroute swaps the agent
+    class -- parity with ``_apply_claude_code_probe_harbor``.
     """
-    if not is_probe or "claude-code" not in (agent or "").strip().lower():
+    if not is_probe or (agent or "").strip().lower() != "claude-code":
         return None
     if not source or not sha:
         return None
