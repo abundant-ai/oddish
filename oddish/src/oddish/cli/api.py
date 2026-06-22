@@ -38,7 +38,10 @@ from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
 from oddish.cli._concurrency import (
+    SUBMIT_CONCURRENCY_HEADER,
     map_with_adaptive_concurrency,
+    parse_submit_concurrency_header,
+    report_advertised_ceiling,
     report_api_call,
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
@@ -488,6 +491,11 @@ def _retry_request(
         # backpressure even when a later retry succeeds.
         transient = response.status_code in _RETRY_STATUS_CODES
         report_api_call(time.monotonic() - call_start, backpressure=transient)
+        report_advertised_ceiling(
+            parse_submit_concurrency_header(
+                response.headers.get(SUBMIT_CONCURRENCY_HEADER)
+            )
+        )
 
         if not transient:
             budget.record_success()
@@ -1018,6 +1026,9 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
     report_api_call(
         time.monotonic() - sweep_start,
         backpressure=response.status_code in _RETRY_STATUS_CODES,
+    )
+    report_advertised_ceiling(
+        parse_submit_concurrency_header(response.headers.get(SUBMIT_CONCURRENCY_HEADER))
     )
 
     if response.status_code != 200:
