@@ -147,6 +147,10 @@ async def apply_probe_overlay(
     ``task_dir`` MUST be a writable temp copy of the task. Staging failures
     are logged and skipped; they never block the probe from running.
 
+    ``probe_scope`` is retained for caller-signature stability; it no longer
+    routes any staging behavior (its only consumer, related-trial-log
+    selection, was removed when the probe moved to the ``oddish-query`` CLI).
+
     (Org skill injection is handled separately by the runners via
     ``stage_org_skills`` + ``AgentConfig.skills`` -- NOT here, because skills
     must reach the sandbox through Harbor's skill-upload path, not the task dir
