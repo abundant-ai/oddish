@@ -11,8 +11,13 @@ import fnmatch
 import re
 import subprocess
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
+
+if TYPE_CHECKING:
+    from oddish.config import Settings
+    from oddish.schemas import HarborConfig
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -96,3 +101,40 @@ def classify_variant(source: str, sha: str) -> str:
         return "default"
     variant = HARBOR_VARIANTS.get((source, sha))  # empty in Phase A
     return variant if variant is not None else "ephemeral"
+
+
+def resolve_and_gate_harbor(
+    harbor: HarborConfig,
+    *,
+    settings: Settings,
+) -> tuple[HarborConfig, str]:
+    """Resolve the (source, ref) on *harbor* to a SHA, classify it, and gate.
+
+    Returns ``(harbor_with_resolved_sha_and_variant_id, variant_id)``. Raises
+    ``HarborSourceError`` (disallowed/unresolvable) or
+    ``HarborOverrideDisabledError`` (non-default pin while overrides are off).
+    The default pin does NO network I/O (40-hex short-circuit in resolve_harbor_pin).
+    """
+    source = harbor.source or HARBOR_DEFAULT_SOURCE
+    ref = harbor.ref if harbor.ref is not None else HARBOR_DEFAULT_SHA
+
+    is_default_request = harbor.source is None and (
+        harbor.ref is None or harbor.ref == HARBOR_DEFAULT_SHA
+    )
+    if not is_default_request:
+        assert_allowed(source, allowed=settings.harbor_allowed_sources)
+
+    pin = resolve_harbor_pin(source, ref)
+    variant = classify_variant(pin.source, pin.sha)
+
+    if variant != "default" and not settings.harbor_overrides_enabled:
+        raise HarborOverrideDisabledError(
+            "Harbor source overrides are not yet enabled "
+            f"(resolved {pin.source}@{pin.sha[:7]}, variant={variant}). "
+            "Set ODDISH_HARBOR_OVERRIDES_ENABLED=true once Phases B/C ship."
+        )
+
+    stamped = harbor.model_copy(
+        update={"source": pin.source, "resolved_sha": pin.sha, "variant_id": variant}
+    )
+    return stamped, variant
