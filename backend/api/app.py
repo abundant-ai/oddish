@@ -179,7 +179,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Server-Timing"],
+        expose_headers=[
+            "Server-Timing",
+            "Oddish-Submit-Concurrency",
+            "RateLimit",
+            "RateLimit-Policy",
+        ],
     )
 
     @api.middleware("http")
@@ -200,6 +205,10 @@ def create_app() -> FastAPI:
         if combined:
             response.headers["Server-Timing"] = combined
         return response
+
+    from api.capacity_headers import capacity_header_middleware
+
+    api.middleware("http")(capacity_header_middleware)
 
     from api.routers import (
         admin,
