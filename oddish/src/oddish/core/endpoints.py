@@ -79,7 +79,6 @@ from oddish.schemas import (
     UserTagRef,
 )
 from oddish.core.harbor_source import (
-    HarborOverrideDisabledError,
     HarborSourceError,
     resolve_and_gate_harbor,
 )
@@ -2633,16 +2632,16 @@ async def create_task_sweep_core(
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # Resolve the Harbor pin to a concrete SHA and gate it BEFORE any task
-    # mutation (append/create). The default pin does no network I/O; a
-    # non-default pin is rejected until ODDISH_HARBOR_OVERRIDES_ENABLED is on.
+    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
+    # BEFORE any task mutation (append/create) so a disallowed/unresolvable ref
+    # never half-creates a task. The default pin does no network I/O.
     from oddish.config import settings
 
     try:
         stamped_harbor, _variant = resolve_and_gate_harbor(
             submission.harbor, settings=settings
         )
-    except (HarborOverrideDisabledError, HarborSourceError) as exc:
+    except HarborSourceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     submission = submission.model_copy(update={"harbor": stamped_harbor})
 

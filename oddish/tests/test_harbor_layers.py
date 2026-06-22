@@ -47,9 +47,7 @@ def test_manifest_structured_table_used_when_no_flag_or_env():
 def test_settings_expose_harbor_envs():
     s = Settings(
         harbor="main",
-        harbor_overrides_enabled=True,
         harbor_allowed_sources="https://github.com/x/*",
     )
     assert s.harbor == "main"
-    assert s.harbor_overrides_enabled is True
     assert s.harbor_allowed_sources == "https://github.com/x/*"

@@ -49,10 +49,6 @@ class HarborSourceError(Exception):
     """Disallowed source or a ref that could not be resolved."""
 
 
-class HarborOverrideDisabledError(Exception):
-    """A non-default pin was requested while overrides are gated off."""
-
-
 @dataclass(frozen=True)
 class ResolvedPin:
     source: str
@@ -195,12 +191,13 @@ def resolve_and_gate_harbor(
     *,
     settings: Settings,
 ) -> tuple[HarborConfig, str]:
-    """Resolve the (source, ref) on *harbor* to a SHA, classify it, and gate.
+    """Resolve the (source, ref) on *harbor* to a SHA, classify it, and stamp it.
 
-    Returns ``(harbor_with_resolved_sha_and_variant_id, variant_id)``. Raises
-    ``HarborSourceError`` (disallowed/unresolvable) or
-    ``HarborOverrideDisabledError`` (non-default pin while overrides are off).
-    The default pin does NO network I/O (40-hex short-circuit in resolve_harbor_pin).
+    Returns ``(harbor_with_resolved_sha_and_variant_id, variant_id)``. The only
+    gate is the allowlist: a non-default source not in
+    ``ODDISH_HARBOR_ALLOWED_SOURCES`` (or an unresolvable ref) raises
+    ``HarborSourceError`` (the FastAPI layer maps it to HTTP 422). The default pin
+    does NO network I/O (40-hex short-circuit in resolve_harbor_pin).
     """
     source = harbor.source or HARBOR_DEFAULT_SOURCE
     ref = harbor.ref if harbor.ref is not None else HARBOR_DEFAULT_SHA
@@ -213,13 +210,6 @@ def resolve_and_gate_harbor(
 
     pin = resolve_harbor_pin(source, ref)
     variant = classify_variant(pin.source, pin.sha)
-
-    if variant != "default" and not settings.harbor_overrides_enabled:
-        raise HarborOverrideDisabledError(
-            "Harbor source overrides are not yet enabled "
-            f"(resolved {pin.source}@{pin.sha[:7]}, variant={variant}). "
-            "Set ODDISH_HARBOR_OVERRIDES_ENABLED=true once Phases B/C ship."
-        )
 
     stamped = harbor.model_copy(
         update={"source": pin.source, "resolved_sha": pin.sha, "variant_id": variant}
