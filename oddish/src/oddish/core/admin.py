@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any
 
@@ -866,3 +867,42 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         reconciler=_component(RECONCILER_COMPONENT),
         timestamp=now.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Live submission-load snapshot (advertised header + GET /load)
+#
+# A slim, ~5s-cached, single-flighted view derived from get_queue_health_core.
+# Inert until the client/runtime consume it.
+# ---------------------------------------------------------------------------
+
+LOAD_CACHE_TTL_SECONDS = 5.0
+CLIENT_FLOOR = 4
+CLIENT_CEILING_MAX = 64
+PRESSURE_WAIT_TARGET_S = 120.0
+PRESSURE_SOFT_QUEUE_CAP = 500.0
+PRESSURE_RTT_BUDGET_S = 2.0
+SUBMIT_CONCURRENCY_HEADER = "Oddish-Submit-Concurrency"
+SUBMIT_LATENCY_COMPONENT = "submit_latency"
+
+# Indirection so tests can advance the clock deterministically.
+_monotonic = time.monotonic
+
+
+def compute_pressure(
+    *,
+    wait_p95_max: float | None,
+    totals_queued: int,
+    sweep_rtt_p95_ewma: float | None,
+) -> float:
+    """Saturation score in [0, 1] = max of the normalized signal terms."""
+    wait_term = (wait_p95_max or 0.0) / PRESSURE_WAIT_TARGET_S
+    queue_term = float(totals_queued) / PRESSURE_SOFT_QUEUE_CAP
+    rtt_term = (sweep_rtt_p95_ewma or 0.0) / PRESSURE_RTT_BUDGET_S
+    return max(0.0, min(1.0, max(wait_term, queue_term, rtt_term)))
+
+
+def compute_submit_ceiling(pressure: float) -> int:
+    """Recommended client in-flight submission ceiling: full when idle, floor when saturated."""
+    raw = round(CLIENT_CEILING_MAX * (1.0 - pressure))
+    return int(max(CLIENT_FLOOR, min(CLIENT_CEILING_MAX, raw)))
