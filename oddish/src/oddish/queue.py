@@ -390,6 +390,7 @@ async def enqueue_trial_worker_job(
     org_id: str | None,
     max_attempts: int,
     parent_job_id: str | None = None,
+    harbor_variant_id: str = "default",
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -402,6 +403,7 @@ async def enqueue_trial_worker_job(
             org_id=org_id,
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
+            harbor_variant_id=harbor_variant_id,
         ),
     )
 
@@ -818,6 +820,7 @@ async def create_task(
                 subject_id=trial_id,
                 org_id=org_id,
                 max_attempts=submission.max_trial_attempts,
+                harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
             )
         )
 
@@ -1056,6 +1059,7 @@ async def append_trials_to_task(
                 subject_id=trial_id,
                 org_id=task.org_id,
                 max_attempts=submission.max_trial_attempts,
+                harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
             )
         )
         new_trial_ids.append(trial_id)
