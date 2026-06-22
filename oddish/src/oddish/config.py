@@ -774,6 +774,13 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
+    # Issue a short-lived, least-privilege job-scoped credential bundle at claim
+    # (model key for the job's provider only + an S3 write prefix), replacing the
+    # blanket oddish-prod secret read for that worker; revoked on terminal status
+    # (spec §6.6). Off by default: the worker dual-reads the blanket secret until
+    # this is enabled.
+    job_scoped_tokens_enabled: bool = False
+
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the
     # SigV4 keys are rejected -- so every Bedrock claude-code call fails. While
