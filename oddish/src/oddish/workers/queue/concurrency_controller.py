@@ -418,13 +418,16 @@ def merge_advisory_over_static(
 ) -> dict[str, int]:
     """Overlay fresh advisory limits onto the static per-queue limits.
 
-    Advisory wins for an active queue (a key present in ``static``); an
-    advisory-only key (a queue not active this cycle) is ignored, and an
-    un-advised active queue keeps its static value. This is the dispatcher's
-    single injection point for the controller.
+    Advisory wins for an active queue (a key present in ``static`` with a
+    positive limit); an advisory-only key (a queue not active this cycle) is
+    ignored, and an un-advised active queue keeps its static value. A
+    statically-disabled queue (static limit ``0``) stays disabled regardless of
+    any (possibly stale) advisory row, so the operator's off switch is honored
+    immediately. This is the dispatcher's single injection point for the
+    controller.
     """
     merged = dict(static)
     for queue_key, limit in advisory.items():
-        if queue_key in merged:
+        if merged.get(queue_key, 0) > 0:
             merged[queue_key] = limit
     return merged
