@@ -35,7 +35,6 @@ from oddish.cli._concurrency import (
     SUBMIT_CONCURRENCY_ENV_VAR,
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
-    _LatencyMonitor,
     map_with_adaptive_concurrency,
     report_api_call,
     report_backpressure,
@@ -170,7 +169,7 @@ def test_explicit_value_pins_limit(monkeypatch):
     assert limiter.min_limit == limiter.max_limit == 7
     assert limiter.limit == 7
     # Pinned -> no adaptation.
-    limiter.record_success(in_flight=99)
+    limiter.record_sample(0.1, in_flight=99)
     limiter.record_backpressure()
     assert limiter.limit == 7
 
@@ -221,12 +220,19 @@ def test_s3_clamps_into_small_band(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_gate_grows_limit_on_clean_success():
+def test_gate_grows_limit_on_clean_low_latency_samples():
+    # A run of clean, fast API calls feeds the gradient and grows the limit
+    # (gradient ~1.0 when noload == actual), while in_flight pushes the ceiling.
     limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=2)
     gate = ConcurrencyGate(limiter)
-    assert gate.run(lambda: "ok") == "ok"
-    # in_flight == 1 at acquire, 1*2 >= 2 -> grow.
-    assert limiter.limit == 3
+
+    def worker():
+        report_api_call(0.01)
+        return "ok"
+
+    for _ in range(6):
+        assert gate.run(worker) == "ok"
+    assert limiter.limit > 2
 
 
 def test_gate_backs_off_on_timeout():
@@ -286,17 +292,17 @@ def test_gate_backs_off_on_reported_status_then_exit():
 
 
 def test_gate_observes_only_reported_api_latency():
-    # The latency signal is built from reported API time, never wall-clock time,
-    # so a slow S3 PUT inside the worker can't trip the API limiter.
-    monitor = _LatencyMonitor(warmup=1, slow_multiplier=2.0)
-    gate = ConcurrencyGate(resolve_submit_concurrency(8), latency_monitor=monitor)
+    # The RTT signal is built from reported API time, never wall-clock time, so a
+    # slow S3 PUT inside the worker can't feed the gradient.
+    limiter = resolve_submit_concurrency(8)
+    gate = ConcurrencyGate(limiter)
 
     def worker():
         report_api_call(0.05)  # API-only time; any S3-PUT time is never reported
         return "ok"
 
     gate.run(worker)
-    assert monitor.slow_threshold() == pytest.approx(0.10)  # 2 * 0.05
+    assert limiter.rtt_actual == pytest.approx(0.05)
 
 
 def test_report_helpers_are_noop_outside_gate():
@@ -424,17 +430,17 @@ def test_s3_put_acquires_separate_semaphore(monkeypatch, tmp_path):
 
 def test_s3_put_excluded_from_api_latency_signal(monkeypatch, tmp_path):
     # The S3 PUT must report no API call, so its (potentially slow) wall-time
-    # never feeds the API latency monitor.
+    # never feeds the gradient's RTT signal.
     monkeypatch.setattr(api, "_get_s3_put_semaphore", _RecordingSemaphore)
     monkeypatch.setattr(api.httpx, "Client", _FakeS3Client)
-    monitor = _LatencyMonitor(warmup=1)
-    gate = ConcurrencyGate(resolve_submit_concurrency(4), latency_monitor=monitor)
+    limiter = resolve_submit_concurrency(4)
+    gate = ConcurrencyGate(limiter)
     tarball = tmp_path / "task.tar.gz"
     tarball.write_bytes(b"payload")
 
     gate.run(lambda: api._upload_to_presigned_url("http://s3/put", tarball, {}))
 
-    assert monitor.slow_threshold() is None  # no API call observed -> still warming up
+    assert limiter.rtt_actual is None  # no API call observed -> no RTT sample
 
 
 # ---------------------------------------------------------------------------
