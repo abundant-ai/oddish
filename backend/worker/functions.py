@@ -51,6 +51,7 @@ from modal_app import (
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
+    harbor_variant_images,
     image,
     runtime_secrets,
     worker_volumes,
@@ -80,6 +81,7 @@ from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
 )
+from oddish.core.harbor_source import harbor_variant_function_name
 
 from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
@@ -104,34 +106,12 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
-@app.function(
-    image=image,
-    volumes=worker_volumes,
-    secrets=runtime_secrets,
-    min_containers=WORKER_MIN_CONTAINERS,
-    buffer_containers=WORKER_BUFFER_CONTAINERS,
-    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
-    max_containers=WORKER_MAX_CONTAINERS,
-    timeout=WORKER_TIMEOUT_SECONDS,
-    cpu=WORKER_CPU,
-    memory=WORKER_MEMORY_MB,
-    nonpreemptible=WORKER_NONPREEMPTIBLE,
-)
-async def process_single_job(queue_key: str, harbor_variant_id: str = "default"):
-    """
-    Process exactly ONE ``worker_jobs`` row from the unified queue.
+async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
+    """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
-    1. Acquires a queue-key concurrency slot (``queue_slots``)
-    2. Claims one row of this ``harbor_variant_id`` via ``FOR UPDATE SKIP
-       LOCKED`` on ``worker_jobs``
-    3. Dispatches to the handler registered for the row's ``kind``
-    4. Records the terminal outcome on the ``worker_jobs`` row; the
-       handler mirrors it back to domain tables (``trials`` / ``tasks``)
-
-    The worker only claims rows of the variant it was spawned for. This base
-    Function (default image) serves ``default`` and ``ephemeral`` (which spawns
-    an out-of-process child); blessed variants run on their own image Function.
-    Each worker gets the full timeout budget for its single job.
+    Shared body for the default ``process_single_job`` and every blessed-variant
+    ``process_single_job__<id>`` Function -- they differ only in the image (which
+    Harbor is baked) and which ``harbor_variant_id`` rows they claim.
     """
     # Resolve the Modal function-call id BEFORE opening the span so
     # it can ride as a span attribute. This is a pure in-process
@@ -231,6 +211,68 @@ async def process_single_job(queue_key: str, harbor_variant_id: str = "default")
         except Exception:
             pass
         console.print("[green]Job worker complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    min_containers=WORKER_MIN_CONTAINERS,
+    buffer_containers=WORKER_BUFFER_CONTAINERS,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_job(queue_key: str, harbor_variant_id: str = "default"):
+    """Default-image single-job worker.
+
+    Serves ``default`` and ``ephemeral`` (the latter spawns an out-of-process
+    child from this image); blessed variants run on their own image Function.
+    """
+    await _run_one_job(queue_key, harbor_variant_id)
+
+
+def _make_variant_entry(variant_id: str):
+    """Build the entrypoint for a blessed variant's single-job Function.
+
+    Closes over *variant_id* so the Function defaults to its own lane even if the
+    dispatcher's explicit ``harbor_variant_id`` kwarg is ever omitted.
+    """
+
+    async def _entry(queue_key: str, harbor_variant_id: str = variant_id):
+        await _run_one_job(queue_key, harbor_variant_id)
+
+    return _entry
+
+
+def build_harbor_variant_functions(modal_app) -> dict[str, object]:
+    """Register one image-bound ``process_single_job__<id>`` per blessed variant.
+
+    Returns ``variant_id -> Function``. Empty unless ``HARBOR_VARIANTS`` is
+    populated, in which case every pin classified to ``<id>`` is routed onto the
+    matching Function (built on that variant's hermetic image). Variants run with
+    ``min_containers=0`` -- they're rare and shouldn't hold warm capacity.
+    """
+    functions: dict[str, object] = {}
+    for variant_id, variant_image in harbor_variant_images().items():
+        functions[variant_id] = modal_app.function(
+            image=variant_image,
+            volumes=worker_volumes,
+            secrets=runtime_secrets,
+            min_containers=0,
+            buffer_containers=0,
+            scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+            max_containers=WORKER_MAX_CONTAINERS,
+            timeout=WORKER_TIMEOUT_SECONDS,
+            cpu=WORKER_CPU,
+            memory=WORKER_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            name=harbor_variant_function_name(variant_id),
+        )(_make_variant_entry(variant_id))
+    return functions
 
 
 @app.function(
@@ -356,8 +398,9 @@ async def reconcile_queue_state():
 
 # Blessed Harbor variants get their own image-bound single-job Function so the
 # in-process Harbor matches the pin. Keyed by ``variant_id``; ``default`` +
-# ``ephemeral`` always route to the base ``process_single_job``.
-_VARIANT_JOB_FUNCTIONS: dict[str, object] = {}
+# ``ephemeral`` always route to the base ``process_single_job``. Empty unless
+# HARBOR_VARIANTS is populated.
+_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
 
 
 @app.function(
