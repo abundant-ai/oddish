@@ -16,6 +16,7 @@ from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 
 from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_staging import stage_org_skills
@@ -181,13 +182,9 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
-        if environment == EnvironmentType.DAYTONA:
-            env_config.kwargs = {
-                "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
-                "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
-                "ephemeral": settings.daytona_ephemeral,
-                **env_config.kwargs,
-            }
+        backend = get_backend(environment.value)
+        if backend is not None:
+            env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
