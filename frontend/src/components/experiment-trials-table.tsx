@@ -2246,7 +2246,7 @@ export function ExperimentTrialsTable({
                               className="h-4 w-4"
                             />
                           )}
-                          <div className="group/task-row flex min-w-0 flex-1 items-center gap-2">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
                             <div className="group/task-name flex min-w-0 flex-1 items-center gap-1.5">
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -2312,7 +2312,7 @@ export function ExperimentTrialsTable({
                               taskId={task.id}
                               taskName={task.name}
                               variant="icon"
-                              className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] opacity-0 transition group-hover/task-row:opacity-100 hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)] focus-visible:opacity-100"
+                              className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
                             />
                           </div>
                         </div>
