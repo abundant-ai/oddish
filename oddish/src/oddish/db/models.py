@@ -985,7 +985,9 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
 
     # Harbor execution variant routing id ('default' | '<registry-id>' |
-    # 'ephemeral'). Phase A adds the column (default 'default'); Phase B routes on it.
+    # 'ephemeral'). Part of the effective dispatch key: the dispatcher
+    # discovers/counts/spawns per (queue_key, harbor_variant_id) and the claim
+    # is scoped to it.
     harbor_variant_id: Mapped[str] = mapped_column(
         String(64), nullable=False, server_default=text("'default'")
     )
