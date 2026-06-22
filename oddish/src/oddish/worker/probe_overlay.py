@@ -104,10 +104,15 @@ def _trial_data_section() -> str:
         "(trial_id, task, status, reward, is_probe). Usually the experiment your "
         "real attempts belong to.\n"
         "- `tasks trials <task_id>` — a task's trials.\n"
-        "- `trials logs <trial_id> [--trajectory]` — one trial's logs (large; one at a time).\n"
+        "- `trials logs <trial_id> [--trajectory]` — one trial's logs, or its full "
+        "message+action trajectory with `--trajectory` (large; one at a time).\n"
         "- `tasks search [--q TEXT]` — find tasks.\n\n"
-        "Use prior real (non-probe) attempts as reference — how earlier agents "
-        "approached the task, where they passed or failed, what the verifier rewarded."
+        "Use your own judgement about when to pull this data — there is no human to "
+        "ask, so query whatever you think will help your investigation. Whenever more "
+        "context would be useful, look: read the `--trajectory` of prior real "
+        "(non-probe) attempts to see how earlier agents approached the task, where "
+        "they passed or failed, and what the verifier rewarded. Pulling a trial's "
+        "trajectory is the most direct way to understand what actually happened in a run."
     )
 
 
