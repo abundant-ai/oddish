@@ -74,8 +74,11 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
         db_session_factory=factory,
     )
 
-    # (a) a key was minted
+    # (a) a key was minted and has the expected scope/internal flag
     assert "model" in minted
+    from models import APIKeyScope
+    assert minted["model"].scope == APIKeyScope.READ, "minted key must be READ-scoped"
+    assert minted["model"].is_internal is True, "minted key must be internal"
 
     # (b) the provisioner env carries the query credentials
     rec = next(iter(fake.sandboxes.values()))
@@ -270,4 +273,5 @@ async def test_all_scopes_mint_key_and_upload_cli(db, monkeypatch):
         )
         rec = next(iter(fake.sandboxes.values()))
         assert rec["env"]["ODDISH_API_KEY"] == "ok_rawsecretkey", f"missing creds for {scope}"
+        assert rec["env"]["ODDISH_API_BASE_URL"] == "https://api.oddish.example", f"missing base URL for {scope}"
         assert any(p.endswith("oddish-query") for p in rec["files"]), f"missing CLI for {scope}"
