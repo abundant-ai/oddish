@@ -25,6 +25,7 @@ from oddish.core.trial_imports import (
 )
 from oddish.core.public_helpers import (
     get_trial_file_content_s3,
+    list_experiment_trials_for_org,
     list_task_trials_for_task,
     list_trial_files_s3,
 )
@@ -90,6 +91,19 @@ async def list_task_trials(
         await get_task_for_org_core(session, task_id=task_id, org_id=auth.org_id)
 
         return await list_task_trials_for_task(session, task_id, probe=probe)
+
+
+@router.get("/experiments/{experiment_id}/trials", response_model=list[TrialResponse])
+async def list_experiment_trials(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> list[TrialResponse]:
+    """List all non-superseded trials for an experiment (org-scoped)."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await list_experiment_trials_for_org(
+            session, experiment_id, auth.org_id
+        )
 
 
 # =============================================================================
