@@ -85,7 +85,23 @@ async def enqueue_worker_job(
     )
     session.add(row)
     await session.flush()
+    _wake_dispatcher()
     return row
+
+
+def _wake_dispatcher() -> None:
+    """Best-effort in-app wake on enqueue (no-op when no loop runs in-process).
+
+    A same-process fast path over the fallback poll; cross-process hosts
+    (Modal/Docker multi-container) rely on the fallback poll / cron. Never
+    raises into the enqueue path.
+    """
+    try:
+        from oddish.dispatch.cycle import signal_dispatch
+
+        signal_dispatch()
+    except Exception:
+        pass
 
 
 # One parameterized INSERT for an arbitrary number of rows. ``unnest`` keeps
@@ -169,6 +185,7 @@ async def bulk_enqueue_worker_jobs(
         "org_id": [r.org_id for r in requests],
     }
     await session.execute(_BULK_INSERT_WORKER_JOBS_SQL, params)
+    _wake_dispatcher()
     return ids
 
 
