@@ -1207,21 +1207,18 @@ def submit_sweep_batch(
     rejected (HTTP 303, nothing committed) once it exceeds Modal's per-request
     ceiling. We split ``payloads`` into chunks of at most
     ``ODDISH_SWEEP_BATCH_MAX_TASKS`` (default ``_DEFAULT_SWEEP_BATCH_MAX_TASKS``)
-    and POST them through a :class:`ConcurrencyGate`, so the chunks are governed
-    by the adaptive limiter (they report latency / backpressure and honor the
-    server-advertised ceiling, sizing the parallelism of the chunks that follow)
-    instead of bypassing the limiter as the batch path used to. Each chunk-local
-    ``index`` is re-based back onto the original payload order.
-
-    The first chunk is probed alone: a 404/405 there means the batch route is
-    absent and nothing was committed, so we return ``None`` and the caller may
-    fall back to per-task. Once the route is confirmed, the remaining chunks run
-    concurrently under the gate; a 404/405 on a later chunk means the route
-    vanished after earlier chunks committed, which raises (falling back would
-    double-submit), as does any other ambiguous failure.
+    and POST each in order through a :class:`ConcurrencyGate`, so each chunk is
+    limiter-governed -- it reports its latency / transient status and honors the
+    server-advertised ceiling, feeding the shared adaptive limiter -- instead of
+    bypassing the limiter as the batch path used to. Chunks are posted
+    sequentially so the duplicate-safety semantics are preserved exactly: on any
+    ambiguous failure we stop immediately rather than firing the remaining
+    chunks at an already-struggling server. Each chunk-local ``index`` is
+    re-based back onto the original payload order.
 
     Returns the combined per-item results list aligned to ``payloads``, or
-    ``None`` when the batch route is absent on the first chunk.
+    ``None`` when the batch route is absent (HTTP 404/405 on the *first* chunk,
+    before anything is committed) so the caller may fall back to per-task.
     """
     if not payloads:
         return []
@@ -1235,37 +1232,25 @@ def submit_sweep_batch(
         cap = _DEFAULT_SWEEP_BATCH_MAX_TASKS
     cap = max(1, cap)
 
-    offsets = list(range(0, len(payloads), cap))
-    chunks = [payloads[offset : offset + cap] for offset in offsets]
-
     limiter = limiter if limiter is not None else resolve_submit_concurrency()
     gate = ConcurrencyGate(limiter)
 
-    # Probe the first chunk alone so a missing batch route (404/405) short-
-    # circuits to the per-task fallback before any concurrent fan-out commits.
-    first = gate.run(_post_sweep_batch_chunk, api_url, chunks[0])
-    if first is None:
-        return None
-
-    chunk_results_list: list[list[dict] | None] = [first]
-    if len(chunks) > 1:
-        chunk_results_list.extend(
-            map_with_adaptive_concurrency(
-                chunks[1:],
-                lambda chunk: _post_sweep_batch_chunk(api_url, chunk),
-                limiter,
-                gate=gate,
-            )
-        )
-
     aggregated: list[dict] = []
-    for offset, chunk, chunk_results in zip(offsets, chunks, chunk_results_list):
+    for offset in range(0, len(payloads), cap):
+        chunk = payloads[offset : offset + cap]
+        # Route the chunk through the gate so it reports latency / backpressure
+        # and reads the advertised ceiling into the limiter (which then shapes
+        # the pacing of the chunks that follow).
+        chunk_results = gate.run(_post_sweep_batch_chunk, api_url, chunk)
         if chunk_results is None:
+            if offset == 0:
+                # No batch route, nothing committed -> caller falls back per-task.
+                return None
             # The route served earlier chunks (already committed) but vanished
             # mid-run; do not fall back -- that would double-submit.
             error_console.print(
-                "[red]Batch route became unavailable mid-run after committing "
-                "earlier chunks.[/red]\n[yellow]Not retrying per task to avoid "
+                "[red]Batch route became unavailable after committing "
+                f"{offset} task(s).[/red]\n[yellow]Not retrying per task to avoid "
                 "duplicate trials; re-run to reconcile the remainder.[/yellow]"
             )
             raise typer.Exit(1)
