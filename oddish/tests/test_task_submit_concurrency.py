@@ -479,3 +479,82 @@ def test_submit_sweep_reports_backpressure_status(monkeypatch):
     with pytest.raises(typer.Exit):
         gate.run(worker)
     assert limiter.limit < 8
+
+
+# ---------------------------------------------------------------------------
+# Server-advertised ceiling (Oddish-Submit-Concurrency) clamps the limiter
+# ---------------------------------------------------------------------------
+
+
+def test_retry_request_reads_advertised_ceiling_within_gate():
+    # init/complete go through _retry_request; the advertised ceiling on the
+    # response must clamp the limiter's effective max.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        send = _scripted_send(
+            [
+                httpx.Response(
+                    status_code=200,
+                    headers={
+                        "Oddish-Submit-Concurrency": "ceiling=9; pressure=0.8; ttl=5"
+                    },
+                )
+            ]
+        )
+        return api._retry_request(
+            send, budget=api._RetryBudget(), sleep=lambda _s: None
+        )
+
+    gate.run(worker)
+    assert limiter.limit == 9  # min(static 64, advertised 9)
+
+
+def test_post_sweep_payload_reads_advertised_ceiling(monkeypatch):
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(api, "compute_sweep_idempotency_key", lambda payload: "k")
+
+    class _HeaderClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            return httpx.Response(
+                status_code=200,
+                json={"ok": True},
+                headers={
+                    "Oddish-Submit-Concurrency": "ceiling=11; pressure=0.5; ttl=5"
+                },
+            )
+
+    monkeypatch.setattr(api.httpx, "Client", _HeaderClient)
+
+    def worker():
+        return api.post_sweep_payload("http://api", {"task_id": "t1"})
+
+    gate.run(worker)
+    assert limiter.limit == 11
+
+
+def test_missing_advertised_header_leaves_max_unchanged():
+    # A response without the header is "no advice": the limiter keeps its max.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        send = _scripted_send([httpx.Response(status_code=200)])
+        return api._retry_request(
+            send, budget=api._RetryBudget(), sleep=lambda _s: None
+        )
+
+    gate.run(worker)
+    assert limiter.limit == 40
