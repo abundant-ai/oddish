@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import random
 import shutil
 import tarfile
@@ -39,10 +40,13 @@ from harbor.viewer.scanner import JobScanner
 
 from oddish.cli._concurrency import (
     SUBMIT_CONCURRENCY_HEADER,
+    AdaptiveConcurrencyLimiter,
+    ConcurrencyGate,
     map_with_adaptive_concurrency,
     parse_submit_concurrency_header,
     report_advertised_ceiling,
     report_api_call,
+    report_backpressure,
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
@@ -1137,6 +1141,7 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
     the operator decide rather than fall back.
     """
     body = {"submissions": payloads}
+    call_start = time.monotonic()
     try:
         with httpx.Client(
             timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
@@ -1146,6 +1151,8 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
         # The request may have reached the server and committed before the error
         # surfaced (e.g. a read timeout). Do not fall back -- that risks
         # duplicate trials -- surface it so the operator can check and retry.
+        # A transport failure under load is backpressure: shrink the limiter.
+        report_backpressure()
         error_console.print(
             f"[red]Batch task submission failed:[/red] {exc}\n"
             "[yellow]The batch may already have been committed; not retrying "
@@ -1153,6 +1160,17 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
             "resubmitting.[/yellow]"
         )
         raise typer.Exit(1) from exc
+
+    # Feed the chunk's latency + transient status + advertised ceiling to any
+    # active gate slot, so a busy backend shrinks the limiter and shapes the
+    # parallelism / ceiling of the remaining chunks.
+    report_api_call(
+        time.monotonic() - call_start,
+        backpressure=response.status_code in _RETRY_STATUS_CODES,
+    )
+    report_advertised_ceiling(
+        parse_submit_concurrency_header(response.headers.get(SUBMIT_CONCURRENCY_HEADER))
+    )
 
     # Older servers have no batch route; nothing was processed -> safe to fall
     # back to per-task submission.
@@ -1187,21 +1205,36 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
     return results
 
 
-def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
-    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked.
+def submit_sweep_batch(
+    api_url: str,
+    payloads: list[dict],
+    *,
+    limiter: AdaptiveConcurrencyLimiter | None = None,
+) -> list[dict] | None:
+    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked + gated.
 
     The server runs each batch synchronously, so a single unbounded request is
     rejected (HTTP 303, nothing committed) once it exceeds Modal's per-request
     ceiling. We split ``payloads`` into chunks of at most
     ``ODDISH_SWEEP_BATCH_MAX_TASKS`` (default ``_DEFAULT_SWEEP_BATCH_MAX_TASKS``)
-    and POST each in order, re-basing the per-item ``index`` back onto the
-    original payload order.
+    and POST them through a :class:`ConcurrencyGate`, so the chunks are governed
+    by the adaptive limiter (they report latency / backpressure and honor the
+    server-advertised ceiling, sizing the parallelism of the chunks that follow)
+    instead of bypassing the limiter as the batch path used to. Each chunk-local
+    ``index`` is re-based back onto the original payload order.
+
+    The first chunk is probed alone: a 404/405 there means the batch route is
+    absent and nothing was committed, so we return ``None`` and the caller may
+    fall back to per-task. Once the route is confirmed, the remaining chunks run
+    concurrently under the gate; a 404/405 on a later chunk means the route
+    vanished after earlier chunks committed, which raises (falling back would
+    double-submit), as does any other ambiguous failure.
 
     Returns the combined per-item results list aligned to ``payloads``, or
-    ``None`` when the batch route is absent (HTTP 404/405 on the *first* chunk,
-    before anything is committed) so the caller may fall back to per-task.
+    ``None`` when the batch route is absent on the first chunk.
     """
-    import os
+    if not payloads:
+        return []
 
     try:
         cap = int(
@@ -1212,19 +1245,37 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
         cap = _DEFAULT_SWEEP_BATCH_MAX_TASKS
     cap = max(1, cap)
 
+    offsets = list(range(0, len(payloads), cap))
+    chunks = [payloads[offset : offset + cap] for offset in offsets]
+
+    limiter = limiter if limiter is not None else resolve_submit_concurrency()
+    gate = ConcurrencyGate(limiter)
+
+    # Probe the first chunk alone so a missing batch route (404/405) short-
+    # circuits to the per-task fallback before any concurrent fan-out commits.
+    first = gate.run(_post_sweep_batch_chunk, api_url, chunks[0])
+    if first is None:
+        return None
+
+    chunk_results_list: list[list[dict] | None] = [first]
+    if len(chunks) > 1:
+        chunk_results_list.extend(
+            map_with_adaptive_concurrency(
+                chunks[1:],
+                lambda chunk: _post_sweep_batch_chunk(api_url, chunk),
+                limiter,
+                gate=gate,
+            )
+        )
+
     aggregated: list[dict] = []
-    for offset in range(0, len(payloads), cap):
-        chunk = payloads[offset : offset + cap]
-        chunk_results = _post_sweep_batch_chunk(api_url, chunk)
+    for offset, chunk, chunk_results in zip(offsets, chunks, chunk_results_list):
         if chunk_results is None:
-            if offset == 0:
-                # No batch route, nothing committed -> caller falls back per-task.
-                return None
             # The route served earlier chunks (already committed) but vanished
             # mid-run; do not fall back -- that would double-submit.
             error_console.print(
-                "[red]Batch route became unavailable after committing "
-                f"{offset} task(s).[/red]\n[yellow]Not retrying per task to avoid "
+                "[red]Batch route became unavailable mid-run after committing "
+                "earlier chunks.[/red]\n[yellow]Not retrying per task to avoid "
                 "duplicate trials; re-run to reconcile the remainder.[/yellow]"
             )
             raise typer.Exit(1)

@@ -558,3 +558,88 @@ def test_missing_advertised_header_leaves_max_unchanged():
 
     gate.run(worker)
     assert limiter.limit == 40
+
+
+# ---------------------------------------------------------------------------
+# submit_sweep_batch: chunks routed through the gate, sized by the header
+# ---------------------------------------------------------------------------
+
+
+def _install_batch_client(monkeypatch, post):
+    """Install a fake httpx.Client whose POST delegates to ``post(url, **kwargs)``."""
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "10")
+
+    class _BatchClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            return post(url, **kwargs)
+
+    monkeypatch.setattr(api.httpx, "Client", _BatchClient)
+
+
+def test_submit_sweep_batch_rebases_indices_and_reads_header(monkeypatch):
+    def post(url, **kwargs):
+        subs = kwargs["json"]["submissions"]
+        results = [
+            {"index": i, "success": True, "task": {"id": s["task_id"]}}
+            for i, s in enumerate(subs)
+        ]
+        return httpx.Response(
+            status_code=200,
+            json={"results": results},
+            headers={"Oddish-Submit-Concurrency": "ceiling=6; pressure=0.7; ttl=5"},
+        )
+
+    _install_batch_client(monkeypatch, post)
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": f"t{i}"} for i in range(25)]  # 3 chunks at cap 10
+
+    results = api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+
+    assert len(results) == 25
+    assert [r["index"] for r in results] == list(range(25))  # re-based 0..24
+    assert {r["task"]["id"] for r in results} == {f"t{i}" for i in range(25)}
+    assert limiter.limit == 6  # clamped to the advertised ceiling
+
+
+def test_submit_sweep_batch_first_chunk_404_returns_none(monkeypatch):
+    _install_batch_client(monkeypatch, lambda url, **k: httpx.Response(status_code=404))
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": "t0"}, {"task_id": "t1"}]
+    assert api.submit_sweep_batch("http://api", payloads, limiter=limiter) is None
+
+
+def test_submit_sweep_batch_later_chunk_route_vanish_raises(monkeypatch):
+    def post(url, **kwargs):
+        subs = kwargs["json"]["submissions"]
+        if subs and subs[0]["task_id"] == "t20":  # the 3rd chunk (offset 20)
+            return httpx.Response(status_code=404)
+        results = [{"index": i, "success": True, "task": {}} for i in range(len(subs))]
+        return httpx.Response(status_code=200, json={"results": results})
+
+    _install_batch_client(monkeypatch, post)
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": f"t{i}"} for i in range(25)]
+    with pytest.raises(typer.Exit):
+        api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+
+
+def test_submit_sweep_batch_chunk_backpressure_shrinks_limit(monkeypatch):
+    _install_batch_client(
+        monkeypatch,
+        lambda url, **k: httpx.Response(status_code=503, text="overloaded"),
+    )
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=20)
+    payloads = [{"task_id": "t0"}]
+    with pytest.raises(typer.Exit):
+        api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+    assert limiter.limit < 20  # the 503 chunk triggered the hard MD via the gate
