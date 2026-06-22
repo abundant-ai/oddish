@@ -471,6 +471,14 @@ def test_merge_advisory_overrides_only_active_static_keys():
     assert merged == {"openai/gpt-5.2": 40, "anthropic/opus": 8}
 
 
+def test_merge_never_overrides_a_statically_disabled_queue():
+    # A queue disabled via static limit 0 stays disabled even if a stale positive
+    # advisory row exists (the operator's off switch wins immediately).
+    static = {"openai/gpt-5.2": 0}
+    advisory = {"openai/gpt-5.2": 40}
+    assert cc.merge_advisory_over_static(static, advisory) == {"openai/gpt-5.2": 0}
+
+
 def test_merge_empty_advisory_is_static():
     static = {"openai/gpt-5.2": 8}
     assert cc.merge_advisory_over_static(static, {}) == {"openai/gpt-5.2": 8}
