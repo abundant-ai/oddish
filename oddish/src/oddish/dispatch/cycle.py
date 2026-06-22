@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable, Collection, Sequence
 
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
 from oddish.workers.queue.worker_job_dispatcher import (
@@ -149,6 +149,29 @@ async def run_dispatch_cycle(
         queued_total=sum(queued_by_queue.values()),
         running_total=sum(running_by_queue.values()),
     )
+
+
+async def reclaim_leaked_workers(
+    dispatcher: Dispatcher, *, alive: Collection[str]
+) -> int:
+    """Cancel managed workers with no live ``worker_jobs`` row (tag-based GC).
+
+    For scalers that expose ``list_managed`` (Docker, Kubernetes), list every
+    worker this dispatcher manages and cancel the ones whose id is not in
+    ``alive`` (the set of worker handle ids still backing a live row). A no-op
+    for scalers without ``list_managed`` (in-process / Modal). The container/Job
+    runtimes also self-reclaim (``--rm`` / ``ttlSecondsAfterFinished``), so this
+    is a backstop for the leak case (CRI/Nomad list-by-tag pattern, §6.5).
+    """
+    list_managed = getattr(dispatcher, "list_managed", None)
+    if list_managed is None:
+        return 0
+    managed = await list_managed()
+    alive_set = set(alive)
+    leaked = [h for h in managed if h.id and h.id not in alive_set]
+    if not leaked:
+        return 0
+    return await dispatcher.cancel(leaked)
 
 
 class DispatchTrigger:
