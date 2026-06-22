@@ -1100,6 +1100,21 @@ class WorkerJobModel(TimestampedMixin, Base):
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
 
+    # Per-stage timing for the pre-harbor preamble (design spec §12). The
+    # existing claimed_at/started_at cover claim+total-elapsed; these fill the
+    # submit -> spawn -> sandbox-create gap so the 180s-poll vs cold-start vs
+    # image-pull split is visible.
+    spawned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sandbox_creating_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why a still-waiting job has not been spawned -- the queryable why-waiting /
+    # admission-reason field (spec §12): "waiting for slot", "cold-starting",
+    # "capability-rejected: <table>", ...
+    admission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
 
 # ---------------------------------------------------------------------------
 # Soft-delete registration
