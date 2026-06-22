@@ -595,13 +595,13 @@ _TRIAL_BULK_INSERT_SQL = text(
     INSERT INTO trials
         (id, name, task_id, task_version_id, experiment_id, org_id,
          agent, provider, queue_key, model, timeout_minutes, environment,
-         harbor_config, is_probe, max_attempts, status, attempts,
+         harbor_config, harbor_sha, is_probe, max_attempts, status, attempts,
          created_at, updated_at)
     SELECT
         t.id, t.name, t.task_id, t.task_version_id, t.experiment_id, t.org_id,
         t.agent, t.provider, t.queue_key, t.model, t.timeout_minutes,
-        t.environment, t.harbor_config::jsonb, t.is_probe, t.max_attempts,
-        'QUEUED'::jobstatus, 0, NOW(), NOW()
+        t.environment, t.harbor_config::jsonb, t.harbor_sha, t.is_probe,
+        t.max_attempts, 'QUEUED'::jobstatus, 0, NOW(), NOW()
     FROM unnest(
         CAST(:id AS text[]),
         CAST(:name AS text[]),
@@ -616,12 +616,13 @@ _TRIAL_BULK_INSERT_SQL = text(
         CAST(:timeout_minutes AS int[]),
         CAST(:environment AS text[]),
         CAST(:harbor_config AS text[]),
+        CAST(:harbor_sha AS text[]),
         CAST(:is_probe AS boolean[]),
         CAST(:max_attempts AS int[])
     ) WITH ORDINALITY AS t(
         id, name, task_id, task_version_id, experiment_id, org_id,
         agent, provider, queue_key, model, timeout_minutes, environment,
-        harbor_config, is_probe, max_attempts, ord
+        harbor_config, harbor_sha, is_probe, max_attempts, ord
     )
     """
 )
@@ -655,6 +656,7 @@ async def _bulk_insert_trials(
             json.dumps(t["harbor_config"]) if t["harbor_config"] is not None else None
             for t in trials
         ],
+        "harbor_sha": [t["harbor_sha"] for t in trials],
         "is_probe": [t["is_probe"] for t in trials],
         "max_attempts": [t["max_attempts"] for t in trials],
     }
@@ -803,6 +805,7 @@ async def create_task(
                 "environment": spec.environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
+                "harbor_sha": (harbor_config or {}).get("resolved_sha"),
                 "max_attempts": submission.max_trial_attempts,
             }
         )
@@ -1040,6 +1043,7 @@ async def append_trials_to_task(
                 "environment": spec.environment,
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
+                "harbor_sha": (harbor_config or {}).get("resolved_sha"),
                 "max_attempts": submission.max_trial_attempts,
             }
         )
