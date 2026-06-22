@@ -77,3 +77,37 @@ async def test_header_omitted_when_snapshot_fails(monkeypatch):
         resp = await client.post("/tasks/sweep")
     assert resp.status_code == 200
     assert "Oddish-Submit-Concurrency" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_update_sweep_rtt_ewma_is_exponential():
+    capacity_headers._sweep_rtt_ewma = None
+    assert capacity_headers._update_sweep_rtt_ewma(2.0) == 2.0
+    # alpha 0.2: 0.2*4 + 0.8*2 = 2.4
+    v = capacity_headers._update_sweep_rtt_ewma(4.0)
+    assert abs(v - 2.4) < 1e-9
+
+
+@pytest.mark.asyncio
+async def test_sweep_rtt_persist_is_throttled(monkeypatch):
+    recorded = []
+
+    async def fake_record(component, payload):
+        recorded.append((component, payload))
+
+    monkeypatch.setattr(
+        "oddish.workers.queue.runtime_status.record_queue_runtime_status", fake_record
+    )
+    clock = {"t": 100.0}
+    monkeypatch.setattr(capacity_headers, "_monotonic", lambda: clock["t"])
+    capacity_headers._sweep_rtt_persisted_at = 0.0
+
+    await capacity_headers._maybe_persist_sweep_rtt(1.0)  # first -> persists
+    await capacity_headers._maybe_persist_sweep_rtt(1.0)  # within interval -> skipped
+    assert len(recorded) == 1
+    assert recorded[0][0] == capacity_headers.SUBMIT_LATENCY_COMPONENT
+    assert recorded[0][1] == {"sweep_rtt_p95_ewma": 1.0}
+
+    clock["t"] += 6.0
+    await capacity_headers._maybe_persist_sweep_rtt(1.0)  # past interval -> persists
+    assert len(recorded) == 2
