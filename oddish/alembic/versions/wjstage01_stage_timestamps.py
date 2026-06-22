@@ -6,7 +6,7 @@ Adds the observability columns for the pre-harbor preamble (design spec §12):
 Additive + idempotent (IF NOT EXISTS), so re-applying on an inherited schema is
 a no-op.
 
-Revision ID: wjstage01_worker_jobs_stage_timestamps
+Revision ID: wjstage01_stage_timestamps
 Revises: r8a9drop_probe_ratio_001
 Create Date: 2026-06-22 00:00:00.000000
 
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "wjstage01_worker_jobs_stage_timestamps"
+revision: str = "wjstage01_stage_timestamps"
 down_revision: Union[str, Sequence[str], None] = "r8a9drop_probe_ratio_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
