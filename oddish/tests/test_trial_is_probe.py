@@ -98,6 +98,7 @@ def test_trial_response_exposes_is_probe():
         error_message=None,
         result=None,
         harbor_config={"mode": "probe"},
+        harbor_sha=None,
         is_probe=True,
         input_tokens=None,
         cache_tokens=None,
