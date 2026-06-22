@@ -87,6 +87,59 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
     return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
 
 
+# --- Configurable Harbor source ----------------------------------------------
+# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
+# both uv.lock files (a test asserts it against oddish/uv.lock).
+HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
+HARBOR_DEFAULT_SHA = "beabbb7a909931850582370e46074f3d8c8b892a"
+
+_HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
+
+
+def parse_harbor_spec(spec: str) -> tuple[str, str]:
+    """Parse a single ``--harbor <spec>`` string into ``(source, ref)``.
+
+    First match wins:
+    - R1 URL form (``git+``/``http://``/``https://``/``ssh://`` or scp
+      ``git@host:org/repo``): source = the URL; ref = the segment after the
+      LAST ``@`` that follows the host, else "" (caller resolves default-branch
+      HEAD).
+    - R2 ``org/repo@ref``: source = ``https://github.com/<org>/<repo>``; ref =
+      after the ``@``.
+    - R3 bare ref (anything else, incl. a bare ``org/repo`` with NO ``@``):
+      source = the locked fork; ref = the whole spec.
+
+    For refs/URLs containing a literal ``@``, use the structured
+    ``oddish.toml [harbor] source/ref`` escape hatch instead (handled upstream),
+    which never reaches this parser.
+    """
+    spec = spec.strip()
+
+    # R1: URL form. Split off a ref only if an '@' appears AFTER the host.
+    if spec.startswith(_HARBOR_URL_PREFIXES):
+        scheme, rest = spec.split("://", 1)
+        if "@" in rest:
+            host_and_path, ref = rest.rsplit("@", 1)
+            return f"{scheme}://{host_and_path}", ref
+        return spec, ""
+    # R1: scp-style git@host:org/repo[@ref]
+    if spec.startswith("git@") and ":" in spec:
+        base, _, after_colon = spec.partition(":")
+        if "@" in after_colon:
+            path, ref = after_colon.rsplit("@", 1)
+            return f"{base}:{path}", ref
+        return spec, ""
+
+    # R2: org/repo@ref  (requires both a '/' before the '@' and an '@').
+    if "@" in spec:
+        left, ref = spec.rsplit("@", 1)
+        if "/" in left and not left.startswith(("refs/", "feature/", "release/")):
+            return f"https://github.com/{left}", ref
+
+    # R3: bare ref on the locked fork (incl. bare org/repo with no '@').
+    return HARBOR_DEFAULT_SOURCE, spec
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
