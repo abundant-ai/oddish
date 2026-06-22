@@ -1,29 +1,6 @@
-"""Apply Alembic to the PR's data-less Supabase preview branch.
-
-A data-less preview branch inherits the parent project's *schema* but none of
-its data -- including an empty ``alembic_version_*`` bookkeeping table. If we
-ran ``alembic upgrade head`` straight away Alembic would read that empty table,
-conclude the branch is at "base", and replay the *entire* migration history
-against a schema that already sits at the parent's head.
-
-That replay is wrong in principle and has bitten us in practice: e.g. an old
-revision's ``CREATE TABLE ... IF NOT EXISTS`` is a no-op against the inherited
-table, but a later ``INSERT`` in the same revision then hits the real,
-already-migrated column layout (the ``ratio_unit`` crash). The historical
-migrations carry ``IF NOT EXISTS`` guards so they *survive* replay, but relying
-on replay at all is the underlying defect.
-
-The fix: before upgrading, copy the parent (production) database's current
-revision into the freshly created branch with ``alembic stamp``. Alembic then
-knows the branch already holds the parent's schema, so ``upgrade head`` applies
-only the revisions this PR adds on top -- no replay. We stamp only when the
-branch was just created; a reused branch already carries correct bookkeeping
-from its first prepare, and a local run (no parent URL, empty DB) legitimately
-wants the from-base build that ``000_initial_schema`` provides.
-
-NOTE: because the branch carries no data, destructive/backfill data migrations
-are not exercised against real rows here; that coverage is deliberately traded
-away. Curated data is loaded afterwards by ``seed_preview_db.py``.
+"""Bootstrap the PR's data-less Supabase preview branch: it inherits the parent's
+schema but an empty ``alembic_version_*``, so stamp each stack to the parent's
+current revision before ``alembic upgrade head`` to apply only this PR's migrations.
 """
 
 import asyncio
