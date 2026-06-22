@@ -753,6 +753,9 @@ async def _handle_harbor_event(
         and hook_event.environment is not None
     ):
         try:
+            # Harbor sandbox file transfer (local dir -> the /probe-harness path
+            # INSIDE the sandbox), not an S3 write -- so the job's S3
+            # authorized_prefix does not apply here.
             await hook_event.environment.upload_dir(
                 source_dir=probe_task_dir, target_dir=PROBE_HARNESS_DIR
             )
@@ -1167,7 +1170,11 @@ async def run_trial_job(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
                 )
 
-        # Mirror to sauron's AWS S3 (best-effort).
+        # Mirror to sauron's AWS S3 (best-effort). This targets sauron's own
+        # observability bucket (settings.sauron_s3_bucket) with its own prefix
+        # scheme -- a distinct scope from the trial-results prefix, so the
+        # job-scoped credential's authorized_prefix intentionally does NOT apply
+        # here (it would refuse every legitimate sauron write).
         if execution.outcome and execution.outcome.job_dir:
             try:
                 from oddish.integrations.sauron import get_sauron_uploader
