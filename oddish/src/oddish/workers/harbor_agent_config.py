@@ -296,12 +296,29 @@ def _claude_code_forces_direct_api(is_probe: bool) -> bool:
     return is_probe or settings.claude_code_force_direct_api
 
 
+def _apply_probe_oddish_creds(
+    agent_config: AgentConfig, probe_env: dict[str, str] | None
+) -> None:
+    """Inject the minted read-only oddish CLI creds into the probe agent env.
+
+    Applied last so it wins over any provider-specific env shaping above. The
+    raw key lives only in process memory + the agent container env; it is never
+    written into harbor_config or anything persisted to S3.
+    """
+    if not probe_env:
+        return
+    env = dict(agent_config.env or {})
+    env.update(probe_env)
+    agent_config.env = env
+
+
 def _build_agent_config(
     *,
     agent: str,
     model: str | None,
     raw_harbor_config: dict[str, Any],
     is_probe: bool = False,
+    probe_oddish_env: dict[str, str] | None = None,
 ) -> AgentConfig:
     """Build Harbor's full AgentConfig, preserving rich per-trial fields."""
     raw_agent_config = raw_harbor_config.get("agent_config")
@@ -387,6 +404,7 @@ def _build_agent_config(
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
+    _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
     return agent_config
 
