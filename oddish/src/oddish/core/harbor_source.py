@@ -1,8 +1,10 @@
-"""Server-side Harbor source resolution, allowlist, and the Phase-A gate.
+"""Server-side Harbor source resolution, allowlist, and variant classification.
 
-Phase A: resolve (source, ref) -> concrete SHA, classify the variant, and
-reject any non-default pin at submit until the execution engines (Phases B/C)
-land. Raises plain exceptions; the FastAPI layer translates them to HTTP 422.
+Resolves a submission's ``(source, ref)`` to a concrete commit SHA, enforces the
+allowlist, and classifies the pin into an execution variant (``default`` ->
+in-process baked Harbor, a registered ``<id>`` -> blessed image, ``ephemeral`` ->
+out-of-process child). Raises plain exceptions; the FastAPI layer translates them
+to HTTP 422.
 """
 
 from __future__ import annotations
@@ -21,9 +23,26 @@ if TYPE_CHECKING:
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# Phase B fills this registry (blessed source@sha -> image variant id). Empty in
-# Phase A, so every non-default pin classifies as "ephemeral".
-HARBOR_VARIANTS: dict[tuple[str, str], str] = {}
+
+@dataclass(frozen=True)
+class HarborVariant:
+    """A blessed Harbor pin that has a dedicated, pre-baked worker image.
+
+    ``variant_id`` is the routing id stored on the trial / worker job and used to
+    select the per-variant Modal Function. ``source`` / ``sha`` identify the exact
+    Harbor commit the variant image baked.
+    """
+
+    variant_id: str
+    source: str
+    sha: str
+
+
+# Blessed source@sha -> image variant. Keyed by ``variant_id``. Empty by default;
+# blessing a pin means adding an entry here and building its image/Function (the
+# Modal side reads this same registry). Any allowlisted pin not registered here
+# runs out-of-process as ``ephemeral``.
+HARBOR_VARIANTS: dict[str, HarborVariant] = {}
 
 
 class HarborSourceError(Exception):
@@ -40,12 +59,22 @@ class ResolvedPin:
     sha: str
 
 
-def _normalize_source(source: str) -> str:
-    """Lowercase + strip a leading ``git+`` so matching/templating is stable."""
+def _strip_git_prefix(source: str) -> str:
+    """Strip a leading ``git+`` so the bare git URL is used everywhere.
+
+    A spec may arrive as ``git+https://…`` (R1). The bare URL is what
+    ``git ls-remote`` wants and what keeps the install requirement
+    ``harbor @ git+<source>@<sha>`` from doubling the prefix.
+    """
     s = source.strip()
     if s.startswith("git+"):
         s = s[len("git+") :]
-    return s.lower()
+    return s
+
+
+def _normalize_source(source: str) -> str:
+    """Lowercase + strip a leading ``git+`` so matching is case/prefix stable."""
+    return _strip_git_prefix(source).lower()
 
 
 def assert_allowed(source: str, *, allowed: str) -> None:
@@ -70,8 +99,10 @@ def resolve_harbor_pin(source: str, ref: str) -> ResolvedPin:
     A 40-hex ``ref`` is treated as already-resolved and short-circuits WITHOUT
     any network I/O (this is the zero-latency default path). Any other ref is
     resolved via ``git ls-remote <source> <ref>``; an empty ``ref`` resolves the
-    remote HEAD.
+    remote HEAD. A leading ``git+`` on *source* is stripped so the stored pin and
+    every downstream install requirement use the bare git URL.
     """
+    source = _strip_git_prefix(source)
     ref = (ref or "").strip()
     if _SHA_RE.match(ref):
         return ResolvedPin(source, ref)
@@ -97,15 +128,19 @@ def resolve_harbor_pin(source: str, ref: str) -> ResolvedPin:
 
 
 def classify_variant(source: str, sha: str) -> str:
-    """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'."""
-    if source == HARBOR_DEFAULT_SOURCE and sha == HARBOR_DEFAULT_SHA:
+    """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'.
+
+    The source is compared NORMALIZED (lowercased, leading ``git+`` stripped) on
+    both sides so ``git+`` / case spellings of the same repo classify alike — the
+    locked default URL is lowercase, and the registry is matched the same way.
+    """
+    norm = _normalize_source(source)
+    if norm == _normalize_source(HARBOR_DEFAULT_SOURCE) and sha == HARBOR_DEFAULT_SHA:
         return "default"
-    # Phase B: when HARBOR_VARIANTS is populated, key the lookup on the
-    # NORMALIZED source (_normalize_source: lowercased, leading ``git+``
-    # stripped) so ``git+``/case variants of the same repo classify alike;
-    # the registry keys must be normalized to match.
-    variant = HARBOR_VARIANTS.get((source, sha))  # empty in Phase A
-    return variant if variant is not None else "ephemeral"
+    for variant in HARBOR_VARIANTS.values():
+        if _normalize_source(variant.source) == norm and variant.sha == sha:
+            return variant.variant_id
+    return "ephemeral"
 
 
 def resolve_and_gate_harbor(
