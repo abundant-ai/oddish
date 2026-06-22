@@ -25,7 +25,7 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
     from api.services.cc_chat.daytona_client import FakeDaytonaClient
     from api.services.cc_chat.orchestrator import ChatOrchestrator
     from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
-    from models import APIKeyModel, APIKeyScope, ChatSession, generate_id
+    from models import ChatSession
     from tests.cc_chat.conftest import ORG
 
     def factory():
@@ -37,27 +37,25 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
 
     minted: dict[str, object] = {}
 
-    def fake_create_api_key(
-        org_id, name, scope=APIKeyScope.FULL, created_by_user_id=None,
-        expires_at=None, is_internal=False,
-    ):
+    async def fake_mint_internal_read_key(session, *, org_id, name, ttl_minutes):
+        from models import APIKeyModel, APIKeyScope, generate_id
         model = APIKeyModel(
             id=generate_id(),
             org_id=org_id,
             name=name,
             key_prefix="ok_testkey",
             key_hash=f"hash_{generate_id()}",
-            scope=scope,
-            created_by_user_id=None,  # no users seeded in this harness
-            expires_at=expires_at,
-            is_internal=is_internal,
+            scope=APIKeyScope.READ,
+            created_by_user_id=None,
+            expires_at=None,
+            is_internal=True,
         )
+        session.add(model)
+        await session.commit()
         minted["model"] = model
-        minted["scope"] = scope
-        minted["is_internal"] = is_internal
-        return model, "ok_rawsecretkey"
+        return model.id, "ok_rawsecretkey"
 
-    monkeypatch.setattr(orchestrator_module, "create_api_key", fake_create_api_key)
+    monkeypatch.setattr(orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key)
 
     fake = FakeDaytonaClient()
     orch = ChatOrchestrator(
@@ -76,9 +74,8 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
         db_session_factory=factory,
     )
 
-    # (a) a READ, internal key was minted
-    assert minted["scope"] == APIKeyScope.READ
-    assert minted["is_internal"] is True
+    # (a) a key was minted
+    assert "model" in minted
 
     # (b) the provisioner env carries the query credentials
     rec = next(iter(fake.sandboxes.values()))
@@ -106,31 +103,29 @@ def _factory(db):
     return factory
 
 
-def _patch_create_api_key(monkeypatch, minted):
-    """Install a fake create_api_key that records the minted model and returns a
-    fresh APIKeyModel + raw secret. Mirrors the existing global-scope test."""
+def _patch_mint_key(monkeypatch, minted):
+    """Patch mint_internal_read_key to record the minted model and return a raw key."""
     from api.services.cc_chat import orchestrator as orchestrator_module
     from models import APIKeyModel, APIKeyScope, generate_id
 
-    def fake_create_api_key(
-        org_id, name, scope=APIKeyScope.FULL, created_by_user_id=None,
-        expires_at=None, is_internal=False,
-    ):
+    async def fake_mint_internal_read_key(session, *, org_id, name, ttl_minutes):
         model = APIKeyModel(
             id=generate_id(),
             org_id=org_id,
             name=name,
             key_prefix="ok_testkey",
             key_hash=f"hash_{generate_id()}",
-            scope=scope,
+            scope=APIKeyScope.READ,
             created_by_user_id=None,
-            expires_at=expires_at,
-            is_internal=is_internal,
+            expires_at=None,
+            is_internal=True,
         )
+        session.add(model)
+        await session.commit()
         minted["model"] = model
-        return model, "ok_rawsecretkey"
+        return model.id, "ok_rawsecretkey"
 
-    monkeypatch.setattr(orchestrator_module, "create_api_key", fake_create_api_key)
+    monkeypatch.setattr(orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key)
 
 
 @pytest.mark.asyncio
@@ -142,7 +137,7 @@ async def test_global_scope_close_revokes_key(db, monkeypatch):
     from tests.cc_chat.conftest import ORG
 
     minted: dict[str, object] = {}
-    _patch_create_api_key(monkeypatch, minted)
+    _patch_mint_key(monkeypatch, minted)
 
     orch = ChatOrchestrator(
         daytona=FakeDaytonaClient(),
@@ -181,7 +176,7 @@ async def test_global_scope_resume_revokes_prior_key(db, monkeypatch):
     from tests.cc_chat.conftest import ORG
 
     minted: dict[str, object] = {}
-    _patch_create_api_key(monkeypatch, minted)
+    _patch_mint_key(monkeypatch, minted)
 
     class _Blob:
         def __init__(self): self.store = {}
@@ -206,8 +201,6 @@ async def test_global_scope_resume_revokes_prior_key(db, monkeypatch):
     )
     key_a_id = minted["model"].id
 
-    # Detach in-process, set a claude_session_id, and stage an archive so resume
-    # provisions and restores successfully (reaching the re-point step).
     orch._sandboxes.pop(session_id, None)
     async with db() as s:
         row = await s.get(ChatSession, session_id)
@@ -226,63 +219,55 @@ async def test_global_scope_resume_revokes_prior_key(db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_global_scope_empty_base_url_fast_fails(db):
+async def test_empty_base_url_fast_fails(db):
+    """All scopes should raise RuntimeError when public_api_base_url is empty."""
     from api.services.cc_chat.daytona_client import FakeDaytonaClient
     from api.services.cc_chat.orchestrator import ChatOrchestrator
     from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
     from tests.cc_chat.conftest import ORG
 
-    orch = ChatOrchestrator(
-        daytona=FakeDaytonaClient(),
-        runtime=_FakeRuntime(),
-        transcript_buffer=SessionTranscriptBuffer(),
-        anthropic_api_key="test",
-        public_api_base_url="",
-    )
-
-    with pytest.raises(RuntimeError):
-        await orch.start(
-            org_id=ORG, user_id=None,
-            scope_kind="global", scope_id=ORG,
-            db_session_factory=_factory(db),
+    for scope in ["global", "experiment", "task", "task_probes"]:
+        orch = ChatOrchestrator(
+            daytona=FakeDaytonaClient(),
+            runtime=_FakeRuntime(),
+            transcript_buffer=SessionTranscriptBuffer(),
+            anthropic_api_key="test",
+            public_api_base_url="",
         )
+
+        with pytest.raises(RuntimeError):
+            await orch.start(
+                org_id=ORG, user_id=None,
+                scope_kind=scope, scope_id=ORG,
+                db_session_factory=_factory(db),
+            )
 
 
 @pytest.mark.asyncio
-async def test_non_global_scope_mints_no_key(db, monkeypatch):
-    from api.services.cc_chat import orchestrator as orchestrator_module
+async def test_all_scopes_mint_key_and_upload_cli(db, monkeypatch):
+    """Every scope now gets creds injected + the CLI uploaded."""
     from api.services.cc_chat.daytona_client import FakeDaytonaClient
     from api.services.cc_chat.orchestrator import ChatOrchestrator
     from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
+    from tests.cc_chat.conftest import ORG
 
-    called = {"create_api_key": False}
+    minted: dict[str, object] = {}
+    _patch_mint_key(monkeypatch, minted)
 
-    def boom_create_api_key(*args, **kwargs):
-        called["create_api_key"] = True
-        raise AssertionError("create_api_key must not be called for non-global scope")
-
-    monkeypatch.setattr(orchestrator_module, "create_api_key", boom_create_api_key)
-
-    class _Blob:
-        async def list_keys(self, prefix): return []
-        async def download_bytes(self, key): return b""
-
-    fake = FakeDaytonaClient()
-    orch = ChatOrchestrator(
-        daytona=fake,
-        runtime=_FakeRuntime(),
-        transcript_buffer=SessionTranscriptBuffer(),
-        anthropic_api_key="test",
-        public_api_base_url="https://api.oddish.example",
-        blob_store=_Blob(),
-    )
-
-    await orch.start(
-        org_id="org_cc_test", user_id=None,
-        scope_kind="experiment", scope_id="exp_1",
-        db_session_factory=_factory(db),
-    )
-
-    assert called["create_api_key"] is False
-    rec = next(iter(fake.sandboxes.values()))
-    assert not any(path.endswith("oddish-query") for path in rec["files"].keys())
+    for scope in ["experiment", "task", "task_probes", "global"]:
+        fake = FakeDaytonaClient()
+        orch = ChatOrchestrator(
+            daytona=fake,
+            runtime=_FakeRuntime(),
+            transcript_buffer=SessionTranscriptBuffer(),
+            anthropic_api_key="test",
+            public_api_base_url="https://api.oddish.example",
+        )
+        await orch.start(
+            org_id=ORG, user_id=None,
+            scope_kind=scope, scope_id="sid",
+            db_session_factory=_factory(db),
+        )
+        rec = next(iter(fake.sandboxes.values()))
+        assert rec["env"]["ODDISH_API_KEY"] == "ok_rawsecretkey", f"missing creds for {scope}"
+        assert any(p.endswith("oddish-query") for p in rec["files"]), f"missing CLI for {scope}"
