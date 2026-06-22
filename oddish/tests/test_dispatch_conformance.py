@@ -8,22 +8,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
 
+import types
+
 from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
+from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
+
+
+def _hermetic_modal_dispatcher() -> ModalDispatcher:
+    """A ModalDispatcher wired to fakes so it runs without the Modal SDK."""
+
+    async def _spawn_aio(*, queue_key: str):
+        return None
+
+    spawn_function = types.SimpleNamespace(
+        spawn=types.SimpleNamespace(aio=_spawn_aio)
+    )
+
+    async def _cancel_fn(fc_ids: list[str]) -> int:
+        return len(fc_ids)
+
+    return ModalDispatcher(spawn_function=spawn_function, cancel_fn=_cancel_fn)
 
 
 def _noop_dispatchers() -> list[Dispatcher]:
     """Dispatchers that can spawn hermetically (no real infra).
 
     ``InProcessDispatcher`` is given a no-op job runner so ``spawn`` creates
-    tasks that complete immediately without touching the database.
+    tasks that complete immediately without touching the database; the Modal
+    dispatcher is wired to fakes (the shared conformance suite runs against
+    every backend — the fakes keep it hermetic, per spec §10).
     """
 
     async def _noop_run_job(queue_key: str, **_kwargs) -> bool:
         return False
 
-    return [FakeDispatcher(), InProcessDispatcher(run_job=_noop_run_job)]
+    return [
+        FakeDispatcher(),
+        InProcessDispatcher(run_job=_noop_run_job),
+        _hermetic_modal_dispatcher(),
+    ]
 
 
 @pytest.mark.parametrize("dispatcher", _noop_dispatchers(), ids=lambda d: d.name)
