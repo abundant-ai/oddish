@@ -19,9 +19,11 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 
 from oddish.workers import harbor_ephemeral
+from oddish.workers._harbor_entry import _build_job_config
 from oddish.workers.harbor_ephemeral import (
     HarborOverrideImportError,
     _bridge_event,
+    _build_payload,
     _read_outcome,
     run_ephemeral_harbor_trial,
 )
@@ -104,6 +106,49 @@ def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     )
     assert outcome.exception_type == "HarborOverrideImportError"
     assert outcome.error == "boom"
+
+
+# --------------------------------------------------------------------------- #
+# extra_agent_env (minted probe creds) threads to the child's agent
+# --------------------------------------------------------------------------- #
+
+
+def test_build_payload_carries_extra_agent_env():
+    from pathlib import Path
+
+    from harbor.models.environment_type import EnvironmentType
+
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="claude-code",
+        model="claude-sonnet-4-5",
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config={},
+        is_probe=True,
+        extra_agent_env={"ODDISH_API_KEY": "secret-mint"},
+    )
+    assert payload["extra_agent_env"] == {"ODDISH_API_KEY": "secret-mint"}
+
+
+def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    config = _build_job_config(
+        {
+            "task_path": str(task_dir),
+            "jobs_dir": str(tmp_path / "jobs"),
+            "agent": "claude-code",
+            "model": "claude-sonnet-4-5",
+            "environment": "docker",
+            "environment_config": {},
+            "verifier": {},
+            "artifacts": [],
+            "extra_agent_env": {"ODDISH_API_KEY": "secret-mint"},
+        }
+    )
+    assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
 
 
 def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):
