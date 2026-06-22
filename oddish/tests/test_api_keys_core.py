@@ -1,4 +1,3 @@
-import pytest
 from datetime import timedelta
 from oddish.db.models import APIKeyModel, APIKeyScope, utcnow
 from oddish.core.api_keys import (

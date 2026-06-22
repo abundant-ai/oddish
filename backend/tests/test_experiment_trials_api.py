@@ -209,3 +209,39 @@ async def test_experiment_trials_returns_org_scoped_rows(client, seed_experiment
 async def test_experiment_trials_requires_auth(client):
     resp = await client.get("/experiments/exp_x/trials")
     assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_experiment_trials_does_not_leak_across_orgs(
+    client, seed_experiment_with_trials
+):
+    """Org B's key must not see org A's experiment trials."""
+    exp_id, _org_a_key = seed_experiment_with_trials
+
+    suffix = uuid.uuid4().hex[:8]
+    org_b_id = f"org_etb_{suffix}"
+    api_key_model = None
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(
+                id=org_b_id, name=f"Other Org {suffix}", slug=f"other-org-{suffix}"
+            )
+        )
+        api_key_model, org_b_key = create_api_key(
+            org_id=org_b_id, name=f"other-key-{suffix}", scope=APIKeyScope.READ
+        )
+        session.add(api_key_model)
+
+    try:
+        resp = await client.get(
+            f"/experiments/{exp_id}/trials",
+            headers={"Authorization": f"Bearer {org_b_key}"},
+        )
+        assert resp.status_code == 200
+        # org B is authenticated but owns none of org A's experiment trials.
+        assert resp.json() == []
+    finally:
+        await _cleanup(
+            api_key_ids=[api_key_model.id] if api_key_model else None,
+            org_ids=[org_b_id],
+        )

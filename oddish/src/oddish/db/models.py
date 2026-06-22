@@ -1189,7 +1189,8 @@ class APIKeyModel(TimestampedMixin, Base):
 #
 # Backend-only auth models (organizations / users) register
 # themselves from ``backend/models.py`` so this module stays standalone.
-# APIKeyModel is now registered here since it lives in oddish.
+# ``APIKeyModel`` lives in this module, but its soft-delete registration
+# still happens from ``backend/models.py`` (alongside the other auth models).
 class ProbePresetModel(TimestampedMixin, Base):
     """Operator-directive presets for probe trials.
 
