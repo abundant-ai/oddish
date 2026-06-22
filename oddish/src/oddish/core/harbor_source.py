@@ -127,6 +127,53 @@ def resolve_harbor_pin(source: str, ref: str) -> ResolvedPin:
     return ResolvedPin(source, sha)
 
 
+def harbor_git_requirement(source: str, sha: str) -> str:
+    """PEP 508 direct reference for a Harbor git pin: ``harbor @ git+<src>@<sha>``.
+
+    The single source of truth for the override install requirement, shared by
+    the ephemeral child's ``uv run --with``, the blessed-variant image build, and
+    the in-sandbox agent pin. A leading ``git+`` on *source* is stripped first so
+    the result never doubles the prefix.
+    """
+    return f"harbor @ git+{_strip_git_prefix(source)}@{sha}"
+
+
+def harbor_variant_function_name(variant_id: str) -> str:
+    """Modal Function name for a blessed variant's single-job worker."""
+    return f"process_single_job__{variant_id}"
+
+
+# A fixed python program (no interpolation -> no shell-injection surface) that
+# repoints the ``[tool.uv.sources]`` harbor inline-table at ``argv[1]@argv[2]``
+# for every pyproject path in ``argv[3:]``. Used in a blessed-variant image build
+# to rewrite the harbor pin BEFORE ``uv_sync`` so the whole dependency set
+# resolves against the variant's commit.
+_HARBOR_SOURCE_REWRITE_PY = (
+    "import re,sys\n"
+    "src,sha=sys.argv[1],sys.argv[2]\n"
+    "for p in sys.argv[3:]:\n"
+    '    s=open(p).read()\n'
+    '    s=re.sub(r"harbor = \\{ git = [^}]*\\}", '
+    '"harbor = { git = \\""+src+"\\", rev = \\""+sha+"\\" }", s)\n'
+    '    open(p,"w").write(s)'
+)
+
+
+def harbor_uv_source_rewrite_command(
+    source: str, sha: str, *pyproject_paths: str
+) -> str:
+    """Shell command repointing the harbor ``[tool.uv.sources]`` pin in-place.
+
+    Emits ``python3 -c '<fixed program>' <source> <sha> <paths...>`` (python is
+    always present in the image; this is portable where ``sed -i`` is not). The
+    program is fixed and the dynamic values ride as argv, so there's no
+    interpolation/injection surface.
+    """
+    src = _strip_git_prefix(source)
+    args = " ".join([src, sha, *pyproject_paths])
+    return f"python3 -c '{_HARBOR_SOURCE_REWRITE_PY}' {args}"
+
+
 def classify_variant(source: str, sha: str) -> str:
     """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'.
 
