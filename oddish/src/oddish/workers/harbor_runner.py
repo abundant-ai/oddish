@@ -122,9 +122,13 @@ async def run_harbor_trial_async(
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> HarborOutcome:
     """
     Execute a Harbor trial using Harbor's Python API with lifecycle hooks.
+
+    ``extra_agent_env`` is merged into the built AgentConfig env (probe trials
+    use this for the minted read-only oddish CLI creds). It is never persisted.
 
     Returns a HarborOutcome with reward, error, tokens, cost, timing,
     trajectory presence, and artifact paths.
@@ -203,6 +207,7 @@ async def run_harbor_trial_async(
             model=model,
             raw_harbor_config=raw,
             is_probe=is_probe,
+            probe_oddish_env=extra_agent_env,
         )
 
         # Stage the org's shared skills (+ global seeds) into a root under the
@@ -359,6 +364,7 @@ def run_harbor_trial(
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> HarborOutcome:
     """Synchronous wrapper around run_harbor_trial_async."""
     try:
@@ -375,6 +381,7 @@ def run_harbor_trial(
                 trial_id=trial_id,
                 harbor_config=harbor_config,
                 org_id=org_id,
+                extra_agent_env=extra_agent_env,
             )
         )
     raise RuntimeError("run_harbor_trial cannot be called from an active event loop.")

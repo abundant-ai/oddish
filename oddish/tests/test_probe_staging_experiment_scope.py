@@ -1,67 +1,47 @@
 import pytest
 
 from oddish.worker import probe_staging
-
-
-class _Trial:
-    def __init__(self, id, task_id, experiment_id):
-        self.id = id
-        self.task_id = task_id
-        self.experiment_id = experiment_id
-        self.harbor_config = {}
-
-
-class _FakeStorage:
-    def __init__(self):
-        self.prefixes = []
-
-    async def list_keys(self, prefix):
-        self.prefixes.append(prefix)
-        return []  # no files -> nothing staged, but prefixes are recorded
-
-    async def download_bytes(self, key):  # pragma: no cover
-        return b""
-
-
-def _fake_loader(current, trials):
-    async def _loader(current_trial_id):
-        return current, trials
-
-    return _loader
+from oddish.worker.probe_overlay import QUERY_CLI_CONTAINER_PATH
 
 
 @pytest.mark.asyncio
-async def test_experiment_scope_uses_per_trial_task_prefix(tmp_path, monkeypatch):
-    # Two trials in the same experiment but DIFFERENT tasks.
-    current = _Trial("cur", "task-A", "exp-1")
-    other = _Trial("sib", "task-B", "exp-1")
+async def test_apply_overlay_stages_query_cli(tmp_path, monkeypatch):
+    """apply_probe_overlay must stage the oddish-query CLI in the work dir."""
+    # Minimal instruction.md so apply_probe_overlay can write the overlay.
+    (tmp_path / "instruction.md").write_text("original task")
 
-    monkeypatch.setattr(
-        probe_staging, "_load_experiment_trials", _fake_loader(current, [current, other])
+    # Stub out harbor source staging (not under test here).
+    monkeypatch.setattr(probe_staging, "stage_harbor_source", lambda d: True)
+
+    await probe_staging.apply_probe_overlay(
+        tmp_path,
+        task_id="task-A",
+        trial_id="trial-1",
+        extra_instructions="do x",
+        probe_scope="experiment",
     )
-    storage = _FakeStorage()
-    monkeypatch.setattr(probe_staging, "get_storage_client", lambda: storage)
 
-    await probe_staging.stage_related_trial_logs(
-        tmp_path, "task-A", "cur", probe_scope="experiment"
-    )
-
-    # The sibling is staged under its OWN task_id, not the host task-A.
-    assert "tasks/task-B/trials/sib/" in storage.prefixes
-    # The current trial is excluded from its own related set.
-    assert "tasks/task-A/trials/cur/" not in storage.prefixes
+    cli = tmp_path / "oddish-query"
+    assert cli.exists(), "oddish-query must be staged in the work dir"
+    assert cli.read_text().startswith("#!/usr/bin/env node")
 
 
 @pytest.mark.asyncio
-async def test_experiment_scope_no_trials_returns_false(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        probe_staging, "_load_experiment_trials", _fake_loader(None, [])
-    )
-    storage = _FakeStorage()
-    monkeypatch.setattr(probe_staging, "get_storage_client", lambda: storage)
+async def test_apply_overlay_instruction_documents_cli(tmp_path, monkeypatch):
+    """The rendered instruction.md must document the CLI and not mention related trial logs."""
+    (tmp_path / "instruction.md").write_text("original task")
+    monkeypatch.setattr(probe_staging, "stage_harbor_source", lambda d: True)
 
-    staged = await probe_staging.stage_related_trial_logs(
-        tmp_path, "task-A", "cur", probe_scope="experiment"
+    await probe_staging.apply_probe_overlay(
+        tmp_path,
+        task_id="task-A",
+        trial_id="trial-1",
+        extra_instructions="do x",
     )
-    assert staged is False
-    assert storage.prefixes == []
+
+    instr = (tmp_path / "instruction.md").read_text()
+    assert "oddish-query" in instr
+    assert f"node {QUERY_CLI_CONTAINER_PATH}" in instr
+    assert "RELATED TRIAL LOGS" not in instr
+    # related_trials/ directory must NOT be staged
+    assert not (tmp_path / "related_trials").exists()
