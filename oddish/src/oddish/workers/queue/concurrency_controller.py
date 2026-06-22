@@ -5,8 +5,8 @@ concurrency limit and writes it to ``model_concurrency_advisory``; the dispatche
 reads the advisory limit when it is fresh and otherwise falls back to the static
 ``settings.get_model_concurrency`` value. The static config stays the hard
 ceiling and the fallback -- the controller only ever writes the advisory table
-(the senpai guard: never mutate a limit you must refresh), and a stale/missing/
-crashed controller decays to today's static behavior within ``STALE_TTL_SECONDS``.
+(it never mutates the hard limit it must refresh), and a stale/missing/crashed
+controller decays to today's static behavior within ``STALE_TTL_SECONDS``.
 
 Two cooperating laws, both pure and unit-tested here:
 
@@ -71,7 +71,7 @@ CEILING_WINDOW_MINUTES = DEFAULT_CALIBRATION_WINDOW_MINUTES
 # The feedback throttle signal is "recent trials": a short window.
 THROTTLE_WINDOW_MINUTES = 60
 # Advisory is trusted only within 3x the 240s reconcile cadence; older rows decay
-# to the static limit (senpai guard).
+# to the static limit (never trust a stale advisory).
 STALE_TTL_SECONDS = 720
 
 CONCURRENCY_CONTROLLER_COMPONENT = "concurrency_controller"
@@ -363,7 +363,7 @@ async def get_advisory_limits(
     fresh_within: float = STALE_TTL_SECONDS,
     global_max: int = GLOBAL_MAX,
 ) -> dict[str, int]:
-    """Read fresh advisory limits as ``{queue_key: limit}`` (senpai guard).
+    """Read fresh advisory limits as ``{queue_key: limit}`` (decay-to-static).
 
     Only rows updated within ``fresh_within`` seconds are returned; stale/missing
     rows are omitted so the dispatcher decays to the static limit. Each value is
