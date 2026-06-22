@@ -76,7 +76,8 @@ def resolve_harbor_pin(source: str, ref: str) -> ResolvedPin:
     if _SHA_RE.match(ref):
         return ResolvedPin(source, ref)
 
-    cmd = ["git", "ls-remote", source] + ([ref] if ref else ["HEAD"])
+    # ``--`` terminates options so a '-'-prefixed source can't be read as a flag.
+    cmd = ["git", "ls-remote", "--", source] + ([ref] if ref else ["HEAD"])
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -99,6 +100,10 @@ def classify_variant(source: str, sha: str) -> str:
     """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'."""
     if source == HARBOR_DEFAULT_SOURCE and sha == HARBOR_DEFAULT_SHA:
         return "default"
+    # Phase B: when HARBOR_VARIANTS is populated, key the lookup on the
+    # NORMALIZED source (_normalize_source: lowercased, leading ``git+``
+    # stripped) so ``git+``/case variants of the same repo classify alike;
+    # the registry keys must be normalized to match.
     variant = HARBOR_VARIANTS.get((source, sha))  # empty in Phase A
     return variant if variant is not None else "ephemeral"
 

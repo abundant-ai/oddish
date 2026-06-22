@@ -2640,9 +2640,7 @@ async def create_task_sweep_core(
         stamped_harbor, _variant = resolve_and_gate_harbor(
             submission.harbor, settings=settings
         )
-    except HarborOverrideDisabledError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except HarborSourceError as exc:
+    except (HarborOverrideDisabledError, HarborSourceError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     submission = submission.model_copy(update={"harbor": stamped_harbor})
 
