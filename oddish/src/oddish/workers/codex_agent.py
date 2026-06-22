@@ -129,6 +129,42 @@ class AzureCompatibleCodex(OddishCodex):
     provider that disables websockets so it uses the HTTP Responses stream.
     """
 
+    @classmethod
+    def required_outbound_domains(
+        cls,
+        model_name: str | None = None,
+        kwargs: dict | None = None,
+    ) -> list[str]:
+        """Egress domains for Harbor's Modal firewall allowlist.
+
+        Harbor builds the per-trial Modal egress allowlist from this hook. The
+        stock Codex allowlist only covers ``api.openai.com``/``ab.chatgpt.com``,
+        but this variant points Codex at Oddish's Azure OpenAI endpoint -- so
+        without the Azure host every model request is firewalled and the agent
+        times out with zero tokens. Allowlist whichever endpoint the trial
+        will dial: the per-trial ``OPENAI_BASE_URL`` (matching Harbor's base
+        Codex hook) and the configured Azure endpoint, plus the public OpenAI
+        defaults.
+        """
+        from harbor.environments.modal_network import normalize_domain_or_url
+
+        domains = {"api.openai.com", "ab.chatgpt.com"}
+        candidates: list[str | None] = []
+        extra_env = (kwargs or {}).get("extra_env")
+        if isinstance(extra_env, dict):
+            candidates.append(extra_env.get("OPENAI_BASE_URL"))
+        try:
+            from oddish.config import settings
+
+            candidates.append(settings.azure_openai_endpoint)
+        except Exception:
+            pass
+        for candidate in candidates:
+            host = normalize_domain_or_url(candidate)
+            if host:
+                domains.add(host)
+        return sorted(domains)
+
     def _azure_provider_config_command(self) -> str:
         base_url = self._get_env("OPENAI_BASE_URL")
         if not base_url:
