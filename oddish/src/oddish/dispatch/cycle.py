@@ -91,6 +91,7 @@ async def run_dispatch_cycle(
     max_workers: int,
     concurrency_for: Callable[[str], int],
     admit: AdmissionCheck = admit_all,
+    on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
 ) -> DispatchCycleResult:
@@ -98,6 +99,9 @@ async def run_dispatch_cycle(
 
     Pure scheduling lives here; the ``Dispatcher`` only fans out the admitted
     plan. Every still-waiting queue_key gets a named reason in ``why_waiting``.
+    ``on_stage(admitted, why_waiting)`` is an optional hook (the host wires it to
+    ``stamp_dispatch_stage``) that records the §12 per-stage observability;
+    omitted in pure/unit contexts so the cycle stays DB-free.
     """
     queue_keys = tuple(await _discover())
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
@@ -132,6 +136,9 @@ async def run_dispatch_cycle(
             why_waiting[queue_key] = f"spawn cap reached (max {max_workers})"
 
     handles = list(await dispatcher.spawn(spawn_plan=admitted))
+
+    if on_stage is not None:
+        await on_stage(admitted, why_waiting)
 
     return DispatchCycleResult(
         queue_keys=queue_keys,
@@ -202,6 +209,7 @@ async def run_dispatch_loop(
     max_workers: int,
     concurrency_for: Callable[[str], int],
     admit: AdmissionCheck = admit_all,
+    on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     fallback_interval: float = 20.0,
     _stop: Callable[[], bool] = lambda: False,
 ) -> None:
@@ -213,5 +221,6 @@ async def run_dispatch_loop(
             max_workers=max_workers,
             concurrency_for=concurrency_for,
             admit=admit,
+            on_stage=on_stage,
         )
         await trigger.wait()

@@ -732,6 +732,7 @@ async def _handle_harbor_event(
                     .values(
                         provider=hook_event.environment_provider,
                         external_id=hook_event.environment_external_id,
+                        sandbox_creating_at=utcnow(),
                     )
                 )
 

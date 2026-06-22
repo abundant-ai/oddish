@@ -32,7 +32,52 @@ __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
     "get_worker_job_org_queue_counts",
+    "stamp_dispatch_stage",
 ]
+
+
+async def stamp_dispatch_stage(
+    spawned_keys: list[str],
+    why_waiting: dict[str, str],
+) -> None:
+    """Record per-queue dispatch observability on waiting ``worker_jobs`` rows.
+
+    * ``spawned_at = NOW()`` for queue_keys we just dispatched a worker for
+      (only where still unset, so a re-spawn never overwrites the first), and
+      clears any stale waiting-reason.
+    * ``admission_reason`` for queue_keys still waiting (the §12 why-waiting
+      field), so every Stage 2-5 wait has a named, queryable reason.
+
+    Best-effort telemetry: callers run it after ``Dispatcher.spawn`` and do not
+    depend on its result.
+    """
+    pool = await get_pool()
+
+    deduped = sorted(set(spawned_keys))
+    if deduped:
+        await pool.execute(
+            """
+            UPDATE worker_jobs
+            SET    spawned_at = NOW(),
+                   admission_reason = NULL
+            WHERE  queue_key = ANY($1)
+              AND  status::text IN ('QUEUED', 'RETRYING')
+              AND  spawned_at IS NULL
+            """,
+            deduped,
+        )
+
+    for queue_key, reason in why_waiting.items():
+        await pool.execute(
+            """
+            UPDATE worker_jobs
+            SET    admission_reason = $2
+            WHERE  queue_key = $1
+              AND  status::text IN ('QUEUED', 'RETRYING')
+            """,
+            queue_key,
+            reason,
+        )
 
 
 async def discover_active_worker_job_queue_keys() -> tuple[str, ...]:

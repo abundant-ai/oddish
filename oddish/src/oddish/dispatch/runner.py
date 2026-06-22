@@ -26,6 +26,7 @@ from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.backends.k8s import K8sJobDispatcher
 from oddish.dispatch.cycle import run_dispatch_cycle, run_dispatch_loop
 from oddish.dispatch.ports import Dispatcher
+from oddish.workers.queue.worker_job_dispatcher import stamp_dispatch_stage
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ async def run_once(env: Mapping[str, str] = os.environ):
         dispatcher,
         max_workers=_max_workers(env),
         concurrency_for=settings.get_model_concurrency,
+        on_stage=stamp_dispatch_stage,
     )
 
 
@@ -103,6 +105,7 @@ async def run_forever(env: Mapping[str, str] = os.environ) -> None:
         dispatcher,
         max_workers=_max_workers(env),
         concurrency_for=settings.get_model_concurrency,
+        on_stage=stamp_dispatch_stage,
         fallback_interval=float(env.get("ODDISH_DISPATCH_FALLBACK_SECONDS", "20")),
     )
 
