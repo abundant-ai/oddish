@@ -838,6 +838,19 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+
+    # Dynamic per-model concurrency controller (default OFF; see
+    # workers.queue.concurrency_controller). When enabled, the reconciler
+    # recomputes a per-queue advisory limit each cycle and the dispatcher reads
+    # it (decaying to the static limit when stale). Off => today's behavior.
+    dynamic_model_concurrency: bool = False
+    # Feed-forward provider rate-limit config: a quota-BUCKET table keyed by
+    # bucket_id (rpm / tpm / headroom — the published provider limits) plus a
+    # MANY-to-one queue_key -> bucket_id map. Operator-owned JSON via
+    # ODDISH_PROVIDER_RATE_LIMITS / ODDISH_QUEUE_KEY_BUCKETS; the controller
+    # joins queue_key -> bucket to derive each queue's provider-limit ceiling.
+    provider_rate_limits: dict[str, dict] = Field(default_factory=dict)
+    queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -984,6 +997,34 @@ class Settings(BaseSettings):
                 normalized[queue_key] = int(value)
             self.model_concurrency_overrides = normalized
 
+        raw_buckets = os.getenv("ODDISH_PROVIDER_RATE_LIMITS")
+        if raw_buckets:
+            try:
+                parsed_buckets = json.loads(raw_buckets)
+            except Exception as exc:
+                raise ValueError(
+                    "ODDISH_PROVIDER_RATE_LIMITS must be valid JSON"
+                ) from exc
+            if not isinstance(parsed_buckets, dict):
+                raise ValueError("ODDISH_PROVIDER_RATE_LIMITS must be a JSON object")
+            self.provider_rate_limits = {
+                str(bucket_id): dict(limits)
+                for bucket_id, limits in parsed_buckets.items()
+            }
+
+        raw_map = os.getenv("ODDISH_QUEUE_KEY_BUCKETS")
+        if raw_map:
+            try:
+                parsed_map = json.loads(raw_map)
+            except Exception as exc:
+                raise ValueError("ODDISH_QUEUE_KEY_BUCKETS must be valid JSON") from exc
+            if not isinstance(parsed_map, dict):
+                raise ValueError("ODDISH_QUEUE_KEY_BUCKETS must be a JSON object")
+            self.queue_key_buckets = {
+                self.normalize_queue_key(str(key)): str(bucket_id)
+                for key, bucket_id in parsed_map.items()
+            }
+
         self.azure_openai_deployments = self._normalize_azure_openai_deployments(
             self.azure_openai_deployments
         )
@@ -1125,6 +1166,19 @@ class Settings(BaseSettings):
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
+
+    def get_provider_rate_limit(self, queue_key: str) -> dict | None:
+        """Return the provider rate-limit bucket for ``queue_key``, or ``None``.
+
+        Joins the many-to-one ``queue_key -> bucket_id`` map against the
+        ``provider_rate_limits`` bucket table; ``None`` when the queue is not
+        mapped (the controller then falls back to a static-derived ceiling).
+        """
+        normalized = self.normalize_queue_key(queue_key)
+        bucket_id = self.queue_key_buckets.get(normalized)
+        if bucket_id is None:
+            return None
+        return self.provider_rate_limits.get(bucket_id)
 
     def get_known_queue_keys(self) -> set[str]:
         keys = {
