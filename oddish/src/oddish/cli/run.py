@@ -165,6 +165,17 @@ def run(
             help="Model to use (optional)",
         ),
     ] = None,
+    harbor: Annotated[
+        Optional[str],
+        typer.Option(
+            "--harbor",
+            help=(
+                "Override Harbor source/ref for this run, e.g. 'main', "
+                "'v0.13.1', a 40-hex SHA, 'org/repo@ref', or a git URL@ref. "
+                "Default: the locked fork commit. (env: ODDISH_HARBOR)"
+            ),
+        ),
+    ] = None,
     n_trials: Annotated[
         int,
         typer.Option(
@@ -616,6 +627,20 @@ def run(
             }
         ]
         harbor_config = None
+
+    # Resolve the Harbor source/ref override (CLI --harbor / env ODDISH_HARBOR)
+    # with layer-atomic precedence and merge it into the harbor passthrough.
+    from oddish.config import resolve_harbor_layers
+    from oddish.config import settings as _settings
+
+    _harbor_manifest = (
+        None  # Phase A: oddish.toml [harbor] read is wired in a follow-up.
+    )
+    _src, _ref = resolve_harbor_layers(
+        flag=harbor, env=_settings.harbor, manifest=_harbor_manifest
+    )
+    if (harbor and harbor.strip()) or _settings.harbor:
+        harbor_config = {**(harbor_config or {}), "source": _src, "ref": _ref}
 
     # Determine task sources using Harbor's dataset models
     task_paths: list[Path] = []
