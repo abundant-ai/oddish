@@ -1,0 +1,34 @@
+# RBAC for the oddish dispatcher: it creates / inspects / deletes worker Jobs
+# (K8sJobDispatcher) in its namespace. Apply before the CronJob.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oddish-dispatcher
+  namespace: oddish
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oddish-dispatcher
+  namespace: oddish
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oddish-dispatcher
+  namespace: oddish
+subjects:
+  - kind: ServiceAccount
+    name: oddish-dispatcher
+    namespace: oddish
+roleRef:
+  kind: Role
+  name: oddish-dispatcher
+  apiGroup: rbac.authorization.k8s.io
