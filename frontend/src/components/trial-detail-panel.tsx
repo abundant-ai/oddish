@@ -874,6 +874,15 @@ export function TrialDetailPanel({
                 </Card>
               )}
 
+              {trial.harbor_sha && (
+                <div className="text-muted-foreground px-4 py-1 text-[11px]">
+                  Harbor:{" "}
+                  <span className="font-mono">
+                    rishidesai/harbor@{trial.harbor_sha.slice(0, 7)}
+                  </span>
+                </div>
+              )}
+
               <TimingBreakdownBar
                 createdAt={trial.created_at}
                 startedAt={trial.started_at}
