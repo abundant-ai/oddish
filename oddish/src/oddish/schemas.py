@@ -86,6 +86,24 @@ class HarborConfig(BaseModel):
         description="MCP servers to make available in the task environment",
     )
 
+    # --- Configurable Harbor source (override which Harbor runs this trial) ---
+    source: str | None = Field(
+        None,
+        description="Harbor git source URL; None = locked default fork.",
+    )
+    ref: str | None = Field(
+        None,
+        description="Harbor ref (branch/tag/sha/PR); None = locked default commit.",
+    )
+    resolved_sha: str | None = Field(
+        None,
+        description="Server-stamped concrete commit SHA. Client-provided values are ignored.",
+    )
+    variant_id: str | None = Field(
+        None,
+        description="Server-stamped routing id: 'default' | '<registry-id>' | 'ephemeral'.",
+    )
+
 
 # =============================================================================
 # Request Schemas
@@ -687,6 +705,10 @@ class TrialResponse(BaseModel):
             "resources, probe mode marker, extra_instructions, etc.). "
             "Surfaced for clients that need to render mode-specific UI."
         ),
+    )
+    harbor_sha: str | None = Field(
+        None,
+        description="Concrete Harbor commit SHA this trial executed against (None for legacy rows).",
     )
     is_probe: bool = Field(
         False,
