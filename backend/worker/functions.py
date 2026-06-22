@@ -74,7 +74,9 @@ from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
     get_worker_job_org_queue_counts,
+    stamp_dispatch_stage,
 )
+from oddish.dispatch.cycle import compute_why_waiting
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
@@ -443,6 +445,24 @@ async def poll_queue():
                 "running_total": sum(running_by_queue.values()),
             },
         )
+
+        # Stamp the per-stage observability on the Modal path too: spawned_at for
+        # the queue_keys being dispatched, admission_reason for those still
+        # waiting. Additive + best-effort -- the spawn/logging/heartbeat above are
+        # byte-for-byte unchanged; this only writes the new columns.
+        try:
+            await stamp_dispatch_stage(
+                spawn_plan,
+                compute_why_waiting(
+                    queued_by_queue=queued_by_queue,
+                    running_by_queue=running_by_queue,
+                    concurrency_limits=concurrency_limits,
+                    spawned_keys=spawn_plan,
+                    max_workers=MAX_WORKERS_PER_POLL,
+                ),
+            )
+        except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
+            console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
 
         if not spawn_plan:
             console.print("[dim]No queue capacity available, exiting[/dim]")

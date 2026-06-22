@@ -65,6 +65,38 @@ def admit_spawn_plan(
     return admitted, rejected
 
 
+def compute_why_waiting(
+    *,
+    queued_by_queue: dict[str, int],
+    running_by_queue: dict[str, int],
+    concurrency_limits: dict[str, int],
+    spawned_keys: Collection[str],
+    max_workers: int,
+    base_reasons: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Name a reason for every queue_key with queued work that got no spawn.
+
+    Starts from ``base_reasons`` (admission rejections) and adds a capacity
+    reason for the rest — over-cap (no free slot) or per-poll budget exhausted.
+    The §12 why-waiting field; shared by ``run_dispatch_cycle`` and the Modal
+    ``poll_queue`` so both hosts stamp the same reasons.
+    """
+    why_waiting: dict[str, str] = dict(base_reasons or {})
+    spawned = set(spawned_keys)
+    for queue_key, queued in queued_by_queue.items():
+        if queued <= 0 or queue_key in spawned or queue_key in why_waiting:
+            continue
+        limit = concurrency_limits.get(queue_key, 0)
+        running = running_by_queue.get(queue_key, 0)
+        if limit - running <= 0:
+            why_waiting[queue_key] = (
+                f"waiting for slot (limit {limit}, running {running})"
+            )
+        else:
+            why_waiting[queue_key] = f"spawn cap reached (max {max_workers})"
+    return why_waiting
+
+
 @dataclass(frozen=True)
 class DispatchCycleResult:
     """Outcome of one dispatch tick — the transparency record (§12)."""
@@ -114,31 +146,29 @@ async def run_dispatch_cycle(
         max_workers=max_workers,
     )
 
-    admitted, why_waiting = admit_spawn_plan(spawn_plan, admit)
+    admitted, rejected = admit_spawn_plan(spawn_plan, admit)
 
     queued_by_queue: dict[str, int] = {}
     for (_org, queue_key), queued in queued_by_org_queue.items():
         queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
 
-    # Name a reason for every queue_key that has queued work but received no
-    # spawn this tick — over-cap (no free slot) or budget exhausted.
-    spawned_keys = set(admitted)
-    for queue_key, queued in queued_by_queue.items():
-        if queued <= 0 or queue_key in spawned_keys or queue_key in why_waiting:
-            continue
-        limit = concurrency_limits.get(queue_key, 0)
-        running = running_by_queue.get(queue_key, 0)
-        if limit - running <= 0:
-            why_waiting[queue_key] = (
-                f"waiting for slot (limit {limit}, running {running})"
-            )
-        else:
-            why_waiting[queue_key] = f"spawn cap reached (max {max_workers})"
+    why_waiting = compute_why_waiting(
+        queued_by_queue=queued_by_queue,
+        running_by_queue=running_by_queue,
+        concurrency_limits=concurrency_limits,
+        spawned_keys=set(admitted),
+        max_workers=max_workers,
+        base_reasons=rejected,
+    )
 
     handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
     if on_stage is not None:
-        await on_stage(admitted, why_waiting)
+        # Telemetry is best-effort: a stamping failure must never break dispatch.
+        try:
+            await on_stage(admitted, why_waiting)
+        except Exception:
+            pass
 
     return DispatchCycleResult(
         queue_keys=queue_keys,
