@@ -10,10 +10,40 @@ import pytest
 
 import types
 
+from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.fake import FakeDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
+
+
+class _FakeDockerCLI:
+    """Minimal in-memory docker CLI so the docker backend runs hermetically."""
+
+    def __init__(self) -> None:
+        self.containers: dict[str, bool] = {}
+        self._counter = 0
+
+    async def __call__(self, args: list[str]) -> str:
+        verb = args[0]
+        if verb == "run":
+            self._counter += 1
+            cid = f"ctr{self._counter:012d}"
+            self.containers[cid] = True
+            return cid + "\n"
+        if verb == "inspect":
+            cid = args[-1]
+            if cid not in self.containers:
+                raise RuntimeError("No such object")
+            if "-f" in args:
+                return ("true" if self.containers[cid] else "false") + "\n"
+            return "[{}]\n"
+        if verb == "rm":
+            cid = args[-1]
+            if self.containers.pop(cid, None) is None:
+                raise RuntimeError("No such container")
+            return cid + "\n"
+        raise AssertionError(f"unexpected docker verb: {verb}")
 
 
 def _hermetic_modal_dispatcher() -> ModalDispatcher:
@@ -48,6 +78,7 @@ def _noop_dispatchers() -> list[Dispatcher]:
         FakeDispatcher(),
         InProcessDispatcher(run_job=_noop_run_job),
         _hermetic_modal_dispatcher(),
+        DockerPoolDispatcher(image="oddish-worker:test", run_command=_FakeDockerCLI()),
     ]
 
 
