@@ -710,6 +710,10 @@ class TrialResponse(BaseModel):
         None,
         description="Concrete Harbor commit SHA this trial executed against (None for legacy rows).",
     )
+    harbor_source: str | None = Field(
+        None,
+        description="Harbor git source this trial executed against (None for legacy rows).",
+    )
     is_probe: bool = Field(
         False,
         description=(
