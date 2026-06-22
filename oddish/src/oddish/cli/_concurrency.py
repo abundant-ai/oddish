@@ -2,18 +2,22 @@
 
 The CLI uploads and submits batches of tasks against a shared API. A fixed
 worker count is a poor fit: too low and large batches crawl, too high and a
-busy API starts shedding load. This module provides an additive-increase /
-multiplicative-decrease (AIMD) in-flight limiter that discovers a safe
-operating point on its own -- it raises its ceiling by one on each clean
-success and backs off multiplicatively when the server signals backpressure
-(HTTP 429/500/502/503/504, request timeouts, a slow connection-pool checkout,
-or sustained high latency).
+busy API starts shedding load. This module provides a gradient2 in-flight
+limiter (Netflix/Envoy "adaptive concurrency") that discovers a safe operating
+point on its own from request latency -- it nudges its ceiling toward
+``limit * gradient + queue_size`` on each clean sample, where ``gradient``
+compares a no-load RTT floor against the live RTT, and it still backs off hard
+and multiplicatively the moment the server signals explicit backpressure (HTTP
+429/500/502/503/504, request timeouts, or a slow connection-pool checkout).
 
-The design mirrors Netflix's ``concurrency-limits`` ``AIMDLimit`` (gentle 0.9
-backoff with a hard 0.5x floor, a utilization-gated increase, and a small
-``[min, max]`` clamp), scaled down to a bursty CLI workload. The clamp acts as
-a Little's-Law guardrail (in-flight ~= throughput x latency); AIMD finds the
-operating point inside it rather than pinning a hand-computed value.
+The gradient law follows Netflix's ``concurrency-limits`` ``Gradient2Limit`` and
+Envoy's adaptive-concurrency filter, with one deliberate change: the no-load
+baseline is a windowed MINIMUM (re-probed as samples expire), not a long EWMA.
+An average baseline drifts up toward the live RTT under sustained load, driving
+the gradient to 1.0 and blinding the limiter exactly when the server is
+saturated; a rolling minimum keeps the floor honest. The server can also
+advertise a recommended ceiling (the ``Oddish-Submit-Concurrency`` response
+header); the limiter clamps its maximum to that advice.
 
 The pieces here are pure -- no network calls, no thread pools -- so the control
 logic is fully unit-testable. ``ConcurrencyGate`` / ``map_with_adaptive_concurrency``
@@ -23,27 +27,44 @@ logic is fully unit-testable. ``ConcurrencyGate`` / ``map_with_adaptive_concurre
 from __future__ import annotations
 
 import contextvars
+import math
 import os
 import threading
+from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypeVar, cast
 
 import httpx
 
-# Bounds for the adaptive in-flight limit. Small bounds are deliberate: a floor
-# of 4 keeps throughput off the floor for large batches, while a ceiling of 16
-# caps the blast radius on a shared API. (Connection-pool sizing lore -- e.g.
-# HikariCP -- favors small pools; this is the same instinct.)
+# Bounds for the adaptive in-flight limit. A floor of 4 keeps throughput off the
+# floor for large batches; the ceiling matches the server's advertised maximum
+# (``core.admin.CLIENT_CEILING_MAX``) so an idle backend lets the client widen
+# well past the old static band, while a busy backend pulls the advertised
+# ceiling down and the limiter follows it.
 DEFAULT_MIN_CONCURRENCY = 4
-DEFAULT_MAX_CONCURRENCY = 16
+DEFAULT_MAX_CONCURRENCY = 64
 
-# Gentle multiplicative-decrease factor. 0.9 maximizes throughput for a single
-# client protecting a downstream (a deep cut takes many +1 successes to climb
-# back); 0.5 is the hard floor so one backpressure step never cuts the limit by
-# more than half. This matches AIMDLimit's enforced ``[0.5, 1.0)`` backoff range.
+# Gentle multiplicative-decrease factor for the hard backpressure override. 0.9
+# maximizes throughput for a single client protecting a downstream; 0.5 is the
+# hard floor so one backpressure step never cuts the limit by more than half.
+# This matches AIMDLimit's enforced ``[0.5, 1.0)`` backoff range.
 DEFAULT_BACKOFF_FACTOR = 0.9
 MIN_BACKOFF_FACTOR = 0.5
+
+# Gradient2 tuning. ``RTT_TOLERANCE`` (>1) lets the live RTT rise modestly above
+# the no-load floor before the gradient starts shrinking the limit; the gradient
+# is clamped to ``[0.5, 1.0]`` (a single sample never more than halves the
+# target, and a faster-than-floor sample never pushes the gradient above 1).
+# ``GRADIENT_SMOOTHING`` blends each new target into the current limit so one
+# noisy sample can't swing it. ``NOLOAD_WINDOW`` sizes the sliding window for the
+# no-load minimum -- large enough to retain the floor across a submit batch,
+# small enough that the floor re-probes over a long run.
+RTT_TOLERANCE = 1.5
+GRADIENT_MIN = 0.5
+GRADIENT_MAX = 1.0
+GRADIENT_SMOOTHING = 0.2
+NOLOAD_WINDOW = 100
 
 # Transient statuses that signal server backpressure. Identical to the retry set
 # used for the idempotent upload calls (api._RETRY_STATUS_CODES). Deterministic
@@ -73,17 +94,49 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
+def compute_gradient_limit(
+    limit: float,
+    *,
+    rtt_noload: float,
+    rtt_actual: float,
+    rtt_tolerance: float = RTT_TOLERANCE,
+    smoothing: float = GRADIENT_SMOOTHING,
+) -> float:
+    """Return the smoothed next limit from one clean latency sample (gradient2).
+
+    ``gradient = clamp(rtt_tolerance * rtt_noload / rtt_actual, 0.5, 1.0)`` is the
+    ratio of the no-load RTT floor to the live RTT (so it shrinks below 1 as the
+    server slows); ``queue_size = ceil(sqrt(limit))`` is Little's-Law headroom;
+    the raw target is ``limit * gradient + queue_size`` and the result blends it
+    into the current limit by ``smoothing`` so a single noisy sample can't swing
+    it. Pure -- the caller applies clamps and the app-limited guard.
+    """
+    gradient = _clamp(
+        rtt_tolerance * rtt_noload / rtt_actual, GRADIENT_MIN, GRADIENT_MAX
+    )
+    queue_size = math.ceil(math.sqrt(max(1.0, limit)))
+    new_target = limit * gradient + queue_size
+    return (1.0 - smoothing) * limit + smoothing * new_target
+
+
 class AdaptiveConcurrencyLimiter:
-    """An AIMD in-flight limiter.
+    """A gradient2 in-flight limiter.
 
-    ``record_success`` adds one to the limit (additive increase); ``record_backpressure``
-    multiplies it by ``backoff_factor`` (multiplicative decrease). Both clamp the
-    result to ``[min_limit, max_limit]``. The limit is held as a float internally
-    so repeated decreases don't get stuck on integer rounding, and exposed as an
-    int via :attr:`limit`.
+    ``record_sample(rtt)`` feeds one clean API-latency sample through the
+    gradient2 law (:func:`compute_gradient_limit`) to nudge the limit toward a
+    latency-derived target; ``record_backpressure`` is the kept hard override --
+    it multiplies the limit by ``backoff_factor`` (floor ``0.5x``) the moment the
+    server signals explicit backpressure (429/5xx/timeout/pool checkout), without
+    waiting for the gradient. The limit is held as a float internally so repeated
+    moves don't get stuck on integer rounding, and exposed as an int via
+    :attr:`limit`.
 
-    Setting ``min_limit == max_limit`` pins the limit (no adaptation) -- used when
-    a caller supplies an explicit value.
+    The effective maximum is ``min(max_limit, advertised_max)`` where
+    ``advertised_max`` is the server-advertised ceiling (the
+    ``Oddish-Submit-Concurrency`` header) -- ``None`` until one is seen, after
+    which a busy backend can clamp the client below ``max_limit``. The floor
+    always stays ``>= min_limit``. Setting ``min_limit == max_limit`` pins the
+    limit (no adaptation) -- used when a caller supplies an explicit value.
     """
 
     def __init__(
@@ -93,6 +146,9 @@ class AdaptiveConcurrencyLimiter:
         max_limit: int = DEFAULT_MAX_CONCURRENCY,
         initial_limit: int | None = None,
         backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
+        rtt_tolerance: float = RTT_TOLERANCE,
+        smoothing: float = GRADIENT_SMOOTHING,
+        latency_monitor: _LatencyMonitor | None = None,
     ) -> None:
         if min_limit < 1:
             raise ValueError(f"min_limit must be >= 1, got {min_limit}")
@@ -106,37 +162,99 @@ class AdaptiveConcurrencyLimiter:
         # never more aggressive than a halving; cap below 1.0 so a decrease always
         # decreases.
         self.backoff_factor = _clamp(float(backoff_factor), MIN_BACKOFF_FACTOR, 0.999)
+        self.rtt_tolerance = float(rtt_tolerance)
+        self.smoothing = float(smoothing)
         start = self.min_limit if initial_limit is None else int(initial_limit)
         self._limit = float(_clamp(float(start), self.min_limit, self.max_limit))
+        # Server-advertised upper clamp (D1 header); None until one is seen.
+        self._advertised_max: float | None = None
+        self._monitor = (
+            latency_monitor if latency_monitor is not None else _LatencyMonitor()
+        )
         # Reads/writes happen from worker threads in the runtime gate; the lock
         # keeps the float state consistent (it guards arithmetic, not any I/O).
         self._lock = threading.Lock()
 
+    def _effective_max(self) -> float:
+        if self._advertised_max is None:
+            return float(self.max_limit)
+        return min(float(self.max_limit), self._advertised_max)
+
     def _effective_limit(self) -> int:
-        return int(_clamp(self._limit, float(self.min_limit), float(self.max_limit)))
+        return int(_clamp(self._limit, float(self.min_limit), self._effective_max()))
 
     @property
     def limit(self) -> int:
-        """The current in-flight ceiling, clamped to ``[min_limit, max_limit]``."""
+        """The current in-flight ceiling, clamped to ``[min_limit, eff_max]``."""
         with self._lock:
             return self._effective_limit()
 
-    def record_success(self, *, in_flight: int | None = None) -> int:
-        """Register a clean success and additively increase the limit.
+    @property
+    def rtt_actual(self) -> float | None:
+        """Short-window EWMA of observed API latency (``None`` before any sample)."""
+        return self._monitor.rtt_actual()
 
-        When ``in_flight`` is supplied the increase is gated on utilization
-        (``in_flight * 2 >= limit``), so the ceiling doesn't creep upward while
-        the client isn't actually pushing against it. Returns the new limit.
+    @property
+    def rtt_noload(self) -> float | None:
+        """Windowed no-load RTT floor (``None`` before any sample)."""
+        return self._monitor.noload_rtt()
+
+    def set_advertised_max(self, advertised: int | None) -> int:
+        """Clamp the effective maximum to a server-advertised ceiling.
+
+        ``None`` clears the advice (revert to the static ``max_limit``). A value
+        re-clamps the current limit down immediately so a freshly-lowered server
+        ceiling takes effect without waiting for the next sample. Returns the new
+        effective limit.
         """
         with self._lock:
-            if in_flight is None or in_flight * 2 >= self._effective_limit():
-                self._limit = min(float(self.max_limit), self._limit + 1.0)
+            self._advertised_max = (
+                None if advertised is None else max(1.0, float(advertised))
+            )
+            self._limit = _clamp(
+                self._limit, float(self.min_limit), self._effective_max()
+            )
+            return self._effective_limit()
+
+    def record_sample(self, rtt: float, *, in_flight: int | None = None) -> int:
+        """Fold one clean API-latency sample through the gradient2 law.
+
+        Updates the no-load floor and live-RTT EWMA, then moves the limit toward
+        the gradient target. A shrink always applies; a grow applies only when the
+        client is actually pushing the ceiling (``in_flight * 2 >= limit``, the
+        app-limited guard) so the limit doesn't creep up while idle. Returns the
+        new limit.
+        """
+        with self._lock:
+            self._monitor.observe(rtt)
+            noload = self._monitor.noload_rtt()
+            actual = self._monitor.rtt_actual()
+            if noload is None or actual is None or actual <= 0.0:
+                return self._effective_limit()
+            target = compute_gradient_limit(
+                self._limit,
+                rtt_noload=noload,
+                rtt_actual=actual,
+                rtt_tolerance=self.rtt_tolerance,
+                smoothing=self.smoothing,
+            )
+            clamped = _clamp(target, float(self.min_limit), self._effective_max())
+            # App-limited guard: only let the limit GROW when the client is
+            # pushing it; a shrink (degraded gradient) always applies.
+            if (
+                clamped > self._limit
+                and in_flight is not None
+                and (in_flight * 2 < self._effective_limit())
+            ):
+                return self._effective_limit()
+            self._limit = clamped
             return self._effective_limit()
 
     def record_backpressure(self) -> int:
-        """Register backpressure and multiplicatively decrease the limit.
+        """Hard multiplicative decrease on explicit backpressure (the kept override).
 
-        Returns the new limit.
+        Bypasses the gradient and cuts the limit by ``backoff_factor`` (floored at
+        ``0.5x``) immediately. Returns the new limit.
         """
         with self._lock:
             self._limit = max(float(self.min_limit), self._limit * self.backoff_factor)
@@ -147,17 +265,16 @@ def classify_backpressure(
     *,
     status_code: int | None = None,
     exception: BaseException | None = None,
-    latency: float | None = None,
-    slow_threshold: float | None = None,
 ) -> bool:
-    """Decide whether a request outcome should shrink the in-flight limit.
+    """Decide whether a request outcome should trigger the hard MD override.
 
-    Backpressure is signalled by a transient status (:data:`BACKPRESSURE_STATUS_CODES`),
-    a request timeout or a slow connection-pool checkout (``httpx.TimeoutException``,
-    which covers ``httpx.PoolTimeout``), or a latency sample above ``slow_threshold``.
-    Everything else -- deterministic 4xx, non-load transport errors, latency within
-    threshold -- is treated as neutral, so the limit isn't cut for problems extra
-    concurrency control can't fix.
+    Backpressure is signalled by a transient status (:data:`BACKPRESSURE_STATUS_CODES`)
+    or a request timeout / slow connection-pool checkout (``httpx.TimeoutException``,
+    which covers ``httpx.PoolTimeout``). Everything else -- deterministic 4xx,
+    non-load transport errors -- is neutral. High latency is NOT classified here:
+    it is the gradient's job (a rising RTT shrinks the limit via
+    :meth:`AdaptiveConcurrencyLimiter.record_sample`), so a separate latency cut
+    would double-count.
     """
     if exception is not None:
         # TimeoutException covers ConnectTimeout/ReadTimeout/WriteTimeout and
@@ -167,68 +284,89 @@ def classify_backpressure(
         return isinstance(exception, httpx.TimeoutException)
     if status_code is not None and status_code in BACKPRESSURE_STATUS_CODES:
         return True
-    if latency is not None and slow_threshold is not None and latency > slow_threshold:
-        return True
     return False
 
 
 class _LatencyMonitor:
-    """EWMA of request latency, used to derive the high-latency backpressure cut.
+    """The two RTT statistics the gradient2 limiter needs.
 
-    A single GC pause or network blip shouldn't cause an outsized reduction, so
-    the baseline is an exponentially-weighted moving average and only samples a
-    multiple above it (after a short warmup) count as slow. ``slow_threshold`` is
-    meant to be read *before* folding in the current sample, so a request is
-    compared against the baseline of the requests that preceded it.
+    ``rtt_actual`` is a short-window EWMA (``alpha`` = 0.2) of recent API
+    latency; ``rtt_noload`` is a rolling MINIMUM over a sliding window -- the
+    no-load floor. The floor is a minimum, not an average: an average drifts up
+    toward ``rtt_actual`` under sustained load, driving the gradient to 1.0 and
+    blinding the limiter exactly when the server is saturated. Old samples leave
+    the window as new ones arrive, so the floor is continuously re-probed and a
+    transient spike can't poison it forever.
     """
 
     def __init__(
-        self,
-        *,
-        alpha: float = 0.2,
-        slow_multiplier: float = 3.0,
-        warmup: int = 4,
+        self, *, alpha: float = 0.2, noload_window: int = NOLOAD_WINDOW
     ) -> None:
         self._alpha = alpha
-        self._slow_multiplier = slow_multiplier
-        self._warmup = warmup
-        self._count = 0
-        self._ewma = 0.0
+        self._ewma: float | None = None
+        self._window: deque[float] = deque(maxlen=max(1, int(noload_window)))
         self._lock = threading.Lock()
 
-    def slow_threshold(self) -> float | None:
-        """Current slow-latency cutoff, or ``None`` until warmed up."""
-        with self._lock:
-            if self._count < self._warmup:
-                return None
-            return self._ewma * self._slow_multiplier
-
     def observe(self, sample: float) -> None:
-        """Fold a latency sample (seconds) into the moving average."""
+        """Fold a latency sample (seconds) into the EWMA and the no-load window."""
         with self._lock:
-            if self._count == 0:
+            if self._ewma is None:
                 self._ewma = sample
             else:
                 self._ewma = self._alpha * sample + (1.0 - self._alpha) * self._ewma
-            self._count += 1
+            self._window.append(sample)
+
+    def rtt_actual(self) -> float | None:
+        """Short-window EWMA of observed latency, or ``None`` before any sample."""
+        with self._lock:
+            return self._ewma
+
+    def noload_rtt(self) -> float | None:
+        """Windowed minimum (no-load floor), or ``None`` before any sample."""
+        with self._lock:
+            return min(self._window) if self._window else None
+
+
+SUBMIT_CONCURRENCY_HEADER = "Oddish-Submit-Concurrency"
+
+
+def parse_submit_concurrency_header(value: str | None) -> int | None:
+    """Parse the advertised ceiling out of an ``Oddish-Submit-Concurrency`` header.
+
+    Header form: ``ceiling=<int>; pressure=<float>; ttl=<int>``. Returns the
+    ``ceiling`` as an int, or ``None`` when the header is missing or garbled
+    (the client then keeps its current advertised max -- "no advice").
+    """
+    if not value:
+        return None
+    for part in value.split(";"):
+        key, sep, raw = part.strip().partition("=")
+        if sep and key.strip() == "ceiling":
+            try:
+                return int(raw.strip())
+            except ValueError:
+                return None
+    return None
 
 
 class _SlotOutcome:
     """Per-call outcome reported by the API layer while inside a gate slot."""
 
-    __slots__ = ("api_calls", "api_latency", "backpressure")
+    __slots__ = ("api_calls", "api_latency", "backpressure", "advertised_ceiling")
 
     def __init__(self) -> None:
         self.backpressure = False
         self.api_latency = 0.0
         self.api_calls = 0
+        self.advertised_ceiling: int | None = None
 
 
 # Ambient handle to the active gate slot. ``ConcurrencyGate.run`` installs one
 # for the duration of each unit of work; the API layer reports each request's
-# latency and status through it (see ``report_api_call``). A ContextVar keeps the
-# reporting decoupled from the deep call stack (no gate handle to thread through
-# upload_task / submit_sweep / _retry_request) and isolated per worker thread.
+# latency, status, and advertised ceiling through it (see ``report_api_call``).
+# A ContextVar keeps the reporting decoupled from the deep call stack (no gate
+# handle to thread through upload_task / submit_sweep / _retry_request) and
+# isolated per worker thread.
 _CURRENT_SLOT: contextvars.ContextVar[_SlotOutcome | None] = contextvars.ContextVar(
     "oddish_concurrency_slot", default=None
 )
@@ -246,7 +384,7 @@ def report_api_call(latency: float, *, backpressure: bool = False) -> None:
 
     ``latency`` (seconds) feeds the API-only latency signal -- callers must NOT
     include time spent on the S3 presigned PUT, which is bounded separately and
-    would otherwise pollute the API backpressure signal. Set ``backpressure`` for
+    would otherwise pollute the API latency signal. Set ``backpressure`` for
     a transient status (429/5xx) so the limiter backs off even when a retry
     ultimately succeeds. No-op outside a gate slot (e.g. the single-item path).
     """
@@ -259,33 +397,39 @@ def report_api_call(latency: float, *, backpressure: bool = False) -> None:
         slot.backpressure = True
 
 
+def report_advertised_ceiling(ceiling: int | None) -> None:
+    """Report a server-advertised submission ceiling to the active gate slot.
+
+    Callers pass the parsed ``Oddish-Submit-Concurrency`` ceiling; the gate then
+    clamps the limiter's max to it. No-op outside a gate slot or for a missing
+    header (``None``), so a response without the header keeps the current advice.
+    """
+    slot = _CURRENT_SLOT.get()
+    if slot is not None and ceiling is not None:
+        slot.advertised_ceiling = ceiling
+
+
 class ConcurrencyGate:
     """Throttle concurrent work to a limiter's adaptive in-flight ceiling.
 
     Wrap each unit of work with :meth:`run`: it blocks until in-flight is below
     the current limit, runs the callable, and feeds the outcome back to the
     limiter. The outcome is reported by the API layer through
-    :func:`report_api_call` / :func:`report_backpressure` (HTTP status + API-only
-    latency), not inferred from wall-clock time, so the S3 PUT step never trips
-    the API backpressure signal. A clean success grows the limit; a transient
-    status, timeout, slow pool checkout, or high API latency shrinks it; any
-    other failure (deterministic 4xx, bugs) is neutral and leaves it unchanged.
+    :func:`report_api_call` / :func:`report_backpressure` /
+    :func:`report_advertised_ceiling` (HTTP status + API-only latency + the
+    advertised ceiling), not inferred from wall-clock time, so the S3 PUT step
+    never trips the API signal. A clean latency sample feeds the gradient (grow
+    or shrink); a transient status, timeout, or slow pool checkout triggers the
+    hard multiplicative decrease; any other failure (deterministic 4xx, bugs) is
+    neutral and leaves the limit unchanged.
 
     Built to drive a ``ThreadPoolExecutor`` sized to ``limiter.max_limit`` -- the
     gate, not the pool size, is the real throttle, so the limit can shrink below
     the pool size under load.
     """
 
-    def __init__(
-        self,
-        limiter: AdaptiveConcurrencyLimiter,
-        *,
-        latency_monitor: _LatencyMonitor | None = None,
-    ) -> None:
+    def __init__(self, limiter: AdaptiveConcurrencyLimiter) -> None:
         self._limiter = limiter
-        self._latency = (
-            latency_monitor if latency_monitor is not None else _LatencyMonitor()
-        )
         self._cond = threading.Condition()
         self._in_flight = 0
 
@@ -324,19 +468,18 @@ class ConcurrencyGate:
             # Latency sample is the API-only time the worker reported (excludes
             # the S3 PUT); ``None`` when the worker made no API calls.
             api_latency = slot.api_latency if slot.api_calls else None
-            backpressure = slot.backpressure or classify_backpressure(
-                exception=error,
-                latency=api_latency,
-                slow_threshold=self._latency.slow_threshold(),
-            )
+            backpressure = slot.backpressure or classify_backpressure(exception=error)
+            # Honor a server-advertised ceiling before adapting, so the gradient
+            # sample lands inside the (possibly lowered) advertised band.
+            if slot.advertised_ceiling is not None:
+                self._limiter.set_advertised_max(slot.advertised_ceiling)
             if backpressure:
                 self._limiter.record_backpressure()
-            elif error is None:
-                self._limiter.record_success(in_flight=in_flight)
-            # else: a non-load failure (deterministic 4xx, a bug) -- neutral, so
-            # the limit is neither grown nor shrunk.
-            if api_latency is not None:
-                self._latency.observe(api_latency)
+            elif error is None and api_latency is not None:
+                # A clean latency sample drives the gradient (grow or shrink).
+                self._limiter.record_sample(api_latency, in_flight=in_flight)
+            # else: a non-load failure (deterministic 4xx, a bug) or a clean call
+            # with no latency sample -- neutral, so the limit is unchanged.
             self._release()
 
 
