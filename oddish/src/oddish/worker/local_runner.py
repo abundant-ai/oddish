@@ -48,6 +48,7 @@ from oddish.worker.probe_analysis import (
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
+from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
@@ -454,6 +455,16 @@ async def _run_harbor_trial(trial_id: str) -> None:
     zai_env = _zai_agent_env(model_name)
     if zai_env:
         agent_config.env = {**(agent_config.env or {}), **zai_env}
+
+    # Probe trials get read-only oddish CLI creds + network egress so the
+    # oddish-query CLI staged into the sandbox can reach the backend. Local
+    # requires real creds, so let ProbeCredsError propagate and fail loudly.
+    if extra_instructions:
+        enable_local_internet(actual_task_path)
+        _, probe_env = await mint_probe_creds(
+            org_id=trial_org_id, trial_id=trial_id
+        )
+        agent_config.env = {**(agent_config.env or {}), **probe_env}
 
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),
