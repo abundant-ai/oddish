@@ -155,6 +155,7 @@ async def run_harbor_trial_async(
             trial_id=trial_id,
             harbor_config=harbor_config,
             org_id=org_id,
+            extra_agent_env=extra_agent_env,
         )
 
     # Probes attach to an existing task and inherit its task.toml, which may

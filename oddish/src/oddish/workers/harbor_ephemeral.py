@@ -98,6 +98,7 @@ def _build_payload(
     environment: EnvironmentType,
     raw_harbor_config: dict[str, Any],
     is_probe: bool,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     daytona_kwargs: dict[str, Any] = {}
     if environment == EnvironmentType.DAYTONA:
@@ -137,6 +138,9 @@ def _build_payload(
         ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
+        # Minted read-only oddish CLI creds (probe trials); merged onto the
+        # child's AgentConfig env, never persisted.
+        "extra_agent_env": extra_agent_env or {},
     }
 
 
@@ -232,6 +236,7 @@ async def run_ephemeral_harbor_trial(
     trial_id: str | None = None,
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> HarborOutcome:
     """Run a trial in a child interpreter pinned to an arbitrary override Harbor.
 
@@ -300,6 +305,7 @@ async def run_ephemeral_harbor_trial(
         environment=environment,
         raw_harbor_config=raw,
         is_probe=is_probe,
+        extra_agent_env=extra_agent_env,
     )
     payload_path = unique_parent / "payload.json"
     payload_path.write_text(json.dumps(payload))

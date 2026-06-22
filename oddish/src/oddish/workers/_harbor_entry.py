@@ -132,6 +132,9 @@ def _build_job_config(payload: dict[str, Any]):
     agent_kwargs: dict[str, Any] = {"name": payload["agent"]}
     if payload.get("model"):
         agent_kwargs["model_name"] = payload["model"]
+    if payload.get("extra_agent_env"):
+        # Minted read-only oddish CLI creds for probe trials (parent-supplied).
+        agent_kwargs["env"] = dict(payload["extra_agent_env"])
     agent_config = AgentConfig(**agent_kwargs)
 
     kwargs: dict[str, Any] = {
