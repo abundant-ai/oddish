@@ -54,6 +54,40 @@ def _alembic(project: Path, *args: str) -> None:
     subprocess.run(["alembic", *args], cwd=project, check=True)
 
 
+# alembic emits this when asked to stamp a revision absent from the branch's
+# history -- on stdout (via util.err) and stderr (via its root logger). Match it
+# to distinguish "branch behind/diverged" from a genuine stamp failure.
+_REVISION_NOT_FOUND = "Can't locate revision"
+
+
+def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
+    """Stamp the branch's empty version table to the parent's revision.
+
+    If that revision predates this branch's history (branch behind/diverged),
+    alembic can't locate it -- fall back to the branch's own head so only this
+    PR's migrations replay. Any *other* stamp failure (unreachable DB, bad
+    config, ambiguous heads) is a real error: surface alembic's output and
+    re-raise rather than masking it as a no-op success.
+    """
+    proc = subprocess.run(
+        ["alembic", "stamp", rev], cwd=project, text=True, capture_output=True
+    )
+    sys.stdout.write(proc.stdout)
+    sys.stderr.write(proc.stderr)
+    if proc.returncode == 0:
+        return
+    if _REVISION_NOT_FOUND not in (proc.stdout + proc.stderr):
+        raise subprocess.CalledProcessError(
+            proc.returncode, proc.args, proc.stdout, proc.stderr
+        )
+    print(
+        f"{table}: parent revision {rev} not in this branch's history; "
+        "stamping branch head instead (branch behind or diverged)",
+        file=sys.stderr,
+    )
+    _alembic(project, "stamp", "head")
+
+
 def main() -> None:
     branch_was_created = os.environ.get("BRANCH_WAS_CREATED") == "true"
     parent_url = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL")
@@ -67,15 +101,7 @@ def main() -> None:
                     f"parent DB exposes no {table} revision to stamp; refusing "
                     "to replay full history against the inherited branch schema"
                 )
-            try:
-                _alembic(project, "stamp", rev)
-            except subprocess.CalledProcessError:
-                print(
-                    f"{table}: parent revision {rev} not in this branch's history; "
-                    "stamping branch head instead (branch behind or diverged)",
-                    file=sys.stderr,
-                )
-                _alembic(project, "stamp", "head")
+            _stamp_to_parent(project, table, rev)
 
     for project, _ in STACKS:
         _alembic(project, "upgrade", "head")
