@@ -140,6 +140,31 @@ def parse_harbor_spec(spec: str) -> tuple[str, str]:
     return HARBOR_DEFAULT_SOURCE, spec
 
 
+def resolve_harbor_layers(
+    *,
+    flag: str | None,
+    env: str | None,
+    manifest: dict[str, str] | None,
+) -> tuple[str, str]:
+    """Layer-atomic, first-wins precedence: flag > env > manifest > default.
+
+    Each layer parses to a COMPLETE (source, ref) pair; the whole pair is taken
+    from the highest layer that sets anything. Never merges a source from one
+    layer with a ref from another. ``ref == ""`` (R1 URL without an explicit
+    ref) is treated as set; the server resolves it to the default-branch HEAD.
+    """
+    if flag is not None and flag.strip():
+        return parse_harbor_spec(flag)
+    if env is not None and env.strip():
+        return parse_harbor_spec(env)
+    if manifest:
+        source = manifest.get("source") or HARBOR_DEFAULT_SOURCE
+        ref = manifest.get("ref")
+        if ref is not None:
+            return source, ref
+    return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
@@ -846,6 +871,17 @@ class Settings(BaseSettings):
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
+
+    # --- Configurable Harbor source (override which Harbor runs a trial) ---
+    # Single CLI spec mirror (env ODDISH_HARBOR). Parsed via parse_harbor_spec.
+    harbor: str | None = None
+    # Gate: until the execution engines (Phases B/C) land, a resolved non-default
+    # pin is rejected at submit. Default OFF keeps the default path unchanged.
+    harbor_overrides_enabled: bool = False
+    # Comma-separated case-insensitive URL globs of allowed override sources.
+    harbor_allowed_sources: str = (
+        "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
+    )
 
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
     # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
