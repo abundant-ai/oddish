@@ -1,0 +1,17 @@
+# Keep the Docker build context small + reproducible (the backend image build
+# uses the repo root as context). Excludes local/dev cruft that the image
+# rebuilds itself (uv sync) or never needs.
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+frontend/.next
+frontend/out
+.claude
+**/*.log
+jobs/
+*.egg-info
