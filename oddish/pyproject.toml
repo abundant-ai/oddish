@@ -112,7 +112,7 @@ exclude = [".git", "uv.lock"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oddish"]
-include = ["src/oddish/analyze/*.txt"]
+include = ["src/oddish/analyze/*.txt", "src/oddish/assets/oddish-query"]
 
 [tool.mypy]
 python_version = "3.13"
