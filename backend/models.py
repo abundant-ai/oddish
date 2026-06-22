@@ -79,8 +79,16 @@ class OrganizationModel(TimestampedMixin, Base):
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
         "UserModel", back_populates="organization", lazy="selectin"
     )
+    # ``APIKeyModel.org_id`` is a plain column in oddish core (no ORM-level
+    # ForeignKey, so the standalone OSS server's create_all works), so the join
+    # condition can't be inferred and is spelled out here. ``viewonly``: this is
+    # a read-only convenience collection; keys are created via
+    # ``oddish.core.api_keys``, not by mutating this list.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", lazy="selectin"
+        "APIKeyModel",
+        primaryjoin="foreign(APIKeyModel.org_id) == OrganizationModel.id",
+        viewonly=True,
+        lazy="selectin",
     )
 
 
@@ -140,8 +148,13 @@ class UserModel(TimestampedMixin, Base):
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
         "OrganizationModel", back_populates="users", lazy="selectin"
     )
+    # See ``OrganizationModel.api_keys``: ``APIKeyModel.created_by_user_id`` is a
+    # plain core column, so the join is explicit and the collection is viewonly.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", lazy="selectin"
+        "APIKeyModel",
+        primaryjoin="foreign(APIKeyModel.created_by_user_id) == UserModel.id",
+        viewonly=True,
+        lazy="selectin",
     )
 
     __table_args__ = (

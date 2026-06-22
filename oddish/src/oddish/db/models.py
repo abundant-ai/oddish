@@ -1120,10 +1120,16 @@ class APIKeyModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
-    # Organization scope
-    org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    # Organization scope. Plain column with NO ORM-level ForeignKey: the
+    # ``organizations`` table is defined in the backend layer
+    # (``backend/models.py``), so declaring a ``ForeignKey`` here would make
+    # core metadata depend on a backend-only table and break the standalone OSS
+    # server -- ``Base.metadata.create_all`` raises ``NoReferencedTableError``
+    # when only the core models are imported. The hosted deployment still gets
+    # the DB-level FK via the backend Alembic migration (``fk_api_keys_org_id``
+    # in ``a1b2c3d4e5f6_add_cloud_auth_tables``), exactly how core
+    # ``tasks.org_id`` is handled.
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Key identification
     name: Mapped[str] = mapped_column(
@@ -1147,10 +1153,12 @@ class APIKeyModel(TimestampedMixin, Base):
         nullable=False,
     )
 
-    # Creator tracking
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    # Creator tracking. Plain column, no ORM-level ForeignKey (see ``org_id``
+    # above): ``users`` is backend-only, and every other core
+    # ``created_by_user_id`` column is a plain ``String`` too. The hosted
+    # DB-level FK (``fk_api_keys_created_by_user_id``) is added by the same
+    # backend migration.
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Status and expiry
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
