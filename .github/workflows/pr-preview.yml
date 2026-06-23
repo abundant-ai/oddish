@@ -66,46 +66,16 @@ jobs:
           WORKFLOW_CHANGED: ${{ steps.last_deployed.outputs.workflow_changed }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/preview/compute_deployment_plan.sh"
 
-  stop-previous-preview-backend:
-    name: Stop previous preview backend
-    needs: detect-changes
-    if: needs.detect-changes.outputs.any_change == 'true' && needs.detect-changes.outputs.deploy_backend == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-    container:
-      image: ghcr.io/abundant-ai/oddish-ci-base:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    env:
-      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-      MODAL_ENVIRONMENT: preview
-      MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Stop previous preview backend
-        run: "$GITHUB_WORKSPACE/.github/scripts/preview/stop_previous_preview_backend.sh"
-
   prepare-preview-database:
     name: Prepare preview database
     needs:
       - detect-changes
-      - stop-previous-preview-backend
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
       (
         needs.detect-changes.outputs.deploy_backend == 'true' ||
         needs.detect-changes.outputs.run_migrations == 'true'
-      ) &&
-      (
-        needs.stop-previous-preview-backend.result == 'success' ||
-        needs.stop-previous-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 12
@@ -181,6 +151,7 @@ jobs:
       MODAL_ENVIRONMENT: preview
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
+      EXPECTED_MODAL_API_URL: ${{ format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
@@ -207,7 +178,6 @@ jobs:
     needs:
       - detect-changes
       - prepare-preview-database
-      - deploy-preview-backend
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
@@ -215,10 +185,6 @@ jobs:
       (
         needs.prepare-preview-database.result == 'success' ||
         needs.prepare-preview-database.result == 'skipped'
-      ) &&
-      (
-        needs.deploy-preview-backend.result == 'success' ||
-        needs.deploy-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
     permissions:
@@ -235,7 +201,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
