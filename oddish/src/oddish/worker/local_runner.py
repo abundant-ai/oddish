@@ -222,6 +222,23 @@ def _strip_nul(obj: object) -> object:
     return obj
 
 
+def _trajectory_total_steps(trajectory: object) -> int | None:
+    if not isinstance(trajectory, dict):
+        return None
+    final_metrics = trajectory.get("final_metrics")
+    if isinstance(final_metrics, dict):
+        raw_steps = final_metrics.get("total_steps")
+        if raw_steps is not None:
+            try:
+                return int(raw_steps)
+            except (TypeError, ValueError):
+                pass
+    steps = trajectory.get("steps")
+    if isinstance(steps, list):
+        return len(steps)
+    return None
+
+
 def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
     """Env that lets Claude Code invoke a Bedrock-routed model in local dev.
 
@@ -556,6 +573,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     artifacts = extract_probe_artifacts(trials_dir)
     agent_messages = artifacts["agent_messages"]
     verifier_stdout = artifacts["verifier_stdout"]
+    trajectory = artifacts.get("trajectory")
 
     # Build the result payload to persist.
     result_payload: dict = {}
@@ -610,6 +628,14 @@ async def _run_harbor_trial(trial_id: str) -> None:
         if reward_value is not None:
             trial.reward = reward_value
         trial.result = _strip_nul(result_payload)
+        agent_result = getattr(result, "agent_result", None) if result else None
+        if agent_result is not None and not agent_result.is_empty():
+            trial.input_tokens = agent_result.n_input_tokens
+            trial.cache_tokens = agent_result.n_cache_tokens
+            trial.output_tokens = agent_result.n_output_tokens
+            trial.cost_usd = agent_result.cost_usd
+        trial.total_steps = _trajectory_total_steps(trajectory)
+        trial.has_trajectory = trajectory is not None
         if analyzer_summary is not None:
             trial.analysis = _strip_nul(analyzer_summary)
         trial.analysis_status = analyzer_status

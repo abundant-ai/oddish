@@ -1325,6 +1325,7 @@ async def get_model_usage_core(
         func.sum(TrialModel.input_tokens).label("input_tokens"),
         func.sum(TrialModel.cache_tokens).label("cache_tokens"),
         func.sum(TrialModel.output_tokens).label("output_tokens"),
+        func.sum(TrialModel.total_steps).label("total_steps"),
         func.sum(TrialModel.cost_usd).label("cost_usd"),
         func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
             "running"
@@ -1378,6 +1379,7 @@ async def get_model_usage_core(
                 "input_tokens": 0,
                 "cache_tokens": 0,
                 "output_tokens": 0,
+                "total_steps": 0,
                 "cost_usd": 0.0,
                 "running": 0,
                 "retrying": 0,
@@ -1394,6 +1396,7 @@ async def get_model_usage_core(
         agg["input_tokens"] = int(agg["input_tokens"]) + int(row.input_tokens or 0)
         agg["cache_tokens"] = int(agg["cache_tokens"]) + int(row.cache_tokens or 0)
         agg["output_tokens"] = int(agg["output_tokens"]) + int(row.output_tokens or 0)
+        agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
         agg["cost_usd"] = float(agg["cost_usd"]) + float(row.cost_usd or 0)
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
@@ -1417,6 +1420,7 @@ async def get_model_usage_core(
                 "input_tokens": int(agg["input_tokens"]),
                 "cache_tokens": int(agg["cache_tokens"]),
                 "output_tokens": int(agg["output_tokens"]),
+                "total_steps": int(agg["total_steps"]),
                 "cost_usd": round(float(agg["cost_usd"]), 4),
                 "running": int(agg["running"]),
                 "retrying": int(agg["retrying"]),
