@@ -400,10 +400,12 @@ function ExperimentMetaStrip({
   tasks,
   isInitialLoading,
   experimentId,
+  readOnly = false,
 }: {
   tasks: Task[];
   isInitialLoading: boolean;
   experimentId?: string;
+  readOnly?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -420,7 +422,10 @@ function ExperimentMetaStrip({
 
   if (isInitialLoading) return null;
   const { createdAt, author } = pickExperimentCreationMeta(tasks);
-  if (!createdAt && !author && !experimentId) return null;
+  // The creator attribution is internal context that shouldn't surface on the
+  // public share view (mirrors how the PR link is hidden when read-only).
+  const showAuthor = Boolean(author) && !readOnly;
+  if (!createdAt && !showAuthor && !experimentId) return null;
 
   return (
     <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
@@ -429,9 +434,9 @@ function ExperimentMetaStrip({
           created {formatRelativeTime(createdAt)}
         </span>
       )}
-      {createdAt && author && <MetaDot />}
-      {author && <span>by {author}</span>}
-      {(createdAt || author) && experimentId && <MetaDot />}
+      {createdAt && showAuthor && <MetaDot />}
+      {showAuthor && <span>by {author}</span>}
+      {(createdAt || showAuthor) && experimentId && <MetaDot />}
       {experimentId && (
         <span className="inline-flex items-center gap-1">
           <span>id</span>
@@ -1191,6 +1196,7 @@ export function ExperimentDetailView({
                   tasks={tasksForExperiment}
                   isInitialLoading={isInitialLoading}
                   experimentId={experimentId}
+                  readOnly={readOnly}
                 />
               </div>
               <ExperimentHeaderMeta
