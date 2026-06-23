@@ -12,6 +12,7 @@ github_env="${GITHUB_ENV:-}"
 branch_ref=""
 branch_was_created=""
 published_modal_secret=false
+schema_upgraded=false
 
 read_output_value() {
   local file="$1"
@@ -38,6 +39,7 @@ summarize_database_phase() {
     fi
     echo "- Branch created: \`${branch_was_created:-unknown}\`"
     echo "- Migrations requested: \`$RUN_MIGRATIONS\`"
+    echo "- Schema upgraded to head: \`$schema_upgraded\`"
     echo "- Modal DB secret published: \`$published_modal_secret\`"
   } >> "$GITHUB_STEP_SUMMARY"
 }
@@ -56,8 +58,17 @@ branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
 export BRANCH_WAS_CREATED="$branch_was_created"
 
-if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
+# A reused preview branch only re-migrated when a push touched a migration file,
+# so code-only PRs ran the latest worker against a stale schema. Bring it to head
+# whenever we deploy backend code -- `alembic upgrade head` is a no-op once current.
+if [ "$DEPLOY_BACKEND" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
+  schema_upgraded=true
+fi
+
+# The prod-sample seed is the expensive step, so keep it gated: a reused branch
+# already has its data and only needed the schema bump above.
+if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 
