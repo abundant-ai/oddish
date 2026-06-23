@@ -252,6 +252,7 @@ async def list_tasks_core(
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
                 TrialModel.output_tokens,
+                TrialModel.total_steps,
                 TrialModel.cost_usd,
                 # Loaded eagerly so the compact builder can surface the
                 # rerun pointer without triggering a lazy-load outside
@@ -2244,6 +2245,7 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
     "input_tokens",
     "cache_tokens",
     "output_tokens",
+    "total_steps",
     "cost_usd",
     "phase_timing",
     "has_trajectory",
