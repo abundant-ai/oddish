@@ -115,8 +115,10 @@ High-level flow:
    nothing enqueues them anymore. `trials.analysis` holds the per-trial
    classification and `tasks.verdict` the task-level result — both are outputs
    of the one QA job.)
-5. Use the CLI or dashboard to watch progress and pull logs/artifacts
-   back locally.
+5. Trial completion persists queryable execution metrics on the trial row:
+   input/cache/output tokens, total trajectory steps, native runtime cost when
+   reported, phase timing, and trajectory availability. Use the CLI or dashboard
+   to watch progress and pull logs/artifacts back locally.
 
 ## Package Boundaries
 
