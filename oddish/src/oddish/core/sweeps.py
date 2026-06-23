@@ -103,4 +103,5 @@ def build_task_submission_from_sweep(
         probe_scope=submission.probe_scope,
         evaluation_metric=submission.evaluation_metric,
         link=submission.link,
+        registry_auth=submission.registry_auth,
     )

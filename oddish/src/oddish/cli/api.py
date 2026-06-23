@@ -901,6 +901,7 @@ def build_sweep_payload(
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
     link: str | None = None,
+    registry_auth: list[dict] | None = None,
 ) -> dict:
     """Build the JSON body for a single ``/tasks/sweep`` submission.
 
@@ -989,6 +990,8 @@ def build_sweep_payload(
         payload["evaluation_metric"] = evaluation_metric
     if link:
         payload["link"] = link
+    if registry_auth:
+        payload["registry_auth"] = registry_auth
 
     return payload
 
@@ -1059,6 +1062,7 @@ def submit_sweep(
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
     link: str | None = None,
+    registry_auth: list[dict] | None = None,
 ) -> dict:
     """Build and submit a single task sweep to ``/tasks/sweep``.
 
@@ -1098,6 +1102,7 @@ def submit_sweep(
         result_focus=result_focus,
         evaluation_metric=evaluation_metric,
         link=link,
+        registry_auth=registry_auth,
     )
     return post_sweep_payload(api_url, payload)
 

@@ -31,6 +31,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
@@ -380,6 +381,28 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # is no longer a per-trial classification enqueue on the normal pipeline.
 # ``enqueue_analysis_worker_job`` is retained only to drain in-flight
 # legacy ANALYSIS rows across a deploy.
+
+
+def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
+    models = getattr(submission, "registry_auth", None)
+    if not models:
+        return None
+    creds = [
+        RegistryCredential(
+            username=m.username,
+            token=m.token.get_secret_value(),
+            registry=m.registry,
+        )
+        for m in models
+    ]
+    return encrypt_credentials(creds)
+
+
+def _trial_job_payload(trial_id: str, registry_auth_enc: str | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"trial_id": trial_id}
+    if registry_auth_enc:
+        payload["registry_auth_enc"] = registry_auth_enc
+    return payload
 
 
 async def enqueue_trial_worker_job(
@@ -783,6 +806,7 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
@@ -815,7 +839,7 @@ async def create_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=org_id,
@@ -1021,6 +1045,7 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
@@ -1054,7 +1079,7 @@ async def append_trials_to_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=task.org_id,
