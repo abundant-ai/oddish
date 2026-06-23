@@ -61,8 +61,8 @@ from oddish.cli.config import (
 console = Console()
 
 # Trial imports are small (per-trial tarballs) and independent, so we
-# allow a modest fan-out. Task uploads share
-# ``cli.api.TASK_UPLOAD_CONCURRENCY`` via ``upload_tasks_with_progress``.
+# allow a modest fan-out. Task uploads instead use the adaptive limiter in
+# ``cli._concurrency`` via ``upload_tasks_with_progress``.
 TRIAL_IMPORT_CONCURRENCY = 4
 
 

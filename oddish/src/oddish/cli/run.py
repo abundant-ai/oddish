@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -19,14 +18,22 @@ from rich.progress import (
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
+from oddish.cli._concurrency import (
+    DEFAULT_MAX_CONCURRENCY,
+    DEFAULT_MIN_CONCURRENCY,
+    SUBMIT_CONCURRENCY_ENV_VAR,
+    map_with_adaptive_concurrency,
+    resolve_submit_concurrency,
+)
 from oddish.cli.api import (
-    TASK_UPLOAD_CONCURRENCY,
+    build_sweep_payload,
     get_experiment_share,
     get_task_summary,
     load_sweep_config,
+    post_sweep_payload,
     print_final_results,
     resolve_local_task_paths,
-    submit_sweep,
+    submit_sweep_batch,
     upload_tasks_with_progress,
     watch_task,
 )
@@ -64,6 +71,44 @@ def _default_cloud_environment_for_task(
     if task_path is not None and _task_config_requests_gpu(task_path):
         return EnvironmentType.MODAL
     return EnvironmentType.DAYTONA
+
+
+def _map_batch_sweep_results(
+    batch_results: list,
+    submit_targets: list,
+) -> tuple[list[dict | None], int, list[str]]:
+    """Map per-item batch sweep results onto the submitted task order.
+
+    Returns ``(results_by_index, total_trials, failed_target_ids)``: each
+    successful item's task payload is placed at its request index, and failures
+    are reported by task id (best-effort). A malformed (non-dict) item raises
+    ``typer.Exit(1)`` -- the batch may already have committed, so surface the bad
+    response rather than crash or guess.
+    """
+    results_by_index: list[dict | None] = [None] * len(submit_targets)
+    total_trials = 0
+    failed_targets: list[str] = []
+    for item in batch_results:
+        if not isinstance(item, dict):
+            error_console.print(
+                "[red]Batch task submission returned a malformed item.[/red]\n"
+                "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+            )
+            raise typer.Exit(1)
+        idx = item.get("index")
+        if not isinstance(idx, int) or not 0 <= idx < len(submit_targets):
+            continue
+        task_resp = item.get("task")
+        if item.get("success") and isinstance(task_resp, dict):
+            results_by_index[idx] = task_resp
+            total_trials += task_resp.get("trials_count", 0)
+        else:
+            failed_targets.append(submit_targets[idx][0])
+            error_console.print(
+                f"[red]Failed to submit task {submit_targets[idx][0]}:[/red] "
+                f"{item.get('error')}"
+            )
+    return results_by_index, total_trials, failed_targets
 
 
 def run(
@@ -393,6 +438,18 @@ def run(
             help="API URL (defaults to ODDISH_API_URL or Oddish Cloud)",
         ),
     ] = "",
+    submit_concurrency: Annotated[
+        Optional[int],
+        typer.Option(
+            "--submit-concurrency",
+            help=(
+                "Max parallel task uploads/submissions. Default: adaptive "
+                f"(grows on success, backs off under load, within "
+                f"[{DEFAULT_MIN_CONCURRENCY}, {DEFAULT_MAX_CONCURRENCY}]). "
+                f"Overrides ${SUBMIT_CONCURRENCY_ENV_VAR}."
+            ),
+        ),
+    ] = None,
     json_output: Annotated[
         bool,
         typer.Option(
@@ -614,7 +671,7 @@ def run(
     total_trials_submitted = 0
     append_mode = bool(existing_task_ids)
 
-    def submit_task(
+    def build_task_payload(
         task_id: str,
         *,
         append_to_task: bool,
@@ -632,8 +689,7 @@ def run(
                 task_path,
                 override_gpus=override_gpus,
             )
-        return submit_sweep(
-            api_url=api_url,
+        return build_sweep_payload(
             task_id=task_id,
             configs=task_configs,
             environment=task_environment,
@@ -662,6 +718,21 @@ def run(
             link=link,
         )
 
+    def submit_task(
+        task_id: str,
+        *,
+        append_to_task: bool,
+        task_content_hash: str | None = None,
+        task_path: Path | None = None,
+    ) -> dict:
+        payload = build_task_payload(
+            task_id,
+            append_to_task=append_to_task,
+            task_content_hash=task_content_hash,
+            task_path=task_path,
+        )
+        return post_sweep_payload(api_url, payload)
+
     # Phase 1: upload any local task directories (shared with
     # ``oddish upload``). ``oddish run`` deliberately uses
     # ``register=False`` so the subsequent sweep call owns TaskModel
@@ -684,6 +755,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
+            concurrency=submit_concurrency,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
@@ -735,31 +807,61 @@ def run(
                 total_trials_submitted += result["trials_count"]
                 submit_progress.update(progress_task, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(submit_targets)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(submit_targets))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(
-                        submit_task,
+            # Prefer the batch endpoint: submit every task in as few requests as
+            # possible (chunked under the server's per-request limit). Build all
+            # payloads up front, then post them together.
+            payloads = [
+                build_task_payload(
+                    target_id,
+                    append_to_task=append,
+                    task_content_hash=content_hash,
+                    task_path=task_path,
+                )
+                for target_id, append, content_hash, task_path in submit_targets
+            ]
+            batch_results = submit_sweep_batch(api_url, payloads)
+
+            if batch_results is not None:
+                # Best-effort: each item is independent. Surface failures by
+                # task id; keep the tasks that succeeded.
+                results_by_index, batch_trials, failed_targets = (
+                    _map_batch_sweep_results(batch_results, submit_targets)
+                )
+                total_trials_submitted += batch_trials
+                submit_progress.update(progress_task, advance=len(submit_targets))
+                all_results = [r for r in results_by_index if r is not None]
+                if failed_targets and not all_results:
+                    raise typer.Exit(1)
+            else:
+                # submit_sweep_batch only returns None for HTTP 404/405 -- an
+                # older server without the batch route, where nothing was
+                # created -- so it is safe to submit each task on its own.
+                # (Ambiguous failures raise instead of returning None.)
+                # Throttle this legacy path with the adaptive submit limiter,
+                # mirroring the upload pool, so a busy API still shapes
+                # submission concurrency.
+                submit_limiter = resolve_submit_concurrency(submit_concurrency)
+
+                def _submit_one(
+                    target: tuple[str, bool, str | None, Path | None],
+                ) -> dict:
+                    target_id, append, content_hash, target_path = target
+                    return submit_task(
                         target_id,
                         append_to_task=append,
                         task_content_hash=content_hash,
-                        task_path=task_path,
-                    ): index
-                    for index, (
-                        target_id,
-                        append,
-                        content_hash,
-                        task_path,
-                    ) in enumerate(submit_targets)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    result = future.result()
-                    results_by_index[index] = result
-                    total_trials_submitted += result["trials_count"]
-                    submit_progress.update(progress_task, advance=1)
-            all_results = [r for r in results_by_index if r is not None]
+                        task_path=target_path,
+                    )
+
+                all_results = map_with_adaptive_concurrency(
+                    submit_targets,
+                    _submit_one,
+                    submit_limiter,
+                    on_complete=lambda: submit_progress.update(
+                        progress_task, advance=1
+                    ),
+                )
+                total_trials_submitted += sum(r["trials_count"] for r in all_results)
 
     experiment_id_resolved: str | None = None
     experiment_name = ""

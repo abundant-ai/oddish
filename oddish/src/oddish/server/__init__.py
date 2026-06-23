@@ -1,4 +1,3 @@
-from collections import Counter
 from contextlib import asynccontextmanager
 import argparse
 import asyncio
@@ -6,18 +5,21 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
-from typing import cast
+from typing import Annotated, cast
 import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
     browse_tasks_core,
+    build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
+    create_task_sweep_batch_core,
     create_task_sweep_core,
     get_task_detail_core,
     get_task_status_core,
@@ -91,6 +93,8 @@ from oddish.schemas import (
     TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchRequest,
+    TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
     TrialImportCompleteRequest,
@@ -356,13 +360,20 @@ async def finalize_trial_import(
 
 
 @api.post("/tasks/sweep", response_model=TaskResponse)
-async def create_task_sweep(submission: TaskSweepSubmission):
+async def create_task_sweep(
+    submission: TaskSweepSubmission,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+):
     """
     Submit the common pattern: one task_id expanded into many trials.
 
     The task_id should be from a previous /tasks/upload/init +
     /tasks/upload/complete flow.
     The task files are already stored (S3 if enabled, local directory otherwise).
+
+    The ``Idempotency-Key`` header is accepted for parity with the cloud API but
+    not persisted here: the idempotency record store is a backend-only table, so
+    this single-tenant open-source server runs every submission as received.
     """
 
     from oddish.core.sweeps import validate_sweep_submission
@@ -374,29 +385,53 @@ async def create_task_sweep(submission: TaskSweepSubmission):
             session,
             submission=submission,
             org_id=None,
+            idempotency_key=idempotency_key,
+            idempotency_store=None,
         )
 
         if not is_append and hasattr(task, "task_s3_key") and task.task_s3_key:
             await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
-        provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = experiment or (task.experiments[0] if task.experiments else None)
-        resp_experiment_id = primary.id if primary else None
-        resp_experiment_name = primary.name if primary else None
+        return build_task_sweep_response(task, new_trials, is_append, experiment)
 
-        return TaskResponse(
-            id=task.id,
-            name=task.name,
-            status=task.status,
-            priority=task.priority,
-            trials_count=len(response_trials),
-            providers=dict(provider_counts),
-            experiment_id=resp_experiment_id,
-            experiment_name=resp_experiment_name,
-            created_at=task.created_at,
-            new_trial_ids=[t.id for t in response_trials],
+
+@api.post("/tasks/sweep/batch", response_model=TaskSweepBatchResponse)
+async def create_task_sweep_batch(
+    payload: TaskSweepBatchRequest, response: Response
+) -> TaskSweepBatchResponse:
+    """Submit several task sweeps in one request (best-effort, per-item status).
+
+    Each submission is created inside its own savepoint, so one bad item neither
+    aborts the batch nor rolls back items that already succeeded. ``results`` is
+    a per-item status array indexed to ``submissions``; HTTP 207 Multi-Status is
+    returned when at least one item fails.
+
+    Per-item idempotency-key replay is intentionally not handled here; request
+    idempotency is separate in-flight work and will layer on top of this path.
+    """
+    if not payload.submissions:
+        raise HTTPException(
+            status_code=400, detail="Must specify at least one submission"
         )
+
+    async with get_session() as session:
+        results = await create_task_sweep_batch_core(
+            session,
+            submissions=payload.submissions,
+            org_id=None,
+        )
+        await session.commit()
+
+    succeeded = sum(1 for r in results if r.success)
+    failed = len(results) - succeeded
+    if failed:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    return TaskSweepBatchResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
 
 
 @api.get("/tasks", response_model=list[TaskStatusResponse])
@@ -491,11 +526,22 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
-    async with get_session() as session:
-        result = await cancel_tasks_runs(session, payload.task_ids)
-        if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail="No matching tasks found")
-        await session.commit()
+    try:
+        async with get_session() as session:
+            result = await cancel_tasks_runs(session, payload.task_ids)
+            if result.get("error") == "not_found":
+                raise HTTPException(status_code=404, detail="No matching tasks found")
+            await session.commit()
+    except SQLAlchemyError as exc:
+        # Full detail (traceback + failing SQL + Postgres detail) to the logs;
+        # the UI gets a simple message instead of an opaque 500.
+        logger.error(
+            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Couldn't cancel right now (database error). Please retry.",
+        ) from exc
 
     return {
         "status": "cancelled",
