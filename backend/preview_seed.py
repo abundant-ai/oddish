@@ -48,21 +48,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
-# Prod-sample sizing: a generous slice of prod -- branch compute (Micro,
-# 8 GB disk) dwarfs the app dataset, so the caps are sized for feature
-# realism, not capacity. Loading stays fast because rows upsert in
-# multi-row batches (see _UPSERT_BATCH), not row-by-row.
-SAMPLE_RECENT_EXPERIMENTS = 2000
-SAMPLE_RANDOM_EXPERIMENTS = 4000
-# Per-user coverage: every distinct experiment owner contributes their K
-# most recent experiments, so per-user features (the dashboard "Mine"
-# filter) work in the preview for every member, exactly as in prod.
-SAMPLE_EXPERIMENTS_PER_OWNER = 5
-SAMPLE_EXTRA_TASKS = 3000
-SAMPLE_TRIALS_PER_EXPERIMENT = 100
-SAMPLE_SKILLS = 200
-SAMPLE_DOCUMENTS = 200
-SAMPLE_PROBE_PRESETS = 100
+SAMPLE_RECENT_EXPERIMENTS = 8
+SAMPLE_RANDOM_EXPERIMENTS = 8
+SAMPLE_EXPERIMENTS_PER_OWNER = 3
+SAMPLE_EXTRA_TASKS = 20
+SAMPLE_TRIALS_PER_EXPERIMENT = 50
+SAMPLE_SKILLS = 10
+SAMPLE_DOCUMENTS = 10
+SAMPLE_PROBE_PRESETS = 10
 
 # Multi-row upsert batching. Rows per statement are computed per table from
 # the column count against Postgres's 32767 bind-parameter limit (with
@@ -112,6 +105,18 @@ _STATE_TABLE = "_preview_seed_state"
 
 def _warn(message: str) -> None:
     print(f"preview_seed: {message}", file=sys.stderr)
+
+
+def _error_cause(exc) -> str:
+    orig = getattr(exc, "orig", None) or exc
+    cause = getattr(orig, "__cause__", None) or orig
+    parts = []
+    if sqlstate := getattr(cause, "sqlstate", None):
+        parts.append(f"SQLSTATE {sqlstate}")
+    if constraint := getattr(cause, "constraint_name", None):
+        parts.append(f"constraint {constraint}")
+    detail = type(cause).__name__
+    return f"{detail} ({', '.join(parts)})" if parts else detail
 
 
 async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
@@ -441,17 +446,10 @@ def _row_key(table, row: dict) -> str:
 
 
 def _prepare_row(table, row: dict) -> dict:
-    """Filter a sampled row to the target table's columns and coerce JSON.
-
-    Prod may trail the branch schema (extra columns dropped with a warning),
-    and raw SELECTs return JSON/JSONB as strings, which a typed bind would
-    double-encode.
-    """
     values = {}
     for k, v in row.items():
         col = table.columns.get(k)
         if col is None:
-            _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
             continue
         if isinstance(col.type, (JSONB, JSON)) and isinstance(v, str):
             try:
@@ -548,6 +546,9 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
     batch degrades further to per-row savepoints so only the colliding row
     yields to the existing one.
     """
+    for k in rows[0] if rows else []:
+        if k not in table.columns:
+            _warn(f"dropped {table.name}.{k} (no such column on the target schema)")
     prepared = [_prepare_row(table, row) for row in rows]
     try:
         await _load_table_copy_merge(engine, table, prepared)
@@ -555,7 +556,7 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
     except Exception as exc:  # noqa: BLE001 -- any failure downgrades, never aborts
         _warn(
             f"copy fast-path failed for {table.name} "
-            f"({type(exc).__name__}: {exc}); falling back to batched upserts"
+            f"({_error_cause(exc)}); falling back to batched upserts"
         )
     await _load_table_batches(engine, table, prepared)
 
@@ -622,6 +623,8 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
     for batch in batches:
         queue.put_nowait(batch)
 
+    skips: dict[str, list[str]] = {}
+
     async def worker() -> None:
         async with engine.connect() as conn:
             while True:
@@ -630,10 +633,18 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
                 except asyncio.QueueEmpty:
                     return
                 async with conn.begin():
-                    await _upsert_batch(conn, table, pk_cols, chunk)
+                    await _upsert_batch(conn, table, pk_cols, chunk, skips)
 
     workers = min(_LOAD_STREAMS, len(batches))
     await asyncio.gather(*[worker() for _ in range(workers)])
+
+    for cause, row_keys in skips.items():
+        sample = ", ".join(row_keys[:3])
+        more = f" (+{len(row_keys) - 3} more)" if len(row_keys) > 3 else ""
+        _warn(
+            f"skipped {len(row_keys)} {table.name} row(s) on {cause}; "
+            f"existing rows kept -- e.g. {sample}{more}"
+        )
 
 
 def _changed(table, stmt, keys: list[str]):
@@ -643,7 +654,9 @@ def _changed(table, stmt, keys: list[str]):
     )
 
 
-async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+async def _upsert_batch(
+    conn, table, pk_cols: list[str], chunk: list[dict], skips: dict[str, list[str]]
+) -> None:
     deferred = _LINKAGE_COLUMNS.get(table.name, set())
     non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
     stmt = pg_insert(table).values(chunk)
@@ -674,10 +687,7 @@ async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> N
                     )
                 )
         except (IntegrityError, DBAPIError) as exc:
-            _warn(
-                f"skipped {table.name} row {_row_key(table, values)} "
-                f"({type(exc.orig or exc).__name__}); existing row wins"
-            )
+            skips.setdefault(_error_cause(exc), []).append(_row_key(table, values))
 
 
 async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> None:
@@ -710,12 +720,12 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
                     delete(table).where(pk_cols[0].in_(stale[start : start + 5000]))
                 )
         else:
-            for stale_key in stale:
-                parts = stale_key.split(":", len(pk_cols) - 1)
-                stmt = delete(table)
-                for c, v in zip(pk_cols, parts):
-                    stmt = stmt.where(c == v)
-                await conn.execute(stmt)
+            keys = [k.split(":", len(pk_cols) - 1) for k in stale]
+            pk_tuple = tuple_(*pk_cols)
+            for start in range(0, len(keys), 5000):
+                await conn.execute(
+                    delete(table).where(pk_tuple.in_(keys[start : start + 5000]))
+                )
 
 
 async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
