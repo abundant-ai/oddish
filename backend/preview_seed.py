@@ -59,6 +59,18 @@ def _warn(message: str) -> None:
 _warned_dropped_columns: set[tuple[str, str]] = set()
 
 
+def _error_cause(exc) -> str:
+    orig = getattr(exc, "orig", None) or exc
+    cause = getattr(orig, "__cause__", None) or orig
+    parts = []
+    if sqlstate := getattr(cause, "sqlstate", None):
+        parts.append(f"SQLSTATE {sqlstate}")
+    if constraint := getattr(cause, "constraint_name", None):
+        parts.append(f"constraint {constraint}")
+    detail = type(cause).__name__
+    return f"{detail} ({', '.join(parts)})" if parts else detail
+
+
 async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
     async def rows_of(conn, sql: str, **params) -> list[dict]:
         res = await conn.execute(text(sql), params)
@@ -421,7 +433,7 @@ async def _load_table(engine: AsyncEngine, table, rows: list[dict]) -> None:
     except Exception as exc:
         _warn(
             f"copy fast-path failed for {table.name} "
-            f"({type(exc).__name__}: {exc}); falling back to batched upserts"
+            f"({_error_cause(exc)}); falling back to batched upserts"
         )
     await _load_table_batches(engine, table, prepared)
 
@@ -482,6 +494,8 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
     for batch in batches:
         queue.put_nowait(batch)
 
+    skips: dict[str, list[str]] = {}
+
     async def worker() -> None:
         async with engine.connect() as conn:
             while True:
@@ -490,10 +504,18 @@ async def _load_table_batches(engine: AsyncEngine, table, prepared: list[dict]) 
                 except asyncio.QueueEmpty:
                     return
                 async with conn.begin():
-                    await _upsert_batch(conn, table, pk_cols, chunk)
+                    await _upsert_batch(conn, table, pk_cols, chunk, skips)
 
     workers = min(_LOAD_STREAMS, len(batches))
     await asyncio.gather(*[worker() for _ in range(workers)])
+
+    for cause, row_keys in skips.items():
+        sample = ", ".join(row_keys[:3])
+        more = f" (+{len(row_keys) - 3} more)" if len(row_keys) > 3 else ""
+        _warn(
+            f"skipped {len(row_keys)} {table.name} row(s) on {cause}; "
+            f"existing rows kept -- e.g. {sample}{more}"
+        )
 
 
 def _changed(table, stmt, keys: list[str]):
@@ -502,7 +524,9 @@ def _changed(table, stmt, keys: list[str]):
     )
 
 
-async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> None:
+async def _upsert_batch(
+    conn, table, pk_cols: list[str], chunk: list[dict], skips: dict[str, list[str]]
+) -> None:
     deferred = _LINKAGE_COLUMNS.get(table.name, set())
     non_pk = [k for k in chunk[0] if k not in pk_cols and k not in deferred]
     stmt = pg_insert(table).values(chunk)
@@ -533,10 +557,7 @@ async def _upsert_batch(conn, table, pk_cols: list[str], chunk: list[dict]) -> N
                     )
                 )
         except (IntegrityError, DBAPIError) as exc:
-            _warn(
-                f"skipped {table.name} row {_row_key(table, values)} "
-                f"({type(exc.orig or exc).__name__}); existing row wins"
-            )
+            skips.setdefault(_error_cause(exc), []).append(_row_key(table, values))
 
 
 async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> None:
@@ -562,12 +583,12 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
                     delete(table).where(pk_cols[0].in_(stale[start : start + 5000]))
                 )
         else:
-            for stale_key in stale:
-                parts = stale_key.split(":", len(pk_cols) - 1)
-                stmt = delete(table)
-                for c, v in zip(pk_cols, parts):
-                    stmt = stmt.where(c == v)
-                await conn.execute(stmt)
+            keys = [k.split(":", len(pk_cols) - 1) for k in stale]
+            pk_tuple = tuple_(*pk_cols)
+            for start in range(0, len(keys), 5000):
+                await conn.execute(
+                    delete(table).where(pk_tuple.in_(keys[start : start + 5000]))
+                )
 
 
 async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
