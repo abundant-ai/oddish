@@ -25,6 +25,7 @@ jobs:
       run_migrations: ${{ steps.compute.outputs.run_migrations }}
       deploy_frontend: ${{ steps.compute.outputs.deploy_frontend }}
       any_change: ${{ steps.compute.outputs.any_change }}
+      preview_api_url: ${{ format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -151,7 +152,7 @@ jobs:
       MODAL_ENVIRONMENT: preview
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       MODAL_SECRET_ENVIRONMENT: main
-      EXPECTED_MODAL_API_URL: ${{ format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) }}
+      EXPECTED_MODAL_API_URL: ${{ needs.detect-changes.outputs.preview_api_url }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
       ODDISH_MODAL_API_MIN_CONTAINERS: "0"
       ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
@@ -201,7 +202,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && format('https://abundant-ai-preview--oddish-pr-{0}-api.modal.run', github.event.pull_request.number) || '' }}
+      MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && needs.detect-changes.outputs.preview_api_url || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}

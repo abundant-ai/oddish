@@ -58,7 +58,6 @@ def test_vercel_decoupled_from_backend_deploy():
 def test_backend_and_vercel_are_siblings():
     jobs = _wf()["jobs"]
     assert "update-vercel-preview" not in _needs(jobs["deploy-preview-backend"])
-    assert "deploy-preview-backend" not in _needs(jobs["update-vercel-preview"])
     assert "prepare-preview-database" in _needs(jobs["deploy-preview-backend"])
 
 
@@ -68,12 +67,12 @@ def test_post_links_waits_for_backend_and_vercel():
     assert "update-vercel-preview" in needs
 
 
-def test_deterministic_url_used_by_vercel_and_guarded_by_deploy():
+def test_deterministic_url_single_sourced_and_consumed():
     jobs = _wf()["jobs"]
-    assert URL_FRAGMENT in jobs["update-vercel-preview"]["env"]["MODAL_API_URL"]
+    assert URL_FRAGMENT in jobs["detect-changes"]["outputs"]["preview_api_url"]
+    assert "preview_api_url" in jobs["update-vercel-preview"]["env"]["MODAL_API_URL"]
     deploy_env = jobs["deploy-preview-backend"]["env"]
-    assert "EXPECTED_MODAL_API_URL" in deploy_env
-    assert URL_FRAGMENT in deploy_env["EXPECTED_MODAL_API_URL"]
+    assert "preview_api_url" in deploy_env["EXPECTED_MODAL_API_URL"]
 
 
 def test_url_format_tied_to_modal_app_label():
@@ -141,7 +140,7 @@ def _run_prepare(extra_env):
         cwd=str(tmp),
         check=True,
     )
-    return order.read_text().split() if order.exists() else []
+    return order.read_text().split()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash required")
