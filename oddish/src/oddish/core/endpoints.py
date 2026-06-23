@@ -1460,6 +1460,41 @@ async def rerun_task_qa_core(
     enqueues one QA job that re-classifies all live trials and synthesizes a
     fresh verdict.
     """
+    return await backfill_task_analysis_core(
+        session,
+        task_id=task_id,
+        org_id=org_id,
+        trial_ids=None,
+        force=True,
+        enable_analysis=True,
+    )
+
+
+async def backfill_task_analysis_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    org_id: str | None = None,
+    trial_ids: list[str] | None = None,
+    force: bool = False,
+    enable_analysis: bool = False,
+) -> dict[str, str | int]:
+    """(Re)run task-level QA to backfill trial analysis.
+
+    Resets the task verdict (so the QA job runs instead of short-circuiting
+    on a terminal verdict) and enqueues one QA job. The QA job is idempotent
+    at trial granularity, so:
+
+    * ``force=False`` resets no trial analyses -> only genuinely-missing
+      trials are (re)classified;
+    * ``force=True`` with ``trial_ids`` resets only those trials -> true
+      per-trial re-run;
+    * ``force=True`` without ``trial_ids`` resets every live trial.
+
+    ``enable_analysis=True`` also flips ``task.run_analysis`` on so future
+    trials auto-analyze. Directly enqueuing the QA job is the gate override:
+    the worker does not recheck ``run_analysis``.
+    """
     result = await session.execute(
         select(TaskModel)
         .options(selectinload(TaskModel.trials))
@@ -1496,7 +1531,6 @@ async def rerun_task_qa_core(
             status_code=400,
             detail="QA is already in progress for this task",
         )
-
     if task.verdict_status in (
         VerdictStatus.PENDING,
         VerdictStatus.QUEUED,
@@ -1507,11 +1541,20 @@ async def rerun_task_qa_core(
             detail="QA is already in progress for this task",
         )
 
-    for trial in live_trials:
-        _reset_trial_analysis(trial)
+    reset_count = 0
+    if force:
+        if trial_ids is not None:
+            wanted = set(trial_ids)
+            to_reset = [t for t in live_trials if t.id in wanted]
+        else:
+            to_reset = live_trials
+        for trial in to_reset:
+            _reset_trial_analysis(trial)
+            reset_count += 1
 
     _reset_task_verdict(task)
-    task.run_analysis = True
+    if enable_analysis:
+        task.run_analysis = True
     task.status = TaskStatus.VERDICT_PENDING
     task.finished_at = None
     task.verdict_status = VerdictStatus.QUEUED
@@ -1525,6 +1568,7 @@ async def rerun_task_qa_core(
         "status": "queued",
         "task_id": task_id,
         "trial_count": len(live_trials),
+        "reset_count": reset_count,
     }
 
 
