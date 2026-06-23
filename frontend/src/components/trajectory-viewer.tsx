@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import useSWR from "swr";
 import {
   Accordion,
@@ -12,7 +12,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Route, ChevronRight, Download, ImageOff } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Route, ChevronRight, Download, ImageOff, Search, X } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
 import {
   Tooltip,
@@ -85,6 +86,47 @@ function getFirstLine(
 ): string | null {
   const text = getTextFromContent(content);
   return text?.split("\n")[0] || null;
+}
+
+/**
+ * Collect all human-readable text from a step (message, reasoning, tool call
+ * names + arguments, and observations) into a single lower-cased string for
+ * keyword matching.
+ */
+function getStepSearchText(step: TrajectoryStep): string {
+  const parts: string[] = [getTextFromContent(step.message)];
+
+  if (step.reasoning_content) {
+    parts.push(step.reasoning_content);
+  }
+
+  if (step.tool_calls) {
+    for (const tc of step.tool_calls) {
+      parts.push(tc.function_name);
+      try {
+        parts.push(JSON.stringify(tc.arguments));
+      } catch {
+        // Ignore arguments that can't be stringified (e.g. circular refs).
+      }
+    }
+  }
+
+  if (step.observation) {
+    for (const result of step.observation.results) {
+      parts.push(getTextFromContent(result.content));
+    }
+  }
+
+  if (step.model_name) {
+    parts.push(step.model_name);
+  }
+
+  return parts.join("\n").toLowerCase();
+}
+
+function stepMatchesQuery(step: TrajectoryStep, lowerQuery: string): boolean {
+  if (!lowerQuery) return true;
+  return getStepSearchText(step).includes(lowerQuery);
 }
 
 function downloadTrajectoryJson(trajectory: Trajectory, trialId: string) {
@@ -745,19 +787,35 @@ export function TrajectoryViewer({
   );
 
   const [expandedSteps, setExpandedSteps] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
   const stepRefs = useRef<(HTMLDivElement | null)[]>([]);
   const stepReset = useRef<string | null>(null);
 
-  // Reset expanded steps when switching to a different trial
+  // Reset expanded steps and search when switching to a different trial
   useEffect(() => {
     if (trialId !== stepReset.current) {
       stepReset.current = trialId;
       setExpandedSteps([]);
+      setQuery("");
     }
   }, [trialId]);
 
+  // Filter steps by keyword, keeping each step's original index so timing,
+  // refs, and duration-bar clicks stay consistent with the full trajectory.
+  const lowerQuery = query.trim().toLowerCase();
+  const visibleSteps = useMemo(() => {
+    const all = (trajectory?.steps ?? []).map((step, idx) => ({ step, idx }));
+    if (!lowerQuery) return all;
+    return all.filter(({ step }) => stepMatchesQuery(step, lowerQuery));
+  }, [trajectory, lowerQuery]);
+
   const handleStepClick = (index: number) => {
     const stepKey = `step-${index}`;
+    // The duration bar spans every step, so a click may target a step the
+    // active filter is hiding — clear the filter so it can be shown.
+    if (lowerQuery && !visibleSteps.some(({ idx }) => idx === index)) {
+      setQuery("");
+    }
     setExpandedSteps((prev) =>
       prev.includes(stepKey) ? prev : [...prev, stepKey],
     );
@@ -819,7 +877,9 @@ export function TrajectoryViewer({
             </span>
             <span className="flex items-center gap-2">
               <span className="text-xs font-normal text-muted-foreground">
-                {trajectory.steps.length} steps
+                {lowerQuery
+                  ? `${visibleSteps.length} of ${trajectory.steps.length} steps`
+                  : `${trajectory.steps.length} steps`}
                 {trajectory.final_metrics?.total_cost_usd && (
                   <> · ${trajectory.final_metrics.total_cost_usd.toFixed(4)}</>
                 )}
@@ -837,7 +897,31 @@ export function TrajectoryViewer({
             </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="overflow-x-auto pt-0">
+        <CardContent className="overflow-x-auto pt-1">
+          {/* Step search */}
+          <div className="relative mb-4">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter steps by keyword…"
+              className="h-9 pl-8 pr-8 text-sm"
+            />
+            {query && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setQuery("")}
+                aria-label="Clear search"
+                className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+
           {/* Token Usage Bar */}
           <TokenUsageBar metrics={trajectory.final_metrics} />
 
@@ -848,40 +932,49 @@ export function TrajectoryViewer({
           />
 
           {/* Steps Accordion */}
-          <Accordion
-            type="multiple"
-            value={expandedSteps}
-            onValueChange={setExpandedSteps}
-          >
-            {trajectory.steps.map((step, idx) => (
-              <AccordionItem
-                key={step.step_id}
-                value={`step-${idx}`}
-                ref={(el: HTMLDivElement | null) => {
-                  stepRefs.current[idx] = el;
-                }}
-              >
-                <AccordionTrigger className="py-3 hover:no-underline">
-                  <StepTrigger
-                    step={step}
-                    prevTimestamp={
-                      idx > 0
-                        ? (trajectory.steps[idx - 1]?.timestamp ?? null)
-                        : null
-                    }
-                    startTimestamp={trajectory.steps[0]?.timestamp ?? null}
-                  />
-                </AccordionTrigger>
-                <AccordionContent>
-                  <StepContent
-                    step={step}
-                    trialId={trialId}
-                    apiBaseUrl={apiBaseUrl}
-                  />
-                </AccordionContent>
-              </AccordionItem>
-            ))}
-          </Accordion>
+          {visibleSteps.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              No steps match{" "}
+              <span className="font-medium text-foreground">
+                &ldquo;{query.trim()}&rdquo;
+              </span>
+            </div>
+          ) : (
+            <Accordion
+              type="multiple"
+              value={expandedSteps}
+              onValueChange={setExpandedSteps}
+            >
+              {visibleSteps.map(({ step, idx }) => (
+                <AccordionItem
+                  key={step.step_id}
+                  value={`step-${idx}`}
+                  ref={(el: HTMLDivElement | null) => {
+                    stepRefs.current[idx] = el;
+                  }}
+                >
+                  <AccordionTrigger className="py-3 hover:no-underline">
+                    <StepTrigger
+                      step={step}
+                      prevTimestamp={
+                        idx > 0
+                          ? (trajectory.steps[idx - 1]?.timestamp ?? null)
+                          : null
+                      }
+                      startTimestamp={trajectory.steps[0]?.timestamp ?? null}
+                    />
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <StepContent
+                      step={step}
+                      trialId={trialId}
+                      apiBaseUrl={apiBaseUrl}
+                    />
+                  </AccordionContent>
+                </AccordionItem>
+              ))}
+            </Accordion>
+          )}
         </CardContent>
       </Card>
     </div>
