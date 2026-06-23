@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Ensure the PR database exists, run pending migrations, seed curated
-# fixtures, and publish the Modal DB secret needed by the backend deploy phase.
 set -euo pipefail
 
 : "${DEPLOY_BACKEND:?}"
@@ -56,14 +54,12 @@ load_env_file "$supabase_env"
 branch_ref="$(read_output_value "$supabase_output" branch_ref)"
 branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
+export BRANCH_WAS_CREATED="$branch_was_created"
+
 if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
+  ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
-
-# Seed runs on EVERY prepare (not gated by RUN_MIGRATIONS/branch_was_created):
-# branches are reused across pushes, so a backend-only push would otherwise
-# skip seeding and leave stale fixtures. The seed is idempotent + convergent.
-( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 
 if [ "$DEPLOY_BACKEND" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/publish_modal_db_secret.sh"
