@@ -260,6 +260,20 @@ def test_claim_sql_clears_retry_timestamp_on_claim():
     assert "next_retry_at = NULL" in _normalized_claim_sql()
 
 
+def test_claim_sql_scopes_to_harbor_variant():
+    # harbor_variant_id is part of the effective dispatch key: a worker only
+    # claims rows of the variant it was spawned for (default + ephemeral on the
+    # default image, blessed ids on their own image). Both the claim predicate
+    # and the per-user fairness count are scoped to $5.
+    sql = _normalized_claim_sql()
+    assert "wj.harbor_variant_id = $5" in sql
+    assert "wj2.harbor_variant_id = $5" in sql
+
+
+def test_claim_sql_returns_harbor_variant():
+    assert "harbor_variant_id" in _normalized_claim_sql().split("RETURNING", 1)[1]
+
+
 # ---------------------------------------------------------------------------
 # retry backoff helpers
 # ---------------------------------------------------------------------------
@@ -366,7 +380,12 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
 def _install_fake_claim(monkeypatch, job: ClaimedWorkerJob | None):
     async def fake_claim(
-        queue_key, *, worker_id, queue_slot, modal_function_call_id=None
+        queue_key,
+        *,
+        worker_id,
+        queue_slot,
+        modal_function_call_id=None,
+        harbor_variant_id="default",
     ):
         return job
 
@@ -560,6 +579,7 @@ def test_claimed_worker_job_fields_match_schema_expectations():
         "max_attempts",
         "org_id",
         "parent_job_id",
+        "harbor_variant_id",
         "worker_id",
         "queue_slot",
         "modal_function_call_id",

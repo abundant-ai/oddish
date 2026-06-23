@@ -98,6 +98,7 @@ def test_trial_response_exposes_is_probe():
         error_message=None,
         result=None,
         harbor_config={"mode": "probe"},
+        harbor_sha=None,
         is_probe=True,
         input_tokens=None,
         cache_tokens=None,
@@ -247,7 +248,14 @@ async def test_retry_preserves_is_probe(monkeypatch):
         return 1
 
     async def fake_enqueue(
-        session, *, trial_id, queue_key, org_id, max_attempts, parent_job_id=None
+        session,
+        *,
+        trial_id,
+        queue_key,
+        org_id,
+        max_attempts,
+        parent_job_id=None,
+        harbor_variant_id="default",
     ):
         pass
 

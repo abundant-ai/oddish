@@ -23,7 +23,11 @@ class _RecordingClient:
 
 def _installs(commands: list[str]) -> tuple[bool, bool]:
     npm = any("npm install -g @anthropic-ai/claude-code" in c for c in commands)
-    pip = any("pip install --user --quiet harbor" in c for c in commands)
+    # The harbor pin is now a git direct reference resolved from the running
+    # harbor (shlex-quoted), e.g. `harbor @ git+https://...@<sha>`.
+    pip = any(
+        "pip install --user --quiet" in c and "harbor" in c for c in commands
+    )
     return npm, pip
 
 
