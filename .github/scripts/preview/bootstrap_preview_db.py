@@ -1,3 +1,22 @@
+"""Build each preview-branch Alembic stack to a schema that matches the migrations.
+
+A data-less Supabase preview branch inherits a *stale* snapshot of the parent
+schema. The old bootstrap stamped ``alembic_version`` to the parent's current
+revision before ``upgrade head``; when the inherited schema lagged it, the stamp
+marked migrations applied whose DDL never ran, so the branch sat "at head" with
+columns physically missing (``queue_slots.locked_at``, ...).
+
+So we make the schema a pure function of the migrations, keyed on a marker
+comment we stamp on ``public`` once we've built it:
+
+* marker present -> ``alembic upgrade head`` (applies whatever the PR adds);
+* marker absent  -> drop ``public``, materialize the schema from the model graph
+  (``create_all``), stamp both stacks to head, set the marker.
+
+A rebuild drops the branch's data, so we touch ``SCHEMA_REBUILT_FILE`` and
+prepare_preview_database.sh re-seeds.
+"""
+
 import asyncio
 import os
 import subprocess
@@ -7,70 +26,124 @@ from pathlib import Path
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+# Alembic project roots. run_preview_migrations.sh invokes us from ``backend/``,
+# so cwd is the backend stack and its sibling is the oddish stack. Oddish first:
+# the cloud stack layers on top of the core schema.
 STACKS = (
-    (Path.cwd().parent / "oddish", "alembic_version_oddish"),
-    (Path.cwd(), "alembic_version_backend"),
+    Path.cwd().parent / "oddish",
+    Path.cwd(),
 )
 
+# Comment stamped on ``public`` once we've built it from base. Its presence is
+# what distinguishes a branch this script owns from a stale inherited snapshot.
+SCHEMA_MARKER = "oddish-preview:schema-built-from-base"
 
-async def _parent_revisions(parent_url: str) -> dict[str, str]:
-    engine = create_async_engine(
-        parent_url,
-        connect_args={
-            "statement_cache_size": 0,
-            "server_settings": {"default_transaction_read_only": "on"},
-            "timeout": 30,
-            "command_timeout": 30,
-        },
-        poolclass=pool.NullPool,
+
+def _upgrade_head(project: Path) -> None:
+    subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
+
+
+def _stamp_head(project: Path) -> None:
+    subprocess.run(["alembic", "stamp", "head"], cwd=project, check=True)
+
+
+def _branch_db_url() -> str:
+    url = os.environ["ODDISH_DATABASE_URL"]
+    # Mirror alembic/env.py: ensure the async driver so create_async_engine
+    # doesn't fall back to a sync DBAPI.
+    if url.startswith("postgresql://") and "+asyncpg" not in url:
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def _engine(url: str):
+    # Supabase poolers (transaction mode) can't reuse asyncpg's cached prepared
+    # statements, mirroring oddish.db.connection.
+    return create_async_engine(
+        url, connect_args={"statement_cache_size": 0}, poolclass=pool.NullPool
     )
-    revisions: dict[str, str] = {}
+
+
+async def _schema_trusted(url: str) -> bool:
+    """True when ``public`` carries our marker -- i.e. this script built it, so
+    its ``alembic_version`` honestly reflects the schema and we can just upgrade.
+    """
+    engine = _engine(url)
     try:
         async with engine.connect() as conn:
-            for _, table in STACKS:
-                if await conn.scalar(text("SELECT to_regclass(:t)"), {"t": table}) is None:
-                    continue
-                rev = await conn.scalar(text(f"SELECT version_num FROM {table}"))
-                if rev:
-                    revisions[table] = rev
+            marker = await conn.scalar(
+                # Two-arg form: the one-arg obj_description() is unreliable for
+                # schema comments (it isn't scoped to pg_namespace).
+                text(
+                    "SELECT obj_description('public'::regnamespace, 'pg_namespace')"
+                )
+            )
     finally:
         await engine.dispose()
-    return revisions
+    return marker == SCHEMA_MARKER
 
 
-def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
-    proc = subprocess.run(
-        ["alembic", "stamp", rev], cwd=project, text=True, capture_output=True
-    )
-    sys.stdout.write(proc.stdout)
-    sys.stderr.write(proc.stderr)
-    if proc.returncode == 0:
-        return
-    if "Can't locate revision" not in (proc.stdout + proc.stderr):
-        raise subprocess.CalledProcessError(
-            proc.returncode, proc.args, proc.stdout, proc.stderr
-        )
-    raise SystemExit(
-        f"{table}: parent revision {rev} is not in this branch's Alembic history; "
-        "merge `main` into this branch to reconcile migrations, then recreate the "
-        "preview branch."
-    )
+async def _rebuild_schema(url: str) -> None:
+    """Drop ``public`` and rebuild the full schema from the combined model graph.
+
+    Importing the backend models registers the cloud tables (``organizations``,
+    ...) on the shared ``Base``, so the cross-stack FK
+    ``api_keys.org_id -> organizations`` resolves -- a standalone oddish
+    ``create_all`` (``000_initial_schema``) can't. Mirrors
+    ``oddish.db.connection.init_db``. Dropping ``public`` is safe: Supabase keeps
+    auth/storage in their own schemas and no migration creates an extension.
+    """
+    backend_dir = str(Path.cwd())  # run_preview_migrations.sh runs us from backend/
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    import models  # noqa: F401  registers the cloud tables on the shared Base
+    from oddish.db.models import Base
+
+    engine = _engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+            await conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    finally:
+        await engine.dispose()
+
+
+async def _mark_trusted(url: str) -> None:
+    engine = _engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(f"COMMENT ON SCHEMA public IS '{SCHEMA_MARKER}'")
+            )
+    finally:
+        await engine.dispose()
 
 
 def main() -> None:
-    branch_was_created = os.environ.get("BRANCH_WAS_CREATED") == "true"
-    parent_url = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL")
+    url = _branch_db_url()
 
-    if branch_was_created and parent_url:
-        revisions = asyncio.run(_parent_revisions(parent_url))
-        for project, table in STACKS:
-            rev = revisions.get(table)
-            if rev is None:
-                raise SystemExit(f"parent DB exposes no {table} revision to stamp")
-            _stamp_to_parent(project, table, rev)
+    if asyncio.run(_schema_trusted(url)):
+        for project in STACKS:
+            _upgrade_head(project)
+        rebuilt = False
+    else:
+        print(
+            "bootstrap_preview_db: branch schema is untrusted (fresh snapshot or "
+            "old-stamp poison); rebuilding from base",
+            file=sys.stderr,
+        )
+        asyncio.run(_rebuild_schema(url))
+        for project in STACKS:
+            _stamp_head(project)
+        asyncio.run(_mark_trusted(url))
+        rebuilt = True
 
-    for project, _ in STACKS:
-        subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
+    sentinel = os.environ.get("SCHEMA_REBUILT_FILE")
+    if rebuilt and sentinel:
+        Path(sentinel).write_text("1")
 
 
 if __name__ == "__main__":
