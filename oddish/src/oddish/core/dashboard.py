@@ -1548,6 +1548,18 @@ async def get_dashboard_core(
     every filter or pagination tweak.
     """
 
+    phase_timings_ms: dict[str, float] = {}
+    _orig_record_timing = record_timing
+
+    def _record_timing(
+        name: str, duration_ms: float, description: str | None = None
+    ) -> None:
+        phase_timings_ms[name] = duration_ms
+        if _orig_record_timing is not None:
+            _orig_record_timing(name, duration_ms, description)
+
+    record_timing = _record_timing
+
     primary_cache_key = (
         f"dashboard.primary:{org_id}:"
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
@@ -1589,8 +1601,10 @@ async def get_dashboard_core(
                 _QUEUE_PIPELINE_CACHE_TTL_SECONDS,
             )
             if cached_qp is not None:
+                logger.info(f"dashboard_core queue_pipeline_cache=hit org={org_id}")
                 qs, ps = cached_qp
             else:
+                logger.info(f"dashboard_core queue_pipeline_cache=miss org={org_id}")
                 queue_started_at = now()
                 qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
                     session, org_id
@@ -1729,6 +1743,11 @@ async def get_dashboard_core(
         if include_experiments
         else None
     )
+    logger.info(
+        f"dashboard_core cache_lookup org={org_id} "
+        f"primary={'hit' if primary_cached is not None else 'miss'} "
+        f"experiments={('hit' if experiments_cached is not None else 'miss') if include_experiments else 'skipped'}"
+    )
 
     primary_task = (
         asyncio.create_task(_fetch_primary()) if primary_cached is None else None
@@ -1778,6 +1797,14 @@ async def get_dashboard_core(
             elapsed_ms(dashboard_started_at),
             "Dashboard core total",
         )
+    logger.info(
+        f"dashboard_core org={org_id} "
+        f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
+        f"cached={response['cached']} "
+        f"primary={'recomputed' if primary_task is not None else 'cached'} "
+        f"experiments={('recomputed' if experiments_task is not None else 'cached') if include_experiments else 'skipped'} "
+        f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
+    )
     return response
 
 
