@@ -13,6 +13,7 @@ branch_ref=""
 branch_was_created=""
 published_modal_secret=false
 schema_upgraded=false
+schema_rebuilt=false
 
 read_output_value() {
   local file="$1"
@@ -40,6 +41,7 @@ summarize_database_phase() {
     echo "- Branch created: \`${branch_was_created:-unknown}\`"
     echo "- Migrations requested: \`$RUN_MIGRATIONS\`"
     echo "- Schema upgraded to head: \`$schema_upgraded\`"
+    echo "- Schema rebuilt from base: \`$schema_rebuilt\`"
     echo "- Modal DB secret published: \`$published_modal_secret\`"
   } >> "$GITHUB_STEP_SUMMARY"
 }
@@ -56,7 +58,10 @@ load_env_file "$supabase_env"
 branch_ref="$(read_output_value "$supabase_output" branch_ref)"
 branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
-export BRANCH_WAS_CREATED="$branch_was_created"
+# bootstrap_preview_db.py touches this file when it rebuilds the branch schema
+# from base (fresh branch, or a stale/poisoned one), which drops the data.
+schema_rebuilt_file="$(mktemp)"
+export SCHEMA_REBUILT_FILE="$schema_rebuilt_file"
 
 # A reused preview branch only re-migrated when a push touched a migration file,
 # so code-only PRs ran the latest worker against a stale schema. Bring it to head
@@ -66,9 +71,12 @@ if [ "$DEPLOY_BACKEND" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branc
   schema_upgraded=true
 fi
 
+[ -s "$schema_rebuilt_file" ] && schema_rebuilt=true
+
 # The prod-sample seed is the expensive step, so keep it gated: a reused branch
-# already has its data and only needed the schema bump above.
-if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
+# already has its data and only needs the schema bump above -- unless bootstrap
+# had to rebuild from base, which drops the data and forces a re-seed.
+if [ "$schema_rebuilt" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 

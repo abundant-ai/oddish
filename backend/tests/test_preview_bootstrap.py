@@ -1,8 +1,8 @@
 """Unit tests that do NOT require a database.
 
-Covers the dedupe of the preview seed's dropped-column warning (Fix 1) and
-the bootstrap script's refusal to stamp head when the parent revision is not
-in the branch's Alembic history (Fix 2).
+Covers the dedupe of the preview seed's dropped-column warning (Fix 1) and the
+bootstrap's rebuild-from-base decision -- fresh branch, or a reused branch whose
+schema drifted from the models (Fix 2).
 
 ``test_preview_seed.py`` skips its whole module without ``ODDISH_DATABASE_URL``
 (every test there touches Postgres); these checks are pure functions, so they
@@ -10,11 +10,9 @@ live here and always run.
 """
 
 import importlib.util
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from sqlalchemy import JSON, Column, MetaData, String, Table
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -87,8 +85,9 @@ def test_prepare_row_preserves_json_coercion_and_filtering():
 
 
 # ---------------------------------------------------------------------------
-# Fix 2: stamping the parent revision fails loudly (no silent ``stamp head``)
-# when that revision is not in the branch's Alembic history.
+# Fix 2: the bootstrap rebuilds the branch schema from base instead of trusting
+# the inherited (stale) snapshot -- on a fresh branch, and on a reused branch
+# whose schema still drifts from the models after upgrade (old-stamp poison).
 # ---------------------------------------------------------------------------
 
 
@@ -106,64 +105,67 @@ def _load_bootstrap():
     return module
 
 
-def test_stamp_to_parent_raises_when_revision_not_in_history(monkeypatch):
-    """A 'Can't locate revision' from the stamp must raise SystemExit with an
-    actionable message and must NOT fall back to ``stamp head`` (which would
-    assert an unverified schema and corrupt the branch)."""
+def _fake_run(calls):
+    """Record alembic invocations; all succeed (no DB in these tests)."""
+
+    def run(args, *a, **kw):
+        calls.append(list(args))
+        return SimpleNamespace(returncode=0, args=args, stdout="", stderr="")
+
+    return run
+
+
+def _patch_db(monkeypatch, boot, *, trusted, resets, marks):
+    async def fake_trusted(url):
+        return trusted
+
+    async def fake_reset(url):
+        resets.append(url)
+
+    async def fake_mark(url):
+        marks.append(url)
+
+    monkeypatch.setattr(boot, "_schema_trusted", fake_trusted)
+    monkeypatch.setattr(boot, "_reset_public_schema", fake_reset)
+    monkeypatch.setattr(boot, "_mark_trusted", fake_mark)
+
+
+def _prime_env(monkeypatch, tmp_path):
+    sentinel = tmp_path / "rebuilt"
+    monkeypatch.setenv("ODDISH_DATABASE_URL", "postgresql+asyncpg://u@h/db")
+    monkeypatch.setenv("SCHEMA_REBUILT_FILE", str(sentinel))
+    return sentinel
+
+
+def test_trusted_branch_upgrades_without_rebuild(monkeypatch, tmp_path):
+    """A branch this script already built (marker present) just upgrades to
+    head -- no drop, no re-mark, no re-seed signal."""
     boot = _load_bootstrap()
-    calls = []
+    calls, resets, marks = [], [], []
+    monkeypatch.setattr(boot.subprocess, "run", _fake_run(calls))
+    _patch_db(monkeypatch, boot, trusted=True, resets=resets, marks=marks)
+    sentinel = _prime_env(monkeypatch, tmp_path)
 
-    def fake_run(args, *a, **kw):
-        calls.append(args)
-        return SimpleNamespace(
-            returncode=1,
-            args=args,
-            stdout="",
-            stderr=(
-                "FAILED: Can't locate revision identified by 'deadbeef0000'"
-            ),
-        )
+    boot.main()
 
-    monkeypatch.setattr(boot.subprocess, "run", fake_run)
-
-    with pytest.raises(SystemExit) as exc:
-        boot._stamp_to_parent(Path("/tmp/proj"), "alembic_version_oddish", "deadbeef0000")
-
-    message = str(exc.value)
-    assert "deadbeef0000" in message
-    assert "not in this branch's Alembic history" in message
-    assert "merge `main`" in message
-    # Only the stamp attempt ran; no second 'stamp head' subprocess.
-    assert calls == [["alembic", "stamp", "deadbeef0000"]]
-    assert not any("head" in c for c in calls)
+    assert resets == [] and marks == []
+    upgrades = [c for c in calls if c[:2] == ["alembic", "upgrade"]]
+    assert len(upgrades) == len(boot.STACKS)
+    assert not sentinel.exists()
 
 
-def test_stamp_to_parent_returns_on_success(monkeypatch):
-    """A clean stamp returns without raising and runs exactly one command."""
+def test_untrusted_branch_rebuilds_marks_and_signals(monkeypatch, tmp_path):
+    """A fresh snapshot or stamp-poisoned branch (marker absent) is dropped,
+    replayed from base, marked, and signals a re-seed."""
     boot = _load_bootstrap()
-    calls = []
+    calls, resets, marks = [], [], []
+    monkeypatch.setattr(boot.subprocess, "run", _fake_run(calls))
+    _patch_db(monkeypatch, boot, trusted=False, resets=resets, marks=marks)
+    sentinel = _prime_env(monkeypatch, tmp_path)
 
-    def fake_run(args, *a, **kw):
-        calls.append(args)
-        return SimpleNamespace(returncode=0, args=args, stdout="ok\n", stderr="")
+    boot.main()
 
-    monkeypatch.setattr(boot.subprocess, "run", fake_run)
-
-    boot._stamp_to_parent(Path("/tmp/proj"), "alembic_version_oddish", "abc123")
-    assert calls == [["alembic", "stamp", "abc123"]]
-
-
-def test_stamp_to_parent_reraises_unrelated_failure(monkeypatch):
-    """A stamp failure that is NOT 'Can't locate revision' re-raises as a
-    CalledProcessError (unchanged behavior)."""
-    boot = _load_bootstrap()
-
-    def fake_run(args, *a, **kw):
-        return SimpleNamespace(
-            returncode=2, args=args, stdout="", stderr="some other alembic error"
-        )
-
-    monkeypatch.setattr(boot.subprocess, "run", fake_run)
-
-    with pytest.raises(subprocess.CalledProcessError):
-        boot._stamp_to_parent(Path("/tmp/proj"), "alembic_version_oddish", "abc123")
+    assert len(resets) == 1 and len(marks) == 1
+    upgrades = [c for c in calls if c[:2] == ["alembic", "upgrade"]]
+    assert len(upgrades) == len(boot.STACKS)
+    assert sentinel.read_text() == "1"
