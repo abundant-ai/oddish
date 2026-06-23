@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import selectinload
 from typing import Annotated, cast
 import uvicorn
@@ -525,11 +526,22 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
-    async with get_session() as session:
-        result = await cancel_tasks_runs(session, payload.task_ids)
-        if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail="No matching tasks found")
-        await session.commit()
+    try:
+        async with get_session() as session:
+            result = await cancel_tasks_runs(session, payload.task_ids)
+            if result.get("error") == "not_found":
+                raise HTTPException(status_code=404, detail="No matching tasks found")
+            await session.commit()
+    except SQLAlchemyError as exc:
+        # Full detail (traceback + failing SQL + Postgres detail) to the logs;
+        # the UI gets a simple message instead of an opaque 500.
+        logger.error(
+            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Couldn't cancel right now (database error). Please retry.",
+        ) from exc
 
     return {
         "status": "cancelled",
