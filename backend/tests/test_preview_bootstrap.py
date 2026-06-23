@@ -115,7 +115,7 @@ def _fake_run(calls):
     return run
 
 
-def _patch_db(monkeypatch, boot, *, trusted, resets, marks):
+def _patch_db(monkeypatch, boot, *, trusted, resets, marks, creates):
     async def fake_trusted(url):
         return trusted
 
@@ -125,9 +125,13 @@ def _patch_db(monkeypatch, boot, *, trusted, resets, marks):
     async def fake_mark(url):
         marks.append(url)
 
+    async def fake_create_all(url):
+        creates.append(url)
+
     monkeypatch.setattr(boot, "_schema_trusted", fake_trusted)
     monkeypatch.setattr(boot, "_reset_public_schema", fake_reset)
     monkeypatch.setattr(boot, "_mark_trusted", fake_mark)
+    monkeypatch.setattr(boot, "_create_all_from_models", fake_create_all)
 
 
 def _prime_env(monkeypatch, tmp_path):
@@ -139,33 +143,35 @@ def _prime_env(monkeypatch, tmp_path):
 
 def test_trusted_branch_upgrades_without_rebuild(monkeypatch, tmp_path):
     """A branch this script already built (marker present) just upgrades to
-    head -- no drop, no re-mark, no re-seed signal."""
+    head -- no drop, no create_all, no stamp, no re-seed signal."""
     boot = _load_bootstrap()
-    calls, resets, marks = [], [], []
+    calls, resets, marks, creates = [], [], [], []
     monkeypatch.setattr(boot.subprocess, "run", _fake_run(calls))
-    _patch_db(monkeypatch, boot, trusted=True, resets=resets, marks=marks)
+    _patch_db(monkeypatch, boot, trusted=True, resets=resets, marks=marks, creates=creates)
     sentinel = _prime_env(monkeypatch, tmp_path)
 
     boot.main()
 
-    assert resets == [] and marks == []
+    assert resets == [] and marks == [] and creates == []
     upgrades = [c for c in calls if c[:2] == ["alembic", "upgrade"]]
     assert len(upgrades) == len(boot.STACKS)
+    assert not any(c[:2] == ["alembic", "stamp"] for c in calls)
     assert not sentinel.exists()
 
 
 def test_untrusted_branch_rebuilds_marks_and_signals(monkeypatch, tmp_path):
     """A fresh snapshot or stamp-poisoned branch (marker absent) is dropped,
-    replayed from base, marked, and signals a re-seed."""
+    rebuilt from the model graph, stamped to head, marked, and signals a re-seed."""
     boot = _load_bootstrap()
-    calls, resets, marks = [], [], []
+    calls, resets, marks, creates = [], [], [], []
     monkeypatch.setattr(boot.subprocess, "run", _fake_run(calls))
-    _patch_db(monkeypatch, boot, trusted=False, resets=resets, marks=marks)
+    _patch_db(monkeypatch, boot, trusted=False, resets=resets, marks=marks, creates=creates)
     sentinel = _prime_env(monkeypatch, tmp_path)
 
     boot.main()
 
-    assert len(resets) == 1 and len(marks) == 1
-    upgrades = [c for c in calls if c[:2] == ["alembic", "upgrade"]]
-    assert len(upgrades) == len(boot.STACKS)
+    assert len(resets) == 1 and len(creates) == 1 and len(marks) == 1
+    stamps = [c for c in calls if c[:2] == ["alembic", "stamp"]]
+    assert len(stamps) == len(boot.STACKS)
+    assert not any(c[:2] == ["alembic", "upgrade"] for c in calls)
     assert sentinel.read_text() == "1"

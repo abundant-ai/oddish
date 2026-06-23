@@ -10,7 +10,8 @@ So we make the schema a pure function of the migrations, keyed on a marker
 comment we stamp on ``public`` once we've built it:
 
 * marker present -> ``alembic upgrade head`` (applies whatever the PR adds);
-* marker absent  -> drop ``public``, replay every stack from base, set the marker.
+* marker absent  -> drop ``public``, materialize the schema from the model graph
+  (``create_all``), stamp both stacks to head, set the marker.
 
 A rebuild drops the branch's data, so we touch ``SCHEMA_REBUILT_FILE`` and
 prepare_preview_database.sh re-seeds.
@@ -40,6 +41,10 @@ SCHEMA_MARKER = "oddish-preview:schema-built-from-base"
 
 def _upgrade_head(project: Path) -> None:
     subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
+
+
+def _stamp_head(project: Path) -> None:
+    subprocess.run(["alembic", "stamp", "head"], cwd=project, check=True)
 
 
 def _branch_db_url() -> str:
@@ -95,6 +100,29 @@ async def _reset_public_schema(url: str) -> None:
         await engine.dispose()
 
 
+async def _create_all_from_models(url: str) -> None:
+    """Materialize the full schema from the combined model graph.
+
+    The oddish and backend stacks share one ``Base``. Importing the backend
+    models registers the cloud tables (``organizations``, ...) on it, so the
+    cross-stack FK ``api_keys.org_id -> organizations`` resolves -- which a
+    standalone oddish ``create_all`` (``000_initial_schema``, run by the oddish
+    stack alone) cannot. This mirrors ``oddish.db.connection.init_db``.
+    """
+    backend_dir = str(Path.cwd())  # run_preview_migrations.sh runs us from backend/
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    import models  # noqa: F401  registers the cloud tables on the shared Base
+    from oddish.db.models import Base
+
+    engine = _engine(url)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    finally:
+        await engine.dispose()
+
+
 async def _mark_trusted(url: str) -> None:
     engine = _engine(url)
     try:
@@ -120,8 +148,9 @@ def main() -> None:
             file=sys.stderr,
         )
         asyncio.run(_reset_public_schema(url))
+        asyncio.run(_create_all_from_models(url))
         for project in STACKS:
-            _upgrade_head(project)
+            _stamp_head(project)
         asyncio.run(_mark_trusted(url))
         rebuilt = True
 
