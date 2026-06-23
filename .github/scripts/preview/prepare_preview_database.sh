@@ -62,14 +62,11 @@ load_env_file "$supabase_env"
 branch_ref="$(read_output_value "$supabase_output" branch_ref)"
 branch_was_created="$(read_output_value "$supabase_output" branch_was_created)"
 
-# bootstrap_preview_db.py touches this file when it rebuilds the branch schema
-# from base (fresh branch, or a stale/poisoned one), which drops the data.
 schema_rebuilt_file="$(mktemp)"
 export SCHEMA_REBUILT_FILE="$schema_rebuilt_file"
 
-# A reused preview branch only re-migrated when a push touched a migration file,
-# so code-only PRs ran the latest worker against a stale schema. Bring it to head
-# whenever we deploy backend code -- `alembic upgrade head` is a no-op once current.
+# Migrate on any backend deploy, not just migration-file changes, so a reused
+# branch can't run new code against a stale schema.
 if [ "$DEPLOY_BACKEND" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
   schema_upgraded=true
@@ -77,9 +74,8 @@ fi
 
 [ -s "$schema_rebuilt_file" ] && schema_rebuilt=true
 
-# The prod-sample seed is the expensive step, so keep it gated: a reused branch
-# already has its data and only needs the schema bump above -- unless bootstrap
-# had to rebuild from base, which drops the data and forces a re-seed.
+# Seed is expensive: only when fresh, on an explicit migration run, or after a
+# rebuild dropped the branch's data.
 if [ "$schema_rebuilt" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
