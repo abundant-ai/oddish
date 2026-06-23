@@ -446,6 +446,16 @@ def run(
             help="Environment path to download as an artifact after the trial (can be used multiple times)",
         ),
     ] = None,
+    registry_login: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--registry-login",
+            help=(
+                "Registry login for sandbox Docker pulls, as "
+                "'username=USER,token=TOKEN[,registry=docker.io]' (repeatable)."
+            ),
+        ),
+    ] = None,
     retry: Annotated[
         bool,
         typer.Option(
@@ -574,6 +584,16 @@ def run(
         api_url = get_api_url()
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
+
+    import os as _os
+
+    from oddish.registry_auth import parse_registry_login
+
+    try:
+        registry_auth = parse_registry_login(registry_login, dict(_os.environ)) or None
+    except ValueError as exc:
+        error_console.print(f"[red]Invalid --registry-login:[/red] {exc}")
+        raise typer.Exit(1)
 
     # Retry mode: re-run existing trials, or the task-level QA job, for a
     # target instead of submitting new work. Kept on `run` (rather than a
@@ -774,6 +794,7 @@ def run(
             append_to_task=append_to_task,
             content_hash=task_content_hash,
             link=link,
+            registry_auth=registry_auth,
         )
 
     def submit_task(

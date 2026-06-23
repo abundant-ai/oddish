@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
@@ -171,6 +171,18 @@ class AgentModelPair(TrialSpec):
     )
 
 
+class RegistryAuth(BaseModel):
+    registry: str = Field(
+        "docker.io",
+        description="Registry host. Defaults to Docker Hub (docker.io).",
+    )
+    username: str = Field(..., description="Registry username.")
+    token: SecretStr = Field(
+        ...,
+        description="Registry password or access token (a Docker Hub PAT is recommended).",
+    )
+
+
 class TaskSubmission(BaseModel):
     """Task submission request (API input)."""
 
@@ -253,6 +265,10 @@ class TaskSubmission(BaseModel):
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
+    registry_auth: list[RegistryAuth] | None = Field(
+        None,
+        description="Per-run registry logins for sandbox Docker pulls.",
     )
 
     @model_validator(mode="after")
@@ -389,6 +405,10 @@ class TaskSweepSubmission(BaseModel):
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
+    registry_auth: list[RegistryAuth] | None = Field(
+        None,
+        description="Per-run registry logins for sandbox Docker pulls.",
     )
 
     @model_validator(mode="after")

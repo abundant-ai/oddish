@@ -57,6 +57,8 @@ def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
     spec) so an identical re-submit yields the same key and any change to the
     spec yields a different one.
     """
+    if "registry_auth" in payload:
+        payload = {k: v for k, v in payload.items() if k != "registry_auth"}
     return _canonical_digest(payload)
 
 

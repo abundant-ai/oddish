@@ -884,6 +884,8 @@ class Settings(BaseSettings):
         "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
     )
 
+    registry_auth_key: str | None = None
+
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
     # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
     # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.
