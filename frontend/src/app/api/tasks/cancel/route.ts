@@ -41,7 +41,16 @@ export async function POST(request: Request) {
     });
 
     const text = await res.text();
-    const data = text ? JSON.parse(text) : null;
+    // The backend normally returns JSON, but an unhandled 500 yields a
+    // plain-text body ("Internal Server Error"). Guard the parse so we
+    // forward the real status + message instead of throwing here (which
+    // would surface as a misleading "Unexpected token 'I'..." in the UI).
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text ? { error: text } : null;
+    }
 
     if (!res.ok) {
       return NextResponse.json(data ?? { error: "Failed to cancel tasks" }, {

@@ -518,6 +518,43 @@ async def test_bulk_batches_load_and_fallback_yields_single_rows():
         await src.dispose()
 
 
+async def test_trials_per_experiment_cap_bounds_the_draw(monkeypatch):
+    src = await _make_source_db()
+    try:
+        t = Base.metadata.tables
+        async with src.begin() as c:
+            await c.execute(
+                t["trials"].insert(),
+                [
+                    {
+                        "id": f"tr-cap-{i:04d}",
+                        "name": f"tr-cap-{i:04d}",
+                        "task_id": "task-solo",
+                        "task_version_id": "ver-solo-2",
+                        "experiment_id": "exp-a",
+                        "org_id": "org-a",
+                        "agent": "claude",
+                        "provider": "anthropic",
+                        "queue_key": "q",
+                        "timeout_minutes": 30,
+                        "environment": "modal",
+                        "harbor_config": {},
+                        "status": "SUCCESS",
+                        "origin": "oddish",
+                        "result": {"reward": 0},
+                        "superseded_by_trial_id": None,
+                    }
+                    for i in range(20)
+                ],
+            )
+        monkeypatch.setattr(preview_seed, "SAMPLE_TRIALS_PER_EXPERIMENT", 3)
+        s = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        exp_a_trials = [t for t in s["rows"]["trials"] if t["experiment_id"] == "exp-a"]
+        assert len(exp_a_trials) == 3
+    finally:
+        await src.dispose()
+
+
 async def test_per_owner_anchor_guarantees_mine_view_data(monkeypatch):
     """With the global anchors disabled, every distinct experiment owner is
     still represented in the draw -- the guarantee behind the dashboard
