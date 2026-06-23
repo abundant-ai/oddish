@@ -792,10 +792,11 @@ class TrialModel(TimestampedMixin, Base):
     )  # S3 prefix for trial results/logs
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Token usage & cost (extracted from Harbor's AgentContext)
+    # Token usage, steps & cost (extracted from Harbor's AgentContext / trajectory)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cache_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
