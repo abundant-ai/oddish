@@ -244,9 +244,9 @@ oddish backfill-analysis --experiment <experiment_id> --enable-analysis
 
 Options
 
-- `--experiment`, `-e TEXT` - Re-analyze all trials in an experiment
-- `--task`, `-t TEXT` - Re-analyze all trials in a task
-- `--trial`, `-T TEXT` - Re-analyze a single trial
+- `--experiment TEXT` - Re-analyze all trials in an experiment
+- `--task TEXT` - Re-analyze all trials in a task
+- `--trial TEXT` - Re-analyze a single trial
 - `--force` - Re-run analysis even for trials already analyzed. With `--trial`, re-runs just that trial; with `--task` or `--experiment`, re-runs all their trials.
 - `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
 - `--json` - Emit machine-readable output.
