@@ -48,21 +48,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 SEED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)
 
-# Prod-sample sizing: a generous slice of prod -- branch compute (Micro,
-# 8 GB disk) dwarfs the app dataset, so the caps are sized for feature
-# realism, not capacity. Loading stays fast because rows upsert in
-# multi-row batches (see _UPSERT_BATCH), not row-by-row.
-SAMPLE_RECENT_EXPERIMENTS = 2000
-SAMPLE_RANDOM_EXPERIMENTS = 4000
-# Per-user coverage: every distinct experiment owner contributes their K
-# most recent experiments, so per-user features (the dashboard "Mine"
-# filter) work in the preview for every member, exactly as in prod.
-SAMPLE_EXPERIMENTS_PER_OWNER = 5
-SAMPLE_EXTRA_TASKS = 3000
-SAMPLE_TRIALS_PER_EXPERIMENT = 100
-SAMPLE_SKILLS = 200
-SAMPLE_DOCUMENTS = 200
-SAMPLE_PROBE_PRESETS = 100
+SAMPLE_RECENT_EXPERIMENTS = 8
+SAMPLE_RANDOM_EXPERIMENTS = 8
+SAMPLE_EXPERIMENTS_PER_OWNER = 3
+SAMPLE_EXTRA_TASKS = 20
+SAMPLE_TRIALS_PER_EXPERIMENT = 50
+SAMPLE_SKILLS = 10
+SAMPLE_DOCUMENTS = 10
+SAMPLE_PROBE_PRESETS = 10
 
 # Multi-row upsert batching. Rows per statement are computed per table from
 # the column count against Postgres's 32767 bind-parameter limit (with
