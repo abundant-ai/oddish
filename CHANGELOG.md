@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-23]
+
+### Added
+
+- `GET /experiments/{id}/trials` read endpoint returns all non-superseded trials for an experiment, gated by READ scope with org-scoped access control; trial rows now include an `is_probe` flag (#414)
+- Probe agent receives short-lived read-only API credentials and the `oddish-query` CLI on launch, enabling it to pull trial trajectories and logs on demand; a credentials-mint failure now fails the trial with a stored error rather than silently proceeding without access (#414)
+
+### Changed
+
+- `oddish-query` CLI ported from Python to a dependency-free Node.js script so it works in all claude-code environments where Node is guaranteed but `python3` is not; old Python CLI removed (#414)
+- `APIKeyModel`, `APIKeyScope`, and key helpers relocated from `backend/models.py` into `oddish.db.models` and `oddish.core.api_keys` so workers can mint credentials; `backend/models.py` re-exports both for backwards compatibility (#414)
+- cc_chat scope CLAUDE.md templates rewritten around the `oddish-query` CLI (`experiments trials`, `tasks trials`, `trials logs`); per-scope artifact file mounting (`experiment_files.py`, `task_files.py`, `file_loader.py`) removed in favour of query-on-demand access (#414)
+- Probe trials are now forced to `allow_internet=true` to give the `oddish-query` CLI egress to the Oddish API (#414)
+- Experiment probe-launch button in the trials table is now always visible instead of appearing only on row hover; `group/task-row` hover marker removed (#400)
+- `backend/uv.lock` synced to record the missing `jsonschema` dependency edges under the `oddish` editable package, fixing dirty lockfile state on every `uv` invocation and `uv sync --frozen` compatibility in CI (#415)
+
+### Fixed
+
+- Codex trials on `openai/*` models (e.g. `openai/gpt-5.5`) no longer time out with zero tokens: `AzureCompatibleCodex` now implements `required_outbound_domains` to declare the configured Azure OpenAI endpoint host and per-trial `OPENAI_BASE_URL` alongside the OpenAI defaults, so Harbor's Modal egress firewall allowlists the Azure host and requests reach the model (#416)
+
+---
+
 ## [2026-06-21]
 
 ### Changed
