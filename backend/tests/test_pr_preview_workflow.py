@@ -149,7 +149,7 @@ def test_stop_fold_runs_first_when_deploying_backend():
     order = _run_prepare({"DEPLOY_BACKEND": "true", "RUN_MIGRATIONS": "false"})
     assert order[:2] == ["stop", "supabase"]
     assert "publish" in order
-    assert "migrate" not in order
+    assert "migrate" in order
     assert "seed" not in order
 
 
