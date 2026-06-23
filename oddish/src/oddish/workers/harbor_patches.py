@@ -5,10 +5,22 @@ place, so behavioral shims that must ship with oddish live here and are applied
 once, idempotently, at worker startup via :func:`apply_harbor_patches`. Keep
 these minimal and reversible -- prefer upstreaming to the harbor fork when a shim
 proves durable.
+
+Two shims live here, both targeting the Docker-in-Docker (compose) strategies
+(``_DaytonaDinD`` / ``_ModalDinD``):
+
+* **dockerd diagnostics** -- fold the DinD daemon's own log into the
+  "Docker daemon not ready" error so failures are debuggable.
+* **registry login** -- when the run supplied a per-run container-registry
+  credential (see :mod:`oddish.registry_auth`), write ``/root/.docker/config.json``
+  inside the sandbox *after the daemon is ready and before ``compose build``/``up``*
+  so image pulls authenticate (fixing Docker Hub ``toomanyrequests``), then remove
+  it again on teardown.
 """
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -27,6 +39,23 @@ _DOCKERD_DIAG_CMD = (
     "echo '=== disk ==='; df -h /var/lib/docker 2>/dev/null || df -h 2>/dev/null || true"
 )
 
+# Root's docker config inside the DinD VM. The docker CLI (running as root for
+# ``compose build``/``up``) reads this and forwards the auth to the daemon on
+# every pull.
+_DOCKER_CONFIG_PATH = "/root/.docker/config.json"
+_DOCKER_CONFIG_ENV = "ODDISH_DOCKERCFG_B64"
+
+# Write the config from a base64 blob passed via the exec env so the raw token
+# is never embedded literally in the command. Busybox (Alpine) provides printf
+# and base64. ``umask 077`` makes the redirection create config.json as 0600
+# from the start (no world-readable window) — chmod is belt-and-suspenders.
+_WRITE_DOCKER_CONFIG_CMD = (
+    f'umask 077 && mkdir -p "$(dirname {_DOCKER_CONFIG_PATH})" && '
+    f'printf %s "${_DOCKER_CONFIG_ENV}" | base64 -d > {_DOCKER_CONFIG_PATH} && '
+    f"chmod 600 {_DOCKER_CONFIG_PATH}"
+)
+_SCRUB_DOCKER_CONFIG_CMD = f"rm -f {_DOCKER_CONFIG_PATH}"
+
 
 def apply_harbor_patches() -> None:
     """Install oddish's Harbor runtime shims exactly once."""
@@ -34,7 +63,12 @@ def apply_harbor_patches() -> None:
     if _PATCHED:
         return
     _PATCHED = True
-    _patch_dind_docker_daemon_diagnostics()
+    _patch_dind_strategies()
+
+
+# =============================================================================
+# dockerd diagnostics
+# =============================================================================
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
@@ -46,54 +80,175 @@ async def _collect_dockerd_diagnostics(strategy: Any) -> str:
     """
     try:
         result = await strategy._vm_exec(_DOCKERD_DIAG_CMD, timeout_sec=15)
-        out = (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
+        out = (getattr(result, "stdout", "") or "") + (
+            getattr(result, "stderr", "") or ""
+        )
         out = out.strip() or "(no diagnostic output)"
-        return "dockerd diagnostics (captured by oddish before sandbox teardown):\n" + out
+        return (
+            "dockerd diagnostics (captured by oddish before sandbox teardown):\n" + out
+        )
     except Exception as exc:  # the VM/sandbox may already be unreachable
         return f"dockerd diagnostics unavailable: {exc!r}"
 
 
+# =============================================================================
+# per-run registry login
+# =============================================================================
+
+
+def _redact(text: str, secrets: list[str]) -> str:
+    out = text
+    for secret in secrets:
+        if secret:
+            out = out.replace(secret, "***")
+    return out
+
+
+async def _perform_registry_login(strategy: Any) -> None:
+    """Authenticate the DinD daemon to the run's registries, if any were supplied.
+
+    Reads the request-scoped credentials published by the worker. Writes
+    ``/root/.docker/config.json`` so subsequent ``compose build``/``up`` pulls are
+    authenticated. Never raises -- a login failure should degrade to the old
+    (anonymous) behavior, not abort the trial before it starts.
+    """
+    try:
+        from oddish.registry_auth import (
+            build_docker_config_json,
+            current_registry_credentials,
+        )
+
+        creds = current_registry_credentials.get()
+        if not creds:
+            return
+
+        cfg_b64 = base64.b64encode(build_docker_config_json(creds).encode()).decode()
+        result = await strategy._vm_exec(
+            _WRITE_DOCKER_CONFIG_CMD,
+            env={_DOCKER_CONFIG_ENV: cfg_b64},
+            timeout_sec=20,
+        )
+        registries = ", ".join(sorted({c.auth_key() for c in creds}))
+        if getattr(result, "return_code", 1) != 0:
+            tokens = [c.token for c in creds]
+            detail = (getattr(result, "stdout", "") or "") + (
+                getattr(result, "stderr", "") or ""
+            )
+            logger.warning(
+                "Registry login write failed (rc=%s) for %s: %s",
+                getattr(result, "return_code", "?"),
+                registries,
+                _redact(detail, tokens),
+            )
+        else:
+            logger.info("Authenticated DinD daemon for registries: %s", registries)
+    except Exception as exc:  # never block trial startup on login
+        logger.warning("Registry login skipped due to error: %r", exc)
+
+
+async def _scrub_registry_login(strategy: Any) -> None:
+    """Remove the docker config (log the token off) on sandbox teardown."""
+    try:
+        from oddish.registry_auth import current_registry_credentials
+
+        if not current_registry_credentials.get():
+            return
+        await strategy._vm_exec(_SCRUB_DOCKER_CONFIG_CMD, timeout_sec=10)
+    except Exception as exc:  # pragma: no cover - best-effort cleanup
+        logger.debug("Registry logout scrub skipped: %r", exc)
+
+
+# =============================================================================
+# wrappers
+# =============================================================================
+
+
 def _wrap_wait_for_docker_daemon(
     orig: Callable[[Any], Awaitable[None]],
+    *,
+    with_diagnostics: bool,
 ) -> Callable[[Any], Awaitable[None]]:
-    """Wrap ``_wait_for_docker_daemon`` to fold dockerd logs into its error.
+    """Wrap ``_wait_for_docker_daemon`` to (optionally) add dockerd diagnostics on
+    failure and to run the per-run registry login on success.
 
-    Harbor raises ``RuntimeError("Docker daemon not ready after 60s. Last
-    output: ...")`` where "Last output" is only the failing ``docker info`` --
-    always just "Cannot connect to the Docker daemon", which never says why the
-    daemon died. We capture dockerd's own log and re-raise with it appended.
+    The daemon-ready return is the exact seam: the daemon is up and ``compose
+    build``/``up`` have not started, so writing the docker config here makes every
+    subsequent pull authenticated.
     """
 
     async def _wait_for_docker_daemon(self: Any) -> None:
         try:
-            return await orig(self)
+            await orig(self)
         except RuntimeError as exc:
-            diag = await _collect_dockerd_diagnostics(self)
-            raise RuntimeError(f"{exc}\n\n{diag}") from exc
+            if with_diagnostics:
+                diag = await _collect_dockerd_diagnostics(self)
+                raise RuntimeError(f"{exc}\n\n{diag}") from exc
+            raise
+        await _perform_registry_login(self)
 
     _wait_for_docker_daemon._oddish_wrapped = True  # type: ignore[attr-defined]
     return _wait_for_docker_daemon
 
 
-def _patch_dind_docker_daemon_diagnostics() -> None:
+def _wrap_stop(
+    orig: Callable[..., Awaitable[None]],
+) -> Callable[..., Awaitable[None]]:
+    """Wrap ``stop`` to scrub the docker config before the original teardown.
+
+    Signature-agnostic (``*args``/``**kwargs``) so it survives any drift in
+    Harbor's ``stop(self, delete)`` signature.
+    """
+
+    async def _stop(self: Any, *args: Any, **kwargs: Any) -> None:
+        await _scrub_registry_login(self)
+        return await orig(self, *args, **kwargs)
+
+    _stop._oddish_wrapped = True  # type: ignore[attr-defined]
+    return _stop
+
+
+def _patch_strategy(dind: type | None, *, with_diagnostics: bool, label: str) -> None:
+    if dind is None:
+        logger.warning("Harbor %s strategy not found; DinD shims skipped", label)
+        return
+
+    wait = getattr(dind, "_wait_for_docker_daemon", None)
+    if wait is not None and not getattr(wait, "_oddish_wrapped", False):
+        dind._wait_for_docker_daemon = _wrap_wait_for_docker_daemon(
+            wait, with_diagnostics=with_diagnostics
+        )
+
+    stop = getattr(dind, "stop", None)
+    if stop is not None and not getattr(stop, "_oddish_wrapped", False):
+        dind.stop = _wrap_stop(stop)
+
+    logger.info("Installed oddish DinD shims (login + cleanup) on Harbor %s", label)
+
+
+def _patch_dind_strategies() -> None:
+    # Daytona is the default cloud environment; its DinD strategy also gets the
+    # dockerd-diagnostics fold-in. Daytona extras may be absent in some contexts.
     try:
         from harbor.environments.daytona import environment as _dt
-    except Exception:  # daytona extras may be absent in some contexts
+
+        _patch_strategy(
+            getattr(_dt, "_DaytonaDinD", None),
+            with_diagnostics=True,
+            label="_DaytonaDinD",
+        )
+    except Exception:
         logger.debug(
-            "Harbor daytona environment unavailable; skipping dockerd diagnostics patch"
+            "Harbor daytona environment unavailable; Daytona DinD shims skipped"
         )
-        return
 
-    dind = getattr(_dt, "_DaytonaDinD", None)
-    orig = getattr(dind, "_wait_for_docker_daemon", None)
-    if orig is None:
-        logger.warning(
-            "Harbor _DaytonaDinD._wait_for_docker_daemon not found; "
-            "dockerd diagnostics patch skipped"
+    # Modal DinD (used for GPU / Modal-backed trials).
+    try:
+        from harbor.environments import modal as _modal
+
+        _patch_strategy(
+            getattr(_modal, "_ModalDinD", None),
+            with_diagnostics=False,
+            label="_ModalDinD",
         )
-        return
-    if getattr(orig, "_oddish_wrapped", False):
-        return
-
-    dind._wait_for_docker_daemon = _wrap_wait_for_docker_daemon(orig)
-    logger.info("Installed oddish dockerd-diagnostics patch on Harbor _DaytonaDinD")
+    except Exception:
+        logger.debug("Harbor modal environment unavailable; Modal DinD shims skipped")

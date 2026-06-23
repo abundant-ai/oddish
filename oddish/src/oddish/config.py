@@ -794,6 +794,14 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    # Data-protection key for per-run container-registry credentials (see
+    # ``oddish.registry_auth``). When set (``ODDISH_REGISTRY_AUTH_KEY``), it
+    # encrypts the user-supplied Docker login as it crosses the queue; when
+    # unset, a key is derived from the database URL so encryption still applies
+    # with no extra provisioning. This is an oddish-managed envelope key -- it is
+    # NOT the user's registry token, which is always supplied per run.
+    registry_auth_key: str | None = None
+
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
     # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
     # once stopped for ``daytona_auto_delete_interval_mins`` it is deleted.

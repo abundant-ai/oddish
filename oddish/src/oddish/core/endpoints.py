@@ -2724,9 +2724,7 @@ async def create_task_sweep_core(
                 TrialModel.is_probe.is_(False),
             ]
             if target_experiment_id is not None:
-                reconcile_where.append(
-                    TrialModel.experiment_id == target_experiment_id
-                )
+                reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
             existing_counts_result = await session.execute(
                 select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
                 .where(*reconcile_where)
@@ -2778,7 +2776,11 @@ async def create_task_sweep_core(
 
         if task.run_probe:
             await maybe_enqueue_auto_probe(
-                session, task=task, experiment=experiment, org_id=org_id
+                session,
+                task=task,
+                experiment=experiment,
+                org_id=org_id,
+                registry_auth=submission.registry_auth,
             )
         if (
             reservation is not None
@@ -2848,7 +2850,11 @@ async def create_task_sweep_core(
 
     if task.run_probe:
         await maybe_enqueue_auto_probe(
-            session, task=task, experiment=experiment, org_id=org_id
+            session,
+            task=task,
+            experiment=experiment,
+            org_id=org_id,
+            registry_auth=submission.registry_auth,
         )
     if reservation is not None and idempotency_store is not None and org_id is not None:
         # Flush so trial ids / timestamps are populated, then store the
