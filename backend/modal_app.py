@@ -356,6 +356,7 @@ image = (
         "dashboard_attribution",
         "dashboard_owner_backfill",
         "endpoints",
+        "idempotency_store",
         "modal_app",
         "models",
         "observability",

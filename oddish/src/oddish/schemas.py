@@ -819,6 +819,63 @@ class TaskBatchCancelRequest(BaseModel):
     )
 
 
+class TaskSweepBatchRequest(BaseModel):
+    """Submit several task-sweep submissions in a single request.
+
+    Each submission is processed independently (best-effort): a failure in one
+    item neither aborts the batch nor rolls back items that already succeeded.
+    The response carries a per-item status array indexed to ``submissions``.
+    """
+
+    submissions: list[TaskSweepSubmission] = Field(
+        ...,
+        description="Task-sweep submissions to create; each is processed independently.",
+    )
+
+
+class TaskSweepBatchItemResult(BaseModel):
+    """Outcome of one submission within a batch sweep, keyed by request order."""
+
+    index: int = Field(
+        ...,
+        description="0-based position of this item in the request's submissions array.",
+    )
+    success: bool = Field(..., description="True when the submission was created.")
+    status_code: int = Field(
+        200,
+        description=(
+            "Per-item outcome code: 200 on success, otherwise the failure's "
+            "HTTP-equivalent status (e.g. 404 for a missing task)."
+        ),
+    )
+    task: TaskResponse | None = Field(
+        None,
+        description="The created/appended task on success; null when the item failed.",
+    )
+    error: str | None = Field(
+        None,
+        description="Human-readable failure detail; null on success.",
+    )
+
+
+class TaskSweepBatchResponse(BaseModel):
+    """Per-item results for a batch sweep submission.
+
+    ``results`` mirrors the request's ``submissions`` order via each item's
+    ``index``. Callers must inspect per-item ``success``/``status_code`` rather
+    than relying solely on the top-level HTTP status (200 = all succeeded,
+    207 Multi-Status = at least one item failed).
+    """
+
+    total: int = Field(..., description="Number of submissions in the request.")
+    succeeded: int = Field(..., description="Count of submissions that were created.")
+    failed: int = Field(..., description="Count of submissions that failed.")
+    results: list[TaskSweepBatchItemResult] = Field(
+        default_factory=list,
+        description="Per-item outcomes, ordered by request index.",
+    )
+
+
 class ExperimentUpdateResponse(BaseModel):
     id: str
     name: str
