@@ -38,13 +38,6 @@ async def _parent_revisions(parent_url: str) -> dict[str, str]:
     return revisions
 
 
-def _alembic(project: Path, *args: str) -> None:
-    subprocess.run(["alembic", *args], cwd=project, check=True)
-
-
-_REVISION_NOT_FOUND = "Can't locate revision"
-
-
 def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
     proc = subprocess.run(
         ["alembic", "stamp", rev], cwd=project, text=True, capture_output=True
@@ -53,17 +46,14 @@ def _stamp_to_parent(project: Path, table: str, rev: str) -> None:
     sys.stderr.write(proc.stderr)
     if proc.returncode == 0:
         return
-    if _REVISION_NOT_FOUND not in (proc.stdout + proc.stderr):
+    if "Can't locate revision" not in (proc.stdout + proc.stderr):
         raise subprocess.CalledProcessError(
             proc.returncode, proc.args, proc.stdout, proc.stderr
         )
     raise SystemExit(
-        f"{table}: parent revision {rev} is not in this branch's Alembic "
-        "history, so this branch is behind or diverged from the schema "
-        "source. Stamping head here would assert a schema state nothing "
-        "verified and silently corrupt the branch. Fix: merge `main` into "
-        "this branch (or otherwise reconcile migrations) so its history "
-        f"contains {rev}, then recreate the preview branch."
+        f"{table}: parent revision {rev} is not in this branch's Alembic history; "
+        "merge `main` into this branch to reconcile migrations, then recreate the "
+        "preview branch."
     )
 
 
@@ -76,14 +66,11 @@ def main() -> None:
         for project, table in STACKS:
             rev = revisions.get(table)
             if rev is None:
-                raise SystemExit(
-                    f"parent DB exposes no {table} revision to stamp; refusing "
-                    "to replay full history against the inherited branch schema"
-                )
+                raise SystemExit(f"parent DB exposes no {table} revision to stamp")
             _stamp_to_parent(project, table, rev)
 
     for project, _ in STACKS:
-        _alembic(project, "upgrade", "head")
+        subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
 
 
 if __name__ == "__main__":

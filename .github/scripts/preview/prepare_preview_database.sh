@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Ensure the PR database exists, run pending migrations, seed curated
-# fixtures, and publish the Modal DB secret needed by the backend deploy phase.
 set -euo pipefail
 
 : "${DEPLOY_BACKEND:?}"
@@ -60,9 +58,6 @@ export BRANCH_WAS_CREATED="$branch_was_created"
 
 if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   "$script_dir/run_preview_migrations.sh"
-fi
-
-if [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 
