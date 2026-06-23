@@ -48,6 +48,10 @@ summarize_database_phase() {
 
 trap summarize_database_phase EXIT
 
+if [ "$DEPLOY_BACKEND" = "true" ]; then
+  "$script_dir/stop_modal_preview_app.sh" || true
+fi
+
 supabase_env="$(mktemp)"
 supabase_output="$(mktemp)"
 GITHUB_ENV="$supabase_env" GITHUB_OUTPUT="$supabase_output" "$script_dir/wait_for_supabase_branch.sh"
