@@ -24,6 +24,7 @@ from cloud_policy import (
     get_default_cloud_environment,
 )
 from oddish.core.endpoints import (
+    backfill_task_analysis_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -76,6 +77,7 @@ from oddish.queue import (
     cancel_tasks_runs,
 )
 from oddish.schemas import (
+    BackfillQARequest,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentProbeRow,
@@ -1015,6 +1017,31 @@ async def retry_task_qa(
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
+
+
+@router.post("/tasks/{task_id}/qa/backfill")
+async def backfill_task_qa(
+    task_id: str,
+    body: BackfillQARequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Backfill trial analysis for a task: (re)run the task-level QA job.
+
+    Default fills only missing analyses; ``force`` re-runs (optionally only
+    ``trial_ids``); ``enable_analysis`` also opts the task into analysis going
+    forward.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await backfill_task_analysis_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            trial_ids=body.trial_ids,
+            force=body.force,
+            enable_analysis=body.enable_analysis,
+        )
 
 
 @router.post("/tasks/{task_id}/qa/cancel")
