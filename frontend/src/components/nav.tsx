@@ -26,6 +26,7 @@ import {
   BookOpen,
   ChevronDown,
   FileText,
+  Gauge,
   LogOut,
   SearchCheck,
   Shield,
@@ -136,6 +137,21 @@ export function Nav() {
               >
                 <SearchCheck className="h-4 w-4" />
                 <span>Agents</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname === "/usage" ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/usage"
+                className="flex items-center gap-2"
+                data-active={pathname === "/usage"}
+              >
+                <Gauge className="h-4 w-4" />
+                <span>Usage</span>
               </Link>
             </Button>
           </div>
