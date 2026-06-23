@@ -51,6 +51,7 @@ from modal_app import (
     WORKER_SCALEDOWN_WINDOW_SECONDS,
     WORKER_TIMEOUT_SECONDS,
     app,
+    harbor_variant_images,
     image,
     runtime_secrets,
     worker_volumes,
@@ -79,11 +80,13 @@ from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
     get_worker_job_org_queue_counts,
+    select_job_function,
 )
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
 )
+from oddish.core.harbor_source import harbor_variant_function_name
 
 from .github import notify_github_analysis, notify_github_qa, notify_github_trial
 from .runtime import configure_storage_paths, console
@@ -108,30 +111,12 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
-@app.function(
-    image=image,
-    volumes=worker_volumes,
-    secrets=runtime_secrets,
-    min_containers=WORKER_MIN_CONTAINERS,
-    buffer_containers=WORKER_BUFFER_CONTAINERS,
-    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
-    max_containers=WORKER_MAX_CONTAINERS,
-    timeout=WORKER_TIMEOUT_SECONDS,
-    cpu=WORKER_CPU,
-    memory=WORKER_MEMORY_MB,
-    nonpreemptible=WORKER_NONPREEMPTIBLE,
-)
-async def process_single_job(queue_key: str):
-    """
-    Process exactly ONE ``worker_jobs`` row from the unified queue.
+async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
+    """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
-    1. Acquires a queue-key concurrency slot (``queue_slots``)
-    2. Claims one row via ``FOR UPDATE SKIP LOCKED`` on ``worker_jobs``
-    3. Dispatches to the handler registered for the row's ``kind``
-    4. Records the terminal outcome on the ``worker_jobs`` row; the
-       handler mirrors it back to domain tables (``trials`` / ``tasks``)
-
-    Each worker gets the full timeout budget for its single job.
+    Shared body for the default ``process_single_job`` and every blessed-variant
+    ``process_single_job__<id>`` Function -- they differ only in the image (which
+    Harbor is baked) and which ``harbor_variant_id`` rows they claim.
     """
     # Resolve the Modal function-call id BEFORE opening the span so
     # it can ride as a span attribute. This is a pure in-process
@@ -149,6 +134,7 @@ async def process_single_job(queue_key: str):
     job_span = _otel_span(
         "worker.process_single_job",
         queue_key=queue_key,
+        harbor_variant_id=harbor_variant_id,
         modal_function_call_id=fc_id,
     )
 
@@ -197,6 +183,7 @@ async def process_single_job(queue_key: str):
             budget_seconds=WORKER_BATCH_BUDGET_SECONDS,
             modal_function_call_id=fc_id,
             post_success_hooks=_POST_SUCCESS_HOOKS,
+            harbor_variant_id=harbor_variant_id,
         )
         if jobs_processed == 0:
             console.print(
@@ -229,6 +216,68 @@ async def process_single_job(queue_key: str):
         except Exception:
             pass
         console.print("[green]Job worker complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    min_containers=WORKER_MIN_CONTAINERS,
+    buffer_containers=WORKER_BUFFER_CONTAINERS,
+    scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+    max_containers=WORKER_MAX_CONTAINERS,
+    timeout=WORKER_TIMEOUT_SECONDS,
+    cpu=WORKER_CPU,
+    memory=WORKER_MEMORY_MB,
+    nonpreemptible=WORKER_NONPREEMPTIBLE,
+)
+async def process_single_job(queue_key: str, harbor_variant_id: str = "default"):
+    """Default-image single-job worker.
+
+    Serves ``default`` and ``ephemeral`` (the latter spawns an out-of-process
+    child from this image); blessed variants run on their own image Function.
+    """
+    await _run_one_job(queue_key, harbor_variant_id)
+
+
+def _make_variant_entry(variant_id: str):
+    """Build the entrypoint for a blessed variant's single-job Function.
+
+    Closes over *variant_id* so the Function defaults to its own lane even if the
+    dispatcher's explicit ``harbor_variant_id`` kwarg is ever omitted.
+    """
+
+    async def _entry(queue_key: str, harbor_variant_id: str = variant_id):
+        await _run_one_job(queue_key, harbor_variant_id)
+
+    return _entry
+
+
+def build_harbor_variant_functions(modal_app) -> dict[str, object]:
+    """Register one image-bound ``process_single_job__<id>`` per blessed variant.
+
+    Returns ``variant_id -> Function``. Empty unless ``HARBOR_VARIANTS`` is
+    populated, in which case every pin classified to ``<id>`` is routed onto the
+    matching Function (built on that variant's hermetic image). Variants run with
+    ``min_containers=0`` -- they're rare and shouldn't hold warm capacity.
+    """
+    functions: dict[str, object] = {}
+    for variant_id, variant_image in harbor_variant_images().items():
+        functions[variant_id] = modal_app.function(
+            image=variant_image,
+            volumes=worker_volumes,
+            secrets=runtime_secrets,
+            min_containers=0,
+            buffer_containers=0,
+            scaledown_window=WORKER_SCALEDOWN_WINDOW_SECONDS,
+            max_containers=WORKER_MAX_CONTAINERS,
+            timeout=WORKER_TIMEOUT_SECONDS,
+            cpu=WORKER_CPU,
+            memory=WORKER_MEMORY_MB,
+            nonpreemptible=WORKER_NONPREEMPTIBLE,
+            name=harbor_variant_function_name(variant_id),
+        )(_make_variant_entry(variant_id))
+    return functions
 
 
 @app.function(
@@ -365,6 +414,13 @@ async def reconcile_queue_state():
         console.print("[green]Reconciler complete[/green]")
 
 
+# Blessed Harbor variants get their own image-bound single-job Function so the
+# in-process Harbor matches the pin. Keyed by ``variant_id``; ``default`` +
+# ``ephemeral`` always route to the base ``process_single_job``. Empty unless
+# HARBOR_VARIANTS is populated.
+_VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
+
+
 @app.function(
     image=image,
     volumes=worker_volumes,
@@ -402,7 +458,8 @@ async def poll_queue():
         console.print("[cyan]Queue dispatcher starting...[/cyan]")
         await configure_storage_paths()
 
-        queue_keys = await discover_active_worker_job_queue_keys()
+        queue_units = await discover_active_worker_job_queue_keys()
+        queue_keys = tuple({qk for qk, _variant in queue_units})
         queued_by_org_queue, running_by_queue = await get_worker_job_org_queue_counts(
             queue_keys
         )
@@ -424,25 +481,42 @@ async def poll_queue():
             except Exception as e:  # noqa: BLE001 - advisory read is best-effort
                 console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
 
-        # Per-queue_key summary (aggregated across orgs) is still the
-        # useful operator-facing view.
+        # Per-queue_key summary (aggregated across orgs + variants) is still the
+        # useful operator-facing view; running sums across variants (the shared
+        # per-queue_key concurrency pool).
         queued_by_queue: dict[str, int] = {}
-        for (_org_id, queue_key), queued in queued_by_org_queue.items():
+        for (_org_id, queue_key, _variant), queued in queued_by_org_queue.items():
             queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
+        running_by_queue_key: dict[str, int] = {}
+        for (queue_key, _variant), running in running_by_queue.items():
+            running_by_queue_key[queue_key] = (
+                running_by_queue_key.get(queue_key, 0) + running
+            )
         for queue_key in queue_keys:
             queued = queued_by_queue.get(queue_key, 0)
-            running = running_by_queue.get(queue_key, 0)
+            running = running_by_queue_key.get(queue_key, 0)
             limit = concurrency_limits.get(queue_key, 0)
             console.print(
                 f"[dim]{queue_key}: queued={queued} running={running} limit={limit}[/dim]"
             )
 
-        # Also log the per-(org, queue_key) breakdown so a lopsided
-        # fair-share allocation is debuggable from the poll log without
-        # digging into the DB.
+        # Log non-default variant demand so override routing is debuggable from
+        # the poll log.
+        variant_demand: dict[str, int] = {}
+        for (_org_id, _queue_key, variant), queued in queued_by_org_queue.items():
+            if variant != "default":
+                variant_demand[variant] = variant_demand.get(variant, 0) + queued
+        if variant_demand:
+            summary = ", ".join(
+                f"{v}={count}" for v, count in sorted(variant_demand.items())
+            )
+            console.print(f"[dim]queued_by_variant: {summary}[/dim]")
+
+        # Also log the per-org breakdown so a lopsided fair-share allocation is
+        # debuggable from the poll log without digging into the DB.
         if queued_by_org_queue:
             org_buckets: dict[str, int] = {}
-            for (org_id, _queue_key), queued in queued_by_org_queue.items():
+            for (org_id, _queue_key, _variant), queued in queued_by_org_queue.items():
                 key = org_id or "<none>"
                 org_buckets[key] = org_buckets.get(key, 0) + queued
             summary = ", ".join(
@@ -480,17 +554,23 @@ async def poll_queue():
 
         console.print(f"[green]Spawning {len(spawn_plan)} job worker(s)...[/green]")
 
-        # Use Modal's async spawn interface inside this async function to avoid
-        # blocking the event loop and spurious AsyncUsageWarning noise.
-        await asyncio.gather(
-            *(
-                process_single_job.spawn.aio(queue_key=queue_key)
-                for queue_key in spawn_plan
+        # Select the per-variant Function for each unit (default/ephemeral ->
+        # base image; blessed ids -> their own image), then spawn. Use Modal's
+        # async spawn interface inside this async function to avoid blocking the
+        # event loop and spurious AsyncUsageWarning noise.
+        spawn_calls = []
+        for unit in spawn_plan:
+            fn, spawn_kwargs = select_job_function(
+                unit,
+                default_fn=process_single_job,
+                variant_fns=_VARIANT_JOB_FUNCTIONS,
             )
-        )
-        for i, queue_key in enumerate(spawn_plan, start=1):
+            spawn_calls.append(fn.spawn.aio(**spawn_kwargs))
+        await asyncio.gather(*spawn_calls)
+        for i, (queue_key, variant) in enumerate(spawn_plan, start=1):
             console.print(
-                f"[dim]Spawned worker {i}/{len(spawn_plan)} (queue_key={queue_key})[/dim]"
+                f"[dim]Spawned worker {i}/{len(spawn_plan)} "
+                f"(queue_key={queue_key}, variant={variant})[/dim]"
             )
 
         console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
