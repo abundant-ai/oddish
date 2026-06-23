@@ -21,6 +21,7 @@ from oddish.db import (
     WorkerJobKind,
     get_session,
 )
+from oddish.registry_auth import current_registry_credentials, decrypt_credentials
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.qa_handler import run_task_qa_job
@@ -64,14 +65,26 @@ class TrialJobHandler:
         if not trial_id:
             raise ValueError("TRIAL worker_job missing subject_id")
 
-        await run_trial_job(
-            trial_id,
-            queue_key=job.queue_key,
-            worker_id=job.worker_id,
-            queue_slot=job.queue_slot,
-            modal_function_call_id=job.modal_function_call_id,
-            worker_job_id=job.id,
-        )
+        # Per-run container-registry login (if the submission supplied one):
+        # decrypt it and publish it on the context var for the trial's lifetime
+        # so the Harbor DinD shim can authenticate image pulls. The credential
+        # stays on the (encrypted) worker_jobs row so retries -- which re-claim
+        # this same row -- can re-authenticate; the sandbox shim removes
+        # ~/.docker/config.json on teardown, and the row is cleared by the
+        # worker-jobs cleanup. Reset the context var in finally either way.
+        creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
+        cred_token = current_registry_credentials.set(creds or None)
+        try:
+            await run_trial_job(
+                trial_id,
+                queue_key=job.queue_key,
+                worker_id=job.worker_id,
+                queue_slot=job.queue_slot,
+                modal_function_call_id=job.modal_function_call_id,
+                worker_job_id=job.id,
+            )
+        finally:
+            current_registry_credentials.reset(cred_token)
 
         async with get_session() as session:
             trial = await session.get(TrialModel, trial_id)
@@ -194,8 +207,7 @@ class QaJobHandler:
             if task.verdict_status == VerdictStatus.FAILED:
                 return _fail_retryable(task.verdict_error or f"QA {task_id} FAILED")
             return _fail_retryable(
-                f"QA {task_id} left in non-terminal status "
-                f"{task.verdict_status!r}"
+                f"QA {task_id} left in non-terminal status {task.verdict_status!r}"
             )
 
 

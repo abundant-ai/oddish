@@ -56,7 +56,13 @@ def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
     Derived from the submission body (task id, experiment, and the full sweep
     spec) so an identical re-submit yields the same key and any change to the
     spec yields a different one.
+
+    ``registry_auth`` is excluded: it is a transient per-run credential, not part
+    of the run's identity, so rotating the token must not split an otherwise
+    identical submission into a duplicate (and the secret stays out of the key).
     """
+    if "registry_auth" in payload:
+        payload = {k: v for k, v in payload.items() if k != "registry_auth"}
     return _canonical_digest(payload)
 
 

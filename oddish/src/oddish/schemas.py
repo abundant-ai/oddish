@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
@@ -153,6 +153,28 @@ class AgentModelPair(TrialSpec):
     )
 
 
+class RegistryAuth(BaseModel):
+    """A per-run container-registry login supplied by the run's trigger.
+
+    Used only to authenticate the trial sandbox's inner Docker daemon when it
+    pulls compose images (fixing Docker Hub ``toomanyrequests``). It is never
+    persisted to ``trials.harbor_config``; it crosses the queue encrypted and is
+    scrubbed after the run. ``token`` is a ``SecretStr`` so it is masked in any
+    ``model_dump``/log output -- the value is only read via ``get_secret_value()``
+    at encryption time.
+    """
+
+    registry: str = Field(
+        "docker.io",
+        description="Registry host. Defaults to Docker Hub (docker.io).",
+    )
+    username: str = Field(..., description="Registry username.")
+    token: SecretStr = Field(
+        ...,
+        description="Registry password or access token (a Docker Hub PAT is recommended).",
+    )
+
+
 class TaskSubmission(BaseModel):
     """Task submission request (API input)."""
 
@@ -235,6 +257,16 @@ class TaskSubmission(BaseModel):
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
+    registry_auth: list[RegistryAuth] | None = Field(
+        None,
+        description=(
+            "Per-run container-registry logins for the trial sandbox's inner "
+            "Docker daemon (e.g. a Docker Hub username + PAT to avoid anonymous "
+            "pull rate limits). Write-only: encrypted across the queue, used to "
+            "write ~/.docker/config.json before image pulls, then scrubbed. "
+            "Never stored in harbor_config and never echoed back."
+        ),
     )
 
     @model_validator(mode="after")
@@ -371,6 +403,16 @@ class TaskSweepSubmission(BaseModel):
     link: str | None = Field(
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
+    )
+    registry_auth: list[RegistryAuth] | None = Field(
+        None,
+        description=(
+            "Per-run container-registry logins for the trial sandbox's inner "
+            "Docker daemon (e.g. a Docker Hub username + PAT to avoid anonymous "
+            "pull rate limits). Write-only: encrypted across the queue, used to "
+            "write ~/.docker/config.json before image pulls, then scrubbed. "
+            "Never stored in harbor_config and never echoed back."
+        ),
     )
 
     @model_validator(mode="after")
