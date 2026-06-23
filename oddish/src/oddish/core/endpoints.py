@@ -30,7 +30,8 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
-from collections.abc import Collection, Sequence
+from collections import Counter
+from collections.abc import Awaitable, Callable, Collection, Sequence
 from harbor.models.environment_type import EnvironmentType
 from oddish.core.tag_filter_ast import (
     TagFilterAST,
@@ -68,12 +69,22 @@ from oddish.schemas import (
     TaskBrowseTrial,
     TaskCostTotals,
     TaskDetailResponse,
+    TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchItemResult,
     TaskSweepSubmission,
     TaskVersionResponse,
     TaskVersionSummary,
     TrialResponse,
     UserTagRef,
+)
+from oddish.core.idempotency import (
+    SWEEP_ROUTE,
+    IdempotencyConflict,
+    IdempotencyStore,
+    Reservation,
+    compute_request_hash,
+    reserve_idempotency_slot,
 )
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
@@ -514,7 +525,8 @@ def _build_browse_author_filter(
     lowered_handles = [
         handle
         for handle in (
-            (name or "").strip().lstrip("@").lower() for name in (github_usernames or ())
+            (name or "").strip().lstrip("@").lower()
+            for name in (github_usernames or ())
         )
         if handle
     ]
@@ -2513,6 +2525,36 @@ async def delete_trial_core(
     }
 
 
+def build_task_sweep_response(
+    task: TaskModel,
+    new_trials: list[TrialModel],
+    is_append: bool,
+    experiment: ExperimentModel | None,
+) -> TaskResponse:
+    """Build the ``TaskResponse`` for a sweep submission.
+
+    Shared by both ``POST /tasks/sweep`` routes and by the idempotency layer so
+    the response stored for replay is identical to the one a fresh submission
+    returns. For append submissions only the newly appended trials are counted;
+    for create submissions the task's full trial set is counted.
+    """
+    response_trials = new_trials if is_append else list(task.trials)
+    provider_counts: Counter[str] = Counter(trial.provider for trial in response_trials)
+    primary = experiment or (task.experiments[0] if task.experiments else None)
+    return TaskResponse(
+        id=task.id,
+        name=task.name,
+        status=task.status,
+        priority=task.priority,
+        trials_count=len(response_trials),
+        providers=dict(provider_counts),
+        experiment_id=primary.id if primary else None,
+        experiment_name=primary.name if primary else None,
+        created_at=task.created_at,
+        new_trial_ids=[trial.id for trial in response_trials],
+    )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -2520,12 +2562,29 @@ async def create_task_sweep_core(
     org_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
+    idempotency_key: str | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+    request_hash: str | None = None,
 ) -> tuple[TaskModel, list[TrialModel], bool, ExperimentModel | None]:
     """
     Expands a sweep submission into trials and either appends to an existing task
     or creates a new one.
 
     Returns a tuple of (task, new_trials, is_append, experiment).
+
+    When ``idempotency_key`` and ``idempotency_store`` are supplied (the cloud
+    backend wires both; the open-source server passes neither), the submission is
+    deduplicated: a faithful retry of a completed key raises ``IdempotencyReplay``
+    carrying the stored response, and a key reused with a different body -- or one
+    still in progress -- raises ``HTTPException(409)``. This short-circuits before
+    any trials are created, so a retried "create" never duplicates trials via the
+    auto-append flip below.
+
+    ``request_hash`` is the fingerprint used to detect a key reused with a
+    different body. Callers that mutate the submission before calling (the cloud
+    backend resolves identity / attribution / probe defaults) must pass a hash
+    of the *raw* client submission so an honest retry is not spuriously rejected;
+    when omitted it is computed from ``submission`` as received here.
     """
     from oddish.core.sweeps import (
         build_trial_specs_from_sweep,
@@ -2540,6 +2599,34 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.auto_probe import maybe_enqueue_auto_probe
+
+    # Reserve the idempotency slot before doing any work. The fingerprint comes
+    # from the caller's raw pre-mutation snapshot when supplied (the backend
+    # mutates the submission before calling), else from the submission as
+    # received here -- in both cases captured before the link defaulting and
+    # auto-append flip below mutate it, so the original create and a faithful
+    # retry fingerprint identically. ``reserve_idempotency_slot`` raises
+    # ``IdempotencyReplay`` on a matching retry (handled by the route) or
+    # ``IdempotencyConflict`` (mapped to 409 here) on a reused key / in-progress
+    # duplicate.
+    reservation: Reservation | None = None
+    if idempotency_store is not None and idempotency_key and org_id:
+        effective_request_hash = (
+            request_hash
+            if request_hash is not None
+            else compute_request_hash(submission)
+        )
+        try:
+            reservation = await reserve_idempotency_slot(
+                idempotency_store,
+                org_id=org_id,
+                route=SWEEP_ROUTE,
+                raw_key=idempotency_key,
+                request_hash=effective_request_hash,
+                now=utcnow(),
+            )
+        except IdempotencyConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Default the task link to the GitHub PR URL when the caller didn't
     # pass an explicit ``--link`` but the task carries GitHub PR metadata
@@ -2561,6 +2648,7 @@ async def create_task_sweep_core(
         task = await get_task_for_org_core(
             session, task_id=submission.task_id, org_id=org_id
         )
+        await session.refresh(task, with_for_update=True)
         # Allow flipping task.run_analysis from False to True on append.
         # ``run_analysis`` runs at trial-completion time, so updating the
         # task-level flag does not retroactively analyze pre-existing
@@ -2627,18 +2715,42 @@ async def create_task_sweep_core(
             else default_environment
         )
 
+        target_experiment_id = new_experiment_id or (
+            primary_experiment.id if primary_experiment else None
+        )
+        existing_counts: dict[tuple[str, str | None], int] | None = None
+        if task.current_version_id is not None:
+            reconcile_where = [
+                TrialModel.task_id == task.id,
+                TrialModel.task_version_id == task.current_version_id,
+                TrialModel.is_probe.is_(False),
+            ]
+            if target_experiment_id is not None:
+                reconcile_where.append(
+                    TrialModel.experiment_id == target_experiment_id
+                )
+            existing_counts_result = await session.execute(
+                select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
+                .where(*reconcile_where)
+                .group_by(TrialModel.agent, TrialModel.model)
+            )
+            existing_counts = {
+                (agent, model): count
+                for agent, model, count in existing_counts_result.all()
+            }
+
         trials = build_trial_specs_from_sweep(
             submission,
             default_environment=effective_default_env,
             allowed_environments=allowed_environments,
+            existing_counts=existing_counts,
         )
 
-        fallback_experiment_id = primary_experiment.id if primary_experiment else None
         append_submission = submission.model_copy(
             update={
                 "name": task.name,
                 "priority": task.priority,
-                "experiment_id": new_experiment_id or fallback_experiment_id,
+                "experiment_id": target_experiment_id,
                 "tags": task.tags or {},
                 "run_analysis": task.run_analysis,
                 "run_probe": task.run_probe,
@@ -2669,6 +2781,22 @@ async def create_task_sweep_core(
         if task.run_probe:
             await maybe_enqueue_auto_probe(
                 session, task=task, experiment=experiment, org_id=org_id
+            )
+        if (
+            reservation is not None
+            and idempotency_store is not None
+            and org_id is not None
+        ):
+            # Flush so trial ids / timestamps are populated, then store the
+            # response for replay alongside the trials in this transaction.
+            await session.flush()
+            await idempotency_store.complete(
+                org_id,
+                SWEEP_ROUTE,
+                reservation.key_hash,
+                build_task_sweep_response(
+                    task, new_trials, True, experiment
+                ).model_dump(mode="json"),
             )
         return task, new_trials, True, experiment
 
@@ -2724,4 +2852,112 @@ async def create_task_sweep_core(
         await maybe_enqueue_auto_probe(
             session, task=task, experiment=experiment, org_id=org_id
         )
+    if reservation is not None and idempotency_store is not None and org_id is not None:
+        # Flush so trial ids / timestamps are populated, then store the
+        # response for replay alongside the trials in this transaction.
+        await session.flush()
+        await idempotency_store.complete(
+            org_id,
+            SWEEP_ROUTE,
+            reservation.key_hash,
+            build_task_sweep_response(task, new_trials, False, experiment).model_dump(
+                mode="json"
+            ),
+        )
     return task, new_trials, False, experiment
+
+
+async def create_task_sweep_batch_core(
+    session: AsyncSession,
+    *,
+    submissions: Sequence[TaskSweepSubmission],
+    org_id: str | None = None,
+    default_environment: EnvironmentType | None = None,
+    allowed_environments: Collection[EnvironmentType] | None = None,
+    prepare: Callable[
+        [AsyncSession, TaskSweepSubmission], Awaitable[EnvironmentType | None]
+    ]
+    | None = None,
+    finalize: Callable[
+        [AsyncSession, TaskSweepSubmission, TaskModel, bool, ExperimentModel | None],
+        Awaitable[None],
+    ]
+    | None = None,
+) -> list[TaskSweepBatchItemResult]:
+    """Create several task sweeps in one transaction, best-effort.
+
+    Each submission runs inside its own SAVEPOINT (``session.begin_nested()``):
+    if an item fails, only that item is rolled back, leaving sibling items -- and
+    the rows they already inserted -- intact. The caller commits the outer
+    transaction once after this returns. Returns a per-item result list aligned
+    to ``submissions`` by ``index`` (best-effort / 207-style semantics).
+
+    Per-item creation reuses :func:`create_task_sweep_core`, so the same
+    single-statement bulk insert of trials and worker jobs (see
+    ``oddish.queue._bulk_insert_trials`` / ``bulk_enqueue_worker_jobs``) is used
+    here as on the single-sweep path.
+
+    ``prepare`` (optional) runs inside each item's savepoint before creation and
+    returns the default environment for that submission; it is where a caller
+    performs per-item, auth-aware setup (identity resolution, attribution).
+    ``finalize`` (optional) runs inside the savepoint after creation for
+    post-create stamping. Keeping both inside the savepoint preserves per-item
+    atomicity -- a failure in either rolls back just that item.
+
+    Per-item idempotency-key replay is intentionally out of scope: this path
+    calls :func:`create_task_sweep_core` without idempotency arguments, so batch
+    items are not deduplicated server-side the way the single ``/tasks/sweep``
+    route is.
+    """
+    from oddish.core.sweeps import validate_sweep_submission
+
+    results: list[TaskSweepBatchItemResult] = []
+    for index, submission in enumerate(submissions):
+        try:
+            async with session.begin_nested():
+                validate_sweep_submission(submission)
+                item_default_env = default_environment
+                if prepare is not None:
+                    item_default_env = await prepare(session, submission)
+                task, new_trials, is_append, experiment = await create_task_sweep_core(
+                    session,
+                    submission=submission,
+                    org_id=org_id,
+                    default_environment=item_default_env,
+                    allowed_environments=allowed_environments,
+                )
+                if finalize is not None:
+                    await finalize(session, submission, task, is_append, experiment)
+        except HTTPException as exc:
+            # Expected validation/lookup failures (e.g. missing task -> 404).
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=False,
+                    status_code=exc.status_code,
+                    error=str(exc.detail),
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
+            # Any other error is contained to this item; the savepoint has been
+            # rolled back, so the session stays usable for the remaining items.
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=False,
+                    status_code=400,
+                    error=str(exc),
+                )
+            )
+        else:
+            results.append(
+                TaskSweepBatchItemResult(
+                    index=index,
+                    success=True,
+                    status_code=200,
+                    task=build_task_sweep_response(
+                        task, new_trials, is_append, experiment
+                    ),
+                )
+            )
+    return results

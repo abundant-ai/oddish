@@ -297,6 +297,14 @@ class TagPolicyProfanityMode(str, Enum):
     OFF = "OFF"
 
 
+class APIKeyScope(str, Enum):
+    """API key permission scopes."""
+
+    FULL = "full"  # All operations (tasks, trials, admin)
+    TASKS = "tasks"  # Create/view tasks and trials only
+    READ = "read"  # Read-only access
+
+
 # =============================================================================
 # SQLAlchemy Models (Database Tables)
 # =============================================================================
@@ -1102,6 +1110,69 @@ class WorkerJobModel(TimestampedMixin, Base):
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
 
 
+class APIKeyModel(TimestampedMixin, Base):
+    """API key for programmatic access.
+
+    API keys are scoped to an organization and have specific permissions.
+    The actual key is only shown once on creation; we store a hash.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+
+    # Organization scope
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Key identification
+    name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )  # Human-readable name
+    key_prefix: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # First 8 chars for display
+    key_hash: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False
+    )  # SHA256 of full key
+
+    # Permissions
+    scope: Mapped[APIKeyScope] = mapped_column(
+        SQLEnum(
+            APIKeyScope,
+            name="apikeyscope",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=APIKeyScope.FULL,
+        nullable=False,
+    )
+
+    # Creator tracking
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Status and expiry
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Visibility
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    __table_args__ = (
+        Index("idx_api_keys_org_id", "org_id"),
+        Index("idx_api_keys_key_hash", "key_hash"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
@@ -1117,8 +1188,10 @@ class WorkerJobModel(TimestampedMixin, Base):
 #   ``status = 'CANCELLED'`` to retire jobs (see ``delete_*_core``),
 #   not ``deleted_at``.
 #
-# Backend-only auth models (organizations / users / api_keys) register
+# Backend-only auth models (organizations / users) register
 # themselves from ``backend/models.py`` so this module stays standalone.
+# ``APIKeyModel`` lives in this module, but its soft-delete registration
+# still happens from ``backend/models.py`` (alongside the other auth models).
 class ProbePresetModel(TimestampedMixin, Base):
     """Operator-directive presets for probe trials.
 
