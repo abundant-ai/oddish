@@ -13,7 +13,7 @@ Idempotent (CREATE TABLE IF NOT EXISTS) and self-contained, mirroring
 qh01_add_queue_runtime_status.
 
 Revision ID: mca01_model_concurrency_advisory
-Revises: r8a9drop_probe_ratio_001
+Revises: trial_steps_001
 Create Date: 2026-06-22 00:00:00.000000
 """
 
@@ -23,7 +23,7 @@ from alembic import op
 
 
 revision: str = "mca01_model_concurrency_advisory"
-down_revision: Union[str, Sequence[str], None] = "r8a9drop_probe_ratio_001"
+down_revision: Union[str, Sequence[str], None] = "trial_steps_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
