@@ -1,7 +1,7 @@
 """add trials.harbor_sha and worker_jobs.harbor_variant_id
 
 Revision ID: h1a2r3b4sha01
-Revises: r8a9drop_probe_ratio_001
+Revises: trial_steps_001
 Create Date: 2026-06-22
 
 Core-table columns for the configurable-Harbor-source feature. trials and
@@ -19,7 +19,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "h1a2r3b4sha01"
-down_revision: Union[str, Sequence[str], None] = "r8a9drop_probe_ratio_001"
+down_revision: Union[str, Sequence[str], None] = "trial_steps_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
