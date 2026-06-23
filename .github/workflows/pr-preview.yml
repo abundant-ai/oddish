@@ -108,6 +108,7 @@ jobs:
         needs.stop-previous-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     permissions:
       contents: read
       packages: read
