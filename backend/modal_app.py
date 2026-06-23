@@ -52,9 +52,15 @@ API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 # also preserved because endpoints.py sizes the per-container pool to
 # API_CONCURRENCY_MAX (64*3 == 24*8 == 192 client connections) -- see the
 # budget note there.
-API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 64)
-API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 2)
-API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
+# ABI-69 contention test: pin one request per container (no GIL pile-up) and
+# triple the container cap to keep capacity (192*1 == 64*3 == 192 concurrent).
+# Revert these three lines to restore the env-var-driven defaults.
+# API_MAX_CONTAINERS = _env_int("ODDISH_MODAL_API_MAX_CONTAINERS", 64)
+# API_CONCURRENCY_TARGET = _env_int("ODDISH_MODAL_API_CONCURRENCY_TARGET", 2)
+# API_CONCURRENCY_MAX = _env_int("ODDISH_MODAL_API_CONCURRENCY_MAX", 3)
+API_MAX_CONTAINERS = 192
+API_CONCURRENCY_TARGET = 1
+API_CONCURRENCY_MAX = 1
 
 # Per-function CPU/memory. ``cpu`` is a reservation floor (containers may burst
 # above it when the host has spare capacity); ``memory`` is in MiB. These were
