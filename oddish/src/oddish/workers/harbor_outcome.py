@@ -26,10 +26,11 @@ class HarborOutcome:
     job_result_path: Path | None
     job_dir: Path | None  # Full job directory for S3 upload
 
-    # Token usage & cost (from Harbor's AgentContext)
+    # Token usage, steps & cost (from Harbor's AgentContext / ATIF final_metrics)
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
+    total_steps: int | None = None
     cost_usd: float | None = None
 
     # Per-phase timing breakdown (seconds)
@@ -75,27 +76,41 @@ def _detect_trajectory(job_dir: Path) -> bool:
     return False
 
 
-def _extract_tokens_from_trajectory(
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_metrics_from_trajectory(
     job_dir: Path,
-) -> tuple[int | None, int | None, int | None, float | None]:
-    """Fallback: read token counts from ATIF trajectory final_metrics."""
+) -> tuple[int | None, int | None, int | None, int | None, float | None]:
+    """Fallback: read token/step/cost metrics from ATIF trajectory data."""
     if not job_dir or not job_dir.exists():
-        return None, None, None, None
+        return None, None, None, None, None
     for traj_path in job_dir.rglob("trajectory.json"):
         try:
             data = json.loads(traj_path.read_text())
             fm = data.get("final_metrics")
-            if not fm:
+            steps = data.get("steps")
+            if not fm and not isinstance(steps, list):
                 continue
+            total_steps = _as_int(fm.get("total_steps")) if isinstance(fm, dict) else None
+            if total_steps is None and isinstance(steps, list):
+                total_steps = len(steps)
             return (
-                fm.get("total_prompt_tokens"),
-                fm.get("total_completion_tokens"),
-                fm.get("total_cached_tokens"),
-                fm.get("total_cost_usd"),
+                fm.get("total_prompt_tokens") if isinstance(fm, dict) else None,
+                fm.get("total_completion_tokens") if isinstance(fm, dict) else None,
+                fm.get("total_cached_tokens") if isinstance(fm, dict) else None,
+                total_steps,
+                fm.get("total_cost_usd") if isinstance(fm, dict) else None,
             )
         except Exception:
             continue
-    return None, None, None, None
+    return None, None, None, None, None
 
 
 def _extract_outcome_from_job_result(
@@ -121,6 +136,7 @@ def _extract_outcome_from_job_result(
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
+    total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict[str, Any] | None = None
 
@@ -134,10 +150,15 @@ def _extract_outcome_from_job_result(
             break
 
     if input_tokens is None and output_tokens is None:
-        t_in, t_out, t_cache, t_cost = _extract_tokens_from_trajectory(job_dir)
+        t_in, t_out, t_cache, t_steps, t_cost = _extract_metrics_from_trajectory(job_dir)
         input_tokens = t_in
         output_tokens = t_out
         cache_tokens = t_cache
+        total_steps = t_steps
+        if cost_usd is None:
+            cost_usd = t_cost
+    else:
+        _, _, _, total_steps, t_cost = _extract_metrics_from_trajectory(job_dir)
         if cost_usd is None:
             cost_usd = t_cost
 
@@ -159,6 +180,7 @@ def _extract_outcome_from_job_result(
             input_tokens=input_tokens,
             cache_tokens=cache_tokens,
             output_tokens=output_tokens,
+            total_steps=total_steps,
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
