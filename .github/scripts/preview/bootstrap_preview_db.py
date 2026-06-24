@@ -1,4 +1,4 @@
-"""Build each preview-branch Alembic stack to a schema that matches the migrations."""
+"""Build each preview-branch schema by running both Alembic stacks' migrations."""
 
 import asyncio
 import hashlib
@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -20,10 +22,6 @@ SCHEMA_MARKER = "oddish-preview:schema-built-from-base"
 
 def _upgrade_head(project: Path) -> None:
     subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
-
-
-def _stamp_head(project: Path) -> None:
-    subprocess.run(["alembic", "stamp", "head"], cwd=project, check=True)
 
 
 def _branch_db_url() -> str:
@@ -76,8 +74,17 @@ def _model_fingerprint() -> str:
     return _fingerprint_metadata(_load_base().metadata)
 
 
+def _migration_fingerprint() -> str:
+    heads = []
+    for project in STACKS:
+        cfg = Config(str(project / "alembic.ini"))
+        cfg.set_main_option("script_location", str(project / "alembic"))
+        heads.extend(sorted(ScriptDirectory.from_config(cfg).get_heads()))
+    return hashlib.sha256("|".join(heads).encode()).hexdigest()[:16]
+
+
 def _trust_marker() -> str:
-    return f"{SCHEMA_MARKER}:{_model_fingerprint()}"
+    return f"{SCHEMA_MARKER}:{_model_fingerprint()}:{_migration_fingerprint()}"
 
 
 async def _schema_trusted(url: str) -> bool:
@@ -107,18 +114,14 @@ def _assert_preview_branch(url: str) -> None:
         )
 
 
-async def _rebuild_schema(url: str) -> None:
+async def _reset_schema(url: str) -> None:
     _assert_preview_branch(url)
-    base = _load_base()
-
     engine = _engine(url)
     try:
         async with engine.begin() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
             await conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
-        async with engine.begin() as conn:
-            await conn.run_sync(base.metadata.create_all)
     finally:
         await engine.dispose()
 
@@ -141,10 +144,13 @@ def main() -> None:
             _upgrade_head(project)
         rebuilt = False
     else:
-        print("bootstrap_preview_db: untrusted schema; rebuilding from base", file=sys.stderr)
-        asyncio.run(_rebuild_schema(url))
+        print(
+            "bootstrap_preview_db: untrusted schema; rebuilding by running migrations",
+            file=sys.stderr,
+        )
+        asyncio.run(_reset_schema(url))
         for project in STACKS:
-            _stamp_head(project)
+            _upgrade_head(project)
         asyncio.run(_mark_trusted(url))
         rebuilt = True
 
