@@ -99,9 +99,11 @@ export function ExperimentClientPage({
     : "";
 
   // Phase 1: Fetch ALL tasks without trial data (lightweight).
-  // Populates the full task list immediately.
+  // Populates the full task list immediately. Uses the dedicated
+  // ``task-shells`` endpoint, which drops the per-task ``experiments``
+  // fan-out. (Phase 2 below still uses the regular ``tasks`` endpoint.)
   const allTasksUrl = experimentId
-    ? `/api/experiments/${encodedId}/tasks?limit=2000&offset=0&include_trials=false`
+    ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
     : null;
 
   const {
