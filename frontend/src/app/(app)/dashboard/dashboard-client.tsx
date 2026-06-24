@@ -113,6 +113,7 @@ function useDashboardExperiments(
     experiments_author_query: parsedQuery.authors.join(","),
     experiments_status: experimentsStatus,
     experiments_author: experimentsAuthor,
+    include_queues: false,
     include_tasks: false,
     include_usage: false,
   });

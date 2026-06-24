@@ -11,6 +11,7 @@ type DashboardRequestParams = {
   experiments_author?: string;
   experiments_author_query?: string;
   usage_minutes?: number | null;
+  include_queues?: boolean;
   include_tasks?: boolean;
   include_usage?: boolean;
   include_experiments?: boolean;
@@ -95,6 +96,7 @@ function buildDashboardSearchParams(
     params.set("usage_minutes", String(input.usage_minutes));
   }
 
+  setBooleanParam(params, "include_queues", input.include_queues);
   setBooleanParam(params, "include_tasks", input.include_tasks);
   setBooleanParam(params, "include_usage", input.include_usage);
   setBooleanParam(params, "include_experiments", input.include_experiments);
