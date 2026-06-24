@@ -59,6 +59,7 @@ import {
   isDefaultDashboardExperimentsView,
 } from "@/lib/dashboard-request";
 import { badgeVariants } from "@/components/ui/badge";
+import { UsageSummaryCard } from "@/components/usage-overview";
 import {
   ArrowRight,
   Check,
@@ -907,6 +908,7 @@ export function DashboardClient({
   return (
     <div className="space-y-4">
       {isDefaultOrgExperimentsEmpty && <FirstRunCard />}
+      <UsageSummaryCard initialUsageData={initialDashboardData} />
       <RecentTasksCard
         experiments={experiments}
         searchQuery={searchQuery}

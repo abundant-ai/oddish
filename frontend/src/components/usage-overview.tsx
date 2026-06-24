@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
+import Link from "next/link";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +29,10 @@ import type {
   QueueStats,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { buildDashboardApiPath } from "@/lib/dashboard-request";
+import {
+  buildDashboardApiPath,
+  DASHBOARD_DEFAULT_USAGE_MINUTES,
+} from "@/lib/dashboard-request";
 import { Badge } from "@/components/ui/badge";
 import {
   Select,
@@ -43,7 +47,14 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Beaker, ChevronDown, Gavel, Loader2, Microscope } from "lucide-react";
+import {
+  ArrowRight,
+  Beaker,
+  ChevronDown,
+  Gavel,
+  Loader2,
+  Microscope,
+} from "lucide-react";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 
 export function useDashboardUsage(
@@ -190,6 +201,148 @@ type UsageRow = {
   hasUsageMetrics: boolean;
 };
 
+// Merge per-model usage, per-queue worker-job stats, and raw queue stats into
+// one row per queue key. Shared by the full Usage table and the Dashboard
+// summary so the running/queued/retrying counts stay identical across both.
+function buildUsageRows(
+  jobUsage: JobUsage[],
+  modelUsage: ModelUsage[],
+  queues: QueueStats | null,
+): UsageRow[] {
+  const mergedRows = new Map<string, UsageRow>();
+  const jobUsageByQueue = new Map<
+    string,
+    {
+      jobCount: number;
+      running: number;
+      queued: number;
+      retrying: number;
+      durationTotalS: number;
+      durationCount: number;
+      avgDurationS: number | null;
+    }
+  >();
+
+  for (const job of jobUsage) {
+    const existing = jobUsageByQueue.get(job.queue_key) ?? {
+      jobCount: 0,
+      running: 0,
+      queued: 0,
+      retrying: 0,
+      durationTotalS: 0,
+      durationCount: 0,
+      avgDurationS: null,
+    };
+    existing.jobCount += job.job_count;
+    existing.running += job.running;
+    existing.queued += job.queued;
+    existing.retrying += job.retrying;
+    if (job.avg_duration_s != null && job.job_count > 0) {
+      existing.durationTotalS += job.avg_duration_s * job.job_count;
+      existing.durationCount += job.job_count;
+      existing.avgDurationS =
+        existing.durationCount > 0
+          ? existing.durationTotalS / existing.durationCount
+          : null;
+    }
+    jobUsageByQueue.set(job.queue_key, existing);
+  }
+
+  for (const usage of modelUsage) {
+    const queueKey = usage.model || usage.provider || "unknown";
+    const jobsForQueue = jobUsageByQueue.get(queueKey);
+    const queueStats = queues?.[queueKey];
+    mergedRows.set(queueKey, {
+      key: queueKey,
+      queueKey,
+      model: usage.model,
+      provider: usage.provider,
+      jobCount:
+        jobsForQueue?.jobCount ||
+        getQueueTotalJobs(queueStats) ||
+        usage.trial_count,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      cacheTokens: usage.cache_tokens,
+      costUsd: usage.cost_usd,
+      running:
+        jobsForQueue?.running ??
+        (queueStats ? Number(queueStats.running) || 0 : usage.running),
+      queued:
+        jobsForQueue?.queued ??
+        (queueStats ? getQueueQueuedJobs(queueStats) : usage.queued),
+      retrying:
+        jobsForQueue?.retrying ??
+        (queueStats ? Number(queueStats.retrying) || 0 : 0),
+      avgDurationS: jobsForQueue?.avgDurationS ?? usage.avg_duration_s,
+      hasUsageMetrics: true,
+    });
+  }
+
+  for (const [queueKey, jobsForQueue] of jobUsageByQueue) {
+    if (mergedRows.has(queueKey)) continue;
+
+    mergedRows.set(queueKey, {
+      key: queueKey,
+      queueKey,
+      model: queueKey,
+      provider: inferProviderFromQueueKey(queueKey),
+      jobCount: jobsForQueue.jobCount,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheTokens: 0,
+      costUsd: 0,
+      running: jobsForQueue.running,
+      queued: jobsForQueue.queued,
+      retrying: jobsForQueue.retrying,
+      avgDurationS: jobsForQueue.avgDurationS,
+      hasUsageMetrics: false,
+    });
+  }
+
+  for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
+    const totalJobs = getQueueTotalJobs(queueStats);
+    if (mergedRows.has(queueKey) || totalJobs === 0) continue;
+
+    mergedRows.set(queueKey, {
+      key: queueKey,
+      queueKey,
+      model: queueKey,
+      provider: inferProviderFromQueueKey(queueKey),
+      jobCount: totalJobs,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheTokens: 0,
+      costUsd: 0,
+      running: Number(queueStats.running) || 0,
+      queued: getQueueQueuedJobs(queueStats),
+      retrying: Number(queueStats.retrying) || 0,
+      avgDurationS: null,
+      hasUsageMetrics: false,
+    });
+  }
+
+  return Array.from(mergedRows.values());
+}
+
+// Group active counts by actual worker_jobs kind for the badge hover tooltip.
+function buildPipelineByKind(
+  jobUsage: JobUsage[],
+): Record<string, { running: number; queued: number; retrying: number }> {
+  const kinds: Record<
+    string,
+    { running: number; queued: number; retrying: number }
+  > = {};
+  for (const job of jobUsage) {
+    const kind = job.kind;
+    kinds[kind] ??= { running: 0, queued: 0, retrying: 0 };
+    kinds[kind].running += job.running;
+    kinds[kind].queued += job.queued;
+    kinds[kind].retrying += job.retrying;
+  }
+  return kinds;
+}
+
 const PIPELINE_KIND_DISPLAY: Record<
   string,
   {
@@ -298,6 +451,142 @@ function KindBreakdownTooltip({
   );
 }
 
+// Running / queued / retrying status badges with the per-kind hover
+// breakdown.
+function UsageStatusBadges({
+  running,
+  queued,
+  retrying,
+  pipeline,
+}: {
+  running: number;
+  queued: number;
+  retrying: number;
+  pipeline: Record<
+    string,
+    { running: number; queued: number; retrying: number }
+  >;
+}) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      {running > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge
+              variant="outline"
+              className="cursor-help border-[#85b85c]/30 text-[10px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
+            >
+              {running} running
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="w-[220px]">
+            <KindBreakdownTooltip pipeline={pipeline} metric="running" />
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {queued > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge
+              variant="outline"
+              className="cursor-help border-[#6f88b4]/30 text-[10px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
+            >
+              {queued} queued
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="w-[220px]">
+            <KindBreakdownTooltip pipeline={pipeline} metric="queued" />
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {retrying > 0 && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Badge
+              variant="outline"
+              className="cursor-help border-amber-500/30 text-[10px] font-normal text-amber-600 dark:text-amber-300"
+            >
+              {retrying} retrying
+            </Badge>
+          </TooltipTrigger>
+          <TooltipContent className="w-[220px]">
+            <KindBreakdownTooltip pipeline={pipeline} metric="retrying" />
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </TooltipProvider>
+  );
+}
+
+
+export function UsageSummaryCard({
+  initialUsageData = null,
+}: {
+  initialUsageData?: DashboardResponse | null;
+}) {
+  const { queues, modelUsage, jobUsage, isLoading, isRefreshing } =
+    useDashboardUsage(DASHBOARD_DEFAULT_USAGE_MINUTES, initialUsageData);
+
+  const usageRows = useMemo(
+    () => buildUsageRows(jobUsage, modelUsage, queues),
+    [jobUsage, modelUsage, queues],
+  );
+  const totals = useMemo(
+    () =>
+      usageRows.reduce(
+        (acc, row) => ({
+          running: acc.running + row.running,
+          queued: acc.queued + row.queued,
+          retrying: acc.retrying + row.retrying,
+        }),
+        { running: 0, queued: 0, retrying: 0 },
+      ),
+    [usageRows],
+  );
+  const pipelineByKind = useMemo(
+    () => buildPipelineByKind(jobUsage),
+    [jobUsage],
+  );
+
+  return (
+    <Card className="border-[#6f88b4]/20 shadow-xs">
+      <CardHeader className="py-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <CardTitle className="text-base">Usage</CardTitle>
+            {(isLoading || isRefreshing) && (
+              <Badge
+                variant="outline"
+                className="text-muted-foreground text-[10px] font-normal"
+              >
+                <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                {isLoading ? "Loading" : "Updating"}
+              </Badge>
+            )}
+            <UsageStatusBadges
+              running={totals.running}
+              queued={totals.queued}
+              retrying={totals.retrying}
+              pipeline={pipelineByKind}
+            />
+          </div>
+          <Button
+            asChild
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground ml-auto h-7 shrink-0 px-2 text-[11px]"
+          >
+            <Link href="/usage">
+              View usage
+              <ArrowRight className="ml-1 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </div>
+      </CardHeader>
+    </Card>
+  );
+}
+
 export function UsageOverviewCard({
   queues,
   modelUsage,
@@ -341,122 +630,10 @@ export function UsageOverviewCard({
     setCustomUnit("m");
   }, [timeRange]);
 
-  const usageRows = useMemo(() => {
-    const mergedRows = new Map<string, UsageRow>();
-    const jobUsageByQueue = new Map<
-      string,
-      {
-        jobCount: number;
-        running: number;
-        queued: number;
-        retrying: number;
-        durationTotalS: number;
-        durationCount: number;
-        avgDurationS: number | null;
-      }
-    >();
-
-    for (const job of jobUsage) {
-      const existing = jobUsageByQueue.get(job.queue_key) ?? {
-        jobCount: 0,
-        running: 0,
-        queued: 0,
-        retrying: 0,
-        durationTotalS: 0,
-        durationCount: 0,
-        avgDurationS: null,
-      };
-      existing.jobCount += job.job_count;
-      existing.running += job.running;
-      existing.queued += job.queued;
-      existing.retrying += job.retrying;
-      if (job.avg_duration_s != null && job.job_count > 0) {
-        existing.durationTotalS += job.avg_duration_s * job.job_count;
-        existing.durationCount += job.job_count;
-        existing.avgDurationS =
-          existing.durationCount > 0
-            ? existing.durationTotalS / existing.durationCount
-            : null;
-      }
-      jobUsageByQueue.set(job.queue_key, existing);
-    }
-
-    for (const usage of modelUsage) {
-      const queueKey = usage.model || usage.provider || "unknown";
-      const jobsForQueue = jobUsageByQueue.get(queueKey);
-      const queueStats = queues?.[queueKey];
-      mergedRows.set(queueKey, {
-        key: queueKey,
-        queueKey,
-        model: usage.model,
-        provider: usage.provider,
-        jobCount:
-          jobsForQueue?.jobCount ||
-          getQueueTotalJobs(queueStats) ||
-          usage.trial_count,
-        inputTokens: usage.input_tokens,
-        outputTokens: usage.output_tokens,
-        cacheTokens: usage.cache_tokens,
-        costUsd: usage.cost_usd,
-        running:
-          jobsForQueue?.running ??
-          (queueStats ? Number(queueStats.running) || 0 : usage.running),
-        queued:
-          jobsForQueue?.queued ??
-          (queueStats ? getQueueQueuedJobs(queueStats) : usage.queued),
-        retrying:
-          jobsForQueue?.retrying ??
-          (queueStats ? Number(queueStats.retrying) || 0 : 0),
-        avgDurationS: jobsForQueue?.avgDurationS ?? usage.avg_duration_s,
-        hasUsageMetrics: true,
-      });
-    }
-
-    for (const [queueKey, jobsForQueue] of jobUsageByQueue) {
-      if (mergedRows.has(queueKey)) continue;
-
-      mergedRows.set(queueKey, {
-        key: queueKey,
-        queueKey,
-        model: queueKey,
-        provider: inferProviderFromQueueKey(queueKey),
-        jobCount: jobsForQueue.jobCount,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheTokens: 0,
-        costUsd: 0,
-        running: jobsForQueue.running,
-        queued: jobsForQueue.queued,
-        retrying: jobsForQueue.retrying,
-        avgDurationS: jobsForQueue.avgDurationS,
-        hasUsageMetrics: false,
-      });
-    }
-
-    for (const [queueKey, queueStats] of Object.entries(queues ?? {})) {
-      const totalJobs = getQueueTotalJobs(queueStats);
-      if (mergedRows.has(queueKey) || totalJobs === 0) continue;
-
-      mergedRows.set(queueKey, {
-        key: queueKey,
-        queueKey,
-        model: queueKey,
-        provider: inferProviderFromQueueKey(queueKey),
-        jobCount: totalJobs,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheTokens: 0,
-        costUsd: 0,
-        running: Number(queueStats.running) || 0,
-        queued: getQueueQueuedJobs(queueStats),
-        retrying: Number(queueStats.retrying) || 0,
-        avgDurationS: null,
-        hasUsageMetrics: false,
-      });
-    }
-
-    return Array.from(mergedRows.values());
-  }, [jobUsage, modelUsage, queues]);
+  const usageRows = useMemo(
+    () => buildUsageRows(jobUsage, modelUsage, queues),
+    [jobUsage, modelUsage, queues],
+  );
 
   const sortedUsageRows = useMemo(
     () =>
@@ -502,20 +679,10 @@ export function UsageOverviewCard({
   );
 
   // Pipeline aggregation: group active counts by actual worker_jobs kind.
-  const pipelineByKind = useMemo(() => {
-    const kinds: Record<
-      string,
-      { running: number; queued: number; retrying: number }
-    > = {};
-    for (const job of jobUsage) {
-      const kind = job.kind;
-      kinds[kind] ??= { running: 0, queued: 0, retrying: 0 };
-      kinds[kind].running += job.running;
-      kinds[kind].queued += job.queued;
-      kinds[kind].retrying += job.retrying;
-    }
-    return kinds;
-  }, [jobUsage]);
+  const pipelineByKind = useMemo(
+    () => buildPipelineByKind(jobUsage),
+    [jobUsage],
+  );
 
   const selectedWindowValue = timeRange.startsWith("custom:")
     ? "custom"
@@ -553,62 +720,12 @@ export function UsageOverviewCard({
                 {isLoading ? "Loading" : "Updating"}
               </Badge>
             )}
-            <TooltipProvider delayDuration={150}>
-              {totals.running > 0 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="cursor-help border-[#85b85c]/30 text-[10px] font-normal text-[#5c8e43] dark:text-[#85b85c]"
-                    >
-                      {totals.running} running
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent className="w-[220px]">
-                    <KindBreakdownTooltip
-                      pipeline={pipelineByKind}
-                      metric="running"
-                    />
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              {totals.queued > 0 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="cursor-help border-[#6f88b4]/30 text-[10px] font-normal text-[#5d77a5] dark:text-[#a8b8d2]"
-                    >
-                      {totals.queued} queued
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent className="w-[220px]">
-                    <KindBreakdownTooltip
-                      pipeline={pipelineByKind}
-                      metric="queued"
-                    />
-                  </TooltipContent>
-                </Tooltip>
-              )}
-              {totals.retrying > 0 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="outline"
-                      className="cursor-help border-amber-500/30 text-[10px] font-normal text-amber-600 dark:text-amber-300"
-                    >
-                      {totals.retrying} retrying
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent className="w-[220px]">
-                    <KindBreakdownTooltip
-                      pipeline={pipelineByKind}
-                      metric="retrying"
-                    />
-                  </TooltipContent>
-                </Tooltip>
-              )}
-            </TooltipProvider>
+            <UsageStatusBadges
+              running={totals.running}
+              queued={totals.queued}
+              retrying={totals.retrying}
+              pipeline={pipelineByKind}
+            />
           </div>
           <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-1">
             <DropdownMenu modal={false}>
