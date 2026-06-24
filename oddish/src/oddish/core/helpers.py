@@ -25,7 +25,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.model_pricing import estimate_cost_usd

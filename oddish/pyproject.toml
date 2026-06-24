@@ -70,7 +70,7 @@ server = [
     "pypdf>=4.0",
     # Doc-store MCP retrieval server (oddish.mcp.docstore_server).
     "mcp>=1.26",
-    # Tag-name profanity screening (oddish.core.tag_profanity); same
+    # Tag-name profanity screening (oddish.core.tags.profanity); same
     # constraint as backend/pyproject.toml.
     "better-profanity>=0.7.0,<1.0",
 ]
