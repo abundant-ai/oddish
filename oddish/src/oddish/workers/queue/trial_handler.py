@@ -17,7 +17,7 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import update
 
-from oddish.config import settings
+from oddish.config import is_nop_oracle_agent, settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -132,6 +132,22 @@ def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
     if outcome is None or outcome.exception_type is None:
         return False
     return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
+
+
+SCORELESS_EXPECTED_MESSAGE = "Completed with verification disabled; no reward expected."
+
+
+def _verification_disabled_in_config(harbor_config: dict | None) -> bool:
+    if not isinstance(harbor_config, dict):
+        return False
+    verifier = harbor_config.get("verifier")
+    return isinstance(verifier, dict) and bool(verifier.get("disable"))
+
+
+def _is_scoreless_expected(trial: object) -> bool:
+    if _verification_disabled_in_config(getattr(trial, "harbor_config", None)):
+        return True
+    return is_nop_oracle_agent(getattr(trial, "agent", None))
 
 
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
@@ -600,6 +616,17 @@ async def _store_trial_results(
                 trial.finished_at = utcnow()
                 console.print(
                     f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
+                )
+            elif not outcome.error and _is_scoreless_expected(trial):
+                # Verification disabled or a nop/oracle baseline: a missing
+                # reward is the designed outcome, not a failure. Terminate as
+                # SUCCESS so we don't burn the retry budget on a clean run.
+                trial.status = TrialStatus.SUCCESS
+                trial.error_message = SCORELESS_EXPECTED_MESSAGE
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[green]Trial {trial_id} SUCCESS[/green] "
+                    "(verification disabled; no reward expected)"
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
