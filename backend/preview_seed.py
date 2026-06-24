@@ -38,6 +38,9 @@ _RECONCILED_TABLES = (
     "skills",
     "skill_files",
     "documents",
+    # tags before tag_assignments (FK order)
+    "tags",
+    "tag_assignments",
 )
 
 _BACKEDGES = {("tasks", "current_version_id")}
@@ -235,6 +238,44 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
                 if row.get("org_id")
             }
         )
+
+        # Tags for the sampled orgs, plus their DIRECT assignments onto the
+        # sampled tasks / versions / experiments. The only hard FK on
+        # tag_assignments is tag_id -> tags(id), so we constrain assignments to
+        # the tags we just drew AND to targets that exist in the trimmed set.
+        # Only DIRECT assignments are taken: experiment-propagated LIVING /
+        # SNAPSHOT rows carry source_*/target ids that can dangle once the
+        # task/experiment graph is sampled down. Sampled before the user
+        # backfill below so tag owners / assigners are pulled into `users`.
+        tagged_version_ids = sorted({v["id"] for v in versions})
+        await section(
+            "tags",
+            "SELECT * FROM tags"
+            " WHERE deleted_at IS NULL AND state = 'ACTIVE'"
+            "   AND org_id = ANY(:org_ids)"
+            " ORDER BY id",
+            org_ids=org_ids,
+        )
+        tag_ids = sorted({t["id"] for t in rows.get("tags", [])})
+        if tag_ids:
+            await section(
+                "tag_assignments",
+                "SELECT * FROM tag_assignments"
+                " WHERE deleted_at IS NULL AND state = 'ACTIVE'"
+                "   AND source = 'DIRECT'"
+                "   AND tag_id = ANY(:tag_ids)"
+                "   AND ("
+                "     (scope = 'TASK' AND target_id = ANY(:task_ids))"
+                "     OR (scope = 'VERSION' AND target_id = ANY(:version_ids))"
+                "     OR (scope = 'EXPERIMENT' AND target_id = ANY(:exp_ids))"
+                "   )"
+                " ORDER BY id",
+                tag_ids=tag_ids,
+                task_ids=kept_task_ids,
+                version_ids=tagged_version_ids,
+                exp_ids=exp_ids,
+            )
+
         orgs = (
             await rows_of(
                 conn,
@@ -301,6 +342,13 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         j["current_queue_slot"] = None
         if j.get("parent_job_id") not in job_ids:
             j["parent_job_id"] = None
+
+    # ACTIVE tags are never merged, but guard the merged_into_id self-FK in case
+    # a source row is dirty: drop a merge pointer we didn't also sample.
+    sampled_tag_ids = {t["id"] for t in rows.get("tags", [])}
+    for tg in rows.get("tags", []):
+        if tg.get("merged_into_id") and tg["merged_into_id"] not in sampled_tag_ids:
+            tg["merged_into_id"] = None
 
     rows.update(
         {
