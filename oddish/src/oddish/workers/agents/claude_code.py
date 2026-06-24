@@ -10,7 +10,7 @@ a git fork, not a PyPI release). In a blessed-variant container that is the
 variant's harbor; for an explicit override the caller can pass ``(source, sha)``.
 
 This wrapper is selected only for probe claude-code trials, via
-``_apply_claude_code_probe_harbor`` in :mod:`oddish.workers.harbor_agent_config`,
+``_apply_claude_code_probe_harbor`` in :mod:`oddish.workers.harbor.agent_config`,
 which points ``AgentConfig.import_path`` here.
 """
 

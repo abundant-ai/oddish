@@ -29,18 +29,18 @@ from oddish.core.harbor_source import harbor_git_requirement
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.workers._harbor_entry import EVENT_SENTINEL
-from oddish.workers.claude_code_agent import _pinned_harbor_requirement
-from oddish.workers.harbor_agent_config import (
+from ._entry import EVENT_SENTINEL
+from oddish.workers.agents.claude_code import _pinned_harbor_requirement
+from .agent_config import (
     _claude_code_forces_direct_api,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
-from oddish.workers.harbor_outcome import (
+from .outcome import (
     HarborOutcome,
     _extract_outcome_from_job_result,
 )
-from oddish.workers.harbor_runner import (
+from .runner import (
     HookCallback,
     _check_local_storage_preflight,
     _patch_task_toml,
@@ -48,7 +48,7 @@ from oddish.workers.harbor_runner import (
 
 # Path to the standalone child entrypoint, invoked BY PATH (not ``-m``) so the
 # child never imports the oddish package.
-_ENTRY_PATH = str(Path(__file__).resolve().parent / "_harbor_entry.py")
+_ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 
 # The child interpreter is pinned to the image venv's Python (the 3.14 base is
 # NOT what the worker runs); a ref whose requires-python excludes it fails fast.
