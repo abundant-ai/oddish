@@ -48,6 +48,13 @@ class HarborOutcome:
     # as non-retryable.
     exception_type: str | None = None
 
+    # Full sub-reward breakdown from the verifier, when the grader emits one
+    # (partial-credit components: code_fraction, code_tests_passed/total,
+    # workflow_fraction, workflow_passed/total, ...). None for graders that
+    # only produce a scalar reward. Persisted to ``trial.result`` so the score
+    # is explainable in the UI/CLI instead of being a bare number.
+    reward_breakdown: dict[str, Any] | None = None
+
 
 def _extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
     """Extract per-phase timing from a TrialResult's TimingInfo fields."""
@@ -169,6 +176,15 @@ def _extract_outcome_from_job_result(
 
     has_trajectory = _detect_trajectory(job_dir)
 
+    # Capture the verifier's full sub-reward dict once (code/workflow fractions,
+    # tests passed/total, ...) so it rides along with whichever reward we return.
+    reward_breakdown: dict[str, Any] | None = None
+    for trial_result in job_result.trial_results:
+        vr = trial_result.verifier_result
+        if vr and vr.rewards:
+            reward_breakdown = dict(vr.rewards)
+            break
+
     def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
             reward=reward,
@@ -185,6 +201,7 @@ def _extract_outcome_from_job_result(
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
             exception_type=exception_type,
+            reward_breakdown=reward_breakdown,
         )
 
     # Harbor's AgentDatasetStats.reward_stats is

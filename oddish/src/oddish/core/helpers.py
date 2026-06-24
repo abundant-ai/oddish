@@ -506,7 +506,9 @@ def build_compact_trial_response(
         harbor_stage=trial.harbor_stage,
         reward=trial.reward,
         error_message=trial.error_message,
-        result=None,
+        # Reward-breakdown blob (code/workflow fractions) for the reward
+        # tooltip; small, so it's fine on the compact path.
+        result=trial.result,
         harbor_config=trial.harbor_config,
         harbor_sha=trial.harbor_sha,
         harbor_source=(trial.harbor_config or {}).get("source"),

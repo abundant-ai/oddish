@@ -64,6 +64,31 @@ def format_reward_value(reward: float | None) -> str:
     return f"[yellow]{reward:.2f}[/yellow]"
 
 
+def format_reward_breakdown(result: object) -> str:
+    """One-line code/workflow decomposition from ``trial.result``.
+
+    Returns "" when no partial-credit breakdown is present (scalar-only graders),
+    e.g. "code 0/12 · workflow 4/6".
+    """
+    if not isinstance(result, dict):
+        return ""
+    bd = result.get("reward_breakdown")
+    if not isinstance(bd, dict):
+        return ""
+    parts: list[str] = []
+    code_total = bd.get("code_tests_total")
+    if code_total:
+        parts.append(f"code {int(bd.get('code_tests_passed') or 0)}/{int(code_total)}")
+    elif bd.get("code_fraction") is not None:
+        parts.append(f"code {float(bd['code_fraction']):.0%}")
+    wf_total = bd.get("workflow_total")
+    if wf_total:
+        parts.append(f"workflow {int(bd.get('workflow_passed') or 0)}/{int(wf_total)}")
+    elif bd.get("workflow_fraction") is not None:
+        parts.append(f"workflow {float(bd['workflow_fraction']):.0%}")
+    return " · ".join(parts)
+
+
 # =============================================================================
 # Task Path Resolution
 # =============================================================================
@@ -2052,6 +2077,9 @@ def print_final_results(result: dict) -> None:
             reward_value = float(reward)
             rewards.append(reward_value)
             reward_str = format_reward_value(reward_value)
+            _bd = format_reward_breakdown(trial.get("result"))
+            if _bd:
+                reward_str += f" [dim]({_bd})[/dim]"
         else:
             reward_str = "-"
 
@@ -2145,6 +2173,9 @@ def watch_task(
                     reward_str = format_reward_value(
                         float(reward) if reward is not None else None
                     )
+                    _bd = format_reward_breakdown(trial.get("result"))
+                    if _bd:
+                        reward_str += f" [dim]({_bd})[/dim]"
 
                     table.add_row(
                         trial["id"].split("-")[-1],  # Just the index

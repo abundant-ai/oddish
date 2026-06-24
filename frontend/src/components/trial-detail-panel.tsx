@@ -51,6 +51,7 @@ import {
   formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
+  getRewardBreakdown,
   getRewardStyle,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
@@ -655,6 +656,17 @@ export function TrialDetailPanel({
                         {trialStatusConfig.shortLabel}
                       </span>
                     </div>
+                    {(() => {
+                      const comps = getRewardBreakdown(trial.result);
+                      if (!comps.length) return null;
+                      return (
+                        <div className="text-muted-foreground mt-0.5 font-mono text-[9px] leading-tight">
+                          {comps
+                            .map((c) => `${c.label} ${c.detail}`)
+                            .join(" · ")}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               </CardContent>

@@ -168,6 +168,10 @@ async def list_tasks_core(
                 TrialModel.max_attempts,
                 TrialModel.harbor_stage,
                 TrialModel.reward,
+                # Surfaced by ``build_compact_trial_response`` (reward breakdown
+                # tooltip); must be eager-loaded or the builder lazy-loads
+                # outside the greenlet and 500s with MissingGreenlet.
+                TrialModel.result,
                 TrialModel.error_message,
                 # Surfaced by ``build_compact_trial_response`` (probe
                 # trials read it on the experiment page). Must be loaded

@@ -72,6 +72,7 @@ import {
   formatRewardPercent,
   formatRewardValue,
   getMatrixStatus,
+  getRewardBreakdown,
   getRewardStyle,
   STATUS_CONFIG,
   STATUS_GLYPH_BOX,
@@ -419,10 +420,14 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
 }
 
 function getTrialTitle(trial: Trial, status: MatrixStatus) {
+  const breakdown = getRewardBreakdown(trial.result);
+  const breakdownStr = breakdown.length
+    ? ` [${breakdown.map((c) => `${c.label} ${c.detail}`).join(" · ")}]`
+    : "";
   const reward =
     trial.reward === null
       ? "reward pending"
-      : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})`;
+      : `reward ${formatRewardValue(trial.reward)} (${formatRewardPercent(trial.reward)})${breakdownStr}`;
   const error = trial.error_message ? ` • ${trial.error_message}` : "";
   const queueInfo = hasLiveQueueSnapshot(trial) ? trial.queue_info : null;
   const queueSnapshot = queueInfo

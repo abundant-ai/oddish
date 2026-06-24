@@ -171,6 +171,63 @@ export function formatRewardPercent(
   return `${(reward * 100).toFixed(digits)}%`;
 }
 
+export interface RewardComponent {
+  label: string;
+  detail: string;
+  fraction: number | null;
+}
+
+/**
+ * Extract the partial-credit components from a trial's ``result`` blob
+ * (``result.reward_breakdown``), written by the verifier. Returns [] when no
+ * breakdown is present (scalar-only graders).
+ */
+export function getRewardBreakdown(
+  result: Record<string, unknown> | null | undefined,
+): RewardComponent[] {
+  if (!result || typeof result !== "object") return [];
+  const bd = (result as Record<string, unknown>)["reward_breakdown"] as
+    | Record<string, unknown>
+    | undefined;
+  if (!bd || typeof bd !== "object") return [];
+  const num = (k: string): number | null => {
+    const v = bd[k];
+    return typeof v === "number" ? v : null;
+  };
+  const out: RewardComponent[] = [];
+  const codeTotal = num("code_tests_total");
+  const codeFrac = num("code_fraction");
+  if (codeTotal && codeTotal > 0) {
+    out.push({
+      label: "Code tests",
+      detail: `${num("code_tests_passed") ?? 0}/${codeTotal}`,
+      fraction: codeFrac,
+    });
+  } else if (codeFrac !== null) {
+    out.push({
+      label: "Code",
+      detail: `${Math.round(codeFrac * 100)}%`,
+      fraction: codeFrac,
+    });
+  }
+  const wfTotal = num("workflow_total");
+  const wfFrac = num("workflow_fraction");
+  if (wfTotal && wfTotal > 0) {
+    out.push({
+      label: "Workflow",
+      detail: `${num("workflow_passed") ?? 0}/${wfTotal}`,
+      fraction: wfFrac,
+    });
+  } else if (wfFrac !== null) {
+    out.push({
+      label: "Workflow",
+      detail: `${Math.round(wfFrac * 100)}%`,
+      fraction: wfFrac,
+    });
+  }
+  return out;
+}
+
 export function formatPartialRewardBadgeValue(
   reward: number | null | undefined,
 ): string {

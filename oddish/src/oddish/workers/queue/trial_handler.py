@@ -569,6 +569,14 @@ async def _store_trial_results(
                     )
 
             trial.reward = derived_reward
+            # Persist the verifier's sub-reward breakdown (code/workflow
+            # fractions, tests passed/total, ...) so the score is explainable
+            # in the UI/CLI instead of a bare number. None for scalar-only graders.
+            trial.result = (
+                {"reward_breakdown": outcome.reward_breakdown}
+                if outcome.reward_breakdown
+                else None
+            )
             if outcome.error:
                 trial.error_message = outcome.error
             elif derived_reward is not None:
