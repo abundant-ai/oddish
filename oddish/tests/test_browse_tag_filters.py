@@ -261,10 +261,15 @@ def test_browse_tasks_core_imports_user_tag_ref():
     """Regression: ``UserTagRef`` is referenced inside ``browse_tasks_core``
     when populating the response items, so it MUST be imported at module
     scope (the pre-fix version omitted the import)."""
-    from oddish.core import endpoints
+    import importlib
+
+    from oddish.core.endpoints import browse_tasks_core
     from oddish.schemas import UserTagRef
 
-    assert getattr(endpoints, "UserTagRef", None) is UserTagRef
+    # ``browse_tasks_core`` now lives in a submodule of the ``endpoints``
+    # package; assert the name is in scope wherever it is actually defined.
+    module = importlib.import_module(browse_tasks_core.__module__)
+    assert getattr(module, "UserTagRef", None) is UserTagRef
 
 
 def test_tasks_browse_endpoint_accepts_tag_query_params():
