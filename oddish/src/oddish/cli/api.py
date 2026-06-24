@@ -1324,7 +1324,7 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 
 
 def detect_trajectory_in_dir(trial_dir: Path) -> bool:
-    """Mirror ``oddish.workers.harbor_runner._detect_trajectory``."""
+    """Mirror ``oddish.workers.harbor.runner._detect_trajectory``."""
     if not trial_dir.exists():
         return False
     if any(trial_dir.rglob("trajectory.json")):
@@ -1334,15 +1334,36 @@ def detect_trajectory_in_dir(trial_dir: Path) -> bool:
     return False
 
 
+def extract_total_steps_from_dir(trial_dir: Path) -> int | None:
+    """Read ATIF total step count from an imported Harbor trial directory."""
+    if not trial_dir.exists():
+        return None
+    for traj_path in trial_dir.rglob("trajectory.json"):
+        try:
+            data = json.loads(traj_path.read_text(encoding="utf-8"))
+            final_metrics = data.get("final_metrics")
+            if isinstance(final_metrics, dict):
+                raw_steps = final_metrics.get("total_steps")
+                if raw_steps is not None:
+                    return int(raw_steps)
+            steps = data.get("steps")
+            if isinstance(steps, list):
+                return len(steps)
+        except Exception:
+            continue
+    return None
+
+
 def trial_result_to_import_spec(
     trial_result: TrialResult,
     *,
     has_trajectory: bool,
+    total_steps: int | None = None,
 ) -> dict[str, Any]:
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
 
     Per-trial equivalent of
-    ``oddish.workers.harbor_runner._extract_outcome_from_job_result``.
+    ``oddish.workers.harbor.runner._extract_outcome_from_job_result``.
     Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
     oddish trial rows.
     """
@@ -1427,6 +1448,7 @@ def trial_result_to_import_spec(
         "input_tokens": input_tokens,
         "cache_tokens": cache_tokens,
         "output_tokens": output_tokens,
+        "total_steps": total_steps,
         "cost_usd": cost_usd,
         "phase_timing": phase_timing or None,
         "has_trajectory": has_trajectory,
@@ -1538,7 +1560,9 @@ def import_trial(
 
     has_trajectory = detect_trajectory_in_dir(trial_dir)
     spec_payload = trial_result_to_import_spec(
-        trial_result, has_trajectory=has_trajectory
+        trial_result,
+        has_trajectory=has_trajectory,
+        total_steps=extract_total_steps_from_dir(trial_dir),
     )
 
     init = _call_trial_import_init(
