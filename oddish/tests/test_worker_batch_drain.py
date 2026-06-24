@@ -102,7 +102,13 @@ async def test_drain_passes_slot_and_hooks_through():
     seen = []
 
     async def run_job(
-        queue_key, *, worker_id, queue_slot, modal_function_call_id, post_success_hooks
+        queue_key,
+        *,
+        worker_id,
+        queue_slot,
+        modal_function_call_id,
+        post_success_hooks,
+        harbor_variant_id="default",
     ):
         seen.append((queue_key, worker_id, queue_slot, modal_function_call_id))
         return len(seen) < 2

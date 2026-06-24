@@ -8,6 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from fastapi import HTTPException
+
 import oddish.queue as queue_mod
 from oddish.core import endpoints
 from oddish.db import AnalysisStatus, TaskStatus, VerdictStatus
@@ -139,7 +141,7 @@ async def test_enable_analysis_flips_flag(_stub_enqueue):
 async def test_org_mismatch_404(_stub_enqueue):
     task = _task([_trial("tsk-0")])
     session = _FakeSession(task)
-    with pytest.raises(endpoints.HTTPException) as exc:
+    with pytest.raises(HTTPException) as exc:
         await endpoints.backfill_task_analysis_core(
             session, task_id="tsk", org_id="other-org"
         )
@@ -153,6 +155,6 @@ async def test_qa_in_progress_400(_stub_enqueue):
         verdict_status=VerdictStatus.RUNNING,
     )
     session = _FakeSession(task)
-    with pytest.raises(endpoints.HTTPException) as exc:
+    with pytest.raises(HTTPException) as exc:
         await endpoints.backfill_task_analysis_core(session, task_id="tsk", org_id="org-1")
     assert exc.value.status_code == 400
