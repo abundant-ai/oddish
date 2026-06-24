@@ -55,9 +55,13 @@ async def _collect_dockerd_diagnostics(strategy: Any) -> str:
     """
     try:
         result = await strategy._vm_exec(_DOCKERD_DIAG_CMD, timeout_sec=15)
-        out = (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
+        out = (getattr(result, "stdout", "") or "") + (
+            getattr(result, "stderr", "") or ""
+        )
         out = out.strip() or "(no diagnostic output)"
-        return "dockerd diagnostics (captured by oddish before sandbox teardown):\n" + out
+        return (
+            "dockerd diagnostics (captured by oddish before sandbox teardown):\n" + out
+        )
     except Exception as exc:  # the VM/sandbox may already be unreachable
         return f"dockerd diagnostics unavailable: {exc!r}"
 
@@ -178,7 +182,7 @@ async def _inject_mirror_and_reload(strategy: Any) -> None:
         )
         await strategy._vm_exec(
             'kill -HUP "$(cat /var/run/docker.pid 2>/dev/null '
-            "|| pidof dockerd 2>/dev/null)\" 2>/dev/null || true",
+            '|| pidof dockerd 2>/dev/null)" 2>/dev/null || true',
             timeout_sec=10,
         )
 

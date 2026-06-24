@@ -24,9 +24,7 @@ class _FakeStrategy:
         self.calls.append(command)
         if self._raises is not None:
             raise self._raises
-        return SimpleNamespace(
-            stdout=self._stdout, stderr=self._stderr, return_code=0
-        )
+        return SimpleNamespace(stdout=self._stdout, stderr=self._stderr, return_code=0)
 
 
 async def _ok(_self):
@@ -103,6 +101,7 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
 
     assert calls == {"diag": 1, "daytona_mirror": 1, "modal_mirror": 1}
 
+
 class _CaptureStrategy:
     def __init__(self):
         self.calls: list[dict] = []
@@ -138,6 +137,7 @@ async def test_daytona_vm_exec_passes_other_commands_through():
     assert strategy.calls[0]["command"] == "docker info"
     assert strategy.calls[0]["args"] == ("extra",)
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 5}
+
 
 class _ModalCaptureStrategy:
     def __init__(self, *, cat_stdout, info_stdout="", raises_on=None):
