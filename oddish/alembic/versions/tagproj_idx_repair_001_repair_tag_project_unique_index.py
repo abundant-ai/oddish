@@ -1,7 +1,7 @@
 """repair TAG_PROJECT coalescing unique index
 
 Revision ID: tagproj_idx_repair_001
-Revises: trial_steps_001
+Revises: hv2claimidx01
 Create Date: 2026-06-23 23:15:00.000000
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 
 revision: str = "tagproj_idx_repair_001"
-down_revision: Union[str, Sequence[str], None] = "trial_steps_001"
+down_revision: Union[str, Sequence[str], None] = "hv2claimidx01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
