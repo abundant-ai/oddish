@@ -1,0 +1,79 @@
+name: Schema Parity
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "oddish/**"
+      - ".github/workflows/schema-parity.yml"
+      - ".github/scripts/ci/check_schema_parity.py"
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "oddish/**"
+      - ".github/workflows/schema-parity.yml"
+      - ".github/scripts/ci/check_schema_parity.py"
+  workflow_dispatch:
+
+concurrency:
+  group: schema-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Migrations vs create_all
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: oddish
+          POSTGRES_PASSWORD: oddish
+          POSTGRES_DB: oddish
+        options: >-
+          --health-cmd "pg_isready -U oddish"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      SCHEMA_PARITY_MIGRATED_URL: postgresql+asyncpg://oddish:oddish@postgres:5432/schema_migrated
+      SCHEMA_PARITY_METADATA_URL: postgresql+asyncpg://oddish:oddish@postgres:5432/schema_metadata
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync oddish dependencies
+        working-directory: oddish
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+        run: uv sync --frozen --extra server
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv sync --frozen
+
+      - name: Create scratch databases
+        env:
+          PGPASSWORD: oddish
+        run: |
+          createdb -h postgres -U oddish schema_migrated
+          createdb -h postgres -U oddish schema_metadata
+
+      - name: Check migrations vs create_all parity
+        working-directory: backend
+        env:
+          UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+        run: uv run python "$GITHUB_WORKSPACE/.github/scripts/ci/check_schema_parity.py"
