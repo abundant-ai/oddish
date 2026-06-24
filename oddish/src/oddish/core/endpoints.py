@@ -300,13 +300,21 @@ async def list_tasks_core(
         else:
             query = query.options(trials_loader, experiments_loader)
     else:
-        # ``selectinload`` here is one batched round trip even on the
-        # compact path -- ``_build_task_status_response`` reads
-        # ``task.experiments`` for the primary-experiment lookup. The
-        # bigger compact-mode wins are skipping
-        # ``fetch_experiment_effective_version_ids`` (an IN-list of up
-        # to 2000 task ids) and ``fetch_visible_worker_jobs``.
-        query = query.options(selectinload(TaskModel.experiments))
+        # ``_build_task_status_response`` reads ``task.experiments`` to pick a
+        # primary experiment (and to emit the per-task chips list). Off the
+        # experiment-scoped path we need the relationship loaded for that.
+        #
+        # On the experiment-scoped path it's pure waste: every returned task
+        # belongs to ``experiment_id`` (the ``.any(...)`` filter below
+        # guarantees it), so the primary is always the experiment we're already
+        # looking at. Loading every experiment each task has EVER been in just
+        # to re-pick that one is a large fan-out (~5.6k rows / 2k distinct
+        # experiments for an 841-task experiment built from shared benchmark
+        # tasks) and is the dominant per-request cost of the experiment-page
+        # first paint. Skip it here; attach just the context experiment after
+        # the query instead (see below).
+        if experiment_id is None:
+            query = query.options(selectinload(TaskModel.experiments))
 
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
@@ -329,6 +337,22 @@ async def list_tasks_core(
             "List tasks query",
         )
     tasks = result.scalars().all()
+
+    # Experiment-scoped path: every task here belongs to ``experiment_id`` (the
+    # ``.any(...)`` filter above), and we skipped the per-task ``experiments``
+    # fan-out. Attach just the context experiment so the primary-experiment
+    # lookup and the chips list resolve to it without hydrating thousands of
+    # unrelated rows. ``set_committed_value`` marks the collection as loaded so
+    # the response builder never triggers a lazy load outside the async
+    # greenlet. Only needed when the relationship was NOT eagerly loaded above
+    # (i.e. the ``include_trials=False`` branch with an experiment filter).
+    if experiment_id and tasks and not include_trials:
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        context_experiment = await session.get(ExperimentModel, experiment_id)
+        scoped_experiments = [context_experiment] if context_experiment else []
+        for task in tasks:
+            set_committed_value(task, "experiments", scoped_experiments)
 
     # When trial payloads are loaded, constrain them to the subset the status UI
     # should reflect: first the requested experiment, then the task's active
