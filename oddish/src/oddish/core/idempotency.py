@@ -51,8 +51,6 @@ def _canonical_digest(value: Any) -> str:
 
 
 def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
-    # registry_auth is a transient per-run credential excluded from the key so
-    # rotating it doesn't change the submission identity.
     if "registry_auth" in payload:
         payload = {k: v for k, v in payload.items() if k != "registry_auth"}
     return _canonical_digest(payload)

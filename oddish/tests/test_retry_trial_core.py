@@ -169,6 +169,4 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
 
     await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
 
-    # For stuck/live trials, read the credential before the old job cancellation
-    # scrubs it so the replacement trial can authenticate.
     assert captured["registry_auth_enc"] == "ENC"
