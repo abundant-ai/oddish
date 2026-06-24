@@ -36,6 +36,7 @@ from oddish.core.endpoints import (
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
+    list_experiment_task_shells_core,
     list_tasks_core,
     list_task_versions_core,
     rerun_task_qa_core,
@@ -651,6 +652,46 @@ async def list_tasks(
             record_timing=_make_timing_recorder(request),
         )
         return tasks
+
+
+@router.get(
+    "/experiments/{experiment_id}/task-shells",
+    response_model=list[TaskStatusResponse],
+)
+async def list_experiment_task_shells(
+    request: Request,
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(2000, ge=1, le=2000),
+    offset: int = 0,
+) -> list[TaskStatusResponse]:
+    """Lightweight task shells for the experiment-details first paint.
+
+    A dedicated, trimmed alternative to ``GET /tasks?...&compact_tasks=true``
+    that additionally drops the per-task ``experiments`` fan-out. The generic
+    ``/tasks`` route (and ``list_tasks_core``) are intentionally left unchanged;
+    only the experiment-page first paint should call this.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Task shells DB connect",
+        )
+        return await list_experiment_task_shells_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
+            include_empty_rewards=True,
+            record_timing=_make_timing_recorder(request),
+        )
 
 
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)

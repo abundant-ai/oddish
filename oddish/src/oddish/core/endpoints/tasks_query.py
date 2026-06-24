@@ -461,6 +461,78 @@ async def list_tasks_core(
     return response
 
 
+async def list_experiment_task_shells_core(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+    limit: int = 2000,
+    offset: int = 0,
+    include_empty_rewards: bool = True,
+    record_timing: TimingRecorder | None = None,
+) -> list[TaskStatusResponse]:
+    """Lightweight task-shell list for the experiment-details first paint.
+
+    A dedicated, trimmed alternative to ``list_tasks_core``'s compact
+    experiment path. It returns the same ``TaskStatusResponse`` shells
+    (id/name/status + aggregated trial counts) but skips every load the
+    first-paint shell view never reads: trials, ``visible_worker_jobs``,
+    ``queue_info``, ``effective_version_ids``, AND the per-task
+    ``experiments`` fan-out (which hydrates every experiment each task has
+    ever belonged to -- the dominant per-request cost of that page).
+
+    Every returned task belongs to ``experiment_id`` (the ``.any(...)``
+    filter), so the only experiment the response needs -- the primary -- is
+    the one being viewed. We attach just that with a single ``session.get``
+    instead of the fan-out.
+
+    Kept intentionally separate so the generic ``list_tasks_core`` / ``/tasks``
+    path is left completely unchanged.
+    """
+    query = (
+        select(TaskModel)
+        .order_by(TaskModel.created_at.desc())
+        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    query = query.limit(limit).offset(offset)
+
+    query_started_at = now()
+    result = await session.execute(query)
+    if record_timing is not None:
+        record_timing(
+            "tasks_query", elapsed_ms(query_started_at), "Task shells query"
+        )
+    tasks = result.scalars().all()
+
+    # Attach only the context experiment -- no fan-out. ``set_committed_value``
+    # marks the collection loaded so the response builder never triggers a lazy
+    # load outside the async greenlet.
+    if tasks:
+        from sqlalchemy.orm.attributes import set_committed_value
+
+        context_experiment = await session.get(ExperimentModel, experiment_id)
+        scoped_experiments = [context_experiment] if context_experiment else []
+        for task in tasks:
+            set_committed_value(task, "experiments", scoped_experiments)
+
+    build_started_at = now()
+    response = await build_task_status_responses_from_counts(
+        session,
+        tasks=tasks,
+        include_empty_rewards=include_empty_rewards,
+        experiment_context_id=experiment_id,
+        effective_version_id_by_task_id=None,
+        jobs_by_subject={},
+    )
+    if record_timing is not None:
+        record_timing(
+            "tasks_build", elapsed_ms(build_started_at), "Build task shells"
+        )
+    return response
+
+
 def _task_freetext_match(needle: str):
     """Broad match for one bare (un-prefixed) browse needle.
 
