@@ -80,8 +80,30 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_org_id ON users (org_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)")
+    # ``supabase_user_id`` only exists when this migration freshly created the
+    # ``users`` table above. When the schema was instead materialized from the
+    # current model graph (``Base.metadata.create_all`` — the preview rebuild and
+    # fresh-bootstrap path), ``users`` already exists carrying the modern
+    # ``clerk_user_id`` rather than the legacy ``supabase_user_id``, so the
+    # ``CREATE TABLE IF NOT EXISTS`` above is a no-op and this column is absent.
+    # Guard the legacy index on the column's presence so the migration is correct
+    # in both cases (without it, the bare ``CREATE INDEX`` aborts the upgrade with
+    # ``column "supabase_user_id" does not exist``).
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_supabase_user_id ON users (supabase_user_id)"
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'users'
+                  AND column_name = 'supabase_user_id'
+            ) THEN
+                CREATE INDEX IF NOT EXISTS idx_users_supabase_user_id
+                ON users (supabase_user_id);
+            END IF;
+        END $$;
+        """
     )
 
     # ==========================================================================
@@ -224,7 +246,9 @@ def downgrade() -> None:
     op.execute("DROP TYPE IF EXISTS apikeyscope")
 
     # Drop users table
-    op.drop_index("idx_users_supabase_user_id", table_name="users")
+    # The supabase_user_id index is only created when the column exists (see
+    # upgrade), so drop it idempotently to mirror that.
+    op.execute("DROP INDEX IF EXISTS idx_users_supabase_user_id")
     op.drop_index("idx_users_email", table_name="users")
     op.drop_index("idx_users_org_id", table_name="users")
     op.drop_table("users")
