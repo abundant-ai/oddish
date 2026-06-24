@@ -1035,6 +1035,12 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    # Cursor team admin API key (Basic-auth username) for the Cursor Admin API.
+    # Used to pull AUTHORITATIVE team spend (api.cursor.com/teams/spend), as
+    # opposed to the per-trial token-estimated cursor-cli cost.
+    cursor_admin_api_key: str | None = Field(
+        default=None, alias="CURSOR_ADMIN_API_KEY"
+    )
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"

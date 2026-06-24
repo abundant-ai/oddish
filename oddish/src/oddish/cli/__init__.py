@@ -4,6 +4,7 @@ import typer
 from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.combine import combine
+from oddish.cli.cursor_spend import cursor_spend
 from oddish.cli.delete import delete
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
@@ -26,6 +27,7 @@ app.command(name="ls")(ls)
 app.command()(status)
 app.command()(cancel)
 app.command()(combine)
+app.command(name="cursor-spend")(cursor_spend)
 app.command()(delete)
 app.command()(pull)
 app.command()(publish)
