@@ -168,7 +168,8 @@ async def retry_trial_core(
                    error_message = 'Superseded by user retry',
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
-                   modal_function_call_id = NULL
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
             WHERE  subject_table = 'trials'
               AND  subject_id = :trial_id
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')

@@ -285,7 +285,8 @@ async def _cancel_worker_jobs_for_trials(
                    error_message = :reason,
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
-                   modal_function_call_id = NULL
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
             WHERE  subject_table = 'trials'
               AND  subject_id = ANY(:trial_ids)
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
