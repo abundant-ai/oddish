@@ -1,9 +1,9 @@
 """Model pricing for estimating trial cost from token counts.
 
 Harbor does not populate ``cost_usd`` on ``AgentContext`` for every provider:
-agents that wrap CLI tools (gemini-cli, copilot-cli, some codex modes) only
-parse whatever the CLI itself prints, and several CLIs report tokens but not
-cost.  We backfill those trials here.
+agents that wrap CLI tools (cursor-cli, gemini-cli, copilot-cli, some codex
+modes) only parse whatever the CLI itself prints, and several CLIs report
+tokens but not cost.  We backfill those trials here.
 
 Pricing sources, in order of preference:
 
@@ -80,6 +80,31 @@ PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     # but since litellm resolves gpt-5.3-codex first, we never reach here
     # for that model.  Still, keep gpt-5.3 short to avoid shadowing.)
     ("gpt-5.3", ModelPricing(input=1.75e-6, output=14e-6, cache_read=1.75e-7)),
+    # Cursor Composer (cursor-cli / cursor-agent) — Cursor's proprietary
+    # models, never in litellm.  The cursor-cli agent reports input/output/
+    # cache token counts but no native cost_usd, so these trials only ever
+    # get priced from this table.  The model id stored on trials is the bare
+    # "cursor/composer"; versioned ids (composer-2.5, composer-2-fast,
+    # composer-1.5) can also appear.  Rates are per-token = published
+    # $/1M tokens / 1e6.  Sources (cursor.com / TokenCost / Vantage, 2026-06):
+    #   Composer 2.5 (standard): $0.50 in / $2.50 out / $0.20 cache-read
+    #   Composer 2   (fast):     $1.50 in / $7.50 out / $0.35 cache-read
+    #   Composer 1.5:            $3.50 in / $17.50 out / $0.35 cache-read
+    # Substring match is greedy first-hit and the table invariant forbids an
+    # earlier pattern being a substring of a later one, so the specific
+    # versioned patterns MUST precede bare "composer".  Bare "cursor/composer"
+    # maps to the current default (Composer 2.5, standard tier).
+    (
+        "composer-2-fast",
+        ModelPricing(input=1.5e-6, output=7.5e-6, cache_read=3.5e-7),
+    ),
+    ("composer-2.5", ModelPricing(input=5e-7, output=2.5e-6, cache_read=2e-7)),
+    (
+        "composer-1.5",
+        ModelPricing(input=3.5e-6, output=17.5e-6, cache_read=3.5e-7),
+    ),
+    ("composer-2", ModelPricing(input=5e-7, output=2.5e-6, cache_read=2e-7)),
+    ("composer", ModelPricing(input=5e-7, output=2.5e-6, cache_read=2e-7)),
 ]
 
 
