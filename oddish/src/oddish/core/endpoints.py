@@ -230,12 +230,10 @@ async def list_tasks_core(
                 # async greenlet and fails with MissingGreenlet (same
                 # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                # Surfaced by ``build_compact_trial_response`` (``harbor_sha``
-                # on every compact trial). Must be loaded eagerly; otherwise
-                # accessing it triggers a lazy-load on this deferred column
-                # outside the async greenlet and the whole compact-trials fetch
-                # 500s with MissingGreenlet (same reason ``harbor_config`` is
-                # here).
+                # Surfaced by both trial builders (``harbor_sha=trial.harbor_sha``).
+                # Must be loaded eagerly; otherwise the compact builder triggers a
+                # lazy-load on this column outside the async greenlet and fails
+                # with MissingGreenlet (same reason ``harbor_config`` is here).
                 TrialModel.harbor_sha,
                 # Read by the compact builder (``build_compact_trial_response``);
                 # the experiment-scoped path also filters on ``is_probe``, but
