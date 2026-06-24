@@ -2210,6 +2210,9 @@ export function ExperimentTrialsTable({
                   const trialIndexById =
                     context?.trialIndexById ?? EMPTY_TRIAL_INDEX;
                   const trialGroups = context?.trialGroups ?? [];
+                  const taskHref = task.current_version_id
+                    ? `/tasks/${encodeURIComponent(task.id)}?version=${encodeURIComponent(task.current_version_id)}`
+                    : `/tasks/${encodeURIComponent(task.id)}`;
                   return (
                     <TableRow
                       key={task.id}
@@ -2316,14 +2319,11 @@ export function ExperimentTrialsTable({
                               variant="icon"
                               className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
                             />
-                            {/* Jump from the experiment to this task's own
-                                page. Hidden on the read-only share view since
-                                /tasks/[id] is an authenticated route. */}
                             {!readOnly && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Link
-                                    href={`/tasks/${encodeURIComponent(task.id)}`}
+                                    href={taskHref}
                                     aria-label={`Open task page for ${task.name}`}
                                     className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
                                   >
