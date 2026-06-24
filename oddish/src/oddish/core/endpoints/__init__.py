@@ -31,6 +31,7 @@ from oddish.core.endpoints.deletion import (
     delete_trial_core,
 )
 from oddish.core.endpoints.qa import (
+    backfill_task_analysis_core,
     cancel_task_qa_core,
     rerun_task_qa_core,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "_primary_experiment_for_task_model",
     "_reset_task_verdict",
     "_task_freetext_match",
+    "backfill_task_analysis_core",
     "browse_tasks_core",
     "build_task_sweep_response",
     "cancel_task_qa_core",

@@ -845,6 +845,12 @@ class TaskBatchCancelRequest(BaseModel):
     )
 
 
+class BackfillQARequest(BaseModel):
+    force: bool = False
+    enable_analysis: bool = False
+    trial_ids: list[str] | None = None
+
+
 class TaskSweepBatchRequest(BaseModel):
     """Submit several task-sweep submissions in a single request.
 
