@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
-from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
-from oddish.core.tags_projection import recompute_task_browse_projection
+from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
