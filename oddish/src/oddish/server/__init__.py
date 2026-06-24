@@ -37,7 +37,7 @@ def _split_tag_csv(csv: str | None) -> list[str]:
     return [s.strip() for s in (csv or "").split(",") if s.strip()]
 
 
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
     list_task_files_s3,
@@ -61,12 +61,12 @@ from oddish.core.admin import (
     get_orphaned_state_core,
 )
 from oddish.core.dashboard import get_dashboard_core
-from oddish.core.public import router as public_router
+from oddish.core.sharing.public import router as public_router
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
-from oddish.core.trial_imports import (
+from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )
@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI):
     # Ensure required storage directories exist
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
-    from oddish.workers.harbor_runner import log_local_storage_snapshot
+    from oddish.workers.harbor.runner import log_local_storage_snapshot
 
     log_local_storage_snapshot(settings.harbor_jobs_dir)
 
