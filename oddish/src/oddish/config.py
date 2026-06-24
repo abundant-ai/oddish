@@ -87,6 +87,87 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
     return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
 
 
+# --- Configurable Harbor source ----------------------------------------------
+# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
+# both uv.lock files (a test asserts it against oddish/uv.lock).
+HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
+HARBOR_DEFAULT_SHA = "beabbb7a909931850582370e46074f3d8c8b892a"
+
+_HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
+
+
+def parse_harbor_spec(spec: str) -> tuple[str, str]:
+    """Parse a single ``--harbor <spec>`` string into ``(source, ref)``.
+
+    First match wins:
+    - R1 URL form (``git+``/``http://``/``https://``/``ssh://`` or scp
+      ``git@host:org/repo``): source = the URL; ref = the segment after a ``@``
+      in the PATH (after the host), else "" (caller resolves default-branch
+      HEAD). A userinfo ``@`` (``user:token@host`` / ``git@host``) is part of
+      the source and is never treated as the ref delimiter.
+    - R2 ``org/repo@ref``: source = ``https://github.com/<org>/<repo>``; ref =
+      after the ``@``.
+    - R3 bare ref (anything else, incl. a bare ``org/repo`` with NO ``@``):
+      source = the locked fork; ref = the whole spec.
+
+    For refs/URLs containing a literal ``@``, use the structured
+    ``oddish.toml [harbor] source/ref`` escape hatch instead (handled upstream),
+    which never reaches this parser.
+    """
+    spec = spec.strip()
+
+    # R1: URL form. Split a ref off only when an '@' falls AFTER the host (in
+    # the path), never on a userinfo '@' (``user:token@host`` / ``git@host``).
+    if spec.startswith(_HARBOR_URL_PREFIXES):
+        scheme, rest = spec.split("://", 1)
+        host, sep, path = rest.partition("/")
+        if sep and "@" in path:
+            path_no_ref, ref = path.rsplit("@", 1)
+            return f"{scheme}://{host}{sep}{path_no_ref}", ref
+        return spec, ""
+    # R1: scp-style git@host:org/repo[@ref]
+    if spec.startswith("git@") and ":" in spec:
+        base, _, after_colon = spec.partition(":")
+        if "@" in after_colon:
+            path, ref = after_colon.rsplit("@", 1)
+            return f"{base}:{path}", ref
+        return spec, ""
+
+    # R2: org/repo@ref  (requires both a '/' before the '@' and an '@').
+    if "@" in spec:
+        left, ref = spec.rsplit("@", 1)
+        if "/" in left and not left.startswith(("refs/", "feature/", "release/")):
+            return f"https://github.com/{left}", ref
+
+    # R3: bare ref on the locked fork (incl. bare org/repo with no '@').
+    return HARBOR_DEFAULT_SOURCE, spec
+
+
+def resolve_harbor_layers(
+    *,
+    flag: str | None,
+    env: str | None,
+    manifest: dict[str, str] | None,
+) -> tuple[str, str]:
+    """Layer-atomic, first-wins precedence: flag > env > manifest > default.
+
+    Each layer parses to a COMPLETE (source, ref) pair; the whole pair is taken
+    from the highest layer that sets anything. Never merges a source from one
+    layer with a ref from another. ``ref == ""`` (R1 URL without an explicit
+    ref) is treated as set; the server resolves it to the default-branch HEAD.
+    """
+    if flag is not None and flag.strip():
+        return parse_harbor_spec(flag)
+    if env is not None and env.strip():
+        return parse_harbor_spec(env)
+    if manifest:
+        source = manifest.get("source") or HARBOR_DEFAULT_SOURCE
+        ref = manifest.get("ref")
+        if ref is not None:
+            return source, ref
+    return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
@@ -793,6 +874,15 @@ class Settings(BaseSettings):
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
+
+    # --- Configurable Harbor source (override which Harbor runs a trial) ---
+    # Single CLI spec mirror (env ODDISH_HARBOR). Parsed via parse_harbor_spec.
+    harbor: str | None = None
+    # Comma-separated case-insensitive URL globs of allowed override sources. The
+    # allowlist is the safety boundary: a source outside it is rejected at submit.
+    harbor_allowed_sources: str = (
+        "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
+    )
 
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
     # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
