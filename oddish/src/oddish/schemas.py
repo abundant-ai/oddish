@@ -1329,6 +1329,16 @@ class TagListItem(BaseModel):
     usage_count: int = 0
     row_version: int = 1
     owner_user_id: str | None = None
+    # Per-scope assignment breakdown (active assignments only). Summed across
+    # all scopes these equal ``usage_count``. Populated by the tags list
+    # endpoint; other endpoints that build a TagListItem leave them at 0.
+    task_count: int = 0
+    version_count: int = 0
+    experiment_count: int = 0
+    # Resolved display label / avatar for ``owner_user_id`` (creator). Populated
+    # by the tags list endpoint via a join against the ``users`` table.
+    owner_label: str | None = None
+    owner_avatar_url: str | None = None
 
 
 class TagListResponse(BaseModel):
