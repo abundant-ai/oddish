@@ -2,11 +2,6 @@ name: Schema Parity
 
 on:
   pull_request:
-    paths:
-      - "backend/**"
-      - "oddish/**"
-      - ".github/workflows/schema-parity.yml"
-      - ".github/scripts/ci/check_schema_parity.py"
   push:
     branches:
       - main
