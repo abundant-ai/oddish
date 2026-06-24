@@ -172,15 +172,7 @@ class AgentModelPair(TrialSpec):
 
 
 class RegistryAuth(BaseModel):
-    """A per-run container-registry login supplied by the run's trigger.
-
-    Used only to authenticate the trial sandbox's inner Docker daemon when it
-    pulls compose images (fixing Docker Hub ``toomanyrequests``). It is never
-    persisted to ``trials.harbor_config``; it crosses the queue encrypted and is
-    scrubbed after the run. ``token`` is a ``SecretStr`` so it is masked in any
-    ``model_dump``/log output -- the value is only read via ``get_secret_value()``
-    at encryption time.
-    """
+    """A write-only docker login used only to authenticate the sandbox's pulls."""
 
     registry: str = Field(
         "docker.io",
@@ -191,6 +183,12 @@ class RegistryAuth(BaseModel):
         ...,
         description="Registry password or access token (a Docker Hub PAT is recommended).",
     )
+
+    @model_validator(mode="after")
+    def require_username_and_token(self):
+        if not self.username.strip() or not self.token.get_secret_value().strip():
+            raise ValueError("registry_auth requires a non-empty username and token")
+        return self
 
 
 class TaskSubmission(BaseModel):

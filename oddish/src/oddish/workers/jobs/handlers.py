@@ -65,13 +65,9 @@ class TrialJobHandler:
         if not trial_id:
             raise ValueError("TRIAL worker_job missing subject_id")
 
-        # Per-run container-registry login (if the submission supplied one):
-        # decrypt it and publish it on the context var for the trial's lifetime
-        # so the Harbor DinD shim can authenticate image pulls. The credential
-        # stays on the (encrypted) worker_jobs row so retries -- which re-claim
-        # this same row -- can re-authenticate; the sandbox shim removes
-        # ~/.docker/config.json on teardown, and the row is cleared by the
-        # worker-jobs cleanup. Reset the context var in finally either way.
+        # Publish the run's registry login (if any) so the DinD shim can
+        # authenticate pulls. The encrypted blob stays on the row across
+        # RETRYING re-claims and is scrubbed once the row goes terminal.
         creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
         cred_token = current_registry_credentials.set(creds or None)
         try:
