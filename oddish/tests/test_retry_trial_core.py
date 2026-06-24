@@ -22,7 +22,7 @@ class _Result:
 
 
 class _RecordingTrial:
-    def __init__(self, events):
+    def __init__(self, events, *, status=TrialStatus.SUCCESS, error_message=None):
         self._events = events
         self._superseded_by_trial_id = None
         self.id = "task-1-0"
@@ -40,8 +40,8 @@ class _RecordingTrial:
         self.harbor_config = None
         self.is_probe = False
         self.max_attempts = 6
-        self.status = TrialStatus.SUCCESS
-        self.error_message = None
+        self.status = status
+        self.error_message = error_message
         self.harbor_stage = None
         self.finished_at = None
         self.current_worker_id = None
@@ -145,9 +145,9 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
 @pytest.mark.asyncio
 async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
     events = []
-    trial = _RecordingTrial(events)
+    trial = _RecordingTrial(events, status=TrialStatus.RUNNING, error_message="stuck")
     task = SimpleNamespace(
-        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+        id="task-1", name="task-1", status=TaskStatus.RUNNING, finished_at=None
     )
     session = _RecordingSession(
         trial=trial, task=task, events=events, registry_auth_enc="ENC"
@@ -169,6 +169,6 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
 
     await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
 
-    # The old row's credential is carried to the replacement trial so a manual
-    # retry re-authenticates like an automatic one.
+    # For stuck/live trials, read the credential before the old job cancellation
+    # scrubs it so the replacement trial can authenticate.
     assert captured["registry_auth_enc"] == "ENC"

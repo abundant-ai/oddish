@@ -61,6 +61,7 @@ def _redact(text: str, secrets: list[str]) -> str:
 
 
 async def _perform_registry_login(strategy: Any) -> None:
+    secrets: list[str] = []
     try:
         from oddish.registry_auth import (
             build_docker_config_json,
@@ -71,7 +72,9 @@ async def _perform_registry_login(strategy: Any) -> None:
         if not creds:
             return
 
+        secrets = [c.token for c in creds]
         cfg_b64 = base64.b64encode(build_docker_config_json(creds).encode()).decode()
+        secrets.append(cfg_b64)
         result = await strategy._vm_exec(
             _WRITE_DOCKER_CONFIG_CMD,
             env={_DOCKER_CONFIG_ENV: cfg_b64},
@@ -79,7 +82,6 @@ async def _perform_registry_login(strategy: Any) -> None:
         )
         registries = ", ".join(sorted({c.auth_key() for c in creds}))
         if getattr(result, "return_code", 1) != 0:
-            tokens = [c.token for c in creds]
             detail = (getattr(result, "stdout", "") or "") + (
                 getattr(result, "stderr", "") or ""
             )
@@ -87,12 +89,14 @@ async def _perform_registry_login(strategy: Any) -> None:
                 "Registry login write failed (rc=%s) for %s: %s",
                 getattr(result, "return_code", "?"),
                 registries,
-                _redact(detail, tokens),
+                _redact(detail, secrets),
             )
         else:
             logger.info("Authenticated DinD daemon for registries: %s", registries)
     except Exception as exc:
-        logger.warning("Registry login skipped due to error: %r", exc)
+        logger.warning(
+            "Registry login skipped due to error: %s", _redact(repr(exc), secrets)
+        )
 
 
 async def _scrub_registry_login(strategy: Any) -> None:

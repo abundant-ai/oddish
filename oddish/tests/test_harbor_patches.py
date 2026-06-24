@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -163,6 +164,25 @@ async def test_login_never_raises_into_daemon_wait(creds):
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_token_and_env(creds, caplog):
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError(
+                f"exec failed: secrettoken {env[harbor_patches._DOCKER_CONFIG_ENV]}"
+            )
+
+    strategy = _LeakyStrategy()
+    with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+        await harbor_patches._perform_registry_login(strategy)
+
+    leaked_env = strategy.calls[0][1][harbor_patches._DOCKER_CONFIG_ENV]
+    assert "secrettoken" not in caplog.text
+    assert leaked_env not in caplog.text
+    assert "***" in caplog.text
 
 
 @pytest.mark.asyncio
