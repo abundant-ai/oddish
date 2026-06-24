@@ -1120,6 +1120,18 @@ class WorkerJobModel(TimestampedMixin, Base):
             "status",
             postgresql_where=text("org_id IS NOT NULL"),
         ),
+        Index(
+            "uq_worker_jobs_tag_project_active",
+            "kind",
+            "subject_table",
+            "subject_id",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'TAG_PROJECT' "
+                "AND status IN ('QUEUED', 'RETRYING') "
+                "AND subject_id IS NOT NULL"
+            ),
+        ),
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
