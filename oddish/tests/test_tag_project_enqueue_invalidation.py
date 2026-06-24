@@ -32,7 +32,7 @@ def _run(coro):
 
 
 def test_enqueue_tag_project_writes_a_worker_jobs_row(monkeypatch):
-    from oddish.core import tags_enqueue
+    from oddish.core.tags import enqueue as tags_enqueue
 
     captured: list[dict] = []
 
@@ -72,7 +72,7 @@ def test_enqueue_tag_project_writes_a_worker_jobs_row(monkeypatch):
 
 
 def test_enqueue_tag_project_uses_tasks_queue_key(monkeypatch):
-    from oddish.core import tags_enqueue
+    from oddish.core.tags import enqueue as tags_enqueue
 
     captured: list[dict] = []
 
@@ -99,7 +99,7 @@ def test_enqueue_tag_project_uses_tasks_queue_key(monkeypatch):
 
 
 def test_enqueue_tag_project_coalesces_against_active_jobs(monkeypatch):
-    from oddish.core import tags_enqueue
+    from oddish.core.tags import enqueue as tags_enqueue
 
     inserted: list[dict] = []
 
@@ -141,7 +141,7 @@ def test_enqueue_tag_project_coalesces_against_active_jobs(monkeypatch):
 
 
 def test_enqueue_tag_project_experiment_living_fanout_payload(monkeypatch):
-    from oddish.core import tags_enqueue
+    from oddish.core.tags import enqueue as tags_enqueue
 
     captured: list[dict] = []
 

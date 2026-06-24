@@ -40,7 +40,7 @@ class InviteUserRequest(BaseModel):
 
     email: str
     name: str | None = None
-    role: str = "member"  # owner, admin, or member
+    role: str = "member"  # admin or member
 
 
 class InviteUserResponse(BaseModel):
@@ -82,6 +82,12 @@ class APIKeyCreateResponse(BaseModel):
     org_id: str
     expires_at: str | None
     created_at: str
+
+
+class APIKeyPermissionsResponse(BaseModel):
+    """API key capability flags for the current user."""
+
+    can_create: bool
 
 
 class CreateAPIKeyRequest(BaseModel):

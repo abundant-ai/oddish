@@ -4,12 +4,12 @@ import asyncio
 import copy
 import hashlib
 import json
-import os
+import random
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -37,7 +37,14 @@ from harbor.models.trial.config import AgentConfig
 from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
+from oddish.cli._concurrency import (
+    map_with_adaptive_concurrency,
+    report_api_call,
+    resolve_s3_put_concurrency,
+    resolve_submit_concurrency,
+)
 from oddish.cli.config import get_auth_headers, error_console
+from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -316,6 +323,52 @@ def compute_task_content_hash(task_path: Path) -> str:
     return hasher.hexdigest()
 
 
+_GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1\n"
+
+
+def _is_git_lfs_pointer_file(file_path: Path) -> bool:
+    """Return True when a worktree file is an unresolved Git LFS pointer."""
+    try:
+        header = file_path.read_bytes()[:512]
+    except OSError:
+        return False
+    return (
+        header.startswith(_GIT_LFS_POINTER_PREFIX)
+        and b"\noid sha256:" in header
+        and b"\nsize " in header
+    )
+
+
+def find_git_lfs_pointer_files(task_path: Path) -> list[Path]:
+    """Find unresolved Git LFS pointers that would be uploaded as task files."""
+    pointers: list[Path] = []
+    for file_path in sorted(task_path.rglob("*")):
+        if file_path.is_file() and _is_git_lfs_pointer_file(file_path):
+            pointers.append(file_path)
+    return pointers
+
+
+def validate_no_git_lfs_pointers(task_path: Path) -> None:
+    pointers = find_git_lfs_pointer_files(task_path)
+    if not pointers:
+        return
+
+    shown = pointers[:10]
+    error_console.print(
+        f"[red]Task '{task_path.name}' contains unresolved Git LFS pointer "
+        "file(s).[/red]"
+    )
+    for file_path in shown:
+        rel = file_path.relative_to(task_path)
+        error_console.print(f"  [red]✗[/red] {rel}")
+    if len(pointers) > len(shown):
+        error_console.print(f"  [dim]... and {len(pointers) - len(shown)} more[/dim]")
+    error_console.print(
+        "\n[dim]Run `git lfs pull` in the task repository, then retry the upload.[/dim]"
+    )
+    raise typer.Exit(1)
+
+
 def archive_task_dir(task_path: Path) -> Path:
     """Create a tarball of a task directory."""
     # Create tarball in temp directory
@@ -325,19 +378,150 @@ def archive_task_dir(task_path: Path) -> Path:
     # Favor fast uploads in CI/cloud flows over maximum compression.
     with tarfile.open(tarball_path, "w:gz", compresslevel=1) as tar:
         # Add contents of task_path to the tarball
-        deref_symlinks = os.environ.get(
-            "ODDISH_ARCHIVE_DEREF_SYMLINKS", ""
-        ).strip().lower() in ("1", "true", "yes")
         for item in task_path.iterdir():
-            # Symlink dereference is opt-in (ODDISH_ARCHIVE_DEREF_SYMLINKS=1) so
-            # default uploads preserve symlink semantics and stay byte-identical
-            # to the pre-feature behavior. Enable it for symlinked task layouts
-            # (e.g. experiment task dirs linked into one task_path) so the
-            # tarball packages the real target dir instead of a broken symlink.
-            target = item.resolve() if deref_symlinks else item
-            tar.add(target, arcname=item.name)
+            tar.add(item, arcname=item.name)
 
     return tarball_path
+
+
+# Transient HTTP statuses worth retrying on the idempotent upload calls.
+# Other 4xx (400/401/403/404/409/422...) are deterministic client errors:
+# the identical request will fail identically, so we surface them at once.
+_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+_RETRY_BASE_DELAY = 0.1  # seconds
+_RETRY_MAX_DELAY = 25.0  # backoff ceiling (seconds)
+_RETRY_MAX_ATTEMPTS = 5
+
+
+class _RetryBudget:
+    """Token-bucket retry budget that caps retries to a fraction of requests.
+
+    Starts full at ``max_tokens``; each failed attempt costs one token and
+    each success refunds ``token_ratio``. Retries are suppressed once the
+    bucket falls to half capacity, so a sustained outage can't amplify into a
+    retry storm. The default ratio (0.1) keeps retries under ~10% of requests.
+    Mirrors the gRPC retry-throttling design.
+    """
+
+    def __init__(self, max_tokens: float = 10.0, token_ratio: float = 0.1) -> None:
+        self._max = max_tokens
+        self._ratio = token_ratio
+        self._threshold = max_tokens / 2.0
+        self._tokens = max_tokens
+
+    def can_retry(self) -> bool:
+        return self._tokens > self._threshold
+
+    def record_failure(self) -> None:
+        self._tokens = max(0.0, self._tokens - 1.0)
+
+    def record_success(self) -> None:
+        self._tokens = min(self._max, self._tokens + self._ratio)
+
+
+_DEFAULT_RETRY_BUDGET = _RetryBudget()
+
+
+def _parse_retry_after(response: httpx.Response) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds or HTTP-date) to seconds."""
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    from datetime import timezone
+
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(when.tzinfo)).total_seconds())
+
+
+def _full_jitter_delay(attempt: int, rng=random) -> float:
+    """Capped exponential backoff with full jitter: uniform in [0, ceiling]."""
+    ceiling = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** (attempt - 1)))
+    return rng.uniform(0, ceiling)
+
+
+def _retry_request(
+    send,
+    *,
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+    budget: _RetryBudget | None = None,
+    sleep=time.sleep,
+    rng=random,
+) -> httpx.Response:
+    """Call ``send`` (returning an ``httpx.Response``), retrying transient failures.
+
+    Retries on 429/500/502/503/504 and transport errors with capped
+    exponential backoff + full jitter, honoring ``Retry-After`` and a
+    token-bucket retry budget. Non-retryable responses (other 4xx, and any
+    2xx/3xx) are returned immediately; the last response is returned once the
+    attempt or budget limit is hit. **For idempotent requests only** -- callers
+    that can duplicate a server-side effect on replay must not use this.
+    """
+    if budget is None:
+        budget = _DEFAULT_RETRY_BUDGET
+
+    response: httpx.Response | None = None
+    for attempt in range(1, max_attempts + 1):
+        call_start = time.monotonic()
+        try:
+            response = send()
+        except httpx.TransportError:
+            budget.record_failure()
+            if attempt >= max_attempts or not budget.can_retry():
+                raise
+            sleep(_full_jitter_delay(attempt, rng))
+            continue
+
+        # Feed the API-call latency + transient status to any active limiter slot
+        # (no-op outside a submit/upload pool). A transient status counts as
+        # backpressure even when a later retry succeeds.
+        transient = response.status_code in _RETRY_STATUS_CODES
+        report_api_call(time.monotonic() - call_start, backpressure=transient)
+
+        if not transient:
+            budget.record_success()
+            return response
+
+        budget.record_failure()
+        if attempt >= max_attempts or not budget.can_retry():
+            return response
+        retry_after = _parse_retry_after(response)
+        delay = (
+            retry_after if retry_after is not None else _full_jitter_delay(attempt, rng)
+        )
+        sleep(delay)
+
+    return cast(httpx.Response, response)
+
+
+# Concurrent S3 presigned PUTs are capped by a process-wide semaphore, sized
+# separately from (and smaller than) the adaptive API limit. The object store is
+# a different service, so S3 saturation must not shrink the API limiter and vice
+# versa. Built lazily so ODDISH_TASK_S3_UPLOAD_CONCURRENCY is read at first use.
+_S3_PUT_SEMAPHORE: threading.BoundedSemaphore | None = None
+_S3_PUT_SEMAPHORE_LOCK = threading.Lock()
+
+
+def _get_s3_put_semaphore() -> threading.BoundedSemaphore:
+    global _S3_PUT_SEMAPHORE
+    if _S3_PUT_SEMAPHORE is None:
+        with _S3_PUT_SEMAPHORE_LOCK:
+            if _S3_PUT_SEMAPHORE is None:
+                _S3_PUT_SEMAPHORE = threading.BoundedSemaphore(
+                    resolve_s3_put_concurrency()
+                )
+    return _S3_PUT_SEMAPHORE
 
 
 def _upload_to_presigned_url(
@@ -348,7 +532,12 @@ def _upload_to_presigned_url(
     retry_status_codes = {408, 425, 429, 500, 502, 503, 504}
     max_attempts = 3
 
-    with httpx.Client(timeout=600.0, follow_redirects=True) as upload_client:
+    # Hold the S3 slot across the PUT and its retries so the bound counts
+    # concurrent upload operations, not just in-flight sockets.
+    with (
+        _get_s3_put_semaphore(),
+        httpx.Client(timeout=600.0, follow_redirects=True) as upload_client,
+    ):
         for attempt in range(1, max_attempts + 1):
             try:
                 with tarball_path.open("rb") as tarball:
@@ -407,8 +596,9 @@ def upload_task(
         error_console.print(f"[red]Invalid task timeout config:[/red] {exc}")
         raise typer.Exit(1) from exc
 
+    validate_no_git_lfs_pointers(task_path)
     content_hash = compute_task_content_hash(task_path)
-    tarball_path = archive_task_dir(task_path)
+    tarball_path: Path | None = None
 
     init_body: dict[str, object] = {
         "name": task_path.name,
@@ -421,9 +611,14 @@ def upload_task(
 
     try:
         with httpx.Client(timeout=600.0, headers=get_auth_headers()) as client:
-            init_response = client.post(
-                f"{api_url}/tasks/upload/init",
-                json=init_body,
+            # init is retry-safe: a content-hash match short-circuits and a new
+            # task gets a fresh task id allocated server-side, so a retry after
+            # a transient 5xx/429 can't duplicate trials.
+            init_response = _retry_request(
+                lambda: client.post(
+                    f"{api_url}/tasks/upload/init",
+                    json=init_body,
+                )
             )
 
             if init_response.status_code != 200:
@@ -445,6 +640,8 @@ def upload_task(
                 )
                 raise typer.Exit(1)
 
+            tarball_path = archive_task_dir(task_path)
+
             _upload_to_presigned_url(
                 upload_url,
                 tarball_path,
@@ -464,9 +661,13 @@ def upload_task(
                 complete_body["user"] = user
             if priority:
                 complete_body["priority"] = priority
-            response = client.post(
-                f"{api_url}/tasks/upload/complete",
-                json=complete_body,
+            # complete is keyed on (task_id, version, content_hash); replaying
+            # it after a transient failure resolves to the same version.
+            response = _retry_request(
+                lambda: client.post(
+                    f"{api_url}/tasks/upload/complete",
+                    json=complete_body,
+                )
             )
 
         if response.status_code != 200:
@@ -475,13 +676,8 @@ def upload_task(
 
         return cast(dict, response.json())
     finally:
-        shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
-
-
-# Uploads are serialised to keep the presigned-PUT path simple and to avoid
-# overwhelming the API's upload/init rate. Exported so callers
-# (``oddish run`` / ``oddish upload``) can override if needed.
-TASK_UPLOAD_CONCURRENCY = 1
+        if tarball_path is not None:
+            shutil.rmtree(Path(tarball_path).parent, ignore_errors=True)
 
 
 def upload_tasks_with_progress(
@@ -496,12 +692,18 @@ def upload_tasks_with_progress(
     json_output: bool = False,
     progress_label: str = "Uploading",
     force_new_version: bool = False,
+    concurrency: int | None = None,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
     Shared by ``oddish run`` (``register=False``-ish legacy mode -- the
     sweep endpoint creates the TaskModel) and ``oddish upload``
     (``register=True``, task becomes browsable immediately).
+
+    ``concurrency`` pins the number of parallel uploads; when ``None`` the limit
+    is adaptive (env ``ODDISH_TASK_UPLOAD_CONCURRENCY``, else an AIMD limiter that
+    grows on success and backs off under load). The S3 presigned-PUT step is
+    bounded separately and more tightly inside ``_upload_to_presigned_url``.
 
     Returns the upload response dicts in the same order as ``task_paths``.
     """
@@ -530,6 +732,7 @@ def upload_tasks_with_progress(
     )
 
     results: list[dict] = []
+    limiter = resolve_submit_concurrency(concurrency)
     with progress:
         progress_task = progress.add_task(
             f"{progress_label} {len(task_paths)} tasks...", total=len(task_paths)
@@ -539,18 +742,12 @@ def upload_tasks_with_progress(
                 results.append(_upload_one(task_path))
                 progress.update(progress_task, advance=1)
         else:
-            results_by_index: list[dict | None] = [None] * len(task_paths)
-            max_workers = min(TASK_UPLOAD_CONCURRENCY, len(task_paths))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_index = {
-                    executor.submit(_upload_one, task_path): index
-                    for index, task_path in enumerate(task_paths)
-                }
-                for future in as_completed(future_to_index):
-                    index = future_to_index[future]
-                    results_by_index[index] = future.result()
-                    progress.update(progress_task, advance=1)
-            results = [r for r in results_by_index if r is not None]
+            results = map_with_adaptive_concurrency(
+                task_paths,
+                _upload_one,
+                limiter,
+                on_complete=lambda: progress.update(progress_task, advance=1),
+            )
 
     return results
 
@@ -674,8 +871,7 @@ def _build_harbor_payload(
     return harbor
 
 
-def submit_sweep(
-    api_url: str,
+def build_sweep_payload(
     task_id: str,
     configs: list[dict],
     environment: EnvironmentType | None,
@@ -704,18 +900,18 @@ def submit_sweep(
     extra_instructions: str | None = None,
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
-    ratio_unit: str | None = None,
-    ratio_verb: str | None = None,
     link: str | None = None,
 ) -> dict:
-    """Submit a task sweep to the API.
+    """Build the JSON body for a single ``/tasks/sweep`` submission.
+
+    Split out from the network call so the same payload can be posted on its own
+    or bundled into a ``/tasks/sweep/batch`` request.
 
     Probe trials are ordinary sweeps with ``extra_instructions`` set: the
     server sets ``mode: "probe"`` in harbor_config (see
     ``queue._build_harbor_config_for_trial``) and the cloud worker applies the
-    instruction overlay. ``result_focus`` / ``evaluation_metric`` /
-    ``ratio_unit`` / ``ratio_verb`` are the same optional probe fields the UI
-    sends from a selected preset.
+    instruction overlay. ``result_focus`` / ``evaluation_metric`` are the same
+    optional probe fields the UI sends from a selected preset.
     """
     env_value = environment.value if environment else None
 
@@ -791,17 +987,38 @@ def submit_sweep(
         payload["result_focus"] = result_focus
     if evaluation_metric:
         payload["evaluation_metric"] = evaluation_metric
-    if ratio_unit:
-        payload["ratio_unit"] = ratio_unit
-    if ratio_verb:
-        payload["ratio_verb"] = ratio_verb
     if link:
         payload["link"] = link
 
+    return payload
+
+
+def post_sweep_payload(api_url: str, payload: dict) -> dict:
+    """POST one prebuilt sweep payload to ``/tasks/sweep`` and return its body."""
+    # Stamp the submission with a stable idempotency key so a retried identical
+    # submission (e.g. after a network blip) is deduplicated server-side instead
+    # of creating a second set of trials.
+    idempotency_key = compute_sweep_idempotency_key(payload)
+
+    # Single POST, deliberately not wrapped in _retry_request: the adaptive
+    # limiter only throttles submission *concurrency*, it never replays a sweep.
+    # Client-side retry of /tasks/sweep is intentionally not added here; the
+    # idempotency key above is what makes a re-run safe to dedupe server-side.
+    sweep_start = time.monotonic()
     with httpx.Client(
         timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
     ) as client:
-        response = client.post(f"{api_url}/tasks/sweep", json=payload)
+        response = client.post(
+            f"{api_url}/tasks/sweep",
+            json=payload,
+            headers={"Idempotency-Key": idempotency_key},
+        )
+    # Report the sweep latency + transient status to any active limiter slot
+    # before surfacing an error, so a 429/5xx shrinks the in-flight limit.
+    report_api_call(
+        time.monotonic() - sweep_start,
+        backpressure=response.status_code in _RETRY_STATUS_CODES,
+    )
 
     if response.status_code != 200:
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
@@ -809,6 +1026,214 @@ def submit_sweep(
 
     result: dict = response.json()
     return result
+
+
+def submit_sweep(
+    api_url: str,
+    task_id: str,
+    configs: list[dict],
+    environment: EnvironmentType | None,
+    user: str | None,
+    priority: str,
+    experiment_id: str | None,
+    max_trial_attempts: int | None = None,
+    run_analysis: bool = False,
+    run_probe: bool = False,
+    github_username: str | None = None,
+    tags: dict[str, str] | None = None,
+    publish_experiment: bool | None = False,
+    disable_verification: bool = False,
+    override_cpus: int | None = None,
+    override_memory_mb: int | None = None,
+    override_gpus: int | None = None,
+    override_storage_mb: int | None = None,
+    force_build: bool | None = None,
+    agent_env: list[str] | None = None,
+    agent_kwargs: list[str] | None = None,
+    artifact_paths: list[str] | None = None,
+    append_to_task: bool = False,
+    content_hash: str | None = None,
+    harbor_config: dict[str, Any] | None = None,
+    environment_kwargs: list[str] | None = None,
+    extra_instructions: str | None = None,
+    result_focus: str | None = None,
+    evaluation_metric: str | None = None,
+    link: str | None = None,
+) -> dict:
+    """Build and submit a single task sweep to ``/tasks/sweep``.
+
+    Convenience wrapper over :func:`build_sweep_payload` +
+    :func:`post_sweep_payload` for callers that build and submit one sweep in a
+    single step (e.g. the probe CLI). The explicit signature mirrors
+    :func:`build_sweep_payload` so existing positional and keyword callers keep
+    working unchanged.
+    """
+    payload = build_sweep_payload(
+        task_id=task_id,
+        configs=configs,
+        environment=environment,
+        user=user,
+        priority=priority,
+        experiment_id=experiment_id,
+        max_trial_attempts=max_trial_attempts,
+        run_analysis=run_analysis,
+        run_probe=run_probe,
+        github_username=github_username,
+        tags=tags,
+        publish_experiment=publish_experiment,
+        disable_verification=disable_verification,
+        override_cpus=override_cpus,
+        override_memory_mb=override_memory_mb,
+        override_gpus=override_gpus,
+        override_storage_mb=override_storage_mb,
+        force_build=force_build,
+        agent_env=agent_env,
+        agent_kwargs=agent_kwargs,
+        artifact_paths=artifact_paths,
+        append_to_task=append_to_task,
+        content_hash=content_hash,
+        harbor_config=harbor_config,
+        environment_kwargs=environment_kwargs,
+        extra_instructions=extra_instructions,
+        result_focus=result_focus,
+        evaluation_metric=evaluation_metric,
+        link=link,
+    )
+    return post_sweep_payload(api_url, payload)
+
+
+# The server processes each /tasks/sweep/batch synchronously; past a per-request
+# size/time ceiling Modal rejects the call with a 303 and commits nothing, so a
+# single unbounded batch fails for large submissions. Cap tasks-per-request well
+# under that ceiling; tunable for heavier-load environments.
+_DEFAULT_SWEEP_BATCH_MAX_TASKS = 10
+
+
+def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | None:
+    """POST one chunk to ``POST /tasks/sweep/batch``.
+
+    Returns the per-item results list -- each item ``{"index", "success",
+    "status_code", "task", "error"}`` -- on HTTP 200 (all succeeded) or 207
+    Multi-Status (some failed).
+
+    Returns ``None`` ONLY for HTTP 404/405, the one case where we know the batch
+    route is absent (older server) and nothing was created.
+
+    Every other failure is ambiguous: a read timeout, connection/network error,
+    5xx, an oversized-request 303, or any other status may land AFTER the server
+    committed the chunk. Since idempotent replay is deferred, a per-task retry
+    there would double-submit, so we surface the error (``typer.Exit``) and let
+    the operator decide rather than fall back.
+    """
+    body = {"submissions": payloads}
+    try:
+        with httpx.Client(
+            timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
+        ) as client:
+            response = client.post(f"{api_url}/tasks/sweep/batch", json=body)
+    except httpx.HTTPError as exc:
+        # The request may have reached the server and committed before the error
+        # surfaced (e.g. a read timeout). Do not fall back -- that risks
+        # duplicate trials -- surface it so the operator can check and retry.
+        error_console.print(
+            f"[red]Batch task submission failed:[/red] {exc}\n"
+            "[yellow]The batch may already have been committed; not retrying "
+            "per task to avoid duplicate trials. Check the dashboard before "
+            "resubmitting.[/yellow]"
+        )
+        raise typer.Exit(1) from exc
+
+    # Older servers have no batch route; nothing was processed -> safe to fall
+    # back to per-task submission.
+    if response.status_code in (404, 405):
+        return None
+
+    # 200 = all succeeded, 207 = mixed/partial; both carry per-item outcomes.
+    # Any other received status (5xx, 4xx, an oversized-request 303, ...) may
+    # have committed some or all items, so do not fall back -- surface it.
+    if response.status_code not in (200, 207):
+        error_console.print(
+            f"[red]Batch task submission failed (HTTP {response.status_code}):"
+            f"[/red] {response.text}\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(results, list):
+        # A 200/207 means the batch was processed; a malformed or unexpected
+        # body (invalid JSON, non-object, or missing results) is still
+        # ambiguous, so surface it cleanly and do not fall back.
+        error_console.print(
+            "[red]Batch task submission returned an unexpected response.[/red]\n"
+            "[yellow]Not retrying per task to avoid duplicate trials.[/yellow]"
+        )
+        raise typer.Exit(1)
+    return results
+
+
+def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
+    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked.
+
+    The server runs each batch synchronously, so a single unbounded request is
+    rejected (HTTP 303, nothing committed) once it exceeds Modal's per-request
+    ceiling. We split ``payloads`` into chunks of at most
+    ``ODDISH_SWEEP_BATCH_MAX_TASKS`` (default ``_DEFAULT_SWEEP_BATCH_MAX_TASKS``)
+    and POST each in order, re-basing the per-item ``index`` back onto the
+    original payload order.
+
+    Returns the combined per-item results list aligned to ``payloads``, or
+    ``None`` when the batch route is absent (HTTP 404/405 on the *first* chunk,
+    before anything is committed) so the caller may fall back to per-task.
+    """
+    import os
+
+    try:
+        cap = int(
+            os.environ.get("ODDISH_SWEEP_BATCH_MAX_TASKS", "")
+            or _DEFAULT_SWEEP_BATCH_MAX_TASKS
+        )
+    except ValueError:
+        cap = _DEFAULT_SWEEP_BATCH_MAX_TASKS
+    cap = max(1, cap)
+
+    aggregated: list[dict] = []
+    for offset in range(0, len(payloads), cap):
+        chunk = payloads[offset : offset + cap]
+        chunk_results = _post_sweep_batch_chunk(api_url, chunk)
+        if chunk_results is None:
+            if offset == 0:
+                # No batch route, nothing committed -> caller falls back per-task.
+                return None
+            # The route served earlier chunks (already committed) but vanished
+            # mid-run; do not fall back -- that would double-submit.
+            error_console.print(
+                "[red]Batch route became unavailable after committing "
+                f"{offset} task(s).[/red]\n[yellow]Not retrying per task to avoid "
+                "duplicate trials; re-run to reconcile the remainder.[/yellow]"
+            )
+            raise typer.Exit(1)
+        # Re-base each chunk-local index onto the global payload order. The server
+        # enumerates submissions, so an index outside [0, len(chunk)) is a
+        # malformed response -- surface it rather than re-basing it into a valid
+        # but wrong global index that would mis-attribute the result.
+        for item in chunk_results:
+            index = item.get("index") if isinstance(item, dict) else None
+            if isinstance(index, int):
+                if not 0 <= index < len(chunk):
+                    error_console.print(
+                        "[red]Batch task submission returned an out-of-range "
+                        "item index.[/red]\n[yellow]Not retrying per task to avoid "
+                        "duplicate trials.[/yellow]"
+                    )
+                    raise typer.Exit(1)
+                item = {**item, "index": index + offset}
+            aggregated.append(item)
+    return aggregated
 
 
 def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
@@ -894,7 +1319,7 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 
 
 def detect_trajectory_in_dir(trial_dir: Path) -> bool:
-    """Mirror ``oddish.workers.harbor_runner._detect_trajectory``."""
+    """Mirror ``oddish.workers.harbor.runner._detect_trajectory``."""
     if not trial_dir.exists():
         return False
     if any(trial_dir.rglob("trajectory.json")):
@@ -904,15 +1329,36 @@ def detect_trajectory_in_dir(trial_dir: Path) -> bool:
     return False
 
 
+def extract_total_steps_from_dir(trial_dir: Path) -> int | None:
+    """Read ATIF total step count from an imported Harbor trial directory."""
+    if not trial_dir.exists():
+        return None
+    for traj_path in trial_dir.rglob("trajectory.json"):
+        try:
+            data = json.loads(traj_path.read_text(encoding="utf-8"))
+            final_metrics = data.get("final_metrics")
+            if isinstance(final_metrics, dict):
+                raw_steps = final_metrics.get("total_steps")
+                if raw_steps is not None:
+                    return int(raw_steps)
+            steps = data.get("steps")
+            if isinstance(steps, list):
+                return len(steps)
+        except Exception:
+            continue
+    return None
+
+
 def trial_result_to_import_spec(
     trial_result: TrialResult,
     *,
     has_trajectory: bool,
+    total_steps: int | None = None,
 ) -> dict[str, Any]:
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
 
     Per-trial equivalent of
-    ``oddish.workers.harbor_runner._extract_outcome_from_job_result``.
+    ``oddish.workers.harbor.runner._extract_outcome_from_job_result``.
     Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
     oddish trial rows.
     """
@@ -997,6 +1443,7 @@ def trial_result_to_import_spec(
         "input_tokens": input_tokens,
         "cache_tokens": cache_tokens,
         "output_tokens": output_tokens,
+        "total_steps": total_steps,
         "cost_usd": cost_usd,
         "phase_timing": phase_timing or None,
         "has_trajectory": has_trajectory,
@@ -1108,7 +1555,9 @@ def import_trial(
 
     has_trajectory = detect_trajectory_in_dir(trial_dir)
     spec_payload = trial_result_to_import_spec(
-        trial_result, has_trajectory=has_trajectory
+        trial_result,
+        has_trajectory=has_trajectory,
+        total_steps=extract_total_steps_from_dir(trial_dir),
     )
 
     init = _call_trial_import_init(

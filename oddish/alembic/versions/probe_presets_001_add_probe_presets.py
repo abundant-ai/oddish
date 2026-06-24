@@ -189,6 +189,19 @@ def upgrade() -> None:
         if_not_exists=True,
     )
 
+    # ``000_initial_schema`` (Base.metadata.create_all) may have already
+    # created ``probe_presets`` from the current models, which no longer
+    # carry the ratio_* columns, so the create_table above is skipped. Add
+    # the columns back idempotently so the seed insert below matches the
+    # table shape this migration expects. A later migration drops them
+    # again, leaving the final schema unchanged.
+    op.execute(
+        "ALTER TABLE probe_presets ADD COLUMN IF NOT EXISTS ratio_unit VARCHAR(30)"
+    )
+    op.execute(
+        "ALTER TABLE probe_presets ADD COLUMN IF NOT EXISTS ratio_verb VARCHAR(30)"
+    )
+
     presets = sa.table(
         "probe_presets",
         sa.column("id", sa.String),

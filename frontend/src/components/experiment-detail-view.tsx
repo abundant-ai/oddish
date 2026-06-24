@@ -31,6 +31,14 @@ import {
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type { Task, Trial, ExperimentProbeRow, UserTagRef } from "@/lib/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { ProbeSubmitForm } from "@/components/probe-submit-form";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
@@ -265,7 +273,7 @@ function ExperimentHeaderMeta({
           <path d="M3 3v18h18" />
           <path d="M7 14l4-4 4 4 5-5" />
         </svg>
-        Pass@k graph
+        Pass/k graph
       </Button>
       {headerRight}
     </div>
@@ -660,17 +668,59 @@ function statusLabel(status: string): string {
   return status;
 }
 
-function ExperimentProbeTab({ experimentId }: { experimentId?: string }) {
+// The experiment-level probe runs in the experiment's current/most-recent
+// task environment. Prefer the highest current_version, tie-break on most
+// recent created_at, fall back to the first task.
+function resolveHostTaskId(tasks: Task[]): string | undefined {
+  if (tasks.length === 0) return undefined;
+  const sorted = [...tasks].sort((a, b) => {
+    const v = (b.current_version ?? -1) - (a.current_version ?? -1);
+    if (v !== 0) return v;
+    return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+  });
+  return sorted[0]?.id;
+}
+
+function ExperimentProbeTab({
+  experimentId,
+  hostTaskId,
+}: {
+  experimentId?: string;
+  hostTaskId?: string;
+}) {
+  const [dialogOpen, setDialogOpen] = useState(false);
   const encodedId = experimentId
     ? encodeExperimentRouteParam(experimentId)
     : null;
   const url = encodedId ? `/api/experiments/${encodedId}/probes` : null;
 
-  const { data, error, isLoading } = useSWR<ExperimentProbeRow[]>(
+  const { data, error, isLoading, mutate } = useSWR<ExperimentProbeRow[]>(
     url,
     fetcher,
     { refreshInterval: 15000 },
   );
+
+  const newProbeButton = hostTaskId ? (
+    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm">New probe</Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>New experiment probe</DialogTitle>
+        </DialogHeader>
+        <ProbeSubmitForm
+          taskId={hostTaskId}
+          scope="experiment"
+          experimentId={experimentId}
+          onSubmitted={() => {
+            setDialogOpen(false);
+            mutate();
+          }}
+        />
+      </DialogContent>
+    </Dialog>
+  ) : null;
 
   if (!experimentId) {
     return (
@@ -702,62 +752,70 @@ function ExperimentProbeTab({ experimentId }: { experimentId?: string }) {
 
   if (data.length === 0) {
     return (
-      <p className="text-sm text-[color:var(--paper-ink-3)]">No probes yet.</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-[color:var(--paper-ink-3)]">
+          No probes yet.
+        </p>
+        {newProbeButton}
+      </div>
     );
   }
 
   return (
-    <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)]">
-      <table className="w-full text-sm">
-        <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-          <tr>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Task
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Version
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Model
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              Status
-            </th>
-            <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-              &nbsp;
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((row) => (
-            <tr
-              key={row.probe_trial_id}
-              className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
-            >
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
-                {row.task_name}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                {row.version != null ? `v${row.version}` : "—"}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                {row.model ?? "—"}
-              </td>
-              <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
-                {statusLabel(row.status)}
-              </td>
-              <td className="px-4 py-2.5 text-xs">
-                <Link
-                  href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
-                  className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
-                >
-                  View →
-                </Link>
-              </td>
+    <div className="space-y-3">
+      <div className="flex items-center justify-end">{newProbeButton}</div>
+      <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)]">
+        <table className="w-full text-sm">
+          <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
+            <tr>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Task
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Version
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Model
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                Status
+              </th>
+              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
+                &nbsp;
+              </th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {data.map((row) => (
+              <tr
+                key={row.probe_trial_id}
+                className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
+              >
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
+                  {row.task_name}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                  {row.version != null ? `v${row.version}` : "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
+                  {row.model ?? "—"}
+                </td>
+                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
+                  {statusLabel(row.status)}
+                </td>
+                <td className="px-4 py-2.5 text-xs">
+                  <Link
+                    href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
+                    className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
+                  >
+                    View →
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1234,7 +1292,10 @@ export function ExperimentDetailView({
                 />
               </TabsContent>
               <TabsContent value="probe">
-                <ExperimentProbeTab experimentId={experimentId} />
+                <ExperimentProbeTab
+                  experimentId={experimentId}
+                  hostTaskId={resolveHostTaskId(tasksForExperiment)}
+                />
               </TabsContent>
             </Tabs>
           )}

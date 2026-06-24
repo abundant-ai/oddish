@@ -80,8 +80,26 @@ def upgrade() -> None:
     )
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_org_id ON users (org_id)")
     op.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)")
+    # ``supabase_user_id`` was later replaced by ``clerk_user_id`` and removed
+    # from the model. On a schema built from the current model graph (e.g. a
+    # Supabase data-less branch or ``Base.metadata.create_all``) the ``users``
+    # table already exists without this column, so the ``CREATE TABLE IF NOT
+    # EXISTS`` above is a no-op and this index would reference a missing column.
+    # Guard on column existence so the replay stays safe; a true empty-DB
+    # replay still creates the column above and indexes it here.
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_supabase_user_id ON users (supabase_user_id)"
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'supabase_user_id'
+            ) THEN
+                CREATE INDEX IF NOT EXISTS idx_users_supabase_user_id
+                ON users (supabase_user_id);
+            END IF;
+        END $$;
+        """
     )
 
     # ==========================================================================
@@ -224,7 +242,7 @@ def downgrade() -> None:
     op.execute("DROP TYPE IF EXISTS apikeyscope")
 
     # Drop users table
-    op.drop_index("idx_users_supabase_user_id", table_name="users")
+    op.execute("DROP INDEX IF EXISTS idx_users_supabase_user_id")
     op.drop_index("idx_users_email", table_name="users")
     op.drop_index("idx_users_org_id", table_name="users")
     op.drop_table("users")

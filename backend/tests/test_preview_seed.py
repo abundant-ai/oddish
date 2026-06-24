@@ -86,7 +86,7 @@ async def _make_source_db():
                     "org_id": "org-a",
                     "email": "real-a1@corp.com",
                     "name": "Alice Real",
-                    "role": "owner",
+                    "role": "admin",
                     "github_username": "alice",
                     "clerk_user_id": "user_a1",
                 },
@@ -518,6 +518,43 @@ async def test_bulk_batches_load_and_fallback_yields_single_rows():
         await src.dispose()
 
 
+async def test_trials_per_experiment_cap_bounds_the_draw(monkeypatch):
+    src = await _make_source_db()
+    try:
+        t = Base.metadata.tables
+        async with src.begin() as c:
+            await c.execute(
+                t["trials"].insert(),
+                [
+                    {
+                        "id": f"tr-cap-{i:04d}",
+                        "name": f"tr-cap-{i:04d}",
+                        "task_id": "task-solo",
+                        "task_version_id": "ver-solo-2",
+                        "experiment_id": "exp-a",
+                        "org_id": "org-a",
+                        "agent": "claude",
+                        "provider": "anthropic",
+                        "queue_key": "q",
+                        "timeout_minutes": 30,
+                        "environment": "modal",
+                        "harbor_config": {},
+                        "status": "SUCCESS",
+                        "origin": "oddish",
+                        "result": {"reward": 0},
+                        "superseded_by_trial_id": None,
+                    }
+                    for i in range(20)
+                ],
+            )
+        monkeypatch.setattr(preview_seed, "SAMPLE_TRIALS_PER_EXPERIMENT", 3)
+        s = await preview_seed.sample_prod_subset(src, sample_key=SAMPLE_KEY)
+        exp_a_trials = [t for t in s["rows"]["trials"] if t["experiment_id"] == "exp-a"]
+        assert len(exp_a_trials) == 3
+    finally:
+        await src.dispose()
+
+
 async def test_per_owner_anchor_guarantees_mine_view_data(monkeypatch):
     """With the global anchors disabled, every distinct experiment owner is
     still represented in the draw -- the guarantee behind the dashboard
@@ -596,7 +633,7 @@ async def test_seed_loads_subset_reconciles_drift_and_keeps_reviewer_data():
                 text(
                     "insert into users (id, org_id, email, role, name, is_active,"
                     " created_at, updated_at) values ('jit-rev', 'org-a',"
-                    " 'reviewer@corp.com', 'owner', 'Reviewer', true, now(), now())"
+                    " 'reviewer@corp.com', 'admin', 'Reviewer', true, now(), now())"
                 )
             )
             await c.execute(
@@ -721,12 +758,12 @@ async def test_seed_cleans_legacy_fixtures_and_yields_to_jit_conflicts():
                     "insert into users (id, org_id, email, role, name, is_active,"
                     " created_at, updated_at) values"
                     " ('seed-usr-owner', 'seed-org', 'owner@preview.local',"
-                    "  'owner', 'Preview Owner', true, now(), now()),"
+                    "  'admin', 'Preview Owner', true, now(), now()),"
                     " ('anon-1', 'seed-org', 'user-x@preview.local', 'member',"
                     "  'Prod User x', true, now(), now()),"
                     # ... and a JIT-provisioned reviewer holding a real user's
                     # unique identity under a different primary key
-                    " ('jit-1', 'org-a', 'real-a1@corp.com', 'owner', 'Reviewer',"
+                    " ('jit-1', 'org-a', 'real-a1@corp.com', 'admin', 'Reviewer',"
                     "  true, now(), now())"
                 )
             )

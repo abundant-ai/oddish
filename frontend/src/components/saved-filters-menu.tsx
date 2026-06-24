@@ -100,6 +100,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         all: toNames(filter.filter_ast.all ?? []),
         any: toNames(filter.filter_ast.any ?? []),
         none: toNames(filter.filter_ast.none ?? []),
+        authors: [],
       }),
     );
     setOpen(false);
@@ -258,7 +259,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
           {hasTagTokens ? (
             <>
               <p className="truncate font-mono text-[11px] text-muted-foreground">
-                Save “{serializeTaskSearch({ ...parsed, text: "" })}”
+                Save “{serializeTaskSearch({ ...parsed, text: "", authors: [] })}”
               </p>
               <Input
                 value={name}

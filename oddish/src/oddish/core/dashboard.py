@@ -22,13 +22,17 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from oddish.core.helpers import build_task_status_responses_from_counts
-from oddish.core.tag_filter_ast import (
+from oddish.core.helpers import (
+    build_task_status_responses_from_counts,
+    escape_like,
+    parse_search_query,
+)
+from oddish.core.tags.filter_ast import (
     ResolvedTagFilter,
     TagFilterAST,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     UserTagView,
     list_direct_tags_for_targets,
     list_effective_user_tags_for_task_versions,
@@ -36,6 +40,11 @@ from oddish.core.tags_projection import (
 from oddish.config import normalize_model_id
 from oddish.db import (
     ExperimentModel,
+    TagAssignmentModel,
+    TagAssignmentScope,
+    TagAssignmentState,
+    TagModel,
+    TagState,
     TaskModel,
     TaskStatus,
     TrialModel,
@@ -427,6 +436,64 @@ def _absent_legacy_user_clause():
     )
 
 
+def _experiment_freetext_match(needle: str, *, org_id: str | None):
+    """Broad match for one bare (un-prefixed) search needle on an experiment.
+
+    Matches the experiment name/id, OR any of its live tasks' author fields
+    (legacy ``user`` / ``github_username`` tag), OR any of its tag names -- so
+    a plain word finds work by name, author, or tag without learning the
+    ``github:`` / ``tag:`` prefixes. Explicit qualifiers still route to their
+    own precise (AND-ed) filters.
+    """
+    pattern = f"%{escape_like(needle)}%"
+
+    author_exists = (
+        select(1)
+        .select_from(
+            task_experiments.join(
+                TaskModel,  # type: ignore[arg-type]
+                TaskModel.id == task_experiments.c.task_id,
+            )
+        )
+        .where(task_experiments.c.experiment_id == ExperimentModel.id)
+        .where(task_experiments.c.deleted_at.is_(None))
+        .where(TaskModel.deleted_at.is_(None))
+        .where(
+            or_(
+                TaskModel.user.ilike(pattern, escape="\\"),
+                _task_github_tag_expr().ilike(pattern, escape="\\"),
+            )
+        )
+    )
+    if org_id is not None:
+        author_exists = author_exists.where(TaskModel.org_id == org_id)
+    author_exists = author_exists.correlate(ExperimentModel)
+
+    # Experiments carry tags only via tag_assignments (no effective_tag_ids
+    # column), so match the assigned tag's display key. Tags aren't registered
+    # for the soft-delete session filter, so exclude dead rows explicitly.
+    tag_exists = (
+        select(1)
+        .select_from(TagAssignmentModel)
+        .join(TagModel, TagModel.id == TagAssignmentModel.tag_id)
+        .where(TagAssignmentModel.scope == TagAssignmentScope.EXPERIMENT)
+        .where(TagAssignmentModel.state == TagAssignmentState.ACTIVE)
+        .where(TagAssignmentModel.deleted_at.is_(None))
+        .where(TagAssignmentModel.target_id == ExperimentModel.id)
+        .where(TagModel.deleted_at.is_(None))
+        .where(TagModel.state != TagState.DELETED)
+        .where(TagModel.key.ilike(pattern, escape="\\"))
+        .correlate(ExperimentModel)
+    )
+
+    return or_(
+        ExperimentModel.name.ilike(pattern, escape="\\"),
+        ExperimentModel.id.ilike(pattern, escape="\\"),
+        author_exists.exists(),
+        tag_exists.exists(),
+    )
+
+
 def _dashboard_author_from_task(
     *,
     github_username: str | None,
@@ -556,6 +623,134 @@ def _build_experiments_author_filter(
         legacy_exists.exists(),
     )
     return or_(owner_match, legacy_match)
+
+
+def _build_primary_task_search_match(
+    user_ids: Sequence[str],
+    github_handles: Sequence[str],
+    *,
+    emails: Sequence[str] | None,
+):
+    """Primary-task author match for a *set* of identities, or ``None``.
+
+    Iterable sibling of ``_build_primary_task_author_match`` used by the
+    ``github:`` search qualifier (a handle can resolve to several users +
+    aliases). Same attribution precedence — ``github_username`` tag, then
+    legacy ``tasks.user`` (emails/handles), then ``created_by_user_id`` — but
+    every tier uses ``IN`` so collisions union. Returns ``None`` when no
+    identity was supplied.
+    """
+    lowered_handles = [handle.lower() for handle in github_handles if handle]
+    lowered_emails = [
+        email.strip().lower() for email in (emails or ()) if (email or "").strip()
+    ]
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    lowered_tag = func.lower(_task_github_tag_expr())
+    lowered_user = func.lower(TaskModel.user)
+
+    tiers = []
+    if lowered_handles:
+        tiers.append(lowered_tag.in_(lowered_handles))
+
+    legacy_user_matches = []
+    if lowered_emails:
+        legacy_user_matches.append(lowered_user.in_(lowered_emails))
+    if lowered_handles:
+        legacy_user_matches.append(lowered_user.in_(lowered_handles))
+    if legacy_user_matches:
+        tiers.append(and_(_empty_github_tag_clause(), or_(*legacy_user_matches)))
+
+    if normalized_user_ids:
+        tiers.append(
+            and_(
+                _empty_github_tag_clause(),
+                _absent_legacy_user_clause(),
+                TaskModel.created_by_user_id.in_(normalized_user_ids),
+            )
+        )
+
+    if not tiers:
+        return None
+    return or_(*tiers)
+
+
+def _build_experiments_search_author_filter(
+    user_ids: Sequence[str] | None,
+    github_usernames: Sequence[str] | None,
+    *,
+    org_id: str | None,
+    emails: Sequence[str] | None = None,
+):
+    """AND-able EXISTS clause for the ``github:`` search qualifier.
+
+    Sibling of ``_build_experiments_author_filter`` that accepts *iterables*
+    (resolved by ``resolve_search_authors``) and unions them with the same
+    primary-task attribution precedence the Members dropdown uses. It is
+    applied as an additional ``.where()`` so it ANDs with the owner control
+    and ``tag:`` filters.
+
+    Unlike the owner filter, the primary-task fallback here is *always* emitted
+    and is not gated by the unowned-experiments probe. A handle search routinely
+    targets people who are **not** active org members (external GitHub
+    contributors), so there is no resolved ``user_id`` to seek on the indexed
+    ``owner_user_id`` -- the only way to reach their work is the primary-task
+    match. The fallback covers experiments whose owner is NULL **or** the
+    ``__unattributed__`` sentinel: the owner backfill stamps that sentinel on
+    experiments it can't attribute to any active member (again, the common case
+    for external contributors), so gating on ``owner_user_id IS NULL`` alone
+    silently dropped every such experiment once the backfill had converged.
+
+    Returns ``false()`` when nothing was resolved so the qualifier narrows to
+    an empty result rather than silently disappearing.
+    """
+    normalized_user_ids = [uid for uid in (user_ids or ()) if uid]
+    handles = [
+        handle
+        for handle in (
+            _normalize_github_handle(name) for name in (github_usernames or ())
+        )
+        if handle
+    ]
+    normalized_emails = [
+        email.strip() for email in (emails or ()) if (email or "").strip()
+    ]
+
+    if not normalized_user_ids and not handles and not normalized_emails:
+        return false()
+
+    tiers = []
+    # Fast path: indexed owner column when the handle resolves to org members.
+    if normalized_user_ids:
+        tiers.append(ExperimentModel.owner_user_id.in_(normalized_user_ids))
+
+    # Primary-task fallback for experiments not owned by a resolved member --
+    # both NULL owners and the ``__unattributed__`` sentinel (see docstring).
+    primary_match = _build_primary_task_search_match(
+        normalized_user_ids, handles, emails=normalized_emails
+    )
+    if primary_match is not None:
+        primary_task_id = _first_live_task_id_for_experiment()
+        legacy_exists = (
+            select(1)
+            .select_from(TaskModel)
+            .where(TaskModel.id == primary_task_id)
+            .where(primary_match)
+        )
+        if org_id is not None:
+            legacy_exists = legacy_exists.where(TaskModel.org_id == org_id)
+        tiers.append(
+            and_(
+                or_(
+                    ExperimentModel.owner_user_id.is_(None),
+                    ExperimentModel.owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER,
+                ),
+                legacy_exists.exists(),
+            )
+        )
+
+    if not tiers:
+        return false()
+    return or_(*tiers)
 
 
 def _experiment_row_passes_status_filter(row, *, status_filter: str) -> bool:
@@ -694,6 +889,9 @@ async def load_dashboard_experiments(
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
+    experiments_search_author_user_ids: Sequence[str] | None = None,
+    experiments_search_author_github_usernames: Sequence[str] | None = None,
+    experiments_search_author_emails: Sequence[str] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Load experiment summaries for the dashboard.
@@ -726,7 +924,7 @@ async def load_dashboard_experiments(
             _STATUS_FILTER_OVERFETCH_CEILING,
         )
 
-    normalized_query = (experiments_query or "").strip().lower()
+    normalized_query = (experiments_query or "").strip()
 
     page_query = select(
         ExperimentModel.id.label("experiment_id"),
@@ -737,17 +935,31 @@ async def load_dashboard_experiments(
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
     if normalized_query:
-        # Author search has to wait until the latest_task lookup runs
-        # (step 1.5) -- the index-friendly fields are name and id.
-        query_like = f"%{normalized_query}%"
-        page_query = page_query.where(
-            or_(
-                func.lower(ExperimentModel.name).like(query_like),
-                func.lower(ExperimentModel.id).like(query_like),
+        # Bare words match name / author / tag (each word ANDs, OR-groups and
+        # "phrases" and -exclusions per the shared grammar). github:/tag:
+        # qualifiers are parsed out client-side into their own precise filters.
+        terms = parse_search_query(normalized_query)
+        for group in terms.include:
+            page_query = page_query.where(
+                or_(*(_experiment_freetext_match(n, org_id=org_id) for n in group))
             )
-        )
+        for needle in terms.exclude:
+            page_query = page_query.where(
+                ~_experiment_freetext_match(needle, org_id=org_id)
+            )
     # Owner filter ("My experiments" / per-member picker): keep only
     # experiments whose primary (oldest) live task belongs to the target author.
+    # The ``github:`` search qualifier ANDs an additional author predicate on
+    # top; both share the one unowned-experiments probe below.
+    # The owner control (Mine / member picker) can drop its primary-task EXISTS
+    # fallback once the org has zero NULL owners (pure indexed seek). The github:
+    # search filter does NOT share this optimization -- it always needs the
+    # primary-task match -- so the probe gates only the owner filter.
+    has_search_author = bool(
+        (experiments_search_author_user_ids or ())
+        or (experiments_search_author_github_usernames or ())
+        or (experiments_search_author_emails or ())
+    )
     include_legacy_fallback = True
     if experiments_author_user_id is not None:
         probe_started_at = now()
@@ -769,6 +981,17 @@ async def load_dashboard_experiments(
     )
     if author_filter is not None:
         page_query = page_query.where(author_filter)
+    if has_search_author:
+        # ANDs with the owner filter above: with Org selected this is the only
+        # author predicate; with Mine selected it intersects (your work AND the
+        # searched author's), which is empty unless you are that author.
+        search_author_filter = _build_experiments_search_author_filter(
+            experiments_search_author_user_ids,
+            experiments_search_author_github_usernames,
+            org_id=org_id,
+            emails=experiments_search_author_emails,
+        )
+        page_query = page_query.where(search_author_filter)
     tag_ast = TagFilterAST(
         all=[t.strip() for t in (experiments_tags or "").split(",") if t.strip()],
         any_=[t.strip() for t in (experiments_tags_any or "").split(",") if t.strip()],
@@ -974,19 +1197,6 @@ async def load_dashboard_experiments(
                 int(agg["task_count"] or 0), int(agg["trial_task_count"] or 0)
             )
 
-        # Author-search post-filter: name/id matches already passed in
-        # step 1, so any miss here means the user typed an author and
-        # neither the primary owner nor the latest runner matched.
-        if normalized_query and not (
-            normalized_query in str(merged["experiment_name"] or "").lower()
-            or normalized_query in exp_id.lower()
-            or normalized_query in str(merged["primary_user"] or "").lower()
-            or normalized_query in str(merged["primary_github_username"] or "").lower()
-            or normalized_query in str(merged["last_user"] or "").lower()
-            or normalized_query in str(merged["last_github_username"] or "").lower()
-        ):
-            continue
-
         if not _experiment_row_passes_status_filter(
             merged, status_filter=experiments_status
         ):
@@ -1115,6 +1325,7 @@ async def get_model_usage_core(
         func.sum(TrialModel.input_tokens).label("input_tokens"),
         func.sum(TrialModel.cache_tokens).label("cache_tokens"),
         func.sum(TrialModel.output_tokens).label("output_tokens"),
+        func.sum(TrialModel.total_steps).label("total_steps"),
         func.sum(TrialModel.cost_usd).label("cost_usd"),
         func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
             "running"
@@ -1168,6 +1379,7 @@ async def get_model_usage_core(
                 "input_tokens": 0,
                 "cache_tokens": 0,
                 "output_tokens": 0,
+                "total_steps": 0,
                 "cost_usd": 0.0,
                 "running": 0,
                 "retrying": 0,
@@ -1184,6 +1396,7 @@ async def get_model_usage_core(
         agg["input_tokens"] = int(agg["input_tokens"]) + int(row.input_tokens or 0)
         agg["cache_tokens"] = int(agg["cache_tokens"]) + int(row.cache_tokens or 0)
         agg["output_tokens"] = int(agg["output_tokens"]) + int(row.output_tokens or 0)
+        agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
         agg["cost_usd"] = float(agg["cost_usd"]) + float(row.cost_usd or 0)
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
@@ -1207,6 +1420,7 @@ async def get_model_usage_core(
                 "input_tokens": int(agg["input_tokens"]),
                 "cache_tokens": int(agg["cache_tokens"]),
                 "output_tokens": int(agg["output_tokens"]),
+                "total_steps": int(agg["total_steps"]),
                 "cost_usd": round(float(agg["cost_usd"]), 4),
                 "running": int(agg["running"]),
                 "retrying": int(agg["retrying"]),
@@ -1321,6 +1535,9 @@ async def get_dashboard_core(
     experiments_author_user_id: str | None = None,
     experiments_author_github_usernames: Sequence[str] | None = None,
     experiments_author_emails: Sequence[str] | None = None,
+    experiments_search_author_user_ids: Sequence[str] | None = None,
+    experiments_search_author_github_usernames: Sequence[str] | None = None,
+    experiments_search_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
     include_tasks: bool = True,
     include_usage: bool = True,
@@ -1335,6 +1552,18 @@ async def get_dashboard_core(
     every filter or pagination tweak.
     """
 
+    phase_timings_ms: dict[str, float] = {}
+    _orig_record_timing = record_timing
+
+    def _record_timing(
+        name: str, duration_ms: float, description: str | None = None
+    ) -> None:
+        phase_timings_ms[name] = duration_ms
+        if _orig_record_timing is not None:
+            _orig_record_timing(name, duration_ms, description)
+
+    record_timing = _record_timing
+
     primary_cache_key = (
         f"dashboard.primary:{org_id}:"
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
@@ -1346,6 +1575,9 @@ async def get_dashboard_core(
         f"{experiments_status}:{experiments_author_user_id}:"
         f"{','.join(experiments_author_github_usernames or ())}:"
         f"{','.join(experiments_author_emails or ())}:"
+        f"{','.join(experiments_search_author_user_ids or ())}:"
+        f"{','.join(experiments_search_author_github_usernames or ())}:"
+        f"{','.join(experiments_search_author_emails or ())}:"
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
     )
 
@@ -1373,8 +1605,10 @@ async def get_dashboard_core(
                 _QUEUE_PIPELINE_CACHE_TTL_SECONDS,
             )
             if cached_qp is not None:
+                logger.info(f"dashboard_core queue_pipeline_cache=hit org={org_id}")
                 qs, ps = cached_qp
             else:
+                logger.info(f"dashboard_core queue_pipeline_cache=miss org={org_id}")
                 queue_started_at = now()
                 qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
                     session, org_id
@@ -1481,6 +1715,9 @@ async def get_dashboard_core(
                 experiments_author_user_id=experiments_author_user_id,
                 experiments_author_github_usernames=experiments_author_github_usernames,
                 experiments_author_emails=experiments_author_emails,
+                experiments_search_author_user_ids=experiments_search_author_user_ids,
+                experiments_search_author_github_usernames=experiments_search_author_github_usernames,
+                experiments_search_author_emails=experiments_search_author_emails,
                 record_timing=record_timing,
             )
         if record_timing is not None:
@@ -1509,6 +1746,11 @@ async def get_dashboard_core(
         )
         if include_experiments
         else None
+    )
+    logger.info(
+        f"dashboard_core cache_lookup org={org_id} "
+        f"primary={'hit' if primary_cached is not None else 'miss'} "
+        f"experiments={('hit' if experiments_cached is not None else 'miss') if include_experiments else 'skipped'}"
     )
 
     primary_task = (
@@ -1559,6 +1801,14 @@ async def get_dashboard_core(
             elapsed_ms(dashboard_started_at),
             "Dashboard core total",
         )
+    logger.info(
+        f"dashboard_core org={org_id} "
+        f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
+        f"cached={response['cached']} "
+        f"primary={'recomputed' if primary_task is not None else 'cached'} "
+        f"experiments={('recomputed' if experiments_task is not None else 'cached') if include_experiments else 'skipped'} "
+        f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
+    )
     return response
 
 

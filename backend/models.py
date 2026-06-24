@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import hashlib
-import os
-import secrets
 from datetime import datetime
 from enum import Enum
 from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -26,24 +24,17 @@ from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-d
 # Import shared base from OSS oddish
 from oddish.db.models import Base, TimestampedMixin, utcnow
 
+# Re-export API key types and helpers from the shared oddish package so all
+# existing ``from models import ...`` call sites keep resolving unchanged.
+from oddish.db.models import APIKeyModel, APIKeyScope  # noqa: F401
+from oddish.core.api_keys import (  # noqa: F401
+    create_api_key, generate_api_key, hash_api_key,
+)
+
 
 def generate_id() -> str:
     """Generate a short unique ID."""
     return str(uuid4())[:8]
-
-
-def generate_api_key() -> str:
-    """Generate a secure API key with prefix for easy identification.
-
-    Prod keys: ``ok_<32 hex>``. Preview keys: ``ok_pr-<N>_<32 hex>`` —
-    the env marker is harmless in prod (won't match anything) and makes
-    a stray preview key visually obvious.
-    """
-    app_name = os.environ.get("MODAL_APP_NAME", "")
-    env_marker = ""
-    if app_name.startswith("oddish-pr-"):
-        env_marker = f"{app_name[len('oddish-'):]}_"
-    return f"ok_{env_marker}{secrets.token_hex(16)}"
 
 
 # =============================================================================
@@ -54,17 +45,8 @@ def generate_api_key() -> str:
 class UserRole(str, Enum):
     """User roles within an organization."""
 
-    OWNER = "owner"  # Developer/superuser — only assignable via direct DB edit
     ADMIN = "admin"  # Can manage users and settings
     MEMBER = "member"  # Can run evals, view results
-
-
-class APIKeyScope(str, Enum):
-    """API key permission scopes."""
-
-    FULL = "full"  # All operations (tasks, trials, admin)
-    TASKS = "tasks"  # Create/view tasks and trials only
-    READ = "read"  # Read-only access
 
 
 # =============================================================================
@@ -98,7 +80,7 @@ class OrganizationModel(TimestampedMixin, Base):
         "UserModel", back_populates="organization", lazy="selectin"
     )
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", back_populates="organization", lazy="selectin"
+        "APIKeyModel", lazy="selectin"
     )
 
 
@@ -159,7 +141,7 @@ class UserModel(TimestampedMixin, Base):
         "OrganizationModel", back_populates="users", lazy="selectin"
     )
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", back_populates="created_by_user", lazy="selectin"
+        "APIKeyModel", lazy="selectin"
     )
 
     __table_args__ = (
@@ -168,77 +150,6 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
-    )
-
-
-class APIKeyModel(TimestampedMixin, Base):
-    """API key for programmatic access.
-
-    API keys are scoped to an organization and have specific permissions.
-    The actual key is only shown once on creation; we store a hash.
-    """
-
-    __tablename__ = "api_keys"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-
-    # Organization scope
-    org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
-
-    # Key identification
-    name: Mapped[str] = mapped_column(
-        String(255), nullable=False
-    )  # Human-readable name
-    key_prefix: Mapped[str] = mapped_column(
-        String(16), nullable=False
-    )  # First 8 chars for display
-    key_hash: Mapped[str] = mapped_column(
-        String(128), unique=True, nullable=False
-    )  # SHA256 of full key
-
-    # Permissions
-    scope: Mapped[APIKeyScope] = mapped_column(
-        SQLEnum(
-            APIKeyScope,
-            name="apikeyscope",
-            values_callable=lambda enum: [e.value for e in enum],
-        ),
-        default=APIKeyScope.FULL,
-        nullable=False,
-    )
-
-    # Creator tracking
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
-
-    # Status and expiry
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_used_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    # Visibility
-    is_internal: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
-
-    # Relationships
-    organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
-        "OrganizationModel", back_populates="api_keys", lazy="selectin"
-    )
-    created_by_user: Mapped["UserModel | None"] = relationship(  # type: ignore[assignment]
-        "UserModel", back_populates="api_keys", lazy="selectin"
-    )
-
-    __table_args__ = (
-        Index("idx_api_keys_org_id", "org_id"),
-        Index("idx_api_keys_key_hash", "key_hash"),
     )
 
 
@@ -280,7 +191,10 @@ class ChatSession(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -290,20 +204,30 @@ class ChatSession(Base):
     # Intentionally unconstrained (no FK): the key is hard-deleted when the
     # session closes and this id is never read afterward.
     query_api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    daytona_session_id: Mapped[str] = mapped_column(String(64), nullable=False, default="cc")  # "cc" is the default Daytona session id used by the chat orchestrator
+    daytona_session_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="cc"
+    )  # "cc" is the default Daytona session id used by the chat orchestrator
     claude_session_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    last_activity: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class ChatSessionEvent(Base):
     __tablename__ = "chat_session_events"
     __table_args__ = (
-        UniqueConstraint("session_id", "seq", name="uq_chat_session_events_session_seq"),
+        UniqueConstraint(
+            "session_id", "seq", name="uq_chat_session_events_session_seq"
+        ),
         Index("ix_chat_session_events_session_seq", "session_id", "seq"),
     )
 
@@ -313,15 +237,19 @@ class ChatSessionEvent(Base):
     )
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     event: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
 
 
 class ChatTurn(Base):
     __tablename__ = "chat_turns"
     __table_args__ = (
         Index(
-            "uq_chat_turns_one_running", "session_id",
-            unique=True, postgresql_where=text("status = 'running'"),
+            "uq_chat_turns_one_running",
+            "session_id",
+            unique=True,
+            postgresql_where=text("status = 'running'"),
         ),
         Index("ix_chat_turns_session_seq", "session_id", "seq"),
     )
@@ -333,9 +261,77 @@ class ChatTurn(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     user_message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
-    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# =============================================================================
+# Request idempotency
+# =============================================================================
+
+
+class SubmissionIdempotency(Base):
+    """Idempotency record for a side-effecting submission (POST /tasks/sweep).
+
+    Subclasses ``Base`` directly (not ``TimestampedMixin``) and is deliberately
+    NOT registered for soft delete: an expired record is hard-deleted so the
+    unique slot is freed for a fresh submission with the same key. The record
+    stores a fingerprint of the original request (``request_hash``) to reject a
+    key replayed with a different body, and the original response
+    (``response_json``) to replay on a faithful retry. Records older than their
+    ``expires_at`` (24h) are pruned and re-runnable.
+    """
+
+    __tablename__ = "submission_idempotency"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    # Tenant scope; combined with route + key for uniqueness so different orgs
+    # may reuse the same client-supplied key without colliding.
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Logical endpoint the key was issued against.
+    route: Mapped[str] = mapped_column(String(64), nullable=False)
+    # SHA-256 of the client-supplied Idempotency-Key header.
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # SHA-256 fingerprint of the original request body.
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Lifecycle: 'in_progress' while the first request runs, 'completed' once the
+    # response is stored. Plain text + CHECK (not a PG enum) keeps the migration
+    # cleanly reversible.
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="in_progress"
+    )
+    # Stored response for replay; NULL until the request completes.
+    response_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_submission_idempotency_org_route_key",
+            "org_id",
+            "route",
+            "key_hash",
+            unique=True,
+        ),
+        # Supports pruning expired records.
+        Index("ix_submission_idempotency_expires_at", "expires_at"),
+        CheckConstraint(
+            "status IN ('in_progress', 'completed')",
+            name="ck_submission_idempotency_status",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,45 +348,3 @@ from oddish.db.soft_delete import register_soft_delete_models
 register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
 
 
-# =============================================================================
-# Helper functions
-# =============================================================================
-
-
-def hash_api_key(key: str) -> str:
-    """Hash an API key for storage."""
-    return hashlib.sha256(key.encode()).hexdigest()
-
-
-def create_api_key(
-    org_id: str,
-    name: str,
-    scope: APIKeyScope = APIKeyScope.FULL,
-    created_by_user_id: str | None = None,
-    expires_at: datetime | None = None,
-    is_internal: bool = False,
-) -> tuple[APIKeyModel, str]:
-    """
-    Create a new API key.
-
-    Returns:
-        tuple of (APIKeyModel instance, raw key string)
-
-    The raw key is only available at creation time and should be
-    shown to the user immediately.
-    """
-    raw_key = generate_api_key()
-    key_hash = hash_api_key(raw_key)
-
-    api_key = APIKeyModel(
-        org_id=org_id,
-        name=name,
-        key_prefix=raw_key[:11],  # "ok_" + first 8 chars
-        key_hash=key_hash,
-        scope=scope,
-        created_by_user_id=created_by_user_id,
-        expires_at=expires_at,
-        is_internal=is_internal,
-    )
-
-    return api_key, raw_key

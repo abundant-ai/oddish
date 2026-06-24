@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -83,6 +84,24 @@ class HarborConfig(BaseModel):
     mcp_servers: list[MCPServerSpec] | None = Field(
         None,
         description="MCP servers to make available in the task environment",
+    )
+
+    # --- Configurable Harbor source (override which Harbor runs this trial) ---
+    source: str | None = Field(
+        None,
+        description="Harbor git source URL; None = locked default fork.",
+    )
+    ref: str | None = Field(
+        None,
+        description="Harbor ref (branch/tag/sha/PR); None = locked default commit.",
+    )
+    resolved_sha: str | None = Field(
+        None,
+        description="Server-stamped concrete commit SHA. Client-provided values are ignored.",
+    )
+    variant_id: str | None = Field(
+        None,
+        description="Server-stamped routing id: 'default' | '<registry-id>' | 'ephemeral'.",
     )
 
 
@@ -217,20 +236,19 @@ class TaskSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
+        ),
+    )
     evaluation_metric: str | None = Field(
         default=None,
         description=(
             "How to render the trial's result. One of 'cheat_ratio', "
             "'result_focus', 'none'. Default null = no specific metric."
         ),
-    )
-    ratio_unit: str | None = Field(
-        default=None,
-        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
-    )
-    ratio_verb: str | None = Field(
-        default=None,
-        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
     link: str | None = Field(
         None,
@@ -306,20 +324,19 @@ class TaskSweepSubmission(BaseModel):
             "The analyzer answers it in its result_focus_findings field."
         ),
     )
+    probe_scope: Literal["task", "experiment"] = Field(
+        default="task",
+        description=(
+            "Probe artifact-visibility scope. 'task' stages same-task sibling "
+            "trials; 'experiment' stages trials across the whole experiment."
+        ),
+    )
     evaluation_metric: str | None = Field(
         default=None,
         description=(
             "How to render the trial's result. One of 'cheat_ratio', "
             "'result_focus', 'none'. Default null = no specific metric."
         ),
-    )
-    ratio_unit: str | None = Field(
-        default=None,
-        description="Noun (singular) for what's counted in a ratio metric, e.g. 'cheat', 'bug'.",
-    )
-    ratio_verb: str | None = Field(
-        default=None,
-        description="Optional verb describing success, e.g. 'succeeded', 'exploitable'.",
     )
 
     # Common fields
@@ -689,6 +706,14 @@ class TrialResponse(BaseModel):
             "Surfaced for clients that need to render mode-specific UI."
         ),
     )
+    harbor_sha: str | None = Field(
+        None,
+        description="Concrete Harbor commit SHA this trial executed against (None for legacy rows).",
+    )
+    harbor_source: str | None = Field(
+        None,
+        description="Harbor git source this trial executed against (None for legacy rows).",
+    )
     is_probe: bool = Field(
         False,
         description=(
@@ -704,6 +729,9 @@ class TrialResponse(BaseModel):
     )
     cache_tokens: int | None = Field(None, description="Cache tokens used")
     output_tokens: int | None = Field(None, description="Output tokens generated")
+    total_steps: int | None = Field(
+        None, description="Total agent trajectory steps, when available"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -814,6 +842,63 @@ class TaskBatchCancelRequest(BaseModel):
     task_ids: list[str] = Field(
         default_factory=list,
         description="Task IDs to cancel in one request",
+    )
+
+
+class TaskSweepBatchRequest(BaseModel):
+    """Submit several task-sweep submissions in a single request.
+
+    Each submission is processed independently (best-effort): a failure in one
+    item neither aborts the batch nor rolls back items that already succeeded.
+    The response carries a per-item status array indexed to ``submissions``.
+    """
+
+    submissions: list[TaskSweepSubmission] = Field(
+        ...,
+        description="Task-sweep submissions to create; each is processed independently.",
+    )
+
+
+class TaskSweepBatchItemResult(BaseModel):
+    """Outcome of one submission within a batch sweep, keyed by request order."""
+
+    index: int = Field(
+        ...,
+        description="0-based position of this item in the request's submissions array.",
+    )
+    success: bool = Field(..., description="True when the submission was created.")
+    status_code: int = Field(
+        200,
+        description=(
+            "Per-item outcome code: 200 on success, otherwise the failure's "
+            "HTTP-equivalent status (e.g. 404 for a missing task)."
+        ),
+    )
+    task: TaskResponse | None = Field(
+        None,
+        description="The created/appended task on success; null when the item failed.",
+    )
+    error: str | None = Field(
+        None,
+        description="Human-readable failure detail; null on success.",
+    )
+
+
+class TaskSweepBatchResponse(BaseModel):
+    """Per-item results for a batch sweep submission.
+
+    ``results`` mirrors the request's ``submissions`` order via each item's
+    ``index``. Callers must inspect per-item ``success``/``status_code`` rather
+    than relying solely on the top-level HTTP status (200 = all succeeded,
+    207 Multi-Status = at least one item failed).
+    """
+
+    total: int = Field(..., description="Number of submissions in the request.")
+    succeeded: int = Field(..., description="Count of submissions that were created.")
+    failed: int = Field(..., description="Count of submissions that failed.")
+    results: list[TaskSweepBatchItemResult] = Field(
+        default_factory=list,
+        description="Per-item outcomes, ordered by request index.",
     )
 
 
@@ -981,6 +1066,7 @@ class ImportedTrialSpec(BaseModel):
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
+    total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,
@@ -1122,8 +1208,6 @@ class ProbePresetCreate(BaseModel):
     operator_prompt: str
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
 
 
 class ProbePresetUpdate(BaseModel):
@@ -1136,8 +1220,6 @@ class ProbePresetUpdate(BaseModel):
     operator_prompt: str | None = None
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
 
 
 class ProbePresetResponse(BaseModel):
@@ -1151,8 +1233,6 @@ class ProbePresetResponse(BaseModel):
     operator_prompt: str
     result_focus: str | None = None
     evaluation_metric: str | None = None
-    ratio_unit: str | None = None
-    ratio_verb: str | None = None
     is_seed: bool
     created_at: datetime
     updated_at: datetime
