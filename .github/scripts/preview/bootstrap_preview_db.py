@@ -94,7 +94,26 @@ async def _schema_trusted(url: str) -> bool:
     return marker == _trust_marker()
 
 
+def _assert_preview_branch(url: str) -> None:
+    # Defense in depth for the DROP SCHEMA below. The workflow binds
+    # ODDISH_DATABASE_URL to a data-less preview branch, never production; this
+    # backstops a future miswiring by refusing to rebuild a target that instead
+    # looks like prod -- it embeds the parent project ref or equals the prod
+    # sample source URL (scheme-insensitive: ours carries the +asyncpg driver).
+    prod_ref = os.environ.get("SUPABASE_PROJECT_REF")
+    source = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL", "")
+    if (prod_ref and prod_ref in url) or (
+        source and url.split("://", 1)[-1] == source.split("://", 1)[-1]
+    ):
+        raise RuntimeError(
+            "bootstrap_preview_db: ODDISH_DATABASE_URL resolves to production "
+            "(matched SUPABASE_PROJECT_REF / PREVIEW_SAMPLE_SOURCE_DB_URL); "
+            "refusing to DROP SCHEMA. This script only rebuilds preview branches."
+        )
+
+
 async def _rebuild_schema(url: str) -> None:
+    _assert_preview_branch(url)
     base = _load_base()
 
     engine = _engine(url)
