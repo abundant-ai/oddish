@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import json
 import logging
 import sys
@@ -9,14 +10,13 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import pytest  # noqa: E402
+pytest = importlib.import_module("pytest")
+_registry_auth = importlib.import_module("oddish.registry_auth")
+harbor_patches = importlib.import_module("oddish.workers.harbor.patches")
 
-from oddish.registry_auth import (  # noqa: E402
-    DOCKER_HUB_AUTH_KEY,
-    RegistryCredential,
-    current_registry_credentials,
-)
-from oddish.workers.harbor import patches as harbor_patches  # noqa: E402
+DOCKER_HUB_AUTH_KEY = _registry_auth.DOCKER_HUB_AUTH_KEY
+RegistryCredential = _registry_auth.RegistryCredential
+current_registry_credentials = _registry_auth.current_registry_credentials
 
 
 class _FakeStrategy:
@@ -59,16 +59,13 @@ def creds():
         current_registry_credentials.reset(token)
 
 
-# --- dockerd diagnostics + login seam ----------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_wrapper_passes_through_on_success():
     strategy = _FakeStrategy()
     wrapped = harbor_patches._wrap_wait_for_docker_daemon(_ok, with_diagnostics=True)
 
     assert await wrapped(strategy) is None
-    assert strategy.calls == []  # no diagnostics, and no creds so no login write
+    assert strategy.calls == []
 
 
 @pytest.mark.asyncio
@@ -99,7 +96,7 @@ async def test_wrapper_without_diagnostics_reraises_bare():
     with pytest.raises(RuntimeError) as excinfo:
         await wrapped(strategy)
 
-    assert str(excinfo.value) == original  # no diagnostics appended
+    assert str(excinfo.value) == original
     assert strategy.calls == []
 
 
@@ -126,9 +123,6 @@ async def test_collect_diagnostics_never_raises():
     assert "diagnostics unavailable" in out
 
 
-# --- registry login / scrub --------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_login_writes_authenticated_config(creds):
     strategy = _FakeStrategy()
@@ -136,10 +130,10 @@ async def test_login_writes_authenticated_config(creds):
         strategy
     )
 
-    assert len(strategy.calls) == 1  # daemon-ready seam wrote the config
+    assert len(strategy.calls) == 1
     command, env = strategy.calls[0]
     assert harbor_patches._DOCKER_CONFIG_PATH in command
-    assert "secrettoken" not in command  # raw token rides the env, never argv
+    assert "secrettoken" not in command
     cfg = json.loads(base64.b64decode(env[harbor_patches._DOCKER_CONFIG_ENV]))
     assert (
         cfg["auths"][DOCKER_HUB_AUTH_KEY]["auth"]
@@ -151,13 +145,12 @@ async def test_login_writes_authenticated_config(creds):
 async def test_login_is_noop_without_credentials():
     strategy = _FakeStrategy()
     await harbor_patches._perform_registry_login(strategy)
-    assert strategy.calls == []  # no creds on the context var → nothing written
+    assert strategy.calls == []
 
 
 @pytest.mark.asyncio
 async def test_login_never_raises_into_daemon_wait(creds):
     strategy = _FakeStrategy(raises=RuntimeError("exec failed"))
-    # A failing write must not break the (successful) daemon-ready path.
     assert (
         await harbor_patches._wrap_wait_for_docker_daemon(_ok, with_diagnostics=True)(
             strategy
@@ -171,8 +164,9 @@ async def test_login_exception_log_redacts_token_and_env(creds, caplog):
     class _LeakyStrategy(_FakeStrategy):
         async def _vm_exec(self, command, *, env=None, timeout_sec=None):
             self.calls.append((command, env))
+            auth = base64.b64encode(b"alice:secrettoken").decode()
             raise RuntimeError(
-                f"exec failed: secrettoken {env[harbor_patches._DOCKER_CONFIG_ENV]}"
+                f"exec failed: secrettoken {auth} {env[harbor_patches._DOCKER_CONFIG_ENV]}"
             )
 
     strategy = _LeakyStrategy()
@@ -181,6 +175,7 @@ async def test_login_exception_log_redacts_token_and_env(creds, caplog):
 
     leaked_env = strategy.calls[0][1][harbor_patches._DOCKER_CONFIG_ENV]
     assert "secrettoken" not in caplog.text
+    assert base64.b64encode(b"alice:secrettoken").decode() not in caplog.text
     assert leaked_env not in caplog.text
     assert "***" in caplog.text
 
@@ -191,7 +186,6 @@ async def test_scrub_removes_config_then_calls_original(creds):
     stopped = []
 
     async def _orig_stop(_self, delete):
-        # The config must already be scrubbed by the time teardown runs.
         assert strategy.calls[0][0] == harbor_patches._SCRUB_DOCKER_CONFIG_CMD
         stopped.append(delete)
 
@@ -208,11 +202,8 @@ async def test_scrub_is_noop_without_credentials():
         ran.append(delete)
 
     await harbor_patches._wrap_stop(_orig_stop)(strategy, delete=False)
-    assert strategy.calls == []  # nothing to scrub
-    assert ran == [False]  # original teardown still runs
-
-
-# --- install / idempotency ---------------------------------------------------
+    assert strategy.calls == []
+    assert ran == [False]
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):

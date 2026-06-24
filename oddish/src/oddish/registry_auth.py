@@ -21,8 +21,6 @@ _DOCKER_HUB_ALIASES = {
     "registry.hub.docker.com",
 }
 
-# Domain-separates the derived key so it can't collide with any other sha256 of
-# the same database URL.
 _KEY_DOMAIN = b"oddish.registry_auth.v1\x00"
 
 current_registry_credentials: ContextVar[list["RegistryCredential"] | None] = (
@@ -82,11 +80,18 @@ def normalize_credentials(raw: object) -> list[RegistryCredential]:
 
 
 def build_docker_config_json(creds: list[RegistryCredential]) -> str:
-    auths: dict[str, dict[str, str]] = {}
-    for cred in creds:
-        blob = base64.b64encode(f"{cred.username}:{cred.token}".encode()).decode()
-        auths[cred.auth_key()] = {"auth": blob}
-    return json.dumps({"auths": auths})
+    return json.dumps(
+        {
+            "auths": {
+                cred.auth_key(): {
+                    "auth": base64.b64encode(
+                        f"{cred.username}:{cred.token}".encode()
+                    ).decode()
+                }
+                for cred in creds
+            }
+        }
+    )
 
 
 def _derive_fernet_key(material: str) -> bytes:
@@ -111,9 +116,7 @@ def _resolve_fernet():
     if not _warned_about_derived_key:
         _warned_about_derived_key = True
         logger.warning(
-            "ODDISH_REGISTRY_AUTH_KEY unset; deriving the registry-auth key from "
-            "the database URL. Set ODDISH_REGISTRY_AUTH_KEY for an independent, "
-            "rotatable key."
+            "ODDISH_REGISTRY_AUTH_KEY unset; deriving registry-auth key from database URL"
         )
     return Fernet(_derive_fernet_key(settings.database_url))
 
@@ -132,10 +135,7 @@ def decrypt_credentials(blob: str | None) -> list[RegistryCredential]:
         plaintext = _resolve_fernet().decrypt(blob.encode())
     except Exception as exc:
         logger.error(
-            "Could not decrypt per-run registry credentials (%s); the trial will "
-            "run UNAUTHENTICATED and may hit registry pull rate limits. "
-            "ODDISH_REGISTRY_AUTH_KEY likely differs between the API and worker, "
-            "or was rotated after the run was submitted -- both must share one key.",
+            "Could not decrypt per-run registry credentials (%s); running unauthenticated",
             type(exc).__name__,
         )
         return []
@@ -143,8 +143,7 @@ def decrypt_credentials(blob: str | None) -> list[RegistryCredential]:
         return normalize_credentials(json.loads(plaintext.decode()))
     except Exception as exc:
         logger.error(
-            "Decrypted the registry credentials but could not parse them (%s); the "
-            "trial will run UNAUTHENTICATED.",
+            "Could not parse decrypted registry credentials (%s); running unauthenticated",
             type(exc).__name__,
         )
         return []
@@ -164,28 +163,28 @@ def _split_login_pairs(value: str) -> dict[str, str]:
                 "--registry-login expects registry=/username=/token= pairs, "
                 f"got {rest!r}"
             )
-        end = len(after)
-        for known in _LOGIN_KEYS:
-            boundary = after.find(f",{known}=")
-            if boundary != -1 and boundary < end:
-                end = boundary
+        end = min(
+            (
+                boundary
+                for known in _LOGIN_KEYS
+                if (boundary := after.find(f",{known}=")) != -1
+            ),
+            default=len(after),
+        )
         fields[key] = after[:end].strip()
         rest = after[end:].lstrip(", ")
     return fields
 
 
 def parse_registry_login(values: list[str] | None, env: dict[str, str]) -> list[dict]:
-    creds: list[RegistryCredential] = []
-
     hub_user = env.get("ODDISH_DOCKERHUB_USERNAME")
     hub_token = env.get("ODDISH_DOCKERHUB_TOKEN")
-    if hub_user and hub_token:
-        creds.append(RegistryCredential(hub_user, hub_token, DEFAULT_REGISTRY))
-
-    for value in values or []:
-        creds.append(RegistryCredential.from_dict(_split_login_pairs(value)))
-
-    by_key: dict[str, RegistryCredential] = {}
-    for cred in creds:
-        by_key[cred.auth_key()] = cred
-    return [c.to_dict() for c in by_key.values()]
+    creds = (
+        [RegistryCredential(hub_user, hub_token, DEFAULT_REGISTRY)]
+        if hub_user and hub_token
+        else []
+    )
+    creds.extend(
+        RegistryCredential.from_dict(_split_login_pairs(v)) for v in values or []
+    )
+    return [c.to_dict() for c in {cred.auth_key(): cred for cred in creds}.values()]

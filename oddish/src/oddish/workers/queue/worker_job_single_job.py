@@ -351,8 +351,6 @@ async def _record_outcome(
     subject_table: str | None = None,
     subject_id: str | None = None,
 ) -> None:
-    # registry_auth_enc is scrubbed only on terminal states (SUCCESS / final FAILED);
-    # RETRYING keeps it so the re-claimed attempt can still authenticate.
     connection = await _open_connection()
     try:
         if outcome.success is not None:

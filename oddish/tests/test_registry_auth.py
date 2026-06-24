@@ -1,5 +1,3 @@
-"""Tests for per-run container-registry credentials (oddish.registry_auth)."""
-
 from __future__ import annotations
 
 import base64
@@ -70,7 +68,6 @@ def test_parse_registry_login_merges_env_and_flags():
     )
     by_reg = {c["registry"]: c for c in creds}
     assert by_reg["ghcr.io"]["username"] == "gh"
-    # The explicit docker.io flag entry wins over the DOCKERHUB env (same auth key).
     assert by_reg["docker.io"]["username"] == "bob"
 
 
@@ -131,8 +128,6 @@ def test_request_hash_ignores_registry_auth():
         **base,
         registry_auth=[{"username": "alice", "token": "t", "registry": "ghcr.io"}],
     )
-    # A per-run credential must not change the server-side request fingerprint,
-    # else a faithful retry that supplies (or rotates) it would 409.
     assert compute_request_hash(plain) == compute_request_hash(with_auth)
 
 
@@ -194,10 +189,7 @@ def test_decrypt_failure_is_logged_loudly(caplog):
 
     with caplog.at_level(logging.ERROR, logger="oddish.registry_auth"):
         assert decrypt_credentials("present-but-undecryptable") == []
-    # A present-but-undecryptable blob must surface an ERROR (likely key mismatch),
-    # not degrade silently.
     assert any(r.levelno >= logging.ERROR for r in caplog.records)
-    # A missing blob is the normal "no creds supplied" case -- no error.
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="oddish.registry_auth"):
         assert decrypt_credentials(None) == []

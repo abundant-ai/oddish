@@ -155,9 +155,6 @@ async def retry_trial_core(
         old_trial.current_worker_id = None
         old_trial.current_queue_slot = None
 
-    # Carry the run's registry login (if still on the old row) to the new trial
-    # so the retry re-authenticates like an automatic retry does; read it before
-    # the cancel below scrubs it, and terminal old rows were already scrubbed.
     registry_auth_enc = await session.scalar(
         text(
             """
