@@ -1319,7 +1319,7 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 
 
 def detect_trajectory_in_dir(trial_dir: Path) -> bool:
-    """Mirror ``oddish.workers.harbor_runner._detect_trajectory``."""
+    """Mirror ``oddish.workers.harbor.runner._detect_trajectory``."""
     if not trial_dir.exists():
         return False
     if any(trial_dir.rglob("trajectory.json")):
@@ -1358,7 +1358,7 @@ def trial_result_to_import_spec(
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
 
     Per-trial equivalent of
-    ``oddish.workers.harbor_runner._extract_outcome_from_job_result``.
+    ``oddish.workers.harbor.runner._extract_outcome_from_job_result``.
     Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
     oddish trial rows.
     """

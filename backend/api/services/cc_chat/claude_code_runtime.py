@@ -88,7 +88,7 @@ class ClaudeCodeRuntime:
         # having to reverse-engineer verifier scripts. Pin to the exact harbor
         # this service runs (the same git resolver the probe agent uses) rather
         # than a hardcoded release, so the sandbox never drifts from the harness.
-        from oddish.workers.claude_code_agent import _pinned_harbor_requirement
+        from oddish.workers.agents.claude_code import _pinned_harbor_requirement
 
         requirement = _pinned_harbor_requirement()
         if requirement is None:

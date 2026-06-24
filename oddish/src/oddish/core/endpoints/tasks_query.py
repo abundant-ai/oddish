@@ -28,12 +28,12 @@ from oddish.core.helpers import (
     get_task_status_trials,
     resolve_effective_version_id,
 )
-from oddish.core.tag_filter_ast import (
+from oddish.core.tags.filter_ast import (
     TagFilterAST,
     build_filter_predicates,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.db import (

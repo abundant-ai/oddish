@@ -18,16 +18,16 @@ import pytest
 
 from harbor.trial.hooks import TrialEvent
 
-from oddish.workers import harbor_ephemeral
-from oddish.workers._harbor_entry import _ProbeClaudeCode, _build_job_config
-from oddish.workers.harbor_ephemeral import (
+from oddish.workers.harbor import ephemeral as harbor_ephemeral
+from oddish.workers.harbor._entry import _ProbeClaudeCode, _build_job_config
+from oddish.workers.harbor.ephemeral import (
     HarborOverrideImportError,
     _bridge_event,
     _build_payload,
     _read_outcome,
     run_ephemeral_harbor_trial,
 )
-from oddish.workers.harbor_outcome import HarborOutcome
+from oddish.workers.harbor.outcome import HarborOutcome
 
 _EPHEMERAL_HC = {
     "variant_id": "ephemeral",

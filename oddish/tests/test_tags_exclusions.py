@@ -38,7 +38,7 @@ class _FakeSession:
 
 
 def test_exclude_tag_core_inserts_tombstone_and_recomputes_target(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     enqueued: list[dict] = []
 
@@ -68,7 +68,7 @@ def test_exclude_tag_core_inserts_tombstone_and_recomputes_target(monkeypatch):
 
 
 def test_unexclude_tag_core_soft_deletes_tombstone_and_recomputes(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     async def _fake_enqueue(s, **kwargs):
         return None
