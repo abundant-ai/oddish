@@ -57,20 +57,3 @@ def add_server_timing_metric(
         setattr(state, "server_timing_metrics", metrics)
 
     metrics.append((name, duration_ms, description))
-
-    # TEMP profiling (remove post-testing): mirror each stage timing into
-    # Logfire so the dashboard request trace shows per-stage durations
-    # (auth_jwt / auth_db / db_connect / dashboard_queue_pipeline /
-    # dashboard_usage / dashboard_experiments_total / dashboard_total, ...).
-    # Guarded + best-effort: a no-op when Logfire isn't installed/configured.
-    try:
-        import logfire
-
-        logfire.info(
-            "server_timing {metric}",
-            metric=name,
-            duration_ms=round(duration_ms, 1),
-            description=description,
-        )
-    except Exception:
-        pass
