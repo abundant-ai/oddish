@@ -351,6 +351,33 @@ def test_harbor_override_import_error_is_non_retryable():
     assert HarborOverrideImportError.__name__ in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
+def test_spawn_args_requests_daytona_extra_for_daytona_env():
+    # The override Harbor no longer ships the daytona SDK by default (it is an
+    # optional extra), so the ephemeral child MUST install harbor[daytona] or it
+    # raises MissingExtraError when building the sandbox.
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.DAYTONA
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA, extras=["daytona"])
+    assert req.startswith("harbor[daytona] @ git+")
+
+
+def test_spawn_args_no_extra_for_docker_env():
+    args = harbor_ephemeral._spawn_args(
+        _SOURCE, _SHA, environment=EnvironmentType.DOCKER
+    )
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA)
+    assert "[" not in req.split("@", 1)[0]
+
+
+def test_spawn_args_defaults_to_docker_no_extra():
+    args = harbor_ephemeral._spawn_args(_SOURCE, _SHA)
+    req = args[args.index("--with") + 1]
+    assert req == harbor_git_requirement(_SOURCE, _SHA)
+
+
 # --------------------------------------------------------------------------- #
 # run_ephemeral_harbor_trial with a fake child (full subprocess flow)
 # --------------------------------------------------------------------------- #
@@ -381,7 +408,9 @@ async def test_run_ephemeral_streams_events_and_reads_outcome(tmp_path, monkeypa
     child = tmp_path / "fake_child.py"
     child.write_text(_FAKE_CHILD)
     monkeypatch.setattr(
-        harbor_ephemeral, "_spawn_args", lambda s, sha: [sys.executable, str(child)]
+        harbor_ephemeral,
+        "_spawn_args",
+        lambda s, sha, **kw: [sys.executable, str(child)],
     )
 
     seen: list[str] = []
@@ -427,7 +456,9 @@ async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
     child = tmp_path / "sleep_child.py"
     child.write_text(_SLEEP_CHILD)
     monkeypatch.setattr(
-        harbor_ephemeral, "_spawn_args", lambda s, sha: [sys.executable, str(child)]
+        harbor_ephemeral,
+        "_spawn_args",
+        lambda s, sha, **kw: [sys.executable, str(child)],
     )
     jobs_dir = tmp_path / "jobs"
     task_dir = tmp_path / "task"
