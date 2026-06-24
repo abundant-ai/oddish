@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Per-run container-registry credentials: any way a run is triggered (the `oddish run` CLI's `--registry-login` flag / `ODDISH_DOCKERHUB_*` env, the experiments-repo and harbor-forge CI workflows, or a direct `POST /tasks/sweep` `registry_auth` field) can now supply its own Docker login so the trial sandbox's inner Docker-in-Docker daemon authenticates compose image pulls — fixing multi-service tasks failing at setup with Docker Hub `toomanyrequests`. The credential is per-user (never a shared Modal/oddish secret), Fernet-encrypted as it crosses the queue on `worker_jobs.payload` (never written to `trials.harbor_config`), used to write `~/.docker/config.json` before `compose build`/`up` via the Harbor DinD shim, then logged off (config removed) on teardown. The encrypted ciphertext stays on the transient `worker_jobs` row so retries can re-authenticate and is scrubbed from the payload once the row reaches a terminal state.
 - `GET /experiments/{id}/trials` read endpoint returns all non-superseded trials for an experiment, gated by READ scope with org-scoped access control; trial rows now include an `is_probe` flag (#414)
 - Probe agent receives short-lived read-only API credentials and the `oddish-query` CLI on launch, enabling it to pull trial trajectories and logs on demand; a credentials-mint failure now fails the trial with a stored error rather than silently proceeding without access (#414)
 
