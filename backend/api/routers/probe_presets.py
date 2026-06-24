@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from auth import APIKeyScope, AuthContext, require_auth
-from oddish.core.probe_presets import (
+from oddish.core.probe.presets import (
     create_probe_preset_core,
     delete_probe_preset_core,
     list_probe_presets_core,

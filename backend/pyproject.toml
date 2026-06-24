@@ -23,7 +23,7 @@ dependencies = [
     "pyparsing==3.3.2",
 
     # Modal deployment
-    "modal==1.4.2",
+    "modal>=1.5.0",
 
     # Auth - JWT validation for Clerk
     "python-jose[cryptography]==3.5.0",
@@ -73,6 +73,7 @@ py-modules = [
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
+    "idempotency_store",
     "modal_app",
     "models",
     "observability",

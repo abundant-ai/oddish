@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -12,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
-from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
-from oddish.core.tags_projection import recompute_task_browse_projection
+from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -32,7 +33,11 @@ from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
-from oddish.workers.jobs.enqueue import EnqueueRequest, enqueue_worker_job
+from oddish.workers.jobs.enqueue import (
+    EnqueueRequest,
+    bulk_enqueue_worker_jobs,
+    enqueue_worker_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +107,29 @@ async def cancel_tasks_runs(
         task_id for task_id in requested_task_ids if task_id not in tasks_by_id
     ]
 
+    # Match worker domain-write order before touching worker_jobs:
+    # trial handlers update the trial row, then may lock/update the parent task
+    # as they advance task state. Locking tasks first can deadlock against a
+    # worker that already holds one of the child trials.
     trial_rows = await session.execute(
-        select(TrialModel).where(TrialModel.task_id.in_(found_task_ids))
+        select(TrialModel)
+        .where(TrialModel.task_id.in_(found_task_ids))
+        .order_by(TrialModel.id)
+        .with_for_update()
     )
     trials = list(trial_rows.scalars().all())
     trial_ids = [trial.id for trial in trials]
+
+    locked_task_query = (
+        select(TaskModel)
+        .where(TaskModel.id.in_(found_task_ids))
+        .order_by(TaskModel.id)
+        .with_for_update()
+    )
+    if org_id:
+        locked_task_query = locked_task_query.where(TaskModel.org_id == org_id)
+    locked_task_rows = await session.execute(locked_task_query)
+    tasks = list(locked_task_rows.scalars().all())
 
     now = utcnow()
 
@@ -119,24 +142,37 @@ async def cancel_tasks_runs(
             await session.execute(
                 text(
                     """
-                UPDATE worker_jobs
+                WITH to_cancel AS (
+                    SELECT id,
+                           kind::text AS kind,
+                           subject_id,
+                           modal_function_call_id,
+                           provider,
+                           external_id
+                    FROM   worker_jobs
+                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                      AND  (
+                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
+                      )
+                    ORDER BY id
+                    FOR UPDATE
+                )
+                UPDATE worker_jobs AS w
                 SET    status = 'CANCELLED',
                        finished_at = NOW(),
                        error_message = :cancel_msg,
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
-                WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                  AND  (
-                      (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                      OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                  )
-                RETURNING id,
-                          kind::text AS kind,
-                          subject_id,
-                          modal_function_call_id,
-                          provider,
-                          external_id
+                FROM   to_cancel
+                WHERE  w.id = to_cancel.id
+                RETURNING w.id,
+                          to_cancel.kind,
+                          to_cancel.subject_id,
+                          to_cancel.modal_function_call_id,
+                          to_cancel.provider,
+                          to_cancel.external_id
                 """
                 ),
                 {
@@ -354,6 +390,7 @@ async def enqueue_trial_worker_job(
     org_id: str | None,
     max_attempts: int,
     parent_job_id: str | None = None,
+    harbor_variant_id: str = "default",
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
@@ -366,6 +403,7 @@ async def enqueue_trial_worker_job(
             org_id=org_id,
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
+            harbor_variant_id=harbor_variant_id,
         ),
     )
 
@@ -488,17 +526,11 @@ def _build_harbor_config_for_trial(
         base["extra_instructions"] = submission.extra_instructions
         if submission.probe_name:
             base["probe_name"] = submission.probe_name
+        if submission.probe_scope == "experiment":
+            base["probe_scope"] = "experiment"
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
-
-    if submission.evaluation_metric:
-        base["evaluation_metric"] = submission.evaluation_metric
-
-    if submission.ratio_unit:
-        base["ratio_unit"] = submission.ratio_unit
-    if submission.ratio_verb:
-        base["ratio_verb"] = submission.ratio_verb
 
     return base or None
 
@@ -550,6 +582,87 @@ async def reserve_next_trial_index(session: AsyncSession, *, task_id: str) -> in
             if value > max_index:
                 max_index = value
     return max_index + 1 if max_index >= 0 else 0
+
+
+# One parameterized INSERT for any number of trials. ``unnest`` keeps the
+# statement shape constant regardless of row count -- the path that stays
+# cheap under Supavisor transaction pooling + ``statement_cache_size=0``
+# (asyncpg 0.31 anonymous statements), unlike a per-N multi-row VALUES.
+# Every array parameter is explicitly cast so asyncpg resolves types without
+# a round-trip; ``harbor_config`` is passed as text and cast to jsonb (a list
+# of dicts is an asyncpg array trap). Columns omitted here (``origin``,
+# ``has_trajectory``, ``heartbeat_failure_count``) fall to their DB defaults.
+_TRIAL_BULK_INSERT_SQL = text(
+    """
+    INSERT INTO trials
+        (id, name, task_id, task_version_id, experiment_id, org_id,
+         agent, provider, queue_key, model, timeout_minutes, environment,
+         harbor_config, harbor_sha, is_probe, max_attempts, status, attempts,
+         created_at, updated_at)
+    SELECT
+        t.id, t.name, t.task_id, t.task_version_id, t.experiment_id, t.org_id,
+        t.agent, t.provider, t.queue_key, t.model, t.timeout_minutes,
+        t.environment, t.harbor_config::jsonb, t.harbor_sha, t.is_probe,
+        t.max_attempts, 'QUEUED'::jobstatus, 0, NOW(), NOW()
+    FROM unnest(
+        CAST(:id AS text[]),
+        CAST(:name AS text[]),
+        CAST(:task_id AS text[]),
+        CAST(:task_version_id AS text[]),
+        CAST(:experiment_id AS text[]),
+        CAST(:org_id AS text[]),
+        CAST(:agent AS text[]),
+        CAST(:provider AS text[]),
+        CAST(:queue_key AS text[]),
+        CAST(:model AS text[]),
+        CAST(:timeout_minutes AS int[]),
+        CAST(:environment AS text[]),
+        CAST(:harbor_config AS text[]),
+        CAST(:harbor_sha AS text[]),
+        CAST(:is_probe AS boolean[]),
+        CAST(:max_attempts AS int[])
+    ) WITH ORDINALITY AS t(
+        id, name, task_id, task_version_id, experiment_id, org_id,
+        agent, provider, queue_key, model, timeout_minutes, environment,
+        harbor_config, harbor_sha, is_probe, max_attempts, ord
+    )
+    """
+)
+
+
+async def _bulk_insert_trials(
+    session: AsyncSession, trials: list[dict[str, Any]]
+) -> None:
+    """Insert many trial rows with a single ``INSERT ... unnest`` statement.
+
+    Equivalent to the old per-row ``session.add(TrialModel(...))`` loop (same
+    columns, ``status=QUEUED``), but one statement instead of N. Runs inside
+    the caller's session-managed transaction.
+    """
+    if not trials:
+        return
+    params = {
+        "id": [t["id"] for t in trials],
+        "name": [t["name"] for t in trials],
+        "task_id": [t["task_id"] for t in trials],
+        "task_version_id": [t["task_version_id"] for t in trials],
+        "experiment_id": [t["experiment_id"] for t in trials],
+        "org_id": [t["org_id"] for t in trials],
+        "agent": [t["agent"] for t in trials],
+        "provider": [t["provider"] for t in trials],
+        "queue_key": [t["queue_key"] for t in trials],
+        "model": [t["model"] for t in trials],
+        "timeout_minutes": [t["timeout_minutes"] for t in trials],
+        "environment": [t["environment"] for t in trials],
+        "harbor_config": [
+            json.dumps(t["harbor_config"]) if t["harbor_config"] is not None else None
+            for t in trials
+        ],
+        "harbor_sha": [t["harbor_sha"] for t in trials],
+        "is_probe": [t["is_probe"] for t in trials],
+        "max_attempts": [t["max_attempts"] for t in trials],
+    }
+    await session.execute(_TRIAL_BULK_INSERT_SQL, params)
 
 
 async def create_task(
@@ -609,8 +722,17 @@ async def create_task(
     session.add(task)
     await session.flush()
 
+    # Skip the membership-hook browse-projection recompute here: at this
+    # point the task has no version yet (created below), so it would run on
+    # incomplete pre-version state. The authoritative recompute fires once
+    # after the trials are inserted (see end of this function). The append /
+    # standalone-link callers keep the hook recompute (their task is already
+    # versioned). The TAG_PROJECT enqueue still fires for tag inheritance.
     await _link_task_to_experiment(
-        session, task_id=task_id, experiment_id=experiment.id
+        session,
+        task_id=task_id,
+        experiment_id=experiment.id,
+        recompute_browse_projection=False,
     )
 
     # Determine the version: if one was pre-created during upload, use the
@@ -661,43 +783,54 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
+    trial_rows: list[dict[str, Any]] = []
+    worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task_id}-{i}"
-        trial_name = f"{task_name}-{i}"
-
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-
-        trial = TrialModel(
-            id=trial_id,
-            name=trial_name,
-            task_id=task_id,
-            task_version_id=version_id,
-            experiment_id=experiment.id,
-            org_id=org_id,
-            agent=spec.agent,
-            provider=provider,
-            queue_key=queue_key,
-            model=model,
-            timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment,
-            harbor_config=harbor_config,
-            is_probe=(harbor_config or {}).get("mode") == "probe",
-            max_attempts=submission.max_trial_attempts,
-            status=TrialStatus.QUEUED,
+        trial_rows.append(
+            {
+                "id": trial_id,
+                "name": f"{task_name}-{i}",
+                "task_id": task_id,
+                "task_version_id": version_id,
+                "experiment_id": experiment.id,
+                "org_id": org_id,
+                "agent": spec.agent,
+                "provider": provider,
+                "queue_key": queue_key,
+                "model": model,
+                "timeout_minutes": spec.timeout_minutes,
+                "environment": spec.environment,
+                "harbor_config": harbor_config,
+                "is_probe": (harbor_config or {}).get("mode") == "probe",
+                "harbor_sha": (harbor_config or {}).get("resolved_sha"),
+                "max_attempts": submission.max_trial_attempts,
+            }
         )
-        session.add(trial)
-        await enqueue_trial_worker_job(
-            session,
-            trial_id=trial_id,
-            queue_key=queue_key,
-            org_id=org_id,
-            max_attempts=trial.max_attempts,
+        worker_job_requests.append(
+            EnqueueRequest(
+                kind=WorkerJobKind.TRIAL,
+                queue_key=queue_key,
+                payload={"trial_id": trial_id},
+                subject_table="trials",
+                subject_id=trial_id,
+                org_id=org_id,
+                max_attempts=submission.max_trial_attempts,
+                harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+            )
         )
 
+    # Flush the task back-pointer + version before the raw inserts so the
+    # trials' task_version_id FK resolves, then bulk-insert in one statement
+    # per table.
     await session.flush()
+    await _bulk_insert_trials(session, trial_rows)
+    await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
     await session.refresh(task, attribute_names=["trials"])
     await bump_experiment_last_activity(session, experiment_ids=experiment.id)
     await recompute_task_browse_projection(session, task_id=task_id)
@@ -710,6 +843,7 @@ async def _recompute_tag_projection_on_membership_change(
     task_id: str,
     experiment_id: str,
     org_id: str | None,
+    recompute_browse_projection: bool = True,
 ) -> None:
     """Invalidation hook for ``_link_task_to_experiment``.
 
@@ -719,8 +853,14 @@ async def _recompute_tag_projection_on_membership_change(
         UI sees the chip immediately,
       * enqueue a TAG_PROJECT job that recomputes every version of the
         task asynchronously (chunked).
+
+    ``recompute_browse_projection=False`` skips the synchronous recompute --
+    used by the create path, which has no version yet here and runs the
+    authoritative recompute once after trials are inserted. The async
+    TAG_PROJECT enqueue still fires so tag inheritance is unaffected.
     """
-    await recompute_task_browse_projection(session, task_id=task_id)
+    if recompute_browse_projection:
+        await recompute_task_browse_projection(session, task_id=task_id)
     await enqueue_tag_project_worker_job(
         session,
         scope="TASK",
@@ -756,9 +896,18 @@ async def _recompute_tag_projection_on_membership_removed(
 
 
 async def _link_task_to_experiment(
-    session: AsyncSession, *, task_id: str, experiment_id: str
+    session: AsyncSession,
+    *,
+    task_id: str,
+    experiment_id: str,
+    recompute_browse_projection: bool = True,
 ) -> None:
-    """Insert or restore a ``task_experiments`` association row."""
+    """Insert or restore a ``task_experiments`` association row.
+
+    ``recompute_browse_projection`` is forwarded to the membership hook;
+    the create path passes ``False`` to avoid a redundant pre-version
+    recompute (it runs the authoritative one after inserting trials).
+    """
     from oddish.db import task_experiments
 
     await session.execute(
@@ -778,6 +927,7 @@ async def _link_task_to_experiment(
         task_id=task_id,
         experiment_id=experiment_id,
         org_id=org_id,
+        recompute_browse_projection=recompute_browse_projection,
     )
 
 
@@ -871,44 +1021,62 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
-    new_trials: list[TrialModel] = []
+    new_trial_rows: list[dict[str, Any]] = []
+    worker_job_requests: list[EnqueueRequest] = []
+    new_trial_ids: list[str] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
         trial_id = f"{task.id}-{next_index}"
-        trial_name = f"{task.name}-{next_index}"
-
         harbor_config = _build_harbor_config_for_trial(submission, spec)
-
-        trial = TrialModel(
-            id=trial_id,
-            name=trial_name,
-            task_id=task.id,
-            task_version_id=current_version_id,
-            experiment_id=trial_experiment_id,
-            org_id=task.org_id,
-            agent=spec.agent,
-            provider=provider,
-            queue_key=queue_key,
-            model=model,
-            timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment,
-            harbor_config=harbor_config,
-            is_probe=(harbor_config or {}).get("mode") == "probe",
-            max_attempts=submission.max_trial_attempts,
-            status=TrialStatus.QUEUED,
+        new_trial_rows.append(
+            {
+                "id": trial_id,
+                "name": f"{task.name}-{next_index}",
+                "task_id": task.id,
+                "task_version_id": current_version_id,
+                "experiment_id": trial_experiment_id,
+                "org_id": task.org_id,
+                "agent": spec.agent,
+                "provider": provider,
+                "queue_key": queue_key,
+                "model": model,
+                "timeout_minutes": spec.timeout_minutes,
+                "environment": spec.environment,
+                "harbor_config": harbor_config,
+                "is_probe": (harbor_config or {}).get("mode") == "probe",
+                "harbor_sha": (harbor_config or {}).get("resolved_sha"),
+                "max_attempts": submission.max_trial_attempts,
+            }
         )
-        session.add(trial)
-        await enqueue_trial_worker_job(
-            session,
-            trial_id=trial_id,
-            queue_key=queue_key,
-            org_id=task.org_id,
-            max_attempts=trial.max_attempts,
+        worker_job_requests.append(
+            EnqueueRequest(
+                kind=WorkerJobKind.TRIAL,
+                queue_key=queue_key,
+                payload={"trial_id": trial_id},
+                subject_table="trials",
+                subject_id=trial_id,
+                org_id=task.org_id,
+                max_attempts=submission.max_trial_attempts,
+                harbor_variant_id=(harbor_config or {}).get("variant_id") or "default",
+            )
         )
-        new_trials.append(trial)
+        new_trial_ids.append(trial_id)
         next_index += 1
+
+    await _bulk_insert_trials(session, new_trial_rows)
+    await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
+    # Re-read the inserted rows as ORM objects (in index order) so callers get
+    # real ``TrialModel`` instances, matching the old per-row return.
+    new_trials: list[TrialModel] = []
+    if new_trial_ids:
+        fetched = await session.execute(
+            select(TrialModel).where(TrialModel.id.in_(new_trial_ids))
+        )
+        by_id = {t.id: t for t in fetched.scalars().all()}
+        new_trials = [by_id[tid] for tid in new_trial_ids]
 
     if new_trials and task.status in (
         TaskStatus.COMPLETED,

@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-from collections import Counter
 import logging
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
+from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -15,8 +25,10 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     browse_tasks_core,
+    build_task_sweep_response,
     cancel_task_qa_core,
     combine_experiments_core,
+    create_task_sweep_batch_core,
     create_task_sweep_core,
     delete_experiment_core,
     get_task_detail_core,
@@ -35,17 +47,20 @@ from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
 )
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
 )
+from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
+from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from dashboard_attribution import resolve_search_authors
 from models import APIKeyModel, UserModel
 from oddish.core.tasks import (
     complete_task_upload,
@@ -73,6 +88,8 @@ from oddish.schemas import (
     TaskUploadInitResponse,
     TaskResponse,
     TaskStatusResponse,
+    TaskSweepBatchRequest,
+    TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
     UploadResponse,
@@ -226,6 +243,33 @@ async def _lookup_user_by_github_username(
         )
     )
     return user_result.scalar_one_or_none()
+
+
+async def _lookup_users_by_github_username(
+    session: AsyncSession,
+    *,
+    github_username: str,
+    org_id: str,
+) -> list[UserModel]:
+    """Plural sibling of ``_lookup_user_by_github_username``.
+
+    Two active members can share a GitHub handle, so search filters must
+    union *all* matches rather than assume a single owner. Uses
+    ``scalars().all()`` (not ``scalar_one_or_none()``, which raises on
+    duplicates) and reuses the same ``@``-strip + case-insensitive,
+    org-scoped, active-only normalization as the singular lookup.
+    """
+    normalized = (github_username or "").strip().lstrip("@")
+    if not normalized:
+        return []
+    result = await session.execute(
+        select(UserModel).where(
+            func.lower(UserModel.github_username) == normalized.lower(),
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return list(result.scalars().all())
 
 
 async def _resolve_created_by_user_id(
@@ -406,26 +450,45 @@ async def _apply_user_run_probe_default(
 async def create_task_sweep(
     submission: TaskSweepSubmission,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ) -> TaskResponse:
-    """Submit a task sweep - expands a task_id into many trials."""
+    """Submit a task sweep - expands a task_id into many trials.
+
+    A retried submission carrying the same ``Idempotency-Key`` replays the
+    original response instead of creating duplicate trials.
+    """
     auth.require_scope(APIKeyScope.TASKS)
 
     from oddish.core.sweeps import validate_sweep_submission
 
     validate_sweep_submission(submission)
 
+    # Fingerprint the raw client submission BEFORE the backend mutates it
+    # (identity / GitHub attribution / per-user probe default). Those defaults
+    # can resolve differently between attempts, so hashing post-mutation would
+    # spuriously 409 an honest retry; hashing the raw body keeps retries faithful.
+    request_hash = compute_request_hash(submission)
+
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
         await _apply_user_run_probe_default(session, submission, auth)
 
-        task, new_trials, is_append, experiment = await create_task_sweep_core(
-            session,
-            submission=submission,
-            org_id=auth.org_id,
-            default_environment=get_default_cloud_environment(submission),
-            allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
-        )
+        try:
+            task, new_trials, is_append, experiment = await create_task_sweep_core(
+                session,
+                submission=submission,
+                org_id=auth.org_id,
+                default_environment=get_default_cloud_environment(submission),
+                allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+                idempotency_key=idempotency_key,
+                idempotency_store=SubmissionIdempotencyStore(session),
+                request_hash=request_hash,
+            )
+        except IdempotencyReplay as replay:
+            # Faithful retry of a completed key: return the stored response and
+            # skip the owner-stamping / publish side effects below.
+            return TaskResponse.model_validate(replay.response_json)
 
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
@@ -446,24 +509,88 @@ async def create_task_sweep(
 
         await session.commit()
 
-        response_trials = new_trials if is_append else list(task.trials)
-        provider_counts: Counter[str] = Counter(t.provider for t in response_trials)
-        primary = experiment or (task.experiments[0] if task.experiments else None)
-        resp_experiment_id = primary.id if primary else None
-        resp_experiment_name = primary.name if primary else None
+        return build_task_sweep_response(task, new_trials, is_append, experiment)
 
-        return TaskResponse(
-            id=task.id,
-            name=task.name,
-            status=task.status,
-            priority=task.priority,
-            trials_count=len(response_trials),
-            providers=dict(provider_counts),
-            experiment_id=resp_experiment_id,
-            experiment_name=resp_experiment_name,
-            created_at=task.created_at,
-            new_trial_ids=[t.id for t in response_trials],
+
+@router.post("/tasks/sweep/batch", response_model=TaskSweepBatchResponse)
+async def create_task_sweep_batch(
+    payload: TaskSweepBatchRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    response: Response,
+) -> TaskSweepBatchResponse:
+    """Submit several task sweeps in one request (best-effort, per-item status).
+
+    Each submission is created inside its own savepoint, so one bad item neither
+    aborts the batch nor rolls back items that already succeeded. ``results`` is
+    a per-item status array indexed to ``submissions``. Returns HTTP 200 when
+    every item succeeds and HTTP 207 Multi-Status when at least one item fails --
+    callers must inspect each item's ``success``/``status_code``.
+
+    Per-item idempotency-key replay is intentionally not handled here; request
+    idempotency is separate in-flight work and will layer on top of this path.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    if not payload.submissions:
+        raise HTTPException(
+            status_code=400, detail="Must specify at least one submission"
         )
+
+    async def _prepare(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> EnvironmentType | None:
+        # Per-item, auth-aware setup. Runs inside the item's savepoint so a
+        # failure here rolls back only this item (mirrors the single-sweep route).
+        await _resolve_submission_identity(session, submission, auth)
+        _apply_github_attribution(submission)
+        await _apply_user_run_probe_default(session, submission, auth)
+        return get_default_cloud_environment(submission)
+
+    async def _finalize(
+        session: AsyncSession,
+        submission: TaskSweepSubmission,
+        task: TaskModel,
+        is_append: bool,
+        experiment: ExperimentModel | None,
+    ) -> None:
+        # Post-create stamping, inside the savepoint (mirrors the single route).
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
+        if not is_append:
+            created_by_user_id = await _resolve_created_by_user_id(
+                session, submission, auth
+            )
+            if created_by_user_id:
+                task.created_by_user_id = created_by_user_id
+            await _maybe_publish_experiment(session, task, submission, auth)
+        elif experiment and submission.publish_experiment:
+            await ensure_experiment_public(session, experiment)
+
+    async with get_session() as session:
+        results = await create_task_sweep_batch_core(
+            session,
+            submissions=payload.submissions,
+            org_id=auth.org_id,
+            allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
+            prepare=_prepare,
+            finalize=_finalize,
+        )
+        await session.commit()
+
+    succeeded = sum(1 for r in results if r.success)
+    failed = len(results) - succeeded
+    # 207 Multi-Status whenever any item failed; the body carries per-item
+    # outcomes so the client never has to rely on the top-level status alone.
+    if failed:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    return TaskSweepBatchResponse(
+        total=len(results),
+        succeeded=succeeded,
+        failed=failed,
+        results=results,
+    )
 
 
 # =============================================================================
@@ -534,6 +661,14 @@ async def browse_tasks(
     tags: str | None = Query(None),
     tags_any: str | None = Query(None),
     tags_none: str | None = Query(None),
+    author: str | None = Query(
+        None,
+        description=(
+            "Author search (the github:/author:/user: qualifier). Comma-separated "
+            "tokens, each resolved to matching org members + their aliases and "
+            "ANDed with the free-text and tag filters."
+        ),
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -547,6 +682,21 @@ async def browse_tasks(
             elapsed_ms(connect_started_at),
             "Browse DB connect",
         )
+        author_tokens = [
+            token.strip() for token in (author or "").split(",") if token.strip()
+        ]
+        if author_tokens:
+            (
+                author_user_ids,
+                author_github_usernames,
+                author_emails,
+            ) = await resolve_search_authors(
+                session, org_id=auth.org_id, tokens=author_tokens
+            )
+        else:
+            author_user_ids = ()
+            author_github_usernames = ()
+            author_emails = ()
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -556,6 +706,9 @@ async def browse_tasks(
             tags_all=_split_tag_csv(tags),
             tags_any=_split_tag_csv(tags_any),
             tags_none=_split_tag_csv(tags_none),
+            author_user_ids=author_user_ids,
+            author_github_usernames=author_github_usernames,
+            author_emails=author_emails,
             record_timing=_make_timing_recorder(request),
         )
 
@@ -815,11 +968,26 @@ async def cancel_tasks(
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
-    async with get_session() as session:
-        result = await cancel_tasks_runs(session, payload.task_ids, org_id=auth.org_id)
-        if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail="No matching tasks found")
-        await session.commit()
+    try:
+        async with get_session() as session:
+            result = await cancel_tasks_runs(
+                session, payload.task_ids, org_id=auth.org_id
+            )
+            if result.get("error") == "not_found":
+                raise HTTPException(status_code=404, detail="No matching tasks found")
+            await session.commit()
+    except SQLAlchemyError as exc:
+        # Full detail goes to the logs: exc_info captures the traceback (which
+        # statement raised) plus exc.statement (the SQL) and exc.orig (the
+        # Postgres deadlock/timeout detail). The UI gets a simple, honest
+        # message instead of an opaque "Internal Server Error".
+        logger.error(
+            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Couldn't cancel right now (database error). Please retry.",
+        ) from exc
 
     modal_cancelled = await _cancel_modal_function_calls(
         result.get("modal_function_call_ids", [])
@@ -858,9 +1026,7 @@ async def cancel_task_qa(
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        result = await cancel_task_qa_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        result = await cancel_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
 
     modal_cancelled = await _cancel_modal_function_calls(
         cast("list[str]", result.get("modal_function_call_ids", []))

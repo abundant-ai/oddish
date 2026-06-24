@@ -38,6 +38,12 @@ _PROVIDER_ONLY_QUEUE_ALIASES: set[str] = {
 }
 
 ANALYSIS_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+# Model for the probe transcript summarizer. Deliberately larger than
+# ANALYSIS_MODEL: it reads the agent's full transcript (including the final
+# synthesis / audit JSON) and must summarize it reliably. Kept separate from
+# ANALYSIS_MODEL so it does not change the analysis queue key or the
+# TrialClassifier model. Normalized to a direct-API id at call time.
+PROBE_ANALYZER_MODEL = "global.anthropic.claude-sonnet-4-6"
 VERDICT_MODEL = "gpt-5.4"
 
 PROBE_MODEL_ROTATION: list[str] = [
@@ -81,6 +87,87 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
     return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
 
 
+# --- Configurable Harbor source ----------------------------------------------
+# The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
+# both uv.lock files (a test asserts it against oddish/uv.lock).
+HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
+HARBOR_DEFAULT_SHA = "beabbb7a909931850582370e46074f3d8c8b892a"
+
+_HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
+
+
+def parse_harbor_spec(spec: str) -> tuple[str, str]:
+    """Parse a single ``--harbor <spec>`` string into ``(source, ref)``.
+
+    First match wins:
+    - R1 URL form (``git+``/``http://``/``https://``/``ssh://`` or scp
+      ``git@host:org/repo``): source = the URL; ref = the segment after a ``@``
+      in the PATH (after the host), else "" (caller resolves default-branch
+      HEAD). A userinfo ``@`` (``user:token@host`` / ``git@host``) is part of
+      the source and is never treated as the ref delimiter.
+    - R2 ``org/repo@ref``: source = ``https://github.com/<org>/<repo>``; ref =
+      after the ``@``.
+    - R3 bare ref (anything else, incl. a bare ``org/repo`` with NO ``@``):
+      source = the locked fork; ref = the whole spec.
+
+    For refs/URLs containing a literal ``@``, use the structured
+    ``oddish.toml [harbor] source/ref`` escape hatch instead (handled upstream),
+    which never reaches this parser.
+    """
+    spec = spec.strip()
+
+    # R1: URL form. Split a ref off only when an '@' falls AFTER the host (in
+    # the path), never on a userinfo '@' (``user:token@host`` / ``git@host``).
+    if spec.startswith(_HARBOR_URL_PREFIXES):
+        scheme, rest = spec.split("://", 1)
+        host, sep, path = rest.partition("/")
+        if sep and "@" in path:
+            path_no_ref, ref = path.rsplit("@", 1)
+            return f"{scheme}://{host}{sep}{path_no_ref}", ref
+        return spec, ""
+    # R1: scp-style git@host:org/repo[@ref]
+    if spec.startswith("git@") and ":" in spec:
+        base, _, after_colon = spec.partition(":")
+        if "@" in after_colon:
+            path, ref = after_colon.rsplit("@", 1)
+            return f"{base}:{path}", ref
+        return spec, ""
+
+    # R2: org/repo@ref  (requires both a '/' before the '@' and an '@').
+    if "@" in spec:
+        left, ref = spec.rsplit("@", 1)
+        if "/" in left and not left.startswith(("refs/", "feature/", "release/")):
+            return f"https://github.com/{left}", ref
+
+    # R3: bare ref on the locked fork (incl. bare org/repo with no '@').
+    return HARBOR_DEFAULT_SOURCE, spec
+
+
+def resolve_harbor_layers(
+    *,
+    flag: str | None,
+    env: str | None,
+    manifest: dict[str, str] | None,
+) -> tuple[str, str]:
+    """Layer-atomic, first-wins precedence: flag > env > manifest > default.
+
+    Each layer parses to a COMPLETE (source, ref) pair; the whole pair is taken
+    from the highest layer that sets anything. Never merges a source from one
+    layer with a ref from another. ``ref == ""`` (R1 URL without an explicit
+    ref) is treated as set; the server resolves it to the default-branch HEAD.
+    """
+    if flag is not None and flag.strip():
+        return parse_harbor_spec(flag)
+    if env is not None and env.strip():
+        return parse_harbor_spec(env)
+    if manifest:
+        source = manifest.get("source") or HARBOR_DEFAULT_SOURCE
+        ref = manifest.get("ref")
+        if ref is not None:
+            return source, ref
+    return HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA
+
+
 OPENAI_PROVIDER_AZURE = "azure"
 OPENAI_PROVIDER_OPENAI = "openai"
 _OPENAI_PROVIDERS: set[str] = {OPENAI_PROVIDER_AZURE, OPENAI_PROVIDER_OPENAI}
@@ -121,11 +208,13 @@ def is_zai_model(model: str | None) -> bool:
     raw = model.strip().lower()
     if not raw:
         return False
-    provider_prefix, bare = split_provider_model_name(raw)
-    if provider_prefix and provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES:
-        return True
-    tail = bare if provider_prefix else raw
-    return tail.split("/")[-1].startswith("glm")
+    provider_prefix, _ = split_provider_model_name(raw)
+    # An explicit provider prefix is authoritative: only a z.ai spelling routes
+    # to z.ai. A foreign prefix (e.g. ``fireworks/glm-5.2``) must NOT be hijacked
+    # here by the bare-``glm`` fallback -- it has chosen another transport.
+    if provider_prefix:
+        return provider_prefix.strip().lower() in _ZAI_PROVIDER_PREFIXES
+    return raw.split("/")[-1].startswith("glm")
 
 
 def zai_bare_model_id(model: str) -> str:
@@ -155,52 +244,6 @@ def to_zai_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"{ZAI_PROVIDER}/{zai_bare_model_id(model)}"
-
-
-# Personal-subscription routing (Claude Code OAuth token / Codex ChatGPT
-# auth.json). Lets the claude-code / codex agents authenticate with a Claude
-# Pro/Max or ChatGPT plan instead of Bedrock / Azure / an API key. A
-# ``sub/<bare-id>`` model id opts a trial into that route: it is kept off the
-# Bedrock chokepoint and gets its own provider/queue bucket (so it never
-# contends for Bedrock/OpenAI slots and can be throttled independently), and
-# harbor_runner injects the subscription credentials while blanking the ambient
-# Bedrock/API creds the Modal image bakes in.
-SUBSCRIPTION_PROVIDER = "subscription"
-_SUBSCRIPTION_PREFIXES: tuple[str, ...] = ("sub/", "subscription/")
-
-
-def is_subscription_model(model: str | None) -> bool:
-    """Return True if *model* opts into the personal-subscription auth route."""
-    if not model:
-        return False
-    return model.strip().lower().startswith(_SUBSCRIPTION_PREFIXES)
-
-
-def subscription_bare_model_id(model: str) -> str:
-    """Strip the ``sub/``/``subscription/`` prefix, returning the bare model id.
-
-    ``sub/claude-opus-4-5`` -> ``claude-opus-4-5``. This is the id handed to the
-    agent CLI (``--model`` / ``ANTHROPIC_MODEL``). A bare id is returned as-is.
-    """
-    raw = model.strip()
-    low = raw.lower()
-    for prefix in _SUBSCRIPTION_PREFIXES:
-        if low.startswith(prefix):
-            return raw[len(prefix) :].strip()
-    return raw
-
-
-def to_subscription_model_id(model: str | None) -> str | None:
-    """Canonicalize a subscription reference to ``sub/<bare-id>``.
-
-    Non-subscription models are returned unchanged. The ``sub/`` prefix keeps the
-    trial off the Bedrock chokepoint and gives it a dedicated provider/queue
-    bucket (see ``get_provider_for_trial`` / ``normalize_queue_key``).
-    """
-    if not is_subscription_model(model):
-        return model
-    assert model is not None
-    return f"sub/{subscription_bare_model_id(model)}"
 
 
 # MiniMax / Moonshot (Kimi) routing. Like GLM/z.ai, these are served over an
@@ -305,6 +348,108 @@ def to_moonshot_model_id(model: str | None) -> str | None:
         return model
     assert model is not None
     return f"{MOONSHOT_PROVIDER}/{moonshot_bare_model_id(model)}"
+
+
+# Fireworks routing. Fireworks serves GLM / MiniMax / Kimi (and many other open
+# models) over a single Anthropic-compatible ``/messages`` endpoint, so they run
+# on the claude-code harness against Fireworks instead of each model's own direct
+# provider. This is the consolidation route: opt a trial in with an explicit
+# ``fireworks/`` (or ``fw/``) provider prefix and it gets its own
+# ``fireworks/<id>`` provider/queue bucket -- off the Bedrock chokepoint and the
+# per-vendor z.ai / MiniMax / Moonshot buckets. Bare ``glm.../minimax.../kimi-...``
+# ids keep their existing direct-provider routes; the ``fireworks/`` prefix is
+# the explicit switch onto Fireworks.
+FIREWORKS_PROVIDER = "fireworks"
+# Anthropic-compatible base URL. Claude Code / the Anthropic SDK append
+# ``/v1/messages`` themselves, so this must NOT carry the ``/v1`` suffix.
+FIREWORKS_DEFAULT_BASE_URL = "https://api.fireworks.ai/inference"
+_FIREWORKS_PROVIDER_PREFIXES: frozenset[str] = frozenset({"fireworks", "fw"})
+# Friendly spellings -> the canonical Fireworks "short" model id (the last
+# segment of the Fireworks model path). The short id is what oddish stores and
+# queues on (``fireworks/<short>``); the full
+# ``accounts/fireworks/models/<short>`` path is only built when handing the id to
+# Claude Code as ANTHROPIC_MODEL. Add an entry here to give a model a friendly
+# alias; any other bare id is assumed to already be a Fireworks short id (a full
+# ``accounts/fireworks/(models|routers)/<id>`` path can always be passed as an
+# escape hatch and is forwarded verbatim).
+_FIREWORKS_SHORT_MODEL_IDS: dict[str, str] = {
+    "glm-5.2": "glm-5p2",
+    "glm-5p2": "glm-5p2",
+    "minimax-m3": "minimax-m3",
+    "kimi-k2.7": "kimi-k2p7-code",
+    "kimi-k2.7-code": "kimi-k2p7-code",
+    "kimi-k2p7": "kimi-k2p7-code",
+    "kimi-k2p7-code": "kimi-k2p7-code",
+}
+
+
+def is_fireworks_model(model: str | None) -> bool:
+    """Return True if *model* should route to Fireworks' Anthropic endpoint.
+
+    Matches an explicit ``fireworks/``/``fw/`` provider prefix only. Bare GLM /
+    MiniMax / Kimi ids keep their existing direct-provider routes (z.ai /
+    MiniMax / Moonshot); the ``fireworks/`` prefix is the opt-in that
+    consolidates them onto Fireworks instead.
+    """
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    if not provider_prefix:
+        return False
+    return provider_prefix.strip().lower() in _FIREWORKS_PROVIDER_PREFIXES
+
+
+def fireworks_bare_model_id(model: str) -> str:
+    """Strip the ``fireworks/``/``fw/`` prefix, returning the remaining id.
+
+    ``fireworks/glm-5.2`` -> ``glm-5.2``;
+    ``fireworks/accounts/fireworks/models/glm-5p2`` ->
+    ``accounts/fireworks/models/glm-5p2``. A bare id is returned unchanged.
+    """
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if (
+        provider_prefix
+        and provider_prefix.strip().lower() in _FIREWORKS_PROVIDER_PREFIXES
+    ):
+        return bare.strip()
+    return raw
+
+
+def fireworks_api_model_id(bare_model_id: str) -> str:
+    """Resolve a bare Fireworks reference to the model id the endpoint expects.
+
+    Friendly aliases (``glm-5.2``) and short ids (``glm-5p2``) expand to the full
+    ``accounts/fireworks/models/<short>`` path Fireworks requires. A value that
+    already contains a path segment (e.g. a full
+    ``accounts/fireworks/routers/<id>`` router path) is forwarded verbatim.
+    """
+    raw = bare_model_id.strip()
+    low = raw.lower()
+    if "/" in low:
+        return raw
+    short = _FIREWORKS_SHORT_MODEL_IDS.get(low, low)
+    return f"accounts/fireworks/models/{short}"
+
+
+def to_fireworks_model_id(model: str | None) -> str | None:
+    """Canonicalize a Fireworks reference to ``fireworks/<id>``.
+
+    Friendly aliases collapse to the canonical short id (``fireworks/glm-5.2`` ->
+    ``fireworks/glm-5p2``) so every spelling shares one queue/provider bucket; a
+    full ``accounts/...`` path is kept as-is behind the ``fireworks/`` prefix.
+    Non-Fireworks models are returned unchanged.
+    """
+    if not is_fireworks_model(model):
+        return model
+    assert model is not None
+    bare = fireworks_bare_model_id(model)
+    low = bare.strip().lower()
+    canonical = _FIREWORKS_SHORT_MODEL_IDS.get(low, low)
+    return f"{FIREWORKS_PROVIDER}/{canonical}"
 
 
 def looks_like_bedrock_model_id(model: str | None) -> bool:
@@ -590,6 +735,11 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     "moonshot": MOONSHOT_PROVIDER,
     "moonshotai": MOONSHOT_PROVIDER,
     "kimi": MOONSHOT_PROVIDER,
+    # Fireworks. The consolidation route: GLM / MiniMax / Kimi (and others)
+    # served over Fireworks' Anthropic-compatible endpoint get one shared
+    # ``fireworks`` provider bucket, distinct from the per-vendor direct routes.
+    "fireworks": FIREWORKS_PROVIDER,
+    "fw": FIREWORKS_PROVIDER,
 }
 
 
@@ -705,6 +855,15 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
+    # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
+    # inference -- the bearer token returns 400 "Operation not allowed" and the
+    # SigV4 keys are rejected -- so every Bedrock claude-code call fails. While
+    # this is set, route ALL claude-code (not just probes) to the direct Anthropic
+    # API (ANTHROPIC_API_KEY) via _claude_code_forces_direct_api(). Set
+    # ODDISH_CLAUDE_CODE_FORCE_DIRECT_API=0 to restore Bedrock routing once the
+    # credentials are fixed.
+    claude_code_force_direct_api: bool = True
+
     # Local dev: dispatch trials to the in-process runner
     # (``worker.local_runner``) instead of the Modal/cloud queue. Set
     # ODDISH_LOCAL_MODE=1 to exercise probe trials end-to-end on a dev box.
@@ -715,6 +874,15 @@ class Settings(BaseSettings):
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
+
+    # --- Configurable Harbor source (override which Harbor runs a trial) ---
+    # Single CLI spec mirror (env ODDISH_HARBOR). Parsed via parse_harbor_spec.
+    harbor: str | None = None
+    # Comma-separated case-insensitive URL globs of allowed override sources. The
+    # allowlist is the safety boundary: a source outside it is rejected at submit.
+    harbor_allowed_sources: str = (
+        "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
+    )
 
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
     # (no SDK events) for ``daytona_auto_stop_interval_mins`` is stopped;
@@ -758,25 +926,10 @@ class Settings(BaseSettings):
     # Queue limits — use ODDISH_MODEL_CONCURRENCY_OVERRIDES for per-model
     # values and ODDISH_DEFAULT_MODEL_CONCURRENCY for fallback.
     default_model_concurrency: int = 8
-    nop_oracle_concurrency: int = 32
-    # Subscription agents whose shared credential is refresh-sensitive and so
-    # must NOT be used by concurrent trials: Codex's ChatGPT auth.json rotates
-    # its refresh token, so two concurrent Codex trials can invalidate each
-    # other's token. These agents get a serialized ``sub-solo/<id>`` queue
-    # bucket capped at ``subscription_queue_concurrency``. (Claude Code's OAuth
-    # token is a static bearer token, safe to use concurrently, so claude-code
-    # is deliberately NOT listed here.)
-    subscription_serialized_agents: str = "codex"
-    # Concurrency cap for the ``sub-solo/<id>`` buckets above. Within the token's
-    # no-refresh window each trial gets its own independent auth.json copy that
-    # never refreshes, so running several at once is safe; this cap only bounds
-    # the single-use-refresh-token race near the ~8-day boundary. Default 4;
-    # raise via ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY when the credential is
-    # unused elsewhere and freshly seeded. An explicit per-key
-    # ODDISH_MODEL_CONCURRENCY_OVERRIDES entry still wins.
-    subscription_queue_concurrency: int = 4
+    nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
+    probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
 
     # Agent to provider mapping (computed from Harbor's AgentName enum)
@@ -950,38 +1103,9 @@ class Settings(BaseSettings):
                 return provider
         return "default"
 
-    # Agents that authenticate with the operator's personal subscription
-    # (Claude Pro/Max OAuth token / ChatGPT auth.json) instead of Bedrock/Azure.
-    # Comma-separated agent names, e.g. "claude-code,codex". When an agent is
-    # listed, its trials keep their STANDARD model id (no Bedrock/Azure mapping,
-    # no "sub/" prefix), get a dedicated subscription provider + queue bucket,
-    # and harbor_runner injects the subscription credentials at runtime.
-    subscription_agents: str = ""
-
-    def _is_subscription_agent(self, agent: str | None) -> bool:
-        names = {
-            a.strip().lower()
-            for a in (self.subscription_agents or "").split(",")
-            if a.strip()
-        }
-        return (agent or "").strip().lower() in names
-
-    def _is_serialized_subscription_agent(self, agent: str | None) -> bool:
-        names = {
-            a.strip().lower()
-            for a in (self.subscription_serialized_agents or "").split(",")
-            if a.strip()
-        }
-        return (agent or "").strip().lower() in names
-
     def get_provider_for_trial(self, agent: str, model: str | None) -> str:
         """Return provider for a trial using model first, agent fallback."""
         normalized_model = self.normalize_trial_model(agent, model)
-        # Subscription trials get a dedicated provider so they never fall through
-        # to the fixed agent provider (e.g. codex -> "openai"), which would drag
-        # them onto the Azure/OpenAI credential path.
-        if is_subscription_model(normalized_model) or self._is_subscription_agent(agent):
-            return SUBSCRIPTION_PROVIDER
         if normalized_model:
             provider = _get_provider_from_model(normalized_model)
             if provider:
@@ -1005,24 +1129,17 @@ class Settings(BaseSettings):
         if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
 
-        # Personal-subscription agents keep their STANDARD model id (no Bedrock
-        # mapping, no prefix) -- the route is selected by agent, not model name.
-        # The dedicated provider/queue bucket comes from get_provider_for_trial /
-        # get_queue_key_for_trial, which also key off the agent.
-        if self._is_subscription_agent(agent):
-            return cleaned
-
-        # Explicit per-trial "sub/<id>" opt-in (alternative to the agent flag):
-        # canonicalize BEFORE the Bedrock chokepoint so the trial stays off
-        # Bedrock and gets its own provider/queue bucket.
-        if is_subscription_model(cleaned):
-            return to_subscription_model_id(cleaned)
-
         # GLM/z.ai, MiniMax, and Moonshot/Kimi models run on the claude-code
         # harness but route to their own direct endpoints, not Bedrock.
         # Canonicalize to "<provider>/<id>" before the Bedrock chokepoint so
         # they get their own provider/queue bucket instead of claude-code's
         # fixed Bedrock fallback.
+        #
+        # Fireworks is checked first: an explicit ``fireworks/`` prefix
+        # consolidates GLM/MiniMax/Kimi onto Fireworks and must win over the
+        # bare-id direct-provider routes below.
+        if is_fireworks_model(cleaned):
+            return to_fireworks_model_id(cleaned)
         if is_zai_model(cleaned):
             return to_zai_model_id(cleaned)
         if is_minimax_model(cleaned):
@@ -1042,16 +1159,6 @@ class Settings(BaseSettings):
         normalized = model.strip().lower().replace(" ", "_")
         if not normalized or normalized in _MODEL_ABSENT_ALIASES:
             return "default"
-        # Subscription models keep their own ``sub/<id>`` bucket; serialized
-        # subscription agents (e.g. codex) use ``sub-solo/<id>`` to dodge ChatGPT
-        # auth.json refresh-token invalidation across concurrent workers. Both
-        # are already canonical queue keys, so pass them through untouched.
-        # Canonicalize the ``subscription/`` opt-in alias to ``sub/`` first so an
-        # override key written that way still matches the real ``sub/<id>`` key.
-        if normalized.startswith("subscription/"):
-            normalized = "sub/" + normalized[len("subscription/") :]
-        if normalized.startswith("sub/") or normalized.startswith("sub-solo/"):
-            return normalized
         if normalized in _PROVIDER_ONLY_QUEUE_ALIASES:
             return "default"
         normalized = _to_bedrock_model_id_if_known(normalized)
@@ -1076,19 +1183,6 @@ class Settings(BaseSettings):
         if is_nop_oracle_agent(agent):
             return NOP_ORACLE_QUEUE_KEY
         normalized_model = self.normalize_trial_model(agent, model)
-        # Subscription trials get a dedicated internal queue bucket so their
-        # concurrency can be capped independently of the standard model id they
-        # still store. Both opt-in paths route here -- the agent flag and the
-        # explicit ``sub/<id>`` model prefix (mirroring get_provider_for_trial) --
-        # so a model-prefix opt-in can't escape the cap via normalize_queue_key.
-        # Agents whose shared credential is refresh-sensitive (codex auth.json)
-        # get a serialized ``sub-solo/<id>`` bucket; the rest (claude-code OAuth,
-        # safe concurrent) get a plain ``sub/<id>`` bucket.
-        if self._is_subscription_agent(agent) or is_subscription_model(normalized_model):
-            bare = subscription_bare_model_id(normalized_model or "default") or "default"
-            if self._is_serialized_subscription_agent(agent):
-                return f"sub-solo/{bare}"
-            return f"sub/{bare}"
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
         return "default"
@@ -1120,13 +1214,6 @@ class Settings(BaseSettings):
             return max(int(override), 0)
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
-        # Serialized subscription buckets (shared refresh-sensitive credential,
-        # e.g. codex auth.json) default to a low cap so concurrent trials can't
-        # race on the shared token, without relying on a per-key override. An
-        # explicit override above still wins. Plain ``sub/<id>`` subscription
-        # buckets (e.g. claude-code OAuth) are safe concurrent and NOT capped.
-        if normalized.startswith("sub-solo/"):
-            return max(int(self.subscription_queue_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
 
     def get_known_queue_keys(self) -> set[str]:

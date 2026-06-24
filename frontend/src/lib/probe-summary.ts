@@ -1,15 +1,7 @@
 // Shared types + pure helpers for rendering probe runs. Used by the probe
 // detail page and the task-drawer PROBE summary so both stay consistent.
 
-type ProbeMetric = "ratio" | "result_focus" | "none";
-
-type Attempt = {
-  title?: string;
-  rationale?: string;
-  outcome?: string;
-  success?: boolean | null;
-  step_indices?: number[];
-};
+type ProbeMetric = "result_focus" | "none";
 
 type ToolInsight = {
   name?: string;
@@ -51,15 +43,15 @@ export type ProbeSummary = {
   summary?: string;
   key_actions?: string[];
   recommendations?: Recommendation[];
-  cheating_attempted?: boolean | null;
-  cheating_succeeded?: boolean | null;
   evidence?: string;
-  attempts?: Attempt[];
   tool_insights?: ToolInsight[];
   model?: string;
   generated_at?: string;
   result_focus_question?: string | null;
-  result_focus_findings?: string | null;
+  // Plain-language recap of result_focus_findings (the JSON answer); shown as the
+  // result-focus body, with the structured findings behind a toggle.
+  result_focus_summary?: string | null;
+  result_focus_findings?: string | Record<string, unknown> | unknown[] | null;
 };
 
 type ProbeHarborConfig = {
@@ -67,10 +59,8 @@ type ProbeHarborConfig = {
   extra_instructions?: string;
   // Operator-selected preset name; absent on older / preset-less runs.
   probe_name?: string | null;
-  // "cheat_ratio" kept as a legacy alias — normalizeMetric folds it to "ratio".
-  evaluation_metric?: "ratio" | "result_focus" | "none" | "cheat_ratio";
-  ratio_unit?: string | null;
-  ratio_verb?: string | null;
+  // "cheat_ratio"/"ratio" kept as legacy aliases — normalizeMetric maps them to "none".
+  evaluation_metric?: "result_focus" | "none" | "cheat_ratio" | "ratio";
 } | null;
 
 // A probe run is a trial row; this is the subset the probe UIs read.
@@ -90,46 +80,10 @@ export type ProbeTrial = {
   error_message?: string | null;
 };
 
-export function pluralize(noun: string): string {
-  const n = noun.trim();
-  if (!n) return "";
-  if (/[sxz]$|[cs]h$/.test(n)) return n + "es";
-  if (/[^aeiou]y$/.test(n)) return n.slice(0, -1) + "ies";
-  return n + "s";
-}
-
 export function normalizeMetric(raw: string | null | undefined): ProbeMetric {
   const m = raw ?? "none";
-  const mapped = m === "cheat_ratio" ? "ratio" : m;
-  const known: ProbeMetric[] = ["ratio", "result_focus", "none"];
-  return known.includes(mapped as ProbeMetric)
-    ? (mapped as ProbeMetric)
-    : "none";
-}
-
-export function ratioUnitVerb(cfg: ProbeHarborConfig): {
-  unit: string;
-  verb: string | null;
-} {
-  const raw = cfg?.evaluation_metric ?? "none";
-  const unit = cfg?.ratio_unit ?? (raw === "cheat_ratio" ? "cheat" : "attempt");
-  const verb = cfg?.ratio_verb ?? (raw === "cheat_ratio" ? "succeeded" : null);
-  return { unit, verb };
-}
-
-type AttemptTally = {
-  succeeded: number;
-  blocked: number;
-  investigation: number;
-  cheatTotal: number;
-};
-
-export function tallyAttempts(attempts: Attempt[] | undefined): AttemptTally {
-  const all = attempts ?? [];
-  const succeeded = all.filter((a) => a.success === true).length;
-  const blocked = all.filter((a) => a.success === false).length;
-  const investigation = all.length - succeeded - blocked;
-  return { succeeded, blocked, investigation, cheatTotal: succeeded + blocked };
+  if (m === "result_focus") return "result_focus";
+  return "none";
 }
 
 export function isTerminalProbeStatus(status: string): boolean {

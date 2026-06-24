@@ -25,7 +25,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.model_pricing import estimate_cost_usd
@@ -436,10 +436,13 @@ def build_trial_response(
         error_message=trial.error_message,
         result=trial.result,
         harbor_config=trial.harbor_config,
+        harbor_sha=trial.harbor_sha,
+        harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
+        total_steps=trial.total_steps,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
@@ -505,10 +508,13 @@ def build_compact_trial_response(
         error_message=trial.error_message,
         result=None,
         harbor_config=trial.harbor_config,
+        harbor_sha=trial.harbor_sha,
+        harbor_source=(trial.harbor_config or {}).get("source"),
         is_probe=trial.is_probe,
         input_tokens=trial.input_tokens,
         cache_tokens=trial.cache_tokens,
         output_tokens=trial.output_tokens,
+        total_steps=trial.total_steps,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,

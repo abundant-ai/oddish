@@ -110,6 +110,8 @@ export interface Trial {
   attempts: number;
   max_attempts: number;
   harbor_stage: string | null;
+  harbor_sha?: string | null;
+  harbor_source?: string | null;
   reward: number | null;
   error_message?: string | null;
   result?: Record<string, unknown> | null;
@@ -127,6 +129,7 @@ export interface Trial {
   input_tokens?: number | null;
   cache_tokens?: number | null;
   output_tokens?: number | null;
+  total_steps?: number | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
   has_trajectory?: boolean;
@@ -319,6 +322,7 @@ export interface ModelUsage {
   input_tokens: number;
   cache_tokens: number;
   output_tokens: number;
+  total_steps: number;
   cost_usd: number;
   running: number;
   queued: number;

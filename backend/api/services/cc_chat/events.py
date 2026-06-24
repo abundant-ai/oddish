@@ -1,4 +1,7 @@
+from typing import cast
+
 from sqlalchemy import delete, func, select
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import ChatSessionEvent, generate_id
@@ -19,17 +22,23 @@ async def append_event(session: AsyncSession, *, session_id: str, event: dict) -
         )
     ).scalar_one() + 1
     session.add(
-        ChatSessionEvent(id=generate_id(), session_id=session_id, seq=next_seq, event=event)
+        ChatSessionEvent(
+            id=generate_id(), session_id=session_id, seq=next_seq, event=event
+        )
     )
     await session.flush()
     return next_seq
 
 
-async def read_events(session: AsyncSession, *, session_id: str, since: int = -1) -> list[dict]:
+async def read_events(
+    session: AsyncSession, *, session_id: str, since: int = -1
+) -> list[dict]:
     rows = (
         await session.execute(
             select(ChatSessionEvent.seq, ChatSessionEvent.event)
-            .where(ChatSessionEvent.session_id == session_id, ChatSessionEvent.seq > since)
+            .where(
+                ChatSessionEvent.session_id == session_id, ChatSessionEvent.seq > since
+            )
             .order_by(ChatSessionEvent.seq.asc())
         )
     ).all()
@@ -40,4 +49,4 @@ async def prune_events(session: AsyncSession, *, session_id: str) -> int:
     result = await session.execute(
         delete(ChatSessionEvent).where(ChatSessionEvent.session_id == session_id)
     )
-    return result.rowcount or 0
+    return cast(CursorResult, result).rowcount or 0

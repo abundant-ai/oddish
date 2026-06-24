@@ -28,6 +28,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import {
   Popover,
   PopoverContent,
@@ -51,6 +52,7 @@ import {
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
@@ -81,6 +83,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ArrowUpRight,
   ChevronDown,
   Copy,
   OctagonX,
@@ -170,7 +173,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "harness-error",
 ];
 
-// Row-level filter modes. Inspired by sauron's "any/all pass@k=0" toggle:
+// Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
 // hide tasks based on failures or harness/infrastructure errors across the
 // visible non-baseline agent columns.
 type RowFilterMode = "none" | "anyError" | "allFail" | "anyFail";
@@ -1784,7 +1787,7 @@ export function ExperimentTrialsTable({
   return (
     <TooltipProvider>
       <div className="space-y-4">
-        {/* Pass@k Graph - only shows when there are multiple trials per task-agent */}
+        {/* Pass/k Graph - only shows when there are multiple trials per task-agent */}
         {showPassAtK ? (
           <div className="grid items-stretch gap-4 xl:grid-cols-2">
             <div className="h-full min-w-0">
@@ -2103,8 +2106,6 @@ export function ExperimentTrialsTable({
                               >
                                 <QueueKeyIcon
                                   agent={agent.agent}
-                                  model={agent.model}
-                                  queueKey={agent.queueKey}
                                   size={12}
                                   className="shrink-0"
                                 />
@@ -2308,6 +2309,29 @@ export function ExperimentTrialsTable({
                               <span className="inline-flex shrink-0 items-center rounded-[3px] bg-[color:var(--paper-bg-2)] px-1 py-px font-mono text-[9.5px] leading-none font-medium text-[color:var(--paper-ink-3)]">
                                 v{task.current_version}
                               </span>
+                            )}
+                            <ProbeLaunchButton
+                              taskId={task.id}
+                              taskName={task.name}
+                              variant="icon"
+                              className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
+                            />
+                            {/* Jump from the experiment to this task's own
+                                page. Hidden on the read-only share view since
+                                /tasks/[id] is an authenticated route. */}
+                            {!readOnly && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Link
+                                    href={`/tasks/${encodeURIComponent(task.id)}`}
+                                    aria-label={`Open task page for ${task.name}`}
+                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
+                                  >
+                                    <ArrowUpRight className="h-3.5 w-3.5" />
+                                  </Link>
+                                </TooltipTrigger>
+                                <TooltipContent>Open task page</TooltipContent>
+                              </Tooltip>
                             )}
                           </div>
                         </div>

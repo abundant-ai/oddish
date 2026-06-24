@@ -297,6 +297,14 @@ class TagPolicyProfanityMode(str, Enum):
     OFF = "OFF"
 
 
+class APIKeyScope(str, Enum):
+    """API key permission scopes."""
+
+    FULL = "full"  # All operations (tasks, trials, admin)
+    TASKS = "tasks"  # Create/view tasks and trials only
+    READ = "read"  # Read-only access
+
+
 # =============================================================================
 # SQLAlchemy Models (Database Tables)
 # =============================================================================
@@ -311,7 +319,7 @@ task_experiments = Table(
     Base.metadata,
     Column(
         "task_id",
-        String(64),
+        String(128),
         ForeignKey("tasks.id", ondelete="CASCADE"),
         primary_key=True,
     ),
@@ -481,7 +489,7 @@ class TaskModel(TimestampedMixin, Base):
     )
 
     # Override id to add auto-generation
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    id: Mapped[str] = mapped_column(String(128), primary_key=True, default=generate_id)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # -------------------------------------------------------------------------
@@ -523,7 +531,7 @@ class TaskModel(TimestampedMixin, Base):
 
     # Versioning: points to the latest TaskVersionModel row
     current_version_id: Mapped[str | None] = mapped_column(
-        String(128),
+        String(160),
         ForeignKey("task_versions.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
     )
@@ -615,9 +623,9 @@ class TaskVersionModel(TimestampedMixin, Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
     task_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     task_path: Mapped[str] = mapped_column(Text, nullable=False)
@@ -658,13 +666,13 @@ class TrialModel(TimestampedMixin, Base):
     __tablename__ = "trials"
 
     # Override id: Stable, human-friendly ID set manually as "{task_id}-{index}"
-    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     task_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
+        String(128), ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False
     )
     task_version_id: Mapped[str | None] = mapped_column(
-        String(128), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
+        String(160), ForeignKey("task_versions.id", ondelete="SET NULL"), nullable=True
     )
     experiment_id: Mapped[str] = mapped_column(
         String(64),
@@ -694,6 +702,12 @@ class TrialModel(TimestampedMixin, Base):
 
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    # Concrete Harbor commit SHA this trial executed against (denormalized,
+    # indexed projection of harbor_config["resolved_sha"]; stamped at creation).
+    harbor_sha: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
 
     # Derived, indexed projection of ``harbor_config["mode"] == "probe"`` so
     # probe runs can be filtered server-side. Source of truth stays in
@@ -784,10 +798,11 @@ class TrialModel(TimestampedMixin, Base):
     )  # S3 prefix for trial results/logs
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Token usage & cost (extracted from Harbor's AgentContext)
+    # Token usage, steps & cost (extracted from Harbor's AgentContext / trajectory)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cache_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
@@ -819,7 +834,7 @@ class TrialModel(TimestampedMixin, Base):
     # the DB (for history / direct deep-links) but stop cluttering
     # default views, S3 file viewers, and verdict aggregation.
     superseded_by_trial_id: Mapped[str | None] = mapped_column(
-        String(128),
+        String(160),
         ForeignKey("trials.id", ondelete="SET NULL"),
         nullable=True,
     )
@@ -978,6 +993,14 @@ class WorkerJobModel(TimestampedMixin, Base):
         server_default="QUEUED",
     )
 
+    # Harbor execution variant routing id ('default' | '<registry-id>' |
+    # 'ephemeral'). Part of the effective dispatch key: the dispatcher
+    # discovers/counts/spawns per (queue_key, harbor_variant_id) and the claim
+    # is scoped to it.
+    harbor_variant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'default'")
+    )
+
     queue_key: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=0, server_default="0"
@@ -1058,6 +1081,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
+            "harbor_variant_id",
             "priority",
             "available_after",
             "created_at",
@@ -1101,6 +1125,69 @@ class WorkerJobModel(TimestampedMixin, Base):
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
 
 
+class APIKeyModel(TimestampedMixin, Base):
+    """API key for programmatic access.
+
+    API keys are scoped to an organization and have specific permissions.
+    The actual key is only shown once on creation; we store a hash.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+
+    # Organization scope
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Key identification
+    name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )  # Human-readable name
+    key_prefix: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # First 8 chars for display
+    key_hash: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False
+    )  # SHA256 of full key
+
+    # Permissions
+    scope: Mapped[APIKeyScope] = mapped_column(
+        SQLEnum(
+            APIKeyScope,
+            name="apikeyscope",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=APIKeyScope.FULL,
+        nullable=False,
+    )
+
+    # Creator tracking
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Status and expiry
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Visibility
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    __table_args__ = (
+        Index("idx_api_keys_org_id", "org_id"),
+        Index("idx_api_keys_key_hash", "key_hash"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
@@ -1116,8 +1203,10 @@ class WorkerJobModel(TimestampedMixin, Base):
 #   ``status = 'CANCELLED'`` to retire jobs (see ``delete_*_core``),
 #   not ``deleted_at``.
 #
-# Backend-only auth models (organizations / users / api_keys) register
+# Backend-only auth models (organizations / users) register
 # themselves from ``backend/models.py`` so this module stays standalone.
+# ``APIKeyModel`` lives in this module, but its soft-delete registration
+# still happens from ``backend/models.py`` (alongside the other auth models).
 class ProbePresetModel(TimestampedMixin, Base):
     """Operator-directive presets for probe trials.
 
@@ -1150,8 +1239,6 @@ class ProbePresetModel(TimestampedMixin, Base):
     operator_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     result_focus: Mapped[str | None] = mapped_column(Text, nullable=True)
     evaluation_metric: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    ratio_unit: Mapped[str | None] = mapped_column(String(30), nullable=True)
-    ratio_verb: Mapped[str | None] = mapped_column(String(30), nullable=True)
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
@@ -1253,8 +1340,8 @@ class TagAssignmentModel(TimestampedMixin, Base):
         ),
         nullable=False,
     )
-    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    target_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     state: Mapped[TagAssignmentState] = mapped_column(
         SQLEnum(
             TagAssignmentState,
@@ -1326,7 +1413,7 @@ class TagExclusionModel(TimestampedMixin, Base):
         ),
         nullable=False,
     )
-    target_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(160), nullable=False)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
@@ -1409,7 +1496,7 @@ class TagEventModel(Base):
         ),
         nullable=True,
     )
-    target_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    target_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     actor_type: Mapped[TagEventActor] = mapped_column(
         SQLEnum(

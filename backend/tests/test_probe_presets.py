@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 
-from oddish.core.probe_presets import (
+from oddish.core.probe.presets import (
     create_probe_preset_core,
     delete_probe_preset_core,
     list_probe_presets_core,
@@ -44,9 +44,7 @@ def _make(name: str) -> ProbePresetCreate:
         model="anthropic/claude-sonnet-4-6",
         operator_prompt="probe the task",
         result_focus="did it work?",
-        evaluation_metric="ratio",
-        ratio_unit="cheat",
-        ratio_verb="succeeded",
+        evaluation_metric="cheat_ratio",
     )
 
 
