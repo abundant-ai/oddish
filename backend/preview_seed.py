@@ -247,11 +247,16 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         # SNAPSHOT rows carry source_*/target ids that can dangle once the
         # task/experiment graph is sampled down. Sampled before the user
         # backfill below so tag owners / assigners are pulled into `users`.
+        #
+        # All non-deleted tags are drawn (ACTIVE / ARCHIVED / MERGED), not just
+        # ACTIVE, so the preview also exercises the page's own state filtering
+        # (e.g. that DELETED tags stay hidden). The merged_into_id guard below
+        # keeps the self-FK safe.
         tagged_version_ids = sorted({v["id"] for v in versions})
         await section(
             "tags",
             "SELECT * FROM tags"
-            " WHERE deleted_at IS NULL AND state = 'ACTIVE'"
+            " WHERE deleted_at IS NULL"
             "   AND org_id = ANY(:org_ids)"
             " ORDER BY id",
             org_ids=org_ids,
@@ -343,8 +348,10 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         if j.get("parent_job_id") not in job_ids:
             j["parent_job_id"] = None
 
-    # ACTIVE tags are never merged, but guard the merged_into_id self-FK in case
-    # a source row is dirty: drop a merge pointer we didn't also sample.
+    # We now draw MERGED tags too, which carry a merged_into_id self-FK. Its
+    # target (the surviving tag) is normally an active tag in the same org and
+    # so is also sampled, but guard the edge where it isn't: drop a merge
+    # pointer we didn't also sample.
     sampled_tag_ids = {t["id"] for t in rows.get("tags", [])}
     for tg in rows.get("tags", []):
         if tg.get("merged_into_id") and tg["merged_into_id"] not in sampled_tag_ids:

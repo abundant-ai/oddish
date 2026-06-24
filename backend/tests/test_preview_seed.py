@@ -398,7 +398,8 @@ async def _make_source_db():
                     "state": "ACTIVE",
                     "owner_user_id": "u-b1",
                 },
-                # MERGED tags are excluded from the draw (state != ACTIVE).
+                # MERGED tags ARE drawn (the page does its own state filtering);
+                # the merged_into_id self-FK points at a sampled tag.
                 {
                     "id": "t-merged",
                     "org_id": "org-a",
@@ -407,6 +408,16 @@ async def _make_source_db():
                     "state": "MERGED",
                     "merged_into_id": "t-smoke",
                     "owner_user_id": "u-a1",
+                },
+                # Soft-deleted tags are excluded (deleted_at IS NOT NULL).
+                {
+                    "id": "t-del",
+                    "org_id": "org-a",
+                    "key": "gone",
+                    "normalized_key": "gone",
+                    "state": "ACTIVE",
+                    "owner_user_id": "u-a1",
+                    "deleted_at": preview_seed.SEED_EPOCH,
                 },
             ],
         )
@@ -546,11 +557,15 @@ async def test_sample_is_deterministic_and_prod_faithful():
         assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
         assert [d["id"] for d in rows["documents"]] == ["doc-1"]
 
-        # ACTIVE tags for the sampled orgs (org-a + org-b); MERGED excluded
+        # non-deleted tags for the sampled orgs (org-a + org-b); MERGED kept so
+        # the page exercises its own state filtering, soft-deleted excluded
         tags = {t["id"]: t for t in rows["tags"]}
-        assert set(tags) == {"t-smoke", "t-flaky", "t-bonly"}
+        assert set(tags) == {"t-smoke", "t-flaky", "t-bonly", "t-merged"}
+        assert "t-del" not in tags  # deleted_at IS NOT NULL
         assert tags["t-smoke"]["key"] == "smoke"
         assert tags["t-smoke"]["owner_user_id"] == "u-a1"
+        # the merged tag keeps its self-FK pointer (target was sampled)
+        assert tags["t-merged"]["merged_into_id"] == "t-smoke"
         # only DIRECT/ACTIVE assignments onto sampled targets, one per scope
         tas = {a["id"]: a for a in rows["tag_assignments"]}
         assert set(tas) == {"ta-task", "ta-ver", "ta-exp", "ta-bonly"}
