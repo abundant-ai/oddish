@@ -16,6 +16,7 @@ from fastapi import (
 )
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from cloud_policy import (
@@ -46,7 +47,7 @@ from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
 )
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
@@ -967,11 +968,26 @@ async def cancel_tasks(
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
-    async with get_session() as session:
-        result = await cancel_tasks_runs(session, payload.task_ids, org_id=auth.org_id)
-        if result.get("error") == "not_found":
-            raise HTTPException(status_code=404, detail="No matching tasks found")
-        await session.commit()
+    try:
+        async with get_session() as session:
+            result = await cancel_tasks_runs(
+                session, payload.task_ids, org_id=auth.org_id
+            )
+            if result.get("error") == "not_found":
+                raise HTTPException(status_code=404, detail="No matching tasks found")
+            await session.commit()
+    except SQLAlchemyError as exc:
+        # Full detail goes to the logs: exc_info captures the traceback (which
+        # statement raised) plus exc.statement (the SQL) and exc.orig (the
+        # Postgres deadlock/timeout detail). The UI gets a simple, honest
+        # message instead of an opaque "Internal Server Error".
+        logger.error(
+            "cancel_tasks failed for task_ids=%s", payload.task_ids, exc_info=exc
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Couldn't cancel right now (database error). Please retry.",
+        ) from exc
 
     modal_cancelled = await _cancel_modal_function_calls(
         result.get("modal_function_call_ids", [])

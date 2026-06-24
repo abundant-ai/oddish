@@ -9,7 +9,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
-from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
+from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_io import (
     read_trial_agent_file,
     read_trial_logs,
@@ -17,7 +17,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.core.public_helpers import (
+from .helpers import (
     get_public_experiment,
     get_public_task,
     get_public_trial,

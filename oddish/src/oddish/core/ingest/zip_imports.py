@@ -53,7 +53,7 @@ from oddish.cli.api import (
     trial_result_to_import_spec,
 )
 from oddish.core.tasks import complete_task_upload, initialize_task_upload
-from oddish.core.trial_imports import (
+from .trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )

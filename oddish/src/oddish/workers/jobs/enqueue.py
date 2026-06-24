@@ -37,6 +37,10 @@ class EnqueueRequest:
     max_attempts: int = 6
     org_id: str | None = None
     parent_job_id: str | None = None
+    # Harbor execution variant ('default' | '<registry-id>' | 'ephemeral'). Part
+    # of the effective dispatch key: the dispatcher counts/spawns per
+    # (queue_key, harbor_variant_id) and the claim is scoped to it.
+    harbor_variant_id: str = "default"
 
 
 def _validated_payload(request: EnqueueRequest, validate: bool) -> dict[str, Any]:
@@ -82,6 +86,7 @@ async def enqueue_worker_job(
         max_attempts=request.max_attempts,
         available_after=utcnow(),
         org_id=request.org_id,
+        harbor_variant_id=request.harbor_variant_id,
     )
     session.add(row)
     await session.flush()
@@ -101,7 +106,7 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
     INSERT INTO worker_jobs
         (id, kind, status, queue_key, priority, subject_table, subject_id,
          parent_job_id, payload, attempts, max_attempts, available_after,
-         org_id, created_at, updated_at)
+         org_id, harbor_variant_id, created_at, updated_at)
     SELECT
         j.id,
         j.kind::worker_job_kind,
@@ -116,6 +121,7 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
         j.max_attempts,
         NOW(),
         j.org_id,
+        j.harbor_variant_id,
         NOW(),
         NOW()
     FROM unnest(
@@ -128,10 +134,11 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
         CAST(:parent_job_id AS text[]),
         CAST(:payload AS text[]),
         CAST(:max_attempts AS int[]),
-        CAST(:org_id AS text[])
+        CAST(:org_id AS text[]),
+        CAST(:harbor_variant_id AS text[])
     ) WITH ORDINALITY AS j(
         id, kind, queue_key, priority, subject_table, subject_id,
-        parent_job_id, payload, max_attempts, org_id, ord
+        parent_job_id, payload, max_attempts, org_id, harbor_variant_id, ord
     )
     """
 )
@@ -167,6 +174,7 @@ async def bulk_enqueue_worker_jobs(
         "payload": [json.dumps(_validated_payload(r, validate)) for r in requests],
         "max_attempts": [r.max_attempts for r in requests],
         "org_id": [r.org_id for r in requests],
+        "harbor_variant_id": [r.harbor_variant_id for r in requests],
     }
     await session.execute(_BULK_INSERT_WORKER_JOBS_SQL, params)
     return ids

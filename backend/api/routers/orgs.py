@@ -15,7 +15,7 @@ from api.schemas import (
 )
 from auth import AuthContext, require_admin, require_auth
 from models import UserModel, UserRole
-from oddish.core.tag_ownership_transfer import transfer_tag_ownership_to_admin
+from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
