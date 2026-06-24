@@ -9,12 +9,15 @@ from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
 from auth import AuthContext, require_admin
+from models import OrganizationModel, UserModel
 from oddish.core.admin import (
+    CostBreakdownResponse,
     QueueHealthResponse,
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
     WorkerJobsResponse,
+    get_cost_breakdown_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
@@ -88,6 +91,96 @@ async def get_worker_jobs(
             stale_after_minutes=stale_after_minutes,
             sample_limit=sample_limit,
         )
+
+
+async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None:
+    """Fill owner/org display names on a cost breakdown in place.
+
+    The core aggregation in ``oddish`` only knows ``owner_user_id`` /
+    ``org_id`` (the cloud auth tables it can't import). We resolve those to
+    names here. ``include_deleted=True`` keeps historical spend attributable
+    to users/orgs that have since been deactivated.
+    """
+    user_ids: set[str] = set()
+    org_ids: set[str] = set()
+    for entry in result.by_user:
+        if entry.owner_user_id:
+            user_ids.add(entry.owner_user_id)
+        if entry.org_id:
+            org_ids.add(entry.org_id)
+    for experiment in result.experiments:
+        if experiment.owner_user_id:
+            user_ids.add(experiment.owner_user_id)
+        if experiment.org_id:
+            org_ids.add(experiment.org_id)
+
+    users: dict[str, UserModel] = {}
+    if user_ids:
+        rows = await session.execute(
+            select(UserModel)
+            .where(UserModel.id.in_(user_ids))
+            .execution_options(include_deleted=True)
+        )
+        for user in rows.scalars():
+            users[user.id] = user
+            if user.org_id:
+                org_ids.add(user.org_id)
+
+    orgs: dict[str, str] = {}
+    if org_ids:
+        rows = await session.execute(
+            select(OrganizationModel.id, OrganizationModel.name)
+            .where(OrganizationModel.id.in_(org_ids))
+            .execution_options(include_deleted=True)
+        )
+        for org_id, org_name in rows.all():
+            orgs[org_id] = org_name
+
+    for entry in result.by_user:
+        user = users.get(entry.owner_user_id) if entry.owner_user_id else None
+        if user is not None:
+            entry.name = user.name
+            entry.email = user.email
+            if not entry.org_id and user.org_id:
+                entry.org_id = user.org_id
+        entry.org_name = orgs.get(entry.org_id) if entry.org_id else None
+
+    for experiment in result.experiments:
+        owner_id = experiment.owner_user_id
+        user = users.get(owner_id) if owner_id else None
+        if user is not None:
+            experiment.owner_name = user.name
+            experiment.owner_email = user.email
+        experiment.org_name = orgs.get(experiment.org_id) if experiment.org_id else None
+
+
+@router.get("/costs", response_model=CostBreakdownResponse)
+async def get_costs(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    experiment_limit: int = Query(100, ge=1, le=500),
+    user_limit: int = Query(100, ge=1, le=500),
+) -> CostBreakdownResponse:
+    """Global trial-spend breakdown for the admin cost dashboard.
+
+    Reports total cost over fixed trailing windows (24h / 7d / 30d / all-time)
+    plus a per-user breakdown and a ranked table of the most expensive recent
+    experiments with their model mix, for the selected ``window_days`` window.
+    Cost uses the native runtime cost when reported and a per-model token
+    estimate otherwise.
+    """
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(
+            session,
+            window_days=effective_window,
+            experiment_limit=experiment_limit,
+            user_limit=user_limit,
+        )
+        await _enrich_cost_breakdown(session, result)
+    return result
 
 
 class ExpandBackfillResponse(BaseModel):
