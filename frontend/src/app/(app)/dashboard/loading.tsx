@@ -13,7 +13,7 @@ export default function DashboardLoading() {
       <Card>
         <CardContent className="p-4">
           <Skeleton className="h-4 w-40" />
-          <Skeleton className="mt-3 h-[360px]" />
+          <Skeleton className="mt-3 h-90" />
         </CardContent>
       </Card>
     </div>
