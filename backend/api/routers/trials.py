@@ -23,7 +23,7 @@ from oddish.core.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     get_trial_file_content_s3,
     list_experiment_trials_for_org,
     list_task_trials_for_task,
