@@ -44,7 +44,8 @@ async def test_resume_restores_dead_sandbox(db):
     client = FakeDaytonaClient()
     orch = ChatOrchestrator(
         daytona=client, runtime=_Runtime(),
-        transcript_buffer=SessionTranscriptBuffer(), anthropic_api_key="test", blob_store=blob,
+        transcript_buffer=SessionTranscriptBuffer(), anthropic_api_key="test",
+        public_api_base_url="https://api.oddish.example", blob_store=blob,
     )
 
     await orch.resume(session_id="cs_1", db_session_factory=_factory(db))
@@ -68,7 +69,8 @@ async def test_resume_no_archive_raises(db):
     client = FakeDaytonaClient()
     orch = ChatOrchestrator(
         daytona=client, runtime=_Runtime(),
-        transcript_buffer=SessionTranscriptBuffer(), anthropic_api_key="test", blob_store=_Blob(),
+        transcript_buffer=SessionTranscriptBuffer(), anthropic_api_key="test",
+        public_api_base_url="https://api.oddish.example", blob_store=_Blob(),
     )
     from api.services.cc_chat.orchestrator import ResumeUnavailable
     with pytest.raises(ResumeUnavailable):

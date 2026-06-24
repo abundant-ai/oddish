@@ -15,7 +15,7 @@ from api.schemas import (
 )
 from auth import AuthContext, require_admin, require_auth
 from models import UserModel, UserRole
-from oddish.core.tag_ownership_transfer import transfer_tag_ownership_to_admin
+from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
@@ -129,12 +129,6 @@ async def invite_user(
             detail=f"Invalid role: {request.role}. Must be one of: admin, member",
         )
 
-    if role == UserRole.OWNER:
-        raise HTTPException(
-            status_code=403,
-            detail="The owner role cannot be assigned via API",
-        )
-
     if not auth.org or not auth.org.clerk_org_id:
         raise HTTPException(
             status_code=400,
@@ -177,21 +171,21 @@ async def remove_user(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Prevent removing the last owner. The owner count uses live rows
+        # Prevent removing the last admin. The admin count uses live rows
         # only -- the auto-filter already excludes soft-deleted users, so
         # the explicit ``is_active`` check just additionally ignores
-        # deactivated-but-not-removed owners.
-        if user.role == UserRole.OWNER:
-            owners = await session.execute(
+        # deactivated-but-not-removed admins.
+        if user.role == UserRole.ADMIN:
+            admins = await session.execute(
                 select(UserModel)
                 .where(UserModel.org_id == auth.org_id)
-                .where(UserModel.role == UserRole.OWNER)
+                .where(UserModel.role == UserRole.ADMIN)
                 .where(UserModel.is_active == True)  # noqa: E712
             )
-            if len(list(owners.scalars().all())) <= 1:
+            if len(list(admins.scalars().all())) <= 1:
                 raise HTTPException(
                     status_code=400,
-                    detail="Cannot remove the last owner of the organization",
+                    detail="Cannot remove the last admin of the organization",
                 )
 
         user.is_active = False

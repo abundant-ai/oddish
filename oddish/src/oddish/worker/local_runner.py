@@ -48,6 +48,7 @@ from oddish.worker.probe_analysis import (
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
+from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 
 logger = logging.getLogger(__name__)
@@ -221,6 +222,23 @@ def _strip_nul(obj: object) -> object:
     return obj
 
 
+def _trajectory_total_steps(trajectory: object) -> int | None:
+    if not isinstance(trajectory, dict):
+        return None
+    final_metrics = trajectory.get("final_metrics")
+    if isinstance(final_metrics, dict):
+        raw_steps = final_metrics.get("total_steps")
+        if raw_steps is not None:
+            try:
+                return int(raw_steps)
+            except (TypeError, ValueError):
+                pass
+    steps = trajectory.get("steps")
+    if isinstance(steps, list):
+        return len(steps)
+    return None
+
+
 def _bedrock_agent_env(model_name: str | None) -> dict[str, str]:
     """Env that lets Claude Code invoke a Bedrock-routed model in local dev.
 
@@ -363,6 +381,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         model_name = trial.model
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
+        probe_scope = harbor_config.get("probe_scope", "task")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -400,6 +419,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             task_id=task_db_id,
             trial_id=trial_id,
             extra_instructions=extra_instructions,
+            probe_scope=probe_scope,
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
         )
         actual_task_path = work_task_dir
@@ -453,6 +473,16 @@ async def _run_harbor_trial(trial_id: str) -> None:
     if zai_env:
         agent_config.env = {**(agent_config.env or {}), **zai_env}
 
+    # Probe trials get read-only oddish CLI creds + network egress so the
+    # oddish-query CLI staged into the sandbox can reach the backend. Local
+    # requires real creds, so let ProbeCredsError propagate and fail loudly.
+    if extra_instructions:
+        enable_local_internet(actual_task_path)
+        _, probe_env = await mint_probe_creds(
+            org_id=trial_org_id, trial_id=trial_id
+        )
+        agent_config.env = {**(agent_config.env or {}), **probe_env}
+
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),
         agent=agent_config,
@@ -476,7 +506,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # We target ``PROBE_HARNESS_DIR`` (e.g. /probe-harness) so /app stays
     # pixel-identical to a real run: the probe-only verifier + reference solution
     # land at the exact paths the probe instruction references
-    # (RELATED_CONTAINER_DIR, HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH),
+    # (HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH, oddish-query CLI),
     # plainly separated from the agent's own workspace. Best-effort: a failure
     # here must never block the probe (mirrors apply_probe_overlay).
     if work_root is not None:
@@ -543,6 +573,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     artifacts = extract_probe_artifacts(trials_dir)
     agent_messages = artifacts["agent_messages"]
     verifier_stdout = artifacts["verifier_stdout"]
+    trajectory = artifacts.get("trajectory")
 
     # Build the result payload to persist.
     result_payload: dict = {}
@@ -571,9 +602,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # Run the LLM analyzer.
     extra_instructions = harbor_config.get("extra_instructions") or ""
     result_focus = harbor_config.get("result_focus") or ""
-    evaluation_metric = harbor_config.get("evaluation_metric") or "none"
-    ratio_unit = harbor_config.get("ratio_unit")
-    ratio_verb = harbor_config.get("ratio_verb")
     analyzer_summary: dict | None = None
     analyzer_status = AnalysisStatus.FAILED
     analyzer_error: str | None = None
@@ -585,9 +613,6 @@ async def _run_harbor_trial(trial_id: str) -> None:
             verifier_stdout=verifier_stdout or "",
             reward=reward_value,
             result_focus=result_focus,
-            evaluation_metric=evaluation_metric,
-            ratio_unit=ratio_unit,
-            ratio_verb=ratio_verb,
         )
         analyzer_status = AnalysisStatus.SUCCESS
     except Exception as exc:
@@ -603,6 +628,14 @@ async def _run_harbor_trial(trial_id: str) -> None:
         if reward_value is not None:
             trial.reward = reward_value
         trial.result = _strip_nul(result_payload)
+        agent_result = getattr(result, "agent_result", None) if result else None
+        if agent_result is not None and not agent_result.is_empty():
+            trial.input_tokens = agent_result.n_input_tokens
+            trial.cache_tokens = agent_result.n_cache_tokens
+            trial.output_tokens = agent_result.n_output_tokens
+            trial.cost_usd = agent_result.cost_usd
+        trial.total_steps = _trajectory_total_steps(trajectory)
+        trial.has_trajectory = trajectory is not None
         if analyzer_summary is not None:
             trial.analysis = _strip_nul(analyzer_summary)
         trial.analysis_status = analyzer_status

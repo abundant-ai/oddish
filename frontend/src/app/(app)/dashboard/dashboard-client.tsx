@@ -43,6 +43,11 @@ import type {
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { parseTaskSearch } from "@/lib/tag-query";
+import {
+  SearchSyntaxHelp,
+  SearchSyntaxMultiRow,
+  SearchSyntaxRow,
+} from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
 import {
   cn,
@@ -172,6 +177,7 @@ function useDashboardExperiments(
     experiments_tags: parsedQuery.all.join(","),
     experiments_tags_any: parsedQuery.any.join(","),
     experiments_tags_none: parsedQuery.none.join(","),
+    experiments_author_query: parsedQuery.authors.join(","),
     experiments_status: experimentsStatus,
     experiments_author: experimentsAuthor,
     include_tasks: false,
@@ -1360,12 +1366,42 @@ function RecentTasksCard({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Input
-            value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
-            placeholder="Search · tag:x OR tag:y NOT tag:z"
-            className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
-          />
+          <div className="relative w-full sm:w-[220px]">
+            <Input
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+              placeholder="Search anything..."
+              className="h-8 w-full border-[#6f88b4]/20 pr-7"
+            />
+            <SearchSyntaxHelp>
+              <p className="font-medium">Search syntax</p>
+              <p className="text-muted-foreground">
+                  Matches experiment name, author, or tags. Add a
+                  prefix below to specify filters.
+              </p>
+              <SearchSyntaxRow
+                example="cybersecurity agent"
+                hint="every word must match (AND)"
+              />
+              <SearchSyntaxRow
+                example="daytona OR modal"
+                hint="either word (OR)"
+              />
+              <SearchSyntaxRow example={'"exact name"'} hint="exact phrase" />
+              <SearchSyntaxRow example="-wip" hint="exclude" />
+              <SearchSyntaxMultiRow
+                examples={["github:alice", "author:alice", "user:alice"]}
+                hint="by author — GitHub handle, email, or name"
+              />
+              <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
+              <p className="text-muted-foreground">
+                Filters stack (AND) and are case-insensitive, e.g. {" "}
+                <code className="rounded bg-muted px-1 font-mono">
+                  github:alice tag:smoke
+                </code>
+              </p>
+            </SearchSyntaxHelp>
+          </div>
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button

@@ -5,6 +5,7 @@ from collections.abc import Collection
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
 
+from oddish.config import settings
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
@@ -37,6 +38,7 @@ def build_trial_specs_from_sweep(
     *,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
+    existing_counts: dict[tuple[str, str | None], int] | None = None,
 ) -> list[TrialSpec]:
     trials: list[TrialSpec] = []
     effective_default_environment = submission.environment or default_environment
@@ -56,7 +58,13 @@ def build_trial_specs_from_sweep(
                 allowed_environments=allowed_environments,
             )
 
-        for _ in range(config.n_trials):
+        n = config.n_trials
+        if existing_counts is not None:
+            norm_model = settings.normalize_trial_model(config.agent, config.model)
+            existing = existing_counts.get((config.agent, norm_model), 0)
+            n = max(0, config.n_trials - existing)
+
+        for _ in range(n):
             trial_kwargs: dict = {
                 "agent": config.agent,
                 "model": config.model,
@@ -92,8 +100,7 @@ def build_task_submission_from_sweep(
         extra_instructions=submission.extra_instructions,
         probe_name=submission.probe_name,
         result_focus=submission.result_focus,
+        probe_scope=submission.probe_scope,
         evaluation_metric=submission.evaluation_metric,
-        ratio_unit=submission.ratio_unit,
-        ratio_verb=submission.ratio_verb,
         link=submission.link,
     )
