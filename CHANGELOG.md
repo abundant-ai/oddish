@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-24]
+
+### Added
+
+- Configurable per-run Harbor source via `--harbor <spec>` flag (or `ODDISH_HARBOR` env / `oddish.toml` `[harbor]` manifest): resolves the spec to a concrete commit SHA at submit time, stamps `trials.harbor_sha` and `worker_jobs.harbor_variant_id`, and executes the run on that exact Harbor version; blessed variants use digest-pinned worker images while arbitrary refs run in an ephemeral out-of-process engine (`uv run --no-project --with harbor@<sha>`); dispatcher routes on `(queue_key, harbor_variant_id)` so variants are isolated but share per-queue-key provider caps; Harbor commit shown in the trial detail drawer (#413)
+- Trajectory viewer keyword search bar: filters steps by message text, reasoning, tool call names/arguments, and observations; step count shows "N of M steps" while a filter is active; clicking a hidden step in the timing bar clears the filter to reveal it (#425)
+- `trials.total_steps` column (nullable integer) persists the total agent trajectory step count; extracted from `trajectory.json` at trial completion on cloud workers, the local runner, and CLI imports; surfaced in trial API responses and model usage aggregation (#396)
+
+### Changed
+
+- PR preview pipeline: backend stop step folded into prepare-database; Vercel and backend deploys decoupled via a deterministic Modal URL formula, enabling parallel execution; `preview_api_url` single-sourced as a workflow job output; `stop_previous_preview_backend.sh` removed (#430)
+- Preview database bootstrap now rebuilds the `public` schema from the combined oddish+backend model graph (`Base.metadata.create_all`) when the schema is untrusted (no `oddish-preview:schema-built-from-base` namespace comment); trusted branches continue to run `alembic upgrade head` only; re-seeds when a rebuild drops data (#429, #430)
+- Preview database schema is now upgraded to head on any backend deploy, not only when migration files change, so code-only PRs on reused branches cannot run against a stale schema; seeding remains gated to new branches and explicit migration runs (#424, #430)
+- Preview seed sample sizes drastically reduced (random experiments 4000→8, trials per experiment 100→50, skills/documents/presets 200→10) to cut seed time; code-only pushes no longer trigger re-seeding of an already-populated branch; prepare-preview-database workflow job capped at 12 minutes (#419)
+
+### Fixed
+
+- Experiment page 500-ing with `MissingGreenlet` on the compact trials path: `harbor_sha` was not included in the `load_only` set in `list_tasks_core`, causing a deferred-column lazy-load outside the async greenlet; added alongside its sibling `harbor_config`; CLAUDE.md updated to document the trap for future columns (#433)
+- Task cancellation database errors (e.g. deadlocks) now return HTTP 503 with a clear user message instead of propagating as an opaque 500 (`Internal Server Error`); full diagnostic detail (sqlstate, failing SQL, traceback) logged server-side; the Next.js cancel proxy now guards `JSON.parse` so a plain-text error body is forwarded correctly instead of surfacing a misleading parse exception (#421)
+- New preview database branches no longer replay the full Alembic migration history against an already-at-head schema: the bootstrap script reads each stack's revision from the parent database and stamps the branch to that revision before running `upgrade head`, so only this PR's new migrations run (#417)
+
+---
+
 ## [2026-06-23]
 
 ### Added
