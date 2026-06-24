@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from oddish.core.tags_core import assign_tag_core
+from oddish.core.tags.service import assign_tag_core
 from oddish.core.zip_imports import (
     import_zip,
     inspect_zip,
