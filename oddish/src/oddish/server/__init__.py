@@ -156,7 +156,7 @@ async def lifespan(app: FastAPI):
     # Ensure required storage directories exist
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
-    from oddish.workers.harbor_runner import log_local_storage_snapshot
+    from oddish.workers.harbor.runner import log_local_storage_snapshot
 
     log_local_storage_snapshot(settings.harbor_jobs_dir)
 

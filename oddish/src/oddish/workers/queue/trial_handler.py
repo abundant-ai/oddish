@@ -38,8 +38,8 @@ from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay
-from oddish.workers.harbor_ephemeral import HarborOverrideImportError
-from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
+from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
