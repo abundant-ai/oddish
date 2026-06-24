@@ -415,13 +415,14 @@ async def enqueue_trial_worker_job(
     max_attempts: int,
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
+    registry_auth_enc: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
-            payload={"trial_id": trial_id},
+            payload=_trial_job_payload(trial_id, registry_auth_enc),
             subject_table="trials",
             subject_id=trial_id,
             org_id=org_id,
