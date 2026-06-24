@@ -172,17 +172,11 @@ class AgentModelPair(TrialSpec):
 
 
 class RegistryAuth(BaseModel):
-    """A write-only docker login used only to authenticate the sandbox's pulls."""
-
     registry: str = Field(
-        "docker.io",
-        description="Registry host. Defaults to Docker Hub (docker.io).",
+        "docker.io", description="Registry host. Defaults to Docker Hub (docker.io)."
     )
     username: str = Field(..., description="Registry username.")
-    token: SecretStr = Field(
-        ...,
-        description="Registry password or access token (a Docker Hub PAT is recommended).",
-    )
+    token: SecretStr = Field(..., description="Registry password or access token.")
 
     @model_validator(mode="after")
     def require_username_and_token(self):
@@ -274,16 +268,7 @@ class TaskSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
-    registry_auth: list[RegistryAuth] | None = Field(
-        None,
-        description=(
-            "Per-run container-registry logins for the trial sandbox's inner "
-            "Docker daemon (e.g. a Docker Hub username + PAT to avoid anonymous "
-            "pull rate limits). Write-only: encrypted across the queue, used to "
-            "write ~/.docker/config.json before image pulls, then scrubbed. "
-            "Never stored in harbor_config and never echoed back."
-        ),
-    )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):
@@ -420,16 +405,7 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
-    registry_auth: list[RegistryAuth] | None = Field(
-        None,
-        description=(
-            "Per-run container-registry logins for the trial sandbox's inner "
-            "Docker daemon (e.g. a Docker Hub username + PAT to avoid anonymous "
-            "pull rate limits). Write-only: encrypted across the queue, used to "
-            "write ~/.docker/config.json before image pulls, then scrubbed. "
-            "Never stored in harbor_config and never echoed back."
-        ),
-    )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):

@@ -51,32 +51,18 @@ def _canonical_digest(value: Any) -> str:
 
 
 def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
-    """Client-side idempotency key for a sweep submission.
-
-    Derived from the submission body so an identical re-submit yields the same
-    key. ``registry_auth`` is excluded: it is a transient per-run credential,
-    not part of the run's identity, and must stay out of the key.
-    """
+    # registry_auth is a transient per-run credential excluded from the key so
+    # rotating it doesn't change the submission identity.
     if "registry_auth" in payload:
         payload = {k: v for k, v in payload.items() if k != "registry_auth"}
     return _canonical_digest(payload)
 
 
 def hash_idempotency_key(raw_key: str) -> str:
-    """Normalise a client-supplied ``Idempotency-Key`` into a stored digest."""
     return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
 
 
 def compute_request_hash(submission: Any) -> str:
-    """Server-side fingerprint of a sweep submission.
-
-    Used to detect a key replayed with a *different* request body. Computed from
-    the submission as received, before the core mutates it (append flip, link
-    defaulting), so the original and its faithful retry fingerprint identically.
-    ``registry_auth`` is excluded to match the client key: a transient per-run
-    credential is not part of the run's identity, so rotating it (or its masked
-    token) must not turn a faithful retry into a 409.
-    """
     payload = submission.model_dump(mode="json")
     payload.pop("registry_auth", None)
     return _canonical_digest(payload)
