@@ -84,6 +84,16 @@ def test_core_migration_creates_worker_jobs_coalescing_index():
     assert "status IN ('QUEUED', 'RETRYING')" in src
 
 
+def test_tag_project_index_repair_migration_present():
+    src = _read("tagproj_idx_repair_001_repair_tag_project_unique_index.py")
+    assert 'revision: str = "tagproj_idx_repair_001"' in src
+    assert '"trial_steps_001"' in src
+    assert "uq_worker_jobs_tag_project_active" in src
+    assert "ROW_NUMBER() OVER" in src
+    assert "status = 'CANCELLED'" in src
+    assert "kind = 'TAG_PROJECT'" in src
+
+
 def test_projection_columns_migration():
     src = _read("aa01ta02proj_add_effective_tag_columns.py")
     assert 'revision: str = "aa01ta02proj"' in src

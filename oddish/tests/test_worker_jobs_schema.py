@@ -172,6 +172,7 @@ def test_worker_jobs_has_required_indexes():
         "idx_worker_jobs_subject",
         "idx_worker_jobs_parent",
         "idx_worker_jobs_org",
+        "uq_worker_jobs_tag_project_active",
     }
     got = {idx.name for idx in WorkerJobModel.__table__.indexes}
     missing = expected - got
@@ -187,6 +188,24 @@ def test_worker_jobs_partial_claim_index_is_scoped():
     # Partial index predicate lives in dialect_options['postgresql']['where'].
     where_clause = str(claim_idx.dialect_options["postgresql"]["where"])
     assert "QUEUED" in where_clause and "RETRYING" in where_clause
+
+
+def test_worker_jobs_tag_project_coalescing_index_matches_enqueue_sql():
+    idx = next(
+        idx
+        for idx in WorkerJobModel.__table__.indexes
+        if idx.name == "uq_worker_jobs_tag_project_active"
+    )
+    assert idx.unique is True
+    assert [expr.name for expr in idx.expressions] == [
+        "kind",
+        "subject_table",
+        "subject_id",
+    ]
+    where_clause = str(idx.dialect_options["postgresql"]["where"])
+    assert "kind = 'TAG_PROJECT'" in where_clause
+    assert "status IN ('QUEUED', 'RETRYING')" in where_clause
+    assert "subject_id IS NOT NULL" in where_clause
 
 
 def test_worker_jobs_partial_heartbeat_index_is_scoped():
