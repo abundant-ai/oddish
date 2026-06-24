@@ -112,17 +112,3 @@ export function buildDashboardBackendParams(
 ): Record<string, string> {
   return Object.fromEntries(buildDashboardSearchParams(input).entries());
 }
-
-export function isDefaultDashboardExperimentsView(
-  offset: number,
-  query: string,
-  status: string,
-  author: string = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
-): boolean {
-  return (
-    offset === 0 &&
-    query.trim().length === 0 &&
-    status === "all" &&
-    author === DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR
-  );
-}
