@@ -78,6 +78,10 @@ from oddish.schemas import (
     TrialResponse,
     UserTagRef,
 )
+from oddish.core.harbor_source import (
+    HarborSourceError,
+    resolve_and_gate_harbor,
+)
 from oddish.core.idempotency import (
     SWEEP_ROUTE,
     IdempotencyConflict,
@@ -1223,6 +1227,8 @@ async def retry_trial_core(
         queue_key=new_trial.queue_key,
         org_id=new_trial.org_id,
         max_attempts=new_trial.max_attempts,
+        harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
+        or "default",
     )
 
     await session.commit()
@@ -2628,6 +2634,19 @@ async def create_task_sweep_core(
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
+    # BEFORE any task mutation (append/create) so a disallowed/unresolvable ref
+    # never half-creates a task. The default pin does no network I/O.
+    from oddish.config import settings
+
+    try:
+        stamped_harbor, _variant = resolve_and_gate_harbor(
+            submission.harbor, settings=settings
+        )
+    except HarborSourceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    submission = submission.model_copy(update={"harbor": stamped_harbor})
+
     # Default the task link to the GitHub PR URL when the caller didn't
     # pass an explicit ``--link`` but the task carries GitHub PR metadata
     # (set via ``--github-meta``). An explicit link always wins.
@@ -2726,9 +2745,7 @@ async def create_task_sweep_core(
                 TrialModel.is_probe.is_(False),
             ]
             if target_experiment_id is not None:
-                reconcile_where.append(
-                    TrialModel.experiment_id == target_experiment_id
-                )
+                reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
             existing_counts_result = await session.execute(
                 select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
                 .where(*reconcile_where)

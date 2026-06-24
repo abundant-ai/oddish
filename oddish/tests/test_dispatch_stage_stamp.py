@@ -65,10 +65,10 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
         seen["why_waiting"] = dict(why_waiting)
 
     async def _discover():
-        return ("gpt-4o",)
+        return (("gpt-4o", "default"),)
 
     async def _counts(_keys):
-        return {(None, "gpt-4o"): 2}, {"gpt-4o": 0}
+        return {(None, "gpt-4o", "default"): 2}, {("gpt-4o", "default"): 0}
 
     asyncio.run(
         run_dispatch_cycle(
