@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -123,15 +124,29 @@ def resolve_harbor_pin(source: str, ref: str) -> ResolvedPin:
     return ResolvedPin(source, sha)
 
 
-def harbor_git_requirement(source: str, sha: str) -> str:
+def harbor_git_requirement(
+    source: str, sha: str, *, extras: Sequence[str] | None = None
+) -> str:
     """PEP 508 direct reference for a Harbor git pin: ``harbor @ git+<src>@<sha>``.
 
     The single source of truth for the override install requirement, shared by
     the ephemeral child's ``uv run --with``, the blessed-variant image build, and
     the in-sandbox agent pin. A leading ``git+`` on *source* is stripped first so
     the result never doubles the prefix.
+
+    When *extras* is given, they are rendered as a PEP 508 extras group on the
+    package name (``harbor[daytona,modal] @ git+<src>@<sha>``). Cloud-provider
+    SDKs (daytona, modal, e2b, …) are optional Harbor extras, so the ephemeral
+    child MUST request the extra matching the trial's environment or Harbor
+    raises ``MissingExtraError`` at runtime when it tries to build the sandbox.
+    Extras are sorted and de-duplicated for a stable requirement string.
     """
-    return f"harbor @ git+{_strip_git_prefix(source)}@{sha}"
+    name = "harbor"
+    if extras:
+        unique = sorted({e.strip() for e in extras if e and e.strip()})
+        if unique:
+            name = f"harbor[{','.join(unique)}]"
+    return f"{name} @ git+{_strip_git_prefix(source)}@{sha}"
 
 
 def harbor_variant_function_name(variant_id: str) -> str:
