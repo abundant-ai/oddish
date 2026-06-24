@@ -54,6 +54,24 @@ _ENTRY_PATH = str(Path(__file__).resolve().parent / "_harbor_entry.py")
 # NOT what the worker runs); a ref whose requires-python excludes it fails fast.
 _CHILD_PYTHON = "3.13"
 
+# Cloud-provider SDKs are optional Harbor extras (``harbor[daytona]`` etc.), so
+# the bare ``harbor @ git+…`` the ephemeral child installs does NOT pull them
+# in. Map the trial's environment type to the Harbor extra that ships its SDK
+# so ``uv run --with`` installs it; otherwise Harbor raises ``MissingExtraError``
+# when it builds the sandbox. Local/container environments need no extra.
+_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
+    EnvironmentType.DAYTONA: "daytona",
+    EnvironmentType.MODAL: "modal",
+    EnvironmentType.E2B: "e2b",
+    EnvironmentType.RUNLOOP: "runloop",
+    EnvironmentType.GKE: "gke",
+    EnvironmentType.NOVITA: "novita",
+    EnvironmentType.TENSORLAKE: "tensorlake",
+    EnvironmentType.CWSANDBOX: "cwsandbox",
+    EnvironmentType.WANDB: "wandb",
+    EnvironmentType.ISLO: "islo",
+}
+
 
 class HarborOverrideImportError(Exception):
     """The override env could not be built/imported (broken ref / dep mismatch).
@@ -206,14 +224,23 @@ def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamesp
     )
 
 
-def _spawn_args(source: str, sha: str) -> list[str]:
-    """The ``uv run`` argv that builds the override env and runs the child."""
+def _spawn_args(
+    source: str, sha: str, *, environment: EnvironmentType = EnvironmentType.DOCKER
+) -> list[str]:
+    """The ``uv run`` argv that builds the override env and runs the child.
+
+    The override Harbor is installed with the optional extra matching
+    *environment* (e.g. ``harbor[daytona]``) so its cloud-provider SDK is
+    present in the child; without it Harbor raises ``MissingExtraError`` when
+    building the sandbox.
+    """
+    extra = _ENVIRONMENT_HARBOR_EXTRAS.get(environment)
     return [
         "uv",
         "run",
         "--no-project",
         "--with",
-        harbor_git_requirement(source, sha),
+        harbor_git_requirement(source, sha, extras=[extra] if extra else None),
         "--python",
         _CHILD_PYTHON,
         _ENTRY_PATH,
@@ -343,7 +370,7 @@ async def run_ephemeral_harbor_trial(
     process: asyncio.subprocess.Process | None = None
     try:
         process = await asyncio.create_subprocess_exec(
-            *_spawn_args(source, sha),
+            *_spawn_args(source, sha, environment=environment),
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
