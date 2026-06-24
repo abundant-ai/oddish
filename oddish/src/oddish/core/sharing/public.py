@@ -17,7 +17,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.core.public_helpers import (
+from .helpers import (
     get_public_experiment,
     get_public_task,
     get_public_trial,
