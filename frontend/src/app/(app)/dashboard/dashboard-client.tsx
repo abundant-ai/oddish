@@ -57,7 +57,6 @@ import {
   buildDashboardApiPath,
   DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
-  isDefaultDashboardExperimentsView,
 } from "@/lib/dashboard-request";
 import { badgeVariants } from "@/components/ui/badge";
 import { UsageSummaryCard } from "@/components/usage-overview";
@@ -860,13 +859,15 @@ export function DashboardClient({
   const [statusFilter, setStatusFilter] = useState(initialStatus);
   const [authorFilter, setAuthorFilter] = useState(initialAuthor);
   const members = useOrgMembers();
+  // The SSR payload matches the initial (URL-derived) filters, so use it as the
+  // experiments fallback until the user changes a filter away from that view.
+  const matchesInitialView =
+    experimentsOffset === initialOffset &&
+    deferredSearchQuery === initialQuery &&
+    statusFilter === initialStatus &&
+    authorFilter === initialAuthor;
   const experimentsFallbackData =
-    isDefaultDashboardExperimentsView(
-      experimentsOffset,
-      deferredSearchQuery,
-      statusFilter,
-      authorFilter,
-    ) && initialDashboardData?.experiments != null
+    matchesInitialView && initialDashboardData?.experiments != null
       ? initialDashboardData
       : null;
   const {
