@@ -422,8 +422,6 @@ function ExperimentMetaStrip({
 
   if (isInitialLoading) return null;
   const { createdAt, author } = pickExperimentCreationMeta(tasks);
-  // The creator attribution is internal context that shouldn't surface on the
-  // public share view (mirrors how the PR link is hidden when read-only).
   const showAuthor = Boolean(author) && !readOnly;
   if (!createdAt && !showAuthor && !experimentId) return null;
 
