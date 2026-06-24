@@ -74,6 +74,9 @@ def test_signal_dispatch_wakes_the_module_singleton() -> None:
 # Host-agnostic dispatch cycle
 # --------------------------------------------------------------------------
 def _fake_discover(keys):
+    # Discovery returns ``(queue_key, harbor_variant_id)`` units (the variant is
+    # part of the effective dispatch key); the cycle collapses them to queue_keys
+    # for the image-agnostic off-Modal backends.
     async def _discover():
         return tuple(keys)
 
@@ -95,8 +98,10 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
             dispatcher,
             max_workers=10,
             concurrency_for=lambda qk: 5,
-            _discover=_fake_discover(["gpt-4o"]),
-            _counts=_fake_counts({(None, "gpt-4o"): 3}, {"gpt-4o": 0}),
+            _discover=_fake_discover([("gpt-4o", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
+            ),
         )
 
     result = asyncio.run(_go())
@@ -115,8 +120,10 @@ def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
             dispatcher,
             max_workers=10,
             concurrency_for=lambda qk: 2,
-            _discover=_fake_discover(["busy"]),
-            _counts=_fake_counts({(None, "busy"): 4}, {"busy": 2}),
+            _discover=_fake_discover([("busy", "default")]),
+            _counts=_fake_counts(
+                {(None, "busy", "default"): 4}, {("busy", "default"): 2}
+            ),
         )
 
     result = asyncio.run(_go())
@@ -138,8 +145,10 @@ def test_run_dispatch_cycle_records_admission_rejection_reason() -> None:
             max_workers=10,
             concurrency_for=lambda qk: 5,
             admit=admit,
-            _discover=_fake_discover(["gpu-task"]),
-            _counts=_fake_counts({(None, "gpu-task"): 1}, {"gpu-task": 0}),
+            _discover=_fake_discover([("gpu-task", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpu-task", "default"): 1}, {("gpu-task", "default"): 0}
+            ),
         )
 
     result = asyncio.run(_go())

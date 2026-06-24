@@ -4,6 +4,12 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from oddish.core.harbor_source import (
+    HARBOR_VARIANTS,
+    HarborVariant,
+    harbor_uv_source_rewrite_command,
+)
+
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -319,48 +325,82 @@ worker_volumes: dict[str, object] = {}
 if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
 
-image = (
-    modal.Image.debian_slim(python_version="3.14")
-    .apt_install(
-        "git",
-        "curl",
+def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal.Image:
+    """Build the worker image, optionally pinned to a blessed Harbor variant.
+
+    When *harbor_override* is set, the harbor git source/rev in the copied
+    pyproject(s) is repointed at the variant's commit BEFORE ``uv_sync`` so the
+    WHOLE dependency set resolves against that Harbor (an image-variant bakes its
+    own hermetic Harbor). With no override this is the default worker image.
+    """
+    img = (
+        modal.Image.debian_slim(python_version="3.14")
+        .apt_install(
+            "git",
+            "curl",
+        )
+        # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
+        .run_commands(
+            "curl -fsSL https://claude.ai/install.sh | bash",
+            "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+        )
+        .pip_install("psycopg2-binary")
+        .env(ENV_VARS)
+        # Copy oddish source BEFORE uv_sync (required for local path dependency)
+        # The pyproject.toml references "../oddish" -> /oddish from /root
+        .add_local_dir(
+            local_path="../oddish",
+            remote_path="/oddish",
+            copy=True,
+            ignore=[".venv/", ".git"],
+        )
+        # Use backend's pyproject.toml which includes oddish as a dependency
+        .add_local_file(
+            local_path="./pyproject.toml",
+            remote_path="/root/pyproject.toml",
+            copy=True,
+        )
     )
-    # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
-    .run_commands(
-        "curl -fsSL https://claude.ai/install.sh | bash",
-        "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+    if harbor_override is not None:
+        # Repoint the harbor pin in both pyprojects (backend's + the editable
+        # oddish's) before the resolve.
+        img = img.run_commands(
+            harbor_uv_source_rewrite_command(
+                harbor_override.source,
+                harbor_override.sha,
+                "/root/pyproject.toml",
+                "/oddish/pyproject.toml",
+            )
+        )
+    return (
+        # Install all dependencies (oddish from /oddish, harbor + others resolved)
+        img.uv_sync()
+        # Add backend-specific Python modules
+        .add_local_python_source(
+            "api",
+            "auth",
+            "cloud_policy",
+            "dashboard_attribution",
+            "dashboard_owner_backfill",
+            "endpoints",
+            "idempotency_store",
+            "modal_app",
+            "models",
+            "observability",
+            "worker",
+            copy=True,
+        )
     )
-    .pip_install("psycopg2-binary")
-    .env(ENV_VARS)
-    # Copy oddish source BEFORE uv_sync (required for local path dependency)
-    # The pyproject.toml references "../oddish" which resolves to /oddish from /root
-    .add_local_dir(
-        local_path="../oddish",
-        remote_path="/oddish",
-        copy=True,
-        ignore=[".venv/", ".git"],
-    )
-    # Use backend's pyproject.toml which includes oddish as a dependency
-    .add_local_file(
-        local_path="./pyproject.toml",
-        remote_path="/root/pyproject.toml",
-        copy=True,
-    )
-    # Install all dependencies (oddish from /oddish, others from PyPI)
-    .uv_sync()
-    # Add backend-specific Python modules
-    .add_local_python_source(
-        "api",
-        "auth",
-        "cloud_policy",
-        "dashboard_attribution",
-        "dashboard_owner_backfill",
-        "endpoints",
-        "idempotency_store",
-        "modal_app",
-        "models",
-        "observability",
-        "worker",
-        copy=True,
-    )
-)
+
+
+image = _build_worker_image()
+
+
+def harbor_variant_images() -> dict[str, modal.Image]:
+    """``variant_id -> image`` for every blessed Harbor variant (empty by default).
+
+    Each image bakes its variant's Harbor hermetically; the dispatcher routes a
+    pin classified to ``<id>`` onto the matching ``process_single_job__<id>``
+    Function bound to this image.
+    """
+    return {v.variant_id: _build_worker_image(v) for v in HARBOR_VARIANTS.values()}

@@ -63,8 +63,10 @@ def test_run_dispatch_cycle_still_computes_reasons_via_helper() -> None:
             FakeDispatcher(),
             max_workers=10,
             concurrency_for=lambda qk: 2,
-            _discover=lambda: _aval(("busy",)),
-            _counts=lambda keys: _aval(({(None, "busy"): 4}, {"busy": 2})),
+            _discover=lambda: _aval((("busy", "default"),)),
+            _counts=lambda keys: _aval(
+                ({(None, "busy", "default"): 4}, {("busy", "default"): 2})
+            ),
         )
 
     result = asyncio.run(_go())
@@ -86,8 +88,10 @@ def test_on_stage_failure_never_breaks_dispatch() -> None:
             max_workers=10,
             concurrency_for=lambda qk: 5,
             on_stage=_boom,
-            _discover=lambda: _aval(("q",)),
-            _counts=lambda keys: _aval(({(None, "q"): 1}, {"q": 0})),
+            _discover=lambda: _aval((("q", "default"),)),
+            _counts=lambda keys: _aval(
+                ({(None, "q", "default"): 1}, {("q", "default"): 0})
+            ),
         )
 
     result = asyncio.run(_go())

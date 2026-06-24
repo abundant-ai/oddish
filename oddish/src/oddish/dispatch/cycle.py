@@ -114,10 +114,12 @@ class DispatchCycleResult:
     running_total: int = 0
 
 
-DiscoverFn = Callable[[], Awaitable[Sequence[str]]]
+DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str]]]]
 CountsFn = Callable[
     [Sequence[str]],
-    Awaitable[tuple[dict[tuple[str | None, str], int], dict[str, int]]],
+    Awaitable[
+        tuple[dict[tuple[str | None, str, str], int], dict[tuple[str, str], int]]
+    ],
 ]
 
 
@@ -139,26 +141,39 @@ async def run_dispatch_cycle(
     ``stamp_dispatch_stage``) that records the §12 per-stage observability;
     omitted in pure/unit contexts so the cycle stays DB-free.
     """
-    queue_keys = tuple(await _discover())
+    queue_units = tuple(await _discover())
+    queue_keys = tuple({qk for qk, _variant in queue_units})
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
     concurrency_limits = {qk: concurrency_for(qk) for qk in queue_keys}
 
-    spawn_plan = build_spawn_plan(
+    # ``build_spawn_plan`` keys on the Harbor variant and emits
+    # ``(queue_key, variant)`` units. Off-Modal backends are image-agnostic (no
+    # per-variant images), so collapse the units to their queue_keys -- keeping
+    # the per-queue_key worker count -- before admitting / fanning out.
+    unit_plan = build_spawn_plan(
         queued_by_org_queue=queued_by_org_queue,
         running_by_queue=running_by_queue,
         concurrency_limits=concurrency_limits,
         max_workers=max_workers,
     )
+    spawn_plan = [queue_key for queue_key, _variant in unit_plan]
 
     admitted, rejected = admit_spawn_plan(spawn_plan, admit)
 
+    # Aggregate the variant-keyed counts to queue_key granularity for the
+    # why-waiting math (variants share a queue_key's concurrency pool).
     queued_by_queue: dict[str, int] = {}
-    for (_org, queue_key), queued in queued_by_org_queue.items():
+    for (_org, queue_key, _variant), queued in queued_by_org_queue.items():
         queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
+    running_by_queue_key: dict[str, int] = {}
+    for (queue_key, _variant), running in running_by_queue.items():
+        running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
+            running or 0
+        )
 
     why_waiting = compute_why_waiting(
         queued_by_queue=queued_by_queue,
-        running_by_queue=running_by_queue,
+        running_by_queue=running_by_queue_key,
         concurrency_limits=concurrency_limits,
         spawned_keys=set(admitted),
         max_workers=max_workers,

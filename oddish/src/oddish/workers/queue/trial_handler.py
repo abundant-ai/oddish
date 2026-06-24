@@ -38,6 +38,7 @@ from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay
+from oddish.workers.harbor_ephemeral import HarborOverrideImportError
 from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
@@ -179,9 +180,13 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
 # AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
 # ``trial.max_attempts`` times against fresh sandboxes that hit the same
 # failure mode for the same upstream reason.
+# A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
+# a fresh sandbox either, so the ephemeral engine's terminal failure joins the
+# set: it blocks re-queue of attempts 2..max without burning the already-counted
+# first attempt.
 _NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
     RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-)
+) | {HarborOverrideImportError.__name__}
 
 
 def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
