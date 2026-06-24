@@ -1535,6 +1535,7 @@ async def get_dashboard_core(
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
+    include_queues: bool = True,
     include_tasks: bool = True,
     include_usage: bool = True,
     include_experiments: bool = True,
@@ -1551,7 +1552,7 @@ async def get_dashboard_core(
     primary_cache_key = (
         f"dashboard.primary:{org_id}:"
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
-        f"{include_tasks}:{include_usage}"
+        f"{include_queues}:{include_tasks}:{include_usage}"
     )
     experiments_cache_key = (
         f"dashboard.experiments:{org_id}:"
@@ -1565,13 +1566,9 @@ async def get_dashboard_core(
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
     )
 
-    is_usage_only_request = (
-        include_usage and not include_tasks and not include_experiments
-    )
-
     async def _fetch_primary():
         """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
-        if is_usage_only_request:
+        if not include_queues:
             qs: dict = {}
             ps: dict[str, dict[str, int]] = {
                 "trials": {},
