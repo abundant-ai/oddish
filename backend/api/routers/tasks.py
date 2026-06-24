@@ -1025,11 +1025,11 @@ async def backfill_task_qa(
     body: BackfillQARequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    """Backfill trial analysis for a task: (re)run the task-level QA job.
+    """Backfill trial analysis for a task: fill trials with no successful analysis yet.
 
-    Default fills only missing analyses; ``force`` re-runs (optionally only
-    ``trial_ids``); ``enable_analysis`` also opts the task into analysis going
-    forward.
+    Default fills only missing/never-analyzed trials; ``force`` re-runs
+    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
+    into analysis going forward.
     """
     auth.require_scope(APIKeyScope.TASKS)
 

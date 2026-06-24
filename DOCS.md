@@ -234,7 +234,7 @@ Options
 
 ## Backfill Analysis
 
-Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classification + task verdict) for an experiment, a task, or a single trial. Pass exactly one of `--experiment`, `--task`, or `--trial`. By default only *missing* analyses are filled—already-analyzed trials are reused; the task verdict is recomputed either way.
+Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classification + task verdict) for an experiment, a task, or a single trial. Pass exactly one of `--experiment`, `--task`, or `--trial`. By default only trials with no successful analysis yet are filled, and trials already analyzed (including ones whose analysis previously failed) are reused — pass `--force` to redo failed or already-complete analyses. The task verdict is recomputed either way.
 
 ```bash
 oddish backfill-analysis --task <task_id>

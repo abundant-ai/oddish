@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.cli import app
-import sys
 backfill_mod = sys.modules["oddish.cli.backfill_analysis"]
 
 runner = CliRunner()
