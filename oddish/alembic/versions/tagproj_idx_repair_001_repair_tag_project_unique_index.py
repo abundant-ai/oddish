@@ -17,9 +17,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Branches that missed the index may already have duplicate in-flight
-    # TAG_PROJECT jobs. Keep the oldest job per subject and cancel the rest so
-    # the unique index can be created idempotently.
     op.execute(
         """
         WITH ranked AS (

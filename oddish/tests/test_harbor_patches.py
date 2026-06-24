@@ -46,7 +46,7 @@ async def test_wrapper_passes_through_on_success():
     wrapped = harbor_patches._wrap_wait_for_docker_daemon(_ok)
 
     assert await wrapped(strategy) is None
-    assert strategy.calls == []  # no diagnostics gathered on success
+    assert strategy.calls == []
 
 
 @pytest.mark.asyncio
@@ -59,8 +59,8 @@ async def test_wrapper_folds_dockerd_log_into_error():
         await wrapped(strategy)
 
     message = str(excinfo.value)
-    assert original in message  # original cause preserved
-    assert "overlay2: driver failed" in message  # dockerd log captured
+    assert original in message
+    assert "overlay2: driver failed" in message
     assert len(strategy.calls) == 1
 
 
@@ -103,10 +103,6 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
 
     assert calls == {"diag": 1, "daytona_mirror": 1, "modal_mirror": 1}
 
-
-# --- Mechanism A: Daytona write-before-start ---
-
-
 class _CaptureStrategy:
     def __init__(self):
         self.calls: list[dict] = []
@@ -129,7 +125,6 @@ async def test_daytona_vm_exec_prepends_daemon_json_for_dockerd():
     assert "/etc/docker/daemon.json" in sent
     assert '{"registry-mirrors": ["https://mirror.gcr.io"]}' in sent
     assert sent.index("daemon.json") < sent.index("dockerd-entrypoint.sh")
-    # timeout_sec preserved as a kwarg
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
 
 
@@ -143,10 +138,6 @@ async def test_daytona_vm_exec_passes_other_commands_through():
     assert strategy.calls[0]["command"] == "docker info"
     assert strategy.calls[0]["args"] == ("extra",)
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 5}
-
-
-# --- Mechanism B: Modal merge + reload ---
-
 
 class _ModalCaptureStrategy:
     def __init__(self, *, cat_stdout, info_stdout="", raises_on=None):
@@ -199,8 +190,6 @@ async def test_modal_inject_handles_invalid_existing_json():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cat_stdout", ["null", "123", "[]", "true", '"str"'])
 async def test_modal_inject_handles_non_object_existing_json(cat_stdout):
-    # Valid JSON that is not an object must not abort injection: cfg["..."] = ...
-    # would raise TypeError on a list/int/None/str/bool and silently skip the mirror.
     strategy = _ModalCaptureStrategy(cat_stdout=cat_stdout)
 
     await harbor_patches._inject_mirror_and_reload(strategy)
@@ -213,7 +202,6 @@ async def test_modal_inject_handles_non_object_existing_json(cat_stdout):
 @pytest.mark.asyncio
 async def test_modal_inject_never_raises():
     strategy = _ModalCaptureStrategy(cat_stdout="{}", raises_on="cat ")
-    # must not propagate
     await harbor_patches._inject_mirror_and_reload(strategy)
 
 
@@ -232,10 +220,7 @@ async def test_modal_wait_wrapper_runs_orig_before_inject(monkeypatch):
     wrapped = harbor_patches._wrap_modal_wait_for_docker_daemon(_orig)
     await wrapped(object())
 
-    assert order == ["orig", "inject"]  # inject only after the daemon is up
-
-
-# --- Idempotency markers: prevent double-wrapping across re-application ---
+    assert order == ["orig", "inject"]
 
 
 @pytest.mark.parametrize(

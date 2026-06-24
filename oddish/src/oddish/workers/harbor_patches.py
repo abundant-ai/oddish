@@ -14,17 +14,13 @@ import importlib
 import json
 import logging
 from typing import Any, Awaitable, Callable
-from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 _PATCHED = False
 
-# Anonymous pull-through cache of Docker Hub. Pointing dockerd here keeps
-# unqualified ``docker.io`` pulls off Docker Hub's anonymous rate limit (429
-# toomanyrequests). Credential-free; only affects docker.io by Docker's design.
 _MIRROR_URL = "https://mirror.gcr.io"
-_MIRROR_HOST = urlsplit(_MIRROR_URL).netloc
+_MIRROR_HOST = "mirror.gcr.io"
 _DAEMON_JSON_PATH = "/etc/docker/daemon.json"
 
 # Diagnostics gathered from the DinD VM when the Docker daemon never becomes
@@ -84,7 +80,7 @@ def _wrap_wait_for_docker_daemon(
             diag = await _collect_dockerd_diagnostics(self)
             raise RuntimeError(f"{exc}\n\n{diag}") from exc
 
-    _wait_for_docker_daemon._oddish_wrapped = True  # type: ignore[attr-defined]
+    setattr(_wait_for_docker_daemon, "_oddish_wrapped", True)
     return _wait_for_docker_daemon
 
 
@@ -97,11 +93,6 @@ def _install_method_patch(
     marker: str,
     label: str,
 ) -> None:
-    """Wrap ``<module_path>.<class_name>.<method_name>`` once, idempotently.
-
-    Harbor extras may be absent and upstream internals may drift, so every step
-    degrades to a log line rather than raising into worker startup.
-    """
     try:
         module = importlib.import_module(module_path)
     except Exception:
@@ -133,28 +124,15 @@ def _patch_dind_docker_daemon_diagnostics() -> None:
     )
 
 
-# --- Registry mirror: keep docker.io pulls off Docker Hub's anon rate limit ---
-
 _DAYTONA_DOCKERD_MARKER = "dockerd-entrypoint.sh dockerd"
 
 
 def _wrap_daytona_vm_exec(
     orig: Callable[..., Awaitable[Any]],
 ) -> Callable[..., Awaitable[Any]]:
-    """Wrap Daytona ``_vm_exec`` to write daemon.json before dockerd launches.
-
-    ``registry-mirrors`` must be on disk before the daemon reads it once at
-    startup. Daytona starts dockerd via ``dockerd-entrypoint.sh dockerd`` flowing
-    through ``_vm_exec``, so we prepend a daemon.json write to that one command
-    (joined so it runs first) and pass every other command through untouched.
-    """
-
     async def _vm_exec(self: Any, command: str, *args: Any, **kwargs: Any) -> Any:
         if _DAYTONA_DOCKERD_MARKER in command:
             cfg = json.dumps({"registry-mirrors": [_MIRROR_URL]})
-            # Write atomically: a truncated/interrupted write must never leave a
-            # corrupt daemon.json (dockerd would refuse to start); ``;`` then lets
-            # dockerd launch mirror-less rather than fail.
             prefix = (
                 f"mkdir -p /etc/docker && printf %s '{cfg}' > {_DAEMON_JSON_PATH}.tmp "
                 f"&& mv {_DAEMON_JSON_PATH}.tmp {_DAEMON_JSON_PATH} ; "
@@ -162,7 +140,7 @@ def _wrap_daytona_vm_exec(
             command = prefix + command
         return await orig(self, command, *args, **kwargs)
 
-    _vm_exec._oddish_mirror_wrapped = True  # type: ignore[attr-defined]
+    setattr(_vm_exec, "_oddish_mirror_wrapped", True)
     return _vm_exec
 
 
@@ -178,13 +156,6 @@ def _patch_daytona_registry_mirror() -> None:
 
 
 async def _inject_mirror_and_reload(strategy: Any) -> None:
-    """Add the registry mirror to Modal's daemon.json and SIGHUP dockerd. Never raises.
-
-    Modal's dockerd is started by Modal itself (not via ``_vm_exec``) and the
-    image bakes ``{"iptables": false, "bridge": "none"}`` into daemon.json, so we
-    merge ``registry-mirrors`` into the existing config (preserving those keys)
-    and reload -- ``registry-mirrors`` is SIGHUP-reloadable.
-    """
     try:
         res = await strategy._vm_exec(
             f"cat {_DAEMON_JSON_PATH} 2>/dev/null || echo '{{}}'", timeout_sec=10
@@ -229,13 +200,11 @@ async def _inject_mirror_and_reload(strategy: Any) -> None:
 def _wrap_modal_wait_for_docker_daemon(
     orig: Callable[[Any], Awaitable[None]],
 ) -> Callable[[Any], Awaitable[None]]:
-    """Wrap Modal ``_wait_for_docker_daemon`` to inject the mirror once dockerd is up."""
-
     async def _wait_for_docker_daemon(self: Any) -> None:
         await orig(self)
         await _inject_mirror_and_reload(self)
 
-    _wait_for_docker_daemon._oddish_mirror_wrapped = True  # type: ignore[attr-defined]
+    setattr(_wait_for_docker_daemon, "_oddish_mirror_wrapped", True)
     return _wait_for_docker_daemon
 
 
