@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
-from oddish.workers import harbor_runner  # noqa: E402
-from oddish.workers.codex_agent import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -804,7 +804,7 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
 
     assert agent_config.name is None
     assert agent_config.import_path == (
-        "oddish.workers.codex_agent:AzureCompatibleCodex"
+        "oddish.workers.agents.codex:AzureCompatibleCodex"
     )
     assert agent_config.model_name == "oddish-gpt"
     assert "AZURE_OPENAI_API_KEY" not in agent_config.env
@@ -822,7 +822,7 @@ def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypa
     )
 
     assert agent_config.name is None
-    assert agent_config.import_path == "oddish.workers.codex_agent:OddishCodex"
+    assert agent_config.import_path == "oddish.workers.agents.codex:OddishCodex"
     assert agent_config.model_name == "openai/gpt-5.2-codex"
 
 

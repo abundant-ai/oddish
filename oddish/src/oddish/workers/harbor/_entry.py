@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import sys
 
-# When invoked BY PATH (``python .../_harbor_entry.py``), Python puts this file's
+# When invoked BY PATH (``python .../_entry.py``), Python puts this file's
 # own directory on ``sys.path[0]``, which would make sibling oddish modules
 # top-level importable and could break the Harbor-only isolation. Drop it BEFORE
 # importing anything else. (Guarded to the exact script dir so a normal
@@ -246,7 +246,7 @@ async def _run(payload: dict[str, Any]) -> dict[str, Any]:
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        sys.stderr.write("usage: _harbor_entry.py <payload.json>\n")
+        sys.stderr.write("usage: _entry.py <payload.json>\n")
         return 2
     payload = json.loads(Path(argv[1]).read_text())
 
