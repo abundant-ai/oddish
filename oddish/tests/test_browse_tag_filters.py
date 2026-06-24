@@ -40,14 +40,14 @@ class _NameResolveSession:
 
 
 def test_tag_filter_ast_default_empty():
-    from oddish.core.tag_filter_ast import TagFilterAST
+    from oddish.core.tags.filter_ast import TagFilterAST
 
     f = TagFilterAST()
     assert f.is_empty() is True
 
 
 def test_tag_filter_ast_normalizes_to_lower():
-    from oddish.core.tag_filter_ast import TagFilterAST
+    from oddish.core.tags.filter_ast import TagFilterAST
 
     f = TagFilterAST(all=["Flaky"], any_=["regression"], none=["WIP"])
     assert f.normalized_all == ["flaky"]
@@ -62,8 +62,8 @@ def test_tag_filter_ast_uses_shared_normalizer_for_whitespace():
     while the persisted ``tags.normalized_key`` is ``flaky-trial`` and
     the join misses.
     """
-    from oddish.core.tag_filter_ast import TagFilterAST
-    from oddish.core.tag_naming import normalize_tag_key
+    from oddish.core.tags.filter_ast import TagFilterAST
+    from oddish.core.tags.naming import normalize_tag_key
 
     f = TagFilterAST(all=["  Flaky Trial  "], any_=["SWE Bench v2.0"])
     assert f.normalized_all == [normalize_tag_key("  Flaky Trial  ")] == ["flaky-trial"]
@@ -73,7 +73,7 @@ def test_tag_filter_ast_uses_shared_normalizer_for_whitespace():
 
 
 def test_resolve_names_to_ids_returns_ids_and_unknown(monkeypatch):
-    from oddish.core.tag_filter_ast import (
+    from oddish.core.tags.filter_ast import (
         TagFilterAST,
         resolve_names_to_ids,
     )
@@ -99,7 +99,7 @@ def test_resolve_accepts_tag_ids_as_tokens():
     the resolver must match ``tags.id`` exactly before falling back to
     the normalized-name lookup.
     """
-    from oddish.core.tag_filter_ast import (
+    from oddish.core.tags.filter_ast import (
         TagFilterAST,
         resolve_names_to_ids,
     )
@@ -119,7 +119,7 @@ def test_resolve_accepts_tag_ids_as_tokens():
 
 
 def test_apply_filter_returns_three_text_predicates():
-    from oddish.core.tag_filter_ast import (
+    from oddish.core.tags.filter_ast import (
         ResolvedTagFilter,
         build_filter_predicates,
     )
@@ -136,7 +136,7 @@ def test_apply_filter_returns_three_text_predicates():
 
 
 def test_apply_filter_returns_empty_predicates_for_empty_filter():
-    from oddish.core.tag_filter_ast import (
+    from oddish.core.tags.filter_ast import (
         ResolvedTagFilter,
         build_filter_predicates,
     )
