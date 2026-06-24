@@ -66,7 +66,7 @@ from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
-from oddish.core.trial_imports import (
+from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )

@@ -19,7 +19,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.core.trial_imports import (
+from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )
