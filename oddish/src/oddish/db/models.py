@@ -703,6 +703,12 @@ class TrialModel(TimestampedMixin, Base):
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Concrete Harbor commit SHA this trial executed against (denormalized,
+    # indexed projection of harbor_config["resolved_sha"]; stamped at creation).
+    harbor_sha: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     # Derived, indexed projection of ``harbor_config["mode"] == "probe"`` so
     # probe runs can be filtered server-side. Source of truth stays in
     # harbor_config; this is set at trial creation in queue.py.
@@ -987,6 +993,14 @@ class WorkerJobModel(TimestampedMixin, Base):
         server_default="QUEUED",
     )
 
+    # Harbor execution variant routing id ('default' | '<registry-id>' |
+    # 'ephemeral'). Part of the effective dispatch key: the dispatcher
+    # discovers/counts/spawns per (queue_key, harbor_variant_id) and the claim
+    # is scoped to it.
+    harbor_variant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'default'")
+    )
+
     queue_key: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=0, server_default="0"
@@ -1067,6 +1081,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
+            "harbor_variant_id",
             "priority",
             "available_after",
             "created_at",
