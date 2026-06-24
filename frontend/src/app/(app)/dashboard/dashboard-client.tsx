@@ -1,8 +1,9 @@
 "use client";
 
-import { useDeferredValue, useEffect, useState } from "react";
+import { useDeferredValue, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -838,19 +839,26 @@ function RecentTasksCard({
 
 type DashboardClientProps = {
   initialDashboardData?: DashboardResponse | null;
+  initialAuthor?: string;
+  initialStatus?: string;
+  initialQuery?: string;
+  initialOffset?: number;
 };
 
 export function DashboardClient({
   initialDashboardData = null,
+  initialAuthor = DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
+  initialStatus = "all",
+  initialQuery = "",
+  initialOffset = 0,
 }: DashboardClientProps) {
   const { mutate } = useSWRConfig();
-  const [experimentsOffset, setExperimentsOffset] = useState(0);
-  const [searchQuery, setSearchQuery] = useState("");
+  const pathname = usePathname();
+  const [experimentsOffset, setExperimentsOffset] = useState(initialOffset);
+  const [searchQuery, setSearchQuery] = useState(initialQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [authorFilter, setAuthorFilter] = useState(
-    DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
-  );
+  const [statusFilter, setStatusFilter] = useState(initialStatus);
+  const [authorFilter, setAuthorFilter] = useState(initialAuthor);
   const members = useOrgMembers();
   const experimentsFallbackData =
     isDefaultDashboardExperimentsView(
@@ -888,9 +896,47 @@ export function DashboardClient({
     statusFilter === "all" &&
     authorFilter === "all";
 
+  // Preserve the deep-linked page on first render; reset to page 1 only when
+  // the user actually changes a filter afterwards.
+  const isInitialFilterMount = useRef(true);
   useEffect(() => {
+    if (isInitialFilterMount.current) {
+      isInitialFilterMount.current = false;
+      return;
+    }
     setExperimentsOffset(0);
   }, [deferredSearchQuery, statusFilter, authorFilter]);
+
+  // Mirror the active filters into the URL so the view is shareable. We use
+  // history.replaceState (not router.replace) to update the address bar without
+  // triggering a server navigation / RSC refetch on every filter change.
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR) {
+      params.set("author", authorFilter);
+    }
+    if (statusFilter !== "all") {
+      params.set("status", statusFilter);
+    }
+    const trimmedQuery = deferredSearchQuery.trim();
+    if (trimmedQuery) {
+      params.set("q", trimmedQuery);
+    }
+    if (currentExperimentsPage > 1) {
+      params.set("page", String(currentExperimentsPage));
+    }
+    const queryString = params.toString();
+    const nextUrl = queryString ? `${pathname}?${queryString}` : pathname;
+    if (nextUrl !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, "", nextUrl);
+    }
+  }, [
+    deferredSearchQuery,
+    statusFilter,
+    authorFilter,
+    currentExperimentsPage,
+    pathname,
+  ]);
 
   const handlePreviousExperimentsPage = () => {
     setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
