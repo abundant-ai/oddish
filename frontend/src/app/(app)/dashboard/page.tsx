@@ -6,10 +6,17 @@ import {
 } from "@/lib/backend-config";
 import {
   buildDashboardBackendParams,
+  DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
+  DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
   DEFAULT_DASHBOARD_REQUEST_PARAMS,
 } from "@/lib/dashboard-request";
 import type { DashboardResponse } from "@/lib/types";
 import { DashboardClient } from "./dashboard-client";
+
+function firstParam(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) return value[0] ?? "";
+  return value ?? "";
+}
 
 async function getInitialDashboardData(): Promise<DashboardResponse | null> {
   try {
@@ -46,7 +53,31 @@ async function getInitialDashboardData(): Promise<DashboardResponse | null> {
   }
 }
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const initialDashboardData = await getInitialDashboardData();
-  return <DashboardClient initialDashboardData={initialDashboardData} />;
+  const params = (await searchParams) ?? {};
+
+  const initialAuthor =
+    firstParam(params.author) || DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR;
+  const initialStatus = firstParam(params.status) || "all";
+  const initialQuery = firstParam(params.q);
+  const pageNumber = Math.max(
+    1,
+    Number.parseInt(firstParam(params.page), 10) || 1,
+  );
+  const initialOffset = (pageNumber - 1) * DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
+
+  return (
+    <DashboardClient
+      initialDashboardData={initialDashboardData}
+      initialAuthor={initialAuthor}
+      initialStatus={initialStatus}
+      initialQuery={initialQuery}
+      initialOffset={initialOffset}
+    />
+  );
 }
