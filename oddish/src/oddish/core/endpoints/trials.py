@@ -155,6 +155,24 @@ async def retry_trial_core(
         old_trial.current_worker_id = None
         old_trial.current_queue_slot = None
 
+    # Carry the run's registry login (if still on the old row) to the new trial
+    # so the retry re-authenticates like an automatic retry does; read it before
+    # the cancel below scrubs it, and terminal old rows were already scrubbed.
+    registry_auth_enc = await session.scalar(
+        text(
+            """
+            SELECT payload->>'registry_auth_enc'
+            FROM   worker_jobs
+            WHERE  kind::text = 'TRIAL'
+              AND  subject_table = 'trials'
+              AND  subject_id = :trial_id
+            ORDER BY created_at DESC
+            LIMIT  1
+            """
+        ),
+        {"trial_id": trial_id},
+    )
+
     # Cancel every live worker_jobs row anchored to the OLD trial id
     # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating
     # against a superseded row and release their queue_slot lease
@@ -213,6 +231,7 @@ async def retry_trial_core(
         max_attempts=new_trial.max_attempts,
         harbor_variant_id=(new_trial.harbor_config or {}).get("variant_id")
         or "default",
+        registry_auth_enc=registry_auth_enc,
     )
 
     await session.commit()

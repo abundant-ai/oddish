@@ -58,15 +58,20 @@ class _RecordingTrial:
 
 
 class _RecordingSession:
-    def __init__(self, *, trial, task, events):
+    def __init__(self, *, trial, task, events, registry_auth_enc=None):
         self.trial = trial
         self.task = task
         self.events = events
+        self.registry_auth_enc = registry_auth_enc
         self.added = []
 
     async def execute(self, _statement, _params=None):
         self.events.append(("execute", None))
         return _Result(scalar=self.trial)
+
+    async def scalar(self, _statement, _params=None):
+        self.events.append(("scalar", None))
+        return self.registry_auth_enc
 
     async def get(self, _model, key):
         self.events.append(("get", key))
@@ -112,6 +117,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        registry_auth_enc=None,
     ):
         events.append(("enqueue", trial_id, queue_key, org_id, max_attempts))
 
@@ -134,3 +140,35 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
     event_names = [event[0] for event in events]
     assert event_names.index("add") < event_names.index("flush")
     assert event_names.index("flush") < event_names.index("supersede")
+
+
+@pytest.mark.asyncio
+async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
+    events = []
+    trial = _RecordingTrial(events)
+    task = SimpleNamespace(
+        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+    )
+    session = _RecordingSession(
+        trial=trial, task=task, events=events, registry_auth_enc="ENC"
+    )
+    captured = {}
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, *, registry_auth_enc=None, **_):
+        captured["registry_auth_enc"] = registry_auth_enc
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    # The old row's credential is carried to the replacement trial so a manual
+    # retry re-authenticates like an automatic one.
+    assert captured["registry_auth_enc"] == "ENC"
