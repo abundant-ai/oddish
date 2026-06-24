@@ -867,7 +867,7 @@ export function UsageOverviewCard({
 
             {/* Per-model table */}
             {sortedUsageRows.length > 0 ? (
-              <div className="max-h-[260px] overflow-y-auto">
+              <div className="overflow-y-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
