@@ -7,11 +7,8 @@ import { ExternalLink, Microscope } from "lucide-react";
 import {
   isTerminalProbeStatus,
   normalizeMetric,
-  pluralize,
   PRIORITY_META,
-  ratioUnitVerb,
   sortRecommendations,
-  tallyAttempts,
   type ProbeTrial,
 } from "@/lib/probe-summary";
 
@@ -20,7 +17,7 @@ import {
 // probe-summary helpers so the two stay consistent.
 type ResultDisplay = {
   text: string;
-  variant: "cheat" | "blocked" | "neutral" | "muted" | "error";
+  variant: "attention" | "clean" | "neutral" | "muted" | "error";
   title?: string;
 };
 
@@ -40,7 +37,6 @@ function statusLabel(t: ProbeTrial): string {
 
 function resultDisplay(t: ProbeTrial): ResultDisplay {
   const metric = normalizeMetric(t.harbor_config?.evaluation_metric);
-  const { unit, verb } = ratioUnitVerb(t.harbor_config ?? null);
 
   if (!isTerminalProbeStatus(t.status)) {
     return { text: "—", variant: "muted", title: `Trial ${statusLabel(t)}` };
@@ -60,43 +56,52 @@ function resultDisplay(t: ProbeTrial): ResultDisplay {
   if (metric === "result_focus") {
     const findings = t.analysis.result_focus_findings;
     if (!findings) return { text: "awaiting answer", variant: "muted" };
+    if (typeof findings === "object") {
+      if (Array.isArray(findings)) {
+        const len = findings.length;
+        return {
+          text: `${len} item${len === 1 ? "" : "s"}`,
+          variant: "neutral",
+          title: "structured findings — open run for full detail",
+        };
+      }
+      const keyCount = Object.keys(findings as Record<string, unknown>).length;
+      return {
+        text: `${keyCount} field${keyCount === 1 ? "" : "s"}`,
+        variant: "neutral",
+        title: "structured findings — open run for full detail",
+      };
+    }
     const truncated =
       findings.length > 80 ? `${findings.slice(0, 80)}…` : findings;
     return { text: truncated, variant: "neutral", title: findings };
   }
 
-  // ratio + none both report on cheat attempts.
-  const plural = pluralize(unit);
-  const verbStr = verb ? ` ${verb}` : "";
-  const { succeeded, cheatTotal } = tallyAttempts(t.analysis.attempts);
-
-  if (cheatTotal === 0) {
-    // Fall back to the top-level cheat verdict when there are no per-attempt rows.
-    if (t.analysis.cheating_attempted === true) {
-      return t.analysis.cheating_succeeded
-        ? { text: "cheat succeeded", variant: "cheat" }
-        : { text: "cheat blocked", variant: "blocked" };
-    }
+  // metric === "none" — summarize by the action items the probe surfaced.
+  const recs = sortRecommendations(t.analysis.recommendations);
+  const mustFix = recs.filter((r) => r.priority === "must_fix").length;
+  if (recs.length === 0) {
     return {
-      text: `0/0 ${plural}`,
-      variant: "neutral",
-      title: `Analyzer found no ${plural} in the transcript`,
+      text: "no action items",
+      variant: "clean",
+      title: "Task held up to probing — no fixes recommended",
     };
   }
+  const count = `${recs.length} action item${recs.length === 1 ? "" : "s"}`;
   return {
-    text: `${succeeded}/${cheatTotal} ${plural}${verbStr}`,
-    variant: succeeded > 0 ? "cheat" : "blocked",
+    text: mustFix > 0 ? `${count} · ${mustFix} must-fix` : count,
+    variant: mustFix > 0 ? "attention" : "neutral",
     title:
-      succeeded > 0
-        ? `${succeeded} of ${cheatTotal} ${plural}${verbStr} — task is gameable`
-        : `All ${cheatTotal} ${plural} were blocked — task is robust`,
+      mustFix > 0
+        ? `${recs.length} recommended fixes, ${mustFix} must-fix`
+        : `${recs.length} recommended fixes`,
   };
 }
 
 const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
-  cheat:
+  attention:
     "rounded bg-red-500/15 px-2 py-0.5 text-[11px] font-medium text-red-600",
-  blocked:
+  clean:
     "rounded bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700",
   neutral:
     "rounded bg-[color:var(--paper-line-2)] px-2 py-0.5 text-[11px] font-medium text-[color:var(--paper-ink-2)]",

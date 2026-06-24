@@ -4,7 +4,7 @@ from rich.console import Console
 
 from oddish.config import settings
 from oddish.db import reconfigure_database_connections
-from oddish.workers.harbor_runner import log_local_storage_snapshot
+from oddish.workers.harbor.runner import log_local_storage_snapshot
 
 console = Console()
 

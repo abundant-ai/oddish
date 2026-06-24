@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/tooltip";
 import { TagEditor } from "@/components/tag-editor";
 import { ChatButton } from "@/components/cc-chat/chat-button";
+import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -278,6 +279,13 @@ function TaskDetailHeader({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <ChatButton scopeKind="task" scopeId={task.name} />
+        <ProbeLaunchButton
+          taskId={task.id}
+          taskName={task.name}
+          variant="labeled"
+          label="Launch probe"
+          className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px]"
+        />
         {(() => {
           const meta = task.github_meta;
           const prUrl = taskPrUrl(task.link, meta);

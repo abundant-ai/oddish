@@ -11,6 +11,7 @@ from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
 from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
+from auth.permissions import can_create_api_keys
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
@@ -90,6 +91,7 @@ async def get_auth_context(
                 return AuthContext(
                     method=cached.method,
                     org_id=cached.org_id,
+                    org_slug=cached.org_slug,
                     api_key_id=cached.api_key_id,
                     scope=cached.scope,
                     # Note: org/api_key ORM objects not included in cached response
@@ -123,6 +125,7 @@ async def get_auth_context(
                     cached_auth = CachedAuthData(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
+                        org_slug=org.slug,
                         api_key_id=api_key.id,
                         scope=api_key.scope,
                     )
@@ -130,6 +133,7 @@ async def get_auth_context(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
                         org=org,
+                        org_slug=org.slug,
                         api_key_id=api_key.id,
                         api_key=api_key,
                         scope=api_key.scope,
@@ -183,7 +187,9 @@ async def get_auth_context(
                 return AuthContext(
                     method=cached.method,
                     org_id=cached.org_id,
+                    org_slug=cached.org_slug,
                     user_id=cached.user_id,
+                    user_email=cached.user_email,
                     user_role=cached.user_role,
                     scope=cached.scope,
                     # Note: org/user ORM objects not included in cached response
@@ -219,7 +225,9 @@ async def get_auth_context(
                     clerk_cached_auth = CachedAuthData(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
+                        org_slug=org.slug,
                         user_id=user.id,
+                        user_email=user.email,
                         user_role=user.role,
                         scope=APIKeyScope.FULL,
                     )
@@ -227,8 +235,10 @@ async def get_auth_context(
                         method=AuthMethod.CLERK_JWT,
                         org_id=org.id,
                         org=org,
+                        org_slug=org.slug,
                         user_id=user.id,
                         user=user,
+                        user_email=user.email,
                         user_role=user.role,
                         scope=APIKeyScope.FULL,
                     )
@@ -288,7 +298,7 @@ async def require_admin(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> AuthContext:
     """
-    Require admin or owner role for an endpoint.
+    Require the admin role for an endpoint.
 
     API keys are authorized via scope instead of user roles.
     """
@@ -297,37 +307,39 @@ async def require_admin(
         return auth
 
     role = auth.user.role if auth.user else auth.user_role
-    if role in {UserRole.ADMIN, UserRole.OWNER}:
+    if role == UserRole.ADMIN:
         return auth
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Admin or owner role required",
+        detail="Admin role required",
     )
 
 
-async def require_owner(
+async def require_api_key_creator(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> AuthContext:
     """
-    Require the owner (developer/superuser) role for an endpoint.
+    Require a user that may create API keys.
 
-    API key auth is rejected — only Clerk JWT users with the owner role
-    can access owner-gated endpoints.
+    API key auth is rejected so one key cannot mint another. Only admins with
+    an @abundant.ai email in the main Abundant org may create keys.
     """
     if auth.method == AuthMethod.API_KEY:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Owner role required — API key auth is not sufficient",
+            detail="User auth required to create API keys",
         )
 
-    role = auth.user.role if auth.user else auth.user_role
-    if role == UserRole.OWNER:
+    if can_create_api_keys(auth):
         return auth
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="Owner role required",
+        detail=(
+            "API key creation requires an admin with an @abundant.ai email "
+            "in the Abundant org"
+        ),
     )
 
 
@@ -335,8 +347,9 @@ __all__ = [
     "APIKeyScope",
     "AuthContext",
     "AuthMethod",
+    "can_create_api_keys",
     "require_admin",
+    "require_api_key_creator",
     "require_auth",
-    "require_owner",
     "get_auth_context",
 ]

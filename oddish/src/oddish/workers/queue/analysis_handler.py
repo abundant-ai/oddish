@@ -189,10 +189,6 @@ async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
                 verifier_stdout=artifacts["verifier_stdout"] or "",
                 reward=trial_reward,
                 result_focus=trial_harbor_config.get("result_focus") or "",
-                evaluation_metric=trial_harbor_config.get("evaluation_metric")
-                or "none",
-                ratio_unit=trial_harbor_config.get("ratio_unit"),
-                ratio_verb=trial_harbor_config.get("ratio_verb"),
                 model=settings.analysis_model,
             )
             console.print(

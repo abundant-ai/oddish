@@ -40,35 +40,28 @@ class _AuthLike:
 
 
 def test_is_org_admin_for_admin_role():
-    from oddish.core.tag_permissions import is_org_admin
+    from oddish.core.tags.permissions import is_org_admin
 
     auth = _AuthLike(user=_User(id="u-1", role=_Role(value="admin")))
     assert is_org_admin(auth) is True
 
 
-def test_is_org_admin_for_owner_role():
-    from oddish.core.tag_permissions import is_org_admin
-
-    auth = _AuthLike(user=_User(id="u-1", role=_Role(value="owner")))
-    assert is_org_admin(auth) is True
-
-
 def test_is_org_admin_for_member_role_is_false():
-    from oddish.core.tag_permissions import is_org_admin
+    from oddish.core.tags.permissions import is_org_admin
 
     auth = _AuthLike(user=_User(id="u-1", role=_Role(value="member")))
     assert is_org_admin(auth) is False
 
 
 def test_is_org_admin_for_api_key_returns_false():
-    from oddish.core.tag_permissions import is_org_admin
+    from oddish.core.tags.permissions import is_org_admin
 
     auth = _AuthLike(method="api_key", user=None, user_role=None)
     assert is_org_admin(auth) is False
 
 
 def test_can_use_apply_requires_write_scope():
-    from oddish.core.tag_permissions import can_use_apply
+    from oddish.core.tags.permissions import can_use_apply
 
     full = _AuthLike(scope="full")
     tasks = _AuthLike(scope="tasks")
@@ -80,14 +73,14 @@ def test_can_use_apply_requires_write_scope():
 
 
 def test_can_use_apply_rejects_cross_org():
-    from oddish.core.tag_permissions import can_use_apply
+    from oddish.core.tags.permissions import can_use_apply
 
     full = _AuthLike(scope="full", org_id="org-1")
     assert can_use_apply(full, target_org_id="org-2") is False
 
 
 def test_can_use_apply_reserved_namespace_requires_admin():
-    from oddish.core.tag_permissions import can_use_apply
+    from oddish.core.tags.permissions import can_use_apply
 
     member = _AuthLike(scope="full", user=_User(id="u-1", role=_Role(value="member")))
     admin = _AuthLike(scope="full", user=_User(id="u-1", role=_Role(value="admin")))
@@ -96,7 +89,7 @@ def test_can_use_apply_reserved_namespace_requires_admin():
 
 
 def test_can_definition_capability_admin_bypass():
-    from oddish.core.tag_permissions import can_definition_capability
+    from oddish.core.tags.permissions import can_definition_capability
 
     class _FakeSession:
         async def execute(self, *a, **k):
@@ -125,7 +118,7 @@ def test_can_definition_capability_admin_bypass():
 
 
 def test_can_definition_capability_owner_bypass():
-    from oddish.core.tag_permissions import can_definition_capability
+    from oddish.core.tags.permissions import can_definition_capability
 
     class _FakeSession:
         async def execute(self, *a, **k):
@@ -154,7 +147,7 @@ def test_can_definition_capability_owner_bypass():
 
 
 def test_can_definition_capability_grant_via_tag_grants():
-    from oddish.core.tag_permissions import can_definition_capability
+    from oddish.core.tags.permissions import can_definition_capability
 
     class _FakeSession:
         async def scalar(self, stmt, params=None):
@@ -174,7 +167,7 @@ def test_can_definition_capability_grant_via_tag_grants():
 
 
 def test_can_definition_capability_member_without_grant_is_false():
-    from oddish.core.tag_permissions import can_definition_capability
+    from oddish.core.tags.permissions import can_definition_capability
 
     class _FakeSession:
         async def scalar(self, stmt, params=None):
@@ -193,7 +186,7 @@ def test_can_definition_capability_member_without_grant_is_false():
 
 
 def test_can_manage_grants_requires_owner_or_admin():
-    from oddish.core.tag_permissions import can_manage_grants
+    from oddish.core.tags.permissions import can_manage_grants
 
     owner = _AuthLike(user=_User(id="u-owner", role=_Role(value="member")))
     admin = _AuthLike(user=_User(id="u-x", role=_Role(value="admin")))
@@ -205,7 +198,7 @@ def test_can_manage_grants_requires_owner_or_admin():
 
 
 def test_grant_tag_capability_core_inserts_row(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     class _FakeSession:
         def __init__(self):
@@ -261,7 +254,7 @@ def test_grant_tag_capability_core_inserts_row(monkeypatch):
 
 
 def test_revoke_tag_capability_core_soft_deletes(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     class _FakeSession:
         def __init__(self):

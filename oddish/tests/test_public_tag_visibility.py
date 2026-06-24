@@ -28,7 +28,7 @@ class _FakeSession:
 
 
 def test_public_task_endpoint_uses_public_only_resolver(monkeypatch):
-    from oddish.core import public as public_module
+    from oddish.core.sharing import public as public_module
 
     captured = {}
 

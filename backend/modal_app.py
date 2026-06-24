@@ -4,6 +4,12 @@ from pathlib import Path
 import modal
 from dotenv import dotenv_values
 
+from oddish.core.harbor_source import (
+    HARBOR_VARIANTS,
+    HarborVariant,
+    harbor_uv_source_rewrite_command,
+)
+
 
 def _env_flag(name: str, default: bool) -> bool:
     value = os.environ.get(name)
@@ -110,19 +116,22 @@ WORKER_BUFFER_CONTAINERS = _env_int(
 WORKER_SCALEDOWN_WINDOW_SECONDS = _env_int(
     "ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS", 300
 )  # Keep idle workers warm for 5 minutes
-# Global cap on concurrent worker containers. This is the real safety bound on
-# DB client connections: each worker holds ~2 pooler client connections
-# (1 SQLAlchemy + 1 asyncpg), so the worst case is roughly
-# ``WORKER_MAX_CONTAINERS * 2 + API(16 * 8) + dispatcher/reconciler``. On the
-# 2XL Supabase tier (1500 max pooler clients, 380 Postgres max_connections,
-# transaction pool size 100) 512 workers -> ~512*2 + 128 = ~1152 clients, ~77%
-# of the 1500 cap, leaving margin for spikes/reconnects and direct connections.
-# Concurrent transaction *execution* is gated by the 100-backend pool, not this
-# count -- worker DB transactions (claim / heartbeat) are short, so a large
-# mostly-idle-on-DB fleet is fine.
+# Global cap on concurrent worker containers. Workers use NullPool (see
+# worker/functions.py), so they hold ~0 idle DB connections during the long
+# Harbor run -- a pooler client connection is opened only for the brief
+# claim / heartbeat / finalize writes. So this cap is NOT bound by the pooler
+# client limit anymore; the binding constraints are Modal cost, per-model
+# provider rate limits, the per-poll claim burst (MAX_WORKERS_PER_POLL), and DB
+# CPU. On the 4XL Supabase tier (3000 max pooler clients, 480 Postgres
+# max_connections, 16 dedicated cores) 2688 workers still fit below the client
+# cap: worst-case concurrent client connections are roughly 2688 transient
+# worker writes + 192 API pool connections + the two singleton scheduled
+# functions (= 2882, leaving ~118 client slots). Concurrent transaction
+# *execution* is gated by the transaction pool size (~150-200 backends on 4XL),
+# not this count.
 WORKER_MAX_CONTAINERS = _env_int(
     "ODDISH_MODAL_WORKER_MAX_CONTAINERS",
-    512,
+    2688,
 )
 
 # Mark single-job worker containers as non-preemptible so Modal does not
@@ -155,12 +164,12 @@ RECONCILER_MEMORY_MB = _env_int("ODDISH_MODAL_RECONCILER_MEMORY_MB", 2048)
 # per-queue_key ``queue_slots`` limits and ``WORKER_MAX_CONTAINERS`` remain the
 # real safety bounds; this just stops the dispatcher from starving them.
 #
-# 192 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
+# 256 ramps the fleet toward WORKER_MAX_CONTAINERS within ~3 polls. The
 # per-poll spawn burst is also the per-poll claim burst (each spawned worker
-# runs one claim query), but claims are short and the 2XL box (8 dedicated
-# cores, transaction pool 100) absorbs ~192 concurrent short claims per
+# runs one claim query), but claims are short and the 4XL box (16 dedicated
+# cores, transaction pool ~150) absorbs ~256 concurrent short claims per
 # 180s tick comfortably.
-MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 192)
+MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 
 # Wall-clock budget for how long one worker container keeps claiming and running
 # jobs on its held slot before exiting. Lets short jobs (analysis / verdict /
@@ -190,16 +199,6 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
-# Optional bring-your-own-credentials secret, layered alongside oddish-prod so
-# personal creds never go into the shared oddish-prod secret. Holds the
-# subscription tokens (CS_CLAUDE_CODE_OAUTH_TOKEN / CS_CODEX_AUTH_JSON_B64) and
-# is consumed only by the subscription auth route in harbor_runner. Set
-# ODDISH_EXTRA_SECRET_NAME (e.g. cs-creds) at deploy to enable; unset = no-op,
-# so this is inert for normal deploys. It is mounted ONLY on the trial worker
-# (see worker_secrets below), not the API or dispatcher, to keep the personal
-# tokens' blast radius minimal.
-EXTRA_SECRET_NAME = os.environ.get("ODDISH_EXTRA_SECRET_NAME", "")
-
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
@@ -213,24 +212,11 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
         )
     )
 
-# Trial-worker secret bundle = runtime_secrets plus the optional
-# bring-your-own-credentials secret. The CS_* subscription tokens are consumed
-# only by harbor_runner, so the extra secret is mounted ONLY on the trial worker
-# (process_single_job), never on the API or dispatcher. With EXTRA_SECRET_NAME
-# unset this is identical to runtime_secrets, so it is inert for normal deploys.
-worker_secrets = list(runtime_secrets)
-if EXTRA_SECRET_NAME:
-    worker_secrets.append(
-        modal.Secret.from_name(
-            EXTRA_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
-        )
-    )
-
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
 MODEL_CONCURRENCY_DEFAULT = _env_int("ODDISH_DEFAULT_MODEL_CONCURRENCY", 48)
-NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 48)
+NOP_ORACLE_CONCURRENCY = _env_int("ODDISH_MODAL_NOP_ORACLE_CONCURRENCY", 256)
 # Per-model queue-key concurrency overrides. Baked into the deploy so the
 # repo is the source of truth; operators can still override the whole JSON
 # via the ODDISH_MODEL_CONCURRENCY_OVERRIDES env var / secret.
@@ -253,22 +239,6 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
-    # Baked so the bring-your-own-creds secret gate (runtime_secrets) evaluates
-    # identically in the container and on the deploy host.
-    "ODDISH_EXTRA_SECRET_NAME": EXTRA_SECRET_NAME,
-    # Comma-separated agents whose trials use the personal-subscription auth
-    # route (Claude Code OAuth / Codex auth.json) instead of Bedrock/Azure.
-    # Lets the stored model id stay standard (e.g. claude-opus-4-8) while the
-    # agent still authenticates via the bring-your-own-creds secret above.
-    "ODDISH_SUBSCRIPTION_AGENTS": os.environ.get("ODDISH_SUBSCRIPTION_AGENTS", ""),
-    # Concurrency cap for serialized subscription buckets (codex sub-solo/...).
-    # Defaults to 4: per-trial codex auth.json copies are independent within the
-    # token's refresh window, so a handful of concurrent trials is safe (matches
-    # the oddish.config.Settings default). Lower to 1 to fully serialize a shared
-    # refresh-sensitive credential.
-    "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY": os.environ.get(
-        "ODDISH_SUBSCRIPTION_QUEUE_CONCURRENCY", "4"
-    ),
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).
@@ -355,47 +325,82 @@ worker_volumes: dict[str, object] = {}
 if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
 
-image = (
-    modal.Image.debian_slim(python_version="3.14")
-    .apt_install(
-        "git",
-        "curl",
+def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal.Image:
+    """Build the worker image, optionally pinned to a blessed Harbor variant.
+
+    When *harbor_override* is set, the harbor git source/rev in the copied
+    pyproject(s) is repointed at the variant's commit BEFORE ``uv_sync`` so the
+    WHOLE dependency set resolves against that Harbor (an image-variant bakes its
+    own hermetic Harbor). With no override this is the default worker image.
+    """
+    img = (
+        modal.Image.debian_slim(python_version="3.14")
+        .apt_install(
+            "git",
+            "curl",
+        )
+        # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
+        .run_commands(
+            "curl -fsSL https://claude.ai/install.sh | bash",
+            "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+        )
+        .pip_install("psycopg2-binary")
+        .env(ENV_VARS)
+        # Copy oddish source BEFORE uv_sync (required for local path dependency)
+        # The pyproject.toml references "../oddish" -> /oddish from /root
+        .add_local_dir(
+            local_path="../oddish",
+            remote_path="/oddish",
+            copy=True,
+            ignore=[".venv/", ".git"],
+        )
+        # Use backend's pyproject.toml which includes oddish as a dependency
+        .add_local_file(
+            local_path="./pyproject.toml",
+            remote_path="/root/pyproject.toml",
+            copy=True,
+        )
     )
-    # Install Claude Code for trial analysis jobs that shell out to `claude -p`.
-    .run_commands(
-        "curl -fsSL https://claude.ai/install.sh | bash",
-        "ln -sf /root/.local/bin/claude /usr/local/bin/claude",
+    if harbor_override is not None:
+        # Repoint the harbor pin in both pyprojects (backend's + the editable
+        # oddish's) before the resolve.
+        img = img.run_commands(
+            harbor_uv_source_rewrite_command(
+                harbor_override.source,
+                harbor_override.sha,
+                "/root/pyproject.toml",
+                "/oddish/pyproject.toml",
+            )
+        )
+    return (
+        # Install all dependencies (oddish from /oddish, harbor + others resolved)
+        img.uv_sync()
+        # Add backend-specific Python modules
+        .add_local_python_source(
+            "api",
+            "auth",
+            "cloud_policy",
+            "dashboard_attribution",
+            "dashboard_owner_backfill",
+            "endpoints",
+            "idempotency_store",
+            "modal_app",
+            "models",
+            "observability",
+            "worker",
+            copy=True,
+        )
     )
-    .pip_install("psycopg2-binary")
-    .env(ENV_VARS)
-    # Copy oddish source BEFORE uv_sync (required for local path dependency)
-    # The pyproject.toml references "../oddish" which resolves to /oddish from /root
-    .add_local_dir(
-        local_path="../oddish",
-        remote_path="/oddish",
-        copy=True,
-        ignore=[".venv/", ".git"],
-    )
-    # Use backend's pyproject.toml which includes oddish as a dependency
-    .add_local_file(
-        local_path="./pyproject.toml",
-        remote_path="/root/pyproject.toml",
-        copy=True,
-    )
-    # Install all dependencies (oddish from /oddish, others from PyPI)
-    .uv_sync()
-    # Add backend-specific Python modules
-    .add_local_python_source(
-        "api",
-        "auth",
-        "cloud_policy",
-        "dashboard_attribution",
-        "dashboard_owner_backfill",
-        "endpoints",
-        "modal_app",
-        "models",
-        "observability",
-        "worker",
-        copy=True,
-    )
-)
+
+
+image = _build_worker_image()
+
+
+def harbor_variant_images() -> dict[str, modal.Image]:
+    """``variant_id -> image`` for every blessed Harbor variant (empty by default).
+
+    Each image bakes its variant's Harbor hermetically; the dispatcher routes a
+    pin classified to ``<id>`` onto the matching ``process_single_job__<id>``
+    Function bound to this image.
+    """
+    return {v.variant_id: _build_worker_image(v) for v in HARBOR_VARIANTS.values()}

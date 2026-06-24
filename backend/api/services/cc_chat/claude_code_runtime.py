@@ -85,10 +85,17 @@ class ClaudeCodeRuntime:
     async def _install_harbor(client: DaytonaClient, sandbox: CreatedSandbox) -> None:
         # Make the harbor package available so the agent can `import harbor` /
         # read its source (anti-cheat scanners, task scaffolding, etc.) without
-        # having to reverse-engineer verifier scripts.
+        # having to reverse-engineer verifier scripts. Pin to the exact harbor
+        # this service runs (the same git resolver the probe agent uses) rather
+        # than a hardcoded release, so the sandbox never drifts from the harness.
+        from oddish.workers.agents.claude_code import _pinned_harbor_requirement
+
+        requirement = _pinned_harbor_requirement()
+        if requirement is None:
+            return
         exit_code, output = await client.exec_sync(
             sandbox,
-            command="pip install --user --quiet harbor==0.5.0 2>&1",
+            command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
         )
         if exit_code != 0:
             raise RuntimeError(

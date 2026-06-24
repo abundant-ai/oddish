@@ -7,7 +7,7 @@ report tokens but no native cost), else unpriceable.
 
 from __future__ import annotations
 
-from oddish.core.endpoints import _resolve_browse_trial_cost
+from oddish.core.endpoints.tasks_query import _resolve_browse_trial_cost
 
 
 def _row(**kw):

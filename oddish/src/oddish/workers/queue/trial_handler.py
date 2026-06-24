@@ -34,9 +34,12 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
+from oddish.worker.local_offline_policy import enable_local_internet
+from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay
-from oddish.workers.harbor_runner import HarborOutcome, run_harbor_trial_async
+from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
@@ -54,6 +57,24 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
     if suffix.startswith("-") and suffix[1:].isdigit():
         return int(suffix[1:])
     return 0
+
+
+async def _delete_probe_key(api_key_id: str, trial_id: str) -> None:
+    """Best-effort revoke a minted probe read key; never raises."""
+    try:
+        from oddish.db import get_session
+        from oddish.db.models import APIKeyModel
+
+        async with get_session() as session:
+            key = await session.get(APIKeyModel, api_key_id)
+            if key is not None:
+                await session.delete(key)
+                await session.commit()
+    except Exception as exc:
+        console.print(
+            f"[yellow]Failed to revoke probe key for trial {trial_id} "
+            f"(will auto-expire): {exc}[/yellow]"
+        )
 
 
 @dataclass(slots=True)
@@ -98,9 +119,13 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
 # AddTestsDirError on a 10h ruby-rust-port trial gets re-queued up to
 # ``trial.max_attempts`` times against fresh sandboxes that hit the same
 # failure mode for the same upstream reason.
+# A broken override ref (bad source/sha, dep/import mismatch) can't be fixed by
+# a fresh sandbox either, so the ephemeral engine's terminal failure joins the
+# set: it blocks re-queue of attempts 2..max without burning the already-counted
+# first attempt.
 _NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
     RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-)
+) | {HarborOverrideImportError.__name__}
 
 
 def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
@@ -369,6 +394,7 @@ async def _prepare_trial_run(
         trial.input_tokens = None
         trial.cache_tokens = None
         trial.output_tokens = None
+        trial.total_steps = None
         trial.cost_usd = None
         trial.phase_timing = None
         trial.has_trajectory = False
@@ -480,9 +506,6 @@ async def _generate_probe_summary_inline(
             verifier_stdout=artifacts["verifier_stdout"] or "",
             reward=reward,
             result_focus=harbor_config.get("result_focus") or "",
-            evaluation_metric=harbor_config.get("evaluation_metric") or "none",
-            ratio_unit=harbor_config.get("ratio_unit"),
-            ratio_verb=harbor_config.get("ratio_verb"),
             model=settings.analysis_model,
         )
         status = AnalysisStatus.SUCCESS
@@ -559,6 +582,7 @@ async def _store_trial_results(
             trial.input_tokens = outcome.input_tokens
             trial.cache_tokens = outcome.cache_tokens
             trial.output_tokens = outcome.output_tokens
+            trial.total_steps = outcome.total_steps
             trial.cost_usd = outcome.cost_usd
 
             # Store per-phase timing breakdown
@@ -841,6 +865,7 @@ async def _execute_trial(
     worker_id: str | None,
     queue_slot: int | None,
     worker_job_id: str | None = None,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
     heartbeat_stop = asyncio.Event()
@@ -883,6 +908,7 @@ async def _execute_trial(
             trial_id=trial_id,
             harbor_config=prepared_trial.trial_harbor_config,
             org_id=prepared_trial.org_id,
+            extra_agent_env=extra_agent_env,
         )
     except asyncio.CancelledError:
         # CancelledError inherits from BaseException, not Exception, so must be caught explicitly.
@@ -986,6 +1012,14 @@ async def run_trial_job(
     probe_extra_instructions = (prepared_trial.trial_harbor_config or {}).get(
         "extra_instructions"
     )
+    probe_scope = (prepared_trial.trial_harbor_config or {}).get(
+        "probe_scope", "task"
+    )
+    # Read-only oddish CLI creds minted for a probe trial; injected into the
+    # agent env only (never persisted to harbor_config / S3). Best-effort
+    # deleted after the run.
+    probe_agent_env: dict[str, str] | None = None
+    probe_key_id: str | None = None
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -998,7 +1032,28 @@ async def run_trial_job(
             task_id=prepared_trial.task_id,
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
+            probe_scope=probe_scope,
         )
+        # Probes get network egress so the oddish-query CLI can reach the API.
+        enable_local_internet(task_path_to_run)
+        try:
+            probe_key_id, probe_agent_env = await mint_probe_creds(
+                org_id=prepared_trial.org_id, trial_id=trial_id
+            )
+        except ProbeCredsError as exc:
+            # Record the failure on the trial row so the operator sees why the
+            # probe failed; _execute_trial's handler never runs in this path.
+            await asyncio.shield(
+                _store_trial_results(
+                    trial_id=trial_id,
+                    outcome=None,
+                    trial_s3_key=None,
+                    execution_error=f"ProbeCredsError: {exc}",
+                )
+            )
+            if temp_task_dir and temp_task_dir.exists():
+                shutil.rmtree(temp_task_dir, ignore_errors=True)
+            raise
 
     # Ensure Harbor scratch directories exist before execution starts.
     os.makedirs(settings.harbor_jobs_dir, exist_ok=True)
@@ -1014,6 +1069,7 @@ async def run_trial_job(
             worker_id=worker_id,
             queue_slot=queue_slot,
             worker_job_id=worker_job_id,
+            extra_agent_env=probe_agent_env,
         )
 
         # Upload trial results to S3.
@@ -1097,3 +1153,7 @@ async def run_trial_job(
         # dev trials (S3 disabled) keep their harbor-jobs output on disk.
         if should_upload_to_s3:
             _cleanup_trial_wrapper_dirs(trial_id)
+        # Best-effort revoke the short-lived probe read key now that the run
+        # is done; it also auto-expires via its TTL if this fails.
+        if probe_key_id:
+            await _delete_probe_key(probe_key_id, trial_id)
