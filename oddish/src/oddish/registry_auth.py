@@ -1,5 +1,3 @@
-"""Per-run container-registry logins that ride the queue encrypted."""
-
 from __future__ import annotations
 
 import base64
@@ -27,8 +25,6 @@ _DOCKER_HUB_ALIASES = {
 # the same database URL.
 _KEY_DOMAIN = b"oddish.registry_auth.v1\x00"
 
-# Per-task credentials the worker publishes and the DinD login shim reads. A
-# context var (not a global) so concurrent trials never see each other's creds.
 current_registry_credentials: ContextVar[list["RegistryCredential"] | None] = (
     ContextVar("current_registry_credentials", default=None)
 )
@@ -38,14 +34,11 @@ _warned_about_derived_key = False
 
 @dataclass(frozen=True)
 class RegistryCredential:
-    """One docker login: a username, a token, and which registry."""
-
     username: str
     token: str
     registry: str = DEFAULT_REGISTRY
 
     def auth_key(self) -> str:
-        """The key docker stores this login under in config.json."""
         host = (self.registry or "").strip().lower()
         if host in _DOCKER_HUB_ALIASES:
             return DOCKER_HUB_AUTH_KEY
@@ -74,7 +67,6 @@ class RegistryCredential:
 
 
 def normalize_credentials(raw: object) -> list[RegistryCredential]:
-    """Coerce a mapping (or list of them) into RegistryCredentials."""
     if raw is None:
         return []
     items = raw if isinstance(raw, (list, tuple)) else [raw]
@@ -90,7 +82,6 @@ def normalize_credentials(raw: object) -> list[RegistryCredential]:
 
 
 def build_docker_config_json(creds: list[RegistryCredential]) -> str:
-    """Render the ~/.docker/config.json that authenticates every pull."""
     auths: dict[str, dict[str, str]] = {}
     for cred in creds:
         blob = base64.b64encode(f"{cred.username}:{cred.token}".encode()).decode()
@@ -99,14 +90,12 @@ def build_docker_config_json(creds: list[RegistryCredential]) -> str:
 
 
 def _derive_fernet_key(material: str) -> bytes:
-    """Stretch any string into a valid Fernet key."""
     return base64.urlsafe_b64encode(
         hashlib.sha256(_KEY_DOMAIN + material.encode()).digest()
     )
 
 
 def _resolve_fernet():
-    """The Fernet the API encrypts with and the worker decrypts with."""
     from cryptography.fernet import Fernet
 
     from oddish.config import settings
@@ -130,7 +119,6 @@ def _resolve_fernet():
 
 
 def encrypt_credentials(creds: list[RegistryCredential]) -> str | None:
-    """Encrypt creds into an opaque token for worker_jobs.payload."""
     if not creds:
         return None
     plaintext = json.dumps([c.to_dict() for c in creds]).encode()
@@ -138,7 +126,6 @@ def encrypt_credentials(creds: list[RegistryCredential]) -> str | None:
 
 
 def decrypt_credentials(blob: str | None) -> list[RegistryCredential]:
-    """Inverse of encrypt_credentials; returns [] (loudly) on any failure."""
     if not blob:
         return []
     try:
@@ -167,7 +154,6 @@ _LOGIN_KEYS = ("registry", "username", "token", "password")
 
 
 def _split_login_pairs(value: str) -> dict[str, str]:
-    """Read 'username=U,token=T[,registry=R]', letting the token keep any commas."""
     fields: dict[str, str] = {}
     rest = value.strip()
     while rest:
@@ -189,7 +175,6 @@ def _split_login_pairs(value: str) -> dict[str, str]:
 
 
 def parse_registry_login(values: list[str] | None, env: dict[str, str]) -> list[dict]:
-    """Build the registry_auth payload from --registry-login flags + DOCKERHUB env."""
     creds: list[RegistryCredential] = []
 
     hub_user = env.get("ODDISH_DOCKERHUB_USERNAME")

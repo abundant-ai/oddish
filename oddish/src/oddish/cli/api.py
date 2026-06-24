@@ -903,17 +903,6 @@ def build_sweep_payload(
     link: str | None = None,
     registry_auth: list[dict] | None = None,
 ) -> dict:
-    """Build the JSON body for a single ``/tasks/sweep`` submission.
-
-    Split out from the network call so the same payload can be posted on its own
-    or bundled into a ``/tasks/sweep/batch`` request.
-
-    Probe trials are ordinary sweeps with ``extra_instructions`` set: the
-    server sets ``mode: "probe"`` in harbor_config (see
-    ``queue._build_harbor_config_for_trial``) and the cloud worker applies the
-    instruction overlay. ``result_focus`` / ``evaluation_metric`` are the same
-    optional probe fields the UI sends from a selected preset.
-    """
     env_value = environment.value if environment else None
 
     if env_value is not None:
@@ -1064,14 +1053,6 @@ def submit_sweep(
     link: str | None = None,
     registry_auth: list[dict] | None = None,
 ) -> dict:
-    """Build and submit a single task sweep to ``/tasks/sweep``.
-
-    Convenience wrapper over :func:`build_sweep_payload` +
-    :func:`post_sweep_payload` for callers that build and submit one sweep in a
-    single step (e.g. the probe CLI). The explicit signature mirrors
-    :func:`build_sweep_payload` so existing positional and keyword callers keep
-    working unchanged.
-    """
     payload = build_sweep_payload(
         task_id=task_id,
         configs=configs,

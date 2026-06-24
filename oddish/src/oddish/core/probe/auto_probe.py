@@ -58,11 +58,6 @@ async def maybe_enqueue_auto_probe(
     org_id: str | None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> None:
-    """Enqueue one probe trial for ``task``'s current version, if not already probed.
-
-    Best-effort: failures are logged and swallowed. ``registry_auth`` is carried
-    through so the probe trial authenticates its pulls like the real trials.
-    """
     try:
         version_id = task.current_version_id
         if not version_id:

@@ -385,13 +385,6 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 
 
 def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
-    """Encrypt the submission's per-run registry logins for queue transit.
-
-    Returns an opaque ciphertext to ride each trial's ``worker_jobs.payload``
-    (NOT ``trials.harbor_config``), or ``None`` when no credential was supplied.
-    The plaintext token is read here via ``SecretStr.get_secret_value()`` and is
-    never written to the database.
-    """
     models = getattr(submission, "registry_auth", None)
     if not models:
         return None

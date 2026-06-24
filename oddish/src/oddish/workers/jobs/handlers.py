@@ -65,9 +65,6 @@ class TrialJobHandler:
         if not trial_id:
             raise ValueError("TRIAL worker_job missing subject_id")
 
-        # Publish the run's registry login (if any) so the DinD shim can
-        # authenticate pulls. The encrypted blob stays on the row across
-        # RETRYING re-claims and is scrubbed once the row goes terminal.
         creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
         cred_token = current_registry_credentials.set(creds or None)
         try:

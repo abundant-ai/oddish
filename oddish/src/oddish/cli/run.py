@@ -451,13 +451,9 @@ def run(
         typer.Option(
             "--registry-login",
             help=(
-                "Per-run container-registry login for the trial sandbox's inner "
-                "Docker daemon, as comma-separated pairs "
+                "Per-run container-registry login as comma-separated pairs "
                 "'username=USER,token=TOKEN[,registry=docker.io]' (repeatable). "
-                "Authenticates image pulls to avoid Docker Hub anonymous "
-                "rate limits. The token is sent write-only, encrypted across the "
-                "queue, and scrubbed after the run -- it is never stored in the "
-                "trial config. Docker Hub creds can also be supplied via "
+                "Docker Hub creds can also be set via "
                 "ODDISH_DOCKERHUB_USERNAME / ODDISH_DOCKERHUB_TOKEN."
             ),
         ),
@@ -591,7 +587,6 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
-    # Parse the registry login once so every submitted task carries it.
     import os as _os
 
     from oddish.registry_auth import parse_registry_login

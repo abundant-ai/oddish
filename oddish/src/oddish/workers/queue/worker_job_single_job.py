@@ -351,17 +351,8 @@ async def _record_outcome(
     subject_table: str | None = None,
     subject_id: str | None = None,
 ) -> None:
-    """Transition the claimed `worker_jobs` row to its terminal state.
-
-    Success → status=SUCCESS, merge ``result_summary``, stamp
-    ``finished_at``.
-    Retryable failure with attempts remaining → status=RETRYING,
-    stamp ``error_message``, clear claim metadata.
-    Non-retryable (or retries exhausted) → status=FAILED.
-
-    SUCCESS and terminal FAILED also scrub any per-run registry credential
-    from the payload; RETRYING keeps it so the re-claim re-authenticates.
-    """
+    # registry_auth_enc is scrubbed only on terminal states (SUCCESS / final FAILED);
+    # RETRYING keeps it so the re-claimed attempt can still authenticate.
     connection = await _open_connection()
     try:
         if outcome.success is not None:
