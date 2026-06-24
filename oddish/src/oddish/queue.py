@@ -165,7 +165,8 @@ async def cancel_tasks_runs(
                        error_message = :cancel_msg,
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
-                       modal_function_call_id = NULL
+                       modal_function_call_id = NULL,
+                       payload = w.payload - 'registry_auth_enc'
                 FROM   to_cancel
                 WHERE  w.id = to_cancel.id
                 RETURNING w.id,

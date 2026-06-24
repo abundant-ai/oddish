@@ -81,8 +81,25 @@ def test_parse_registry_login_requires_username_and_token():
         parse_registry_login(["bareword"], {})
 
 
+def test_parse_registry_login_token_may_contain_commas():
+    creds = parse_registry_login(["username=bob,token=a,b=c,d"], {})
+    assert creds == [{"username": "bob", "token": "a,b=c,d", "registry": "docker.io"}]
+
+
 def test_parse_registry_login_empty_when_nothing_supplied():
     assert parse_registry_login(None, {}) == []
+
+
+def test_registry_auth_rejects_empty_username_or_token():
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    RegistryAuth(username="bob", token="tok")
+    with pytest.raises(ValidationError):
+        RegistryAuth(username=" ", token="tok")
+    with pytest.raises(ValidationError):
+        RegistryAuth(username="bob", token=" ")
 
 
 def test_idempotency_key_ignores_registry_auth():
@@ -100,6 +117,23 @@ def test_idempotency_key_ignores_registry_auth():
         == compute_sweep_idempotency_key(with_a)
         == compute_sweep_idempotency_key(with_b)
     )
+
+
+def test_request_hash_ignores_registry_auth():
+    from oddish.core.idempotency import compute_request_hash
+
+    base = dict(
+        task_id="x",
+        configs=[{"agent": "codex", "model": "openai/gpt-5.5", "n_trials": 1}],
+    )
+    plain = TaskSweepSubmission(**base)
+    with_auth = TaskSweepSubmission(
+        **base,
+        registry_auth=[{"username": "alice", "token": "t", "registry": "ghcr.io"}],
+    )
+    # A per-run credential must not change the server-side request fingerprint,
+    # else a faithful retry that supplies (or rotates) it would 409.
+    assert compute_request_hash(plain) == compute_request_hash(with_auth)
 
 
 def test_submission_masks_token_in_model_dump():

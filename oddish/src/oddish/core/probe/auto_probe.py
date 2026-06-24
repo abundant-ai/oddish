@@ -58,14 +58,11 @@ async def maybe_enqueue_auto_probe(
     org_id: str | None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> None:
-    """Enqueue one probe trial for ``task``'s current version, if not already
-    probed. Best-effort: any failure is logged and swallowed so a probe problem
-    never blocks the caller's real sweep.
+    """Enqueue one probe trial for ``task``'s current version, if not already probed.
 
-    ``registry_auth`` carries the submitting run's per-run container-registry
-    login so the probe trial -- which pulls the same compose images -- can
-    authenticate too (otherwise it would hit the same Docker Hub rate limit the
-    real trials avoid)."""
+    Best-effort: failures are logged and swallowed. ``registry_auth`` is carried
+    through so the probe trial authenticates its pulls like the real trials.
+    """
     try:
         version_id = task.current_version_id
         if not version_id:

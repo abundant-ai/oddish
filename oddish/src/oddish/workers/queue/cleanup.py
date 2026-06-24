@@ -282,6 +282,11 @@ async def cleanup_orphaned_queue_state(
                                WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
                                ELSE 'FAILED'::worker_job_status
                            END,
+                           -- Keep the credential while retries remain; drop it once FAILED.
+                           payload = CASE
+                               WHEN attempts < max_attempts THEN payload
+                               ELSE payload - 'registry_auth_enc'
+                           END,
                            stale_reaped_at = NOW(),
                            finished_at = CASE
                                WHEN attempts < max_attempts THEN finished_at

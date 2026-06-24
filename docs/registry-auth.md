@@ -30,8 +30,9 @@ registry login so the daemon pulls authenticated.
   `worker_jobs.payload`.
 - **Logged off after the run.** The sandbox's `~/.docker/config.json` is removed
   on teardown. The encrypted ciphertext stays on the transient `worker_jobs` row
-  so retries (which re-claim the same row) can re-authenticate, and is removed
-  when the row is swept by the worker-jobs cleanup.
+  while retries (which re-claim the same row) can re-authenticate, and is scrubbed
+  from the payload as soon as that row reaches a terminal state (SUCCESS / FAILED /
+  CANCELLED).
 - **Uniform across every trigger path.** All paths funnel through
   `POST /tasks/sweep`, so one field carries the credential everywhere.
 
@@ -142,19 +143,21 @@ is masked (`SecretStr`) in any server-side `model_dump`/log.
 - **At rest:** Fernet-encrypted before it touches Postgres. The data-protection
   key is oddish-managed (`ODDISH_REGISTRY_AUTH_KEY`, or derived from
   `ODDISH_DATABASE_URL` when unset) — this is **not** the user's token, just the
-  envelope key shared by the API (encrypt) and worker (decrypt). Set
-  `ODDISH_REGISTRY_AUTH_KEY` in the `oddish-prod` Modal secret to rotate
-  independently of the database.
+  envelope key shared by the API (encrypt) and worker (decrypt). Because the
+  derived fallback is only as secret as the database URL, **set
+  `ODDISH_REGISTRY_AUTH_KEY`** in the `oddish-prod` Modal secret in production so
+  the envelope key is independent of (and rotatable apart from) the database; the
+  worker logs a warning while running on the derived key.
 - **Not in the trial config:** lives only on `worker_jobs.payload`, never on
   `trials.harbor_config`.
 - **Idempotency:** excluded from the client idempotency key, so rotating the
   token does not split an otherwise-identical resubmit into duplicate trials.
 - **Cleanup:** on sandbox teardown the shim removes `/root/.docker/config.json`
   (the daemon is logged off); the worker resets the context var. The encrypted
-  ciphertext remains on the transient `worker_jobs` row — needed so a retry can
-  re-authenticate — and is removed when that row is swept by the worker-jobs
-  cleanup. Use short-lived Docker Hub PATs and revoke them in the Hub UI when no
-  longer needed.
+  ciphertext remains on the transient `worker_jobs` row only while retries can
+  re-claim it, and is scrubbed from the payload once the row reaches a terminal
+  state (SUCCESS / FAILED / CANCELLED). Use short-lived Docker Hub PATs and revoke
+  them in the Hub UI when no longer needed.
 - **Scope:** applies to multi-service (docker-compose / DinD) tasks on the
   Daytona and Modal backends. Single-container tasks don't pull through the inner
   daemon and are unaffected.
@@ -188,8 +191,9 @@ pytest tests/test_registry_auth.py -q
 
 Covers: registry-key normalization, `~/.docker/config.json` rendering, encrypt/
 decrypt round-trip (token absent from ciphertext), resilient decrypt, CLI/env
-parsing + de-dup, idempotency-key exclusion, `SecretStr` masking, and the queue
-helpers (ciphertext built, plaintext token never in it).
+parsing + de-dup (including tokens that contain commas), `RegistryAuth` rejecting
+empty username/token, idempotency-key exclusion, `SecretStr` masking, and the
+queue helpers (ciphertext built, plaintext token never in it).
 
 The login shim itself is exercised against a fake DinD strategy in the same
 spirit — confirm the write command contains no raw token and the base64 blob

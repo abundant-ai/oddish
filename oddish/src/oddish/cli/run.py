@@ -591,8 +591,7 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
-    # Resolve any per-run container-registry login (CLI flags + DOCKERHUB env).
-    # Parsed once here so every submitted task carries the same credential.
+    # Parse the registry login once so every submitted task carries it.
     import os as _os
 
     from oddish.registry_auth import parse_registry_login

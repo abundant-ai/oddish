@@ -358,6 +358,9 @@ async def _record_outcome(
     Retryable failure with attempts remaining → status=RETRYING,
     stamp ``error_message``, clear claim metadata.
     Non-retryable (or retries exhausted) → status=FAILED.
+
+    SUCCESS and terminal FAILED also scrub any per-run registry credential
+    from the payload; RETRYING keeps it so the re-claim re-authenticates.
     """
     connection = await _open_connection()
     try:
@@ -373,7 +376,8 @@ async def _record_outcome(
                        finished_at = NOW(),
                        heartbeat_at = NOW(),
                        next_retry_at = NULL,
-                       error_message = NULL
+                       error_message = NULL,
+                       payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
                 """,
                 job_id,
@@ -450,7 +454,8 @@ async def _record_outcome(
                 SET    status = 'FAILED',
                        error_message = $2,
                        finished_at = NOW(),
-                       next_retry_at = NULL
+                       next_retry_at = NULL,
+                       payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
                 """,
                 job_id,
