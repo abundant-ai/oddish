@@ -272,6 +272,7 @@ async def initialize_trial_import(
             input_tokens=trial_spec.input_tokens,
             cache_tokens=trial_spec.cache_tokens,
             output_tokens=trial_spec.output_tokens,
+            total_steps=trial_spec.total_steps,
             cost_usd=trial_spec.cost_usd,
             phase_timing=trial_spec.phase_timing,
             has_trajectory=trial_spec.has_trajectory,

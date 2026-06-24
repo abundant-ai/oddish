@@ -86,6 +86,24 @@ class HarborConfig(BaseModel):
         description="MCP servers to make available in the task environment",
     )
 
+    # --- Configurable Harbor source (override which Harbor runs this trial) ---
+    source: str | None = Field(
+        None,
+        description="Harbor git source URL; None = locked default fork.",
+    )
+    ref: str | None = Field(
+        None,
+        description="Harbor ref (branch/tag/sha/PR); None = locked default commit.",
+    )
+    resolved_sha: str | None = Field(
+        None,
+        description="Server-stamped concrete commit SHA. Client-provided values are ignored.",
+    )
+    variant_id: str | None = Field(
+        None,
+        description="Server-stamped routing id: 'default' | '<registry-id>' | 'ephemeral'.",
+    )
+
 
 # =============================================================================
 # Request Schemas
@@ -688,6 +706,14 @@ class TrialResponse(BaseModel):
             "Surfaced for clients that need to render mode-specific UI."
         ),
     )
+    harbor_sha: str | None = Field(
+        None,
+        description="Concrete Harbor commit SHA this trial executed against (None for legacy rows).",
+    )
+    harbor_source: str | None = Field(
+        None,
+        description="Harbor git source this trial executed against (None for legacy rows).",
+    )
     is_probe: bool = Field(
         False,
         description=(
@@ -703,6 +729,9 @@ class TrialResponse(BaseModel):
     )
     cache_tokens: int | None = Field(None, description="Cache tokens used")
     output_tokens: int | None = Field(None, description="Output tokens generated")
+    total_steps: int | None = Field(
+        None, description="Total agent trajectory steps, when available"
+    )
     cost_usd: float | None = Field(
         None,
         description=(
@@ -1043,6 +1072,7 @@ class ImportedTrialSpec(BaseModel):
     input_tokens: int | None = None
     cache_tokens: int | None = None
     output_tokens: int | None = None
+    total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict | None = Field(
         None,

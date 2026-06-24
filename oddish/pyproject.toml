@@ -77,12 +77,17 @@ server = [
 worker = [
     "oddish[server]",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
-    "daytona>=0.165.0",
+    # Floor is 0.185.0: Harbor's daytona environment imports ``GpuType`` from
+    # the daytona SDK, which was only added in 0.185.0. A lower version (e.g.
+    # the previously-locked 0.176.0) makes Harbor's ``from daytona import ...``
+    # fail, which it swallows into ``_HAS_DAYTONA = False`` and then surfaces as
+    # a misleading ``MissingExtraError`` at sandbox-build time.
+    "daytona>=0.185.0",
     # LLM providers
     "anthropic==0.76.0",
     "openai==2.24.0",
     "google-generativeai==0.8.6",
-    "modal==1.4.2",
+    "modal>=1.5.0",
 ]
 dev = [
     "pytest==9.0.2",
