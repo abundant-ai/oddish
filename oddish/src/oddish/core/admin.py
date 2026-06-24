@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import and_, case, func, select, text, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.db import utcnow
+from oddish.db import ExperimentModel, TrialModel, utcnow
+from oddish.model_pricing import estimate_cost_usd
 
 
 # ---------------------------------------------------------------------------
@@ -864,5 +865,555 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         capacity=capacity,
         dispatcher=_component(DISPATCHER_COMPONENT),
         reconciler=_component(RECONCILER_COMPONENT),
+        timestamp=now.isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cost breakdown
+#
+# A global (cross-org) spend view for the admin page: total cost over a set of
+# trailing windows, broken down per user (attributed via experiment
+# ownership) and a ranked table of the most expensive recent experiments with
+# their model mix.
+#
+# Cost per trial follows the same resolution as the rest of the app
+# (``oddish.core.helpers._resolve_trial_cost``): the native cost reported by
+# the agent runtime when present, otherwise an estimate from token counts via
+# the per-model pricing table. The estimate is per-model and linear in tokens,
+# so we group by model and price the *summed* no-native-cost tokens once per
+# group -- identical to pricing each trial and summing, but far cheaper than
+# pulling every trial row. ``SUM(cost_usd)`` ignores NULLs, so the native sum
+# never double-counts the rows we estimate.
+# ---------------------------------------------------------------------------
+
+
+# (window_days, label). ``None`` window_days == all-time (no lower bound).
+_COST_WINDOWS: tuple[tuple[int | None, str], ...] = (
+    (1, "24h"),
+    (7, "7d"),
+    (30, "30d"),
+    (None, "All"),
+)
+# Per-user and per-experiment model lists are capped so the payload stays
+# small; the rolled-up totals/cost columns are always over the full set.
+_MAX_MODELS_PER_USER = 6
+_MAX_MODELS_PER_EXPERIMENT = 12
+
+
+class CostModelBreakdown(BaseModel):
+    model: str
+    provider: str
+    trial_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    # Portion of ``cost_usd`` derived from token counts (no native cost
+    # reported by the runtime). ``cost_usd - cost_estimated_usd`` is the
+    # native-reported portion.
+    cost_estimated_usd: float
+
+
+class CostUserBreakdown(BaseModel):
+    owner_user_id: str | None
+    org_id: str | None
+    # Enriched by the backend layer (names live in the cloud auth tables).
+    name: str | None = None
+    email: str | None = None
+    org_name: str | None = None
+    trial_count: int
+    experiment_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_estimated_usd: float
+    models: list[CostModelBreakdown]
+
+
+class CostExperimentBreakdown(BaseModel):
+    experiment_id: str
+    name: str | None
+    org_id: str | None
+    owner_user_id: str | None
+    owner_name: str | None = None
+    owner_email: str | None = None
+    org_name: str | None = None
+    created_at: datetime | None
+    last_activity_at: datetime | None
+    trial_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_estimated_usd: float
+    models: list[CostModelBreakdown]
+
+
+class CostWindowTotal(BaseModel):
+    window_days: int | None
+    label: str
+    trial_count: int
+    total_tokens: int
+    cost_usd: float
+    cost_estimated_usd: float
+
+
+class CostTotals(BaseModel):
+    window_days: int | None
+    trial_count: int
+    experiment_count: int
+    user_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_native_usd: float
+    cost_estimated_usd: float
+
+
+class CostBreakdownResponse(BaseModel):
+    window_days: int | None
+    # At-a-glance totals for each trailing window (24h / 7d / 30d / all-time).
+    windows: list[CostWindowTotal]
+    # Detailed rollups for the selected window below.
+    totals: CostTotals
+    by_user: list[CostUserBreakdown]
+    by_model: list[CostModelBreakdown]
+    experiments: list[CostExperimentBreakdown]
+    timestamp: str
+
+
+def _model_label(model: str | None) -> str:
+    return (model or "").strip() or "unknown"
+
+
+def _provider_label(provider: str | None) -> str:
+    return (provider or "").strip().lower() or "unknown"
+
+
+def _accumulate_model(
+    bucket: dict[tuple[str, str], dict[str, Any]],
+    *,
+    model: str,
+    provider: str,
+    trial_count: int,
+    input_tokens: int,
+    cache_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+    cost_estimated_usd: float,
+) -> None:
+    key = (model, provider)
+    agg = bucket.get(key)
+    if agg is None:
+        agg = bucket[key] = {
+            "model": model,
+            "provider": provider,
+            "trial_count": 0,
+            "input_tokens": 0,
+            "cache_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "cost_estimated_usd": 0.0,
+        }
+    agg["trial_count"] += trial_count
+    agg["input_tokens"] += input_tokens
+    agg["cache_tokens"] += cache_tokens
+    agg["output_tokens"] += output_tokens
+    agg["cost_usd"] += cost_usd
+    agg["cost_estimated_usd"] += cost_estimated_usd
+
+
+def _model_breakdowns(
+    bucket: dict[tuple[str, str], dict[str, Any]], *, limit: int | None = None
+) -> list[CostModelBreakdown]:
+    rows = sorted(bucket.values(), key=lambda m: m["cost_usd"], reverse=True)
+    if limit is not None:
+        rows = rows[:limit]
+    return [
+        CostModelBreakdown(
+            model=str(m["model"]),
+            provider=str(m["provider"]),
+            trial_count=int(m["trial_count"]),
+            input_tokens=int(m["input_tokens"]),
+            cache_tokens=int(m["cache_tokens"]),
+            output_tokens=int(m["output_tokens"]),
+            cost_usd=round(float(m["cost_usd"]), 4),
+            cost_estimated_usd=round(float(m["cost_estimated_usd"]), 4),
+        )
+        for m in rows
+    ]
+
+
+async def _cost_window_totals(
+    session: AsyncSession, now: datetime
+) -> list[CostWindowTotal]:
+    """Per-window cost totals, grouped by model so the estimate is exact.
+
+    One scan over ``trials`` produces per-model, per-window native cost and
+    no-native-cost token sums; Python prices the estimated tokens once per
+    (model, window) and rolls up to window totals. Joins ``experiments`` so
+    the soft-delete filter drops trials of deleted experiments -- keeping the
+    at-a-glance windows consistent with the joined detail rollups below.
+    """
+    columns: list[Any] = [TrialModel.model]
+    specs: list[tuple[int, int | None, str]] = []
+    for idx, (days, label) in enumerate(_COST_WINDOWS):
+        since = None if days is None else now - timedelta(days=days)
+        in_window = true() if since is None else (TrialModel.created_at >= since)
+        specs.append((idx, days, label))
+        has_native = and_(in_window, TrialModel.cost_usd.isnot(None))
+        no_native = and_(in_window, TrialModel.cost_usd.is_(None))
+        columns.extend(
+            [
+                func.coalesce(
+                    func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)),
+                    0.0,
+                ).label(f"native_{idx}"),
+                func.coalesce(
+                    func.sum(case((no_native, TrialModel.input_tokens), else_=0)),
+                    0,
+                ).label(f"estin_{idx}"),
+                func.coalesce(
+                    func.sum(case((no_native, TrialModel.output_tokens), else_=0)),
+                    0,
+                ).label(f"estout_{idx}"),
+                func.coalesce(
+                    func.sum(case((no_native, TrialModel.cache_tokens), else_=0)),
+                    0,
+                ).label(f"estcache_{idx}"),
+                func.coalesce(
+                    func.sum(case((in_window, 1), else_=0)),
+                    0,
+                ).label(f"trials_{idx}"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                in_window,
+                                func.coalesce(TrialModel.input_tokens, 0)
+                                + func.coalesce(TrialModel.cache_tokens, 0)
+                                + func.coalesce(TrialModel.output_tokens, 0),
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label(f"tokens_{idx}"),
+            ]
+        )
+
+    rows = (
+        await session.execute(
+            select(*columns)
+            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+            .group_by(TrialModel.model)
+        )
+    ).all()
+
+    totals = {
+        idx: {"cost": 0.0, "estimated": 0.0, "trials": 0, "tokens": 0}
+        for idx, _, _ in specs
+    }
+    for row in rows:
+        for idx, _, _ in specs:
+            native = float(getattr(row, f"native_{idx}") or 0.0)
+            est = (
+                estimate_cost_usd(
+                    row.model,
+                    int(getattr(row, f"estin_{idx}") or 0),
+                    int(getattr(row, f"estout_{idx}") or 0),
+                    int(getattr(row, f"estcache_{idx}") or 0),
+                )
+                or 0.0
+            )
+            agg = totals[idx]
+            agg["cost"] += native + est
+            agg["estimated"] += est
+            agg["trials"] += int(getattr(row, f"trials_{idx}") or 0)
+            agg["tokens"] += int(getattr(row, f"tokens_{idx}") or 0)
+
+    return [
+        CostWindowTotal(
+            window_days=days,
+            label=label,
+            trial_count=int(totals[idx]["trials"]),
+            total_tokens=int(totals[idx]["tokens"]),
+            cost_usd=round(float(totals[idx]["cost"]), 4),
+            cost_estimated_usd=round(float(totals[idx]["estimated"]), 4),
+        )
+        for idx, days, label in specs
+    ]
+
+
+async def get_cost_breakdown_core(
+    session: AsyncSession,
+    *,
+    window_days: int | None = 7,
+    experiment_limit: int = 100,
+    user_limit: int = 100,
+) -> CostBreakdownResponse:
+    """Aggregate trial spend globally for the admin cost dashboard.
+
+    ``window_days`` bounds the per-user / per-model / per-experiment detail to
+    trials created in the trailing window (``None`` == all-time). The
+    ``windows`` summary always reports the fixed 24h / 7d / 30d / all-time
+    totals regardless. Returns IDs only for owners/orgs; the backend layer
+    enriches them with names from the cloud auth tables.
+    """
+    now = datetime.now(timezone.utc)
+
+    windows = await _cost_window_totals(session, now)
+
+    since = None if window_days is None else now - timedelta(days=window_days)
+
+    detail_query = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            ExperimentModel.name.label("exp_name"),
+            ExperimentModel.org_id.label("exp_org_id"),
+            ExperimentModel.owner_user_id.label("owner_user_id"),
+            ExperimentModel.created_at.label("exp_created_at"),
+            ExperimentModel.last_activity_at.label("exp_last_activity_at"),
+            TrialModel.model.label("model"),
+            TrialModel.provider.label("provider"),
+            func.count(TrialModel.id).label("trial_count"),
+            func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
+            func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
+                        else_=0.0,
+                    )
+                ),
+                0.0,
+            ).label("native_cost"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.input_tokens),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("est_input"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.output_tokens),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("est_output"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.cache_tokens),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("est_cache"),
+        )
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .group_by(
+            TrialModel.experiment_id,
+            ExperimentModel.name,
+            ExperimentModel.org_id,
+            ExperimentModel.owner_user_id,
+            ExperimentModel.created_at,
+            ExperimentModel.last_activity_at,
+            TrialModel.model,
+            TrialModel.provider,
+        )
+    )
+    if since is not None:
+        detail_query = detail_query.where(TrialModel.created_at >= since)
+
+    rows = (await session.execute(detail_query)).all()
+
+    by_model: dict[tuple[str, str], dict[str, Any]] = {}
+    experiments: dict[str, dict[str, Any]] = {}
+    by_user: dict[str | None, dict[str, Any]] = {}
+
+    total_trials = 0
+    total_input = 0
+    total_cache = 0
+    total_output = 0
+    total_native = 0.0
+    total_estimated = 0.0
+
+    for row in rows:
+        model = _model_label(row.model)
+        provider = _provider_label(row.provider)
+        trial_count = int(row.trial_count or 0)
+        input_tokens = int(row.input_tokens or 0)
+        cache_tokens = int(row.cache_tokens or 0)
+        output_tokens = int(row.output_tokens or 0)
+        native = float(row.native_cost or 0.0)
+        estimated = (
+            estimate_cost_usd(
+                row.model,
+                int(row.est_input or 0),
+                int(row.est_output or 0),
+                int(row.est_cache or 0),
+            )
+            or 0.0
+        )
+        cost = native + estimated
+
+        total_trials += trial_count
+        total_input += input_tokens
+        total_cache += cache_tokens
+        total_output += output_tokens
+        total_native += native
+        total_estimated += estimated
+
+        _accumulate_model(
+            by_model,
+            model=model,
+            provider=provider,
+            trial_count=trial_count,
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            cost_estimated_usd=estimated,
+        )
+
+        exp = experiments.get(row.experiment_id)
+        if exp is None:
+            exp = experiments[row.experiment_id] = {
+                "experiment_id": row.experiment_id,
+                "name": row.exp_name,
+                "org_id": row.exp_org_id,
+                "owner_user_id": row.owner_user_id,
+                "created_at": row.exp_created_at,
+                "last_activity_at": row.exp_last_activity_at,
+                "trial_count": 0,
+                "input_tokens": 0,
+                "cache_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_estimated_usd": 0.0,
+                "models": {},
+            }
+        exp["trial_count"] += trial_count
+        exp["input_tokens"] += input_tokens
+        exp["cache_tokens"] += cache_tokens
+        exp["output_tokens"] += output_tokens
+        exp["cost_usd"] += cost
+        exp["cost_estimated_usd"] += estimated
+        _accumulate_model(
+            exp["models"],
+            model=model,
+            provider=provider,
+            trial_count=trial_count,
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            cost_estimated_usd=estimated,
+        )
+
+        user = by_user.get(row.owner_user_id)
+        if user is None:
+            user = by_user[row.owner_user_id] = {
+                "owner_user_id": row.owner_user_id,
+                "org_id": row.exp_org_id,
+                "trial_count": 0,
+                "input_tokens": 0,
+                "cache_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_estimated_usd": 0.0,
+                "experiment_ids": set(),
+                "models": {},
+            }
+        user["trial_count"] += trial_count
+        user["input_tokens"] += input_tokens
+        user["cache_tokens"] += cache_tokens
+        user["output_tokens"] += output_tokens
+        user["cost_usd"] += cost
+        user["cost_estimated_usd"] += estimated
+        user["experiment_ids"].add(row.experiment_id)
+        _accumulate_model(
+            user["models"],
+            model=model,
+            provider=provider,
+            trial_count=trial_count,
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            cost_estimated_usd=estimated,
+        )
+
+    user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
+        :user_limit
+    ]
+    by_user_out = [
+        CostUserBreakdown(
+            owner_user_id=u["owner_user_id"],
+            org_id=u["org_id"],
+            trial_count=int(u["trial_count"]),
+            experiment_count=len(u["experiment_ids"]),
+            input_tokens=int(u["input_tokens"]),
+            cache_tokens=int(u["cache_tokens"]),
+            output_tokens=int(u["output_tokens"]),
+            cost_usd=round(float(u["cost_usd"]), 4),
+            cost_estimated_usd=round(float(u["cost_estimated_usd"]), 4),
+            models=_model_breakdowns(u["models"], limit=_MAX_MODELS_PER_USER),
+        )
+        for u in user_rows
+    ]
+
+    experiment_rows = sorted(
+        experiments.values(), key=lambda e: e["cost_usd"], reverse=True
+    )[:experiment_limit]
+    experiments_out = [
+        CostExperimentBreakdown(
+            experiment_id=str(e["experiment_id"]),
+            name=e["name"],
+            org_id=e["org_id"],
+            owner_user_id=e["owner_user_id"],
+            created_at=e["created_at"],
+            last_activity_at=e["last_activity_at"],
+            trial_count=int(e["trial_count"]),
+            input_tokens=int(e["input_tokens"]),
+            cache_tokens=int(e["cache_tokens"]),
+            output_tokens=int(e["output_tokens"]),
+            cost_usd=round(float(e["cost_usd"]), 4),
+            cost_estimated_usd=round(float(e["cost_estimated_usd"]), 4),
+            models=_model_breakdowns(e["models"], limit=_MAX_MODELS_PER_EXPERIMENT),
+        )
+        for e in experiment_rows
+    ]
+
+    totals = CostTotals(
+        window_days=window_days,
+        trial_count=total_trials,
+        experiment_count=len(experiments),
+        user_count=sum(1 for uid in by_user if uid),
+        input_tokens=total_input,
+        cache_tokens=total_cache,
+        output_tokens=total_output,
+        cost_usd=round(total_native + total_estimated, 4),
+        cost_native_usd=round(total_native, 4),
+        cost_estimated_usd=round(total_estimated, 4),
+    )
+
+    return CostBreakdownResponse(
+        window_days=window_days,
+        windows=windows,
+        totals=totals,
+        by_user=by_user_out,
+        by_model=_model_breakdowns(by_model),
+        experiments=experiments_out,
         timestamp=now.isoformat(),
     )
