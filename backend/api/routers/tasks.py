@@ -47,7 +47,7 @@ from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
 )
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,

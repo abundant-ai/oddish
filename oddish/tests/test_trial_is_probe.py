@@ -122,7 +122,7 @@ def test_trial_response_exposes_is_probe():
 
 @pytest.mark.asyncio
 async def test_list_task_trials_filters_by_probe(cleanup_task_ids):
-    from oddish.core.public_helpers import list_task_trials_for_task
+    from oddish.core.sharing.helpers import list_task_trials_for_task
 
     # create_task seeds one probe trial; append_trials_to_task adds one normal
     # trial to the SAME task, in the same session. append takes the TaskModel

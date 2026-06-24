@@ -71,7 +71,7 @@ async def test_task_status_lists_all_live_experiments():
 async def test_public_task_payload_lists_only_public_experiments():
     """Anonymous /public payloads must not leak private experiment names."""
     import oddish.db.connection as conn_mod
-    from oddish.core.public import get_public_task_status
+    from oddish.core.sharing.public import get_public_task_status
 
     engine = create_async_engine(URL)
     try:
