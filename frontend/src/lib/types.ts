@@ -78,6 +78,30 @@ export interface TagFilterAST {
   none: string[];
 }
 
+// One row of the Tags page list (GET /api/tags). Mirrors the backend
+// TagListItem: usage_count is the all-scope total; task/version/experiment
+// counts break it down by scope; owner_* is the resolved creator.
+export interface TagSummary {
+  id: string;
+  key: string;
+  value?: string | null;
+  color?: string | null;
+  visibility: "PRIVATE" | "PUBLIC";
+  state: string;
+  usage_count: number;
+  row_version: number;
+  owner_user_id?: string | null;
+  task_count: number;
+  version_count: number;
+  experiment_count: number;
+  owner_label?: string | null;
+  owner_avatar_url?: string | null;
+}
+
+export interface TagListResponse {
+  items: TagSummary[];
+}
+
 // Trial analysis result
 interface TrialAnalysis {
   trial_name?: string;
