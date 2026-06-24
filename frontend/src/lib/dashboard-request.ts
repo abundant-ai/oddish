@@ -20,6 +20,10 @@ type DashboardRequestParams = {
 export const DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT = 25;
 export const DASHBOARD_DEFAULT_USAGE_MINUTES = 1440;
 
+// Max time the SSR initial fetch waits on the backend before falling
+// back to client fetching.
+export const DASHBOARD_SSR_FETCH_TIMEOUT_MS = 5_000;
+
 // Owner filter sentinel for the experiments table. "all" shows the whole
 // organization; "me" scopes to the current user; any other value is an
 // org member's user id.
