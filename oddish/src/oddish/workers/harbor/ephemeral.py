@@ -29,18 +29,18 @@ from oddish.core.harbor_source import harbor_git_requirement
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.workers._harbor_entry import EVENT_SENTINEL
-from oddish.workers.claude_code_agent import _pinned_harbor_requirement
-from oddish.workers.harbor_agent_config import (
+from ._entry import EVENT_SENTINEL
+from oddish.workers.agents.claude_code import _pinned_harbor_requirement
+from .agent_config import (
     _claude_code_forces_direct_api,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
-from oddish.workers.harbor_outcome import (
+from .outcome import (
     HarborOutcome,
     _extract_outcome_from_job_result,
 )
-from oddish.workers.harbor_runner import (
+from .runner import (
     HookCallback,
     _check_local_storage_preflight,
     _patch_task_toml,
@@ -48,11 +48,29 @@ from oddish.workers.harbor_runner import (
 
 # Path to the standalone child entrypoint, invoked BY PATH (not ``-m``) so the
 # child never imports the oddish package.
-_ENTRY_PATH = str(Path(__file__).resolve().parent / "_harbor_entry.py")
+_ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
 
 # The child interpreter is pinned to the image venv's Python (the 3.14 base is
 # NOT what the worker runs); a ref whose requires-python excludes it fails fast.
 _CHILD_PYTHON = "3.13"
+
+# Cloud-provider SDKs are optional Harbor extras (``harbor[daytona]`` etc.), so
+# the bare ``harbor @ git+…`` the ephemeral child installs does NOT pull them
+# in. Map the trial's environment type to the Harbor extra that ships its SDK
+# so ``uv run --with`` installs it; otherwise Harbor raises ``MissingExtraError``
+# when it builds the sandbox. Local/container environments need no extra.
+_ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
+    EnvironmentType.DAYTONA: "daytona",
+    EnvironmentType.MODAL: "modal",
+    EnvironmentType.E2B: "e2b",
+    EnvironmentType.RUNLOOP: "runloop",
+    EnvironmentType.GKE: "gke",
+    EnvironmentType.NOVITA: "novita",
+    EnvironmentType.TENSORLAKE: "tensorlake",
+    EnvironmentType.CWSANDBOX: "cwsandbox",
+    EnvironmentType.WANDB: "wandb",
+    EnvironmentType.ISLO: "islo",
+}
 
 
 class HarborOverrideImportError(Exception):
@@ -206,14 +224,23 @@ def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamesp
     )
 
 
-def _spawn_args(source: str, sha: str) -> list[str]:
-    """The ``uv run`` argv that builds the override env and runs the child."""
+def _spawn_args(
+    source: str, sha: str, *, environment: EnvironmentType = EnvironmentType.DOCKER
+) -> list[str]:
+    """The ``uv run`` argv that builds the override env and runs the child.
+
+    The override Harbor is installed with the optional extra matching
+    *environment* (e.g. ``harbor[daytona]``) so its cloud-provider SDK is
+    present in the child; without it Harbor raises ``MissingExtraError`` when
+    building the sandbox.
+    """
+    extra = _ENVIRONMENT_HARBOR_EXTRAS.get(environment)
     return [
         "uv",
         "run",
         "--no-project",
         "--with",
-        harbor_git_requirement(source, sha),
+        harbor_git_requirement(source, sha, extras=[extra] if extra else None),
         "--python",
         _CHILD_PYTHON,
         _ENTRY_PATH,
@@ -343,7 +370,7 @@ async def run_ephemeral_harbor_trial(
     process: asyncio.subprocess.Process | None = None
     try:
         process = await asyncio.create_subprocess_exec(
-            *_spawn_args(source, sha),
+            *_spawn_args(source, sha, environment=environment),
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

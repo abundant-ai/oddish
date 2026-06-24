@@ -34,9 +34,9 @@ from oddish.config import (
 )
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 
-_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:OddishCodex"
-_AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.codex_agent:AzureCompatibleCodex"
-_ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.claude_code_agent:OddishClaudeCode"
+_ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
+_AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
+_ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
 
 
 def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:

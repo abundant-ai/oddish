@@ -27,12 +27,12 @@ from oddish.core.helpers import (
     escape_like,
     parse_search_query,
 )
-from oddish.core.tag_filter_ast import (
+from oddish.core.tags.filter_ast import (
     ResolvedTagFilter,
     TagFilterAST,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     UserTagView,
     list_direct_tags_for_targets,
     list_effective_user_tags_for_task_versions,

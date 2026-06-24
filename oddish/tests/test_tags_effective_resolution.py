@@ -45,7 +45,7 @@ def _run(coro):
 
 
 def test_resolve_effective_tag_ids_for_version_union_minus_exclusions(monkeypatch):
-    from oddish.core import tags_projection
+    from oddish.core.tags import projection as tags_projection
 
     session = _FakeSession()
 
@@ -64,7 +64,7 @@ def test_resolve_effective_tag_ids_for_version_union_minus_exclusions(monkeypatc
 
 
 def test_recompute_task_browse_projection_signature_present():
-    from oddish.core import tags_projection
+    from oddish.core.tags import projection as tags_projection
 
     assert hasattr(tags_projection, "recompute_task_browse_projection")
     assert hasattr(tags_projection, "recompute_all_versions_for_task")
@@ -80,7 +80,7 @@ def test_task_effective_set_is_union_of_versions_not_intersection(monkeypatch):
     computed a per-task EXISTS that returned false the moment *any*
     version was excluded; the fix UNIONs per-version truth.
     """
-    from oddish.core import tags_projection
+    from oddish.core.tags import projection as tags_projection
 
     per_version = {
         ("t-1", "t-1-vA"): {"E"},
@@ -107,13 +107,13 @@ def test_task_effective_set_is_union_of_versions_not_intersection(monkeypatch):
 
 
 def test_list_effective_user_tags_signature_present():
-    from oddish.core.tags_projection import list_effective_user_tags_for_task_versions
+    from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 
     assert callable(list_effective_user_tags_for_task_versions)
 
 
 def test_user_tag_view_dataclass_has_expected_fields():
-    from oddish.core.tags_projection import UserTagView
+    from oddish.core.tags.projection import UserTagView
 
     fields = {f for f in UserTagView.__dataclass_fields__}
     assert {

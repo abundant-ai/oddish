@@ -1,6 +1,7 @@
 """Build each preview-branch Alembic stack to a schema that matches the migrations."""
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import sys
@@ -38,6 +39,47 @@ def _engine(url: str):
     )
 
 
+def _load_base():
+    """Import the backend + oddish models so the full cross-stack metadata is registered.
+
+    Importing the backend models registers the cloud tables on the shared Base,
+    so create_all resolves the cross-stack ``api_keys -> organizations`` FK.
+    """
+    backend_dir = str(Path.cwd())
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
+    import models  # noqa: F401
+    from oddish.db.models import Base
+
+    return Base
+
+
+def _fingerprint_metadata(metadata) -> str:
+    """Stable short hash of a metadata's table + column names."""
+    parts = [
+        f"{table.name}:{','.join(sorted(col.name for col in table.columns))}"
+        for table in sorted(metadata.tables.values(), key=lambda t: t.name)
+    ]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _model_fingerprint() -> str:
+    """Fingerprint of the current model graph.
+
+    Folded into the trust marker so a schema cached by an earlier prep is reused
+    only while it still matches the branch's *current* models. Without this, a
+    branch that gains a column after its first prep -- a merge that adds a
+    migration, or a re-pointed migration chain -- keeps its stale cached schema:
+    the version is already stamped at head, so ``alembic upgrade head`` is a
+    no-op, the new column is never created, and every read of it 500s.
+    """
+    return _fingerprint_metadata(_load_base().metadata)
+
+
+def _trust_marker() -> str:
+    return f"{SCHEMA_MARKER}:{_model_fingerprint()}"
+
+
 async def _schema_trusted(url: str) -> bool:
     engine = _engine(url)
     try:
@@ -48,17 +90,26 @@ async def _schema_trusted(url: str) -> bool:
             )
     finally:
         await engine.dispose()
-    return marker == SCHEMA_MARKER
+    # Trust the cached schema only when it was built from the *current* model graph.
+    return marker == _trust_marker()
+
+
+def _assert_preview_branch(url: str) -> None:
+    prod_ref = os.environ.get("SUPABASE_PROJECT_REF")
+    source = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL", "")
+    if (prod_ref and prod_ref in url) or (
+        source and url.split("://", 1)[-1] == source.split("://", 1)[-1]
+    ):
+        raise RuntimeError(
+            "bootstrap_preview_db: ODDISH_DATABASE_URL resolves to production "
+            "(matched SUPABASE_PROJECT_REF / PREVIEW_SAMPLE_SOURCE_DB_URL); "
+            "refusing to DROP SCHEMA. This script only rebuilds preview branches."
+        )
 
 
 async def _rebuild_schema(url: str) -> None:
-    # Importing the backend models registers the cloud tables on the shared Base,
-    # so create_all resolves the cross-stack api_keys -> organizations FK.
-    backend_dir = str(Path.cwd())
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-    import models  # noqa: F401
-    from oddish.db.models import Base
+    _assert_preview_branch(url)
+    base = _load_base()
 
     engine = _engine(url)
     try:
@@ -67,16 +118,17 @@ async def _rebuild_schema(url: str) -> None:
             await conn.execute(text("CREATE SCHEMA public"))
             await conn.execute(text("GRANT ALL ON SCHEMA public TO public"))
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(base.metadata.create_all)
     finally:
         await engine.dispose()
 
 
 async def _mark_trusted(url: str) -> None:
+    marker = _trust_marker()
     engine = _engine(url)
     try:
         async with engine.begin() as conn:
-            await conn.execute(text(f"COMMENT ON SCHEMA public IS '{SCHEMA_MARKER}'"))
+            await conn.execute(text(f"COMMENT ON SCHEMA public IS '{marker}'"))
     finally:
         await engine.dispose()
 
