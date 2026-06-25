@@ -39,6 +39,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ExperimentsSkeleton } from "./experiments-skeleton";
 import type {
   DashboardExperiment,
   DashboardExperimentAuthor,
@@ -557,8 +558,8 @@ function RecentTasksCard({
               Check the API connection and try again.
             </AlertDescription>
           </Alert>
-        ) : isLoading ? (
-          <p className="text-muted-foreground">Loading...</p>
+        ) : isPageTransitioning ? (
+          <ExperimentsSkeleton />
         ) : (
           <>
             {error ? (
