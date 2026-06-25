@@ -58,15 +58,16 @@ class OrganizationModel(TimestampedMixin, Base):
     """Organization (tenant) for multi-tenancy."""
 
     __tablename__ = "organizations"
+    __table_args__ = (
+        Index("idx_organizations_clerk_org_id", "clerk_org_id", unique=True),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
 
     # Clerk integration - links to Clerk organization
-    clerk_org_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )
+    clerk_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Billing/plan info (for future use)
     plan: Mapped[str] = mapped_column(String(32), default="free", nullable=False)
@@ -103,9 +104,7 @@ class UserModel(TimestampedMixin, Base):
 
     # Clerk Auth integration
     # This is the Clerk user ID (e.g., "user_xxx")
-    clerk_user_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )
+    clerk_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Organization membership
     org_id: Mapped[str] = mapped_column(
@@ -160,7 +159,22 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
+        Index("idx_users_clerk_user_id", "clerk_user_id"),
     )
+
+
+class ProviderSlotModel(Base):
+    """Tracks provider queue slots."""
+
+    __tablename__ = "provider_slots"
+    __table_args__ = (
+        Index("idx_provider_slots_provider_locked_until", "provider", "locked_until"),
+    )
+
+    provider: Mapped[str] = mapped_column(Text, primary_key=True)
+    slot: Mapped[int] = mapped_column(Integer, primary_key=True)
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 # =============================================================================
@@ -197,6 +211,13 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
     __table_args__ = (
         Index("ix_chat_sessions_status_last_activity", "status", "last_activity"),
+        Index(
+            "ix_chat_sessions_org_scope_activity",
+            "org_id",
+            "scope_kind",
+            "scope_id",
+            text("last_activity DESC"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -356,5 +377,3 @@ class SubmissionIdempotency(Base):
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
-
-
