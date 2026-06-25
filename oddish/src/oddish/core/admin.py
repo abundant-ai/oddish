@@ -1003,8 +1003,9 @@ class CostBreakdownResponse(BaseModel):
     window_days: int | None
     # ``date_trunc`` granularity of the series buckets (hour/day/week).
     bucket: str
-    # Cost over time for the selected window, stacked by model and by user
+    # Cost over time for the selected window, stacked by agent / model / user
     # (the frontend toggles between them without a refetch).
+    series_by_agent: CostSeries
     series_by_model: CostSeries
     series_by_user: CostSeries
     # Detailed rollups for the selected window below.
@@ -1135,16 +1136,17 @@ def _build_dimension_series(
 
 async def _cost_time_series(
     session: AsyncSession, *, since: datetime | None, bucket: str
-) -> tuple[CostSeries, CostSeries]:
-    """Cost over time, returned twice: stacked by model and stacked by user.
+) -> tuple[CostSeries, CostSeries, CostSeries]:
+    """Cost over time, returned three ways: stacked by agent, model, and user.
 
-    One scan groups by ``(bucket, model, owner_user_id)``. Each group is priced
-    (native cost when present, else a per-model token estimate -- the estimate
-    is per-model, so the model must stay in the grouping). The priced groups are
-    then rolled up two ways, per ``(bucket, model)`` and per ``(bucket, user)``,
-    so the frontend can toggle the stack dimension without a refetch. Joins
-    ``experiments`` so the soft-delete filter drops trials of deleted
-    experiments. ``date_trunc`` is Postgres-native (the production DB).
+    One scan groups by ``(bucket, agent, model, owner_user_id)``. Each group is
+    priced (native cost when present, else a per-model token estimate -- the
+    estimate is per-model, so the model must stay in the grouping). The priced
+    groups are then rolled up three ways, per ``(bucket, agent)``,
+    ``(bucket, model)`` and ``(bucket, user)``, so the frontend can switch the
+    stack dimension without a refetch. Joins ``experiments`` so the soft-delete
+    filter drops trials of deleted experiments. ``date_trunc`` is Postgres-native
+    (the production DB).
     """
     bucket_col = func.date_trunc(bucket, TrialModel.created_at)
     has_native = TrialModel.cost_usd.isnot(None)
@@ -1153,6 +1155,7 @@ async def _cost_time_series(
     query = (
         select(
             bucket_col.label("bucket"),
+            TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
             func.coalesce(
@@ -1170,18 +1173,36 @@ async def _cost_time_series(
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-        .group_by(bucket_col, TrialModel.model, ExperimentModel.owner_user_id)
+        .group_by(
+            bucket_col,
+            TrialModel.agent,
+            TrialModel.model,
+            ExperimentModel.owner_user_id,
+        )
     )
     if since is not None:
         query = query.where(TrialModel.created_at >= since)
 
     rows = (await session.execute(query)).all()
 
+    agent_per_bucket: dict[datetime, dict[str, float]] = {}
+    agent_totals: dict[str, float] = {}
     model_per_bucket: dict[datetime, dict[str, float]] = {}
     model_totals: dict[str, float] = {}
     user_per_bucket: dict[datetime, dict[str, float]] = {}
     user_totals: dict[str, float] = {}
     trials_per_bucket: dict[datetime, int] = {}
+
+    def _add(
+        per_bucket: dict[datetime, dict[str, float]],
+        totals: dict[str, float],
+        bstart: datetime,
+        key: str,
+        cost: float,
+    ) -> None:
+        slot = per_bucket.setdefault(bstart, {})
+        slot[key] = slot.get(key, 0.0) + cost
+        totals[key] = totals.get(key, 0.0) + cost
 
     for row in rows:
         cost = float(row.native_cost or 0.0) + (
@@ -1194,23 +1215,29 @@ async def _cost_time_series(
             or 0.0
         )
         bstart = row.bucket
-        mkey = _model_label(row.model)
-        ukey = row.owner_user_id or _SERIES_UNATTRIBUTED_KEY
-
-        bm = model_per_bucket.setdefault(bstart, {})
-        bm[mkey] = bm.get(mkey, 0.0) + cost
-        model_totals[mkey] = model_totals.get(mkey, 0.0) + cost
-
-        bu = user_per_bucket.setdefault(bstart, {})
-        bu[ukey] = bu.get(ukey, 0.0) + cost
-        user_totals[ukey] = user_totals.get(ukey, 0.0) + cost
-
+        _add(agent_per_bucket, agent_totals, bstart, row.agent or "unknown", cost)
+        _add(model_per_bucket, model_totals, bstart, _model_label(row.model), cost)
+        _add(
+            user_per_bucket,
+            user_totals,
+            bstart,
+            row.owner_user_id or _SERIES_UNATTRIBUTED_KEY,
+            cost,
+        )
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
             row.trial_count or 0
         )
 
     bucket_starts = sorted(trials_per_bucket.keys())
 
+    by_agent = _build_dimension_series(
+        "agent",
+        bucket_starts=bucket_starts,
+        per_bucket=agent_per_bucket,
+        totals=agent_totals,
+        trials_per_bucket=trials_per_bucket,
+        labels={},
+    )
     by_model = _build_dimension_series(
         "model",
         bucket_starts=bucket_starts,
@@ -1227,7 +1254,7 @@ async def _cost_time_series(
         trials_per_bucket=trials_per_bucket,
         labels={_SERIES_UNATTRIBUTED_KEY: "Unattributed"},
     )
-    return by_model, by_user
+    return by_agent, by_model, by_user
 
 
 async def get_cost_breakdown_core(
@@ -1249,7 +1276,7 @@ async def get_cost_breakdown_core(
     since = None if window_days is None else now - timedelta(days=window_days)
 
     bucket = _series_bucket(window_days)
-    series_by_model, series_by_user = await _cost_time_series(
+    series_by_agent, series_by_model, series_by_user = await _cost_time_series(
         session, since=since, bucket=bucket
     )
 
@@ -1495,6 +1522,7 @@ async def get_cost_breakdown_core(
     return CostBreakdownResponse(
         window_days=window_days,
         bucket=bucket,
+        series_by_agent=series_by_agent,
         series_by_model=series_by_model,
         series_by_user=series_by_user,
         totals=totals,

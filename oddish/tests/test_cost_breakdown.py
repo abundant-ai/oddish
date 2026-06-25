@@ -128,12 +128,14 @@ async def seeded_cost_data():
             [
                 _trial(E1, 0, model="claude-opus-4-8", cost_usd=2.0, created_at=recent),
                 _trial(E1, 1, model="claude-opus-4-8", cost_usd=3.0, created_at=recent),
-                # No native cost -> priced from tokens.
+                # No native cost -> priced from tokens. Distinct agent so the
+                # by-agent series has more than one stack.
                 _trial(
                     E2,
                     0,
                     model=_EST_MODEL,
                     provider="openai",
+                    agent="codex",
                     cost_usd=None,
                     input_tokens=_EST_IN,
                     output_tokens=_EST_OUT,
@@ -183,6 +185,7 @@ def _trial(
     cost_usd: float | None,
     created_at,
     provider: str = "bedrock",
+    agent: str = "claude-code",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     cache_tokens: int | None = None,
@@ -194,7 +197,7 @@ def _trial(
         task_id=f"{experiment_id}-task",
         experiment_id=experiment_id,
         org_id=None,
-        agent="claude-code",
+        agent=agent,
         provider=provider,
         queue_key=f"{provider}/{model or 'default'}",
         model=model,
@@ -250,12 +253,16 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     costs = [e.cost_usd for e in result.experiments]
     assert costs == sorted(costs, reverse=True)
 
-    # Both chart series (stacked by model / by user) reconcile with the
-    # windowed totals (all global over the same window, so this holds regardless
-    # of other rows in a shared DB) and are chronological. Tolerance covers
-    # per-bucket rounding.
+    # All three chart series (stacked by agent / model / user) reconcile with
+    # the windowed totals (all global over the same window, so this holds
+    # regardless of other rows in a shared DB) and are chronological. Tolerance
+    # covers per-bucket rounding.
     assert result.bucket == "day"
-    for series in (result.series_by_model, result.series_by_user):
+    for series in (
+        result.series_by_agent,
+        result.series_by_model,
+        result.series_by_user,
+    ):
         assert series.buckets, "expected at least one series bucket"
         assert _approx(
             sum(b.cost_usd for b in series.buckets), result.totals.cost_usd, tol=0.01
@@ -266,6 +273,10 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
         # Each bucket's per-key split sums to that bucket's total.
         for b in series.buckets:
             assert _approx(sum(b.costs.values()), b.cost_usd, tol=0.01)
+
+    # by-agent series splits the two agents used in the fixtures.
+    agent_keys = {k.key for k in result.series_by_agent.keys}
+    assert "claude-code" in agent_keys and "codex" in agent_keys
 
     # by-model series keys are normalized (E3's mixed-case model merged in).
     model_keys = {k.key for k in result.series_by_model.keys}

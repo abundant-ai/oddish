@@ -755,6 +755,7 @@ export interface CostTotals {
 export interface CostBreakdownResponse {
   window_days: number | null;
   bucket: string;
+  series_by_agent: CostSeries;
   series_by_model: CostSeries;
   series_by_user: CostSeries;
   totals: CostTotals;

@@ -437,11 +437,13 @@ function MethodologyNote() {
 // Top-level card
 // =============================================================================
 
-type ChartDimension = "model" | "user";
+type ChartDimension = "agent" | "model" | "user";
+
+const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("7");
-  const [dimension, setDimension] = useState<ChartDimension>("model");
+  const [dimension, setDimension] = useState<ChartDimension>("agent");
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
@@ -452,9 +454,11 @@ export function CostBreakdownCard() {
   const windowLabel =
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const series = data
-    ? dimension === "model"
-      ? data.series_by_model
-      : data.series_by_user
+    ? dimension === "agent"
+      ? data.series_by_agent
+      : dimension === "model"
+        ? data.series_by_model
+        : data.series_by_user
     : null;
 
   return (
@@ -530,7 +534,7 @@ export function CostBreakdownCard() {
                 <h3 className="text-sm font-medium">Cost over time</h3>
                 <div className="flex items-center gap-1 text-xs">
                   <span className="text-muted-foreground mr-1">stack by</span>
-                  {(["model", "user"] as const).map((dim) => (
+                  {CHART_DIMENSIONS.map((dim) => (
                     <Button
                       key={dim}
                       variant={dimension === dim ? "secondary" : "ghost"}
