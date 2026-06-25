@@ -203,9 +203,11 @@ jobs:
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
       PR_URL: ${{ github.event.pull_request.html_url }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
       MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && needs.detect-changes.outputs.preview_api_url || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
       PREVIEW_ALIAS_HOSTNAME: pr-${{ github.event.pull_request.number }}.oddish.app
     outputs:

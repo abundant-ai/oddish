@@ -17,10 +17,10 @@ database_label="${PREVIEW_DATABASE_LABEL:-}"
 if [ -z "$backend_label" ]; then
   if [ -n "${MODAL_API_URL:-}" ]; then
     backend_label="${MODAL_APP_NAME:-preview Modal backend}"
-  elif [ -n "$backend_api_url" ]; then
-    backend_label="production"
   else
-    backend_label="Vercel project default"
+    # Either we pushed PROD_API_URL explicitly, or we removed the override and
+    # the Vercel project default takes over -- both point at prod.
+    backend_label="production"
   fi
 fi
 
@@ -32,6 +32,14 @@ if [ -z "$database_label" ]; then
   else
     database_label="production"
   fi
+fi
+
+# Clickable targets for the preview banner / PR comment. The backend points at
+# whatever API the frontend talks to; the DB links to the Supabase branch only
+# when one exists (prod DB has no per-PR dashboard worth linking).
+database_url=""
+if [ -n "${SUPABASE_PROJECT_REF:-}" ] && [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
+  database_url="https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/branches"
 fi
 
 is_configured_vercel() {
@@ -110,9 +118,12 @@ fi
   fi
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW true
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL "$backend_label"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL "$backend_api_url"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL "$database_label"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL "$database_url"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA "${VERCEL_GIT_COMMIT_SHA:-}"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE "${PR_TITLE:-}"
 )
 
 vercel_output="$(mktemp)"

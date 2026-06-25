@@ -90,18 +90,28 @@ def test_vercel_modal_url_gated_with_prod_fallback():
     assert expr.rstrip().endswith("|| '' }}")
 
 
-def test_pr_url_threaded_to_banner_env_and_cleaned_up():
-    # The preview banner links back to the PR via NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL,
-    # which is only populated if the PR html_url is threaded all the way through
-    # the Vercel env. Guard the full chain since the frontend has no test suite.
-    job = _wf()["jobs"]["update-vercel-preview"]
-    assert "html_url" in job["env"]["PR_URL"]
+def test_banner_env_threaded_to_vercel_and_cleaned_up():
+    # The preview banner surfaces the PR (link + title) and makes the backend/DB
+    # targets clickable. Each field is only populated if the value is threaded
+    # all the way through the Vercel env, so guard the full chain here -- the
+    # frontend has no test suite to catch a broken var.
+    job_env = _wf()["jobs"]["update-vercel-preview"]["env"]
+    assert "html_url" in job_env["PR_URL"]
+    assert "title" in job_env["PR_TITLE"]
+    # The DB link needs the Supabase project ref alongside the branch ref.
+    assert "SUPABASE_PROJECT_REF" in job_env
+    assert "SUPABASE_BRANCH_REF" in job_env
 
     update = (PREVIEW / "update_vercel_preview.sh").read_text()
-    assert 'NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"' in update
-
     stop = (PREVIEW / "stop_preview.sh").read_text()
-    assert "NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL" in stop
+    for name in (
+        "NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL",
+    ):
+        assert name in update, f"{name} not published in update_vercel_preview.sh"
+        assert name in stop, f"{name} not cleaned up in stop_preview.sh"
 
 
 def test_url_fragment_derives_from_modal_app_label():
