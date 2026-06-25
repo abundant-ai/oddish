@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import type { DashboardResponse } from "@/lib/types";
 import { DASHBOARD_DEFAULT_USAGE_MINUTES } from "@/lib/dashboard-request";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -11,20 +11,18 @@ import {
   useDashboardUsage,
   type TimeRangeKey,
 } from "@/components/usage-overview";
+import { CostBreakdownCard } from "@/components/cost-breakdown-card";
+
+type Tab = "queue-state" | "costing";
 
 type UsageClientProps = {
   initialUsageData?: DashboardResponse | null;
   isAdmin?: boolean;
-  // Server-rendered Costing panel (a <Suspense> boundary that streams in the
-  // cost card), passed down so the heavy fetch stays on the server and the tab
-  // switch shows a skeleton immediately.
-  costingSlot?: ReactNode;
 };
 
 export function UsageClient({
   initialUsageData = null,
   isAdmin = false,
-  costingSlot = null,
 }: UsageClientProps) {
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
@@ -39,21 +37,29 @@ export function UsageClient({
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(usageMinutes, usageFallbackData);
 
-  // Tab is driven by the ?tab= query param so it's deep-linkable and survives
-  // browser back/forward. Only "costing" is recognized (admins only); anything
-  // else falls back to queue state.
-  const router = useRouter();
+  // The tab is reflected in ?tab= so it's deep-linkable and survives
+  // back/forward, but switching is purely client-side (like the admin tabs) —
+  // we update the URL via the History API so there's no server round-trip and
+  // the toggle responds instantly. Local state is the source of truth for the
+  // active tab; an effect re-syncs it from the URL on deep-link / back-forward.
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const activeTab =
+  const urlTab: Tab =
     isAdmin && searchParams.get("tab") === "costing" ? "costing" : "queue-state";
+  const [tab, setTab] = useState<Tab>(urlTab);
+
+  useEffect(() => {
+    setTab(urlTab);
+  }, [urlTab]);
 
   const handleTabChange = (value: string) => {
+    const next = (value === "costing" ? "costing" : "queue-state") as Tab;
+    setTab(next);
     const params = new URLSearchParams(searchParams.toString());
-    if (value === "costing") params.set("tab", "costing");
+    if (next === "costing") params.set("tab", "costing");
     else params.delete("tab");
     const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
   };
 
   const queueState = (
@@ -69,17 +75,13 @@ export function UsageClient({
     />
   );
 
-  // Costing is admin-only; for everyone else show queue state without a lone tab.
+  // Costing is admin-only; for everyone else show queue state without a tab strip.
   if (!isAdmin) {
     return <div className="space-y-4">{queueState}</div>;
   }
 
   return (
-    <Tabs
-      value={activeTab}
-      onValueChange={handleTabChange}
-      className="space-y-4"
-    >
+    <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
       <TabsList>
         <TabsTrigger value="queue-state">Queue State</TabsTrigger>
         <TabsTrigger value="costing">Costing</TabsTrigger>
@@ -88,7 +90,14 @@ export function UsageClient({
         {queueState}
       </TabsContent>
       <TabsContent value="costing" className="space-y-4">
-        {costingSlot}
+        {/* Client-fetched (no SSR); the card shows its own skeleton while the
+            heavy /admin/costs query loads, and SWR caches it for revisits. */}
+        <CostBreakdownCard
+          showChart={false}
+          enableSearch
+          experimentLimit={500}
+          userLimit={500}
+        />
       </TabsContent>
     </Tabs>
   );
