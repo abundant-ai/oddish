@@ -1,13 +1,4 @@
-"""Ephemeral out-of-process Harbor engine (override refs not in the registry).
-
-For an allowlisted pin that is neither the locked default nor a blessed image
-variant, the default worker spawns a standalone child interpreter that imports
-the override Harbor (via ``uv run --no-project --with``) and runs the trial. Only
-JSON crosses the process boundary: the child streams lifecycle events as stdout
-NDJSON (bridged back onto the same DB hook the in-process path uses) and writes
-``outcome.json``; the on-disk ``result.json`` remains the authoritative result,
-extracted here exactly as the in-process path does.
-"""
+"""Run Harbor from an override ref."""
 
 from __future__ import annotations
 
@@ -46,19 +37,8 @@ from .runner import (
     _patch_task_toml,
 )
 
-# Path to the standalone child entrypoint, invoked BY PATH (not ``-m``) so the
-# child never imports the oddish package.
 _ENTRY_PATH = str(Path(__file__).resolve().parent / "_entry.py")
-
-# The child interpreter is pinned to the image venv's Python (the 3.14 base is
-# NOT what the worker runs); a ref whose requires-python excludes it fails fast.
 _CHILD_PYTHON = "3.13"
-
-# Cloud-provider SDKs are optional Harbor extras (``harbor[daytona]`` etc.), so
-# the bare ``harbor @ git+…`` the ephemeral child installs does NOT pull them
-# in. Map the trial's environment type to the Harbor extra that ships its SDK
-# so ``uv run --with`` installs it; otherwise Harbor raises ``MissingExtraError``
-# when it builds the sandbox. Local/container environments need no extra.
 _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.DAYTONA: "daytona",
     EnvironmentType.MODAL: "modal",
@@ -71,39 +51,16 @@ _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.WANDB: "wandb",
     EnvironmentType.ISLO: "islo",
 }
-_EVENT_ALIASES = {
-    "START": "start",
-    "ENVIRONMENT_START": "environment-start",
-    "environment_start": "environment-start",
-    "AGENT_START": "agent-start",
-    "agent_start": "agent-start",
-    "AGENT_END": "agent-end",
-    "agent_end": "agent-end",
-    "VERIFICATION_START": "verification-start",
-    "verification_start": "verification-start",
-    "END": "end",
-    "CANCEL": "cancel",
-}
 
 
 class HarborOverrideImportError(Exception):
-    """The override env could not be built/imported (broken ref / dep mismatch).
-
-    Terminal: it can't be fixed by re-running against a fresh sandbox, so it is
-    unioned into the non-retryable set rather than burning the remaining
-    attempts.
-    """
+    """The override Harbor env could not start."""
 
 
 def _runtime_env_overrides(
     *, agent: str, model: str | None, raw_harbor_config: dict[str, Any], is_probe: bool
 ) -> dict[str, str]:
-    """Provider routing/creds env the child must set (mirrors the in-process path).
-
-    The child inherits the worker's baked credentials by virtue of being a
-    subprocess; these are the per-trial *overrides* on top (OpenAI agent env,
-    and blanking Bedrock when claude-code is forced to the direct API).
-    """
+    """Build child runtime env overrides."""
     uses_openai = _trial_uses_openai_provider(
         agent=agent, model=model, raw_harbor_config=raw_harbor_config
     )
@@ -170,11 +127,7 @@ def _build_payload(
         ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
-        # Minted read-only oddish CLI creds (probe trials); merged onto the
-        # child's AgentConfig env, never persisted.
         "extra_agent_env": extra_agent_env or {},
-        # Git requirement so the in-sandbox claude-code agent installs the SAME
-        # (override) Harbor that scored the trial (probe + claude-code only).
         "agent_harbor_requirement": _agent_harbor_requirement(
             agent=agent,
             is_probe=is_probe,
@@ -187,15 +140,7 @@ def _build_payload(
 def _agent_harbor_requirement(
     *, agent: str, is_probe: bool, source: str | None, sha: str | None
 ) -> str | None:
-    """The git requirement the in-sandbox claude-code agent should install.
-
-    Mirrors the in-process probe path (``_apply_claude_code_probe_harbor``): only
-    probe + claude-code trials install harbor into the sandbox. Emits the override
-    pin as ``harbor @ git+<source>@<sha>`` so the agent imports the SAME Harbor
-    the ephemeral child scored the trial with (S3); other trials get nothing.
-    Exact-match the agent name (not substring) since this reroute swaps the agent
-    class -- parity with ``_apply_claude_code_probe_harbor``.
-    """
+    """Build the Harbor install requirement for probe agents."""
     if not is_probe or (agent or "").strip().lower() != "claude-code":
         return None
     if not source or not sha:
@@ -204,12 +149,7 @@ def _agent_harbor_requirement(
 
 
 def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamespace:
-    """Reconstruct a duck-typed ``TrialHookEvent`` from a child NDJSON line.
-
-    Only the fields ``_handle_harbor_event`` reads are reconstructed; the live
-    ``environment`` handle stays in the child (set to ``None`` here), so the
-    parent skips the probe upload -- the child does it itself.
-    """
+    """Build a parent-side event from child NDJSON."""
     result_data = data.get("result")
     result: SimpleNamespace | None = None
     if result_data:
@@ -227,7 +167,7 @@ def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamesp
         result = SimpleNamespace(
             verifier_result=verifier_result, exception_info=exception_info
         )
-    event_name = _EVENT_ALIASES.get(data["event"], data["event"])
+    event_name = data["event"].lower().replace("_", "-")
     return SimpleNamespace(
         event=TrialEvent(event_name),
         trial_id=data.get("trial_id") or trial_id,
@@ -241,13 +181,7 @@ def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamesp
 def _spawn_args(
     source: str, sha: str, *, environment: EnvironmentType = EnvironmentType.DOCKER
 ) -> list[str]:
-    """The ``uv run`` argv that builds the override env and runs the child.
-
-    The override Harbor is installed with the optional extra matching
-    *environment* (e.g. ``harbor[daytona]``) so its cloud-provider SDK is
-    present in the child; without it Harbor raises ``MissingExtraError`` when
-    building the sandbox.
-    """
+    """Build the child process argv."""
     extra = _ENVIRONMENT_HARBOR_EXTRAS.get(environment)
     return [
         "uv",
@@ -268,7 +202,7 @@ async def _consume_events(
     trial_id: str | None,
     tail: list[str],
 ) -> None:
-    """Read child stdout line by line, bridging event lines to the DB hook."""
+    """Bridge child stdout events to the parent hook."""
     while True:
         raw = await stream.readline()
         if not raw:
@@ -288,11 +222,10 @@ async def _consume_events(
             try:
                 await hook_callback(_bridge_event(event, trial_id=trial_id))
             except Exception:
-                # Hook errors are advisory; the on-disk result is authoritative.
                 pass
         else:
             tail.append(line)
-            del tail[:-50]  # keep only the last lines for a failure summary
+            del tail[:-50]
 
 
 async def run_ephemeral_harbor_trial(
@@ -307,12 +240,7 @@ async def run_ephemeral_harbor_trial(
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
 ) -> HarborOutcome:
-    """Run a trial in a child interpreter pinned to an arbitrary override Harbor.
-
-    Mirrors ``run_harbor_trial_async``'s contract (returns a ``HarborOutcome``)
-    but executes Harbor out-of-process so a different Harbor than the baked one
-    builds the env and scores the trial.
-    """
+    """Run one trial in an override Harbor child process."""
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
     source = hc.source
@@ -388,8 +316,6 @@ async def run_ephemeral_harbor_trial(
             str(payload_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            # Own process group so a cancel kills uv + the child + any sandbox
-            # subprocesses in one signal, not just the uv launcher.
             start_new_session=True,
         )
         assert process.stdout is not None and process.stderr is not None
@@ -451,13 +377,7 @@ def _read_outcome(
     stderr: str,
     stdout_tail: str,
 ) -> HarborOutcome:
-    """Turn the child's outcome.json + on-disk result.json into a HarborOutcome.
-
-    The on-disk ``result.json`` is authoritative and extracted exactly as the
-    in-process path does. A child that produced no outcome.json (or exited
-    non-zero before writing the result) is mapped to a terminal
-    ``HarborOverrideImportError`` -- the override env itself is broken.
-    """
+    """Read the child outcome."""
     outcome_data: dict[str, Any] | None = None
     if outcome_path.exists():
         try:
@@ -506,8 +426,6 @@ def _read_outcome(
             duration_sec=duration,
         )
 
-    # Child ran but never wrote a result.json: a real run failure (broken ref,
-    # dep/import mismatch, environment build failure). Terminal + non-retryable.
     error = outcome_data.get("error") or (stderr or stdout_tail or "").strip()[-1500:]
     return HarborOutcome(
         reward=None,

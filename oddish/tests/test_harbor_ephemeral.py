@@ -61,6 +61,7 @@ def test_bridge_event_end_with_reward_and_exception():
 @pytest.mark.parametrize(
     "event_name, expected",
     [
+        ("START", TrialEvent.START),
         (TrialEvent.AGENT_START.value, TrialEvent.AGENT_START),
         ("AGENT_START", TrialEvent.AGENT_START),
         ("agent_start", TrialEvent.AGENT_START),
