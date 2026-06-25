@@ -134,20 +134,16 @@ def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
     return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
-SCORELESS_EXPECTED_MESSAGE = "Completed with verification disabled; no reward expected."
+SCORELESS_EXPECTED_MESSAGE = "Completed with no verifier reward expected."
 
 
-def _verification_disabled_in_config(harbor_config: dict | None) -> bool:
-    if not isinstance(harbor_config, dict):
-        return False
-    verifier = harbor_config.get("verifier")
-    return isinstance(verifier, dict) and bool(verifier.get("disable"))
-
-
-def _is_scoreless_expected(trial: object) -> bool:
-    if _verification_disabled_in_config(getattr(trial, "harbor_config", None)):
-        return True
-    return is_nop_oracle_agent(getattr(trial, "agent", None))
+def _expects_no_reward(trial: object) -> bool:
+    harbor_config = getattr(trial, "harbor_config", None)
+    verifier = harbor_config.get("verifier") if isinstance(harbor_config, dict) else None
+    return (
+        (isinstance(verifier, dict) and bool(verifier.get("disable")))
+        or is_nop_oracle_agent(getattr(trial, "agent", None))
+    )
 
 
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
@@ -617,16 +613,12 @@ async def _store_trial_results(
                 console.print(
                     f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
                 )
-            elif not outcome.error and _is_scoreless_expected(trial):
-                # Verification disabled or a nop/oracle baseline: a missing
-                # reward is the designed outcome, not a failure. Terminate as
-                # SUCCESS so we don't burn the retry budget on a clean run.
+            elif not outcome.error and _expects_no_reward(trial):
                 trial.status = TrialStatus.SUCCESS
                 trial.error_message = SCORELESS_EXPECTED_MESSAGE
                 trial.finished_at = utcnow()
                 console.print(
-                    f"[green]Trial {trial_id} SUCCESS[/green] "
-                    "(verification disabled; no reward expected)"
+                    f"[green]Trial {trial_id} SUCCESS[/green] (no reward expected)"
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
