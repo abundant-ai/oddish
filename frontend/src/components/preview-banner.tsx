@@ -5,6 +5,14 @@ function prNumberFromUrl(url: string) {
   return match ? match[1] : null;
 }
 
+function Dot() {
+  return (
+    <span aria-hidden="true" className="text-amber-950/40 dark:text-amber-100/40">
+      ·
+    </span>
+  );
+}
+
 function LabeledTarget({
   label,
   value,
@@ -54,19 +62,24 @@ export function PreviewBanner() {
 
   return (
     <div className="sticky top-0 z-50 h-[var(--preview-banner-h)] border-b border-amber-400/40 bg-amber-100 text-amber-950 dark:border-amber-300/25 dark:bg-amber-500/15 dark:text-amber-100">
-      <div className="mx-auto flex h-full max-w-(--breakpoint-2xl) items-center gap-x-3 overflow-hidden px-4 text-[11px] leading-none whitespace-nowrap">
+      <div className="mx-auto flex h-full max-w-(--breakpoint-2xl) items-center justify-center gap-x-2 overflow-hidden px-4 text-[11px] leading-none whitespace-nowrap">
         <span className="font-semibold tracking-wider uppercase">Preview</span>
         {prUrl ? (
-          <a
-            href={prUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`min-w-0 max-w-sm truncate font-medium ${linkClass}`}
-          >
-            {prText}
-          </a>
+          <>
+            <Dot />
+            <a
+              href={prUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`min-w-0 max-w-sm truncate font-medium ${linkClass}`}
+            >
+              {prText}
+            </a>
+          </>
         ) : null}
+        <Dot />
         <LabeledTarget label="Backend" value={backendLabel} url={backendUrl} />
+        <Dot />
         <LabeledTarget label="Database" value={databaseLabel} url={databaseUrl} />
       </div>
     </div>
