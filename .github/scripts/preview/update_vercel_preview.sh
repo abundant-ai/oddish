@@ -18,8 +18,6 @@ if [ -z "$backend_label" ]; then
   if [ -n "${MODAL_API_URL:-}" ]; then
     backend_label="${MODAL_APP_NAME:-preview Modal backend}"
   else
-    # Either we pushed PROD_API_URL explicitly, or we removed the override and
-    # the Vercel project default takes over -- both point at prod.
     backend_label="production"
   fi
 fi
