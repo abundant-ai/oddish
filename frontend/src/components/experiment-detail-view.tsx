@@ -172,7 +172,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let taskScoreCount = 0;
 
   for (const task of tasksForExperiment) {
-    const trials = task.trials ?? [];
+    const trials = (task.trials ?? []).filter((t) => !t.is_probe);
     if (trials.length > 0) {
       for (const trial of trials) accumulateTrial(acc, trial);
 
@@ -1153,6 +1153,10 @@ export function ExperimentDetailView({
                 }}
                 onTaskSelect={(task, context) => {
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                  // If the task has trials, jump straight into the first one
+                  // so the user immediately sees results alongside the task
+                  // definition. They can navigate back with the in-drawer
+                  // "View task" control.
                   const firstTrial = orderedTrials[0] ?? null;
                   setDrawerState({
                     isOpen: true,

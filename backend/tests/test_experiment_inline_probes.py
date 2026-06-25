@@ -147,3 +147,8 @@ async def test_probe_trial_merged_into_experiment_task_trials(experiment_with_pr
     assert all(not t.id.startswith("trial_offprobe") for t in task.trials)
     probe = next(t for t in task.trials if t.id == f["probe_id"])
     assert probe.is_probe is True
+    # Probe must not inflate aggregate counts — only the 1 real trial counts.
+    assert task.total == 1
+    assert task.completed == 1
+    # The probe trial is still present in .trials (for inline rendering).
+    assert any(t.id == f["probe_id"] for t in task.trials)
