@@ -301,12 +301,12 @@ async def list_tasks_core(
             if experiment_id:
                 # ``task.trials`` is already scoped to this experiment's
                 # non-probe trials by the filtered selectin load above (probes
-                # have their own tab via ``list_experiment_probes_core``, and
-                # excluding them before resolving the effective version stops a
-                # probe-only version from skewing it). Resolve the experiment's
-                # effective version from that scoped set, then drop superseded /
-                # off-version trials -- identical result to before, without
-                # re-filtering in Python.
+                # are loaded separately by version and merged into task.trials
+                # below, so excluding them here stops a probe-only version from
+                # skewing the effective version resolution). Resolve the
+                # experiment's effective version from that scoped set, then drop
+                # superseded / off-version trials -- identical result to before,
+                # without re-filtering in Python.
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
