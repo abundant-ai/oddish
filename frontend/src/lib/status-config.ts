@@ -4,6 +4,7 @@ import {
   XCircle,
   Ban,
   Loader2,
+  MinusCircle,
   type LucideIcon,
 } from "lucide-react";
 import type { CSSProperties } from "react";
@@ -17,6 +18,7 @@ export type MatrixStatus =
   | "partial"
   | "fail"
   | "harness-error"
+  | "scoreless"
   | "pending"
   | "queued"
   | "running";
@@ -96,6 +98,18 @@ export const STATUS_CONFIG: Record<
       "bg-yellow-500 text-slate-900 border-yellow-500 hover:bg-yellow-500/90!",
     bracketClass: "bg-yellow-500 text-gray-900",
     panelBadgeClass: "bg-yellow-500/20 text-yellow-400 border-yellow-500/50",
+  },
+  scoreless: {
+    icon: MinusCircle,
+    label: "SCORELESS",
+    shortLabel: "Scoreless",
+    symbol: "–",
+    description: "Completed with verification disabled (no reward)",
+    badgeClass: "bg-slate-500/80 text-white border-slate-400 hover:bg-slate-600",
+    matrixClass:
+      "bg-paper-bg-2 text-paper-ink-2 border-paper-line hover:opacity-90",
+    bracketClass: "bg-slate-500 text-white",
+    panelBadgeClass: "bg-slate-500/20 text-slate-300 border-slate-500/50",
   },
   pending: {
     icon: Loader2,
@@ -269,8 +283,9 @@ export function getMatrixStatus(
   // Success execution - check reward
   if (trialStatus === "success") {
     if (hasReward) return getRewardMatrixStatus(reward);
-    // No reward yet (null/undefined) - still pending result
-    return "pending";
+    // Terminal success with no reward = deliberately scoreless run
+    // (verification disabled). Not pending - it executed to completion.
+    return "scoreless";
   }
 
   // Queued = waiting in queue. Backend still emits "pending" (it's the

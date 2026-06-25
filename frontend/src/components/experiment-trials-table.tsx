@@ -171,6 +171,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "partial",
   "fail",
   "harness-error",
+  "scoreless",
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
@@ -550,6 +551,7 @@ export function ExperimentTrialsTable({
               value === "pass" ||
               value === "fail" ||
               value === "harness-error" ||
+              value === "scoreless" ||
               value === "queued" ||
               value === "running",
           ),
