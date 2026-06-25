@@ -26,7 +26,7 @@ fi
 
 if [ -z "$database_label" ]; then
   if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
-    database_label="Supabase ${SUPABASE_BRANCH_REF}"
+    database_label="project ${SUPABASE_BRANCH_REF}"
   elif [ -n "${MODAL_API_URL:-}" ]; then
     database_label="preview Supabase"
   else
