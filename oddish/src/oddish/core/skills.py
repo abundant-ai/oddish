@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import SkillFileModel, SkillModel, utcnow
 from oddish.schemas import SkillCreate, SkillFile, SkillUpdate
+from oddish.core.result_focus_schema import (
+    UnsupportedSchemaError,
+    normalize_findings_schema,
+    parse_result_focus,
+)
 
 _FRONTMATTER_DELIM = "---"
 
@@ -92,6 +97,16 @@ async def get_skill_core(
     return skill
 
 
+def _validate_result_focus(result_focus: str | None) -> None:
+    """Raise HTTPException(422) if a JSON-schema result_focus is malformed."""
+    spec = parse_result_focus(result_focus)
+    if spec is not None:
+        try:
+            normalize_findings_schema(spec)
+        except UnsupportedSchemaError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 async def create_skill_core(
     session: AsyncSession,
     *,
@@ -101,12 +116,16 @@ async def create_skill_core(
 ) -> SkillModel:
     """Create a custom skill owned by ``org_id``, validating its SKILL.md."""
     name, description = parse_skill(data.files)
+    _validate_result_focus(data.result_focus)
     skill = SkillModel(
         org_id=org_id,
         created_by_user_id=user_id,
         name=name,
         description=description,
         is_seed=False,
+        operator_prompt=data.operator_prompt,
+        result_focus=data.result_focus,
+        evaluation_metric=data.evaluation_metric,
         files=[
             SkillFileModel(relative_path=f.relative_path, content=f.content)
             for f in data.files
@@ -158,6 +177,13 @@ async def update_skill_core(
             skill.name = data.name
         if data.description is not None:
             skill.description = data.description
+    if "result_focus" in payload:
+        _validate_result_focus(data.result_focus)
+        skill.result_focus = data.result_focus
+    if "operator_prompt" in payload:
+        skill.operator_prompt = data.operator_prompt
+    if "evaluation_metric" in payload:
+        skill.evaluation_metric = data.evaluation_metric
     await session.flush()
     return skill
 
