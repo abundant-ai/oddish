@@ -25,6 +25,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import {
   BookOpen,
   ChevronDown,
+  DollarSign,
   FileText,
   LogOut,
   SearchCheck,
@@ -136,6 +137,21 @@ export function Nav() {
               >
                 <SearchCheck className="h-4 w-4" />
                 <span>Agents</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname.startsWith("/cost") ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/cost"
+                className="flex items-center gap-2"
+                data-active={pathname.startsWith("/cost")}
+              >
+                <DollarSign className="h-4 w-4" />
+                <span>Cost</span>
               </Link>
             </Button>
           </div>
