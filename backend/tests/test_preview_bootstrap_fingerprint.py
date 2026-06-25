@@ -51,9 +51,8 @@ def test_adding_a_column_changes_the_fingerprint():
 
 
 def test_adding_an_index_changes_the_fingerprint():
-    # An index-only model change (e.g. mirroring a migration's unique index onto
-    # the model) must invalidate the cached schema -- create_all only builds
-    # indexes the models declare, so otherwise it would never reach a preview.
+    # An index-only model change must invalidate the cached schema: create_all
+    # only builds indexes the models declare, so otherwise it never reaches a preview.
     mod = _load_bootstrap()
     before = sa.MetaData()
     sa.Table(
