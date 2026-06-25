@@ -1,9 +1,4 @@
-"""Parent-side bridge for the ephemeral out-of-process Harbor engine.
-
-Uses a fake child script (no Harbor/Docker) to exercise the full subprocess
-stream + outcome bridge fast and deterministically. The real older-Harbor child
-is covered separately in ``test_harbor_ephemeral_real.py``.
-"""
+"""Test the ephemeral Harbor bridge."""
 
 from __future__ import annotations
 
@@ -13,11 +8,14 @@ import os
 import sys
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
+from harbor.models.environment_type import EnvironmentType
 from harbor.trial.hooks import TrialEvent
 
+from oddish.core.harbor_source import harbor_git_requirement
 from oddish.workers.harbor import ephemeral as harbor_ephemeral
 from oddish.workers.harbor._entry import _ProbeClaudeCode, _build_job_config
 from oddish.workers.harbor.ephemeral import (
@@ -34,11 +32,6 @@ _EPHEMERAL_HC = {
     "source": "https://github.com/dot-agi/harbor",
     "resolved_sha": "a" * 40,
 }
-
-
-# --------------------------------------------------------------------------- #
-# _bridge_event
-# --------------------------------------------------------------------------- #
 
 
 def test_bridge_event_end_with_reward_and_exception():
@@ -59,22 +52,19 @@ def test_bridge_event_end_with_reward_and_exception():
         trial_id="t-1",
     )
     assert ev.event == TrialEvent.END
-    assert ev.environment is None  # live handle never crosses the boundary
+    assert ev.environment is None
     assert ev.environment_external_id == "sb-9"
     assert ev.result.verifier_result.rewards["reward"] == 1.0
     assert ev.result.exception_info.exception_type == "AgentTimeoutError"
 
 
 def test_bridge_event_non_end_has_no_result():
-    ev = _bridge_event({"event": "agent_start", "trial_id": "t-1"}, trial_id="t-1")
+    ev = _bridge_event(
+        {"event": TrialEvent.AGENT_START.value, "trial_id": "t-1"}, trial_id="t-1"
+    )
     assert ev.event == TrialEvent.AGENT_START
     assert ev.result is None
     assert ev.trial_id == "t-1"
-
-
-# --------------------------------------------------------------------------- #
-# _read_outcome
-# --------------------------------------------------------------------------- #
 
 
 def test_read_outcome_missing_outcome_json_is_non_retryable(tmp_path):
@@ -92,9 +82,7 @@ def test_read_outcome_missing_outcome_json_is_non_retryable(tmp_path):
 
 def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     (tmp_path / "outcome.json").write_text(
-        json.dumps(
-            {"job_dir": str(tmp_path), "job_result_path": None, "error": "boom"}
-        )
+        json.dumps({"job_dir": str(tmp_path), "job_result_path": None, "error": "boom"})
     )
     outcome = _read_outcome(
         outcome_path=tmp_path / "outcome.json",
@@ -108,16 +96,7 @@ def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     assert outcome.error == "boom"
 
 
-# --------------------------------------------------------------------------- #
-# extra_agent_env (minted probe creds) threads to the child's agent
-# --------------------------------------------------------------------------- #
-
-
 def test_build_payload_carries_extra_agent_env():
-    from pathlib import Path
-
-    from harbor.models.environment_type import EnvironmentType
-
     payload = _build_payload(
         task_path=Path("/tmp/task"),
         jobs_dir=Path("/tmp/jobs"),
@@ -151,18 +130,8 @@ def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
     assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
 
 
-# --------------------------------------------------------------------------- #
-# S3: the override Harbor reaches the in-sandbox agent on the ephemeral path
-# --------------------------------------------------------------------------- #
-
-from pathlib import Path  # noqa: E402
-
-from harbor.models.environment_type import EnvironmentType  # noqa: E402
-
-from oddish.core.harbor_source import harbor_git_requirement  # noqa: E402
-
 _SOURCE = "https://github.com/dot-agi/harbor"
-_SHA = "a" * 40  # equals _EPHEMERAL_HC["resolved_sha"] / trial.harbor_sha
+_SHA = "a" * 40
 
 
 def _payload(**over):
@@ -182,7 +151,6 @@ def _payload(**over):
 
 def test_payload_agent_harbor_requirement_is_override_git_req_for_probe_claude_code():
     req = _payload()["agent_harbor_requirement"]
-    # Equals the override git requirement, and the sha matches trial.harbor_sha.
     assert req == harbor_git_requirement(_SOURCE, _SHA)
     assert req == f"harbor @ git+{_SOURCE}@{_SHA}"
     assert _SHA in req
@@ -197,8 +165,6 @@ def test_payload_no_agent_harbor_requirement_for_non_claude_code_agent():
 
 
 def test_payload_agent_harbor_requirement_is_exact_match_not_substring():
-    # The reroute swaps the agent class, so a substring match must NOT trigger
-    # (parity with the in-process _apply_claude_code_probe_harbor exact gate).
     assert _payload(agent="claude-code-custom")["agent_harbor_requirement"] is None
     assert _payload(agent="my-claude-code")["agent_harbor_requirement"] is None
     assert _payload(agent="Claude-Code")["agent_harbor_requirement"] == (
@@ -227,7 +193,6 @@ def test_child_routes_probe_agent_through_installing_subclass(tmp_path):
     assert ac.name is None
     assert ac.import_path.endswith(":_ProbeClaudeCode")
     assert ac.kwargs["harbor_requirement"] == req
-    # The import_path resolves to the installing subclass (no oddish import).
     from harbor.utils.import_path import import_class
 
     assert import_class(ac.import_path) is _ProbeClaudeCode
@@ -275,16 +240,16 @@ async def test_probe_claude_code_installs_override_harbor(tmp_path, monkeypatch)
 
     await agent.install(environment=object())
 
-    assert calls[0] == "super"  # stock CLI install runs first
+    assert calls[0] == "super"
     assert "pip install --user --quiet" in calls[1]
-    assert req in calls[1]  # the override git req (with the trial's sha)
+    assert req in calls[1]
     assert _SHA in calls[1]
 
 
 @pytest.mark.asyncio
-async def test_probe_claude_code_install_is_best_effort_on_failure(tmp_path, monkeypatch):
-    # A harbor pip-install failure must NOT fail the probe trial (parallel to the
-    # in-process test_install_is_best_effort_on_failure).
+async def test_probe_claude_code_install_is_best_effort_on_failure(
+    tmp_path, monkeypatch
+):
     agent = _ProbeClaudeCode(
         logs_dir=tmp_path,
         model_name="claude-sonnet-4-5",
@@ -302,7 +267,6 @@ async def test_probe_claude_code_install_is_best_effort_on_failure(tmp_path, mon
     )
     monkeypatch.setattr(_ProbeClaudeCode, "exec_as_agent", _boom_exec)
 
-    # Must NOT raise.
     await agent.install(environment=object())
 
 
@@ -310,9 +274,7 @@ def test_read_outcome_with_result_json_uses_extractor(tmp_path, monkeypatch):
     result_path = tmp_path / "result.json"
     result_path.write_text("{}")
     (tmp_path / "outcome.json").write_text(
-        json.dumps(
-            {"job_dir": str(tmp_path), "job_result_path": str(result_path)}
-        )
+        json.dumps({"job_dir": str(tmp_path), "job_result_path": str(result_path)})
     )
     sentinel = HarborOutcome(
         reward=1.0,
@@ -352,9 +314,6 @@ def test_harbor_override_import_error_is_non_retryable():
 
 
 def test_spawn_args_requests_daytona_extra_for_daytona_env():
-    # The override Harbor no longer ships the daytona SDK by default (it is an
-    # optional extra), so the ephemeral child MUST install harbor[daytona] or it
-    # raises MissingExtraError when building the sandbox.
     args = harbor_ephemeral._spawn_args(
         _SOURCE, _SHA, environment=EnvironmentType.DAYTONA
     )
@@ -378,30 +337,28 @@ def test_spawn_args_defaults_to_docker_no_extra():
     assert req == harbor_git_requirement(_SOURCE, _SHA)
 
 
-# --------------------------------------------------------------------------- #
-# run_ephemeral_harbor_trial with a fake child (full subprocess flow)
-# --------------------------------------------------------------------------- #
-
 _FAKE_CHILD = textwrap.dedent(
     """
     import json, sys
     payload = json.loads(open(sys.argv[1]).read())
     sentinel = "_oddish_harbor_event"
-    for ev in ("start", "agent_start"):
+    for ev in ("start", "agent-start"):
         print(json.dumps({sentinel: True, "event": ev, "trial_id": payload.get("trial_id")}), flush=True)
     print("harbor: some noisy log line that is not an event", flush=True)
     print(json.dumps({sentinel: True, "event": "end", "trial_id": payload.get("trial_id"),
                       "result": {"verifier_result": {"rewards": {"reward": 1.0}}}}), flush=True)
     open(payload["outcome_path"], "w").write(json.dumps(
         {"job_dir": payload["jobs_dir"], "job_result_path": None,
-         "duration_sec": 0.1, "error": "fake child: no result", "exception_type": None}))
+        "duration_sec": 0.1, "error": "fake child: no result", "exception_type": None}))
     """
 )
 
 
 @pytest.mark.asyncio
 async def test_run_ephemeral_streams_events_and_reads_outcome(tmp_path, monkeypatch):
-    monkeypatch.setattr(harbor_ephemeral, "validate_task_timeout_config", lambda p: None)
+    monkeypatch.setattr(
+        harbor_ephemeral, "validate_task_timeout_config", lambda p: None
+    )
     monkeypatch.setattr(
         harbor_ephemeral, "_check_local_storage_preflight", lambda *a, **k: None
     )
@@ -430,9 +387,7 @@ async def test_run_ephemeral_streams_events_and_reads_outcome(tmp_path, monkeypa
         harbor_config=_EPHEMERAL_HC,
     )
 
-    # Events bridged in order; the noisy non-event log line was ignored.
-    assert seen == ["start", "agent_start", "end"]
-    # No result.json from the fake child -> terminal override error.
+    assert seen == ["start", "agent-start", "end"]
     assert outcome.exception_type == "HarborOverrideImportError"
     assert outcome.job_dir is not None
 
@@ -449,7 +404,9 @@ _SLEEP_CHILD = textwrap.dedent(
 
 @pytest.mark.asyncio
 async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
-    monkeypatch.setattr(harbor_ephemeral, "validate_task_timeout_config", lambda p: None)
+    monkeypatch.setattr(
+        harbor_ephemeral, "validate_task_timeout_config", lambda p: None
+    )
     monkeypatch.setattr(
         harbor_ephemeral, "_check_local_storage_preflight", lambda *a, **k: None
     )
@@ -473,7 +430,6 @@ async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
             harbor_config=_EPHEMERAL_HC,
         )
     )
-    # Wait for the child to come up and record its pid.
     pid_file = jobs_dir / "task.nop.t-cancel" / "pid"
     for _ in range(100):
         if pid_file.exists():
@@ -486,7 +442,6 @@ async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The child (and its group) must be dead, not orphaned.
     for _ in range(100):
         try:
             os.kill(pid, 0)
