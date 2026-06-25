@@ -241,7 +241,10 @@ async def test_daytona_vm_exec_does_not_duplicate_registry_mirror_flag():
     )
     await wrapped(strategy, cmd)
 
+    assert strategy.calls[0]["command"] == cmd
     assert strategy.calls[0]["command"].count("--registry-mirror=") == 1
+    assert strategy.calls[0]["args"] == ()
+    assert strategy.calls[0]["kwargs"] == {}
 
 
 @pytest.mark.asyncio
@@ -362,8 +365,9 @@ async def test_modal_inject_handles_non_object_existing_json(cat_stdout):
 
 
 @pytest.mark.asyncio
-async def test_modal_inject_never_raises():
-    strategy = _ModalCaptureStrategy(cat_stdout="{}", raises_on="cat ")
+@pytest.mark.parametrize("raises_on", ["cat ", "base64 -d", "kill -HUP", "docker info"])
+async def test_modal_inject_never_raises(raises_on):
+    strategy = _ModalCaptureStrategy(cat_stdout="{}", raises_on=raises_on)
     await harbor_patches._inject_mirror_and_reload(strategy)
 
 
