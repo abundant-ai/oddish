@@ -1,0 +1,4 @@
+interface:
+  display_name: "Taiga Pull Problem Artifacts"
+  short_description: "Export Taiga attempts, transcripts, and QA reports"
+  default_prompt: "Use $taiga-pull-problem-artifacts to export attempts, transcripts, and QA reports for this Taiga problem-version URL."

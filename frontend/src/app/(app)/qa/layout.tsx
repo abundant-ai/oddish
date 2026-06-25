@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
 const CONFIG_TABS = [
-  { href: "/qa/presets", label: "Presets" },
   { href: "/qa/skills", label: "Skills" },
   { href: "/qa/documents", label: "Documents" },
 ];

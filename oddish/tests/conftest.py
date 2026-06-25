@@ -16,8 +16,21 @@ import sys
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+
+@pytest_asyncio.fixture
+async def session():
+    """Async DB session that rolls back after each test, leaving the DB clean."""
+    import oddish.db.connection as _conn
+
+    async with _conn.async_session_maker() as s:
+        try:
+            yield s
+        finally:
+            await s.rollback()
 
 
 @pytest.fixture(autouse=True)
