@@ -46,7 +46,7 @@ class _FakeStrategy:
             stdout=self._stdout, stderr=self._stderr, return_code=self._return_code
         )
 
-    def upload_file(self, local_path, target_path):
+    def _stage_file_to_host(self, local_path, target_path):
         with open(local_path, encoding="utf-8") as handle:
             self.uploads.append((handle.read(), target_path))
 
@@ -179,22 +179,6 @@ async def test_login_failure_raises_into_daemon_wait(creds):
 
 
 @pytest.mark.asyncio
-async def test_login_failure_still_restores_previous_config(creds):
-    strategy = _FakeStrategy(raises=RuntimeError("exec failed"))
-    with pytest.raises(RuntimeError, match="Registry login failed"):
-        await harbor_patches._perform_registry_login(strategy)
-    strategy._raises = None
-    strategy.calls.clear()
-
-    await harbor_patches._wrap_stop(lambda _self, delete: _ok(_self))(
-        strategy, delete=True
-    )
-
-    assert len(strategy.calls) == 1
-    assert harbor_patches._RESTORE_DOCKER_CONFIG_CMD == strategy.calls[0][0]
-
-
-@pytest.mark.asyncio
 async def test_login_failure_has_no_secret_cause(creds):
     strategy = _FakeStrategy(raises=RuntimeError("exec failed: secrettoken"))
 
@@ -207,7 +191,7 @@ async def test_login_failure_has_no_secret_cause(creds):
 
 
 @pytest.mark.asyncio
-async def test_login_skips_second_login_before_scrub(creds):
+async def test_login_skips_second_login(creds):
     strategy = _FakeStrategy()
 
     await harbor_patches._perform_registry_login(strategy)
@@ -310,34 +294,6 @@ async def test_login_nonzero_log_redacts_token(creds, caplog):
 
     assert "secrettoken" not in caplog.text
     assert "***" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_scrub_restores_config_then_calls_original(creds):
-    strategy = _FakeStrategy()
-    await harbor_patches._perform_registry_login(strategy)
-    strategy.calls.clear()
-    stopped = []
-
-    async def _orig_stop(_self, delete):
-        assert strategy.calls[0][0] == harbor_patches._RESTORE_DOCKER_CONFIG_CMD
-        stopped.append(delete)
-
-    await harbor_patches._wrap_stop(_orig_stop)(strategy, delete=True)
-    assert stopped == [True]
-
-
-@pytest.mark.asyncio
-async def test_scrub_is_noop_without_credentials():
-    strategy = _FakeStrategy()
-    ran = []
-
-    async def _orig_stop(_self, delete):
-        ran.append(delete)
-
-    await harbor_patches._wrap_stop(_orig_stop)(strategy, delete=False)
-    assert strategy.calls == []
-    assert ran == [False]
 
 
 def test_apply_harbor_patches_is_idempotent(monkeypatch):
@@ -675,7 +631,6 @@ async def test_modal_wait_wrapper_runs_orig_before_inject(monkeypatch):
             lambda: harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec),
             "_oddish_mirror_wrapped",
         ),
-        (lambda: harbor_patches._wrap_stop(_ok), "_oddish_stop_wrapped"),
     ],
 )
 def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
