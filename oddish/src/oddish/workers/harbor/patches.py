@@ -163,7 +163,7 @@ def _daytona_merge_mirror_command(path: str = _DAEMON_JSON_PATH) -> str:
 
 
 def _strip_registry_mirror_flags(command: str) -> str:
-    return re.sub(r"\s+--registry-mirror=\S+", "", command)
+    return re.sub(r"\s+--registry-mirror(?:=\S+|\s+\S+)", "", command)
 
 
 def _daytona_command_with_mirror(command: str) -> str:
@@ -181,7 +181,7 @@ def _daytona_command_with_mirror(command: str) -> str:
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
         f"2>/dev/null; then\n"
         f"if grep -q '{_MIRROR_URL}' {_DAEMON_JSON_PATH} 2>/dev/null; then\n"
-        f"{config_command}\nelse\n{merge} &&\n{config_command}\nfi\n"
+        f"{config_command}\nelse\n{merge} && {{\n{config_command}\n}}\nfi\n"
         f"else\n{mirrored}\nfi"
     )
 

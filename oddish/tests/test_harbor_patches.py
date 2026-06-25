@@ -4,6 +4,7 @@ import base64
 import importlib
 import importlib.machinery
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -283,6 +284,26 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     _assert_shell_parses(sent)
 
 
+@pytest.mark.asyncio
+async def test_daytona_vm_exec_strips_split_registry_mirror_flag():
+    strategy = _CaptureStrategy()
+    wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
+
+    cmd = (
+        "dockerd-entrypoint.sh dockerd --registry-mirror https://example.com "
+        "> /var/log/dockerd.log 2>&1 &"
+    )
+    await wrapped(strategy, cmd)
+
+    sent = strategy.calls[0]["command"]
+    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
+    assert "&& {\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
+    assert "--registry-mirror https://example.com" in sent
+    assert "&& {\ndockerd-entrypoint.sh dockerd --registry-mirror" not in sent
+    assert "&;" not in sent
+    _assert_shell_parses(sent)
+
+
 @pytest.mark.parametrize(
     "initial, expected, expected_extra",
     [
@@ -331,6 +352,41 @@ def test_daytona_merge_mirror_command_preserves_failures(tmp_path):
     assert result.returncode != 0
     assert not daemon_json.exists()
     assert not stale_tmp.exists()
+
+
+def test_daytona_command_with_mirror_stops_when_merge_fails(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    state_dir = tmp_path / "state"
+    bin_dir.mkdir()
+    state_dir.mkdir()
+
+    daemon_json = tmp_path / "daemon.json"
+    daemon_json.write_text('{"registry-mirrors": ["https://example.com"]}')
+    marker = state_dir / "started"
+    entrypoint = bin_dir / "dockerd-entrypoint.sh"
+    entrypoint.write_text('#!/bin/sh\ntouch "$STARTED_FILE"\n')
+    entrypoint.chmod(0o755)
+    monkeypatch.setattr(harbor_patches, "_DAEMON_JSON_PATH", str(daemon_json))
+    monkeypatch.setattr(
+        harbor_patches, "_daytona_merge_mirror_command", lambda: "false"
+    )
+
+    command = harbor_patches._daytona_command_with_mirror(
+        "dockerd-entrypoint.sh dockerd > /dev/null 2>&1 &"
+    )
+    _assert_shell_parses(command)
+    result = subprocess.run(
+        ["sh", "-c", command],
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "STARTED_FILE": str(marker),
+        },
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio
