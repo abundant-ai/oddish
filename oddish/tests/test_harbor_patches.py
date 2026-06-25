@@ -214,16 +214,16 @@ async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
     await wrapped(strategy, cmd, timeout_sec=10)
 
     sent = strategy.calls[0]["command"]
+    assert "grep -q '\"registry-mirrors\"'" in sent
+    assert "grep -q 'https://mirror.gcr.io'" in sent
+    assert 'sed \'s/"registry-mirrors"' in sent
+    assert "mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json" in sent
     assert (
-        sent
-        == "if grep -q '\"registry-mirrors\"' /etc/docker/daemon.json 2>/dev/null; "
-        "then\n"
-        "dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &\n"
         "else\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
         "> /var/log/dockerd.log 2>&1 &\n"
         "fi"
-    )
+    ) in sent
     assert "&;" not in sent
     _assert_shell_parses(sent)
     assert "base64 -d" not in sent
@@ -265,13 +265,15 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
         "then\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com" in sent
     )
-    else_branch = (
+    else_branch = 'else\nsed \'s/"registry-mirrors"'
+    assert else_branch in sent
+    cli_branch = (
         "else\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
         "--registry-mirror=https://example.com"
     )
-    assert else_branch in sent
-    assert sent.index(else_branch) < sent.rindex("> /var/log/dockerd.log")
+    assert cli_branch in sent
+    assert sent.index(cli_branch) < sent.rindex("> /var/log/dockerd.log")
     assert "&;" not in sent
     _assert_shell_parses(sent)
 

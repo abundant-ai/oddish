@@ -144,9 +144,19 @@ def _daytona_command_with_mirror(command: str) -> str:
     before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
     existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
     mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
+    merge = (
+        'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[/'
+        '"registry-mirrors": ["https:\\/\\/mirror.gcr.io", /'
+        "' "
+        f"{_DAEMON_JSON_PATH} > {_DAEMON_JSON_PATH}.tmp && "
+        f"mv {_DAEMON_JSON_PATH}.tmp {_DAEMON_JSON_PATH}"
+    )
     return (
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
-        f"2>/dev/null; then\n{existing}\nelse\n{mirrored}\nfi"
+        f"2>/dev/null; then\n"
+        f"if grep -q '{_MIRROR_URL}' {_DAEMON_JSON_PATH} 2>/dev/null; then\n"
+        f"{existing}\nelse\n{merge}\n{existing}\nfi\n"
+        f"else\n{mirrored}\nfi"
     )
 
 
