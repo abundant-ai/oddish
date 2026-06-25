@@ -6,6 +6,7 @@ import base64
 import importlib
 import json
 import logging
+import re
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -135,27 +136,46 @@ def _raise_for_bad_result(result: Any) -> None:
         raise RuntimeError((stderr or stdout or f"command failed with {code}").strip())
 
 
-def _daytona_command_with_mirror(command: str) -> str:
-    if (
-        _DAYTONA_DOCKERD_MARKER not in command
-        or f"--registry-mirror={_MIRROR_URL}" in command
-    ):
-        return command
-    before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
-    existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
-    mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
-    merge = (
+def _daytona_merge_mirror_command(path: str = _DAEMON_JSON_PATH) -> str:
+    empty = (
+        'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[[[:space:]]*\\]/'
+        '"registry-mirrors": ["https:\\/\\/mirror.gcr.io"]/'
+        "' "
+        f"{path} > {path}.tmp && mv {path}.tmp {path}"
+    )
+    prefix = (
         'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[/'
         '"registry-mirrors": ["https:\\/\\/mirror.gcr.io", /'
         "' "
-        f"{_DAEMON_JSON_PATH} > {_DAEMON_JSON_PATH}.tmp && "
-        f"mv {_DAEMON_JSON_PATH}.tmp {_DAEMON_JSON_PATH}"
+        f"{path} > {path}.tmp && mv {path}.tmp {path}"
     )
+    return (
+        f'if grep -q \'"registry-mirrors"[[:space:]]*:[[:space:]]*'
+        f"\\[[[:space:]]*\\]' {path} 2>/dev/null; then\n"
+        f"{empty}\nelse\n{prefix}\nfi"
+    )
+
+
+def _strip_registry_mirror_flags(command: str) -> str:
+    return re.sub(r"\s+--registry-mirror=\S+", "", command)
+
+
+def _daytona_command_with_mirror(command: str) -> str:
+    if _DAYTONA_DOCKERD_MARKER not in command:
+        return command
+    before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
+    existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
+    config_command = _strip_registry_mirror_flags(existing)
+    if f"--registry-mirror={_MIRROR_URL}" in existing:
+        mirrored = existing
+    else:
+        mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
+    merge = _daytona_merge_mirror_command()
     return (
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
         f"2>/dev/null; then\n"
         f"if grep -q '{_MIRROR_URL}' {_DAEMON_JSON_PATH} 2>/dev/null; then\n"
-        f"{existing}\nelse\n{merge}\n{existing}\nfi\n"
+        f"{config_command}\nelse\n{merge}\n{config_command}\nfi\n"
         f"else\n{mirrored}\nfi"
     )
 

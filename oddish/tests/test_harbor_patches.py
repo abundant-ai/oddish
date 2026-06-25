@@ -241,8 +241,16 @@ async def test_daytona_vm_exec_does_not_duplicate_registry_mirror_flag():
     )
     await wrapped(strategy, cmd)
 
-    assert strategy.calls[0]["command"] == cmd
-    assert strategy.calls[0]["command"].count("--registry-mirror=") == 1
+    sent = strategy.calls[0]["command"]
+    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
+    assert (
+        "else\n"
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "> /var/log/dockerd.log"
+    ) in sent
+    assert sent.count("--registry-mirror=") == 1
+    assert "&;" not in sent
+    _assert_shell_parses(sent)
     assert strategy.calls[0]["args"] == ()
     assert strategy.calls[0]["kwargs"] == {}
 
@@ -261,10 +269,7 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     sent = strategy.calls[0]["command"]
     assert "--registry-mirror=https://mirror.gcr.io" in sent
     assert "--registry-mirror=https://example.com" in sent
-    assert (
-        "then\n"
-        "dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com" in sent
-    )
+    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     else_branch = 'else\nsed \'s/"registry-mirrors"'
     assert else_branch in sent
     cli_branch = (
@@ -276,6 +281,33 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     assert sent.index(cli_branch) < sent.rindex("> /var/log/dockerd.log")
     assert "&;" not in sent
     _assert_shell_parses(sent)
+
+
+@pytest.mark.parametrize(
+    "initial, expected",
+    [
+        (
+            {"registry-mirrors": []},
+            ["https://mirror.gcr.io"],
+        ),
+        (
+            {"registry-mirrors": ["https://example.com"], "iptables": False},
+            ["https://mirror.gcr.io", "https://example.com"],
+        ),
+    ],
+)
+def test_daytona_merge_mirror_command_writes_valid_json(tmp_path, initial, expected):
+    daemon_json = tmp_path / "daemon.json"
+    daemon_json.write_text(json.dumps(initial))
+
+    command = harbor_patches._daytona_merge_mirror_command(str(daemon_json))
+    _assert_shell_parses(command)
+    subprocess.run(["sh", "-c", command], check=True)
+
+    cfg = json.loads(daemon_json.read_text())
+    assert cfg["registry-mirrors"] == expected
+    if "iptables" in initial:
+        assert cfg["iptables"] is False
 
 
 @pytest.mark.asyncio
