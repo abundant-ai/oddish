@@ -22,7 +22,8 @@ export ODDISH_API_KEY="ok_..."
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
-- `oddish cancel` - stop in-flight trial runs or task-level QA jobs
+- `oddish cancel` - stop in-flight task runs, analysis, or verdict jobs
+- `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish delete` - delete task data
@@ -235,6 +236,26 @@ Options
 - `--force`, `-f` - Skip the confirmation prompt
 - `--api TEXT` - Override the API URL
 - `--json` - Emit the cancellation result as JSON (implies `--force`)
+
+## Backfill Analysis
+
+Use `oddish backfill-analysis` to (re)run trial analysis (LLM trajectory classification + task verdict) for an experiment, a task, or a single trial. Pass exactly one of `--experiment`, `--task`, or `--trial`. By default only trials with no successful analysis yet are filled, and trials already analyzed (including ones whose analysis previously failed) are reused — pass `--force` to redo failed or already-complete analyses. The task verdict is recomputed either way.
+
+```bash
+oddish backfill-analysis --task <task_id>
+oddish backfill-analysis --trial <trial_id> --force
+oddish backfill-analysis --experiment <experiment_id> --enable-analysis
+```
+
+Options
+
+- `--experiment TEXT` - Re-analyze all trials in an experiment
+- `--task TEXT` - Re-analyze all trials in a task
+- `--trial TEXT` - Re-analyze a single trial
+- `--force` - Re-run analysis even for trials already analyzed. With `--trial`, re-runs just that trial; with `--task` or `--experiment`, re-runs all their trials.
+- `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
+- `--json` - Emit machine-readable output.
+- `--api TEXT` - Override the API URL
 
 ## Download Outputs
 

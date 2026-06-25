@@ -18,7 +18,9 @@ import {
   XAI,
   Yi,
 } from "@lobehub/icons";
-import { Sparkles } from "lucide-react";
+import { SearchCheck, Sparkles } from "lucide-react";
+
+import { PROBE_AGENT_KEY } from "@/lib/experiment-agent-grouping";
 
 type QueueKeyIconProps = {
   queueKey?: string | null;
@@ -236,6 +238,12 @@ export function QueueKeyIcon({
   className,
   size = 14,
 }: QueueKeyIconProps) {
+  // The synthetic "probe" agent group has no real provider; show a distinct
+  // probe glyph (magnifying glass + check) instead of the unknown-provider star.
+  if (agent === PROBE_AGENT_KEY) {
+    return <SearchCheck size={size} className={className} />;
+  }
+
   const resolvedProvider = resolveProvider({ queueKey, model, agent });
 
   if (resolvedProvider === "openai") {

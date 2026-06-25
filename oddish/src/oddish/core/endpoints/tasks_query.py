@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import (
@@ -25,6 +26,7 @@ from oddish.core.helpers import (
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
+    filter_probe_trials_for_effective_versions,
     get_task_status_trials,
     resolve_effective_version_id,
 )
@@ -53,7 +55,34 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
+from oddish.model_pricing import estimate_cost_usd
 from oddish.timing import TimingRecorder, elapsed_ms, now
+
+
+def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bool]:
+    """Resolve a single browse trial's cost. Mirrors ``_resolve_trial_cost``:
+    prefer the agent's native ``cost_usd``; otherwise token-estimate (CLI
+    agents like cursor-cli / gemini-cli report tokens but no native cost).
+
+    Returns ``(cost_usd, is_estimated)``; ``(None, False)`` when unpriceable.
+    """
+    cost = row["cost_usd"]
+    if cost is not None:
+        return float(cost), False
+    if row["input_tokens"] is None and row["output_tokens"] is None:
+        return None, False
+    from oddish.config import settings
+
+    model_name = settings.normalize_trial_model(row["agent"], row["model"])
+    estimated = estimate_cost_usd(
+        model_name or row["model"],
+        row["input_tokens"],
+        row["output_tokens"],
+        row["cache_tokens"],
+    )
+    if estimated is None:
+        return None, False
+    return estimated, True
 
 
 async def list_tasks_core(
@@ -267,19 +296,21 @@ async def list_tasks_core(
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
+        effective_by_task: dict[str, str | None] = {}
         for task in tasks:
             if experiment_id:
                 # ``task.trials`` is already scoped to this experiment's
                 # non-probe trials by the filtered selectin load above (probes
-                # have their own tab via ``list_experiment_probes_core``, and
-                # excluding them before resolving the effective version stops a
-                # probe-only version from skewing it). Resolve the experiment's
-                # effective version from that scoped set, then drop superseded /
-                # off-version trials -- identical result to before, without
-                # re-filtering in Python.
+                # are loaded separately by version and merged into task.trials
+                # below, so excluding them here stops a probe-only version from
+                # skewing the effective version resolution). Resolve the
+                # experiment's effective version from that scoped set, then drop
+                # superseded / off-version trials -- identical result to before,
+                # without re-filtering in Python.
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
+                effective_by_task[task.id] = effective
                 set_committed_value(
                     task,
                     "trials",
@@ -287,6 +318,31 @@ async def list_tasks_core(
                 )
             else:
                 set_committed_value(task, "trials", get_task_status_trials(task))
+
+        # Probe trials are not loaded by the experiment selectin (it filters
+        # ``is_probe.is_(False)``). Surface them as their own "Probe" group by
+        # batch-loading every task's probes and keeping only those on the same
+        # effective version the matrix displays -- ``experiment_id`` is ignored
+        # so cross-experiment probes on that version still show. Loaded with
+        # full columns (probe volume per task is tiny), so the response builder
+        # never lazy-loads -> no MissingGreenlet.
+        if experiment_id and tasks:
+            task_ids = [task.id for task in tasks]
+            probe_stmt = select(TrialModel).where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.is_probe.is_(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            if org_id is not None:
+                probe_stmt = probe_stmt.where(TrialModel.org_id == org_id)
+            probe_rows = (await session.execute(probe_stmt)).scalars().all()
+            probes_by_task = filter_probe_trials_for_effective_versions(
+                probe_rows, effective_by_task
+            )
+            for task in tasks:
+                extra = probes_by_task.get(task.id)
+                if extra:
+                    set_committed_value(task, "trials", [*task.trials, *extra])
 
     if include_trials:
         visible_jobs_started_at = now()
@@ -667,6 +723,10 @@ async def browse_tasks_core(
     experiments_by_task: dict[str, list[TaskBrowseExperiment]] = {}
     latest_trials_by_task: dict[str, list[TaskBrowseTrial]] = {}
     counters_by_task: dict[str, dict] = {}
+    # Per-task cost rollup (token-estimated for CLI agents that report tokens
+    # but no native cost_usd). Folded into the trials loop below to avoid an
+    # extra query. Mirrors the task-detail TaskCostTotals fields.
+    cost_by_task: dict[str, dict] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -764,6 +824,12 @@ async def browse_tasks_core(
                 TrialModel.status.label("trial_status"),
                 TrialModel.reward.label("reward"),
                 TrialModel.error_message.label("error_message"),
+                TrialModel.agent.label("agent"),
+                TrialModel.model.label("model"),
+                TrialModel.cost_usd.label("cost_usd"),
+                TrialModel.input_tokens.label("input_tokens"),
+                TrialModel.output_tokens.label("output_tokens"),
+                TrialModel.cache_tokens.label("cache_tokens"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
@@ -789,7 +855,8 @@ async def browse_tasks_core(
                 "Browse trials query",
             )
         for trial_row in latest_trial_rows.mappings():
-            latest_trials_by_task.setdefault(str(trial_row["task_id"]), []).append(
+            task_key = str(trial_row["task_id"])
+            latest_trials_by_task.setdefault(task_key, []).append(
                 TaskBrowseTrial(
                     id=str(trial_row["trial_id"]),
                     name=str(trial_row["trial_name"]),
@@ -798,6 +865,23 @@ async def browse_tasks_core(
                     error_message=trial_row["error_message"],
                 )
             )
+            resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
+            if resolved_cost is not None:
+                agg = cost_by_task.setdefault(
+                    task_key,
+                    {
+                        "cost_usd": 0.0,
+                        "cost_trial_count": 0,
+                        "cost_has_estimated": False,
+                        "cost_has_native": False,
+                    },
+                )
+                agg["cost_usd"] += resolved_cost
+                agg["cost_trial_count"] += 1
+                if cost_estimated:
+                    agg["cost_has_estimated"] = True
+                else:
+                    agg["cost_has_native"] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -857,6 +941,19 @@ async def browse_tasks_core(
                 last_run_at=row["last_run_at"],
                 link=row["link"],
                 github_meta=_parse_github_meta(row["tags"]),
+                cost_usd=float(
+                    cost_by_task.get(str(row["task_id"]), {}).get("cost_usd") or 0.0
+                ),
+                cost_trial_count=int(
+                    cost_by_task.get(str(row["task_id"]), {}).get("cost_trial_count")
+                    or 0
+                ),
+                cost_has_estimated=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get("cost_has_estimated")
+                ),
+                cost_has_native=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get("cost_has_native")
+                ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
                 user_tags=[

@@ -51,6 +51,7 @@ export async function GET(request: NextRequest) {
     const experimentsAuthor = searchParams.get("experiments_author");
     const experimentsAuthorQuery = searchParams.get("experiments_author_query");
     const usageMinutes = searchParams.get("usage_minutes");
+    const includeQueues = searchParams.get("include_queues");
     const includeTasks = searchParams.get("include_tasks");
     const includeUsage = searchParams.get("include_usage");
     const includeExperiments = searchParams.get("include_experiments");
@@ -74,6 +75,7 @@ export async function GET(request: NextRequest) {
     if (experimentsStatus) params.experiments_status = experimentsStatus;
     if (experimentsAuthor) params.experiments_author = experimentsAuthor;
     if (usageMinutes) params.usage_minutes = usageMinutes;
+    if (includeQueues) params.include_queues = includeQueues;
     if (includeTasks) params.include_tasks = includeTasks;
     if (includeUsage) params.include_usage = includeUsage;
     if (includeExperiments) params.include_experiments = includeExperiments;
