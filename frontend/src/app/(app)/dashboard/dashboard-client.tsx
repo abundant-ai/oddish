@@ -1,9 +1,15 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import useSWR, { useSWRConfig } from "swr";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -853,20 +859,25 @@ export function DashboardClient({
   initialOffset = 0,
 }: DashboardClientProps) {
   const { mutate } = useSWRConfig();
+  const router = useRouter();
   const pathname = usePathname();
-  const [experimentsOffset, setExperimentsOffset] = useState(initialOffset);
+  const [isPending, startTransition] = useTransition();
+
+  // Selection filters (Org/Mine, member, status) and the page are driven by the
+  // URL and resolved on the server, so the applied values come straight from the
+  // SSR props; changing one navigates (router.push) to re-render server-side.
+  const authorFilter = initialAuthor;
+  const statusFilter = initialStatus;
+  const experimentsOffset = initialOffset;
+  const currentExperimentsPage =
+    Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
+
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const deferredSearchQuery = useDeferredValue(searchQuery);
-  const [statusFilter, setStatusFilter] = useState(initialStatus);
-  const [authorFilter, setAuthorFilter] = useState(initialAuthor);
+
   const members = useOrgMembers();
-  // The SSR payload matches the initial (URL-derived) filters, so use it as the
-  // experiments fallback until the user changes a filter away from that view.
-  const matchesInitialView =
-    experimentsOffset === initialOffset &&
-    deferredSearchQuery === initialQuery &&
-    statusFilter === initialStatus &&
-    authorFilter === initialAuthor;
+
+  const matchesInitialView = deferredSearchQuery === initialQuery;
   const experimentsFallbackData =
     matchesInitialView && initialDashboardData?.experiments != null
       ? initialDashboardData
@@ -886,8 +897,6 @@ export function DashboardClient({
     authorFilter,
     experimentsFallbackData,
   );
-  const currentExperimentsPage =
-    Math.floor(experimentsOffset / EXPERIMENTS_PAGE_SIZE) + 1;
   const isDefaultOrgExperimentsEmpty =
     experiments.length === 0 &&
     !hasMoreExperiments &&
@@ -898,60 +907,84 @@ export function DashboardClient({
     statusFilter === "all" &&
     authorFilter === "all";
 
-  // Preserve the deep-linked page on first render; reset to page 1 only when
-  // the user actually changes a filter afterwards.
-  const isInitialFilterMount = useRef(true);
-  useEffect(() => {
-    if (isInitialFilterMount.current) {
-      isInitialFilterMount.current = false;
-      return;
-    }
-    setExperimentsOffset(0);
-  }, [deferredSearchQuery, statusFilter, authorFilter]);
-
-  // Mirror the active filters into the URL so the view is shareable. We use
-  // history.replaceState (not router.replace) to update the address bar without
-  // triggering a server navigation / RSC refetch on every filter change.
-  useEffect(() => {
+  // Build a dashboard URL for the given selection/page, preserving the current
+  // search. Defaults are omitted so the clean view stays "/dashboard".
+  const buildFilterHref = (overrides: {
+    author?: string;
+    status?: string;
+    page?: number;
+  }) => {
+    const author = overrides.author ?? authorFilter;
+    const status = overrides.status ?? statusFilter;
+    const page = overrides.page ?? 1;
+    const query = deferredSearchQuery.trim();
     const params = new URLSearchParams();
-    if (authorFilter !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR) {
-      params.set("author", authorFilter);
+    if (author !== DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR) {
+      params.set("author", author);
     }
-    if (statusFilter !== "all") {
-      params.set("status", statusFilter);
+    if (status !== "all") {
+      params.set("status", status);
     }
-    const trimmedQuery = deferredSearchQuery.trim();
-    if (trimmedQuery) {
-      params.set("q", trimmedQuery);
+    if (query) {
+      params.set("q", query);
     }
-    if (currentExperimentsPage > 1) {
-      params.set("page", String(currentExperimentsPage));
+    if (page > 1) {
+      params.set("page", String(page));
     }
     const queryString = params.toString();
-    const nextUrl = queryString ? `${pathname}?${queryString}` : pathname;
-    if (nextUrl !== window.location.pathname + window.location.search) {
-      window.history.replaceState(null, "", nextUrl);
-    }
-  }, [
-    deferredSearchQuery,
-    statusFilter,
-    authorFilter,
-    currentExperimentsPage,
-    pathname,
-  ]);
-
-  const handlePreviousExperimentsPage = () => {
-    setExperimentsOffset((prev) => Math.max(0, prev - EXPERIMENTS_PAGE_SIZE));
+    return queryString ? `${pathname}?${queryString}` : pathname;
   };
 
+  // Selection / pagination changes navigate so the server re-renders the view.
+  const navigateToFilters = (overrides: {
+    author?: string;
+    status?: string;
+    page?: number;
+  }) => {
+    startTransition(() =>
+      router.push(buildFilterHref(overrides), { scroll: false }),
+    );
+  };
+
+  const handleAuthorFilterChange = (author: string) =>
+    navigateToFilters({ author });
+  const handleStatusFilterChange = (status: string) =>
+    navigateToFilters({ status });
+  const handlePreviousExperimentsPage = () => {
+    if (currentExperimentsPage <= 1) return;
+    navigateToFilters({ page: currentExperimentsPage - 1 });
+  };
   const handleNextExperimentsPage = () => {
     if (!hasMoreExperiments) return;
-    setExperimentsOffset((prev) => prev + EXPERIMENTS_PAGE_SIZE);
+    navigateToFilters({ page: currentExperimentsPage + 1 });
   };
 
   const handleRefreshCurrentPage = async () => {
     await mutate(experimentsSwrKey);
   };
+
+  // Mirror the client-side search into the URL (no SSR nav) for shareability,
+  // resetting to page 1. Skips the first render so a deep-linked page is kept.
+  const isInitialSearchMount = useRef(true);
+  useEffect(() => {
+    if (isInitialSearchMount.current) {
+      isInitialSearchMount.current = false;
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const query = deferredSearchQuery.trim();
+    if (query) {
+      params.set("q", query);
+    } else {
+      params.delete("q");
+    }
+    params.delete("page");
+    const queryString = params.toString();
+    const nextUrl = queryString ? `${pathname}?${queryString}` : pathname;
+    if (nextUrl !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, "", nextUrl);
+    }
+  }, [deferredSearchQuery, pathname]);
 
   return (
     <div className="space-y-4">
@@ -962,19 +995,21 @@ export function DashboardClient({
         searchQuery={searchQuery}
         onSearchQueryChange={setSearchQuery}
         statusFilter={statusFilter}
-        onStatusFilterChange={setStatusFilter}
+        onStatusFilterChange={handleStatusFilterChange}
         authorFilter={authorFilter}
-        onAuthorFilterChange={setAuthorFilter}
+        onAuthorFilterChange={handleAuthorFilterChange}
         members={members}
         error={experimentsError}
         isLoading={isExperimentsLoading}
         hasMoreExperiments={hasMoreExperiments}
         onPreviousExperimentsPage={handlePreviousExperimentsPage}
         onNextExperimentsPage={handleNextExperimentsPage}
-        isPageTransitioning={isExperimentsLoading || isExperimentsValidating}
+        isPageTransitioning={
+          isExperimentsLoading || isExperimentsValidating || isPending
+        }
         onRefreshData={handleRefreshCurrentPage}
         currentExperimentsPage={currentExperimentsPage}
-        onViewOrgExperiments={() => setAuthorFilter("all")}
+        onViewOrgExperiments={() => handleAuthorFilterChange("all")}
       />
     </div>
   );
