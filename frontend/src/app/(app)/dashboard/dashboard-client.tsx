@@ -415,7 +415,6 @@ function RecentTasksCard({
             Showing {experiments.length}
             {" • "}
             Page {currentExperimentsPage}
-            {isPageTransitioning ? " • Loading..." : ""}
           </div>
         </div>
         <div className="flex flex-1 flex-wrap gap-2 sm:justify-end">
