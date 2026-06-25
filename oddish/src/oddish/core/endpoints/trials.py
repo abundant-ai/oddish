@@ -24,7 +24,6 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
-    utcnow,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -71,12 +70,7 @@ async def retry_trial_core(
 ) -> dict[str, str]:
     """Create a new trial that replaces an old one."""
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    old_trial = await session.get(
-        TrialModel,
-        old_trial.id,
-        populate_existing=True,
-        with_for_update=True,
-    )
+    old_trial = await session.get(TrialModel, old_trial.id)
     if old_trial is None:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
@@ -103,7 +97,7 @@ async def retry_trial_core(
             ),
         )
 
-    task = await session.get(TaskModel, old_trial.task_id, with_for_update=True)
+    task = await session.get(TaskModel, old_trial.task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
@@ -134,13 +128,42 @@ async def retry_trial_core(
     session.add(new_trial)
     await session.flush()
 
-    old_trial.superseded_by_trial_id = new_trial_id
-    if old_trial.status not in terminal_states:
-        old_trial.status = TrialStatus.FAILED
-        old_trial.error_message = old_trial.error_message or "Superseded by user retry"
-        old_trial.finished_at = old_trial.finished_at or utcnow()
-        old_trial.current_worker_id = None
-        old_trial.current_queue_slot = None
+    cas = await session.execute(
+        text(
+            """
+            UPDATE trials
+            SET    superseded_by_trial_id = :new_trial_id,
+                   status = CASE
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       THEN 'FAILED'::jobstatus ELSE status END,
+                   error_message = CASE
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       THEN COALESCE(error_message, 'Superseded by user retry')
+                       ELSE error_message END,
+                   finished_at = CASE
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       THEN COALESCE(finished_at, NOW()) ELSE finished_at END,
+                   current_worker_id = CASE
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       THEN NULL ELSE current_worker_id END,
+                   current_queue_slot = CASE
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       THEN NULL ELSE current_queue_slot END
+            WHERE  id = :old_trial_id
+              AND  superseded_by_trial_id IS NULL
+            """
+        ),
+        {"new_trial_id": new_trial_id, "old_trial_id": old_trial.id},
+    )
+    if cas.rowcount == 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This trial was just superseded by another retry; "
+                "retry the new trial instead"
+            ),
+        )
+    session.expire(old_trial)
 
     if registry_auth:
         registry_auth_enc = encrypt_credentials(

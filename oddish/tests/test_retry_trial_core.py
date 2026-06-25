@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from harbor.trial.hooks import TrialEvent
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -20,8 +21,9 @@ from oddish.workers.harbor.outcome import HarborOutcome
 
 
 class _Result:
-    def __init__(self, scalar=None):
+    def __init__(self, scalar=None, rowcount=0):
         self._scalar = scalar
+        self.rowcount = rowcount
 
     def scalar_one_or_none(self):
         return self._scalar
@@ -72,8 +74,25 @@ class _RecordingSession:
         self.added = []
 
     async def execute(self, _statement, _params=None):
-        self.events.append(("execute", str(_statement)))
+        sql = str(_statement)
+        self.events.append(("execute", sql))
+        if "UPDATE trials" in sql and "superseded_by_trial_id IS NULL" in sql:
+            if self.trial.superseded_by_trial_id is not None:
+                return _Result(rowcount=0)
+            terminal = self.trial.status in {TrialStatus.FAILED, TrialStatus.SUCCESS}
+            self.trial.superseded_by_trial_id = _params["new_trial_id"]
+            if not terminal:
+                self.trial.status = TrialStatus.FAILED
+                self.trial.error_message = (
+                    self.trial.error_message or "Superseded by user retry"
+                )
+                self.trial.current_worker_id = None
+                self.trial.current_queue_slot = None
+            return _Result(rowcount=1)
         return _Result(scalar=self.trial)
+
+    def expire(self, _obj):
+        self.events.append(("expire", None))
 
     async def scalar(self, _statement, _params=None):
         self.events.append(("scalar", None))
@@ -147,6 +166,49 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
     assert event_names.index("add") < event_names.index("flush")
     assert event_names.index("flush") < event_names.index("supersede")
     assert any("kind::text IN ('QA', 'VERDICT')" in str(event[1]) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_retry_lost_race_raises_409_and_does_not_enqueue(monkeypatch):
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.SUCCESS)
+    task = SimpleNamespace(
+        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    enqueued = []
+
+    async def fake_enqueue_trial_worker_job(_session, *, trial_id, **_):
+        enqueued.append(trial_id)
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    real_execute = session.execute
+
+    async def racing_execute(_statement, _params=None):
+        sql = str(_statement)
+        if "UPDATE trials" in sql and "superseded_by_trial_id IS NULL" in sql:
+            trial._superseded_by_trial_id = "task-1-99"
+        return await real_execute(_statement, _params)
+
+    session.execute = racing_execute
+
+    with pytest.raises(HTTPException) as exc:
+        await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
+
+    assert exc.value.status_code == 409
+    assert enqueued == []
+    assert ("commit", None) not in events
+    assert trial.superseded_by_trial_id == "task-1-99"
 
 
 @pytest.mark.asyncio
