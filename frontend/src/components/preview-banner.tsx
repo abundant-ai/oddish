@@ -50,13 +50,12 @@ export function PreviewBanner() {
   const prTitle = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE || "";
   const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
   const prLabel = prNumber ? `PR #${prNumber}` : "View PR";
+  const prText = prTitle ? `${prLabel} "${prTitle}"` : prLabel;
 
   return (
     <div className="sticky top-0 z-50 h-[var(--preview-banner-h)] border-b border-amber-400/40 bg-amber-100 text-amber-950 dark:border-amber-300/25 dark:bg-amber-500/15 dark:text-amber-100">
       <div className="mx-auto flex h-full max-w-(--breakpoint-2xl) items-center gap-x-3 overflow-hidden px-4 text-[11px] leading-none whitespace-nowrap">
         <span className="font-semibold tracking-wider uppercase">Preview</span>
-        <LabeledTarget label="Backend" value={backendLabel} url={backendUrl} />
-        <LabeledTarget label="DB" value={databaseLabel} url={databaseUrl} />
         {prUrl ? (
           <a
             href={prUrl}
@@ -64,9 +63,11 @@ export function PreviewBanner() {
             rel="noopener noreferrer"
             className={`min-w-0 truncate font-medium ${linkClass}`}
           >
-            {prTitle ? `${prLabel}: ${prTitle}` : prLabel}
+            {prText}
           </a>
         ) : null}
+        <LabeledTarget label="Backend" value={backendLabel} url={backendUrl} />
+        <LabeledTarget label="Database" value={databaseLabel} url={databaseUrl} />
       </div>
     </div>
   );
