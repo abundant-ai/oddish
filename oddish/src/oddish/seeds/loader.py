@@ -20,6 +20,10 @@ def _frontmatter_name_desc(skill_md: str) -> tuple[str, str]:
 
 def load_seed_bundles() -> list[dict]:
     root = Path(__file__).parent / "skillz"
+    if not root.is_dir():
+        # Vendored seeds removed (e.g. switched to a load-from-repo script):
+        # a fresh-DB migration becomes a clean no-op instead of erroring.
+        return []
     bundles: list[dict] = []
     for child in sorted(root.iterdir()):
         if not child.is_dir():
