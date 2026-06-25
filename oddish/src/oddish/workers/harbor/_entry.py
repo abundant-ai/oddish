@@ -32,6 +32,7 @@ if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
     sys.path.pop(0)
 
 import asyncio  # noqa: E402
+import importlib.util  # noqa: E402
 import json  # noqa: E402
 import logging  # noqa: E402
 import shlex  # noqa: E402
@@ -47,6 +48,17 @@ logger = logging.getLogger("oddish.harbor_entry")
 # Event sentinel so the parent can distinguish our NDJSON event lines from any
 # other stdout Harbor (or its deps) may emit.
 EVENT_SENTINEL = "_oddish_harbor_event"
+
+
+def _apply_sibling_harbor_patches() -> None:
+    spec = importlib.util.spec_from_file_location(
+        "_oddish_harbor_patches", Path(_THIS_DIR) / "patches.py"
+    )
+    if spec is None or spec.loader is None:
+        return
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.apply_harbor_patches()
 
 
 def _emit_event_line(payload: dict[str, Any]) -> None:
@@ -131,7 +143,9 @@ class _ProbeClaudeCode(ClaudeCode):
     in-sandbox agent imports the SAME Harbor that scored the trial (S3).
     """
 
-    def __init__(self, *args: Any, harbor_requirement: str | None = None, **kwargs: Any):
+    def __init__(
+        self, *args: Any, harbor_requirement: str | None = None, **kwargs: Any
+    ):
         super().__init__(*args, **kwargs)
         self._harbor_requirement = harbor_requirement
 
@@ -141,9 +155,7 @@ class _ProbeClaudeCode(ClaudeCode):
             return
         # Best-effort: a harbor-install failure must not fail the whole trial
         # (mirrors OddishClaudeCode / stage_harbor_source).
-        command = (
-            f"pip install --user --quiet {shlex.quote(self._harbor_requirement)}"
-        )
+        command = f"pip install --user --quiet {shlex.quote(self._harbor_requirement)}"
         try:
             await self.exec_as_agent(environment, command=command)
         except Exception:
@@ -164,7 +176,9 @@ def _build_job_config(payload: dict[str, Any]):
         VerifierConfig,
     )
 
-    env_config = EnvironmentConfig.model_validate(payload.get("environment_config") or {})
+    env_config = EnvironmentConfig.model_validate(
+        payload.get("environment_config") or {}
+    )
     env_config.type = EnvironmentType(payload["environment"])
     if env_config.type == EnvironmentType.DAYTONA and payload.get("daytona_kwargs"):
         env_config.kwargs = {**payload["daytona_kwargs"], **(env_config.kwargs or {})}
@@ -216,6 +230,7 @@ def _build_job_config(payload: dict[str, Any]):
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
     from harbor import Job
 
+    _apply_sibling_harbor_patches()
     start = time.time()
     config = _build_job_config(payload)
     job = await Job.create(config)

@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import base64
+import importlib.machinery
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest  # noqa: E402
 
 from oddish.workers.harbor import patches as harbor_patches  # noqa: E402
+from oddish.workers.harbor import _entry as harbor_entry  # noqa: E402
 
 
 class _FakeStrategy:
@@ -102,6 +104,93 @@ def test_apply_harbor_patches_is_idempotent(monkeypatch):
     assert calls == {"diag": 1, "daytona_mirror": 1, "modal_mirror": 1}
 
 
+def test_install_method_patch_replaces_target_once(monkeypatch):
+    module_name = "fake_harbor_module"
+    module = ModuleType(module_name)
+
+    async def original(_self):
+        return None
+
+    def wrap(orig):
+        async def wrapped(_self):
+            return await orig(_self)
+
+        setattr(wrapped, "_patched", True)
+        return wrapped
+
+    class FakeDind:
+        target = original
+
+    module.FakeDind = FakeDind
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    harbor_patches._install_method_patch(
+        module_name,
+        "FakeDind",
+        "target",
+        wrap,
+        marker="_patched",
+        label="test",
+    )
+    first = FakeDind.target
+    harbor_patches._install_method_patch(
+        module_name,
+        "FakeDind",
+        "target",
+        wrap,
+        marker="_patched",
+        label="test",
+    )
+
+    assert first is not original
+    assert FakeDind.target is first
+    assert getattr(FakeDind.target, "_patched") is True
+
+
+def test_install_method_patch_skips_missing_targets(monkeypatch):
+    module_name = "fake_harbor_missing"
+    module = ModuleType(module_name)
+    calls: list[object] = []
+
+    class FakeDind:
+        pass
+
+    module.FakeDind = FakeDind
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    def wrap(orig):
+        calls.append(orig)
+        return orig
+
+    harbor_patches._install_method_patch(
+        "not_a_real_harbor_module",
+        "FakeDind",
+        "target",
+        wrap,
+        marker="_patched",
+        label="test",
+    )
+    harbor_patches._install_method_patch(
+        module_name,
+        "FakeDind",
+        "target",
+        wrap,
+        marker="_patched",
+        label="test",
+    )
+    harbor_patches._install_method_patch(
+        module_name,
+        "MissingDind",
+        "target",
+        wrap,
+        marker="_patched",
+        label="test",
+    )
+
+    assert calls == []
+    assert not hasattr(FakeDind, "target")
+
+
 class _CaptureStrategy:
     def __init__(self):
         self.calls: list[dict] = []
@@ -112,7 +201,7 @@ class _CaptureStrategy:
 
 
 @pytest.mark.asyncio
-async def test_daytona_vm_exec_prepends_daemon_json_for_dockerd():
+async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
     strategy = _CaptureStrategy()
     wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
 
@@ -120,11 +209,43 @@ async def test_daytona_vm_exec_prepends_daemon_json_for_dockerd():
     await wrapped(strategy, cmd, timeout_sec=10)
 
     sent = strategy.calls[0]["command"]
-    assert sent.endswith(cmd)
-    assert "/etc/docker/daemon.json" in sent
-    assert '{"registry-mirrors": ["https://mirror.gcr.io"]}' in sent
-    assert sent.index("daemon.json") < sent.index("dockerd-entrypoint.sh")
+    assert "--registry-mirror=https://mirror.gcr.io" in sent
+    assert sent.endswith("> /var/log/dockerd.log 2>&1 &")
+    assert "/etc/docker/daemon.json" not in sent
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
+
+
+@pytest.mark.asyncio
+async def test_daytona_vm_exec_does_not_duplicate_registry_mirror_flag():
+    strategy = _CaptureStrategy()
+    wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
+
+    cmd = (
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "> /var/log/dockerd.log 2>&1 &"
+    )
+    await wrapped(strategy, cmd)
+
+    assert strategy.calls[0]["command"].count("--registry-mirror=") == 1
+
+
+@pytest.mark.asyncio
+async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
+    strategy = _CaptureStrategy()
+    wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
+
+    cmd = (
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com "
+        "> /var/log/dockerd.log 2>&1 &"
+    )
+    await wrapped(strategy, cmd)
+
+    sent = strategy.calls[0]["command"]
+    assert "--registry-mirror=https://mirror.gcr.io" in sent
+    assert "--registry-mirror=https://example.com" in sent
+    assert sent.index("--registry-mirror=https://mirror.gcr.io") < sent.index(
+        "> /var/log/dockerd.log"
+    )
 
 
 @pytest.mark.asyncio
@@ -140,16 +261,21 @@ async def test_daytona_vm_exec_passes_other_commands_through():
 
 
 class _ModalCaptureStrategy:
-    def __init__(self, *, cat_stdout, info_stdout="", raises_on=None):
+    def __init__(
+        self, *, cat_stdout, info_stdout="", raises_on=None, bad_result_on=None
+    ):
         self._cat_stdout = cat_stdout
         self._info_stdout = info_stdout
         self._raises_on = raises_on
+        self._bad_result_on = bad_result_on
         self.calls: list[dict] = []
 
-    async def _vm_exec(self, command, env=None, timeout_sec=None):
-        self.calls.append({"command": command, "env": env})
+    async def _vm_exec(self, command, timeout_sec=None):
+        self.calls.append({"command": command, "timeout_sec": timeout_sec})
         if self._raises_on is not None and self._raises_on in command:
             raise RuntimeError("vm gone")
+        if self._bad_result_on is not None and self._bad_result_on in command:
+            return SimpleNamespace(stdout="", stderr="write failed", return_code=1)
         if command.startswith("cat "):
             return SimpleNamespace(stdout=self._cat_stdout, stderr="", return_code=0)
         if command.startswith("docker info"):
@@ -157,22 +283,33 @@ class _ModalCaptureStrategy:
         return SimpleNamespace(stdout="", stderr="", return_code=0)
 
 
+def _written_daemon_json(strategy):
+    write = next(c for c in strategy.calls if "base64 -d" in c["command"])
+    encoded = write["command"].split("printf %s '", 1)[1].split("'", 1)[0]
+    return json.loads(base64.b64decode(encoded).decode())
+
+
 @pytest.mark.asyncio
 async def test_modal_inject_merges_and_reloads():
     strategy = _ModalCaptureStrategy(
-        cat_stdout='{"iptables": false, "bridge": "none"}',
+        cat_stdout=(
+            '{"iptables": false, "bridge": "none", '
+            '"registry-mirrors": ["https://example.com"]}'
+        ),
         info_stdout='["https://mirror.gcr.io/"]',
     )
 
     await harbor_patches._inject_mirror_and_reload(strategy)
 
-    write = next(c for c in strategy.calls if c["env"])
-    decoded = base64.b64decode(write["env"]["ODDISH_DAEMON_JSON_B64"]).decode()
-    cfg = json.loads(decoded)
+    cfg = _written_daemon_json(strategy)
     assert cfg["iptables"] is False
     assert cfg["bridge"] == "none"
-    assert cfg["registry-mirrors"] == ["https://mirror.gcr.io"]
+    assert cfg["registry-mirrors"] == [
+        "https://mirror.gcr.io",
+        "https://example.com",
+    ]
 
+    assert any(".tmp && mv" in c["command"] for c in strategy.calls)
     assert any("kill -HUP" in c["command"] for c in strategy.calls)
 
 
@@ -182,9 +319,9 @@ async def test_modal_inject_handles_invalid_existing_json():
 
     await harbor_patches._inject_mirror_and_reload(strategy)
 
-    write = next(c for c in strategy.calls if c["env"])
-    cfg = json.loads(base64.b64decode(write["env"]["ODDISH_DAEMON_JSON_B64"]).decode())
-    assert cfg == {"registry-mirrors": ["https://mirror.gcr.io"]}
+    assert _written_daemon_json(strategy) == {
+        "registry-mirrors": ["https://mirror.gcr.io"]
+    }
 
 
 @pytest.mark.asyncio
@@ -194,15 +331,27 @@ async def test_modal_inject_handles_non_object_existing_json(cat_stdout):
 
     await harbor_patches._inject_mirror_and_reload(strategy)
 
-    write = next(c for c in strategy.calls if c["env"])
-    cfg = json.loads(base64.b64decode(write["env"]["ODDISH_DAEMON_JSON_B64"]).decode())
-    assert cfg == {"registry-mirrors": ["https://mirror.gcr.io"]}
+    assert _written_daemon_json(strategy) == {
+        "registry-mirrors": ["https://mirror.gcr.io"]
+    }
 
 
 @pytest.mark.asyncio
 async def test_modal_inject_never_raises():
     strategy = _ModalCaptureStrategy(cat_stdout="{}", raises_on="cat ")
     await harbor_patches._inject_mirror_and_reload(strategy)
+
+
+@pytest.mark.asyncio
+async def test_modal_inject_stops_when_atomic_write_fails():
+    strategy = _ModalCaptureStrategy(cat_stdout="{}", bad_result_on="base64 -d")
+
+    await harbor_patches._inject_mirror_and_reload(strategy)
+
+    commands = [c["command"] for c in strategy.calls]
+    assert any("base64 -d" in command for command in commands)
+    assert not any("kill -HUP" in command for command in commands)
+    assert not any(command.startswith("docker info") for command in commands)
 
 
 @pytest.mark.asyncio
@@ -239,3 +388,68 @@ async def test_modal_wait_wrapper_runs_orig_before_inject(monkeypatch):
 )
 def test_wrappers_set_marker_to_prevent_double_wrap(make_wrapped, attr):
     assert getattr(make_wrapped(), attr, False) is True
+
+
+def test_entry_applies_sibling_harbor_patches(monkeypatch):
+    calls: list[str] = []
+
+    class Loader:
+        def create_module(self, spec):
+            return ModuleType(spec.name)
+
+        def exec_module(self, module):
+            module.apply_harbor_patches = lambda: calls.append("patched")
+
+    def _fake_spec(name, path):
+        assert name == "_oddish_harbor_patches"
+        assert path.name == "patches.py"
+        return importlib.machinery.ModuleSpec(name, Loader())
+
+    monkeypatch.setattr(
+        harbor_entry.importlib.util, "spec_from_file_location", _fake_spec
+    )
+
+    harbor_entry._apply_sibling_harbor_patches()
+
+    assert calls == ["patched"]
+
+
+@pytest.mark.asyncio
+async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path):
+    order: list[str] = []
+    harbor_module = ModuleType("harbor")
+
+    class FakeJob:
+        job_dir = str(tmp_path)
+
+        @classmethod
+        async def create(cls, _config):
+            order.append("create")
+            return cls()
+
+        def __getattr__(self, name):
+            if name.startswith("on_"):
+                return lambda _hook: None
+            raise AttributeError(name)
+
+        async def run(self):
+            order.append("run")
+
+    harbor_module.Job = FakeJob
+    monkeypatch.setitem(sys.modules, "harbor", harbor_module)
+    monkeypatch.setattr(
+        harbor_entry,
+        "_apply_sibling_harbor_patches",
+        lambda: order.append("patch"),
+    )
+
+    def _fake_build_job_config(_payload):
+        order.append("config")
+        return object()
+
+    monkeypatch.setattr(harbor_entry, "_build_job_config", _fake_build_job_config)
+
+    outcome = await harbor_entry._run({"jobs_dir": str(tmp_path)})
+
+    assert order == ["patch", "config", "create", "run"]
+    assert outcome["error"] is None

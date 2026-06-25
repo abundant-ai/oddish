@@ -1,11 +1,4 @@
-"""Best-effort runtime shims over the vendored Harbor library.
-
-Harbor is a git-pinned dependency (``rishidesai/harbor``) we cannot edit in
-place, so behavioral shims that must ship with oddish live here and are applied
-once, idempotently, at worker startup via :func:`apply_harbor_patches`. Keep
-these minimal and reversible -- prefer upstreaming to the harbor fork when a shim
-proves durable.
-"""
+"""Patch Harbor at runtime."""
 
 from __future__ import annotations
 
@@ -23,8 +16,6 @@ _MIRROR_URL = "https://mirror.gcr.io"
 _MIRROR_HOST = "mirror.gcr.io"
 _DAEMON_JSON_PATH = "/etc/docker/daemon.json"
 
-# Diagnostics gathered from the DinD VM when the Docker daemon never becomes
-# ready. Alpine/sh-compatible (the sandbox is ``docker:*-dind``, Alpine-based).
 _DOCKERD_DIAG_CMD = (
     "echo '=== tail -n 200 /var/log/dockerd.log ==='; "
     "tail -n 200 /var/log/dockerd.log 2>&1 || echo '(dockerd.log unavailable)'; "
@@ -36,7 +27,7 @@ _DOCKERD_DIAG_CMD = (
 
 
 def apply_harbor_patches() -> None:
-    """Install oddish's Harbor runtime shims exactly once."""
+    """Install Harbor patches once."""
     global _PATCHED
     if _PATCHED:
         return
@@ -47,12 +38,7 @@ def apply_harbor_patches() -> None:
 
 
 async def _collect_dockerd_diagnostics(strategy: Any) -> str:
-    """Read dockerd's log + resource state from the DinD VM. Never raises.
-
-    Runs inside the failure window: the sandbox VM still exists (teardown happens
-    only after the exception propagates), but the agent never started, so this is
-    the last chance to learn *why* dockerd died before the VM is destroyed.
-    """
+    """Read dockerd logs."""
     try:
         result = await strategy._vm_exec(_DOCKERD_DIAG_CMD, timeout_sec=15)
         out = (getattr(result, "stdout", "") or "") + (
@@ -62,21 +48,13 @@ async def _collect_dockerd_diagnostics(strategy: Any) -> str:
         return (
             "dockerd diagnostics (captured by oddish before sandbox teardown):\n" + out
         )
-    except Exception as exc:  # the VM/sandbox may already be unreachable
+    except Exception as exc:
         return f"dockerd diagnostics unavailable: {exc!r}"
 
 
 def _wrap_wait_for_docker_daemon(
     orig: Callable[[Any], Awaitable[None]],
 ) -> Callable[[Any], Awaitable[None]]:
-    """Wrap ``_wait_for_docker_daemon`` to fold dockerd logs into its error.
-
-    Harbor raises ``RuntimeError("Docker daemon not ready after 60s. Last
-    output: ...")`` where "Last output" is only the failing ``docker info`` --
-    always just "Cannot connect to the Docker daemon", which never says why the
-    daemon died. We capture dockerd's own log and re-raise with it appended.
-    """
-
     async def _wait_for_docker_daemon(self: Any) -> None:
         try:
             return await orig(self)
@@ -131,17 +109,45 @@ def _patch_dind_docker_daemon_diagnostics() -> None:
 _DAYTONA_DOCKERD_MARKER = "dockerd-entrypoint.sh dockerd"
 
 
+def _mirror_daemon_json(raw: str) -> str:
+    try:
+        cfg = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    mirrors = cfg.get("registry-mirrors")
+    if not isinstance(mirrors, list):
+        mirrors = []
+    cfg["registry-mirrors"] = [_MIRROR_URL, *[m for m in mirrors if m != _MIRROR_URL]]
+    return json.dumps(cfg)
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+def _raise_for_bad_result(result: Any) -> None:
+    code = getattr(result, "return_code", 0)
+    if code not in (None, 0):
+        stderr = getattr(result, "stderr", "") or ""
+        stdout = getattr(result, "stdout", "") or ""
+        raise RuntimeError((stderr or stdout or f"command failed with {code}").strip())
+
+
 def _wrap_daytona_vm_exec(
     orig: Callable[..., Awaitable[Any]],
 ) -> Callable[..., Awaitable[Any]]:
     async def _vm_exec(self: Any, command: str, *args: Any, **kwargs: Any) -> Any:
-        if _DAYTONA_DOCKERD_MARKER in command:
-            cfg = json.dumps({"registry-mirrors": [_MIRROR_URL]})
-            prefix = (
-                f"mkdir -p /etc/docker && printf %s '{cfg}' > {_DAEMON_JSON_PATH}.tmp "
-                f"&& mv {_DAEMON_JSON_PATH}.tmp {_DAEMON_JSON_PATH} ; "
+        if (
+            _DAYTONA_DOCKERD_MARKER in command
+            and f"--registry-mirror={_MIRROR_URL}" not in command
+        ):
+            command = command.replace(
+                _DAYTONA_DOCKERD_MARKER,
+                f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}",
+                1,
             )
-            command = prefix + command
         return await orig(self, command, *args, **kwargs)
 
     setattr(_vm_exec, "_oddish_mirror_wrapped", True)
@@ -164,22 +170,15 @@ async def _inject_mirror_and_reload(strategy: Any) -> None:
         res = await strategy._vm_exec(
             f"cat {_DAEMON_JSON_PATH} 2>/dev/null || echo '{{}}'", timeout_sec=10
         )
-        try:
-            cfg = json.loads(getattr(res, "stdout", "") or "{}")
-        except json.JSONDecodeError:
-            cfg = {}
-        if not isinstance(cfg, dict):
-            cfg = {}
-        cfg["registry-mirrors"] = [_MIRROR_URL]
-        merged = json.dumps(cfg)
-        b64 = base64.b64encode(merged.encode()).decode()
+        daemon_json_b64 = _b64(_mirror_daemon_json(getattr(res, "stdout", "")))
 
-        await strategy._vm_exec(
+        result = await strategy._vm_exec(
             "umask 077 && mkdir -p /etc/docker && "
-            f'printf %s "$ODDISH_DAEMON_JSON_B64" | base64 -d > {_DAEMON_JSON_PATH}',
-            env={"ODDISH_DAEMON_JSON_B64": b64},
+            f"printf %s '{daemon_json_b64}' | base64 -d > {_DAEMON_JSON_PATH}.tmp "
+            f"&& mv {_DAEMON_JSON_PATH}.tmp {_DAEMON_JSON_PATH}",
             timeout_sec=10,
         )
+        _raise_for_bad_result(result)
         await strategy._vm_exec(
             'kill -HUP "$(cat /var/run/docker.pid 2>/dev/null '
             '|| pidof dockerd 2>/dev/null)" 2>/dev/null || true',
