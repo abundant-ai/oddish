@@ -34,6 +34,7 @@ backend/jobs/
 # OS / editor
 .DS_Store
 .idea/
+.junie/
 oddish-pulls/
 **/oddish-pulls/
 .oddish/
@@ -45,3 +46,5 @@ oddish-pulls/
 
 # Brainstorming visual companion
 .superpowers/
+/ABI-69-notes.md
+/.junie/
