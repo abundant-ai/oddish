@@ -17,7 +17,7 @@ from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.viewer.scanner import JobScanner
 from sqlalchemy import update
 
-from oddish.config import is_nop_oracle_agent, settings
+from oddish.config import settings
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -134,16 +134,10 @@ def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
     return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
-SCORELESS_EXPECTED_MESSAGE = "Completed with no verifier reward expected."
-
-
 def _expects_no_reward(trial: object) -> bool:
     harbor_config = getattr(trial, "harbor_config", None)
     verifier = harbor_config.get("verifier") if isinstance(harbor_config, dict) else None
-    return (
-        (isinstance(verifier, dict) and bool(verifier.get("disable")))
-        or is_nop_oracle_agent(getattr(trial, "agent", None))
-    )
+    return isinstance(verifier, dict) and bool(verifier.get("disable"))
 
 
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
@@ -615,7 +609,6 @@ async def _store_trial_results(
                 )
             elif not outcome.error and _expects_no_reward(trial):
                 trial.status = TrialStatus.SUCCESS
-                trial.error_message = SCORELESS_EXPECTED_MESSAGE
                 trial.finished_at = utcnow()
                 console.print(
                     f"[green]Trial {trial_id} SUCCESS[/green] (no reward expected)"
