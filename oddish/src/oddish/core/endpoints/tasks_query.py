@@ -26,6 +26,7 @@ from oddish.core.helpers import (
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
+    filter_probe_trials_for_effective_versions,
     get_task_status_trials,
     resolve_effective_version_id,
 )
@@ -295,6 +296,7 @@ async def list_tasks_core(
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
+        effective_by_task: dict[str, str | None] = {}
         for task in tasks:
             if experiment_id:
                 # ``task.trials`` is already scoped to this experiment's
@@ -308,6 +310,7 @@ async def list_tasks_core(
                 effective = resolve_effective_version_id(
                     task, experiment_context_id=experiment_id
                 )
+                effective_by_task[task.id] = effective
                 set_committed_value(
                     task,
                     "trials",
@@ -315,6 +318,31 @@ async def list_tasks_core(
                 )
             else:
                 set_committed_value(task, "trials", get_task_status_trials(task))
+
+        # Probe trials are not loaded by the experiment selectin (it filters
+        # ``is_probe.is_(False)``). Surface them as their own "Probe" group by
+        # batch-loading every task's probes and keeping only those on the same
+        # effective version the matrix displays -- ``experiment_id`` is ignored
+        # so cross-experiment probes on that version still show. Loaded with
+        # full columns (probe volume per task is tiny), so the response builder
+        # never lazy-loads -> no MissingGreenlet.
+        if experiment_id and tasks:
+            task_ids = [task.id for task in tasks]
+            probe_stmt = select(TrialModel).where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.is_probe.is_(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            if org_id is not None:
+                probe_stmt = probe_stmt.where(TrialModel.org_id == org_id)
+            probe_rows = (await session.execute(probe_stmt)).scalars().all()
+            probes_by_task = filter_probe_trials_for_effective_versions(
+                probe_rows, effective_by_task
+            )
+            for task in tasks:
+                extra = probes_by_task.get(task.id)
+                if extra:
+                    set_committed_value(task, "trials", [*task.trials, *extra])
 
     if include_trials:
         visible_jobs_started_at = now()
