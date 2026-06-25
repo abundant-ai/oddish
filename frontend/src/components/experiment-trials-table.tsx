@@ -59,6 +59,7 @@ import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
+  PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
@@ -665,6 +666,7 @@ export function ExperimentTrialsTable({
 
   const sortedAgentSummaries = useMemo(() => {
     const getAgentSortKey = (agentName: string): number => {
+      if (agentName === PROBE_AGENT_KEY) return 9;
       const lower = agentName.toLowerCase();
       if (lower === "nop") return 0;
       if (lower === "oracle") return 1;
