@@ -146,7 +146,7 @@ def _daytona_command_with_mirror(command: str) -> str:
     mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
     return (
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
-        f"2>/dev/null; then {existing}; else {mirrored}; fi"
+        f"2>/dev/null; then\n{existing}\nelse\n{mirrored}\nfi"
     )
 
 

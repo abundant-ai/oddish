@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.machinery
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -38,6 +39,10 @@ def _boom(message):
         raise RuntimeError(message)
 
     return _raise
+
+
+def _assert_shell_parses(command: str) -> None:
+    subprocess.run(["sh", "-n", "-c", command], check=True)
 
 
 @pytest.mark.asyncio
@@ -212,10 +217,15 @@ async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
     assert (
         sent
         == "if grep -q '\"registry-mirrors\"' /etc/docker/daemon.json 2>/dev/null; "
-        "then dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &; "
-        "else dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
-        "> /var/log/dockerd.log 2>&1 &; fi"
+        "then\n"
+        "dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &\n"
+        "else\n"
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "> /var/log/dockerd.log 2>&1 &\n"
+        "fi"
     )
+    assert "&;" not in sent
+    _assert_shell_parses(sent)
     assert "base64 -d" not in sent
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
 
@@ -249,15 +259,18 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     assert "--registry-mirror=https://mirror.gcr.io" in sent
     assert "--registry-mirror=https://example.com" in sent
     assert (
-        "then dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com"
-        in sent
+        "then\n"
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com" in sent
     )
     else_branch = (
-        "else dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "else\n"
+        "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
         "--registry-mirror=https://example.com"
     )
     assert else_branch in sent
     assert sent.index(else_branch) < sent.rindex("> /var/log/dockerd.log")
+    assert "&;" not in sent
+    _assert_shell_parses(sent)
 
 
 @pytest.mark.asyncio
