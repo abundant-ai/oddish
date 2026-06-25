@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, func, select, text, true
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import settings
+from oddish.config import normalize_model_id, settings
 from oddish.db import ExperimentModel, TrialModel, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
@@ -878,27 +878,36 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
 # their model mix.
 #
 # Cost per trial follows the same resolution as the rest of the app
-# (``oddish.core.helpers._resolve_trial_cost``): the native cost reported by
-# the agent runtime when present, otherwise an estimate from token counts via
-# the per-model pricing table. The estimate is per-model and linear in tokens,
-# so we group by model and price the *summed* no-native-cost tokens once per
-# group -- identical to pricing each trial and summing, but far cheaper than
-# pulling every trial row. ``SUM(cost_usd)`` ignores NULLs, so the native sum
-# never double-counts the rows we estimate.
+# (``oddish.core.helpers._resolve_trial_cost``): each trial contributes
+# *exactly one* cost -- the native cost reported by the agent runtime when
+# present, otherwise an estimate from token counts via the per-model pricing
+# table. The two are mutually exclusive per trial (the estimate only ever sums
+# tokens ``WHERE cost_usd IS NULL``), so native + estimated partition the spend
+# with no double-counting. The estimate is per-model and linear in tokens, so
+# we group by model and price the *summed* no-native-cost tokens once per group
+# -- identical to pricing each trial and summing, but far cheaper than pulling
+# every trial row. The per-user and per-model views are that same per-trial
+# cost grouped differently, so each view sums back to the same grand total.
 # ---------------------------------------------------------------------------
 
 
-# (window_days, label). ``None`` window_days == all-time (no lower bound).
-_COST_WINDOWS: tuple[tuple[int | None, str], ...] = (
-    (1, "24h"),
-    (7, "7d"),
-    (30, "30d"),
-    (None, "All"),
-)
 # Per-user and per-experiment model lists are capped so the payload stays
 # small; the rolled-up totals/cost columns are always over the full set.
 _MAX_MODELS_PER_USER = 6
 _MAX_MODELS_PER_EXPERIMENT = 12
+
+
+def _series_bucket(window_days: int | None) -> str:
+    """Pick a ``date_trunc`` granularity that keeps the chart readable.
+
+    Short windows want fine buckets; long / all-time windows want coarse ones
+    so the series doesn't balloon into hundreds of points.
+    """
+    if window_days is not None and window_days <= 2:
+        return "hour"
+    if window_days is not None and window_days <= 120:
+        return "day"
+    return "week"
 
 
 class CostModelBreakdown(BaseModel):
@@ -951,12 +960,13 @@ class CostExperimentBreakdown(BaseModel):
     models: list[CostModelBreakdown]
 
 
-class CostWindowTotal(BaseModel):
-    window_days: int | None
-    label: str
+class CostSeriesPoint(BaseModel):
+    """One time bucket of spend for the cost-over-time chart."""
+
+    bucket_start: datetime
     trial_count: int
-    total_tokens: int
     cost_usd: float
+    cost_native_usd: float
     cost_estimated_usd: float
 
 
@@ -975,8 +985,10 @@ class CostTotals(BaseModel):
 
 class CostBreakdownResponse(BaseModel):
     window_days: int | None
-    # At-a-glance totals for each trailing window (24h / 7d / 30d / all-time).
-    windows: list[CostWindowTotal]
+    # ``date_trunc`` granularity of the ``series`` buckets (hour/day/week).
+    bucket: str
+    # Cost over time for the selected window (drives the chart).
+    series: list[CostSeriesPoint]
     # Detailed rollups for the selected window below.
     totals: CostTotals
     by_user: list[CostUserBreakdown]
@@ -986,7 +998,9 @@ class CostBreakdownResponse(BaseModel):
 
 
 def _model_label(model: str | None) -> str:
-    return (model or "").strip() or "unknown"
+    # Canonicalize the same way the dashboard usage table does so id spellings
+    # (case / whitespace) collapse onto one row rather than fragmenting.
+    return normalize_model_id(model) or "unknown"
 
 
 def _provider_label(provider: str | None) -> str:
@@ -1047,104 +1061,75 @@ def _model_breakdowns(
     ]
 
 
-async def _cost_window_totals(
-    session: AsyncSession, now: datetime
-) -> list[CostWindowTotal]:
-    """Per-window cost totals, grouped by model so the estimate is exact.
+async def _cost_time_series(
+    session: AsyncSession, *, since: datetime | None, bucket: str
+) -> list[CostSeriesPoint]:
+    """Cost over time for the selected window, grouped by (bucket, model).
 
-    One scan over ``trials`` produces per-model, per-window native cost and
-    no-native-cost token sums; Python prices the estimated tokens once per
-    (model, window) and rolls up to window totals. Joins ``experiments`` so
-    the soft-delete filter drops trials of deleted experiments -- keeping the
-    at-a-glance windows consistent with the joined detail rollups below.
+    One scan buckets trials by ``date_trunc(bucket, created_at)`` and, within
+    each bucket, splits native cost from no-native-cost tokens per model so the
+    estimate stays exact (it is per-model). Joins ``experiments`` so the
+    soft-delete filter drops trials of deleted experiments, matching the detail
+    rollups. ``date_trunc`` is Postgres-native (the production DB).
     """
-    columns: list[Any] = [TrialModel.model]
-    specs: list[tuple[int, int | None, str]] = []
-    for idx, (days, label) in enumerate(_COST_WINDOWS):
-        since = None if days is None else now - timedelta(days=days)
-        in_window = true() if since is None else (TrialModel.created_at >= since)
-        specs.append((idx, days, label))
-        has_native = and_(in_window, TrialModel.cost_usd.isnot(None))
-        no_native = and_(in_window, TrialModel.cost_usd.is_(None))
-        columns.extend(
-            [
-                func.coalesce(
-                    func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)),
-                    0.0,
-                ).label(f"native_{idx}"),
-                func.coalesce(
-                    func.sum(case((no_native, TrialModel.input_tokens), else_=0)),
-                    0,
-                ).label(f"estin_{idx}"),
-                func.coalesce(
-                    func.sum(case((no_native, TrialModel.output_tokens), else_=0)),
-                    0,
-                ).label(f"estout_{idx}"),
-                func.coalesce(
-                    func.sum(case((no_native, TrialModel.cache_tokens), else_=0)),
-                    0,
-                ).label(f"estcache_{idx}"),
-                func.coalesce(
-                    func.sum(case((in_window, 1), else_=0)),
-                    0,
-                ).label(f"trials_{idx}"),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (
-                                in_window,
-                                func.coalesce(TrialModel.input_tokens, 0)
-                                + func.coalesce(TrialModel.cache_tokens, 0)
-                                + func.coalesce(TrialModel.output_tokens, 0),
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ).label(f"tokens_{idx}"),
-            ]
-        )
+    bucket_col = func.date_trunc(bucket, TrialModel.created_at)
+    has_native = TrialModel.cost_usd.isnot(None)
+    no_native = TrialModel.cost_usd.is_(None)
 
-    rows = (
-        await session.execute(
-            select(*columns)
-            .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-            .group_by(TrialModel.model)
+    query = (
+        select(
+            bucket_col.label("bucket"),
+            TrialModel.model.label("model"),
+            func.coalesce(
+                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
+            ).label("native_cost"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
+            ).label("est_input"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
+            ).label("est_output"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
+            ).label("est_cache"),
+            func.count(TrialModel.id).label("trial_count"),
         )
-    ).all()
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .group_by(bucket_col, TrialModel.model)
+    )
+    if since is not None:
+        query = query.where(TrialModel.created_at >= since)
 
-    totals = {
-        idx: {"cost": 0.0, "estimated": 0.0, "trials": 0, "tokens": 0}
-        for idx, _, _ in specs
-    }
+    rows = (await session.execute(query)).all()
+
+    buckets: dict[datetime, dict[str, float]] = {}
     for row in rows:
-        for idx, _, _ in specs:
-            native = float(getattr(row, f"native_{idx}") or 0.0)
-            est = (
-                estimate_cost_usd(
-                    row.model,
-                    int(getattr(row, f"estin_{idx}") or 0),
-                    int(getattr(row, f"estout_{idx}") or 0),
-                    int(getattr(row, f"estcache_{idx}") or 0),
-                )
-                or 0.0
+        native = float(row.native_cost or 0.0)
+        est = (
+            estimate_cost_usd(
+                row.model,
+                int(row.est_input or 0),
+                int(row.est_output or 0),
+                int(row.est_cache or 0),
             )
-            agg = totals[idx]
-            agg["cost"] += native + est
-            agg["estimated"] += est
-            agg["trials"] += int(getattr(row, f"trials_{idx}") or 0)
-            agg["tokens"] += int(getattr(row, f"tokens_{idx}") or 0)
+            or 0.0
+        )
+        agg = buckets.setdefault(
+            row.bucket, {"native": 0.0, "estimated": 0.0, "trials": 0}
+        )
+        agg["native"] += native
+        agg["estimated"] += est
+        agg["trials"] += int(row.trial_count or 0)
 
     return [
-        CostWindowTotal(
-            window_days=days,
-            label=label,
-            trial_count=int(totals[idx]["trials"]),
-            total_tokens=int(totals[idx]["tokens"]),
-            cost_usd=round(float(totals[idx]["cost"]), 4),
-            cost_estimated_usd=round(float(totals[idx]["estimated"]), 4),
+        CostSeriesPoint(
+            bucket_start=bucket_start,
+            trial_count=int(agg["trials"]),
+            cost_usd=round(agg["native"] + agg["estimated"], 4),
+            cost_native_usd=round(agg["native"], 4),
+            cost_estimated_usd=round(agg["estimated"], 4),
         )
-        for idx, days, label in specs
+        for bucket_start, agg in sorted(buckets.items())
     ]
 
 
@@ -1157,17 +1142,17 @@ async def get_cost_breakdown_core(
 ) -> CostBreakdownResponse:
     """Aggregate trial spend globally for the admin cost dashboard.
 
-    ``window_days`` bounds the per-user / per-model / per-experiment detail to
-    trials created in the trailing window (``None`` == all-time). The
-    ``windows`` summary always reports the fixed 24h / 7d / 30d / all-time
-    totals regardless. Returns IDs only for owners/orgs; the backend layer
-    enriches them with names from the cloud auth tables.
+    ``window_days`` bounds every rollup (series / per-user / per-model /
+    per-experiment) to trials created in the trailing window (``None`` ==
+    all-time). Returns IDs only for owners/orgs; the backend layer enriches
+    them with names from the cloud auth tables.
     """
     now = datetime.now(timezone.utc)
 
-    windows = await _cost_window_totals(session, now)
-
     since = None if window_days is None else now - timedelta(days=window_days)
+
+    bucket = _series_bucket(window_days)
+    series = await _cost_time_series(session, since=since, bucket=bucket)
 
     detail_query = (
         select(
@@ -1410,7 +1395,8 @@ async def get_cost_breakdown_core(
 
     return CostBreakdownResponse(
         window_days=window_days,
-        windows=windows,
+        bucket=bucket,
+        series=series,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
