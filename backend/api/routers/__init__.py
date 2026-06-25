@@ -1,4 +1,4 @@
-from oddish.core import public
+from oddish.core.sharing import public as public
 
 from api.routers import (
     admin,

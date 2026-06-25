@@ -1,17 +1,24 @@
-"""Local-only network policy for offline probe tasks.
+"""Network-policy relaxation for offline / probe trials.
 
-Offline tasks (``allow_internet=false``) run under Harbor's Docker env with
-``network_mode: none`` -- the container has no network at all. That blocks not
-just the agent install but the model API (Bedrock) the agent must call, so the
-agent cannot run locally. Production (Modal) keeps host networking plus a
-per-domain allowlist (``modal.py``), reaching Bedrock while staying otherwise
-isolated; local Docker has no allowlist primitive.
+Offline tasks run under ``no-network`` (or an ``allowlist`` covering only the
+model API). On Modal that's a CIDR allowlist; on local Docker it's
+``network_mode: none``. Either way the agent loses egress to everything except
+its model endpoint -- which breaks two things probe trials need:
 
-For LOCAL probe runs we therefore relax the offline constraint: patch the staged
-task's ``allow_internet`` to true so the run container has egress and the agent
-can reach Bedrock. This trades away offline isolation locally (the agent gains
-general internet); production keeps the real isolation. Applied only from
-``local_runner`` -- the Modal/cloud path is untouched.
+  * Harbor's claude-code install (``curl downloads.claude.ai/.../bootstrap.sh``),
+    which otherwise SYN-times-out (~127s, curl exit 28), failing the whole trial.
+  * The oddish-query CLI staged into the sandbox, which must reach the backend.
+
+We relax this by forcing the staged task's ``network_mode`` to ``public``.
+Used by BOTH the local Docker runner (``local_runner``) and the cloud (Modal)
+probe path (``workers/queue/trial_handler``). This trades offline isolation for
+working egress -- acceptable because probes are auditing runs, not graded.
+
+IMPORTANT: we set ``network_mode``, not the legacy ``allow_internet`` flag.
+Harbor ignores ``allow_internet`` whenever a task sets ``network_mode`` or
+``allowed_hosts`` explicitly (see ``_apply_legacy_allow_internet`` in Harbor's
+``models/task/config.py``), so flipping ``allow_internet`` was a silent no-op
+for exactly the tasks that needed it.
 """
 
 from __future__ import annotations
@@ -38,26 +45,31 @@ def task_is_offline(task_dir: Path) -> bool:
 
 
 def enable_local_internet(task_dir: Path) -> bool:
-    """Patch the staged task's ``task.toml`` to ``allow_internet=true``.
+    """Force the staged task's ``task.toml`` to ``network_mode = "public"``.
 
-    Lets the local (Docker) run container reach Bedrock. ``task_dir`` MUST be a
-    writable temp copy. Best-effort; returns True if the file now allows
-    internet. Uses Harbor's own task-config serialization so the rest of the
-    TOML round-trips unchanged.
+    Gives the run container (Docker or Modal) full egress so Harbor's agent
+    install and the oddish-query CLI both work. ``task_dir`` MUST be a writable
+    temp copy. Best-effort; returns True if the file now allows internet. Uses
+    Harbor's own task-config serialization so the rest of the TOML round-trips
+    unchanged.
     """
     config_path = task_dir / "task.toml"
     if not config_path.exists():
-        logger.warning("local-policy: no task.toml at %s", config_path)
+        logger.warning("offline-policy: no task.toml at %s", config_path)
         return False
     try:
+        from harbor.models.task.config import NetworkMode
         from harbor.models.task.config import TaskConfig as HarborTaskConfig
 
         tc = HarborTaskConfig.model_validate_toml(config_path.read_text())
-        if tc.environment.allow_internet:
+        if tc.environment.network_mode == NetworkMode.PUBLIC:
             return True
-        tc.environment.allow_internet = True
+        tc.environment.network_mode = NetworkMode.PUBLIC
+        # ``allowed_hosts`` is only valid in allowlist mode; Harbor rejects it
+        # under ``public`` at parse time, so clear it when relaxing.
+        tc.environment.allowed_hosts = None
         config_path.write_text(tc.model_dump_toml())
     except Exception:
-        logger.exception("local-policy: enabling internet for %s failed", config_path)
+        logger.exception("offline-policy: enabling internet for %s failed", config_path)
         return False
     return True

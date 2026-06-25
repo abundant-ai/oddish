@@ -27,12 +27,12 @@ from oddish.core.helpers import (
     escape_like,
     parse_search_query,
 )
-from oddish.core.tag_filter_ast import (
+from oddish.core.tags.filter_ast import (
     ResolvedTagFilter,
     TagFilterAST,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     UserTagView,
     list_direct_tags_for_targets,
     list_effective_user_tags_for_task_versions,
@@ -1325,6 +1325,7 @@ async def get_model_usage_core(
         func.sum(TrialModel.input_tokens).label("input_tokens"),
         func.sum(TrialModel.cache_tokens).label("cache_tokens"),
         func.sum(TrialModel.output_tokens).label("output_tokens"),
+        func.sum(TrialModel.total_steps).label("total_steps"),
         func.sum(TrialModel.cost_usd).label("cost_usd"),
         func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
             "running"
@@ -1378,6 +1379,7 @@ async def get_model_usage_core(
                 "input_tokens": 0,
                 "cache_tokens": 0,
                 "output_tokens": 0,
+                "total_steps": 0,
                 "cost_usd": 0.0,
                 "running": 0,
                 "retrying": 0,
@@ -1394,6 +1396,7 @@ async def get_model_usage_core(
         agg["input_tokens"] = int(agg["input_tokens"]) + int(row.input_tokens or 0)
         agg["cache_tokens"] = int(agg["cache_tokens"]) + int(row.cache_tokens or 0)
         agg["output_tokens"] = int(agg["output_tokens"]) + int(row.output_tokens or 0)
+        agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
         agg["cost_usd"] = float(agg["cost_usd"]) + float(row.cost_usd or 0)
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
@@ -1417,6 +1420,7 @@ async def get_model_usage_core(
                 "input_tokens": int(agg["input_tokens"]),
                 "cache_tokens": int(agg["cache_tokens"]),
                 "output_tokens": int(agg["output_tokens"]),
+                "total_steps": int(agg["total_steps"]),
                 "cost_usd": round(float(agg["cost_usd"]), 4),
                 "running": int(agg["running"]),
                 "retrying": int(agg["retrying"]),
@@ -1549,6 +1553,18 @@ async def get_dashboard_core(
     every filter or pagination tweak.
     """
 
+    phase_timings_ms: dict[str, float] = {}
+    _orig_record_timing = record_timing
+
+    def _record_timing(
+        name: str, duration_ms: float, description: str | None = None
+    ) -> None:
+        phase_timings_ms[name] = duration_ms
+        if _orig_record_timing is not None:
+            _orig_record_timing(name, duration_ms, description)
+
+    record_timing = _record_timing
+
     primary_cache_key = (
         f"dashboard.primary:{org_id}:"
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
@@ -1586,8 +1602,10 @@ async def get_dashboard_core(
                 _QUEUE_PIPELINE_CACHE_TTL_SECONDS,
             )
             if cached_qp is not None:
+                logger.info(f"dashboard_core queue_pipeline_cache=hit org={org_id}")
                 qs, ps = cached_qp
             else:
+                logger.info(f"dashboard_core queue_pipeline_cache=miss org={org_id}")
                 queue_started_at = now()
                 qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
                     session, org_id
@@ -1726,6 +1744,11 @@ async def get_dashboard_core(
         if include_experiments
         else None
     )
+    logger.info(
+        f"dashboard_core cache_lookup org={org_id} "
+        f"primary={'hit' if primary_cached is not None else 'miss'} "
+        f"experiments={('hit' if experiments_cached is not None else 'miss') if include_experiments else 'skipped'}"
+    )
 
     primary_task = (
         asyncio.create_task(_fetch_primary()) if primary_cached is None else None
@@ -1775,6 +1798,14 @@ async def get_dashboard_core(
             elapsed_ms(dashboard_started_at),
             "Dashboard core total",
         )
+    logger.info(
+        f"dashboard_core org={org_id} "
+        f"total_ms={elapsed_ms(dashboard_started_at):.1f} "
+        f"cached={response['cached']} "
+        f"primary={'recomputed' if primary_task is not None else 'cached'} "
+        f"experiments={('recomputed' if experiments_task is not None else 'cached') if include_experiments else 'skipped'} "
+        f"phases={ {k: round(v, 1) for k, v in phase_timings_ms.items()} }"
+    )
     return response
 
 

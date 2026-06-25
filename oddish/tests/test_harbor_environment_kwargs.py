@@ -17,7 +17,7 @@ from oddish.core.sweeps import (
 )
 from oddish.queue import _build_harbor_config_for_trial
 from oddish.schemas import TaskSweepSubmission
-from oddish.workers import harbor_runner
+from oddish.workers.harbor import runner as harbor_runner
 
 
 AGENT_TOOLS_IMAGE = "ghcr.io/org/harbor-agent-tools:tag"

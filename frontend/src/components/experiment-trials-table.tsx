@@ -52,6 +52,7 @@ import {
 } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
@@ -82,6 +83,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ArrowUpRight,
   ChevronDown,
   Copy,
   OctagonX,
@@ -2314,6 +2316,23 @@ export function ExperimentTrialsTable({
                               variant="icon"
                               className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
                             />
+                            {/* Jump from the experiment to this task's own
+                                page. Hidden on the read-only share view since
+                                /tasks/[id] is an authenticated route. */}
+                            {!readOnly && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Link
+                                    href={`/tasks/${encodeURIComponent(task.id)}`}
+                                    aria-label={`Open task page for ${task.name}`}
+                                    className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
+                                  >
+                                    <ArrowUpRight className="h-3.5 w-3.5" />
+                                  </Link>
+                                </TooltipTrigger>
+                                <TooltipContent>Open task page</TooltipContent>
+                              </Tooltip>
+                            )}
                           </div>
                         </div>
                       </TableCell>

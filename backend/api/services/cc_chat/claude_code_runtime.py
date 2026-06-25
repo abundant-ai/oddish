@@ -85,14 +85,33 @@ class ClaudeCodeRuntime:
     async def _install_harbor(client: DaytonaClient, sandbox: CreatedSandbox) -> None:
         # Make the harbor package available so the agent can `import harbor` /
         # read its source (anti-cheat scanners, task scaffolding, etc.) without
-        # having to reverse-engineer verifier scripts.
-        exit_code, output = await client.exec_sync(
-            sandbox,
-            command="pip install --user --quiet harbor==0.5.0 2>&1",
-        )
+        # having to reverse-engineer verifier scripts. Pin to the exact harbor
+        # this service runs (the same git resolver the probe agent uses) rather
+        # than a hardcoded release, so the sandbox never drifts from the harness.
+        from oddish.workers.agents.claude_code import _pinned_harbor_requirement
+
+        requirement = _pinned_harbor_requirement()
+        if requirement is None:
+            return
+        # Best-effort: harbor is a convenience for the agent's exploration, not
+        # load-bearing — chat reads trial data through the oddish-query CLI, not
+        # the harbor package. A hard failure here (e.g. an unresolvable pin) must
+        # NOT abort provisioning, or every chat 500s with "could not start chat".
+        # Mirrors OddishClaudeCode.install in the probe path, which swallows the
+        # same failure by design.
+        try:
+            exit_code, output = await client.exec_sync(
+                sandbox,
+                command=f"pip install --user --quiet {shlex.quote(requirement)} 2>&1",
+            )
+        except Exception:
+            log.exception("cc_chat: harbor install errored; continuing without it")
+            return
         if exit_code != 0:
-            raise RuntimeError(
-                f"harbor install failed (exit={exit_code}): {output[-500:]}"
+            log.warning(
+                "cc_chat: harbor install failed (exit=%s); continuing without it: %s",
+                exit_code,
+                output[-500:],
             )
 
     async def run_once(
