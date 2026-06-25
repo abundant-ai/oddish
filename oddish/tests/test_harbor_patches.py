@@ -257,6 +257,29 @@ async def test_daytona_vm_exec_does_not_duplicate_registry_mirror_flag():
 
 
 @pytest.mark.asyncio
+async def test_daytona_vm_exec_does_not_duplicate_split_registry_mirror_flag():
+    strategy = _CaptureStrategy()
+    wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
+
+    cmd = (
+        "dockerd-entrypoint.sh dockerd --registry-mirror https://mirror.gcr.io "
+        "> /var/log/dockerd.log 2>&1 &"
+    )
+    await wrapped(strategy, cmd)
+
+    sent = strategy.calls[0]["command"]
+    fallback = (
+        "else\n"
+        "dockerd-entrypoint.sh dockerd --registry-mirror https://mirror.gcr.io "
+        "> /var/log/dockerd.log"
+    )
+    assert fallback in sent
+    assert sent.count("--registry-mirror") == 1
+    assert "&;" not in sent
+    _assert_shell_parses(sent)
+
+
+@pytest.mark.asyncio
 async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     strategy = _CaptureStrategy()
     wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
@@ -285,7 +308,7 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
 
 
 @pytest.mark.asyncio
-async def test_daytona_vm_exec_strips_split_registry_mirror_flag():
+async def test_daytona_vm_exec_strips_split_registry_mirror_flag_from_config_branches():
     strategy = _CaptureStrategy()
     wrapped = harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec)
 

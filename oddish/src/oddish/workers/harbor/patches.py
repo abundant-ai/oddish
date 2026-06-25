@@ -166,13 +166,22 @@ def _strip_registry_mirror_flags(command: str) -> str:
     return re.sub(r"\s+--registry-mirror(?:=\S+|\s+\S+)", "", command)
 
 
+def _has_gcr_registry_mirror_flag(command: str) -> bool:
+    return (
+        re.search(
+            rf"(^|\s)--registry-mirror(?:=|\s+){re.escape(_MIRROR_URL)}(\s|$)", command
+        )
+        is not None
+    )
+
+
 def _daytona_command_with_mirror(command: str) -> str:
     if _DAYTONA_DOCKERD_MARKER not in command:
         return command
     before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
     existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
     config_command = _strip_registry_mirror_flags(existing)
-    if f"--registry-mirror={_MIRROR_URL}" in existing:
+    if _has_gcr_registry_mirror_flag(existing):
         mirrored = existing
     else:
         mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
