@@ -134,6 +134,12 @@ def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
     return outcome.exception_type in _NON_RETRYABLE_EXCEPTION_TYPES
 
 
+def _expects_no_reward(trial: object) -> bool:
+    harbor_config = getattr(trial, "harbor_config", None)
+    verifier = harbor_config.get("verifier") if isinstance(harbor_config, dict) else None
+    return isinstance(verifier, dict) and bool(verifier.get("disable"))
+
+
 def _verifier_ran_from_job_result(job_result_path: str | None) -> bool:
     if not job_result_path:
         return False
@@ -600,6 +606,12 @@ async def _store_trial_results(
                 trial.finished_at = utcnow()
                 console.print(
                     f"[green]Trial {trial_id} SUCCESS[/green] reward={derived_reward}"
+                )
+            elif not outcome.error and _expects_no_reward(trial):
+                trial.status = TrialStatus.SUCCESS
+                trial.finished_at = utcnow()
+                console.print(
+                    f"[green]Trial {trial_id} SUCCESS[/green] (no reward expected)"
                 )
             else:
                 # No reward - trial encountered an error or didn't complete verification.
