@@ -14,9 +14,8 @@ from oddish.workers.harbor.runner import HarborOutcome  # noqa: E402
 from oddish.workers.queue import trial_handler as th  # noqa: E402
 from oddish.workers.queue.trial_handler import (  # noqa: E402
     SCORELESS_EXPECTED_MESSAGE,
-    _is_scoreless_expected,
+    _expects_no_reward,
     _store_trial_results,
-    _verification_disabled_in_config,
 )
 
 
@@ -69,48 +68,37 @@ def _outcome(reward=None, error=None):
 def _patch_session(monkeypatch, trial):
     @asynccontextmanager
     async def _fake_trial_session(trial_id, *, allow_missing=False):
-        class _Session:
-            pass
-
-        yield _Session(), trial
+        yield object(), trial
 
     monkeypatch.setattr(th, "_trial_session", _fake_trial_session)
 
     async def _fake_qa(session, trial_id):
         return False
 
-    import oddish.queue as queue_mod
-
-    monkeypatch.setattr(queue_mod, "maybe_start_qa_stage", _fake_qa)
+    monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _fake_qa)
 
 
-def test_verification_disabled_in_config():
-    assert _verification_disabled_in_config({"verifier": {"disable": True}}) is True
-    assert _verification_disabled_in_config({"verifier": {"disable": False}}) is False
-    assert _verification_disabled_in_config({"verifier": {}}) is False
-    assert _verification_disabled_in_config({}) is False
-    assert _verification_disabled_in_config(None) is False
+@pytest.mark.parametrize(
+    ("trial", "expected"),
+    [
+        (_trial(harbor_config={"verifier": {"disable": True}}), True),
+        (_trial(harbor_config={"verifier": {"disable": False}}), False),
+        (_trial(agent="nop"), True),
+        (_trial(agent="oracle"), True),
+        (_trial(agent="agent-nop"), True),
+        (_trial(agent="codex", harbor_config={"verifier": {}}), False),
+    ],
+)
+def test_expects_no_reward(trial, expected):
+    assert _expects_no_reward(trial) is expected
 
 
-def test_is_scoreless_expected_disabled_verifier():
-    trial = _trial(harbor_config={"verifier": {"disable": True}})
-    assert _is_scoreless_expected(trial) is True
-
-
-def test_is_scoreless_expected_nop_agent():
-    assert _is_scoreless_expected(_trial(agent="nop")) is True
-    assert _is_scoreless_expected(_trial(agent="oracle")) is True
-    assert _is_scoreless_expected(_trial(agent="agent-nop")) is True
-
-
-def test_is_scoreless_expected_normal_run():
-    assert _is_scoreless_expected(_trial(agent="codex")) is False
-    assert _is_scoreless_expected(_trial(harbor_config={"verifier": {}})) is False
-
-
+@pytest.mark.parametrize(
+    "trial",
+    [_trial(harbor_config={"verifier": {"disable": True}}), _trial(agent="nop")],
+)
 @pytest.mark.asyncio
-async def test_verifier_disabled_reward_none_terminal_success(monkeypatch):
-    trial = _trial(harbor_config={"verifier": {"disable": True}})
+async def test_expected_scoreless_reward_none_terminal_success(monkeypatch, trial):
     _patch_session(monkeypatch, trial)
     await _store_trial_results(
         trial_id="trial-1",
@@ -122,21 +110,6 @@ async def test_verifier_disabled_reward_none_terminal_success(monkeypatch):
     assert trial.error_message == SCORELESS_EXPECTED_MESSAGE
     assert trial.finished_at is not None
     assert trial.attempts == 1
-
-
-@pytest.mark.asyncio
-async def test_nop_agent_reward_none_terminal_success(monkeypatch):
-    trial = _trial(agent="nop")
-    _patch_session(monkeypatch, trial)
-    await _store_trial_results(
-        trial_id="trial-1",
-        outcome=_outcome(reward=None),
-        trial_s3_key=None,
-        execution_error=None,
-    )
-    assert trial.status == TrialStatus.SUCCESS
-    assert trial.error_message == SCORELESS_EXPECTED_MESSAGE
-    assert trial.finished_at is not None
 
 
 @pytest.mark.asyncio
