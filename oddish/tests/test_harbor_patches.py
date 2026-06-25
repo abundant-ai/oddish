@@ -12,6 +12,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from harbor.trial.hooks import TrialEvent
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 harbor_patches = importlib.import_module("oddish.workers.harbor.patches")
 harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
@@ -380,10 +382,18 @@ def test_daytona_merge_mirror_command_preserves_failures(tmp_path):
 
 def test_daytona_merge_mirror_command_preserves_custom_mirrors(tmp_path):
     daemon_json = tmp_path / "daemon.json"
-    daemon_json.write_text(json.dumps({"registry-mirrors": ["https://mirror.gcr.io"]}))
+    custom = "https://example.com/cache?x=1&y=2"
+    daemon_json.write_text(
+        json.dumps(
+            {
+                "registry-mirrors": ["https://mirror.gcr.io"],
+                "insecure-registries": [custom],
+            }
+        )
+    )
 
     command = harbor_patches._daytona_merge_mirror_command(
-        str(daemon_json), mirrors=["https://mirror.gcr.io", "https://example.com"]
+        str(daemon_json), mirrors=["https://mirror.gcr.io", custom]
     )
     _assert_shell_parses(command)
     subprocess.run(["sh", "-c", command], check=True)
@@ -391,8 +401,9 @@ def test_daytona_merge_mirror_command_preserves_custom_mirrors(tmp_path):
     cfg = json.loads(daemon_json.read_text())
     assert cfg["registry-mirrors"] == [
         "https://mirror.gcr.io",
-        "https://example.com",
+        custom,
     ]
+    assert cfg["insecure-registries"] == [custom]
 
 
 def test_daytona_command_with_mirror_stops_when_merge_fails(tmp_path, monkeypatch):
@@ -597,11 +608,26 @@ def test_entry_applies_sibling_harbor_patches(monkeypatch):
     assert calls == ["patched"]
 
 
+@pytest.mark.parametrize(
+    "event_name, expected",
+    [
+        ("AGENT_START", TrialEvent.AGENT_START.value),
+        ("agent_start", TrialEvent.AGENT_START.value),
+        ("ENVIRONMENT_START", TrialEvent.ENVIRONMENT_START.value),
+        ("environment_start", TrialEvent.ENVIRONMENT_START.value),
+        ("VERIFICATION_START", TrialEvent.VERIFICATION_START.value),
+        ("verification_start", TrialEvent.VERIFICATION_START.value),
+        ("AGENT_END", TrialEvent.AGENT_END.value),
+        ("agent_end", TrialEvent.AGENT_END.value),
+        ("END", TrialEvent.END.value),
+        ("CANCEL", TrialEvent.CANCEL.value),
+    ],
+)
 @pytest.mark.asyncio
-async def test_entry_hook_emits_canonical_agent_start_event(monkeypatch):
+async def test_entry_hook_emits_canonical_events(monkeypatch, event_name, expected):
     payloads: list[dict] = []
     event = SimpleNamespace(
-        event=SimpleNamespace(value="AGENT_START"),
+        event=SimpleNamespace(value=event_name),
         trial_id="t-1",
         environment=None,
         result=None,
@@ -611,7 +637,7 @@ async def test_entry_hook_emits_canonical_agent_start_event(monkeypatch):
     hook = harbor_entry._make_hook(None, None)
     await hook(event)
 
-    assert payloads[0]["event"] == "agent-start"
+    assert payloads[0]["event"] == expected
 
 
 @pytest.mark.asyncio

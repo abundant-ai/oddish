@@ -24,7 +24,19 @@ ClaudeCode = importlib.import_module("harbor.agents.installed.claude_code").Clau
 logger = logging.getLogger("oddish.harbor_entry")
 
 EVENT_SENTINEL = "_oddish_harbor_event"
-_EVENT_ALIASES = {"AGENT_START": "agent-start", "agent_start": "agent-start"}
+_EVENT_ALIASES = {
+    "START": "start",
+    "ENVIRONMENT_START": "environment-start",
+    "environment_start": "environment-start",
+    "AGENT_START": "agent-start",
+    "agent_start": "agent-start",
+    "AGENT_END": "agent-end",
+    "agent_end": "agent-end",
+    "VERIFICATION_START": "verification-start",
+    "verification_start": "verification-start",
+    "END": "end",
+    "CANCEL": "cancel",
+}
 
 
 def _event_name(event: Any) -> str:

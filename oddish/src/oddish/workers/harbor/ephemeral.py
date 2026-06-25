@@ -71,6 +71,19 @@ _ENVIRONMENT_HARBOR_EXTRAS: dict[EnvironmentType, str] = {
     EnvironmentType.WANDB: "wandb",
     EnvironmentType.ISLO: "islo",
 }
+_EVENT_ALIASES = {
+    "START": "start",
+    "ENVIRONMENT_START": "environment-start",
+    "environment_start": "environment-start",
+    "AGENT_START": "agent-start",
+    "agent_start": "agent-start",
+    "AGENT_END": "agent-end",
+    "agent_end": "agent-end",
+    "VERIFICATION_START": "verification-start",
+    "verification_start": "verification-start",
+    "END": "end",
+    "CANCEL": "cancel",
+}
 
 
 class HarborOverrideImportError(Exception):
@@ -100,9 +113,9 @@ def _runtime_env_overrides(
     env: dict[str, str] = {}
     if uses_openai:
         env.update(settings.get_openai_agent_env(model=openai_model))
-    if "claude-code" in (agent or "").strip().lower() and _claude_code_forces_direct_api(
-        is_probe
-    ):
+    if "claude-code" in (
+        agent or ""
+    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
     return env
 
@@ -214,8 +227,9 @@ def _bridge_event(data: dict[str, Any], *, trial_id: str | None) -> SimpleNamesp
         result = SimpleNamespace(
             verifier_result=verifier_result, exception_info=exception_info
         )
+    event_name = _EVENT_ALIASES.get(data["event"], data["event"])
     return SimpleNamespace(
-        event=TrialEvent(data["event"]),
+        event=TrialEvent(event_name),
         trial_id=data.get("trial_id") or trial_id,
         environment=None,
         environment_provider=data.get("environment_provider"),

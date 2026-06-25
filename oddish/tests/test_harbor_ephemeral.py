@@ -58,11 +58,25 @@ def test_bridge_event_end_with_reward_and_exception():
     assert ev.result.exception_info.exception_type == "AgentTimeoutError"
 
 
-def test_bridge_event_non_end_has_no_result():
-    ev = _bridge_event(
-        {"event": TrialEvent.AGENT_START.value, "trial_id": "t-1"}, trial_id="t-1"
-    )
-    assert ev.event == TrialEvent.AGENT_START
+@pytest.mark.parametrize(
+    "event_name, expected",
+    [
+        (TrialEvent.AGENT_START.value, TrialEvent.AGENT_START),
+        ("AGENT_START", TrialEvent.AGENT_START),
+        ("agent_start", TrialEvent.AGENT_START),
+        ("ENVIRONMENT_START", TrialEvent.ENVIRONMENT_START),
+        ("environment_start", TrialEvent.ENVIRONMENT_START),
+        ("VERIFICATION_START", TrialEvent.VERIFICATION_START),
+        ("verification_start", TrialEvent.VERIFICATION_START),
+        ("AGENT_END", TrialEvent.AGENT_END),
+        ("agent_end", TrialEvent.AGENT_END),
+        ("END", TrialEvent.END),
+        ("CANCEL", TrialEvent.CANCEL),
+    ],
+)
+def test_bridge_event_non_end_has_no_result(event_name, expected):
+    ev = _bridge_event({"event": event_name, "trial_id": "t-1"}, trial_id="t-1")
+    assert ev.event == expected
     assert ev.result is None
     assert ev.trial_id == "t-1"
 

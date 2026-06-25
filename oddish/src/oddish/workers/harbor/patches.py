@@ -140,16 +140,25 @@ def _sed_json_string(value: str) -> str:
     return re.escape(json.dumps(value)).replace("/", r"\/")
 
 
+def _sed_replacement_json_string(value: str) -> str:
+    return (
+        json.dumps(value).replace("\\", r"\\").replace("&", r"\&").replace("/", r"\/")
+    )
+
+
 def _daytona_merge_mirror_command(
     path: str = _DAEMON_JSON_PATH, mirrors: list[str] | None = None
 ) -> str:
     desired = list(dict.fromkeys(mirrors or [_MIRROR_URL]))
-    desired_json = ", ".join(json.dumps(m).replace("/", r"\/") for m in desired)
+    desired_json = ", ".join(_sed_replacement_json_string(m) for m in desired)
     strip_existing = "; ".join(
         (
-            rf"s/{_sed_json_string(m)}[[:space:]]*,[[:space:]]*//g; "
-            rf"s/,[[:space:]]*{_sed_json_string(m)}//g; "
-            rf"s/{_sed_json_string(m)}//g"
+            rf's/\("registry-mirrors"[[:space:]]*:[[:space:]]*\[[^]]*\)'
+            rf"{_sed_json_string(m)}[[:space:]]*,[[:space:]]*/\1/g; "
+            rf's/\("registry-mirrors"[[:space:]]*:[[:space:]]*\[[^]]*\)'
+            rf",[[:space:]]*{_sed_json_string(m)}/\1/g; "
+            rf's/\("registry-mirrors"[[:space:]]*:[[:space:]]*\[[[:space:]]*\)'
+            rf"{_sed_json_string(m)}[[:space:]]*\]/\1]/g"
         )
         for m in desired
     )
