@@ -16,7 +16,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.core.auto_probe import maybe_enqueue_auto_probe  # noqa: E402
+from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe  # noqa: E402
 from oddish.db import TaskModel, TrialModel, get_session  # noqa: E402
 from oddish.queue import create_task  # noqa: E402
 from oddish.schemas import (
@@ -93,7 +93,7 @@ async def test_failure_is_swallowed(cleanup_task_ids, monkeypatch):
         )
     cleanup_task_ids.append(task.id)
 
-    import oddish.core.auto_probe as ap
+    import oddish.core.probe.auto_probe as ap
 
     def boom(*a, **k):
         raise RuntimeError("enqueue blew up")

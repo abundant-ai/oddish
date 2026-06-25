@@ -15,7 +15,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 
-from oddish.core.probe_presets import (
+from oddish.core.probe.presets import (
     create_probe_preset_core,
     delete_probe_preset_core,
     list_probe_presets_core,

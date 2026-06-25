@@ -110,7 +110,7 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.auto_probe import maybe_enqueue_auto_probe
+    from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
     # from the caller's raw pre-mutation snapshot when supplied (the backend

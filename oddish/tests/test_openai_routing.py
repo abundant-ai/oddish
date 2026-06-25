@@ -111,7 +111,7 @@ def test_azure_compat_codex_allowlists_azure_endpoint(monkeypatch):
     """The Azure Codex variant must declare the Azure host so Harbor's Modal
     egress firewall doesn't blackhole every gpt-5.5 request."""
     from oddish.config import settings as oddish_settings
-    from oddish.workers.codex_agent import AzureCompatibleCodex
+    from oddish.workers.agents.codex import AzureCompatibleCodex
 
     monkeypatch.setattr(oddish_settings, "azure_openai_endpoint", _AZURE_ENDPOINT)
 
@@ -135,7 +135,7 @@ def test_harbor_infer_agent_domains_uses_azure_codex_hook(monkeypatch):
 
     domains = infer_agent_domains(
         name=None,
-        import_path="oddish.workers.codex_agent:AzureCompatibleCodex",
+        import_path="oddish.workers.agents.codex:AzureCompatibleCodex",
         model_name="openai/gpt-5.5",
         agent_kwargs={},
     )
@@ -146,7 +146,7 @@ def test_harbor_infer_agent_domains_uses_azure_codex_hook(monkeypatch):
 def test_azure_compat_codex_allowlists_per_trial_openai_base_url():
     """If a trial pins an explicit OPENAI_BASE_URL (extra_env), the hook
     allowlists that host too (mirrors harbor's base Codex hook)."""
-    from oddish.workers.codex_agent import AzureCompatibleCodex
+    from oddish.workers.agents.codex import AzureCompatibleCodex
 
     domains = AzureCompatibleCodex.required_outbound_domains(
         model_name="openai/gpt-5.5",

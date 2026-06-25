@@ -11,14 +11,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_normalize_tag_key_casefold_and_trim():
-    from oddish.core.tag_naming import normalize_tag_key
+    from oddish.core.tags.naming import normalize_tag_key
 
     assert normalize_tag_key("  Flaky-Trial  ") == "flaky-trial"
     assert normalize_tag_key("SWE Bench v2.0") == "swe-bench-v2.0"
 
 
 def test_validate_tag_key_charset():
-    from oddish.core.tag_naming import validate_tag_key, TagNameError
+    from oddish.core.tags.naming import validate_tag_key, TagNameError
 
     validate_tag_key("flaky-trial", name_max_len=64, charset_re=r"[a-z0-9._-]")
 
@@ -33,7 +33,7 @@ def test_validate_tag_key_charset():
 
 
 def test_reserved_prefix_requires_admin():
-    from oddish.core.tag_naming import is_reserved_prefix
+    from oddish.core.tags.naming import is_reserved_prefix
 
     assert is_reserved_prefix("system:critical", reserved_prefixes=["system:"]) is True
     assert is_reserved_prefix("safe-tag", reserved_prefixes=["system:"]) is False

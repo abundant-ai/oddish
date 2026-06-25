@@ -52,14 +52,37 @@ async def test_install_only_missing_one():
     assert not npm and pip
 
 
-async def test_install_raises_on_failure():
+async def test_install_raises_when_claude_fails():
+    """claude-code is load-bearing: its install failure must abort provisioning."""
+
     class _Failing(_RecordingClient):
         async def exec_sync(self, sandbox, *, command):
             self.commands.append(command)
             if "test -x" in command or "import harbor" in command:
                 return 1, ""  # both absent -> will attempt install
-            return 1, "boom"  # the install itself fails
+            if "npm install" in command:
+                return 1, "boom"  # claude-code install fails
+            return 0, ""
 
     client = _Failing(claude_present=False, harbor_present=False)
     with pytest.raises(RuntimeError):
         await ClaudeCodeRuntime().install(client, sandbox=object())
+
+
+async def test_install_tolerates_harbor_failure():
+    """harbor is a convenience (chat uses oddish-query), so a failed harbor
+    install must NOT abort provisioning — otherwise every chat 500s."""
+
+    class _HarborFails(_RecordingClient):
+        async def exec_sync(self, sandbox, *, command):
+            self.commands.append(command)
+            if "test -x" in command or "import harbor" in command:
+                return 1, ""  # both absent -> will attempt install
+            if "pip install" in command and "harbor" in command:
+                return 1, "Could not find a version that satisfies harbor==9.9"
+            return 0, ""  # claude-code install succeeds
+
+    client = _HarborFails(claude_present=False, harbor_present=False)
+    await ClaudeCodeRuntime().install(client, sandbox=object())  # must not raise
+    npm, pip = _installs(client.commands)
+    assert npm and pip  # both were attempted; harbor's failure was swallowed

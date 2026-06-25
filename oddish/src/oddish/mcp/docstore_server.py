@@ -16,7 +16,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from oddish.core.documents import get_document_core, search_documents_core
+from oddish.core.sharing.documents import get_document_core, search_documents_core
 from oddish.db import DocumentModel, get_session
 
 mcp = FastMCP("oddish-docstore")

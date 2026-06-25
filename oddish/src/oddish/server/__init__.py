@@ -15,6 +15,7 @@ import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
+    backfill_task_analysis_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -37,7 +38,7 @@ def _split_tag_csv(csv: str | None) -> list[str]:
     return [s.strip() for s in (csv or "").split(",") if s.strip()]
 
 
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     get_task_file_content_s3,
     get_trial_file_content_s3,
     list_task_files_s3,
@@ -61,12 +62,12 @@ from oddish.core.admin import (
     get_orphaned_state_core,
 )
 from oddish.core.dashboard import get_dashboard_core
-from oddish.core.public import router as public_router
+from oddish.core.sharing.public import router as public_router
 from oddish.core.tasks import (
     complete_task_upload,
     initialize_task_upload,
 )
-from oddish.core.trial_imports import (
+from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
 )
@@ -81,6 +82,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    BackfillQARequest,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     ExperimentCombineRequest,
@@ -156,7 +158,7 @@ async def lifespan(app: FastAPI):
     # Ensure required storage directories exist
     Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
 
-    from oddish.workers.harbor_runner import log_local_storage_snapshot
+    from oddish.workers.harbor.runner import log_local_storage_snapshot
 
     log_local_storage_snapshot(settings.harbor_jobs_dir)
 
@@ -629,6 +631,24 @@ async def cancel_task_qa(task_id: str) -> dict:
     """Cancel a task's in-flight QA job."""
     async with get_session() as session:
         return await cancel_task_qa_core(session, task_id=task_id)
+
+
+@api.post("/tasks/{task_id}/qa/backfill")
+async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
+    """Backfill trial analysis for a task: (re)run the task-level QA job.
+
+    Fills only missing/never-analyzed trials by default; ``force`` re-runs
+    (optionally just ``trial_ids``); ``enable_analysis`` also opts the task
+    into analysis going forward.
+    """
+    async with get_session() as session:
+        return await backfill_task_analysis_core(
+            session,
+            task_id=task_id,
+            trial_ids=body.trial_ids,
+            force=body.force,
+            enable_analysis=body.enable_analysis,
+        )
 
 
 @api.post("/trials/{trial_id}/retry")
