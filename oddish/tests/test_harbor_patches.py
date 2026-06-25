@@ -163,10 +163,15 @@ async def test_login_stages_docker_config_without_token_in_command(creds):
 
 @pytest.mark.asyncio
 async def test_login_is_noop_without_credentials():
-    strategy = _FakeStrategy()
-    await harbor_patches._perform_registry_login(strategy)
-    assert strategy.calls == []
-    assert strategy.uploads == []
+    token = current_registry_credentials.set(None)
+    try:
+        strategy = _FakeStrategy()
+        await harbor_patches._perform_registry_login(strategy)
+        assert strategy.calls == []
+        assert strategy.uploads == []
+        assert not getattr(strategy, harbor_patches._LOGGED_IN_ATTR, False)
+    finally:
+        current_registry_credentials.reset(token)
 
 
 @pytest.mark.asyncio
