@@ -1215,50 +1215,6 @@ class PublicExperimentListItem(BaseModel):
     created_at: str
 
 
-# ---------------------------------------------------------------------------
-# Probe presets — operator-directive templates for probe trials.
-# ---------------------------------------------------------------------------
-class ProbePresetCreate(BaseModel):
-    """Request body to create a custom probe preset."""
-
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetUpdate(BaseModel):
-    """Request body to update a custom probe preset. All fields optional;
-    only provided fields are applied."""
-
-    name: str | None = None
-    agent: str | None = None
-    model: str | None = None
-    operator_prompt: str | None = None
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetResponse(BaseModel):
-    """A probe preset as returned to the client."""
-
-    id: str
-    org_id: str | None = None
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-    is_seed: bool
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class TagCreateRequest(BaseModel):
     key: str
     value: str | None = None
