@@ -72,9 +72,11 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     return True
 
 
-async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
-    """Materialize the org's shared skills (+ global seeds) under
-    ``skills_root/<name>/<relative_path>``.
+async def stage_org_skills(
+    skills_root: Path, *, org_id: str | None, skill_ids: list[str] | None = None
+) -> int:
+    """Materialize only the **selected** org skills (``skill_ids``) under ``skills_root/<name>/<relative_path>``.
+    A skill's bundle reaches a probe only when explicitly selected at launch; ``None``/empty mounts nothing.
 
     ``skills_root`` is meant to be passed to Harbor as an ``AgentConfig.skills``
     entry: Harbor's ``resolve_skills`` accepts a root whose every child dir holds
@@ -87,9 +89,13 @@ async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
     malformed skill is skipped without dropping the others. Returns the number
     of skills actually staged; never raises.
     """
+    if not skill_ids:
+        return 0
     try:
         async with get_session() as session:
             skills = await list_skills_core(session, org_id=org_id)
+            wanted = set(skill_ids)
+            skills = [s for s in skills if s.id in wanted]
             bundles = [
                 SkillBundle(
                     name=s.name,

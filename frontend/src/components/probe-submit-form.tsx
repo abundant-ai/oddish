@@ -4,14 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import {
   Select,
   SelectContent,
   SelectItem,
@@ -36,21 +28,14 @@ const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
   ],
 };
 
-// "cheat_ratio" is a legacy alias kept for backward compat when reading old
-// stored presets. "ratio" is no longer a valid new metric.
-type EvaluationMetric = "result_focus" | "none" | "cheat_ratio";
-
-type Preset = {
+type Skill = {
   id: string;
   name: string;
-  agent: string;
-  model: string;
-  operator_prompt: string;
-  result_focus: string | null;
-  evaluation_metric: EvaluationMetric;
   is_seed: boolean;
-  created_at: string;
-  updated_at: string;
+  operator_prompt: string | null;
+  result_focus: string | null;
+  evaluation_metric: string | null;
+  files: { relative_path: string; content: string }[];
 };
 
 function ResultFocusTextarea({
@@ -94,17 +79,6 @@ function ResultFocusTextarea({
   );
 }
 
-function normalizePreset(p: Preset): Preset {
-  // Legacy "cheat_ratio" (and any stale "ratio") fall back to "none".
-  if (
-    p.evaluation_metric === "cheat_ratio" ||
-    (p.evaluation_metric as string) === "ratio"
-  ) {
-    return { ...p, evaluation_metric: "none" };
-  }
-  return p;
-}
-
 export function ProbeSubmitForm({
   taskId,
   scope = "task",
@@ -122,155 +96,41 @@ export function ProbeSubmitForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [presets, setPresets] = useState<Preset[]>([]);
-  const [presetsLoaded, setPresetsLoaded] = useState(false);
-  const [selectedPresetId, setSelectedPresetId] = useState<string>("");
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [skillsLoaded, setSkillsLoaded] = useState(false);
+  const [selectedSkillId, setSelectedSkillId] = useState<string>("");
   const [result_focus, setResultFocus] = useState("");
 
-  // Modal state for create/edit preset
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingPresetId, setEditingPresetId] = useState<string | null>(null);
-  const [modalName, setModalName] = useState("");
-  const [modalAgent, setModalAgent] = useState("claude-code");
-  const [modalModel, setModalModel] = useState(
-    MODELS_BY_AGENT["claude-code"][0].value,
-  );
-  const [modalOperatorPrompt, setModalOperatorPrompt] = useState("");
-  const [modalResultFocus, setModalResultFocus] = useState("");
-  const [modalEvaluationMetric, setModalEvaluationMetric] =
-    useState<EvaluationMetric>("none");
+  const selectedSkill = skills.find((s) => s.id === selectedSkillId) ?? null;
 
-  const selectedPreset = presets.find((p) => p.id === selectedPresetId) ?? null;
-
-  const reloadPresets = useCallback(async () => {
+  const reloadSkills = useCallback(async () => {
     try {
-      const res = await fetch(`/api/probe-presets`, {
-        cache: "no-store",
-      });
+      const res = await fetch(`/api/skills`, { cache: "no-store" });
       if (!res.ok) {
-        console.warn("probe presets fetch failed:", res.status);
+        console.warn("skills fetch failed:", res.status);
         return;
       }
       const data = await res.json();
       if (!Array.isArray(data)) return;
-      // Backend returns global seeds + this org's custom presets. Normalize
-      // legacy cheat_ratio → ratio and backfill a missing metric to "none".
-      setPresets(
-        (data as Preset[]).map((p) =>
-          normalizePreset({
-            ...p,
-            evaluation_metric: (p.evaluation_metric ??
-              "none") as EvaluationMetric,
-          }),
-        ),
-      );
+      setSkills(data as Skill[]);
     } catch (err) {
-      console.warn("probe presets fetch error:", err);
+      console.warn("skills fetch error:", err);
     } finally {
-      setPresetsLoaded(true);
+      setSkillsLoaded(true);
     }
   }, []);
 
   useEffect(() => {
-    void reloadPresets();
-  }, [reloadPresets]);
+    void reloadSkills();
+  }, [reloadSkills]);
 
-  function loadPreset(id: string) {
-    setSelectedPresetId(id);
+  function loadSkill(id: string) {
+    setSelectedSkillId(id);
     if (!id) return;
-    const p = presets.find((x) => x.id === id);
-    if (!p) return;
-    setAgent(p.agent);
-    setModel(p.model);
-    setExtraInstructions(p.operator_prompt);
-    setResultFocus(p.result_focus ?? "");
-  }
-
-  function openCreateModal() {
-    setEditingPresetId(null);
-    setModalName("");
-    setModalAgent("claude-code");
-    setModalModel(MODELS_BY_AGENT["claude-code"][0].value);
-    setModalOperatorPrompt("");
-    setModalResultFocus("");
-    setModalEvaluationMetric("none");
-    setModalOpen(true);
-  }
-
-  function openEditModal() {
-    if (!selectedPreset) return;
-    setEditingPresetId(selectedPreset.id);
-    setModalName(selectedPreset.name);
-    setModalAgent(selectedPreset.agent);
-    setModalModel(selectedPreset.model);
-    setModalOperatorPrompt(selectedPreset.operator_prompt);
-    setModalResultFocus(selectedPreset.result_focus ?? "");
-    setModalEvaluationMetric(selectedPreset.evaluation_metric ?? "none");
-    setModalOpen(true);
-  }
-
-  async function savePresetFromModal() {
-    if (!modalName.trim() || !modalOperatorPrompt.trim()) return;
-    const body = {
-      name: modalName.trim(),
-      agent: modalAgent,
-      model: modalModel,
-      operator_prompt: modalOperatorPrompt,
-      result_focus: modalResultFocus.trim() || null,
-      evaluation_metric:
-        modalEvaluationMetric === "none" ? null : modalEvaluationMetric,
-    };
-    // Editing an existing custom preset updates in place (PUT). Creating
-    // new — or forking a built-in seed — creates a fresh preset (POST); the
-    // backend assigns the id.
-    const isEditCustom = editingPresetId !== null && !selectedPreset?.is_seed;
-    try {
-      const res = await fetch(
-        isEditCustom
-          ? `/api/probe-presets/${editingPresetId}`
-          : `/api/probe-presets`,
-        {
-          method: isEditCustom ? "PUT" : "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-        },
-      );
-      if (!res.ok) {
-        setError(`Failed to save preset: HTTP ${res.status}`);
-        return;
-      }
-      const saved = normalizePreset((await res.json()) as Preset);
-      await reloadPresets();
-      setSelectedPresetId(saved.id);
-      // Apply to the current submission form too.
-      setAgent(saved.agent);
-      setModel(saved.model);
-      setExtraInstructions(saved.operator_prompt);
-      setResultFocus(saved.result_focus ?? "");
-      setModalOpen(false);
-    } catch (err) {
-      setError(`Failed to save preset: ${String(err)}`);
-    }
-  }
-
-  async function deleteSelectedPreset() {
-    if (!selectedPreset || selectedPreset.is_seed) return;
-    if (!confirm(`Delete preset "${selectedPreset.name}"?`)) return;
-    try {
-      const res = await fetch(`/api/probe-presets/${selectedPreset.id}`, {
-        method: "DELETE",
-      });
-      if (!res.ok) {
-        setError(`Failed to delete preset: HTTP ${res.status}`);
-        return;
-      }
-      await reloadPresets();
-      setSelectedPresetId("");
-    } catch (err) {
-      setError(`Failed to delete preset: ${String(err)}`);
-    }
+    const s = skills.find((x) => x.id === id);
+    if (!s) return;
+    setExtraInstructions(s.operator_prompt ?? "");
+    setResultFocus(s.result_focus ?? "");
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -289,9 +149,10 @@ export function ProbeSubmitForm({
           configs: [{ agent, model, n_trials: 1 }],
           user: "probe-ui",
           extra_instructions: extraInstructions,
-          probe_name: selectedPreset?.name ?? null,
+          probe_name: selectedSkill?.name ?? null,
           result_focus: result_focus.trim() || null,
-          evaluation_metric: selectedPreset?.evaluation_metric ?? null,
+          evaluation_metric: selectedSkill?.evaluation_metric ?? null,
+          skill_ids: selectedSkillId ? [selectedSkillId] : null,
         }),
       });
       if (!res.ok) {
@@ -318,188 +179,38 @@ export function ProbeSubmitForm({
     <form onSubmit={onSubmit} className="space-y-4">
       <div className="flex flex-wrap items-end gap-2">
         <label className="min-w-[200px] flex-1">
-          <span className="text-sm font-medium">Your probe agents</span>
+          <span className="text-sm font-medium">Skill</span>
           <Select
-            value={selectedPresetId || undefined}
-            onValueChange={loadPreset}
+            value={selectedSkillId || undefined}
+            onValueChange={loadSkill}
           >
             <SelectTrigger className="mt-1 w-full">
               <SelectValue
                 placeholder={
-                  presetsLoaded
-                    ? "— Select a probe agent —"
-                    : "Loading presets…"
+                  skillsLoaded ? "— Select a skill —" : "Loading skills…"
                 }
               />
             </SelectTrigger>
             <SelectContent>
-              {presets.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
-                  {p.is_seed ? " (built-in)" : ""}
+              {skills.map((s) => (
+                <SelectItem key={s.id} value={s.id}>
+                  {s.name}
+                  {!s.operator_prompt ? " (bundle)" : ""}
+                  {s.is_seed ? " (built-in)" : ""}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
         </label>
-        <Button type="button" variant="outline" onClick={openCreateModal}>
-          + Create your own probe agent
+        <Button type="button" variant="outline" asChild>
+          <a href="/qa/skills" target="_blank" rel="noreferrer">
+            Manage skills
+          </a>
         </Button>
-        {selectedPreset ? (
-          <Button type="button" variant="outline" onClick={openEditModal}>
-            Edit
-          </Button>
-        ) : null}
-        {selectedPreset && !selectedPreset.is_seed ? (
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void deleteSelectedPreset()}
-            className="border-red-500/50 text-red-600 hover:bg-red-500/10 hover:text-red-600"
-          >
-            Delete
-          </Button>
-        ) : null}
       </div>
-      <Dialog open={modalOpen} onOpenChange={setModalOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>
-              {editingPresetId === null
-                ? "Create a probe agent"
-                : selectedPreset?.is_seed
-                  ? "Fork a built-in probe agent"
-                  : "Edit probe agent"}
-            </DialogTitle>
-            {selectedPreset?.is_seed && editingPresetId !== null ? (
-              <p className="text-muted-foreground text-xs">
-                Built-in presets can&apos;t be modified directly. Saving will
-                create a personal copy you can edit and delete freely.
-              </p>
-            ) : null}
-          </DialogHeader>
-          <div className="space-y-4">
-            <label className="block">
-              <span className="text-sm font-medium">Name</span>
-              <Input
-                type="text"
-                value={modalName}
-                onChange={(e) => setModalName(e.target.value)}
-                maxLength={80}
-                className="mt-1"
-                placeholder="My adversarial probe"
-              />
-            </label>
-            <div className="flex gap-3">
-              <label className="flex-1">
-                <span className="text-sm font-medium">Agent</span>
-                <Select
-                  value={modalAgent}
-                  onValueChange={(a) => {
-                    setModalAgent(a);
-                    setModalModel(MODELS_BY_AGENT[a]?.[0]?.value ?? "");
-                  }}
-                >
-                  <SelectTrigger className="mt-1 w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AGENTS.map((a) => (
-                      <SelectItem key={a.value} value={a.value}>
-                        {a.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-              <label className="flex-1">
-                <span className="text-sm font-medium">Model</span>
-                <Select value={modalModel} onValueChange={setModalModel}>
-                  <SelectTrigger className="mt-1 w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(MODELS_BY_AGENT[modalAgent] ?? []).map((m) => (
-                      <SelectItem key={m.value} value={m.value}>
-                        {m.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-            </div>
-            <label className="block">
-              <span className="text-sm font-medium">Operator prompt</span>
-              <textarea
-                value={modalOperatorPrompt}
-                onChange={(e) => setModalOperatorPrompt(e.target.value)}
-                rows={10}
-                className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
-                placeholder="What should the probe agent do?"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium">
-                Result focus{" "}
-                <span className="text-muted-foreground">(optional)</span>
-              </span>
-              <p className="text-muted-foreground text-xs">
-                Plain text = a question answered in prose. A JSON Schema =
-                structured JSON output.
-              </p>
-              <ResultFocusTextarea
-                value={modalResultFocus}
-                onChange={setModalResultFocus}
-                rows={2}
-                placeholder="A specific question for the analyzer to answer"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium">Evaluation metric</span>
-              <p className="text-muted-foreground text-xs">
-                How should this probe&apos;s results be summarized in the
-                history table?
-              </p>
-              <Select
-                value={modalEvaluationMetric}
-                onValueChange={(v) =>
-                  setModalEvaluationMetric(v as EvaluationMetric)
-                }
-              >
-                <SelectTrigger className="mt-1 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">None — show raw reward</SelectItem>
-                  <SelectItem value="result_focus">
-                    Result focus — show the analyzer&apos;s answer to my
-                    question
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setModalOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void savePresetFromModal()}
-              disabled={!modalName.trim() || !modalOperatorPrompt.trim()}
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      {selectedPresetId ? (
+      {selectedSkillId ? (
         <>
-          {selectedPreset?.evaluation_metric === "result_focus" ? (
+          {selectedSkill?.evaluation_metric === "result_focus" ? (
             <div className="bg-muted/30 text-muted-foreground rounded border px-3 py-2 text-xs">
               <span className="text-foreground font-medium">
                 Result column will show:
@@ -597,7 +308,7 @@ export function ProbeSubmitForm({
         </>
       ) : (
         <p className="text-muted-foreground text-sm">
-          Select a probe agent above or create your own to get started.
+          Select a skill above to get started.
         </p>
       )}
     </form>

@@ -5,9 +5,6 @@ flags the trial ``mode: "probe"`` and the cloud worker applies the instruction
 overlay before the agent runs (see ``queue._build_harbor_config_for_trial`` and
 ``workers/queue/trial_handler``). This command is the CLI equivalent of the
 probe submit form in the UI, which posts the same fields to ``/tasks/sweep``.
-
-Phase 1 takes raw ``--instructions`` text. ``--preset <name>`` (resolve a stored
-preset via ``GET /probe-presets`` and render its fields) is a planned follow-up.
 """
 
 from __future__ import annotations

@@ -222,6 +222,7 @@ class TaskSubmission(BaseModel):
             "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
+    skill_ids: list[str] | None = None
     probe_name: str | None = Field(
         default=None,
         description=(
@@ -308,6 +309,14 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
             "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    skill_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "IDs of skills to mount into the probe agent's workspace for every "
+            "trial in this submission. Only these skills are mounted (not all "
+            "org skills)."
         ),
     )
     probe_name: str | None = Field(
@@ -1206,50 +1215,6 @@ class PublicExperimentListItem(BaseModel):
     created_at: str
 
 
-# ---------------------------------------------------------------------------
-# Probe presets — operator-directive templates for probe trials.
-# ---------------------------------------------------------------------------
-class ProbePresetCreate(BaseModel):
-    """Request body to create a custom probe preset."""
-
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetUpdate(BaseModel):
-    """Request body to update a custom probe preset. All fields optional;
-    only provided fields are applied."""
-
-    name: str | None = None
-    agent: str | None = None
-    model: str | None = None
-    operator_prompt: str | None = None
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetResponse(BaseModel):
-    """A probe preset as returned to the client."""
-
-    id: str
-    org_id: str | None = None
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-    is_seed: bool
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class TagCreateRequest(BaseModel):
     key: str
     value: str | None = None
@@ -1480,6 +1445,9 @@ class SkillCreate(BaseModel):
     name: str
     description: str
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillUpdate(BaseModel):
@@ -1489,6 +1457,9 @@ class SkillUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     files: list[SkillFile] | None = None
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillResponse(BaseModel):
@@ -1501,6 +1472,9 @@ class SkillResponse(BaseModel):
     description: str
     is_seed: bool
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
     created_at: datetime
     updated_at: datetime
 
