@@ -32,44 +32,16 @@ _DOCKERD_DIAG_CMD = (
 )
 
 _DOCKER_CONFIG_PATH = "/root/.docker/config.json"
-_DOCKER_CONFIG_BACKUP_PATH = "/tmp/oddish-docker-config.before-registry-auth.json"
-_DOCKER_CONFIG_ABSENT_PATH = "/tmp/oddish-docker-config.was-absent"
 _DOCKER_CONFIG_STAGED_PATH = "/tmp/oddish-docker-config.registry-auth.json"
 _REGISTRY_LOGIN_CMD = """
 set -eu
-config="/root/.docker/config.json"
-backup="/tmp/oddish-docker-config.before-registry-auth.json"
-absent="/tmp/oddish-docker-config.was-absent"
 staged="/tmp/oddish-docker-config.registry-auth.json"
-if [ ! -f "$backup" ] && [ ! -f "$absent" ]; then
-  if [ -f "$config" ]; then
-    cp "$config" "$backup"
-    chmod 600 "$backup"
-  else
-    touch "$absent"
-  fi
-fi
-mkdir -p "$(dirname "$config")"
-cp "$staged" "$config"
-chmod 600 "$config"
+mkdir -p /root/.docker
+cp "$staged" /root/.docker/config.json
+chmod 600 /root/.docker/config.json
 rm -f "$staged"
 """.strip()
-_RESTORE_DOCKER_CONFIG_CMD = """
-set +e
-config="/root/.docker/config.json"
-backup="/tmp/oddish-docker-config.before-registry-auth.json"
-absent="/tmp/oddish-docker-config.was-absent"
-if [ -f "$backup" ]; then
-    mkdir -p "$(dirname "$config")"
-    cp "$backup" "$config"
-    chmod 600 "$config"
-elif [ -f "$absent" ]; then
-    rm -f "$config"
-fi
-rm -f "$backup" "$absent"
-exit 0
-""".strip()
-_RESTORE_ATTR = "_oddish_restore_docker_config"
+_LOGGED_IN_ATTR = "_oddish_registry_logged_in"
 
 
 def apply_harbor_patches() -> None:
@@ -171,12 +143,12 @@ async def _perform_registry_login(strategy: Any) -> None:
     creds = current_registry_credentials.get()
     if not creds:
         return
-    if getattr(strategy, _RESTORE_ATTR, False):
+    if getattr(strategy, _LOGGED_IN_ATTR, False):
         return
 
     config_json, secrets, registries = _registry_login_config(creds)
     logged_registries = sorted(set(registries))
-    setattr(strategy, _RESTORE_ATTR, True)
+    setattr(strategy, _LOGGED_IN_ATTR, True)
     labels = ", ".join(logged_registries)
     message: str | None = None
     try:
@@ -200,17 +172,6 @@ async def _perform_registry_login(strategy: Any) -> None:
     logger.info("Authenticated DinD daemon for registries: %s", labels)
 
 
-async def _scrub_registry_login(strategy: Any) -> None:
-    if not getattr(strategy, _RESTORE_ATTR, False):
-        return
-    try:
-        await strategy._vm_exec(_RESTORE_DOCKER_CONFIG_CMD, timeout_sec=15)
-    except Exception as exc:
-        logger.debug("Registry config restore skipped: %r", exc)
-    finally:
-        setattr(strategy, _RESTORE_ATTR, False)
-
-
 def _wrap_wait_for_docker_daemon(
     orig: Callable[[Any], Awaitable[None]],
     *,
@@ -231,15 +192,6 @@ def _wrap_wait_for_docker_daemon(
 
     setattr(_wait_for_docker_daemon, "_oddish_wrapped", True)
     return _wait_for_docker_daemon
-
-
-def _wrap_stop(orig: Callable[..., Awaitable[None]]) -> Callable[..., Awaitable[None]]:
-    async def _stop(self: Any, *args: Any, **kwargs: Any) -> None:
-        await _scrub_registry_login(self)
-        return await orig(self, *args, **kwargs)
-
-    setattr(_stop, "_oddish_stop_wrapped", True)
-    return _stop
 
 
 def _install_method_patch(
@@ -390,14 +342,6 @@ def _patch_daytona_dind() -> None:
         marker="_oddish_mirror_wrapped",
         label="registry-mirror",
     )
-    _install_method_patch(
-        module_path,
-        class_name,
-        "stop",
-        _wrap_stop,
-        marker="_oddish_stop_wrapped",
-        label="registry-cleanup",
-    )
 
 
 def _patch_modal_dind() -> None:
@@ -410,12 +354,4 @@ def _patch_modal_dind() -> None:
         partial(_wrap_wait_for_docker_daemon, with_diagnostics=False, with_mirror=True),
         marker="_oddish_wrapped",
         label="registry-mirror+registry-login",
-    )
-    _install_method_patch(
-        module_path,
-        class_name,
-        "stop",
-        _wrap_stop,
-        marker="_oddish_stop_wrapped",
-        label="registry-cleanup",
     )
