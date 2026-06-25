@@ -209,9 +209,14 @@ async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
     await wrapped(strategy, cmd, timeout_sec=10)
 
     sent = strategy.calls[0]["command"]
-    assert "--registry-mirror=https://mirror.gcr.io" in sent
-    assert sent.endswith("> /var/log/dockerd.log 2>&1 &")
-    assert "/etc/docker/daemon.json" not in sent
+    assert (
+        sent
+        == "if grep -q '\"registry-mirrors\"' /etc/docker/daemon.json 2>/dev/null; "
+        "then dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &; "
+        "else dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "> /var/log/dockerd.log 2>&1 &; fi"
+    )
+    assert "base64 -d" not in sent
     assert strategy.calls[0]["kwargs"] == {"timeout_sec": 10}
 
 
@@ -243,9 +248,16 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     sent = strategy.calls[0]["command"]
     assert "--registry-mirror=https://mirror.gcr.io" in sent
     assert "--registry-mirror=https://example.com" in sent
-    assert sent.index("--registry-mirror=https://mirror.gcr.io") < sent.index(
-        "> /var/log/dockerd.log"
+    assert (
+        "then dockerd-entrypoint.sh dockerd --registry-mirror=https://example.com"
+        in sent
     )
+    else_branch = (
+        "else dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
+        "--registry-mirror=https://example.com"
+    )
+    assert else_branch in sent
+    assert sent.index(else_branch) < sent.rindex("> /var/log/dockerd.log")
 
 
 @pytest.mark.asyncio
@@ -402,7 +414,7 @@ def test_entry_applies_sibling_harbor_patches(monkeypatch):
 
     def _fake_spec(name, path):
         assert name == "_oddish_harbor_patches"
-        assert path.name == "patches.py"
+        assert path == Path(harbor_entry._THIS_DIR) / "patches.py"
         return importlib.machinery.ModuleSpec(name, Loader())
 
     monkeypatch.setattr(

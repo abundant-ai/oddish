@@ -135,19 +135,26 @@ def _raise_for_bad_result(result: Any) -> None:
         raise RuntimeError((stderr or stdout or f"command failed with {code}").strip())
 
 
+def _daytona_command_with_mirror(command: str) -> str:
+    if (
+        _DAYTONA_DOCKERD_MARKER not in command
+        or f"--registry-mirror={_MIRROR_URL}" in command
+    ):
+        return command
+    before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
+    existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
+    mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
+    return (
+        f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
+        f"2>/dev/null; then {existing}; else {mirrored}; fi"
+    )
+
+
 def _wrap_daytona_vm_exec(
     orig: Callable[..., Awaitable[Any]],
 ) -> Callable[..., Awaitable[Any]]:
     async def _vm_exec(self: Any, command: str, *args: Any, **kwargs: Any) -> Any:
-        if (
-            _DAYTONA_DOCKERD_MARKER in command
-            and f"--registry-mirror={_MIRROR_URL}" not in command
-        ):
-            command = command.replace(
-                _DAYTONA_DOCKERD_MARKER,
-                f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}",
-                1,
-            )
+        command = _daytona_command_with_mirror(command)
         return await orig(self, command, *args, **kwargs)
 
     setattr(_vm_exec, "_oddish_mirror_wrapped", True)

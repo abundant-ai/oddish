@@ -1,32 +1,10 @@
-"""Standalone, Harbor-only entrypoint for an ephemeral out-of-process trial.
-
-Run by the parent worker as::
-
-    uv run --no-project --with "harbor @ git+<source>@<sha>" --python 3.13 \
-        <this file> <payload.json>
-
-``--no-project`` gives it a fresh env containing ONLY the override Harbor and its
-own transitive deps (importing oddish would re-pull the baked Harbor and defeat
-the isolation). It therefore imports **only Harbor + stdlib**: it rebuilds a
-``JobConfig`` from the JSON payload, runs ``Job.create``/``Job.run``, streams each
-lifecycle event to stdout as one JSON line (NDJSON), and writes the final outcome
-pointers to ``outcome.json``. The parent maps those back onto the trial.
-
-``sys.path[0]`` (this file's own directory) is scrubbed at import so a stray
-``import <sibling>`` can never reach into the oddish package and break the
-Harbor-only isolation.
-"""
+"""Run one ephemeral Harbor trial."""
 
 from __future__ import annotations
 
 import os
 import sys
 
-# When invoked BY PATH (``python .../_entry.py``), Python puts this file's
-# own directory on ``sys.path[0]``, which would make sibling oddish modules
-# top-level importable and could break the Harbor-only isolation. Drop it BEFORE
-# importing anything else. (Guarded to the exact script dir so a normal
-# ``import`` of this module -- where sys.path[0] is the cwd/'' -- is untouched.)
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
     sys.path.pop(0)
