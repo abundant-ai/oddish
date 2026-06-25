@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections import Counter
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,25 +20,58 @@ ALEMBIC_VERSION_TABLES = {
     "alembic_version_backend",
     "alembic_version_oddish",
 }
-ALLOWED_DRIFT = {
-    "COLUMNS chat_session_events.created_at",
-    "COLUMNS chat_sessions.created_at",
-    "COLUMNS chat_sessions.daytona_session_id",
-    "COLUMNS chat_sessions.last_activity",
-    "COLUMNS chat_turns.started_at",
-    "COLUMNS organizations.created_at",
-    "COLUMNS organizations.is_active",
-    "COLUMNS organizations.plan",
-    "COLUMNS organizations.settings",
-    "COLUMNS organizations.updated_at",
-    "COLUMNS submission_idempotency.created_at",
-    "COLUMNS submission_idempotency.status",
-    "COLUMNS submission_idempotency.updated_at",
-    "COLUMNS users.created_at",
-    "COLUMNS users.is_active",
-    "COLUMNS users.role",
+NO_DEFAULT_TIMESTAMP = "type=TIMESTAMP nullable=False default=None identity=None computed=None"
+NOW_TIMESTAMP = "type=TIMESTAMP nullable=False default=now() identity=None computed=None"
+NO_DEFAULT_BOOLEAN = "type=BOOLEAN nullable=False default=None identity=None computed=None"
+TRUE_BOOLEAN = "type=BOOLEAN nullable=False default=true identity=None computed=None"
+NO_DEFAULT_VARCHAR_6 = "type=VARCHAR(6) nullable=False default=None identity=None computed=None"
+NO_DEFAULT_VARCHAR_16 = "type=VARCHAR(16) nullable=False default=None identity=None computed=None"
+NO_DEFAULT_VARCHAR_32 = "type=VARCHAR(32) nullable=False default=None identity=None computed=None"
+NO_DEFAULT_VARCHAR_64 = "type=VARCHAR(64) nullable=False default=None identity=None computed=None"
+NO_DEFAULT_JSONB = "type=JSONB nullable=False default=None identity=None computed=None"
+
+ALLOWED_VALUE_DIFFS = {
+    "COLUMNS chat_session_events.created_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS chat_sessions.created_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS chat_sessions.daytona_session_id": (
+        "type=VARCHAR(64) nullable=False default='cc'::character varying identity=None computed=None",
+        NO_DEFAULT_VARCHAR_64,
+    ),
+    "COLUMNS chat_sessions.last_activity": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS chat_turns.started_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS organizations.created_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS organizations.is_active": (TRUE_BOOLEAN, NO_DEFAULT_BOOLEAN),
+    "COLUMNS organizations.plan": (
+        "type=VARCHAR(32) nullable=False default='free'::character varying identity=None computed=None",
+        NO_DEFAULT_VARCHAR_32,
+    ),
+    "COLUMNS organizations.settings": (
+        "type=JSONB nullable=False default='{}'::jsonb identity=None computed=None",
+        NO_DEFAULT_JSONB,
+    ),
+    "COLUMNS organizations.updated_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS submission_idempotency.created_at": (
+        NOW_TIMESTAMP,
+        NO_DEFAULT_TIMESTAMP,
+    ),
+    "COLUMNS submission_idempotency.status": (
+        "type=VARCHAR(16) nullable=False default='in_progress'::character varying identity=None computed=None",
+        NO_DEFAULT_VARCHAR_16,
+    ),
+    "COLUMNS submission_idempotency.updated_at": (
+        NOW_TIMESTAMP,
+        NO_DEFAULT_TIMESTAMP,
+    ),
+    "COLUMNS users.created_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+    "COLUMNS users.is_active": (TRUE_BOOLEAN, NO_DEFAULT_BOOLEAN),
+    "COLUMNS users.role": (
+        "type=VARCHAR(6) nullable=False default='member'::userrole identity=None computed=None",
+        NO_DEFAULT_VARCHAR_6,
+    ),
+    "COLUMNS users.updated_at": (NOW_TIMESTAMP, NO_DEFAULT_TIMESTAMP),
+}
+ALLOWED_ONLY_IN_MIGRATIONS = {
     "COLUMNS users.supabase_user_id",
-    "COLUMNS users.updated_at",
     "CONSTRAINTS saved_tag_filters.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
     "CONSTRAINTS saved_tag_filters.FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID",
     "CONSTRAINTS tag_assignments.FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
@@ -60,6 +94,7 @@ ALLOWED_DRIFT = {
     "INDEXES users.idx_users_supabase_user_id",
     "INDEXES users.users_supabase_user_id_key",
 }
+ALLOWED_ONLY_IN_METADATA: set[str] = set()
 
 
 def _async_url(name: str) -> str:
@@ -184,7 +219,7 @@ def _constraint_snapshot(conn, table: str) -> dict[str, str]:
     rows = conn.execute(
         text(
             """
-            SELECT conname AS name, pg_get_constraintdef(c.oid, true) AS value
+            SELECT pg_get_constraintdef(c.oid, false) AS value
             FROM pg_constraint c
             JOIN pg_class t ON t.oid = c.conrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
@@ -194,7 +229,8 @@ def _constraint_snapshot(conn, table: str) -> dict[str, str]:
         ),
         {"table": table},
     ).mappings()
-    return {row["value"]: "" for row in rows}
+    counts = Counter(row["value"] for row in rows)
+    return {value: str(count) for value, count in counts.items()}
 
 
 def _schema_snapshot_sync(conn) -> dict[str, dict[str, Any]]:
@@ -234,17 +270,18 @@ def _compare_map(
 ) -> None:
     for name in sorted(set(migrated) - set(metadata)):
         key = f"{label}{name}"
-        if key in ALLOWED_DRIFT:
+        if key in ALLOWED_ONLY_IN_MIGRATIONS:
             continue
         problems.append(f"{key}: only in migrations -> {migrated[name]}")
     for name in sorted(set(metadata) - set(migrated)):
         key = f"{label}{name}"
-        if key in ALLOWED_DRIFT:
+        if key in ALLOWED_ONLY_IN_METADATA:
             continue
         problems.append(f"{key}: only in create_all -> {metadata[name]}")
     for name in sorted(set(migrated) & set(metadata)):
         key = f"{label}{name}"
-        if key in ALLOWED_DRIFT:
+        expected = ALLOWED_VALUE_DIFFS.get(key)
+        if expected == (migrated[name], metadata[name]):
             continue
         if migrated[name] != metadata[name]:
             problems.append(f"{key}: migrations={migrated[name]} create_all={metadata[name]}")
@@ -254,7 +291,7 @@ def _diff(migrated: dict[str, Any], metadata: dict[str, Any]) -> list[str]:
     problems: list[str] = []
     migrated_tables = migrated["tables"]
     metadata_tables = metadata["tables"]
-    _compare_map(problems, "ENUM", migrated["enums"], metadata["enums"])
+    _compare_map(problems, "ENUM ", migrated["enums"], metadata["enums"])
     for table in sorted(set(migrated_tables) - set(metadata_tables)):
         problems.append(f"TABLE {table}: only in migrations")
     for table in sorted(set(metadata_tables) - set(migrated_tables)):
