@@ -18,8 +18,7 @@ export function ChatButton({
     <>
       <Button
         size="sm"
-        variant="outline"
-        className="gap-1.5"
+        className="gap-1.5 bg-blue-600 text-white hover:bg-blue-700"
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}
