@@ -144,7 +144,11 @@ def _resolve_fernet():
         try:
             return Fernet(explicit)
         except Exception:
-            return Fernet(_derive_fernet_key(explicit))
+            raise ValueError(
+                "ODDISH_REGISTRY_AUTH_KEY is set but is not a valid Fernet key. "
+                "Generate one with: "
+                'python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+            ) from None
 
     global _warned_about_derived_key
     if not _warned_about_derived_key:
@@ -212,7 +216,9 @@ def _split_login_items(value: str) -> list[str]:
                 while j < len(text) and text[j].isspace():
                     j += 1
                 if j < len(text) and text[j] != ",":
-                    raise ValueError("--registry-login quotes must wrap the whole value")
+                    raise ValueError(
+                        "--registry-login quotes must wrap the whole value"
+                    )
             else:
                 buf.append(ch)
         elif ch in {"'", '"'}:
