@@ -12,7 +12,7 @@ import {
 } from "@/lib/dashboard-request";
 import { parseTaskSearch } from "@/lib/tag-query";
 import type { DashboardResponse } from "@/lib/types";
-import { DashboardClient } from "./dashboard-client";
+import { DashboardClient, type ExperimentsResult } from "./dashboard-client";
 
 type DashboardRequestParams = Parameters<typeof buildDashboardBackendParams>[0];
 
@@ -57,6 +57,27 @@ async function getInitialDashboardData(
   }
 }
 
+// Server-side, experiments-only fetch. Started (not awaited) in the page so the
+// promise can stream to the client and resolve inside a Suspense boundary.
+async function fetchExperiments(
+  requestParams: DashboardRequestParams,
+): Promise<ExperimentsResult> {
+  const data = await getInitialDashboardData({
+    ...requestParams,
+    include_queues: false,
+    include_usage: false,
+    include_tasks: false,
+  });
+  if (!data) {
+    return { experiments: [], hasMore: false, ok: false };
+  }
+  return {
+    experiments: data.experiments ?? [],
+    hasMore: data.experiments_has_more ?? false,
+    ok: true,
+  };
+}
+
 export default async function DashboardPage({
   searchParams,
 }: {
@@ -74,9 +95,11 @@ export default async function DashboardPage({
   );
   const initialOffset = (pageNumber - 1) * DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 
-  // Mirror the client's query so the SSR fetch returns the same filtered experiments the client would request
+  // Mirror the client's query so the server fetch returns the same filtered
+  // experiments. The promise is NOT awaited here — it streams to the client and
+  // resolves inside the keyed <Suspense> boundary (skeleton while pending).
   const parsedQuery = parseTaskSearch(initialQuery);
-  const initialDashboardData = await getInitialDashboardData({
+  const experimentsPromise = fetchExperiments({
     ...DEFAULT_DASHBOARD_REQUEST_PARAMS,
     experiments_offset: initialOffset,
     experiments_author: initialAuthor,
@@ -90,7 +113,7 @@ export default async function DashboardPage({
 
   return (
     <DashboardClient
-      initialDashboardData={initialDashboardData}
+      experimentsPromise={experimentsPromise}
       initialAuthor={initialAuthor}
       initialStatus={initialStatus}
       initialQuery={initialQuery}
