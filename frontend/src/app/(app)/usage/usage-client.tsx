@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import type { CostBreakdownResponse, DashboardResponse } from "@/lib/types";
+import type { DashboardResponse } from "@/lib/types";
 import { DASHBOARD_DEFAULT_USAGE_MINUTES } from "@/lib/dashboard-request";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -11,18 +11,20 @@ import {
   useDashboardUsage,
   type TimeRangeKey,
 } from "@/components/usage-overview";
-import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 
 type UsageClientProps = {
   initialUsageData?: DashboardResponse | null;
   isAdmin?: boolean;
-  initialCostData?: CostBreakdownResponse | null;
+  // Server-rendered Costing panel (a <Suspense> boundary that streams in the
+  // cost card), passed down so the heavy fetch stays on the server and the tab
+  // switch shows a skeleton immediately.
+  costingSlot?: ReactNode;
 };
 
 export function UsageClient({
   initialUsageData = null,
   isAdmin = false,
-  initialCostData = null,
+  costingSlot = null,
 }: UsageClientProps) {
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
@@ -86,13 +88,7 @@ export function UsageClient({
         {queueState}
       </TabsContent>
       <TabsContent value="costing" className="space-y-4">
-        <CostBreakdownCard
-          initialData={initialCostData}
-          showChart={false}
-          enableSearch
-          experimentLimit={500}
-          userLimit={500}
-        />
+        {costingSlot}
       </TabsContent>
     </Tabs>
   );
