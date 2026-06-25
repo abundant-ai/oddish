@@ -55,12 +55,11 @@ def _load_base():
 
 
 def _index_descriptor(index) -> str:
-    """Stable string for one index: name, its columns, and uniqueness.
+    """One index's identity (name, columns, uniqueness) for the fingerprint.
 
-    Indexes are folded into the fingerprint so a model that gains/loses an
-    index (e.g. a unique index mirrored onto a model to match a migration)
-    invalidates the cached schema -- create_all only builds indexes the models
-    declare, so an index-only change would otherwise never reach a preview.
+    Folding indexes in means an index-only model change invalidates the cached
+    schema; create_all only builds indexes the models declare, so otherwise it
+    would never reach a preview.
     """
     cols = ",".join(sorted(col.name for col in index.columns))
     return f"{index.name}({cols}){'!u' if index.unique else ''}"

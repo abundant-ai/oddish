@@ -239,19 +239,11 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             }
         )
 
-        # Tags for the sampled orgs, plus their DIRECT assignments onto the
-        # sampled tasks / versions / experiments. The only hard FK on
-        # tag_assignments is tag_id -> tags(id), so we constrain assignments to
-        # the tags we just drew AND to targets that exist in the trimmed set.
-        # Only DIRECT assignments are taken: experiment-propagated LIVING /
-        # SNAPSHOT rows carry source_*/target ids that can dangle once the
-        # task/experiment graph is sampled down. Sampled before the user
-        # backfill below so tag owners / assigners are pulled into `users`.
-        #
-        # All non-deleted tags are drawn (ACTIVE / ARCHIVED / MERGED), not just
-        # ACTIVE, so the preview also exercises the page's own state filtering
-        # (e.g. that DELETED tags stay hidden). The merged_into_id guard below
-        # keeps the self-FK safe.
+        # Non-deleted tags (any state) for the sampled orgs, plus their DIRECT
+        # assignments onto sampled targets. tag_id -> tags(id) is the only hard
+        # FK; targets are kept in the trimmed set so detail links resolve.
+        # LIVING/SNAPSHOT rows are skipped -- their source_*/target ids can
+        # dangle. Drawn before the user backfill so owners/assigners reach `users`.
         tagged_version_ids = sorted({v["id"] for v in versions})
         await section(
             "tags",
@@ -348,10 +340,7 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
         if j.get("parent_job_id") not in job_ids:
             j["parent_job_id"] = None
 
-    # We now draw MERGED tags too, which carry a merged_into_id self-FK. Its
-    # target (the surviving tag) is normally an active tag in the same org and
-    # so is also sampled, but guard the edge where it isn't: drop a merge
-    # pointer we didn't also sample.
+    # Drop a merged_into_id self-FK pointer to a tag we didn't sample.
     sampled_tag_ids = {t["id"] for t in rows.get("tags", [])}
     for tg in rows.get("tags", []):
         if tg.get("merged_into_id") and tg["merged_into_id"] not in sampled_tag_ids:
