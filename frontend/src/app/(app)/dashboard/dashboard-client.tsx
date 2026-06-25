@@ -890,7 +890,6 @@ export function DashboardClient({
     swrKey: experimentsSwrKey,
     error: experimentsError,
     isLoading: isExperimentsLoading,
-    isValidating: isExperimentsValidating,
   } = useDashboardExperiments(
     EXPERIMENTS_PAGE_SIZE,
     experimentsOffset,
@@ -1006,9 +1005,7 @@ export function DashboardClient({
         hasMoreExperiments={hasMoreExperiments}
         onPreviousExperimentsPage={handlePreviousExperimentsPage}
         onNextExperimentsPage={handleNextExperimentsPage}
-        isPageTransitioning={
-          isExperimentsLoading || isExperimentsValidating || isPending
-        }
+        isPageTransitioning={isExperimentsLoading || isPending}
         onRefreshData={handleRefreshCurrentPage}
         currentExperimentsPage={currentExperimentsPage}
         onViewOrgExperiments={() => handleAuthorFilterChange("all")}
