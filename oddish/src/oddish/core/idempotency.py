@@ -20,6 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
+from pydantic import SecretStr
+
+from oddish.registry_auth import DOCKER_HUB_AUTH_KEY, normalize_registry_host
+
 # Logical route name recorded alongside the key so the same key may be reused on
 # unrelated endpoints in the future without colliding.
 SWEEP_ROUTE = "POST /tasks/sweep"
@@ -50,10 +54,52 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(blob).hexdigest()
 
 
+def _secret_value(value: Any) -> str:
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    if hasattr(value, "get_secret_value"):
+        return str(value.get_secret_value())
+    return str(value or "")
+
+
+def _registry_auth_fingerprints(raw: Any) -> list[dict[str, str]]:
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    fingerprints: list[dict[str, str]] = []
+    for item in items:
+        if hasattr(item, "model_dump"):
+            registry = getattr(item, "registry", "docker.io")
+            username = getattr(item, "username", "")
+            token = getattr(item, "token", "")
+        else:
+            registry = item.get("registry", "docker.io")
+            username = item.get("username", "")
+            token = item.get("token") or item.get("password") or ""
+        host = normalize_registry_host(str(registry))
+        auth_key = DOCKER_HUB_AUTH_KEY if host == "docker.io" else host
+        fingerprints.append(
+            {
+                "registry": auth_key,
+                "username": str(username).strip(),
+                "token_sha256": hashlib.sha256(
+                    _secret_value(token).encode("utf-8")
+                ).hexdigest(),
+            }
+        )
+    return sorted(fingerprints, key=lambda item: (item["registry"], item["username"]))
+
+
+def _payload_with_registry_auth_fingerprint(payload: dict[str, Any]) -> dict[str, Any]:
+    if "registry_auth" not in payload:
+        return payload
+    payload = dict(payload)
+    payload["registry_auth"] = _registry_auth_fingerprints(payload.get("registry_auth"))
+    return payload
+
+
 def compute_sweep_idempotency_key(payload: Mapping[str, Any]) -> str:
-    if "registry_auth" in payload:
-        payload = {k: v for k, v in payload.items() if k != "registry_auth"}
-    return _canonical_digest(payload)
+    return _canonical_digest(_payload_with_registry_auth_fingerprint(dict(payload)))
 
 
 def hash_idempotency_key(raw_key: str) -> str:
@@ -62,7 +108,10 @@ def hash_idempotency_key(raw_key: str) -> str:
 
 def compute_request_hash(submission: Any) -> str:
     payload = submission.model_dump(mode="json")
-    payload.pop("registry_auth", None)
+    if hasattr(submission, "registry_auth"):
+        payload["registry_auth"] = _registry_auth_fingerprints(
+            getattr(submission, "registry_auth", None)
+        )
     return _canonical_digest(payload)
 
 

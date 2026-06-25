@@ -10,7 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import oddish.queue as queue_mod
 from oddish.core import endpoints
+import oddish.core.endpoints.trials as trials_endpoint_mod
 from oddish.db import TaskStatus, TrialStatus
+from oddish.schemas import RegistryAuth
 
 
 class _Result:
@@ -170,3 +172,49 @@ async def test_retry_carries_registry_auth_to_new_trial(monkeypatch):
     await endpoints.retry_trial_core(session, trial_id=trial.id, org_id="org-1")
 
     assert captured["registry_auth_enc"] == "ENC"
+
+
+@pytest.mark.asyncio
+async def test_retry_uses_fresh_registry_auth_when_supplied(monkeypatch):
+    events = []
+    trial = _RecordingTrial(events, status=TrialStatus.FAILED)
+    task = SimpleNamespace(
+        id="task-1", name="task-1", status=TaskStatus.RUNNING, finished_at=None
+    )
+    session = _RecordingSession(
+        trial=trial, task=task, events=events, registry_auth_enc=None
+    )
+    captured = {}
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, *, registry_auth_enc=None, **_):
+        captured["registry_auth_enc"] = registry_auth_enc
+
+    def fake_encrypt_credentials(creds):
+        captured["creds"] = creds
+        return "FRESH_ENC"
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+    monkeypatch.setattr(
+        trials_endpoint_mod, "encrypt_credentials", fake_encrypt_credentials
+    )
+
+    await endpoints.retry_trial_core(
+        session,
+        trial_id=trial.id,
+        org_id="org-1",
+        registry_auth=[
+            RegistryAuth(username="alice", token="fresh", registry="ghcr.io")
+        ],
+    )
+
+    assert captured["registry_auth_enc"] == "FRESH_ENC"
+    assert captured["creds"][0].token == "fresh"
+    assert ("scalar", None) not in events

@@ -21,7 +21,11 @@ from oddish.db import (
     WorkerJobKind,
     get_session,
 )
-from oddish.registry_auth import current_registry_credentials, decrypt_credentials
+from oddish.registry_auth import (
+    RegistryAuthDecryptError,
+    current_registry_credentials,
+    decrypt_credentials,
+)
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.qa_handler import run_task_qa_job
@@ -65,7 +69,10 @@ class TrialJobHandler:
         if not trial_id:
             raise ValueError("TRIAL worker_job missing subject_id")
 
-        creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
+        try:
+            creds = decrypt_credentials((job.payload or {}).get("registry_auth_enc"))
+        except RegistryAuthDecryptError as exc:
+            return _fail_permanent(str(exc))
         cred_token = current_registry_credentials.set(creds or None)
         try:
             await run_trial_job(

@@ -9,6 +9,7 @@ from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.queue import _encrypt_submission_registry_auth, _trial_job_payload
 from oddish.registry_auth import (
     DOCKER_HUB_AUTH_KEY,
+    RegistryAuthDecryptError,
     RegistryCredential,
     build_docker_config_json,
     current_registry_credentials,
@@ -20,7 +21,13 @@ from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
 def test_auth_key_normalizes_docker_hub_aliases():
-    for alias in ["docker.io", "", "index.docker.io", "registry-1.docker.io"]:
+    for alias in [
+        "docker.io",
+        "",
+        "index.docker.io",
+        "registry-1.docker.io",
+        "https://index.docker.io/v1/",
+    ]:
         assert RegistryCredential("u", "t", alias).auth_key() == DOCKER_HUB_AUTH_KEY
 
 
@@ -58,7 +65,8 @@ def test_encrypt_empty_is_none_and_decrypt_is_resilient():
     assert encrypt_credentials([]) is None
     assert decrypt_credentials(None) == []
     assert decrypt_credentials("") == []
-    assert decrypt_credentials("not-a-valid-fernet-token") == []
+    with pytest.raises(RegistryAuthDecryptError):
+        decrypt_credentials("not-a-valid-fernet-token")
 
 
 def test_parse_registry_login_merges_env_and_flags():
@@ -99,7 +107,23 @@ def test_registry_auth_rejects_empty_username_or_token():
         RegistryAuth(username="bob", token=" ")
 
 
-def test_idempotency_key_ignores_registry_auth():
+def test_registry_auth_rejects_userinfo_in_registry_without_leaking_token():
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        RegistryAuth(
+            registry="https://user:registrysecret@ghcr.io",
+            username="bob",
+            token="supersecret",
+    )
+    message = str(excinfo.value)
+    assert "registrysecret" not in message
+    assert "supersecret" not in message
+
+
+def test_idempotency_key_fingerprints_registry_auth():
     base = {"task_id": "x", "configs": []}
     with_a = {
         **base,
@@ -109,14 +133,12 @@ def test_idempotency_key_ignores_registry_auth():
         **base,
         "registry_auth": [{"username": "a", "token": "2", "registry": "docker.io"}],
     }
-    assert (
-        compute_sweep_idempotency_key(base)
-        == compute_sweep_idempotency_key(with_a)
-        == compute_sweep_idempotency_key(with_b)
-    )
+    assert compute_sweep_idempotency_key(base) != compute_sweep_idempotency_key(with_a)
+    assert compute_sweep_idempotency_key(with_a) != compute_sweep_idempotency_key(with_b)
+    assert len(compute_sweep_idempotency_key(with_a)) == 64
 
 
-def test_request_hash_ignores_registry_auth():
+def test_request_hash_fingerprints_registry_auth():
     from oddish.core.idempotency import compute_request_hash
 
     base = dict(
@@ -128,7 +150,12 @@ def test_request_hash_ignores_registry_auth():
         **base,
         registry_auth=[{"username": "alice", "token": "t", "registry": "ghcr.io"}],
     )
-    assert compute_request_hash(plain) == compute_request_hash(with_auth)
+    changed_auth = TaskSweepSubmission(
+        **base,
+        registry_auth=[{"username": "alice", "token": "u", "registry": "ghcr.io"}],
+    )
+    assert compute_request_hash(plain) != compute_request_hash(with_auth)
+    assert compute_request_hash(with_auth) != compute_request_hash(changed_auth)
 
 
 def test_submission_masks_token_in_model_dump():
@@ -188,7 +215,8 @@ def test_decrypt_failure_is_logged_loudly(caplog):
     import logging
 
     with caplog.at_level(logging.ERROR, logger="oddish.registry_auth"):
-        assert decrypt_credentials("present-but-undecryptable") == []
+        with pytest.raises(RegistryAuthDecryptError):
+            decrypt_credentials("present-but-undecryptable")
     assert any(r.levelno >= logging.ERROR for r in caplog.records)
     caplog.clear()
     with caplog.at_level(logging.ERROR, logger="oddish.registry_auth"):

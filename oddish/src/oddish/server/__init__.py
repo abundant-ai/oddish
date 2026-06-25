@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Body, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -50,6 +50,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
+from oddish.schemas import TrialRetryRequest
 from oddish.core.admin import (
     QueueHealthResponse,
     QueueSlotsResponse,
@@ -632,10 +633,17 @@ async def cancel_task_qa(task_id: str) -> dict:
 
 
 @api.post("/trials/{trial_id}/retry")
-async def retry_trial(trial_id: str) -> dict:
+async def retry_trial(
+    trial_id: str,
+    payload: TrialRetryRequest | None = Body(default=None),
+) -> dict:
     """Re-queue a failed or completed trial for another attempt."""
     async with get_session() as session:
-        return await retry_trial_core(session, trial_id=trial_id)
+        return await retry_trial_core(
+            session,
+            trial_id=trial_id,
+            registry_auth=(payload.registry_auth if payload else None),
+        )
 
 
 # =============================================================================
