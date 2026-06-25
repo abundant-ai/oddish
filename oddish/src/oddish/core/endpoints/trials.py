@@ -69,21 +69,15 @@ async def retry_trial_core(
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> dict[str, str]:
-    """Spawn a fresh immutable trial that replaces ``trial_id``.
-
-    Trials are append-only. A retry never resets the existing row;
-    instead it inserts a new trial that copies the spec, marks the
-    old row as superseded (so it disappears from default UI views and
-    no longer counts toward verdict / pipeline aggregation), and
-    enqueues a worker_job for the new trial.
-
-    Each trial therefore owns a unique S3 prefix
-    (``tasks/{task_id}/trials/{trial_id}/``), which keeps the file
-    viewer free of stale folders left over from previous attempts.
-    """
+    """Create a new trial that replaces an old one."""
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-    task = await session.get(TaskModel, old_trial.task_id)
-    if not task:
+    old_trial = await session.get(
+        TrialModel,
+        old_trial.id,
+        populate_existing=True,
+        with_for_update=True,
+    )
+    if old_trial is None:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
     if old_trial.superseded_by_trial_id is not None:
@@ -95,8 +89,6 @@ async def retry_trial_core(
             ),
         )
 
-    # Allow retrying terminal states OR stuck trials.
-    # A trial is "stuck" if running/retrying with error or completed harbor stage.
     terminal_states = {TrialStatus.FAILED, TrialStatus.SUCCESS}
     is_stuck = old_trial.status in {
         TrialStatus.RUNNING,
@@ -111,8 +103,10 @@ async def retry_trial_core(
             ),
         )
 
-    # Imported lazily to avoid a circular import through
-    # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
+    task = await session.get(TaskModel, old_trial.task_id, with_for_update=True)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
     next_index = await reserve_next_trial_index(session, task_id=task.id)
@@ -138,17 +132,8 @@ async def retry_trial_core(
         status=TrialStatus.QUEUED,
     )
     session.add(new_trial)
-    # ``superseded_by_trial_id`` is a self-referential FK. Flush the new
-    # row before pointing the old row at it so Postgres never sees an
-    # UPDATE that references a trial id that has not been inserted yet.
     await session.flush()
 
-    # Mark the old row superseded so it stops showing up in the trial
-    # viewer, file viewer, and verdict / analysis aggregation. We also
-    # snap any non-terminal status to a terminal one so legacy queries
-    # that don't yet filter on ``superseded_by_trial_id`` (e.g. older
-    # dashboards, cleanup safety nets) don't mistake the dead row for
-    # active pending work.
     old_trial.superseded_by_trial_id = new_trial_id
     if old_trial.status not in terminal_states:
         old_trial.status = TrialStatus.FAILED
@@ -184,10 +169,6 @@ async def retry_trial_core(
             {"trial_id": trial_id},
         )
 
-    # Cancel every live worker_jobs row anchored to the OLD trial id
-    # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating
-    # against a superseded row and release their queue_slot lease
-    # before we enqueue work for the new trial.
     await session.execute(
         text(
             """
@@ -207,11 +188,12 @@ async def retry_trial_core(
         {"trial_id": trial_id},
     )
 
-    # The task's cached verdict and any in-flight VERDICT row are
-    # computed across the trial set; superseding a member invalidates
-    # them. Cancel + reset so the verdict stage can re-run cleanly once
-    # the replacement trial's analysis completes.
-    if task.status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+    if task.status in (
+        TaskStatus.ANALYZING,
+        TaskStatus.VERDICT_PENDING,
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+    ):
         task.status = TaskStatus.RUNNING
         task.finished_at = None
     _reset_task_verdict(task)
@@ -225,7 +207,7 @@ async def retry_trial_core(
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  kind::text = 'VERDICT'
+            WHERE  kind::text IN ('QA', 'VERDICT')
               AND  subject_table = 'tasks'
               AND  subject_id = :task_id
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')

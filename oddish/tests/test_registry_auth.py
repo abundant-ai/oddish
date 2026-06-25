@@ -4,6 +4,7 @@ import base64
 import json
 
 import pytest
+from pydantic import SecretStr
 
 from oddish.core.idempotency import compute_sweep_idempotency_key
 from oddish.queue import _encrypt_submission_registry_auth, _trial_job_payload
@@ -15,6 +16,7 @@ from oddish.registry_auth import (
     current_registry_credentials,
     decrypt_credentials,
     encrypt_credentials,
+    normalize_registry_host,
     parse_registry_login,
 )
 from oddish.schemas import TaskSubmission, TaskSweepSubmission, TrialSpec
@@ -36,6 +38,37 @@ def test_auth_key_keeps_private_registry_host():
     assert (
         RegistryCredential("u", "t", "https://my.reg:5000/").auth_key() == "my.reg:5000"
     )
+    assert RegistryCredential("u", "t", "[fd00::1]:5000").auth_key() == "[fd00::1]:5000"
+
+
+def test_registry_host_validation_hides_bad_port_text():
+    with pytest.raises(
+        ValueError, match="registry port must be a valid numeric port"
+    ) as excinfo:
+        normalize_registry_host("ghcr.io:supersecret")
+    assert "supersecret" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+
+
+def test_registry_host_validation_reports_out_of_range_port():
+    with pytest.raises(ValueError, match="registry port must be a valid numeric port"):
+        normalize_registry_host("ghcr.io:70000")
+
+
+def test_registry_host_validation_hides_urlsplit_text():
+    with pytest.raises(ValueError, match="registry must be a host name") as excinfo:
+        normalize_registry_host("ghcr.io／regsecret")
+    assert "regsecret" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+
+
+def test_registry_credential_unwraps_secretstr_and_rejects_blank_token():
+    cred = RegistryCredential.from_dict(
+        {"username": "alice", "token": SecretStr("secret"), "registry": "ghcr.io"}
+    )
+    assert cred.token == "secret"
+    with pytest.raises(ValueError):
+        RegistryCredential.from_dict({"username": "alice", "token": "   "})
 
 
 def test_build_docker_config_json_encodes_basic_auth():
@@ -86,9 +119,34 @@ def test_parse_registry_login_requires_username_and_token():
         parse_registry_login(["bareword"], {})
 
 
-def test_parse_registry_login_token_may_contain_commas():
-    creds = parse_registry_login(["username=bob,token=a,b=c,d"], {})
+def test_parse_registry_login_token_may_contain_quoted_or_escaped_commas():
+    creds = parse_registry_login(["username=bob,token='a,b=c,d'"], {})
     assert creds == [{"username": "bob", "token": "a,b=c,d", "registry": "docker.io"}]
+    creds = parse_registry_login(["username=bob,token=a\\,b"], {})
+    assert creds[0]["token"] == "a,b"
+    creds = parse_registry_login(["username=bob,token=abc\\\"def"], {})
+    assert creds[0]["token"] == 'abc"def'
+    creds = parse_registry_login([r"username=bob,token=abc\xdef"], {})
+    assert creds[0]["token"] == r"abc\xdef"
+
+
+def test_parse_registry_login_rejects_unquoted_commas():
+    with pytest.raises(ValueError) as excinfo:
+        parse_registry_login(["username=bob,token=a,b"], {})
+    assert "b" not in str(excinfo.value)
+    with pytest.raises(ValueError) as excinfo:
+        parse_registry_login(["username=bob,token=a,b=c,d"], {})
+    message = str(excinfo.value)
+    assert "b=c" not in message
+
+
+def test_parse_registry_login_rejects_mid_value_quotes():
+    with pytest.raises(ValueError, match="quotes must wrap the whole value"):
+        parse_registry_login(["username=bob,token=abc'def"], {})
+    with pytest.raises(ValueError, match="quotes must wrap the whole value"):
+        parse_registry_login(['username=bob,token=abc"def"'], {})
+    with pytest.raises(ValueError, match="quotes must wrap the whole value"):
+        parse_registry_login(["username=bob,token='abc'def"], {})
 
 
 def test_parse_registry_login_empty_when_nothing_supplied():
@@ -117,10 +175,72 @@ def test_registry_auth_rejects_userinfo_in_registry_without_leaking_token():
             registry="https://user:registrysecret@ghcr.io",
             username="bob",
             token="supersecret",
-    )
+        )
     message = str(excinfo.value)
     assert "registrysecret" not in message
     assert "supersecret" not in message
+    assert "registry must not include username or password" in message
+
+
+def test_registry_auth_bad_port_error_hides_input():
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        RegistryAuth(registry="ghcr.io:supersecret", username="bob", token="tok")
+    errors = str(excinfo.value.errors())
+    assert "supersecret" not in errors
+    assert "registry port must be a valid numeric port" in errors
+
+
+@pytest.mark.parametrize(
+    "registry",
+    [
+        "ghcr.io/regsecret",
+        "ghcr.io?x=regsecret",
+        "ghcr.io#regsecret",
+        "ghcr.io\nregsecret",
+    ],
+)
+def test_registry_auth_invalid_registry_error_hides_input(registry):
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        RegistryAuth(registry=registry, username="bob", token="tok")
+    errors = str(excinfo.value.errors())
+    assert "regsecret" not in errors
+
+
+def test_registry_auth_whitespace_error_hides_input():
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        RegistryAuth(registry="ghcr.io\nregsecret", username="bob", token="tok")
+    errors = str(excinfo.value.errors())
+    assert "regsecret" not in errors
+    assert "registry must be a host name without whitespace" in errors
+
+
+def test_registry_auth_malformed_url_error_hides_input_dict():
+    from pydantic import ValidationError
+
+    from oddish.schemas import RegistryAuth
+
+    with pytest.raises(ValidationError) as excinfo:
+        RegistryAuth(
+            registry="https://user:registrysecret@[::1",
+            username="bob",
+            token="supersecret",
+        )
+    errors = str(excinfo.value.errors())
+    assert "registrysecret" not in errors
+    assert "supersecret" not in errors
+    assert "registry must be a host name" in errors
 
 
 def test_idempotency_key_fingerprints_registry_auth():
@@ -134,7 +254,9 @@ def test_idempotency_key_fingerprints_registry_auth():
         "registry_auth": [{"username": "a", "token": "2", "registry": "docker.io"}],
     }
     assert compute_sweep_idempotency_key(base) != compute_sweep_idempotency_key(with_a)
-    assert compute_sweep_idempotency_key(with_a) != compute_sweep_idempotency_key(with_b)
+    assert compute_sweep_idempotency_key(with_a) != compute_sweep_idempotency_key(
+        with_b
+    )
     assert len(compute_sweep_idempotency_key(with_a)) == 64
 
 

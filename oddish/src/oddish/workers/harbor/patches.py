@@ -1,16 +1,15 @@
-"""Best-effort runtime shims over the vendored Harbor library.
-
-Harbor is a git-pinned dependency (``rishidesai/harbor``) we cannot edit in
-place, so behavioral shims that must ship with oddish live here and are applied
-once, idempotently, at worker startup via :func:`apply_harbor_patches`. Keep
-these minimal and reversible -- prefer upstreaming to the harbor fork when a shim
-proves durable.
-"""
+"""Runtime shims for the pinned Harbor dependency."""
 
 from __future__ import annotations
 
+import base64
+import inspect
 import importlib
+import json
 import logging
+import os
+import shlex
+import tempfile
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -26,34 +25,28 @@ _DOCKERD_DIAG_CMD = (
     "echo '=== disk ==='; df -h /var/lib/docker 2>/dev/null || df -h 2>/dev/null || true"
 )
 
-_REGISTRY_LOGIN_COUNT = "ODDISH_REGISTRY_LOGIN_COUNT"
 _DOCKER_CONFIG_PATH = "/root/.docker/config.json"
 _DOCKER_CONFIG_BACKUP_PATH = "/tmp/oddish-docker-config.before-registry-auth.json"
 _DOCKER_CONFIG_ABSENT_PATH = "/tmp/oddish-docker-config.was-absent"
+_DOCKER_CONFIG_STAGED_PATH = "/tmp/oddish-docker-config.registry-auth.json"
 _REGISTRY_LOGIN_CMD = """
 set -eu
 config="/root/.docker/config.json"
 backup="/tmp/oddish-docker-config.before-registry-auth.json"
 absent="/tmp/oddish-docker-config.was-absent"
-rm -f "$backup" "$absent"
-if [ -f "$config" ]; then
+staged="/tmp/oddish-docker-config.registry-auth.json"
+if [ ! -f "$backup" ] && [ ! -f "$absent" ]; then
+  if [ -f "$config" ]; then
     cp "$config" "$backup"
     chmod 600 "$backup"
-else
+  else
     touch "$absent"
+  fi
 fi
-i=0
-while [ "$i" -lt "${ODDISH_REGISTRY_LOGIN_COUNT:-0}" ]; do
-    registry="$(printenv "ODDISH_REGISTRY_LOGIN_REGISTRY_$i")"
-    username="$(printenv "ODDISH_REGISTRY_LOGIN_USERNAME_$i")"
-    token="$(printenv "ODDISH_REGISTRY_LOGIN_TOKEN_$i")"
-    if [ "$registry" = "docker.io" ]; then
-        printf %s "$token" | docker login -u "$username" --password-stdin
-    else
-        printf %s "$token" | docker login "$registry" -u "$username" --password-stdin
-    fi
-    i=$((i + 1))
-done
+mkdir -p "$(dirname "$config")"
+cp "$staged" "$config"
+chmod 600 "$config"
+rm -f "$staged"
 """.strip()
 _RESTORE_DOCKER_CONFIG_CMD = """
 set +e
@@ -98,9 +91,8 @@ async def _collect_dockerd_diagnostics(strategy: Any) -> str:
 
 def _redact(text: str, secrets: list[str]) -> str:
     out = text
-    for secret in secrets:
-        if secret:
-            out = out.replace(secret, "***")
+    for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
+        out = out.replace(secret, "***")
     return out
 
 
@@ -108,20 +100,59 @@ def _result_text(result: Any) -> str:
     return (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
 
 
-def _registry_login_env(creds: list[Any]) -> tuple[dict[str, str], list[str], list[str]]:
-    env = {_REGISTRY_LOGIN_COUNT: str(len(creds))}
+def _secret_variants(secret: str) -> list[str]:
+    quoted = shlex.quote(secret)
+    json_secret = json.dumps(secret)[1:-1]
+    json_quoted = json.dumps(quoted)[1:-1]
+    return [
+        secret,
+        quoted,
+        repr(secret)[1:-1],
+        repr(quoted)[1:-1],
+        json_secret,
+        json_quoted,
+        repr(json_secret)[1:-1],
+        repr(json_quoted)[1:-1],
+    ]
+
+
+def _registry_login_config(creds: list[Any]) -> tuple[str, list[str], list[str]]:
+    auths: dict[str, dict[str, str]] = {}
     secrets: list[str] = []
     registries: list[str] = []
-    for i, cred in enumerate(creds):
+    for cred in creds:
         registry = cred.auth_key()
         if registry == "https://index.docker.io/v1/":
-            registry = "docker.io"
-        registries.append(registry)
-        env[f"ODDISH_REGISTRY_LOGIN_REGISTRY_{i}"] = registry
-        env[f"ODDISH_REGISTRY_LOGIN_USERNAME_{i}"] = cred.username
-        env[f"ODDISH_REGISTRY_LOGIN_TOKEN_{i}"] = cred.token
-        secrets.extend([cred.token, f"{cred.username}:{cred.token}"])
-    return env, secrets, registries
+            auth_key = "https://index.docker.io/v1/"
+            registry_label = "docker.io"
+        else:
+            auth_key = registry
+            registry_label = registry
+        registries.append(registry_label)
+        basic = f"{cred.username}:{cred.token}"
+        encoded_basic = base64.b64encode(basic.encode()).decode()
+        auths[auth_key] = {"auth": encoded_basic}
+        secrets.extend(_secret_variants(cred.token))
+        secrets.extend(_secret_variants(basic))
+        secrets.extend(_secret_variants(encoded_basic))
+    return json.dumps({"auths": auths}), secrets, registries
+
+
+async def _upload_text(strategy: Any, text: str, target_path: str) -> None:
+    tmp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
+            tmp.write(text)
+            tmp_name = tmp.name
+        uploaded = strategy.upload_file(tmp_name, target_path)
+        if inspect.isawaitable(uploaded):
+            await uploaded
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
 
 
 async def _perform_registry_login(strategy: Any) -> None:
@@ -130,24 +161,25 @@ async def _perform_registry_login(strategy: Any) -> None:
     creds = current_registry_credentials.get()
     if not creds:
         return
+    if getattr(strategy, _RESTORE_ATTR, False):
+        return
 
-    env, secrets, registries = _registry_login_env(creds)
+    config_json, secrets, registries = _registry_login_config(creds)
     logged_registries = sorted(set(registries))
     setattr(strategy, _RESTORE_ATTR, True)
     labels = ", ".join(logged_registries)
+    message: str | None = None
     try:
+        await _upload_text(strategy, config_json, _DOCKER_CONFIG_STAGED_PATH)
         result = await strategy._vm_exec(
             _REGISTRY_LOGIN_CMD,
-            env=env,
             timeout_sec=30,
         )
     except Exception as exc:
-        message = (
-            f"Registry login failed for {labels}: "
-            f"{_redact(repr(exc), secrets)}"
-        )
+        message = f"Registry login failed for {labels}: {_redact(repr(exc), secrets)}"
         logger.warning(message)
-        raise RuntimeError(message) from exc
+    if message is not None:
+        raise RuntimeError(message)
     if getattr(result, "return_code", 1) != 0:
         message = (
             f"Registry login failed (rc={getattr(result, 'return_code', '?')}) "

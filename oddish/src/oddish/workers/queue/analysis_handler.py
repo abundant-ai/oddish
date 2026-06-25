@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from oddish.config import settings
 from oddish.db import AnalysisStatus, TaskModel, utcnow
@@ -70,28 +71,11 @@ async def _heartbeat_analysis_worker_job(
             pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
-async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
-    """Resolve, classify, and store one trial's analysis.
-
-    This is the heartbeat-free, stage-transition-free core of per-trial
-    analysis. It marks the trial RUNNING, downloads the task/trial
-    artifacts, runs the Claude Code classifier (or the probe analyzer for
-    probe trials), and persists the result onto ``trial.analysis`` /
-    ``trial.analysis_status``.
-
-    It is shared by two callers:
-
-    * the task-level QA job (``run_task_qa_job``), which classifies every
-      live trial in a single worker job before synthesizing the verdict,
-      and manages one heartbeat loop spanning the whole task; and
-    * the transitional per-trial ``run_analysis_job`` wrapper, which adds a
-      heartbeat loop and the legacy stage transition around this call so
-      in-flight ANALYSIS worker_jobs keep working through a deploy.
-
-    Returns the resulting ``AnalysisStatus`` (SUCCESS / FAILED), or
-    ``None`` if the trial was skipped because its analysis was already
-    terminal.
-    """
+async def classify_trial_and_store(
+    trial_id: str,
+    should_store: Callable[[Any], Awaitable[bool]] | None = None,
+) -> AnalysisStatus | None:
+    """Classify one trial and store its analysis."""
     from oddish.analyze import TrialClassifier
 
     # Mark as running
@@ -252,6 +236,11 @@ async def classify_trial_and_store(trial_id: str) -> AnalysisStatus | None:
         nonlocal stored_status
         async with _trial_session(trial_id, allow_missing=True) as (session, trial):
             if not trial:
+                return
+            if should_store is not None and not await should_store(session):
+                console.print(
+                    f"[dim]Analysis {trial_id} ignored; owner was cancelled[/dim]"
+                )
                 return
 
             if classification_result:

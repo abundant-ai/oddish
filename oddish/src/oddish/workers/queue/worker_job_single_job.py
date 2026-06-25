@@ -241,6 +241,7 @@ async def _open_connection() -> asyncpg.Connection:
 async def heartbeat_worker_job(
     job_id: str,
     *,
+    current_worker_id: str | None = None,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
 ) -> None:
@@ -263,10 +264,12 @@ async def heartbeat_worker_job(
                        last_heartbeat_error_at = NOW()
                 WHERE  id = $1
                   AND  status::text = 'RUNNING'
+                  AND  ($4::text IS NULL OR current_worker_id = $4)
                 """,
                 job_id,
                 pending_failure_count,
                 (pending_last_error or "")[:500] or None,
+                current_worker_id,
             )
         else:
             await connection.execute(
@@ -275,8 +278,10 @@ async def heartbeat_worker_job(
                 SET    heartbeat_at = NOW()
                 WHERE  id = $1
                   AND  status::text = 'RUNNING'
+                  AND  ($2::text IS NULL OR current_worker_id = $2)
                 """,
                 job_id,
+                current_worker_id,
             )
     finally:
         await connection.close()
@@ -344,13 +349,14 @@ async def claim_single_worker_job(
 async def _record_outcome(
     *,
     job_id: str,
+    worker_id: str,
     outcome: JobOutcome,
     attempts: int,
     max_attempts: int,
     kind: WorkerJobKind | None = None,
     subject_table: str | None = None,
     subject_id: str | None = None,
-) -> None:
+) -> bool:
     def row_was_updated(command: str) -> bool:
         return command.endswith(" 1")
 
@@ -372,15 +378,18 @@ async def _record_outcome(
                        payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
                   AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $3
                 """,
                 job_id,
                 json.dumps(summary) if summary is not None else None,
+                worker_id,
             )
             if not row_was_updated(command):
                 console.print(
                     f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-            return
+                return False
+            return True
 
         assert outcome.failure is not None
         retry = outcome.failure.retryable and attempts < max_attempts
@@ -412,16 +421,18 @@ async def _record_outcome(
                        modal_function_call_id = NULL
                 WHERE  id = $1
                   AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $4
                 """,
                 job_id,
                 outcome.failure.error_message,
                 retry_at,
+                worker_id,
             )
             if not row_was_updated(command):
                 console.print(
                     f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
                 )
-                return
+                return False
             if (
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
@@ -439,6 +450,7 @@ async def _record_outcome(
                            heartbeat_at = NOW()
                     WHERE  id = $1
                       AND  deleted_at IS NULL
+                      AND  superseded_by_trial_id IS NULL
                     """,
                     subject_id,
                     outcome.failure.error_message,
@@ -450,6 +462,7 @@ async def _record_outcome(
                 f"retry_reason={retry_reason} "
                 f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
+            return True
         else:
             command = await connection.execute(
                 """
@@ -461,14 +474,18 @@ async def _record_outcome(
                        payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
                   AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $3
                 """,
                 job_id,
                 outcome.failure.error_message,
+                worker_id,
             )
             if not row_was_updated(command):
                 console.print(
                     f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
                 )
+                return False
+            return True
     finally:
         await connection.close()
 
@@ -519,6 +536,7 @@ async def run_single_worker_job(
         # doesn't have to reap it via the stale-heartbeat sweep.
         await _record_outcome(
             job_id=job.id,
+            worker_id=worker_id,
             outcome=JobOutcome.fail(
                 f"No handler registered for kind={job.kind.value!r}: {exc}",
                 retryable=False,
@@ -556,8 +574,9 @@ async def run_single_worker_job(
         f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
     )
 
-    await _record_outcome(
+    outcome_recorded = await _record_outcome(
         job_id=job.id,
+        worker_id=worker_id,
         outcome=outcome,
         attempts=job.attempts,
         max_attempts=job.max_attempts,
@@ -566,7 +585,12 @@ async def run_single_worker_job(
         subject_id=job.subject_id,
     )
 
-    if outcome.success is not None and post_success_hooks and job.subject_id:
+    if (
+        outcome_recorded
+        and outcome.success is not None
+        and post_success_hooks
+        and job.subject_id
+    ):
         hook = post_success_hooks.get(job.kind)
         if hook is not None:
             try:
