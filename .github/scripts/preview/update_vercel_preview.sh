@@ -35,11 +35,12 @@ if [ -z "$database_label" ]; then
 fi
 
 # Clickable targets for the preview banner / PR comment. The backend points at
-# whatever API the frontend talks to; the DB links to the Supabase branch only
-# when one exists (prod DB has no per-PR dashboard worth linking).
+# whatever API the frontend talks to; the DB links to the preview branch's own
+# Supabase project dashboard -- branch_ref IS that project's ref. Prod DB has no
+# per-PR dashboard worth linking, so it stays plain text.
 database_url=""
-if [ -n "${SUPABASE_PROJECT_REF:-}" ] && [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
-  database_url="https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/branches"
+if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
+  database_url="https://supabase.com/dashboard/project/${SUPABASE_BRANCH_REF}"
 fi
 
 is_configured_vercel() {
@@ -121,7 +122,6 @@ fi
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL "$backend_api_url"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL "$database_label"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL "$database_url"
-  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA "${VERCEL_GIT_COMMIT_SHA:-}"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE "${PR_TITLE:-}"
 )

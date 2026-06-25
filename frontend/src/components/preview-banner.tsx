@@ -1,9 +1,5 @@
 const linkClass = "underline underline-offset-2 hover:no-underline";
 
-function shortSha(value: string) {
-  return value.length > 7 ? value.slice(0, 7) : value;
-}
-
 function prNumberFromUrl(url: string) {
   const match = url.match(/\/pull\/(\d+)/);
   return match ? match[1] : null;
@@ -50,7 +46,6 @@ export function PreviewBanner() {
   const databaseLabel =
     process.env.NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL || "unknown database";
   const databaseUrl = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL || "";
-  const commitSha = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA || "";
   const prUrl = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL || "";
   const prTitle = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE || "";
   const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
@@ -71,9 +66,6 @@ export function PreviewBanner() {
           >
             {prTitle ? `${prLabel}: ${prTitle}` : prLabel}
           </a>
-        ) : null}
-        {commitSha ? (
-          <span className="truncate">Commit: {shortSha(commitSha)}</span>
         ) : null}
       </div>
     </div>

@@ -98,12 +98,13 @@ def test_banner_env_threaded_to_vercel_and_cleaned_up():
     job_env = _wf()["jobs"]["update-vercel-preview"]["env"]
     assert "html_url" in job_env["PR_URL"]
     assert "title" in job_env["PR_TITLE"]
-    # The DB link needs the Supabase project ref alongside the branch ref.
-    assert "SUPABASE_PROJECT_REF" in job_env
+    # The DB link is the preview branch's own project dashboard, so it only
+    # needs the branch ref (which is that branch's Supabase project ref).
     assert "SUPABASE_BRANCH_REF" in job_env
 
     update = (PREVIEW / "update_vercel_preview.sh").read_text()
     stop = (PREVIEW / "stop_preview.sh").read_text()
+    assert "dashboard/project/${SUPABASE_BRANCH_REF}" in update
     for name in (
         "NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL",
         "NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE",
