@@ -428,8 +428,8 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # to Harbor below. Best-effort; never blocks the probe.
         skills_root = work_root / "agent_skills"
         n_skills = await stage_org_skills(
-                    skills_root, org_id=trial_org_id, skill_ids=skill_ids
-                )
+            skills_root, org_id=trial_org_id, skill_ids=skill_ids
+        )
         if n_skills:
             agent_skill_paths = [skills_root]
             logger.info("probe: staged %d skill(s) for trial %s", n_skills, trial_id)

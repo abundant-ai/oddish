@@ -14,7 +14,7 @@ import yaml
 
 def _frontmatter_name_desc(skill_md: str) -> tuple[str, str]:
     parts = skill_md.lstrip().split("---", 2)
-    meta = yaml.safe_load(parts[1]) if len(parts) >= 3 else {}
+    meta = (yaml.safe_load(parts[1]) or {}) if len(parts) >= 3 else {}
     return str(meta.get("name", "")), str(meta.get("description", ""))
 
 
