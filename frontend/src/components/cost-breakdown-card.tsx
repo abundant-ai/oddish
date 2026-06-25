@@ -51,6 +51,7 @@ import type {
   CostUserBreakdown,
 } from "@/lib/types";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -595,7 +596,18 @@ export function CostBreakdownCard({
             </AlertDescription>
           </Alert>
         ) : !data ? (
-          <p className="text-muted-foreground">Loading...</p>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <Skeleton key={i} className="h-6 w-24" />
+              ))}
+            </div>
+            <div className="space-y-2">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <Skeleton key={i} className="h-9" />
+              ))}
+            </div>
+          </div>
         ) : (
           <TooltipProvider delayDuration={150}>
             {showChart && series && (
