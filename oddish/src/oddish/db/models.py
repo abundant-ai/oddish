@@ -1674,6 +1674,9 @@ class SkillModel(TimestampedMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    operator_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluation_metric: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     files: Mapped[list["SkillFileModel"]] = relationship(  # type: ignore[assignment]
         "SkillFileModel",
