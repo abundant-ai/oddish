@@ -112,6 +112,60 @@ def test_parse_registry_login_merges_env_and_flags():
     assert by_reg["docker.io"]["username"] == "bob"
 
 
+def test_parse_registry_login_generic_env_produces_ghcr_credential():
+    creds = parse_registry_login(
+        None,
+        {
+            "ODDISH_REGISTRY_HOST": "ghcr.io",
+            "ODDISH_REGISTRY_USERNAME": "gh",
+            "ODDISH_REGISTRY_TOKEN": "tok",
+        },
+    )
+    assert creds == [{"username": "gh", "token": "tok", "registry": "ghcr.io"}]
+
+
+def test_parse_registry_login_generic_and_dockerhub_coexist():
+    creds = parse_registry_login(
+        None,
+        {
+            "ODDISH_DOCKERHUB_USERNAME": "hub",
+            "ODDISH_DOCKERHUB_TOKEN": "hubtok",
+            "ODDISH_REGISTRY_HOST": "ghcr.io",
+            "ODDISH_REGISTRY_USERNAME": "gh",
+            "ODDISH_REGISTRY_TOKEN": "tok",
+        },
+    )
+    by_reg = {c["registry"]: c for c in creds}
+    assert by_reg["docker.io"]["username"] == "hub"
+    assert by_reg["ghcr.io"]["username"] == "gh"
+
+
+def test_parse_registry_login_generic_env_defaults_host_to_docker_hub():
+    creds = parse_registry_login(
+        None,
+        {"ODDISH_REGISTRY_USERNAME": "bob", "ODDISH_REGISTRY_TOKEN": "tok"},
+    )
+    assert creds == [{"username": "bob", "token": "tok", "registry": "docker.io"}]
+
+
+def test_parse_registry_login_generic_env_absent_is_noop():
+    assert parse_registry_login(None, {"UNRELATED": "x"}) == []
+
+
+def test_parse_registry_login_generic_env_dedupes_with_flag():
+    creds = parse_registry_login(
+        ["registry=ghcr.io,username=gh,token=flagtok"],
+        {
+            "ODDISH_REGISTRY_HOST": "ghcr.io",
+            "ODDISH_REGISTRY_USERNAME": "gh",
+            "ODDISH_REGISTRY_TOKEN": "envtok",
+        },
+    )
+    assert len(creds) == 1
+    assert creds[0]["registry"] == "ghcr.io"
+    assert creds[0]["token"] == "flagtok"
+
+
 def test_parse_registry_login_requires_username_and_token():
     with pytest.raises(ValueError):
         parse_registry_login(["registry=docker.io,username=bob"], {})

@@ -264,6 +264,15 @@ def parse_registry_login(values: list[str] | None, env: dict[str, str]) -> list[
         if hub_user and hub_token
         else []
     )
+    reg_user = env.get("ODDISH_REGISTRY_USERNAME")
+    reg_token = env.get("ODDISH_REGISTRY_TOKEN")
+    reg_host = env.get("ODDISH_REGISTRY_HOST") or DEFAULT_REGISTRY
+    if reg_user and reg_token:
+        creds.append(
+            RegistryCredential.from_dict(
+                {"registry": reg_host, "username": reg_user, "token": reg_token}
+            )
+        )
     creds.extend(
         RegistryCredential.from_dict(_parse_login_pairs(v)) for v in values or []
     )
