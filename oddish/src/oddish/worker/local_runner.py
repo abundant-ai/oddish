@@ -382,6 +382,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
         probe_scope = harbor_config.get("probe_scope", "task")
+        skill_ids = harbor_config.get("skill_ids")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -426,7 +427,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # Stage the org's shared skills into a root under work_root and hand it
         # to Harbor below. Best-effort; never blocks the probe.
         skills_root = work_root / "agent_skills"
-        n_skills = await stage_org_skills(skills_root, org_id=trial_org_id)
+        n_skills = await stage_org_skills(
+                    skills_root, org_id=trial_org_id, skill_ids=skill_ids
+                )
         if n_skills:
             agent_skill_paths = [skills_root]
             logger.info("probe: staged %d skill(s) for trial %s", n_skills, trial_id)
