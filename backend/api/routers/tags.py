@@ -17,21 +17,21 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from oddish.core.tag_permissions import (
+from oddish.core.tags.permissions import (
     can_definition_capability,
     can_manage_grants,
     can_use_apply,
     is_org_admin,
 )
 from oddish.core.dashboard import invalidate_dashboard_cache
-from oddish.core.tag_policies_core import (
+from oddish.core.tags.policies import (
     TagCapExceededError,
     assert_under_tag_cap,
     get_or_create_tag_policy,
     update_tag_policy_core,
 )
-from oddish.core.tag_naming import TagNameError, is_reserved_prefix
-from oddish.core.tags_core import (
+from oddish.core.tags.naming import TagNameError, is_reserved_prefix
+from oddish.core.tags.service import (
     TagConcurrencyError,
     TagMergeChainError,
     TagPolicyError,
@@ -52,7 +52,7 @@ from oddish.core.tags_core import (
     unassign_tag_core,
     unexclude_tag_core,
 )
-from oddish.core.saved_tag_filters_core import (
+from oddish.core.tags.saved_filters import (
     create_saved_tag_filter_core,
     delete_saved_tag_filter_core,
     list_saved_tag_filters_core,
@@ -85,7 +85,7 @@ from oddish.schemas import (
     TagUpdateRequest,
     UserTagRef,
 )
-from oddish.core.tags_projection import list_direct_target_tags
+from oddish.core.tags.projection import list_direct_target_tags
 
 router = APIRouter(tags=["Tags"])
 

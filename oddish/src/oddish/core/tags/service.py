@@ -14,7 +14,7 @@ import uuid
 
 from sqlalchemy import text
 
-from oddish.core.tag_naming import (
+from .naming import (
     TagNameError,
     is_reserved_prefix,
     normalize_tag_key,
@@ -22,9 +22,9 @@ from oddish.core.tag_naming import (
     validate_tag_key,
     validate_tag_value,
 )
-from oddish.core.tag_profanity import check_tag_text
-from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
-from oddish.core.tags_projection import recompute_task_browse_projection
+from .profanity import check_tag_text
+from .enqueue import enqueue_tag_project_worker_job
+from .projection import recompute_task_browse_projection
 
 
 def _new_event_uuid() -> str:
