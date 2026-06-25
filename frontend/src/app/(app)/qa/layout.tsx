@@ -11,11 +11,23 @@ const CONFIG_TABS = [
 
 export default function QaLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const runProbeActive = pathname === "/qa/run";
   const runsActive = pathname.startsWith("/qa/runs");
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-4 border-b border-[#6f88b4]/15 pb-3">
+        <Button
+          variant={runProbeActive ? "secondary" : "ghost"}
+          size="sm"
+          asChild
+          className="border border-transparent data-[active=true]:border-[#85b85c]/25"
+        >
+          <Link href="/qa/run" data-active={runProbeActive}>
+            Run Probe
+          </Link>
+        </Button>
+
         <Button
           variant={runsActive ? "secondary" : "ghost"}
           size="sm"
