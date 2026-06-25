@@ -2,7 +2,7 @@ import type { Task, Trial } from "@/lib/types";
 
 const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
 
-export const PROBE_AGENT_KEY = "Probe";
+export const PROBE_AGENT_KEY = "probe";
 
 export type ExperimentAgentSummary = {
   key: string;
@@ -79,7 +79,7 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
       if (trial.is_probe) {
         summaries.set(key, {
           key: PROBE_AGENT_KEY,
-          label: "Probe",
+          label: "probe",
           agent: PROBE_AGENT_KEY,
           model: null,
           queueKey: null,
