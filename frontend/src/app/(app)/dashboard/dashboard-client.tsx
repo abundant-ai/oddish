@@ -133,7 +133,9 @@ function useDashboardExperiments(
       revalidateOnFocus: false,
       revalidateOnMount: !hasFallbackData,
       revalidateIfStale: !hasFallbackData,
-      keepPreviousData: true,
+      // Only keep previous data for client-fetched views (e.g. search) where a
+      // revalidation is in flight.
+      keepPreviousData: !hasFallbackData,
       fallbackData: hasFallbackData ? (fallbackData ?? undefined) : undefined,
     },
   );
