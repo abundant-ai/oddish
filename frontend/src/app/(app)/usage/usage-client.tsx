@@ -13,7 +13,7 @@ import {
 } from "@/components/usage-overview";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 
-type Tab = "queue-state" | "costing";
+type Tab = "queue-state" | "cost";
 
 type UsageClientProps = {
   initialUsageData?: DashboardResponse | null;
@@ -45,7 +45,7 @@ export function UsageClient({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const urlTab: Tab =
-    isAdmin && searchParams.get("tab") === "costing" ? "costing" : "queue-state";
+    isAdmin && searchParams.get("tab") === "cost" ? "cost" : "queue-state";
   const [tab, setTab] = useState<Tab>(urlTab);
 
   useEffect(() => {
@@ -53,10 +53,10 @@ export function UsageClient({
   }, [urlTab]);
 
   const handleTabChange = (value: string) => {
-    const next = (value === "costing" ? "costing" : "queue-state") as Tab;
+    const next = (value === "cost" ? "cost" : "queue-state") as Tab;
     setTab(next);
     const params = new URLSearchParams(searchParams.toString());
-    if (next === "costing") params.set("tab", "costing");
+    if (next === "cost") params.set("tab", "cost");
     else params.delete("tab");
     const qs = params.toString();
     window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
@@ -75,7 +75,7 @@ export function UsageClient({
     />
   );
 
-  // Costing is admin-only; for everyone else show queue state without a tab strip.
+  // Cost is admin-only; for everyone else show queue state without a tab strip.
   if (!isAdmin) {
     return <div className="space-y-4">{queueState}</div>;
   }
@@ -84,12 +84,12 @@ export function UsageClient({
     <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
       <TabsList>
         <TabsTrigger value="queue-state">Queue State</TabsTrigger>
-        <TabsTrigger value="costing">Costing</TabsTrigger>
+        <TabsTrigger value="cost">Cost</TabsTrigger>
       </TabsList>
       <TabsContent value="queue-state" className="space-y-4">
         {queueState}
       </TabsContent>
-      <TabsContent value="costing" className="space-y-4">
+      <TabsContent value="cost" className="space-y-4">
         {/* Client-fetched (no SSR); the card shows its own skeleton while the
             heavy /admin/costs query loads, and SWR caches it for revisits. */}
         <CostBreakdownCard
