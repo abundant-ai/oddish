@@ -18,18 +18,18 @@ from oddish.core.sweeps import (
     build_task_submission_from_sweep,
     build_trial_specs_from_sweep,
 )
-from oddish.db import ExperimentModel, ProbePresetModel, TaskModel, TrialModel
+from oddish.db import ExperimentModel, SkillModel, TaskModel, TrialModel
 from oddish.queue import append_trials_to_task
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
 
 logger = logging.getLogger(__name__)
 
-# Every auto-probe is built from this probe preset row in the ``probe_presets``
-# table, so the directive, result-focus question, and metric are editable in
-# one place. The model is still rotated per task version (see
-# ``next_probe_model``); only the preset's prompt/metadata are adopted. If the
-# row is missing the auto-probe is logged and skipped (no fallback) — seed it.
-DEFAULT_PROBE_PRESET_ID = "774e69fa"  # Task Construction Auditor
+# Auto-probes adopt the directive (operator prompt, result-focus, metric) from
+# this seed skill, editable in one place. Agent is fixed to claude-code; the
+# model still rotates per task version (``next_probe_model``). Missing -> the
+# probe is logged and skipped (the real sweep is unaffected).
+DEFAULT_PROBE_SKILL_ID = "cheat-detector"
+DEFAULT_PROBE_AGENT = "claude-code"
 
 
 async def _version_already_probed(session: AsyncSession, version_id: str) -> bool:
@@ -69,19 +69,15 @@ async def maybe_enqueue_auto_probe(
 
         model = next_probe_model(await _probed_version_count(session, org_id))
 
-        preset = await session.scalar(
-            select(ProbePresetModel).where(
-                ProbePresetModel.id == DEFAULT_PROBE_PRESET_ID
-            )
+        skill = await session.scalar(
+            select(SkillModel).where(SkillModel.id == DEFAULT_PROBE_SKILL_ID)
         )
-        if preset is None:
-            # Operator-facing: no traceback, just a clear line. The probe is
-            # simply skipped (the sweep itself is unaffected).
+        if skill is None or not skill.operator_prompt:
             logger.error(
-                "Default probe preset %r not found in probe_presets; "
-                "skipping auto-probe for task %s. Seed the preset to enable "
+                "Default probe skill %r not found (or has no operator_prompt); "
+                "skipping auto-probe for task %s. Seed the skill to enable "
                 "auto-probing.",
-                DEFAULT_PROBE_PRESET_ID,
+                DEFAULT_PROBE_SKILL_ID,
                 task.id,
             )
             return
@@ -90,11 +86,12 @@ async def maybe_enqueue_auto_probe(
             task_id=task.id,
             append_to_task=True,
             name=task.name,
-            configs=[AgentModelPair(agent=preset.agent, model=model, n_trials=1)],
-            extra_instructions=preset.operator_prompt,
-            probe_name=preset.name,
-            result_focus=preset.result_focus,
-            evaluation_metric=preset.evaluation_metric,
+            configs=[AgentModelPair(agent=DEFAULT_PROBE_AGENT, model=model, n_trials=1)],
+            extra_instructions=skill.operator_prompt,
+            probe_name=skill.name,
+            result_focus=skill.result_focus,
+            evaluation_metric=skill.evaluation_metric,
+            skill_ids=[skill.id],
             experiment_id=(experiment.id if experiment is not None else None),
             user=task.user,
         )
