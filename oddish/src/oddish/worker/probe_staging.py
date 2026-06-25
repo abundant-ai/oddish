@@ -72,8 +72,10 @@ def stage_harbor_source(work_task_dir: Path) -> bool:
     return True
 
 
-async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
-    """Materialize the org's shared skills (+ global seeds) under
+async def stage_org_skills(
+    skills_root: Path, *, org_id: str | None, skill_ids: list[str] | None = None
+) -> int:
+    """Materialize the selected org skills (or all visible skills when ``skill_ids`` is None) under
     ``skills_root/<name>/<relative_path>``.
 
     ``skills_root`` is meant to be passed to Harbor as an ``AgentConfig.skills``
@@ -90,6 +92,9 @@ async def stage_org_skills(skills_root: Path, *, org_id: str | None) -> int:
     try:
         async with get_session() as session:
             skills = await list_skills_core(session, org_id=org_id)
+            if skill_ids is not None:
+                wanted = set(skill_ids)
+                skills = [s for s in skills if s.id in wanted]
             bundles = [
                 SkillBundle(
                     name=s.name,
