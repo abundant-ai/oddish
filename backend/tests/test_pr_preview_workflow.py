@@ -90,6 +90,20 @@ def test_vercel_modal_url_gated_with_prod_fallback():
     assert expr.rstrip().endswith("|| '' }}")
 
 
+def test_pr_url_threaded_to_banner_env_and_cleaned_up():
+    # The preview banner links back to the PR via NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL,
+    # which is only populated if the PR html_url is threaded all the way through
+    # the Vercel env. Guard the full chain since the frontend has no test suite.
+    job = _wf()["jobs"]["update-vercel-preview"]
+    assert "html_url" in job["env"]["PR_URL"]
+
+    update = (PREVIEW / "update_vercel_preview.sh").read_text()
+    assert 'NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"' in update
+
+    stop = (PREVIEW / "stop_preview.sh").read_text()
+    assert "NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL" in stop
+
+
 def test_url_fragment_derives_from_modal_app_label():
     m = re.search(r'f"\{MODAL_APP_NAME\}(-\w+)"', MODAL_APP.read_text())
     assert m, "preview webhook label formula not found in modal_app.py"

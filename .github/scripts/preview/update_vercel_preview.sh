@@ -112,6 +112,7 @@ fi
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL "$backend_label"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL "$database_label"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA "${VERCEL_GIT_COMMIT_SHA:-}"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"
 )
 
 vercel_output="$(mktemp)"
