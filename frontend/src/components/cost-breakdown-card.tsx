@@ -50,12 +50,13 @@ import type {
   CostSeries,
   CostUserBreakdown,
 } from "@/lib/types";
+import { Input } from "@/components/ui/input";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
-import { AlertCircle, DollarSign, Info, RefreshCw } from "lucide-react";
+import { AlertCircle, DollarSign, Info, RefreshCw, Search } from "lucide-react";
 
 // window_days values the backend understands (0 == all-time).
 const WINDOW_OPTIONS: { value: string; label: string }[] = [
@@ -441,14 +442,70 @@ type ChartDimension = "agent" | "model" | "user";
 
 const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
 
-export function CostBreakdownCard() {
+type CostBreakdownCardProps = {
+  // SSR/initial payload used as the SWR fallback so the card renders with data
+  // immediately (no client loading flash) on the default window.
+  initialData?: CostBreakdownResponse | null;
+  // Hide the "Cost over time" chart (the org Usage > Costing tab is list-only).
+  showChart?: boolean;
+  // Render a client-side search box that filters the user/model/experiment
+  // tables over the full API response.
+  enableSearch?: boolean;
+  experimentLimit?: number;
+  userLimit?: number;
+};
+
+function matchesQuery(
+  values: (string | null | undefined)[],
+  q: string,
+): boolean {
+  return values.some((v) => (v ?? "").toLowerCase().includes(q));
+}
+
+export function CostBreakdownCard({
+  initialData = null,
+  showChart = true,
+  enableSearch = false,
+  experimentLimit = 100,
+  userLimit = 100,
+}: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
+  const [search, setSearch] = useState("");
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
-    `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
+    `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}`,
     fetcher,
-    { refreshInterval: 30000 }
+    { refreshInterval: 30000, fallbackData: initialData ?? undefined }
+  );
+
+  const q = enableSearch ? search.trim().toLowerCase() : "";
+  const filteredUsers = useMemo(
+    () =>
+      !q
+        ? (data?.by_user ?? [])
+        : (data?.by_user ?? []).filter((u) =>
+            matchesQuery([u.name, u.email, u.org_name], q),
+          ),
+    [data, q],
+  );
+  const filteredModels = useMemo(
+    () =>
+      !q
+        ? (data?.by_model ?? [])
+        : (data?.by_model ?? []).filter((m) =>
+            matchesQuery([m.model, m.provider], q),
+          ),
+    [data, q],
+  );
+  const filteredExperiments = useMemo(
+    () =>
+      !q
+        ? (data?.experiments ?? [])
+        : (data?.experiments ?? []).filter((e) =>
+            matchesQuery([e.name, e.owner_name, e.owner_email, e.org_name], q),
+          ),
+    [data, q],
   );
 
   const windowLabel =
@@ -477,6 +534,18 @@ export function CostBreakdownCard() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {enableSearch && (
+              <div className="relative">
+                <Search className="text-muted-foreground absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search users, models, experiments…"
+                  className="h-8 w-[240px] pl-7 text-xs"
+                  aria-label="Search cost breakdown"
+                />
+              </div>
+            )}
             <Select value={windowDays} onValueChange={setWindowDays}>
               <SelectTrigger className="h-8 w-[150px] text-xs">
                 <SelectValue />
@@ -525,30 +594,32 @@ export function CostBreakdownCard() {
                 : "Check if you have admin access."}
             </AlertDescription>
           </Alert>
-        ) : !data || !series ? (
+        ) : !data ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-medium">Cost over time</h3>
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-muted-foreground mr-1">stack by</span>
-                  {CHART_DIMENSIONS.map((dim) => (
-                    <Button
-                      key={dim}
-                      variant={dimension === dim ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-7 px-2 text-xs capitalize"
-                      onClick={() => setDimension(dim)}
-                    >
-                      {dim}
-                    </Button>
-                  ))}
+            {showChart && series && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium">Cost over time</h3>
+                  <div className="flex items-center gap-1 text-xs">
+                    <span className="text-muted-foreground mr-1">stack by</span>
+                    {CHART_DIMENSIONS.map((dim) => (
+                      <Button
+                        key={dim}
+                        variant={dimension === dim ? "secondary" : "ghost"}
+                        size="sm"
+                        className="h-7 px-2 text-xs capitalize"
+                        onClick={() => setDimension(dim)}
+                      >
+                        {dim}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
+                <CostChart series={series} bucket={data.bucket} />
               </div>
-              <CostChart series={series} bucket={data.bucket} />
-            </div>
+            )}
 
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
@@ -573,12 +644,12 @@ export function CostBreakdownCard() {
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by user</h3>
-              <UserTable users={data.by_user} />
+              <UserTable users={filteredUsers} />
             </section>
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={data.by_model} />
+              <ModelTable models={filteredModels} />
             </section>
 
             <section className="space-y-2">
@@ -588,7 +659,7 @@ export function CostBreakdownCard() {
                   ranked descending · {windowLabel.toLowerCase()}
                 </span>
               </div>
-              <ExperimentTable experiments={data.experiments} />
+              <ExperimentTable experiments={filteredExperiments} />
             </section>
           </TooltipProvider>
         )}
