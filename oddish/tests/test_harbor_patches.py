@@ -291,6 +291,10 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
             ["https://mirror.gcr.io"],
         ),
         (
+            '{\n  "registry-mirrors": [\n  ]\n}',
+            ["https://mirror.gcr.io"],
+        ),
+        (
             {"registry-mirrors": ["https://example.com"], "iptables": False},
             ["https://mirror.gcr.io", "https://example.com"],
         ),
@@ -298,7 +302,7 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
 )
 def test_daytona_merge_mirror_command_writes_valid_json(tmp_path, initial, expected):
     daemon_json = tmp_path / "daemon.json"
-    daemon_json.write_text(json.dumps(initial))
+    daemon_json.write_text(initial if isinstance(initial, str) else json.dumps(initial))
 
     command = harbor_patches._daytona_merge_mirror_command(str(daemon_json))
     _assert_shell_parses(command)
@@ -306,7 +310,7 @@ def test_daytona_merge_mirror_command_writes_valid_json(tmp_path, initial, expec
 
     cfg = json.loads(daemon_json.read_text())
     assert cfg["registry-mirrors"] == expected
-    if "iptables" in initial:
+    if isinstance(initial, dict) and "iptables" in initial:
         assert cfg["iptables"] is False
 
 

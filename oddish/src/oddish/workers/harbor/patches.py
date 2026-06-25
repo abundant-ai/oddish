@@ -137,22 +137,26 @@ def _raise_for_bad_result(result: Any) -> None:
 
 
 def _daytona_merge_mirror_command(path: str = _DAEMON_JSON_PATH) -> str:
+    flat_path = f"{path}.flat"
+    tmp_path = f"{path}.tmp"
     empty = (
         'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[[[:space:]]*\\]/'
         '"registry-mirrors": ["https:\\/\\/mirror.gcr.io"]/'
         "' "
-        f"{path} > {path}.tmp && mv {path}.tmp {path}"
+        f"{flat_path} > {tmp_path}"
     )
     prefix = (
         'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[/'
         '"registry-mirrors": ["https:\\/\\/mirror.gcr.io", /'
         "' "
-        f"{path} > {path}.tmp && mv {path}.tmp {path}"
+        f"{flat_path} > {tmp_path}"
     )
     return (
+        f"tr -d '\\n' < {path} > {flat_path} && "
         f'if grep -q \'"registry-mirrors"[[:space:]]*:[[:space:]]*'
-        f"\\[[[:space:]]*\\]' {path} 2>/dev/null; then\n"
-        f"{empty}\nelse\n{prefix}\nfi"
+        f"\\[[[:space:]]*\\]' {flat_path} 2>/dev/null; then\n"
+        f"{empty}\nelse\n{prefix}\nfi\n"
+        f"mv {tmp_path} {path}\nrm -f {flat_path}"
     )
 
 
