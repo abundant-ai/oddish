@@ -8,7 +8,6 @@ import {
   buildDashboardBackendParams,
   DASHBOARD_DEFAULT_EXPERIMENTS_AUTHOR,
   DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT,
-  DASHBOARD_SSR_FETCH_TIMEOUT_MS,
   DEFAULT_DASHBOARD_REQUEST_PARAMS,
 } from "@/lib/dashboard-request";
 import { parseTaskSearch } from "@/lib/tag-query";
@@ -44,7 +43,6 @@ async function getInitialDashboardData(
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
-      signal: AbortSignal.timeout(DASHBOARD_SSR_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.error(
