@@ -4,27 +4,25 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
+import importlib
+import importlib.util
+import json
+import logging
+import shlex
+import time
+import traceback
+from pathlib import Path
+from typing import Any
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
     sys.path.pop(0)
 
-import asyncio  # noqa: E402
-import importlib.util  # noqa: E402
-import json  # noqa: E402
-import logging  # noqa: E402
-import shlex  # noqa: E402
-import time  # noqa: E402
-import traceback  # noqa: E402
-from pathlib import Path  # noqa: E402
-from typing import Any  # noqa: E402
-
-from harbor.agents.installed.claude_code import ClaudeCode  # noqa: E402
+ClaudeCode = importlib.import_module("harbor.agents.installed.claude_code").ClaudeCode
 
 logger = logging.getLogger("oddish.harbor_entry")
 
-# Event sentinel so the parent can distinguish our NDJSON event lines from any
-# other stdout Harbor (or its deps) may emit.
 EVENT_SENTINEL = "_oddish_harbor_event"
 
 
@@ -45,10 +43,7 @@ def _emit_event_line(payload: dict[str, Any]) -> None:
 
 
 def _serialize_result(result: Any) -> dict[str, Any] | None:
-    """Extract the JSON-able subset of a Harbor ``TrialResult`` the parent reads.
-
-    Defensive/``getattr``-based so it tolerates Harbor-version field drift.
-    """
+    """Extract the Harbor result fields the parent reads."""
     if result is None:
         return None
     out: dict[str, Any] = {}
@@ -86,11 +81,8 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
                 }
             )
         except Exception:
-            # Events are advisory; never let a serialization slip kill the run.
             pass
 
-        # The probe harness upload needs the LIVE environment handle, which only
-        # exists here in the child. Best-effort, AGENT_START only.
         event_name = getattr(event.event, "value", str(event.event))
         environment = getattr(event, "environment", None)
         if (
@@ -110,16 +102,7 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
 
 
 class _ProbeClaudeCode(ClaudeCode):
-    """Claude Code that also installs the override Harbor into the sandbox.
-
-    The in-process / blessed paths use ``OddishClaudeCode`` for this, but the
-    ephemeral child runs ``uv run --no-project`` so oddish is absent. Instead we
-    subclass Harbor's own ClaudeCode HERE (Harbor is the only dependency) and
-    point ``AgentConfig.import_path`` at this class; Harbor resolves it via
-    ``importlib`` against the running module, no oddish import needed. The parent
-    supplies the exact git requirement (``harbor @ git+<source>@<sha>``) so the
-    in-sandbox agent imports the SAME Harbor that scored the trial (S3).
-    """
+    """Claude Code that installs override Harbor in the sandbox."""
 
     def __init__(
         self, *args: Any, harbor_requirement: str | None = None, **kwargs: Any
@@ -131,8 +114,6 @@ class _ProbeClaudeCode(ClaudeCode):
         await super().install(environment)
         if not self._harbor_requirement:
             return
-        # Best-effort: a harbor-install failure must not fail the whole trial
-        # (mirrors OddishClaudeCode / stage_harbor_source).
         command = f"pip install --user --quiet {shlex.quote(self._harbor_requirement)}"
         try:
             await self.exec_as_agent(environment, command=command)
@@ -165,15 +146,10 @@ def _build_job_config(payload: dict[str, Any]):
     if payload.get("model"):
         agent_kwargs["model_name"] = payload["model"]
     if payload.get("extra_agent_env"):
-        # Minted read-only oddish CLI creds for probe trials (parent-supplied).
         agent_kwargs["env"] = dict(payload["extra_agent_env"])
 
     agent_harbor_requirement = payload.get("agent_harbor_requirement")
     if agent_harbor_requirement:
-        # Probe claude-code trial on an override ref: route the in-sandbox agent
-        # through the installing subclass so it imports the override Harbor. The
-        # import_path is resolved against THIS module (``__main__`` in the child),
-        # so no oddish import is needed.
         agent_config = AgentConfig(
             name=None,
             import_path=f"{__name__}:_ProbeClaudeCode",
@@ -243,7 +219,6 @@ def main(argv: list[str]) -> int:
         return 2
     payload = json.loads(Path(argv[1]).read_text())
 
-    # Apply runtime env overrides (provider routing/creds) computed by the parent.
     for key, value in (payload.get("runtime_env") or {}).items():
         os.environ[key] = value
 
@@ -251,7 +226,7 @@ def main(argv: list[str]) -> int:
     start = time.time()
     try:
         outcome = asyncio.run(_run(payload))
-    except BaseException as exc:  # noqa: BLE001 - report every failure to the parent
+    except BaseException as exc:
         outcome = {
             "job_dir": payload.get("jobs_dir"),
             "job_result_path": None,
@@ -261,7 +236,6 @@ def main(argv: list[str]) -> int:
             "traceback": traceback.format_exc()[-4000:],
         }
         outcome_path.write_text(json.dumps(outcome))
-        # Non-zero exit signals the parent that the run did not complete cleanly.
         return 1
     outcome_path.write_text(json.dumps(outcome))
     return 0

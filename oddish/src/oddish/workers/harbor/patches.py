@@ -152,11 +152,13 @@ def _daytona_merge_mirror_command(path: str = _DAEMON_JSON_PATH) -> str:
         f"{flat_path} > {tmp_path}"
     )
     return (
-        f"tr -d '\\n' < {path} > {flat_path} && "
+        f"(tr -d '\\n' < {path} > {flat_path} && "
         f'if grep -q \'"registry-mirrors"[[:space:]]*:[[:space:]]*'
         f"\\[[[:space:]]*\\]' {flat_path} 2>/dev/null; then\n"
-        f"{empty}\nelse\n{prefix}\nfi\n"
-        f"mv {tmp_path} {path}\nrm -f {flat_path}"
+        f"{empty}\nelse\n{prefix}\nfi &&\n"
+        f"mv {tmp_path} {path})\n"
+        f"status=$?\nrm -f {flat_path} {tmp_path}\n"
+        "test $status -eq 0"
     )
 
 
@@ -179,7 +181,7 @@ def _daytona_command_with_mirror(command: str) -> str:
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
         f"2>/dev/null; then\n"
         f"if grep -q '{_MIRROR_URL}' {_DAEMON_JSON_PATH} 2>/dev/null; then\n"
-        f"{config_command}\nelse\n{merge}\n{config_command}\nfi\n"
+        f"{config_command}\nelse\n{merge} &&\n{config_command}\nfi\n"
         f"else\n{mirrored}\nfi"
     )
 

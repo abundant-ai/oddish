@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import importlib.machinery
 import json
 import subprocess
@@ -8,12 +9,11 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-import pytest  # noqa: E402
-
-from oddish.workers.harbor import patches as harbor_patches  # noqa: E402
-from oddish.workers.harbor import _entry as harbor_entry  # noqa: E402
+harbor_patches = importlib.import_module("oddish.workers.harbor.patches")
+harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
 
 
 class _FakeStrategy:
@@ -284,23 +284,28 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
 
 
 @pytest.mark.parametrize(
-    "initial, expected",
+    "initial, expected, expected_extra",
     [
         (
             {"registry-mirrors": []},
             ["https://mirror.gcr.io"],
+            {},
         ),
         (
-            '{\n  "registry-mirrors": [\n  ]\n}',
+            '{\n  "registry-mirrors": [\n  ],\n  "iptables": false\n}',
             ["https://mirror.gcr.io"],
+            {"iptables": False},
         ),
         (
             {"registry-mirrors": ["https://example.com"], "iptables": False},
             ["https://mirror.gcr.io", "https://example.com"],
+            {"iptables": False},
         ),
     ],
 )
-def test_daytona_merge_mirror_command_writes_valid_json(tmp_path, initial, expected):
+def test_daytona_merge_mirror_command_writes_valid_json(
+    tmp_path, initial, expected, expected_extra
+):
     daemon_json = tmp_path / "daemon.json"
     daemon_json.write_text(initial if isinstance(initial, str) else json.dumps(initial))
 
@@ -310,8 +315,22 @@ def test_daytona_merge_mirror_command_writes_valid_json(tmp_path, initial, expec
 
     cfg = json.loads(daemon_json.read_text())
     assert cfg["registry-mirrors"] == expected
-    if isinstance(initial, dict) and "iptables" in initial:
-        assert cfg["iptables"] is False
+    for key, value in expected_extra.items():
+        assert cfg[key] == value
+
+
+def test_daytona_merge_mirror_command_preserves_failures(tmp_path):
+    daemon_json = tmp_path / "missing.json"
+    stale_tmp = tmp_path / "missing.json.tmp"
+    stale_tmp.write_text('{"registry-mirrors": ["https://stale.example"]}')
+
+    command = harbor_patches._daytona_merge_mirror_command(str(daemon_json))
+    _assert_shell_parses(command)
+    result = subprocess.run(["sh", "-c", command], check=False)
+
+    assert result.returncode != 0
+    assert not daemon_json.exists()
+    assert not stale_tmp.exists()
 
 
 @pytest.mark.asyncio
