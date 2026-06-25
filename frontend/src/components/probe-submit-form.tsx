@@ -121,8 +121,6 @@ export function ProbeSubmitForm({
   const [extraInstructions, setExtraInstructions] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Collapsed by default: a prominent CTA reveals the agent picker + form.
-  const [formOpen, setFormOpen] = useState(false);
 
   const [presets, setPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -314,18 +312,6 @@ export function ProbeSubmitForm({
     } finally {
       setSubmitting(false);
     }
-  }
-
-  if (!formOpen) {
-    return (
-      <Button
-        type="button"
-        onClick={() => setFormOpen(true)}
-        className="bg-blue-600 text-white hover:bg-blue-700"
-      >
-        Submit a probe run
-      </Button>
-    );
   }
 
   return (
