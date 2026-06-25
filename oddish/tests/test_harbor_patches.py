@@ -364,7 +364,7 @@ def test_daytona_command_with_mirror_stops_when_merge_fails(tmp_path, monkeypatc
     daemon_json.write_text('{"registry-mirrors": ["https://example.com"]}')
     marker = state_dir / "started"
     entrypoint = bin_dir / "dockerd-entrypoint.sh"
-    entrypoint.write_text('#!/bin/sh\ntouch "$STARTED_FILE"\n')
+    entrypoint.write_text('touch "$STARTED_FILE"\n')
     entrypoint.chmod(0o755)
     monkeypatch.setattr(harbor_patches, "_DAEMON_JSON_PATH", str(daemon_json))
     monkeypatch.setattr(
