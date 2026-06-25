@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { CostBreakdownResponse, DashboardResponse } from "@/lib/types";
 import { DASHBOARD_DEFAULT_USAGE_MINUTES } from "@/lib/dashboard-request";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -36,6 +37,23 @@ export function UsageClient({
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(usageMinutes, usageFallbackData);
 
+  // Tab is driven by the ?tab= query param so it's deep-linkable and survives
+  // browser back/forward. Only "costing" is recognized (admins only); anything
+  // else falls back to queue state.
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const activeTab =
+    isAdmin && searchParams.get("tab") === "costing" ? "costing" : "queue-state";
+
+  const handleTabChange = (value: string) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (value === "costing") params.set("tab", "costing");
+    else params.delete("tab");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  };
+
   const queueState = (
     <UsageOverviewCard
       queues={queues}
@@ -55,7 +73,11 @@ export function UsageClient({
   }
 
   return (
-    <Tabs defaultValue="queue-state" className="space-y-4">
+    <Tabs
+      value={activeTab}
+      onValueChange={handleTabChange}
+      className="space-y-4"
+    >
       <TabsList>
         <TabsTrigger value="queue-state">Queue State</TabsTrigger>
         <TabsTrigger value="costing">Costing</TabsTrigger>

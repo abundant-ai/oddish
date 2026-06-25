@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { auth } from "@clerk/nextjs/server";
 import {
   getAuthHeaders,
@@ -81,32 +82,46 @@ async function getInitialCostData(
   }
 }
 
-export default async function UsagePage() {
+export default async function UsagePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>;
+}) {
+  const { tab } = await searchParams;
   const authObj = await auth();
   const token = authObj?.userId ? await getClerkToken(authObj.getToken) : null;
   const isAdmin = isAdminRole(authObj?.orgRole);
 
+  // Only SSR-fetch the (heavy, global) cost breakdown when the Costing tab is
+  // the active one — so a normal /usage load isn't blocked on it. Switching to
+  // the tab changes ?tab=costing, which re-renders this server component and
+  // triggers the fetch on demand.
+  const wantCosting = isAdmin && tab === "costing";
+
   if (!token) {
     return (
-      <UsageClient
-        initialUsageData={null}
-        isAdmin={false}
-        initialCostData={null}
-      />
+      <Suspense fallback={null}>
+        <UsageClient
+          initialUsageData={null}
+          isAdmin={false}
+          initialCostData={null}
+        />
+      </Suspense>
     );
   }
 
-  // Only admins SSR-fetch the (global) cost breakdown; members skip it.
   const [initialUsageData, initialCostData] = await Promise.all([
     getInitialUsageData(token),
-    isAdmin ? getInitialCostData(token) : Promise.resolve(null),
+    wantCosting ? getInitialCostData(token) : Promise.resolve(null),
   ]);
 
   return (
-    <UsageClient
-      initialUsageData={initialUsageData}
-      isAdmin={isAdmin}
-      initialCostData={initialCostData}
-    />
+    <Suspense fallback={null}>
+      <UsageClient
+        initialUsageData={initialUsageData}
+        isAdmin={isAdmin}
+        initialCostData={initialCostData}
+      />
+    </Suspense>
   );
 }
