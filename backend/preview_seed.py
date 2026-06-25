@@ -20,7 +20,6 @@ SAMPLE_EXTRA_TASKS = 20
 SAMPLE_TRIALS_PER_EXPERIMENT = 50
 SAMPLE_SKILLS = 10
 SAMPLE_DOCUMENTS = 10
-SAMPLE_PROBE_PRESETS = 10
 
 _MAX_BIND_PARAMS = 28000
 _LOAD_STREAMS = 6
@@ -39,7 +38,6 @@ _RECONCILED_TABLES = (
     "skills",
     "skill_files",
     "documents",
-    "probe_presets",
 )
 
 _BACKEDGES = {("tasks", "current_version_id")}
@@ -225,14 +223,6 @@ async def sample_prod_subset(source: AsyncEngine, *, sample_key: str) -> dict:
             " ORDER BY md5(id || :key) LIMIT :n",
             key=sample_key,
             n=SAMPLE_DOCUMENTS,
-        )
-        await section(
-            "probe_presets",
-            "SELECT * FROM probe_presets"
-            " WHERE deleted_at IS NULL AND org_id IS NOT NULL"
-            " ORDER BY md5(id || :key) LIMIT :n",
-            key=sample_key,
-            n=SAMPLE_PROBE_PRESETS,
         )
         for name, err in failures.items():
             _warn(f"sample section {name!r} skipped ({err})")

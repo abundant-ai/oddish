@@ -8,6 +8,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -26,6 +33,9 @@ type Skill = {
   created_by_user_id: string | null;
   name: string;
   description: string;
+  operator_prompt: string | null;
+  result_focus: string | null;
+  evaluation_metric: string | null;
   is_seed: boolean;
   files: SkillFile[];
   created_at: string;
@@ -220,6 +230,15 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
     if (!editingSkill) return [];
     return editingSkill.files.filter((f) => f.relative_path !== "SKILL.md");
   });
+  const [operatorPrompt, setOperatorPrompt] = useState(
+    editingSkill?.operator_prompt ?? "",
+  );
+  const [resultFocus, setResultFocus] = useState(
+    editingSkill?.result_focus ?? "",
+  );
+  const [evaluationMetric, setEvaluationMetric] = useState(
+    editingSkill?.evaluation_metric ?? "none",
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [skipped, setSkipped] = useState<string[]>([]);
@@ -285,6 +304,9 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
         name: name.trim(),
         description: description.trim(),
         files,
+        operator_prompt: operatorPrompt.trim() || null,
+        result_focus: resultFocus.trim() || null,
+        evaluation_metric: evaluationMetric === "none" ? null : evaluationMetric,
       };
 
       const url = isEdit ? `/api/skills/${editingSkill.id}` : "/api/skills";
@@ -402,6 +424,54 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
             placeholder="Describe what this skill does, how to trigger it, any constraints…"
             className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
+        </div>
+
+        <div className="space-y-3 rounded-md border border-[#6f88b4]/15 p-3">
+          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+            Probe directive (optional)
+          </p>
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-operator-prompt" className="text-xs font-medium">
+              Operator prompt
+            </Label>
+            <textarea
+              id="skill-operator-prompt"
+              value={operatorPrompt}
+              onChange={(e) => setOperatorPrompt(e.target.value)}
+              rows={6}
+              placeholder="If set, this skill can drive a probe: prompt prepended to the task instruction…"
+              className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-1.5">
+              <Label htmlFor="skill-metric" className="text-xs font-medium">
+                Evaluation metric
+              </Label>
+              <Select value={evaluationMetric} onValueChange={setEvaluationMetric}>
+                <SelectTrigger id="skill-metric" className="h-8 border-[#6f88b4]/20">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None</SelectItem>
+                  <SelectItem value="result_focus">Result focus</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-result-focus" className="text-xs font-medium">
+              Result focus <span className="text-muted-foreground">(optional)</span>
+            </Label>
+            <textarea
+              id="skill-result-focus"
+              value={resultFocus}
+              onChange={(e) => setResultFocus(e.target.value)}
+              rows={3}
+              placeholder="A question (prose) or a JSON Schema for structured output."
+              className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+          </div>
         </div>
 
         {/* Extra files */}
