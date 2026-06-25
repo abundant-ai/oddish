@@ -30,6 +30,7 @@ import { fetcher } from "@/lib/api";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
+  PROBE_AGENT_KEY,
 } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -664,9 +665,7 @@ export function TaskDetailClient({
 
   const trialsForVersion = useMemo(() => {
     if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter(
-      (t) => t.task_version_id === selectedVersionId && !t.is_probe,
-    );
+    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
   }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
@@ -691,6 +690,15 @@ export function TaskDetailClient({
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
     [tasksForGrouping],
+  );
+
+  const realAgentCount = useMemo(
+    () => agentSummaries.filter((s) => s.key !== PROBE_AGENT_KEY).length,
+    [agentSummaries],
+  );
+  const realTrialCount = useMemo(
+    () => trialsForVersion.filter((t) => !t.is_probe).length,
+    [trialsForVersion],
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -990,10 +998,10 @@ export function TaskDetailClient({
               Agents
             </h2>
             <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-              {agentSummaries.length} agent
-              {agentSummaries.length === 1 ? "" : "s"} ·{" "}
-              {trialsForVersion.length} trial
-              {trialsForVersion.length === 1 ? "" : "s"}
+              {realAgentCount} agent
+              {realAgentCount === 1 ? "" : "s"} ·{" "}
+              {realTrialCount} trial
+              {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>
           {agentSummaries.length === 0 ? (
