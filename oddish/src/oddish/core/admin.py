@@ -960,14 +960,30 @@ class CostExperimentBreakdown(BaseModel):
     models: list[CostModelBreakdown]
 
 
-class CostSeriesPoint(BaseModel):
-    """One time bucket of spend for the cost-over-time chart."""
+class CostSeriesKey(BaseModel):
+    """A stack/legend entry in a cost-over-time series."""
+
+    key: str  # stable id referenced in ``CostSeriesBucket.costs``
+    label: str  # display label (enriched with the user name for the user dim)
+
+
+class CostSeriesBucket(BaseModel):
+    """One time bucket: total spend plus the per-key (model/user) split."""
 
     bucket_start: datetime
-    trial_count: int
     cost_usd: float
-    cost_native_usd: float
-    cost_estimated_usd: float
+    trial_count: int
+    # key -> cost for this bucket; only keys in the parent series' ``keys``
+    # appear (everything beyond the top-N is folded into the "__other__" key).
+    costs: dict[str, float]
+
+
+class CostSeries(BaseModel):
+    """Cost over time, stacked by one dimension (model or user)."""
+
+    dimension: str  # "model" | "user"
+    keys: list[CostSeriesKey]
+    buckets: list[CostSeriesBucket]
 
 
 class CostTotals(BaseModel):
@@ -985,10 +1001,12 @@ class CostTotals(BaseModel):
 
 class CostBreakdownResponse(BaseModel):
     window_days: int | None
-    # ``date_trunc`` granularity of the ``series`` buckets (hour/day/week).
+    # ``date_trunc`` granularity of the series buckets (hour/day/week).
     bucket: str
-    # Cost over time for the selected window (drives the chart).
-    series: list[CostSeriesPoint]
+    # Cost over time for the selected window, stacked by model and by user
+    # (the frontend toggles between them without a refetch).
+    series_by_model: CostSeries
+    series_by_user: CostSeries
     # Detailed rollups for the selected window below.
     totals: CostTotals
     by_user: list[CostUserBreakdown]
@@ -1061,16 +1079,72 @@ def _model_breakdowns(
     ]
 
 
+_SERIES_TOP_N = 8
+_SERIES_OTHER_KEY = "__other__"
+_SERIES_UNATTRIBUTED_KEY = "__unattributed__"
+
+
+def _build_dimension_series(
+    dimension: str,
+    *,
+    bucket_starts: list[datetime],
+    per_bucket: dict[datetime, dict[str, float]],
+    totals: dict[str, float],
+    trials_per_bucket: dict[datetime, int],
+    labels: dict[str, str],
+) -> CostSeries:
+    """Fold a ``bucket -> key -> cost`` map into a top-N + "Other" stack.
+
+    Keeps the chart readable: only the ``_SERIES_TOP_N`` keys with the most
+    total spend get their own stack segment; the rest collapse into one
+    ``Other`` segment per bucket.
+    """
+    ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    top_keys = [k for k, _ in ranked[:_SERIES_TOP_N]]
+    top_set = set(top_keys)
+    has_other = len(totals) > len(top_set)
+
+    keys = [CostSeriesKey(key=k, label=labels.get(k, k)) for k in top_keys]
+    if has_other:
+        keys.append(CostSeriesKey(key=_SERIES_OTHER_KEY, label="Other"))
+
+    buckets: list[CostSeriesBucket] = []
+    for bstart in bucket_starts:
+        per_key = per_bucket.get(bstart, {})
+        folded: dict[str, float] = {}
+        other = 0.0
+        total = 0.0
+        for k, value in per_key.items():
+            total += value
+            if k in top_set:
+                folded[k] = folded.get(k, 0.0) + value
+            else:
+                other += value
+        if has_other and other > 0:
+            folded[_SERIES_OTHER_KEY] = other
+        buckets.append(
+            CostSeriesBucket(
+                bucket_start=bstart,
+                cost_usd=round(total, 4),
+                trial_count=trials_per_bucket.get(bstart, 0),
+                costs={k: round(v, 4) for k, v in folded.items()},
+            )
+        )
+    return CostSeries(dimension=dimension, keys=keys, buckets=buckets)
+
+
 async def _cost_time_series(
     session: AsyncSession, *, since: datetime | None, bucket: str
-) -> list[CostSeriesPoint]:
-    """Cost over time for the selected window, grouped by (bucket, model).
+) -> tuple[CostSeries, CostSeries]:
+    """Cost over time, returned twice: stacked by model and stacked by user.
 
-    One scan buckets trials by ``date_trunc(bucket, created_at)`` and, within
-    each bucket, splits native cost from no-native-cost tokens per model so the
-    estimate stays exact (it is per-model). Joins ``experiments`` so the
-    soft-delete filter drops trials of deleted experiments, matching the detail
-    rollups. ``date_trunc`` is Postgres-native (the production DB).
+    One scan groups by ``(bucket, model, owner_user_id)``. Each group is priced
+    (native cost when present, else a per-model token estimate -- the estimate
+    is per-model, so the model must stay in the grouping). The priced groups are
+    then rolled up two ways, per ``(bucket, model)`` and per ``(bucket, user)``,
+    so the frontend can toggle the stack dimension without a refetch. Joins
+    ``experiments`` so the soft-delete filter drops trials of deleted
+    experiments. ``date_trunc`` is Postgres-native (the production DB).
     """
     bucket_col = func.date_trunc(bucket, TrialModel.created_at)
     has_native = TrialModel.cost_usd.isnot(None)
@@ -1080,6 +1154,7 @@ async def _cost_time_series(
         select(
             bucket_col.label("bucket"),
             TrialModel.model.label("model"),
+            ExperimentModel.owner_user_id.label("owner_user_id"),
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
@@ -1095,17 +1170,21 @@ async def _cost_time_series(
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
-        .group_by(bucket_col, TrialModel.model)
+        .group_by(bucket_col, TrialModel.model, ExperimentModel.owner_user_id)
     )
     if since is not None:
         query = query.where(TrialModel.created_at >= since)
 
     rows = (await session.execute(query)).all()
 
-    buckets: dict[datetime, dict[str, float]] = {}
+    model_per_bucket: dict[datetime, dict[str, float]] = {}
+    model_totals: dict[str, float] = {}
+    user_per_bucket: dict[datetime, dict[str, float]] = {}
+    user_totals: dict[str, float] = {}
+    trials_per_bucket: dict[datetime, int] = {}
+
     for row in rows:
-        native = float(row.native_cost or 0.0)
-        est = (
+        cost = float(row.native_cost or 0.0) + (
             estimate_cost_usd(
                 row.model,
                 int(row.est_input or 0),
@@ -1114,23 +1193,41 @@ async def _cost_time_series(
             )
             or 0.0
         )
-        agg = buckets.setdefault(
-            row.bucket, {"native": 0.0, "estimated": 0.0, "trials": 0}
-        )
-        agg["native"] += native
-        agg["estimated"] += est
-        agg["trials"] += int(row.trial_count or 0)
+        bstart = row.bucket
+        mkey = _model_label(row.model)
+        ukey = row.owner_user_id or _SERIES_UNATTRIBUTED_KEY
 
-    return [
-        CostSeriesPoint(
-            bucket_start=bucket_start,
-            trial_count=int(agg["trials"]),
-            cost_usd=round(agg["native"] + agg["estimated"], 4),
-            cost_native_usd=round(agg["native"], 4),
-            cost_estimated_usd=round(agg["estimated"], 4),
+        bm = model_per_bucket.setdefault(bstart, {})
+        bm[mkey] = bm.get(mkey, 0.0) + cost
+        model_totals[mkey] = model_totals.get(mkey, 0.0) + cost
+
+        bu = user_per_bucket.setdefault(bstart, {})
+        bu[ukey] = bu.get(ukey, 0.0) + cost
+        user_totals[ukey] = user_totals.get(ukey, 0.0) + cost
+
+        trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
+            row.trial_count or 0
         )
-        for bucket_start, agg in sorted(buckets.items())
-    ]
+
+    bucket_starts = sorted(trials_per_bucket.keys())
+
+    by_model = _build_dimension_series(
+        "model",
+        bucket_starts=bucket_starts,
+        per_bucket=model_per_bucket,
+        totals=model_totals,
+        trials_per_bucket=trials_per_bucket,
+        labels={},
+    )
+    by_user = _build_dimension_series(
+        "user",
+        bucket_starts=bucket_starts,
+        per_bucket=user_per_bucket,
+        totals=user_totals,
+        trials_per_bucket=trials_per_bucket,
+        labels={_SERIES_UNATTRIBUTED_KEY: "Unattributed"},
+    )
+    return by_model, by_user
 
 
 async def get_cost_breakdown_core(
@@ -1152,7 +1249,9 @@ async def get_cost_breakdown_core(
     since = None if window_days is None else now - timedelta(days=window_days)
 
     bucket = _series_bucket(window_days)
-    series = await _cost_time_series(session, since=since, bucket=bucket)
+    series_by_model, series_by_user = await _cost_time_series(
+        session, since=since, bucket=bucket
+    )
 
     detail_query = (
         select(
@@ -1396,7 +1495,8 @@ async def get_cost_breakdown_core(
     return CostBreakdownResponse(
         window_days=window_days,
         bucket=bucket,
-        series=series,
+        series_by_model=series_by_model,
+        series_by_user=series_by_user,
         totals=totals,
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),

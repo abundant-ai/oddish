@@ -250,23 +250,32 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     costs = [e.cost_usd for e in result.experiments]
     assert costs == sorted(costs, reverse=True)
 
-    # The time series reconciles with the windowed totals (both are global over
-    # the same window) and is chronological. Tolerance covers per-bucket
-    # rounding. ``series`` / ``totals`` are global, so this holds regardless of
-    # other rows in a shared DB.
+    # Both chart series (stacked by model / by user) reconcile with the
+    # windowed totals (all global over the same window, so this holds regardless
+    # of other rows in a shared DB) and are chronological. Tolerance covers
+    # per-bucket rounding.
     assert result.bucket == "day"
-    assert result.series, "expected at least one series bucket"
-    assert _approx(
-        sum(p.cost_usd for p in result.series), result.totals.cost_usd, tol=0.01
-    )
-    assert _approx(
-        sum(p.cost_native_usd for p in result.series),
-        result.totals.cost_native_usd,
-        tol=0.01,
-    )
-    assert sum(p.trial_count for p in result.series) == result.totals.trial_count
-    starts = [p.bucket_start for p in result.series]
-    assert starts == sorted(starts)
+    for series in (result.series_by_model, result.series_by_user):
+        assert series.buckets, "expected at least one series bucket"
+        assert _approx(
+            sum(b.cost_usd for b in series.buckets), result.totals.cost_usd, tol=0.01
+        )
+        assert sum(b.trial_count for b in series.buckets) == result.totals.trial_count
+        starts = [b.bucket_start for b in series.buckets]
+        assert starts == sorted(starts)
+        # Each bucket's per-key split sums to that bucket's total.
+        for b in series.buckets:
+            assert _approx(sum(b.costs.values()), b.cost_usd, tol=0.01)
+
+    # by-model series keys are normalized (E3's mixed-case model merged in).
+    model_keys = {k.key for k in result.series_by_model.keys}
+    assert "claude-opus-4-8" in model_keys
+    assert "Claude-Opus-4-8" not in model_keys
+
+    # by-user series carries both owners plus the unattributed (E3) bucket.
+    user_keys = {k.key for k in result.series_by_user.keys}
+    assert USER_A in user_keys and USER_B in user_keys
+    assert "__unattributed__" in user_keys
 
 
 @pytest.mark.asyncio

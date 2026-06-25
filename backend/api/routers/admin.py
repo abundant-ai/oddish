@@ -113,6 +113,11 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             user_ids.add(experiment.owner_user_id)
         if experiment.org_id:
             org_ids.add(experiment.org_id)
+    # The by-user chart series keys are owner user ids too (plus the synthetic
+    # "__other__" / "__unattributed__" keys, which carry their own labels).
+    for series_key in result.series_by_user.keys:
+        if series_key.key == series_key.label:  # unresolved -> a raw user id
+            user_ids.add(series_key.key)
 
     users: dict[str, UserModel] = {}
     if user_ids:
@@ -152,6 +157,12 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             experiment.owner_name = user.name
             experiment.owner_email = user.email
         experiment.org_name = orgs.get(experiment.org_id) if experiment.org_id else None
+
+    # Relabel by-user series keys (raw user ids) with display names.
+    for series_key in result.series_by_user.keys:
+        user = users.get(series_key.key)
+        if user is not None:
+            series_key.label = user.name or user.email or series_key.key
 
 
 @router.get("/costs", response_model=CostBreakdownResponse)
