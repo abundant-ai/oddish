@@ -222,6 +222,7 @@ class TaskSubmission(BaseModel):
             "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
+    skill_ids: list[str] | None = None
     probe_name: str | None = Field(
         default=None,
         description=(
@@ -308,6 +309,14 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
             "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    skill_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "IDs of skills to mount into the probe agent's workspace for every "
+            "trial in this submission. Only these skills are mounted (not all "
+            "org skills)."
         ),
     )
     probe_name: str | None = Field(

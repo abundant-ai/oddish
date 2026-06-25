@@ -532,6 +532,9 @@ def _build_harbor_config_for_trial(
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
 
+    if submission.skill_ids:
+        base["skill_ids"] = list(submission.skill_ids)
+
     return base or None
 
 
