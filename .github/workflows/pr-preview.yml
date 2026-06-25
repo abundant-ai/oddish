@@ -30,17 +30,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # find_last_deploys.py emits all the change signals (see its docstring):
-      #   - pr_{backend,migrations,frontend}: does the whole PR touch each
-      #     component (diffed vs the PR base branch) -- used on opened/reopened
-      #     and as the no-base fallback.
-      #   - On synchronize: backend_base/migrations_base (last successful deploy
-      #     SHAs) + {backend,migrations,workflow}_changed (only this push's
-      #     files, diffed vs that base / the previous push).
-      # We compute these via the GitHub compare API instead of dorny/paths-filter
-      # because that action ignores its `base` input on pull_request events (so
-      # it diffs the whole PR) and, under its default `some` quantifier, its
-      # negated excludes match almost anything -- both forced the DB seed.
       - name: Detect preview component changes
         id: last_deployed
         env:
@@ -79,7 +68,7 @@ jobs:
         needs.detect-changes.outputs.run_migrations == 'true'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
@@ -100,10 +89,6 @@ jobs:
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
       SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
-      # Production DB URL, used by the seed for a read-only sample of real
-      # data -- the preview's only data source. Deliberately NOT named
-      # ODDISH_DATABASE_URL: that var is rebound to the branch DB by
-      # wait_for_supabase_branch.sh in this job.
       PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
     defaults:
       run:
@@ -133,6 +118,7 @@ jobs:
       needs.prepare-preview-database.result == 'success' &&
       (
         needs.detect-changes.outputs.deploy_backend == 'true' ||
+        needs.detect-changes.outputs.run_migrations == 'true' ||
         needs.prepare-preview-database.outputs.branch_was_created == 'true'
       )
     runs-on: ubuntu-latest
@@ -179,6 +165,7 @@ jobs:
     needs:
       - detect-changes
       - prepare-preview-database
+      - deploy-preview-backend
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
@@ -186,6 +173,10 @@ jobs:
       (
         needs.prepare-preview-database.result == 'success' ||
         needs.prepare-preview-database.result == 'skipped'
+      ) &&
+      (
+        needs.deploy-preview-backend.result == 'success' ||
+        needs.deploy-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
     permissions:
@@ -202,7 +193,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_GIT_BRANCH: ${{ github.event.pull_request.head.ref }}
       VERCEL_GIT_COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-      MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && needs.detect-changes.outputs.preview_api_url || '' }}
+      MODAL_API_URL: ${{ (needs.detect-changes.outputs.deploy_backend == 'true' || needs.detect-changes.outputs.run_migrations == 'true' || needs.prepare-preview-database.outputs.branch_was_created == 'true') && needs.detect-changes.outputs.preview_api_url || '' }}
       MODAL_APP_NAME: oddish-pr-${{ github.event.pull_request.number }}
       PROD_API_URL: ${{ vars.ODDISH_PROD_API_URL }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}

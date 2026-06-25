@@ -1,27 +1,33 @@
-"""Build each preview-branch schema by running both Alembic stacks' migrations."""
+"""Build preview schemas from migrations."""
 
 import asyncio
 import hashlib
+import importlib
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from sqlalchemy import pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+ODDISH_DIR = REPO_ROOT / "oddish"
+BACKEND_DIR = REPO_ROOT / "backend"
 STACKS = (
-    Path.cwd().parent / "oddish",
-    Path.cwd(),
+    ODDISH_DIR,
+    BACKEND_DIR,
 )
 
 SCHEMA_MARKER = "oddish-preview:schema-built-from-base"
 
 
 def _upgrade_head(project: Path) -> None:
-    subprocess.run(["alembic", "upgrade", "head"], cwd=project, check=True)
+    subprocess.run(
+        ["alembic", "upgrade", "head"],
+        cwd=project,
+        check=True,
+    )
 
 
 def _branch_db_url() -> str:
@@ -38,22 +44,17 @@ def _engine(url: str):
 
 
 def _load_base():
-    """Import the backend + oddish models so the full cross-stack metadata is registered.
-
-    Importing the backend models registers the cloud tables on the shared Base,
-    so create_all resolves the cross-stack ``api_keys -> organizations`` FK.
-    """
-    backend_dir = str(Path.cwd())
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-    import models  # noqa: F401
+    for path in (BACKEND_DIR, ODDISH_DIR / "src"):
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+    importlib.import_module("models")
     from oddish.db.models import Base
 
     return Base
 
 
 def _fingerprint_metadata(metadata) -> str:
-    """Stable short hash of a metadata's table + column names."""
     parts = [
         f"{table.name}:{','.join(sorted(col.name for col in table.columns))}"
         for table in sorted(metadata.tables.values(), key=lambda t: t.name)
@@ -62,25 +63,20 @@ def _fingerprint_metadata(metadata) -> str:
 
 
 def _model_fingerprint() -> str:
-    """Fingerprint of the current model graph.
-
-    Folded into the trust marker so a schema cached by an earlier prep is reused
-    only while it still matches the branch's *current* models. Without this, a
-    branch that gains a column after its first prep -- a merge that adds a
-    migration, or a re-pointed migration chain -- keeps its stale cached schema:
-    the version is already stamped at head, so ``alembic upgrade head`` is a
-    no-op, the new column is never created, and every read of it 500s.
-    """
     return _fingerprint_metadata(_load_base().metadata)
 
 
 def _migration_fingerprint() -> str:
-    heads = []
+    digest = hashlib.sha256()
     for project in STACKS:
-        cfg = Config(str(project / "alembic.ini"))
-        cfg.set_main_option("script_location", str(project / "alembic"))
-        heads.extend(sorted(ScriptDirectory.from_config(cfg).get_heads()))
-    return hashlib.sha256("|".join(heads).encode()).hexdigest()[:16]
+        for path in sorted((project / "alembic").rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            digest.update(path.relative_to(project).as_posix().encode())
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+    return digest.hexdigest()[:16]
 
 
 def _trust_marker() -> str:
@@ -91,13 +87,11 @@ async def _schema_trusted(url: str) -> bool:
     engine = _engine(url)
     try:
         async with engine.connect() as conn:
-            # Two-arg form; one-arg obj_description() is unreliable for schema comments.
             marker = await conn.scalar(
                 text("SELECT obj_description('public'::regnamespace, 'pg_namespace')")
             )
     finally:
         await engine.dispose()
-    # Trust the cached schema only when it was built from the *current* model graph.
     return marker == _trust_marker()
 
 
