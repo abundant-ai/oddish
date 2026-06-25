@@ -54,12 +54,25 @@ def _load_base():
     return Base
 
 
+def _index_descriptor(index) -> str:
+    """Stable string for one index: name, its columns, and uniqueness.
+
+    Indexes are folded into the fingerprint so a model that gains/loses an
+    index (e.g. a unique index mirrored onto a model to match a migration)
+    invalidates the cached schema -- create_all only builds indexes the models
+    declare, so an index-only change would otherwise never reach a preview.
+    """
+    cols = ",".join(sorted(col.name for col in index.columns))
+    return f"{index.name}({cols}){'!u' if index.unique else ''}"
+
+
 def _fingerprint_metadata(metadata) -> str:
-    """Stable short hash of a metadata's table + column names."""
-    parts = [
-        f"{table.name}:{','.join(sorted(col.name for col in table.columns))}"
-        for table in sorted(metadata.tables.values(), key=lambda t: t.name)
-    ]
+    """Stable short hash of a metadata's table + column + index names."""
+    parts = []
+    for table in sorted(metadata.tables.values(), key=lambda t: t.name):
+        cols = ",".join(sorted(col.name for col in table.columns))
+        idxs = ",".join(sorted(_index_descriptor(ix) for ix in table.indexes))
+        parts.append(f"{table.name}:{cols}:{idxs}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
