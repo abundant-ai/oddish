@@ -138,55 +138,59 @@ async def cancel_tasks_runs(
     # tasks. One UPDATE, every kind. Returning the canceled rows gives
     # us the Modal function-call ids to terminate remotely and the kind
     # breakdown for the domain-mirror pass below.
-    canceled_rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                WITH to_cancel AS (
-                    SELECT id,
-                           kind::text AS kind,
-                           subject_id,
-                           modal_function_call_id,
-                           provider,
-                           external_id
-                    FROM   worker_jobs
-                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                      AND  (
-                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                      )
-                    ORDER BY id
-                    FOR UPDATE
-                )
-                UPDATE worker_jobs AS w
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = :cancel_msg,
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL,
-                       payload = w.payload - 'registry_auth_enc'
-                FROM   to_cancel
-                WHERE  w.id = to_cancel.id
-                RETURNING w.id,
-                          to_cancel.kind,
-                          to_cancel.subject_id,
-                          to_cancel.modal_function_call_id,
-                          to_cancel.provider,
-                          to_cancel.external_id
-                """
-                ),
-                {
-                    "cancel_msg": USER_CANCELLED_MESSAGE,
-                    "task_ids": found_task_ids,
-                    "trial_ids": trial_ids or [""],
-                },
-            )
-        )
-        .mappings()
-        .all()
+    #
+    # When the task has no trials yet the trial_ids list is empty; omit the
+    # trials branch entirely so we don't pass an empty array to ANY() (asyncpg
+    # cannot infer the element type of an empty list) and avoid a spurious
+    # FALSE predicate that PostgreSQL still has to plan.
+    trial_branch = (
+        "OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
+        if trial_ids
+        else ""
     )
+    cancel_sql = text(
+        f"""
+        WITH to_cancel AS (
+            SELECT id,
+                   kind::text AS kind,
+                   subject_id,
+                   modal_function_call_id,
+                   provider,
+                   external_id
+            FROM   worker_jobs
+            WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+              AND  (
+                  (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                  {trial_branch}
+              )
+            ORDER BY id
+            FOR UPDATE
+        )
+        UPDATE worker_jobs AS w
+        SET    status = 'CANCELLED',
+               finished_at = NOW(),
+               error_message = :cancel_msg,
+               current_worker_id = NULL,
+               current_queue_slot = NULL,
+               modal_function_call_id = NULL,
+               payload = w.payload - 'registry_auth_enc'
+        FROM   to_cancel
+        WHERE  w.id = to_cancel.id
+        RETURNING w.id,
+                  to_cancel.kind,
+                  to_cancel.subject_id,
+                  to_cancel.modal_function_call_id,
+                  to_cancel.provider,
+                  to_cancel.external_id
+        """
+    )
+    cancel_params: dict[str, Any] = {
+        "cancel_msg": USER_CANCELLED_MESSAGE,
+        "task_ids": found_task_ids,
+    }
+    if trial_ids:
+        cancel_params["trial_ids"] = trial_ids
+    canceled_rows = (await session.execute(cancel_sql, cancel_params)).mappings().all()
 
     modal_fc_ids: list[str] = []
     worker_targets: set[tuple[str, str]] = set()

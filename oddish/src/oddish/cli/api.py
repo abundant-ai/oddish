@@ -1965,13 +1965,15 @@ def print_experiment_status(api_url: str, experiment_id: str) -> bool:
 def watch_experiment(api_url: str, experiment_id: str) -> None:
     """Watch an experiment until all tasks complete."""
     headers = get_auth_headers()
-    with Live(console=console, refresh_per_second=2) as live:
+    with (
+        Live(console=console, refresh_per_second=2) as live,
+        httpx.Client(timeout=10.0, headers=headers) as client,
+    ):
         while True:
             try:
-                with httpx.Client(timeout=10.0, headers=headers) as client:
-                    response = client.get(
-                        f"{api_url}/tasks", params={"experiment_id": experiment_id}
-                    )
+                response = client.get(
+                    f"{api_url}/tasks", params={"experiment_id": experiment_id}
+                )
 
                 if response.status_code != 200:
                     live.update(f"[red]Failed to get status:[/red] {response.text}")
@@ -2087,11 +2089,13 @@ def watch_task(
     final_result = None
     headers = get_auth_headers()
     trial_id_filter = set(trial_ids) if trial_ids is not None else None
-    with Live(console=console, refresh_per_second=2) as live:
+    with (
+        Live(console=console, refresh_per_second=2) as live,
+        httpx.Client(timeout=10.0, headers=headers) as client,
+    ):
         while True:
             try:
-                with httpx.Client(timeout=10.0, headers=headers) as client:
-                    response = client.get(f"{api_url}/tasks/{task_id}")
+                response = client.get(f"{api_url}/tasks/{task_id}")
 
                 if response.status_code != 200:
                     live.update(f"[red]Failed to get status:[/red] {response.text}")

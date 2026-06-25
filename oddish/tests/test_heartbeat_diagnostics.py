@@ -41,8 +41,8 @@ async def test_heartbeat_also_writes_worker_jobs_when_job_id_provided(monkeypatc
     """
 
     async def fake_touch(**kwargs):
-        # Pretend the trial row was touched successfully.
-        return None
+        # Pretend the trial row was touched successfully and owns the trial.
+        return True
 
     wj_calls: list[dict] = []
 
@@ -212,6 +212,7 @@ async def test_touch_trial_execution_flushes_pending_failure_metadata(monkeypatc
         heartbeat_failure_count=0,
         last_heartbeat_error=None,
         last_heartbeat_error_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _FakeSession:
@@ -221,7 +222,9 @@ async def test_touch_trial_execution_flushes_pending_failure_metadata(monkeypatc
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def fake_trial_session(_trial_id, *, allow_missing=False):
+    async def fake_trial_session(
+        _trial_id, *, allow_missing=False, with_for_update=False
+    ):
         yield _FakeSession(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", fake_trial_session)
@@ -265,6 +268,7 @@ async def test_touch_trial_execution_truncates_long_errors(monkeypatch):
         heartbeat_failure_count=0,
         last_heartbeat_error=None,
         last_heartbeat_error_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _FakeSession:
@@ -272,7 +276,9 @@ async def test_touch_trial_execution_truncates_long_errors(monkeypatch):
             return trial
 
     @asynccontextmanager
-    async def fake_trial_session(_trial_id, *, allow_missing=False):
+    async def fake_trial_session(
+        _trial_id, *, allow_missing=False, with_for_update=False
+    ):
         yield _FakeSession(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", fake_trial_session)

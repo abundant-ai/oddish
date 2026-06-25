@@ -318,8 +318,9 @@ class _FakeConnection:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
 
-    async def execute(self, sql: str, *args: Any) -> None:
+    async def execute(self, sql: str, *args: Any) -> str:
         self.calls.append((sql, args))
+        return "UPDATE 1"
 
     async def close(self) -> None:
         self.closed = True
@@ -340,6 +341,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     before = datetime.now(timezone.utc)
     await worker_job_single_job._record_outcome(
         job_id="wj-1",
+        worker_id="w-test",
         outcome=JobOutcome.fail("HTTP 503 from agent", retryable=True),
         attempts=2,
         max_attempts=6,
@@ -398,6 +400,7 @@ def _capture_record_outcome(monkeypatch):
     async def fake_record(
         *,
         job_id,
+        worker_id,
         outcome,
         attempts,
         max_attempts,
@@ -408,6 +411,7 @@ def _capture_record_outcome(monkeypatch):
         captured.append(
             {
                 "job_id": job_id,
+                "worker_id": worker_id,
                 "outcome": outcome,
                 "attempts": attempts,
                 "max_attempts": max_attempts,
@@ -472,6 +476,7 @@ async def test_run_single_worker_job_records_success(monkeypatch):
     assert len(captured) == 1
     recorded = captured[0]
     assert recorded["job_id"] == "wj-1"
+    assert recorded["worker_id"] == "w-1"
     assert recorded["outcome"].success is not None
     assert recorded["outcome"].success.result_summary == {"answer": 42}
 

@@ -17,6 +17,8 @@ import pytest  # noqa: E402
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
+from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
+from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -24,15 +26,15 @@ _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=9, free=1),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
@@ -51,15 +53,15 @@ def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
 
 def test_check_local_storage_preflight_reports_low_inodes(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=12, f_ffree=12),
     )
@@ -81,15 +83,15 @@ def test_check_local_storage_preflight_skips_inode_check_when_no_table(
 ):
     """Modal's ephemeral /tmp reports f_files == 0; that is unlimited, not 0 free."""
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=0, f_favail=0, f_ffree=0),
     )
@@ -106,15 +108,15 @@ def test_check_local_storage_preflight_skips_inode_check_when_no_table(
 
 def test_check_local_storage_preflight_reports_probe_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
@@ -151,7 +153,7 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
         seen_paths.append(path)
         return None
 
-    monkeypatch.setattr(harbor_runner.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(harbor_storage.tempfile, "gettempdir", lambda: str(temp_root))
     monkeypatch.setattr(harbor_runner, "_probe_storage_root", _record_probe)
 
     error = harbor_runner._check_local_storage_preflight(
@@ -197,6 +199,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
@@ -204,7 +207,9 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -268,13 +273,16 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
         pass
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -343,6 +351,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
@@ -350,7 +359,9 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -414,6 +425,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         current_queue_slot=None,
         heartbeat_at=None,
         finished_at=object(),
+        superseded_by_trial_id=None,
     )
     original_finished_at = trial.finished_at
 
@@ -422,7 +434,9 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
@@ -571,7 +585,9 @@ def test_run_harbor_trial_async_probe_skips_timeout_validation(monkeypatch, tmp_
 
     assert outcome.error is None
     agent_config = captured["config"]["agents"][0]
-    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+    assert (
+        agent_config.override_timeout_sec == harbor_agent_config.PROBE_AGENT_TIMEOUT_SEC
+    )
 
 
 def test_run_harbor_trial_async_non_probe_still_validates(tmp_path):
@@ -601,7 +617,9 @@ def test_build_agent_config_injects_probe_timeout_default(monkeypatch):
         is_probe=True,
     )
 
-    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+    assert (
+        agent_config.override_timeout_sec == harbor_agent_config.PROBE_AGENT_TIMEOUT_SEC
+    )
 
 
 def test_build_agent_config_probe_respects_explicit_override(monkeypatch):
@@ -774,7 +792,7 @@ def test_agent_uses_bedrock_unchanged_by_probe_scoping(monkeypatch):
     trials, with or without a bearer token."""
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-    assert harbor_runner._agent_uses_bedrock() is True
+    assert harbor_agent_config._agent_uses_bedrock() is True
 
 
 def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
@@ -1345,6 +1363,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
         current_queue_slot=0,
         heartbeat_at=None,
         finished_at=None,
+        superseded_by_trial_id=None,
     )
 
 
@@ -1354,7 +1373,9 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -1565,7 +1586,9 @@ def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):
     assert outcome.has_trajectory is True
 
 
-def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(tmp_path):
+def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(
+    tmp_path,
+):
     traj_dir = tmp_path / "trial" / "agent"
     traj_dir.mkdir(parents=True)
     (traj_dir / "trajectory.json").write_text(

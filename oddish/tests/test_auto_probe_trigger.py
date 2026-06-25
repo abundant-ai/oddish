@@ -16,8 +16,11 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe  # noqa: E402
-from oddish.db import TaskModel, TrialModel, get_session  # noqa: E402
+from oddish.core.probe.auto_probe import (
+    DEFAULT_PROBE_PRESET_ID,
+    maybe_enqueue_auto_probe,
+)  # noqa: E402
+from oddish.db import ProbePresetModel, TaskModel, TrialModel, get_session  # noqa: E402
 from oddish.queue import create_task  # noqa: E402
 from oddish.schemas import (
     AgentModelPair,
@@ -27,6 +30,34 @@ from oddish.schemas import (
 )  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def seed_probe_preset():
+    """Seed the default probe preset row so maybe_enqueue_auto_probe can find it."""
+    async with get_session() as s:
+        existing = await s.get(ProbePresetModel, DEFAULT_PROBE_PRESET_ID)
+        if existing is None:
+            s.add(
+                ProbePresetModel(
+                    id=DEFAULT_PROBE_PRESET_ID,
+                    name="Task Construction Auditor",
+                    agent="claude-code",
+                    model="anthropic/claude-sonnet-4-6",
+                    operator_prompt="Audit this task for construction quality.",
+                    result_focus=None,
+                    evaluation_metric=None,
+                    is_seed=True,
+                    org_id=None,
+                )
+            )
+            await s.commit()
+    yield
+    async with get_session() as s:
+        row = await s.get(ProbePresetModel, DEFAULT_PROBE_PRESET_ID)
+        if row is not None:
+            await s.delete(row)
+            await s.commit()
 
 
 @pytest_asyncio.fixture
@@ -187,9 +218,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         first = await _probe_trials(s, seeded_sweep_task_id)
-    assert (
-        len(first) == 1
-    ), f"Expected 1 probe trial after first sweep, got {len(first)}"
+    assert len(first) == 1, (
+        f"Expected 1 probe trial after first sweep, got {len(first)}"
+    )
 
     # Second sweep (same task version): probe should NOT be enqueued again.
     async with get_session() as s:
@@ -197,9 +228,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         second = await _probe_trials(s, seeded_sweep_task_id)
-    assert (
-        len(second) == 1
-    ), f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
+    assert len(second) == 1, (
+        f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
+    )
 
 
 @pytest.mark.asyncio
