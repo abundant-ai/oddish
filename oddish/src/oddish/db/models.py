@@ -8,6 +8,7 @@ from sqlalchemy import (
     and_,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -338,6 +339,18 @@ task_experiments = Table(
     Column("deleted_at", DateTime(timezone=True), nullable=True),
     Index("idx_task_experiments_experiment_id", "experiment_id"),
     Index("idx_task_experiments_experiment_task", "experiment_id", "task_id"),
+    Index(
+        "idx_task_experiments_live_experiment_task",
+        "experiment_id",
+        "task_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
+    Index(
+        "idx_task_experiments_live_task_experiment",
+        "task_id",
+        "experiment_id",
+        postgresql_where=text("deleted_at IS NULL"),
+    ),
 )
 
 
@@ -347,6 +360,7 @@ class ExperimentModel(TimestampedMixin, Base):
     __tablename__ = "experiments"
     __table_args__ = (
         Index("idx_experiments_public_token", "public_token", unique=True),
+        Index("idx_experiments_org_id", "org_id"),
         # Backs the dashboard "recent experiments" sort. Partial on
         # ``deleted_at IS NULL`` so the soft-delete listener can ride
         # the index. ``DESC NULLS LAST`` matches the SQL ORDER BY.
@@ -434,6 +448,7 @@ class TaskModel(TimestampedMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
         Index("idx_tasks_org_created_at", "org_id", "created_at"),
+        Index("idx_tasks_org_id", "org_id"),
         # Partial mirror of ``idx_tasks_org_created_at`` that matches
         # the ``deleted_at IS NULL`` predicate the soft-delete listener
         # appends to every read. Lets the dashboard recent-tasks list
@@ -485,6 +500,12 @@ class TaskModel(TimestampedMixin, Base):
             "org_id",
             text("lower((tags ->> 'github_username'))"),
             postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_tasks_effective_tag_ids_gin",
+            "effective_tag_ids",
+            postgresql_using="gin",
+            postgresql_ops={"effective_tag_ids": "array_ops"},
         ),
     )
 
@@ -620,6 +641,12 @@ class TaskVersionModel(TimestampedMixin, Base):
             "task_id",
             "version",
             unique=True,
+        ),
+        Index(
+            "idx_task_versions_effective_tag_ids_gin",
+            "effective_tag_ids",
+            postgresql_using="gin",
+            postgresql_ops={"effective_tag_ids": "array_ops"},
         ),
     )
 
@@ -845,8 +872,12 @@ class TrialModel(TimestampedMixin, Base):
     )
 
     __table_args__ = (
+        CheckConstraint("origin IN ('oddish', 'imported')", name="trials_origin_check"),
         Index("idx_trials_task_id", "task_id"),
         Index("idx_trials_task_version_id", "task_version_id"),
+        Index("idx_trials_experiment_id", "experiment_id"),
+        Index("idx_trials_org_id", "org_id"),
+        Index("idx_trials_idempotency_key", "idempotency_key", unique=True),
         # Display / API filter path. Claim/stale-reap indexes on
         # trials were retired in the ``worker_jobs`` refactor --
         # scheduling queries now hit ``idx_worker_jobs_claim`` and
@@ -1121,6 +1152,11 @@ class WorkerJobModel(TimestampedMixin, Base):
             postgresql_where=text("org_id IS NOT NULL"),
         ),
         Index(
+            "idx_worker_jobs_current_worker_id",
+            "current_worker_id",
+            postgresql_where=text("current_worker_id IS NOT NULL"),
+        ),
+        Index(
             "uq_worker_jobs_tag_project_active",
             "kind",
             "subject_table",
@@ -1135,6 +1171,41 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+
+
+class QueueRuntimeStatusModel(Base):
+    """Stores the latest queue heartbeat."""
+
+    __tablename__ = "queue_runtime_status"
+
+    component: Mapped[str] = mapped_column(Text, primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=text("NOW()"),
+        nullable=False,
+    )
+    payload: Mapped[dict] = mapped_column(
+        JSONB,
+        server_default=text("'{}'::jsonb"),
+        nullable=False,
+    )
+
+
+class TagProjectionSweepStateModel(Base):
+    """Stores the last tag sweep time."""
+
+    __tablename__ = "tag_projection_sweep_state"
+
+    id: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default=text("TRUE"),
+        primary_key=True,
+    )
+    last_full_sweep_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (CheckConstraint("id", name="tag_sweep_singleton"),)
 
 
 class APIKeyModel(TimestampedMixin, Base):
@@ -1235,6 +1306,7 @@ class ProbePresetModel(TimestampedMixin, Base):
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
         ),
+        Index("idx_probe_presets_org_id", "org_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -1329,6 +1401,14 @@ class TagAssignmentModel(TimestampedMixin, Base):
             "idx_tag_assignments_source_experiment",
             "source_experiment_id",
             postgresql_where=text("source_experiment_id IS NOT NULL"),
+        ),
+        Index(
+            "idx_tag_assignments_tag_org_created_target",
+            "tag_id",
+            "org_id",
+            text("created_at DESC"),
+            "target_id",
+            postgresql_where=text("deleted_at IS NULL AND state = 'ACTIVE'"),
         ),
     )
 

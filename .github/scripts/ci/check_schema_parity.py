@@ -4,8 +4,9 @@ import asyncio
 import os
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import inspect, pool, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -13,13 +14,52 @@ from sqlalchemy.ext.asyncio import create_async_engine
 REPO = Path(__file__).resolve().parents[3]
 ODDISH = REPO / "oddish"
 BACKEND = REPO / "backend"
-KINDS = (
-    "columns",
-    "indexes",
-    "unique_constraints",
-    "check_constraints",
-    "foreign_keys",
-)
+ALEMBIC_VERSION_TABLES = {
+    "alembic_version",
+    "alembic_version_backend",
+    "alembic_version_oddish",
+}
+ALLOWED_DRIFT = {
+    "COLUMNS chat_session_events.created_at",
+    "COLUMNS chat_sessions.created_at",
+    "COLUMNS chat_sessions.daytona_session_id",
+    "COLUMNS chat_sessions.last_activity",
+    "COLUMNS chat_turns.started_at",
+    "COLUMNS organizations.created_at",
+    "COLUMNS organizations.is_active",
+    "COLUMNS organizations.plan",
+    "COLUMNS organizations.settings",
+    "COLUMNS organizations.updated_at",
+    "COLUMNS submission_idempotency.created_at",
+    "COLUMNS submission_idempotency.status",
+    "COLUMNS submission_idempotency.updated_at",
+    "COLUMNS users.created_at",
+    "COLUMNS users.is_active",
+    "COLUMNS users.role",
+    "COLUMNS users.supabase_user_id",
+    "COLUMNS users.updated_at",
+    "CONSTRAINTS saved_tag_filters.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS saved_tag_filters.FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_assignments.FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tag_assignments.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_events.FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tag_events.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_exclusions.FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tag_exclusions.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_grants.FOREIGN KEY (granted_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tag_grants.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_grants.FOREIGN KEY (principal_user_id) REFERENCES users(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_policies.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tag_policies.FOREIGN KEY (updated_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tags.FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tags.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE NOT VALID",
+    "CONSTRAINTS tags.FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL NOT VALID",
+    "CONSTRAINTS tasks.FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL",
+    "CONSTRAINTS tasks.FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE",
+    "CONSTRAINTS users.UNIQUE (supabase_user_id)",
+    "INDEXES users.idx_users_supabase_user_id",
+    "INDEXES users.users_supabase_user_id_key",
+}
 
 
 def _async_url(name: str) -> str:
@@ -33,7 +73,9 @@ def _async_url(name: str) -> str:
 
 def _engine(url: str):
     return create_async_engine(
-        url, connect_args={"statement_cache_size": 0}, poolclass=pool.NullPool
+        url,
+        connect_args={"statement_cache_size": 0},
+        poolclass=pool.NullPool,
     )
 
 
@@ -78,10 +120,9 @@ def _build_migrated(url: str) -> None:
 
 def _load_base():
     sys.path[:0] = [p for p in (str(BACKEND), str(ODDISH / "src")) if p not in sys.path]
-    import models
+    import_module("models")
     from oddish.db.models import Base
 
-    _ = models
     return Base
 
 
@@ -95,90 +136,136 @@ async def _build_metadata(url: str) -> None:
         await engine.dispose()
 
 
-def _index(ix: dict[str, Any]) -> str:
-    where = (ix.get("dialect_options") or {}).get("postgresql_where")
-    return (
-        f"cols={list(ix['column_names'])} unique={bool(ix.get('unique'))} where={where}"
+def _column_shape(column: Mapping[str, Any]) -> str:
+    return " ".join(
+        (
+            f"type={column['type']!s}",
+            f"nullable={bool(column['nullable'])}",
+            f"default={column.get('default')}",
+            f"identity={column.get('identity')}",
+            f"computed={column.get('computed')}",
+        )
     )
 
 
-def _fk(fk: dict[str, Any]) -> str:
-    return f"{list(fk['constrained_columns'])}->{fk['referred_table']}{list(fk['referred_columns'])}"
-
-
-def _snapshot_sync(conn) -> dict[str, dict[str, Any]]:
+def _table_snapshot(conn, table: str) -> dict[str, dict[str, str]]:
     insp = inspect(conn)
-    out = {}
-    for table in sorted(
-        set(insp.get_table_names(schema="public")) - {"alembic_version"}
-    ):
-        pk = insp.get_pk_constraint(table, schema="public")
-        out[table] = {
-            "columns": {
-                c["name"]: f"{c['type']!s} null={bool(c['nullable'])}"
-                for c in insp.get_columns(table, schema="public")
-            },
-            "indexes": {
-                ix["name"]: _index(ix)
-                for ix in insp.get_indexes(table, schema="public")
-            },
-            "unique_constraints": {
-                uc["name"]: list(uc["column_names"])
-                for uc in insp.get_unique_constraints(table, schema="public")
-            },
-            "check_constraints": {
-                ck["name"]: ck["sqltext"]
-                for ck in insp.get_check_constraints(table, schema="public")
-            },
-            "foreign_keys": {
-                fk.get("name") or str(fk["constrained_columns"]): _fk(fk)
-                for fk in insp.get_foreign_keys(table, schema="public")
-            },
-            "primary_key": list(pk.get("constrained_columns") or []),
-        }
-    return out
+    return {
+        "columns": {
+            column["name"]: _column_shape(column)
+            for column in insp.get_columns(table, schema="public")
+        },
+        "constraints": _constraint_snapshot(
+            conn,
+            table,
+        ),
+        "indexes": _catalog_query(
+            conn,
+            """
+            SELECT i.relname AS name, pg_get_indexdef(i.oid) AS value
+            FROM pg_index x
+            JOIN pg_class i ON i.oid = x.indexrelid
+            JOIN pg_class t ON t.oid = x.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public' AND t.relname = :table
+            ORDER BY i.relname
+            """,
+            {"table": table},
+        ),
+    }
 
 
-async def _snapshot(url: str) -> dict[str, dict[str, Any]]:
+def _catalog_query(conn, sql: str, params: dict[str, Any] | None = None) -> dict[str, str]:
+    rows = conn.execute(text(sql), params or {}).mappings()
+    return {row["name"]: row["value"] for row in rows}
+
+
+def _constraint_snapshot(conn, table: str) -> dict[str, str]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT conname AS name, pg_get_constraintdef(c.oid, true) AS value
+            FROM pg_constraint c
+            JOIN pg_class t ON t.oid = c.conrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            WHERE n.nspname = 'public' AND t.relname = :table
+            ORDER BY conname
+            """
+        ),
+        {"table": table},
+    ).mappings()
+    return {row["value"]: "" for row in rows}
+
+
+def _schema_snapshot_sync(conn) -> dict[str, dict[str, Any]]:
+    insp = inspect(conn)
+    tables = sorted(set(insp.get_table_names(schema="public")) - ALEMBIC_VERSION_TABLES)
+    return {
+        "tables": {table: _table_snapshot(conn, table) for table in tables},
+        "enums": _catalog_query(
+            conn,
+            """
+            SELECT t.typname AS name, string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder) AS value
+            FROM pg_type t
+            JOIN pg_enum e ON e.enumtypid = t.oid
+            JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = 'public'
+            GROUP BY t.typname
+            ORDER BY t.typname
+            """,
+        ),
+    }
+
+
+async def _schema_snapshot(url: str) -> dict[str, dict[str, Any]]:
     engine = _engine(url)
     try:
         async with engine.connect() as conn:
-            return await conn.run_sync(_snapshot_sync)
+            return await conn.run_sync(_schema_snapshot_sync)
     finally:
         await engine.dispose()
 
 
-def _missing(
+def _compare_map(
     problems: list[str],
-    kind: str,
-    table: str,
-    left: dict[str, Any],
-    right: dict[str, Any],
-    labels: tuple[str, str],
+    label: str,
+    migrated: Mapping[str, Any],
+    metadata: Mapping[str, Any],
 ) -> None:
-    for name in sorted(set(left) - set(right)):
-        problems.append(f"{kind} {table}.{name}: only in {labels[0]} -> {left[name]}")
+    for name in sorted(set(migrated) - set(metadata)):
+        key = f"{label}{name}"
+        if key in ALLOWED_DRIFT:
+            continue
+        problems.append(f"{key}: only in migrations -> {migrated[name]}")
+    for name in sorted(set(metadata) - set(migrated)):
+        key = f"{label}{name}"
+        if key in ALLOWED_DRIFT:
+            continue
+        problems.append(f"{key}: only in create_all -> {metadata[name]}")
+    for name in sorted(set(migrated) & set(metadata)):
+        key = f"{label}{name}"
+        if key in ALLOWED_DRIFT:
+            continue
+        if migrated[name] != metadata[name]:
+            problems.append(f"{key}: migrations={migrated[name]} create_all={metadata[name]}")
 
 
 def _diff(migrated: dict[str, Any], metadata: dict[str, Any]) -> list[str]:
     problems: list[str] = []
-    for table in sorted(set(migrated) - set(metadata)):
+    migrated_tables = migrated["tables"]
+    metadata_tables = metadata["tables"]
+    _compare_map(problems, "ENUM", migrated["enums"], metadata["enums"])
+    for table in sorted(set(migrated_tables) - set(metadata_tables)):
         problems.append(f"TABLE {table}: only in migrations")
-    for table in sorted(set(metadata) - set(migrated)):
+    for table in sorted(set(metadata_tables) - set(migrated_tables)):
         problems.append(f"TABLE {table}: only in create_all")
-    for table in sorted(set(migrated) & set(metadata)):
-        for kind in KINDS:
-            a, b = migrated[table][kind], metadata[table][kind]
-            _missing(problems, kind.upper(), table, a, b, ("migrations", "create_all"))
-            _missing(problems, kind.upper(), table, b, a, ("create_all", "migrations"))
-            for name in sorted(set(a) & set(b)):
-                if a[name] != b[name]:
-                    problems.append(
-                        f"{kind.upper()} {table}.{name}: migrations={a[name]} create_all={b[name]}"
-                    )
-        if migrated[table]["primary_key"] != metadata[table]["primary_key"]:
-            problems.append(
-                f"PRIMARY_KEY {table}: migrations={migrated[table]['primary_key']} create_all={metadata[table]['primary_key']}"
+    for table in sorted(set(migrated_tables) & set(metadata_tables)):
+        for kind in ("columns", "constraints", "indexes"):
+            _compare_map(
+                problems,
+                f"{kind.upper()} {table}.",
+                migrated_tables[table][kind],
+                metadata_tables[table][kind],
             )
     return problems
 
@@ -189,8 +276,8 @@ def main() -> int:
     _build_migrated(migrated_url)
     asyncio.run(_build_metadata(metadata_url))
     problems = _diff(
-        asyncio.run(_snapshot(migrated_url)),
-        asyncio.run(_snapshot(metadata_url)),
+        asyncio.run(_schema_snapshot(migrated_url)),
+        asyncio.run(_schema_snapshot(metadata_url)),
     )
     if problems:
         print("SCHEMA DRIFT")

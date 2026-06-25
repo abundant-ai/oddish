@@ -6,6 +6,7 @@ on:
     paths:
       - "backend/**"
       - "oddish/**"
+      - ".github/docker/ci-base.Dockerfile"
       - ".github/workflows/schema-parity.yml"
       - ".github/scripts/ci/check_schema_parity.py"
   push:
@@ -14,6 +15,7 @@ on:
     paths:
       - "backend/**"
       - "oddish/**"
+      - ".github/docker/ci-base.Dockerfile"
       - ".github/workflows/schema-parity.yml"
       - ".github/scripts/ci/check_schema_parity.py"
   workflow_dispatch:
