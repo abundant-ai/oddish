@@ -50,6 +50,30 @@ def test_adding_a_column_changes_the_fingerprint():
     assert mod._fingerprint_metadata(before) != mod._fingerprint_metadata(after)
 
 
+def test_adding_an_index_changes_the_fingerprint():
+    # An index-only model change must invalidate the cached schema: create_all
+    # only builds indexes the models declare, so otherwise it never reaches a preview.
+    mod = _load_bootstrap()
+    before = sa.MetaData()
+    sa.Table(
+        "worker_jobs",
+        before,
+        sa.Column("id", sa.String),
+        sa.Column("kind", sa.String),
+        sa.Column("subject_id", sa.String),
+    )
+    after = sa.MetaData()
+    t = sa.Table(
+        "worker_jobs",
+        after,
+        sa.Column("id", sa.String),
+        sa.Column("kind", sa.String),
+        sa.Column("subject_id", sa.String),
+    )
+    sa.Index("uq_worker_jobs_tag_project_active", t.c.kind, t.c.subject_id, unique=True)
+    assert mod._fingerprint_metadata(before) != mod._fingerprint_metadata(after)
+
+
 def test_trust_marker_folds_in_the_fingerprint(monkeypatch):
     mod = _load_bootstrap()
     monkeypatch.setattr(mod, "_model_fingerprint", lambda: "deadbeef")

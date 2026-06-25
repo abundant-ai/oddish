@@ -369,6 +369,139 @@ async def _make_source_db():
                 },
             ],
         )
+        await c.execute(
+            t["tags"].insert(),
+            [
+                {
+                    "id": "t-smoke",
+                    "org_id": "org-a",
+                    "key": "smoke",
+                    "normalized_key": "smoke",
+                    "state": "ACTIVE",
+                    "owner_user_id": "u-a1",
+                    "created_by_user_id": "u-a1",
+                },
+                {
+                    "id": "t-flaky",
+                    "org_id": "org-a",
+                    "key": "flaky",
+                    "normalized_key": "flaky",
+                    "state": "ACTIVE",
+                    "owner_user_id": "u-a2",
+                    "created_by_user_id": "u-a1",
+                },
+                {
+                    "id": "t-bonly",
+                    "org_id": "org-b",
+                    "key": "bonly",
+                    "normalized_key": "bonly",
+                    "state": "ACTIVE",
+                    "owner_user_id": "u-b1",
+                },
+                # MERGED tags ARE drawn (the page does its own state filtering);
+                # the merged_into_id self-FK points at a sampled tag.
+                {
+                    "id": "t-merged",
+                    "org_id": "org-a",
+                    "key": "old",
+                    "normalized_key": "old",
+                    "state": "MERGED",
+                    "merged_into_id": "t-smoke",
+                    "owner_user_id": "u-a1",
+                },
+                # Soft-deleted tags are excluded (deleted_at IS NOT NULL).
+                {
+                    "id": "t-del",
+                    "org_id": "org-a",
+                    "key": "gone",
+                    "normalized_key": "gone",
+                    "state": "ACTIVE",
+                    "owner_user_id": "u-a1",
+                    "deleted_at": preview_seed.SEED_EPOCH,
+                },
+            ],
+        )
+        await c.execute(
+            t["tag_assignments"].insert(),
+            [
+                # DIRECT/ACTIVE onto sampled targets -> kept (one per scope).
+                {
+                    "id": "ta-task",
+                    "tag_id": "t-smoke",
+                    "org_id": "org-a",
+                    "scope": "TASK",
+                    "target_id": "task-solo",
+                    "task_id": "task-solo",
+                    "source": "DIRECT",
+                    "state": "ACTIVE",
+                    "assigned_by_user_id": "u-a1",
+                },
+                {
+                    "id": "ta-ver",
+                    "tag_id": "t-flaky",
+                    "org_id": "org-a",
+                    "scope": "VERSION",
+                    "target_id": "ver-solo-2",
+                    "task_id": "task-solo",
+                    "source": "DIRECT",
+                    "state": "ACTIVE",
+                    "assigned_by_user_id": "u-a2",
+                },
+                {
+                    "id": "ta-exp",
+                    "tag_id": "t-smoke",
+                    "org_id": "org-a",
+                    "scope": "EXPERIMENT",
+                    "target_id": "exp-a",
+                    "source": "DIRECT",
+                    "state": "ACTIVE",
+                    "assigned_by_user_id": "u-a1",
+                },
+                {
+                    "id": "ta-bonly",
+                    "tag_id": "t-bonly",
+                    "org_id": "org-b",
+                    "scope": "TASK",
+                    "target_id": "task-dup-b",
+                    "task_id": "task-dup-b",
+                    "source": "DIRECT",
+                    "state": "ACTIVE",
+                },
+                # Experiment-propagated -> excluded (source != DIRECT).
+                {
+                    "id": "ta-living",
+                    "tag_id": "t-smoke",
+                    "org_id": "org-a",
+                    "scope": "TASK",
+                    "target_id": "task-dup-a",
+                    "task_id": "task-dup-a",
+                    "source": "EXPERIMENT_LIVING",
+                    "state": "ACTIVE",
+                },
+                # Removed -> excluded (state != ACTIVE).
+                {
+                    "id": "ta-removed",
+                    "tag_id": "t-flaky",
+                    "org_id": "org-a",
+                    "scope": "TASK",
+                    "target_id": "task-solo",
+                    "task_id": "task-solo",
+                    "source": "DIRECT",
+                    "state": "REMOVED",
+                    "assigned_by_user_id": "u-a1",
+                },
+                # Target not in the trimmed set (exp-del is deleted) -> excluded.
+                {
+                    "id": "ta-deltarget",
+                    "tag_id": "t-smoke",
+                    "org_id": "org-a",
+                    "scope": "EXPERIMENT",
+                    "target_id": "exp-del",
+                    "source": "DIRECT",
+                    "state": "ACTIVE",
+                },
+            ],
+        )
     return src
 
 
@@ -423,6 +556,27 @@ async def test_sample_is_deterministic_and_prod_faithful():
         assert [s["id"] for s in rows["skills"]] == ["sk-a"]
         assert [f["id"] for f in rows["skill_files"]] == ["skf-a1"]
         assert [d["id"] for d in rows["documents"]] == ["doc-1"]
+
+        # non-deleted tags for the sampled orgs (org-a + org-b); MERGED kept so
+        # the page exercises its own state filtering, soft-deleted excluded
+        tags = {t["id"]: t for t in rows["tags"]}
+        assert set(tags) == {"t-smoke", "t-flaky", "t-bonly", "t-merged"}
+        assert "t-del" not in tags  # deleted_at IS NOT NULL
+        assert tags["t-smoke"]["key"] == "smoke"
+        assert tags["t-smoke"]["owner_user_id"] == "u-a1"
+        # the merged tag keeps its self-FK pointer (target was sampled)
+        assert tags["t-merged"]["merged_into_id"] == "t-smoke"
+        # only DIRECT/ACTIVE assignments onto sampled targets, one per scope
+        tas = {a["id"]: a for a in rows["tag_assignments"]}
+        assert set(tas) == {"ta-task", "ta-ver", "ta-exp", "ta-bonly"}
+        assert tas["ta-task"]["scope"] == "TASK"
+        assert tas["ta-ver"]["scope"] == "VERSION"
+        assert tas["ta-exp"]["scope"] == "EXPERIMENT"
+        assert tas["ta-task"]["assigned_by_user_id"] == "u-a1"
+        # excluded: experiment-propagated, removed, and unsampled-target rows
+        assert "ta-living" not in tas  # source != DIRECT
+        assert "ta-removed" not in tas  # state != ACTIVE
+        assert "ta-deltarget" not in tas  # target exp is deleted/unsampled
     finally:
         await src.dispose()
 
