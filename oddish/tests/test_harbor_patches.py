@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import importlib
+import json
 import logging
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -171,13 +174,34 @@ async def test_login_failure_still_restores_previous_config(creds):
 
 
 @pytest.mark.asyncio
+async def test_login_failure_has_no_secret_cause(creds):
+    strategy = _FakeStrategy(raises=RuntimeError("exec failed: secrettoken"))
+
+    with pytest.raises(RuntimeError, match="Registry login failed") as excinfo:
+        await harbor_patches._perform_registry_login(strategy)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "secrettoken" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_login_skips_second_login_before_scrub(creds):
+    strategy = _FakeStrategy()
+
+    await harbor_patches._perform_registry_login(strategy)
+    await harbor_patches._perform_registry_login(strategy)
+
+    assert len(strategy.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_login_exception_log_redacts_token_and_env(creds, caplog):
     class _LeakyStrategy(_FakeStrategy):
         async def _vm_exec(self, command, *, env=None, timeout_sec=None):
             self.calls.append((command, env))
             raise RuntimeError(
-                "exec failed: secrettoken "
-                f"{env['ODDISH_REGISTRY_LOGIN_TOKEN_0']}"
+                f"exec failed: secrettoken {env['ODDISH_REGISTRY_LOGIN_TOKEN_0']}"
             )
 
     strategy = _LeakyStrategy()
@@ -189,6 +213,74 @@ async def test_login_exception_log_redacts_token_and_env(creds, caplog):
     assert "secrettoken" not in caplog.text
     assert leaked_env not in caplog.text
     assert "***" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_shell_quoted_token(caplog):
+    token_value = "abc'def"
+    token = current_registry_credentials.set(
+        [RegistryCredential("alice", token_value, "docker.io")]
+    )
+
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError(f"exec failed: {shlex.quote(token_value)}")
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+            with pytest.raises(RuntimeError):
+                await harbor_patches._perform_registry_login(_LeakyStrategy())
+    finally:
+        current_registry_credentials.reset(token)
+
+    assert token_value not in caplog.text
+    assert shlex.quote(token_value) not in caplog.text
+    assert "***" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_json_escaped_token(caplog):
+    token_value = 'abc"def'
+    token = current_registry_credentials.set(
+        [RegistryCredential("alice", token_value, "docker.io")]
+    )
+
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError(f"exec failed: {json.dumps(token_value)[1:-1]}")
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+            with pytest.raises(RuntimeError):
+                await harbor_patches._perform_registry_login(_LeakyStrategy())
+    finally:
+        current_registry_credentials.reset(token)
+
+    assert token_value not in caplog.text
+    assert json.dumps(token_value)[1:-1] not in caplog.text
+    assert "***" in caplog.text
+
+
+def test_redact_replaces_overlapping_secrets_longest_first():
+    redacted = harbor_patches._redact(
+        "token abc abcdef bob:abc bob:abcdef",
+        ["abc", "abcdef", "bob:abc", "bob:abcdef"],
+    )
+
+    assert "abc" not in redacted
+    assert "abcdef" not in redacted
+    assert "bob:" not in redacted
+    assert redacted == "token *** *** *** ***"
+
+
+def test_login_env_redacts_docker_config_auth(creds):
+    _env, secrets, _registries = harbor_patches._registry_login_env(creds)
+    encoded = base64.b64encode(b"alice:secrettoken").decode()
+
+    assert encoded in secrets
+    assert encoded not in harbor_patches._redact(encoded, secrets)
 
 
 @pytest.mark.asyncio

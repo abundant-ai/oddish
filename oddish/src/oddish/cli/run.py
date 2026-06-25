@@ -453,6 +453,7 @@ def run(
             help=(
                 "Per-run container-registry login as comma-separated pairs "
                 "'username=USER,token=TOKEN[,registry=docker.io]' (repeatable). "
+                "If a value contains commas, wrap the whole argument and quote the value. "
                 "Docker Hub creds can also be set via "
                 "ODDISH_DOCKERHUB_USERNAME / ODDISH_DOCKERHUB_TOKEN."
             ),
@@ -597,9 +598,6 @@ def run(
         error_console.print(f"[red]Invalid --registry-login:[/red] {exc}")
         raise typer.Exit(1)
 
-    # Retry mode: re-run existing trials, or the task-level QA job, for a
-    # target instead of submitting new work. Kept on `run` (rather than a
-    # separate command) so the CLI surface stays small.
     if retry:
         from oddish.cli.retry import run_retry
 

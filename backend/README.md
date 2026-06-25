@@ -21,25 +21,26 @@ User (Dashboard, CLI, SDK)
   ▼
 Modal API (FastAPI in `endpoints.py` and `api/routers/*`)
   │  - Auth: API key or Clerk JWT
-  │  - Enqueues trial / analysis / verdict work as worker_jobs rows
+  │  - Enqueues trial and task QA work as worker_jobs rows
   ▼
 Postgres
-  - worker_jobs   (unified queue; TRIAL / ANALYSIS / VERDICT)
+  - worker_jobs   (unified queue, including TRIAL / QA / TASK_EXPAND)
   - trials/tasks  (domain state + live UI columns)
   - queue_slots   (per-queue-key concurrency leases)
   + cloud tables  (orgs / users / api_keys)
   │
   ▼
-Worker dispatcher (`worker/functions.py::poll_queue`, every 180s)
-  │  - Runs unified cleanup (stale-heartbeat + stage safety nets)
-  │  - Discovers active queue keys from worker_jobs
-  │  - Spawns single-job Modal containers per queue key
-  ▼
-Single-job worker (`process_single_job`)
-  │  - Acquires a queue_slots lease
-  │  - Claims ONE worker_jobs row (any kind)
-  │  - Dispatches to the registered handler
-  │  - Writes heartbeats, records outcome, exits
+Scheduled functions
+  ├─ poll_queue
+  │    - Discovers active queue keys from worker_jobs
+  │    - Spawns single-job Modal containers per queue key
+  ├─ reconcile_queue_state
+  │    - Runs cleanup, stage safety nets, and owner backfill
+  └─ process_single_job
+       - Acquires a queue_slots lease
+       - Claims ONE worker_jobs row (any kind)
+       - Dispatches to the registered handler
+       - Writes heartbeats, records outcome, exits
   ▼
 Modal sandboxes (Harbor execution, logs/artifacts to S3)
 ```
@@ -48,26 +49,28 @@ Modal sandboxes (Harbor execution, logs/artifacts to S3)
 
 Dispatcher + single-job pattern backed by the unified `worker_jobs` table:
 
-1. `poll_queue()` runs on a 180s Modal schedule. It calls
-   `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
-   stage safety nets, orphaned-slot release), runs the experiments owner
-   backfill (dashboard Mine fast path), discovers active queue keys via
-   `discover_active_worker_job_queue_keys`, and launches up to
+1. `poll_queue()` runs on a 180s Modal schedule. It discovers active queue
+   keys via `discover_active_worker_job_queue_keys` and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers.
-2. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
+2. `reconcile_queue_state()` runs separately. It calls
+   `cleanup_orphaned_queue_state` (zombie-txn reap, stale-heartbeat sweep,
+   stage safety nets, orphaned-slot release) and runs the experiments owner
+   backfill (dashboard Mine fast path).
+3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
    queue key and calls `run_single_worker_job`, which atomically claims one
    row from `worker_jobs`, dispatches to the registered handler
-   (`TRIAL` / `ANALYSIS` / `VERDICT`), writes heartbeats to both
+  (`TRIAL` / `QA` / `TASK_EXPAND` / `TAG_PROJECT`), writes heartbeats to both
    `worker_jobs.heartbeat_at` and the mirrored domain column, records the
    outcome, runs the post-success hook, releases the lease, and exits.
 
-`_POST_SUCCESS_HOOKS = {TRIAL: notify_github_trial, ANALYSIS: …,
-VERDICT: …}` is threaded through so GitHub notifications fire after the
-row is `SUCCESS`. Handlers are registered at module load via
-`ensure_builtin_handlers_registered()` so every container has
-`TRIAL` / `ANALYSIS` / `VERDICT` wired up before any claim. Adding a new
-kind (e.g. `QA_REVIEW`) is one handler class plus a `register` call — no
-new claim SQL, cleanup step, or dispatcher branch.
+Post-success hooks for `TRIAL`, `QA`, and transitional `ANALYSIS` rows are
+threaded through so GitHub notifications fire after the row is `SUCCESS`.
+Handlers are registered at module load via `ensure_builtin_handlers_registered()`
+so every container has
+`TRIAL`, `QA`, `TASK_EXPAND`, `TAG_PROJECT`, and transitional `ANALYSIS`
+wired up before any claim. Adding a new kind (e.g. `QA_REVIEW`) is one
+handler class plus a `register` call — no new claim SQL, cleanup step, or
+dispatcher branch.
 
 ## Authentication Model
 
@@ -123,7 +126,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `api/app.py` | FastAPI app factory + startup/lifespan wiring |
 | `api/schemas.py` | Pydantic models for org/auth/share responses |
 | `api/routers/tasks.py` | Task upload, browse, versions, sweep creation, sharing, retries, and file access |
-| `api/routers/trials.py` | Trial listing, retry/reanalysis, logs, result, trajectory, and debug file inspection |
+| `api/routers/trials.py` | Trial listing, retry, logs, result, trajectory, and debug file inspection |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint (queues, usage, tasks, experiments) |
 | `api/routers/orgs.py` | Current org lookup and Clerk-backed user management |
 | `api/routers/api_keys.py` | Org API key listing, creation, and revocation |
@@ -245,15 +248,14 @@ All routes require auth unless marked public.
 | GET | `/tasks/{task_id}` | Task details |
 | POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
 | DELETE | `/tasks/{task_id}` | Delete task and queued jobs |
-| POST | `/tasks/{task_id}/analysis/retry` | Re-queue analysis jobs for completed trials in a task |
-| POST | `/tasks/{task_id}/verdict/retry` | Re-queue verdict generation for a task |
+| POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
+| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |
 | GET | `/tasks/{task_id}/versions/{version}` | Get one stored task version |
-| DELETE | `/trials/{trial_id}` | Delete a single trial and its associated S3 artifacts (admin only) |
+| DELETE | `/trials/{trial_id}` | Soft-delete a trial, cancel jobs, and invalidate the cached verdict (admin only) |
 | POST | `/trials/{trial_id}/retry` | Re-queue trial |
-| POST | `/trials/{trial_id}/analysis/retry` | Re-queue analysis for a completed trial |
 | GET | `/trials/{trial_id}/logs` | Trial logs |
 | GET | `/trials/{trial_id}/logs/structured` | Structured trial logs |
 | GET | `/trials/{trial_id}/files` | List trial files |

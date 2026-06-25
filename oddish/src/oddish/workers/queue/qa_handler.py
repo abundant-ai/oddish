@@ -11,6 +11,8 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     VerdictStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
     get_session,
     utcnow,
 )
@@ -62,26 +64,28 @@ async def _heartbeat_qa_worker_job(
             pending_last_error = f"{type(exc).__name__}: {exc}"
 
 
-def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
-    """Whether the task QA job should (re)classify this live trial.
+async def _worker_job_is_running(
+    session,
+    worker_job_id: str | None,
+    *,
+    with_for_update: bool = False,
+) -> bool:
+    if not worker_job_id:
+        return True
+    statement = select(WorkerJobModel.status).where(WorkerJobModel.id == worker_job_id)
+    if with_for_update:
+        statement = statement.with_for_update()
+    status = await session.scalar(statement)
+    return status == WorkerJobStatus.RUNNING
 
-    Trials whose analysis is already terminal (SUCCESS / FAILED) keep
-    their stored result; everything else (NULL / PENDING / QUEUED /
-    RUNNING) gets (re)classified. Probe trials are normally already
-    SUCCESS (analyzed inline by the trial job) so they are reused here;
-    if a probe trial still needs analysis, ``classify_trial_and_store``
-    routes it through the probe analyzer.
-    """
+
+def _trial_needs_classification(analysis_status: AnalysisStatus | None) -> bool:
+    """Return true when a live trial still needs QA."""
     return analysis_status not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
 
 
 def _classifications_from_trials(trials) -> list:
-    """Reconstruct ``TrialClassification`` objects from stored analyses.
-
-    Only successfully-classified trials contribute, and probe summaries
-    (which store no ``classification`` key) are skipped defensively so a
-    task mixing probe and classified trials can't crash verdict synthesis.
-    """
+    """Build verdict inputs from stored trial QA."""
     from oddish.analyze import Classification, TrialClassification
 
     classifications: list = []
@@ -109,11 +113,7 @@ def _classifications_from_trials(trials) -> list:
 async def _load_live_trials_for_classification(
     task_id: str,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return ``(trial_id, analysis_status)`` for live trials.
-
-    "Live" means not superseded by a retry. Used to decide which trials
-    the task-level QA job still needs to classify.
-    """
+    """Return live trial IDs and QA states."""
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -136,38 +136,20 @@ async def run_task_qa_job(
     modal_function_call_id: str | None = None,
     worker_job_id: str | None = None,
 ) -> None:
-    """Run task-level trajectory analysis (QA) for a claimed task.
-
-    This is the single, task-scoped QA job. One worker job per task:
-
-    1. Classifies every live (non-superseded) trial's trajectory with the
-       Claude Code classifier -- same taxonomy, evidence, and reasoning as
-       before -- writing each result to ``trial.analysis`` /
-       ``trial.analysis_status``. Trials already classified (SUCCESS) or
-       analyzed inline (probe trials) are reused, not re-run.
-    2. Synthesizes a single task verdict from those per-trial
-       classifications and stores it on ``task.verdict``.
-    3. Marks the task COMPLETED.
-
-    Collapsing N analyses + 1 verdict into one job means a sweep of
-    ``T`` tasks x ``N`` trials enqueues ``T`` QA jobs instead of
-    ``T * (N + 1)``.
-    """
+    """Classify a task's live trials and store one verdict."""
     from oddish.analyze import TrialClassification, compute_task_verdict
 
-    console.print(
-        f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})"
-    )
+    console.print(f"[cyan]Processing task QA[/cyan] {task_id} (queue_key={queue_key})")
 
-    # Mark as running. The per-trial classification + verdict synthesis
-    # below can be long (it walks every trial), so a single heartbeat
-    # loop spans the whole job.
     async with get_session() as session:
-        task = await session.get(TaskModel, task_id)
+        task = await session.get(TaskModel, task_id, with_for_update=True)
         if not task:
             raise RuntimeError(f"Task {task_id} not found in database")
 
-        # Skip if already processed
+        if not await _worker_job_is_running(session, worker_job_id):
+            console.print(f"[dim]QA {task_id} skipped; job was cancelled[/dim]")
+            return
+
         if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
             console.print(
                 f"[yellow]Task {task_id} verdict already processed, skipping[/yellow]"
@@ -191,15 +173,6 @@ async def run_task_qa_job(
 
     classifications: list[TrialClassification] = []
     try:
-        # -----------------------------------------------------------------
-        # 1. Classification phase: classify every live trial that still
-        #    needs it. Trials already SUCCESS/FAILED keep their stored
-        #    result (probe trials, analyzed inline by the trial job, are
-        #    normally already SUCCESS and thus reused). Each classification
-        #    is best-effort -- one failed trial must not abort the whole
-        #    task QA -- and ``classify_trial_and_store`` records FAILED on
-        #    error itself.
-        # -----------------------------------------------------------------
         live_trials = await _load_live_trials_for_classification(task_id)
         to_classify = [
             trial_id
@@ -212,20 +185,31 @@ async def run_task_qa_job(
                 f"{task_id}...[/cyan]"
             )
         for trial_id in to_classify:
+            async with get_session() as session:
+                if not await _worker_job_is_running(session, worker_job_id):
+                    console.print(
+                        f"[dim]QA {task_id} classification stopped; job was cancelled[/dim]"
+                    )
+                    return
             try:
-                await classify_trial_and_store(trial_id)
+                await classify_trial_and_store(
+                    trial_id,
+                    should_store=lambda session: _worker_job_is_running(
+                        session, worker_job_id
+                    ),
+                )
             except Exception as exc:  # noqa: BLE001
                 console.print(
                     f"[red]Classification crashed for {trial_id}: "
                     f"{type(exc).__name__}: {exc}[/red]"
                 )
 
-        # -----------------------------------------------------------------
-        # 2. Verdict phase: synthesize the task verdict from the live
-        #    trials' classifications. Filter out superseded rows so the
-        #    verdict only reflects the currently-live trial set.
-        # -----------------------------------------------------------------
         async with get_session() as session:
+            if not await _worker_job_is_running(session, worker_job_id):
+                console.print(
+                    f"[dim]QA {task_id} verdict skipped; job was cancelled[/dim]"
+                )
+                return
             trials_result = await session.execute(
                 select(TrialModel).where(
                     TrialModel.task_id == task_id,
@@ -241,8 +225,7 @@ async def run_task_qa_job(
         )
         for i, c in enumerate(classifications):
             console.print(
-                f"  [{i + 1}] {c.classification.value}: {c.subtype} "
-                f"(reward={c.reward})"
+                f"  [{i + 1}] {c.classification.value}: {c.subtype} (reward={c.reward})"
             )
 
         if not classifications:
@@ -251,15 +234,14 @@ async def run_task_qa_job(
         console.print("[dim]Starting verdict synthesis...[/dim]")
         verdict = compute_task_verdict(
             classifications=classifications,
-            baseline=None,  # We don't have baseline validation data
-            quality_check_passed=True,  # Assume passed
+            baseline=None,
+            quality_check_passed=True,
             model=settings.verdict_model,
             console=console,
             verbose=True,
-            timeout=180,  # 3 minutes
+            timeout=180,
         )
 
-        # Convert to dict for storage
         verdict_result = {
             "is_good": verdict.is_good,
             "confidence": verdict.confidence,
@@ -293,8 +275,14 @@ async def run_task_qa_job(
 
     async def _store_results() -> None:
         async with get_session() as session:
-            task = await session.get(TaskModel, task_id)
+            task = await session.get(TaskModel, task_id, with_for_update=True)
             if not task:
+                return
+
+            if not await _worker_job_is_running(session, worker_job_id):
+                console.print(
+                    f"[dim]QA {task_id} result ignored; job was cancelled[/dim]"
+                )
                 return
 
             if verdict_result:
@@ -313,7 +301,6 @@ async def run_task_qa_job(
                     verdict_error or "Verdict synthesis failed with exception"
                 )
                 task.verdict_finished_at = utcnow()
-                # Still mark task as completed even if verdict failed
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()
                 console.print(

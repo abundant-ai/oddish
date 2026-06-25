@@ -32,7 +32,7 @@ _warned_about_derived_key = False
 
 
 class RegistryAuthDecryptError(ValueError):
-    """Raised when a present registry-auth blob cannot be decrypted or parsed."""
+    """The saved registry login cannot be read."""
 
 
 def normalize_registry_host(registry: str | None) -> str:
@@ -44,7 +44,10 @@ def normalize_registry_host(registry: str | None) -> str:
     if any(ord(ch) < 32 or ch.isspace() for ch in raw):
         raise ValueError("registry must be a host name without whitespace")
 
-    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    try:
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    except ValueError:
+        raise ValueError("registry must be a host name") from None
     host = (parsed.hostname or "").lower()
     if parsed.username or parsed.password:
         raise ValueError("registry must not include username or password")
@@ -52,8 +55,14 @@ def normalize_registry_host(registry: str | None) -> str:
         raise ValueError("registry must be a host name, not a URL path")
     if not host:
         raise ValueError("registry must be a host name")
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("registry port must be a valid numeric port") from None
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None:
+        host = f"{host}:{port}"
     return DEFAULT_REGISTRY if host in _DOCKER_HUB_ALIASES else host
 
 
@@ -79,9 +88,12 @@ class RegistryCredential:
     @classmethod
     def from_dict(cls, raw: dict) -> "RegistryCredential":
         username = str(raw.get("username") or "").strip()
-        token = str(raw.get("token") or raw.get("password") or "")
+        raw_token = raw.get("token") or raw.get("password") or ""
+        if hasattr(raw_token, "get_secret_value"):
+            raw_token = raw_token.get_secret_value()
+        token = str(raw_token)
         registry = normalize_registry_host(str(raw.get("registry") or DEFAULT_REGISTRY))
-        if not username or not token:
+        if not username or not token.strip():
             raise ValueError("registry credential requires both 'username' and 'token'")
         return cls(username=username, token=token, registry=registry)
 
@@ -175,30 +187,66 @@ def decrypt_credentials(blob: str | None) -> list[RegistryCredential]:
         ) from exc
 
 
-_LOGIN_KEYS = ("registry", "username", "token", "password")
+_LOGIN_KEYS = {"registry", "username", "token", "password"}
 
 
-def _split_login_pairs(value: str) -> dict[str, str]:
+def _split_login_items(value: str) -> list[str]:
+    items: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    text = value.strip()
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in {",", "\\", "'", '"'}:
+                buf.append(nxt)
+                i += 2
+                continue
+            buf.append(ch)
+        elif quote:
+            if ch == quote:
+                quote = None
+                j = i + 1
+                while j < len(text) and text[j].isspace():
+                    j += 1
+                if j < len(text) and text[j] != ",":
+                    raise ValueError("--registry-login quotes must wrap the whole value")
+            else:
+                buf.append(ch)
+        elif ch in {"'", '"'}:
+            current = "".join(buf)
+            _key, sep, value_prefix = current.partition("=")
+            if sep and not value_prefix.strip():
+                quote = ch
+            else:
+                raise ValueError("--registry-login quotes must wrap the whole value")
+        elif ch == ",":
+            items.append("".join(buf).strip())
+            buf.clear()
+        else:
+            buf.append(ch)
+        i += 1
+    if quote:
+        raise ValueError("--registry-login has an unterminated quoted value")
+    items.append("".join(buf).strip())
+    return items
+
+
+def _parse_login_pairs(value: str) -> dict[str, str]:
     fields: dict[str, str] = {}
-    rest = value.strip()
-    while rest:
-        key, sep, after = rest.partition("=")
+    for item in _split_login_items(value):
+        key, sep, raw = item.partition("=")
         key = key.strip().lower()
         if not sep or key not in _LOGIN_KEYS:
             raise ValueError(
-                "--registry-login expects registry=/username=/token= pairs, "
-                f"got {rest!r}"
+                "--registry-login expects comma-separated registry=, username=, "
+                "token=, or password= pairs"
             )
-        end = min(
-            (
-                boundary
-                for known in _LOGIN_KEYS
-                if (boundary := after.find(f",{known}=")) != -1
-            ),
-            default=len(after),
-        )
-        fields[key] = after[:end].strip()
-        rest = after[end:].lstrip(", ")
+        if key in fields:
+            raise ValueError(f"--registry-login repeats {key!r}")
+        fields[key] = raw.strip()
     return fields
 
 
@@ -211,6 +259,6 @@ def parse_registry_login(values: list[str] | None, env: dict[str, str]) -> list[
         else []
     )
     creds.extend(
-        RegistryCredential.from_dict(_split_login_pairs(v)) for v in values or []
+        RegistryCredential.from_dict(_parse_login_pairs(v)) for v in values or []
     )
     return [c.to_dict() for c in {cred.auth_key(): cred for cred in creds}.values()]

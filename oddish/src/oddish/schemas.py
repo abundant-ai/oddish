@@ -195,10 +195,28 @@ class RegistryAuth(BaseModel):
         if not isinstance(data, dict) or "registry" not in data:
             return data
         raw = str(data.get("registry") or "")
-        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
-        if parsed.username or parsed.password:
+        try:
+            parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        except ValueError:
+            parsed = None
+        if parsed and (parsed.username or parsed.password):
             data = dict(data)
-            data["registry"] = "https://redacted@redacted.invalid"
+            data["registry"] = "https://redacted:redacted@redacted.invalid"
+            return data
+        try:
+            normalize_registry_host(raw)
+        except ValueError as exc:
+            message = str(exc)
+            data = dict(data)
+            if message == "registry port must be a valid numeric port":
+                data["registry"] = "redacted.invalid:badport"
+            elif message == "registry must be a host name without whitespace":
+                data["registry"] = "redacted invalid"
+            elif message == "registry must be a host name":
+                data["registry"] = "https://[::1"
+            else:
+                data["registry"] = "redacted.invalid/path"
+            return data
         return data
 
     @field_validator("registry")
