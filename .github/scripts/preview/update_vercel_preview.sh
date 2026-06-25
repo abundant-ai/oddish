@@ -34,10 +34,8 @@ if [ -z "$database_label" ]; then
   fi
 fi
 
-# Clickable targets for the preview banner / PR comment. The backend points at
-# whatever API the frontend talks to; the DB links to the preview branch's own
-# Supabase project dashboard -- branch_ref IS that project's ref. Prod DB has no
-# per-PR dashboard worth linking, so it stays plain text.
+# branch_ref is the preview branch's own Supabase project ref, so link it to
+# that project's dashboard. Prod DB stays plain text (no per-PR dashboard).
 database_url=""
 if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
   database_url="https://supabase.com/dashboard/project/${SUPABASE_BRANCH_REF}"
