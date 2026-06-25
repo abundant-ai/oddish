@@ -1,0 +1,4 @@
+interface:
+  display_name: "Oddish"
+  short_description: "Inspect and pull Oddish experiment runs"
+  default_prompt: "Use $oddish to inspect recent Oddish tasks and pull run artifacts."
