@@ -154,7 +154,7 @@ async def _upload_text(strategy: Any, text: str, target_path: str) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
             tmp.write(text)
             tmp_name = tmp.name
-        uploaded = strategy.upload_file(tmp_name, target_path)
+        uploaded = strategy._stage_file_to_host(tmp_name, target_path)
         if inspect.isawaitable(uploaded):
             await uploaded
     finally:
