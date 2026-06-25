@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import pytest  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
-from oddish.workers import harbor_runner  # noqa: E402
-from oddish.workers.codex_agent import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -245,6 +245,79 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
     assert trial.harbor_stage == "image_build_failed"
     assert trial.finished_at is not None
     assert "Image build for im-abc123 failed" in trial.error_message
+
+
+def test_store_trial_results_persists_total_steps(monkeypatch):
+    trial = SimpleNamespace(
+        task_id="task-1",
+        status=trial_handler.TrialStatus.RUNNING,
+        attempts=1,
+        max_attempts=1,
+        error_message=None,
+        harbor_stage="running",
+        reward=None,
+        harbor_result_path=None,
+        trial_s3_key=None,
+        input_tokens=None,
+        cache_tokens=None,
+        output_tokens=None,
+        total_steps=None,
+        cost_usd=None,
+        phase_timing=None,
+        has_trajectory=False,
+        current_worker_id="worker-1",
+        current_queue_slot=0,
+        heartbeat_at=None,
+    )
+
+    class _Session:
+        pass
+
+    @asynccontextmanager
+    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+        yield _Session(), trial
+
+    async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
+        return False
+
+    import oddish.queue as queue_module
+
+    monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
+    monkeypatch.setattr(
+        queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
+    )
+
+    outcome = harbor_runner.HarborOutcome(
+        reward=1.0,
+        error=None,
+        exit_code=0,
+        duration_sec=1.0,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp/job"),
+        input_tokens=100,
+        cache_tokens=25,
+        output_tokens=50,
+        total_steps=7,
+        cost_usd=0.12,
+        has_trajectory=True,
+    )
+
+    asyncio.run(
+        trial_handler._store_trial_results(
+            trial_id="trial-1",
+            outcome=outcome,
+            trial_s3_key="tasks/task-1/trials/trial-1/",
+            execution_error=None,
+        )
+    )
+
+    assert trial.status == trial_handler.TrialStatus.SUCCESS
+    assert trial.input_tokens == 100
+    assert trial.cache_tokens == 25
+    assert trial.output_tokens == 50
+    assert trial.total_steps == 7
+    assert trial.cost_usd == 0.12
+    assert trial.has_trajectory is True
 
 
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
@@ -731,7 +804,7 @@ def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch
 
     assert agent_config.name is None
     assert agent_config.import_path == (
-        "oddish.workers.codex_agent:AzureCompatibleCodex"
+        "oddish.workers.agents.codex:AzureCompatibleCodex"
     )
     assert agent_config.model_name == "oddish-gpt"
     assert "AZURE_OPENAI_API_KEY" not in agent_config.env
@@ -749,7 +822,7 @@ def test_build_agent_config_uses_oddish_codex_wrapper_for_public_openai(monkeypa
     )
 
     assert agent_config.name is None
-    assert agent_config.import_path == "oddish.workers.codex_agent:OddishCodex"
+    assert agent_config.import_path == "oddish.workers.agents.codex:OddishCodex"
     assert agent_config.model_name == "openai/gpt-5.2-codex"
 
 
@@ -1443,6 +1516,93 @@ def test_extract_outcome_from_job_result_carries_exception_type(monkeypatch):
 
     assert outcome.exception_type == "AddTestsDirError"
     assert outcome.error and "Failed to add tests directory" in outcome.error
+
+
+def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):
+    traj_dir = tmp_path / "trial" / "agent"
+    traj_dir.mkdir(parents=True)
+    (traj_dir / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "final_metrics": {
+                    "total_prompt_tokens": 11,
+                    "total_completion_tokens": 7,
+                    "total_cached_tokens": 3,
+                    "total_steps": 5,
+                    "total_cost_usd": 0.42,
+                },
+                "steps": [{"step_id": index} for index in range(99)],
+            }
+        ),
+        encoding="utf-8",
+    )
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=tmp_path / "result.json",
+        job_dir=tmp_path,
+        duration_sec=1.0,
+    )
+
+    assert outcome.input_tokens == 11
+    assert outcome.output_tokens == 7
+    assert outcome.cache_tokens == 3
+    assert outcome.total_steps == 5
+    assert outcome.cost_usd == 0.42
+    assert outcome.has_trajectory is True
+
+
+def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(tmp_path):
+    traj_dir = tmp_path / "trial" / "agent"
+    traj_dir.mkdir(parents=True)
+    (traj_dir / "trajectory.json").write_text(
+        json.dumps({"steps": [{"step_id": "a"}, {"step_id": "b"}]}),
+        encoding="utf-8",
+    )
+    agent_context = SimpleNamespace(
+        is_empty=lambda: False,
+        n_input_tokens=10,
+        n_cache_tokens=4,
+        n_output_tokens=6,
+        cost_usd=None,
+    )
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=agent_context,
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=tmp_path / "result.json",
+        job_dir=tmp_path,
+        duration_sec=1.0,
+    )
+
+    assert outcome.input_tokens == 10
+    assert outcome.output_tokens == 6
+    assert outcome.total_steps == 2
 
 
 def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():

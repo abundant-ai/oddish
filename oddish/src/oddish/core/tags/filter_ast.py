@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import text
 from sqlalchemy.sql.elements import TextClause
 
-from oddish.core.tag_naming import normalize_tag_key
+from .naming import normalize_tag_key
 
 
 def _normalize_each(values: list[str]) -> list[str]:

@@ -6,7 +6,7 @@ import signal
 
 from oddish.config import settings
 from oddish.db import close_pool
-from oddish.workers.harbor_runner import log_local_storage_snapshot
+from oddish.workers.harbor.runner import log_local_storage_snapshot
 from oddish.workers.queue.queue_manager import run_polling_worker
 from oddish.workers.queue.shared import console
 

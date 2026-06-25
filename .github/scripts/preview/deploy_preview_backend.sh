@@ -49,6 +49,12 @@ if [ -z "$modal_api_url" ]; then
   exit 1
 fi
 
+if [ -n "${EXPECTED_MODAL_API_URL:-}" ] && [ "${modal_api_url%/}" != "${EXPECTED_MODAL_API_URL%/}" ]; then
+  echo "modal_api_url mismatch: deploy emitted '${modal_api_url}' but expected '${EXPECTED_MODAL_API_URL}'" >&2
+  echo "the deterministic preview URL formula drifted from modal_app.API_WEBHOOK_LABEL; update pr-preview.yml" >&2
+  exit 1
+fi
+
 if ! python "$script_dir/wait_for_modal_ready.py" "$modal_api_url"; then
   dump_modal_logs
   exit 1

@@ -703,6 +703,12 @@ class TrialModel(TimestampedMixin, Base):
     # Harbor passthrough config (agent env/kwargs, verifier, environment resources)
     harbor_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # Concrete Harbor commit SHA this trial executed against (denormalized,
+    # indexed projection of harbor_config["resolved_sha"]; stamped at creation).
+    harbor_sha: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+
     # Derived, indexed projection of ``harbor_config["mode"] == "probe"`` so
     # probe runs can be filtered server-side. Source of truth stays in
     # harbor_config; this is set at trial creation in queue.py.
@@ -792,10 +798,11 @@ class TrialModel(TimestampedMixin, Base):
     )  # S3 prefix for trial results/logs
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # Token usage & cost (extracted from Harbor's AgentContext)
+    # Token usage, steps & cost (extracted from Harbor's AgentContext / trajectory)
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cache_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
@@ -986,6 +993,14 @@ class WorkerJobModel(TimestampedMixin, Base):
         server_default="QUEUED",
     )
 
+    # Harbor execution variant routing id ('default' | '<registry-id>' |
+    # 'ephemeral'). Part of the effective dispatch key: the dispatcher
+    # discovers/counts/spawns per (queue_key, harbor_variant_id) and the claim
+    # is scoped to it.
+    harbor_variant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default=text("'default'")
+    )
+
     queue_key: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, default=0, server_default="0"
@@ -1066,6 +1081,7 @@ class WorkerJobModel(TimestampedMixin, Base):
         Index(
             "idx_worker_jobs_claim",
             "queue_key",
+            "harbor_variant_id",
             "priority",
             "available_after",
             "created_at",
@@ -1104,6 +1120,18 @@ class WorkerJobModel(TimestampedMixin, Base):
             "status",
             postgresql_where=text("org_id IS NOT NULL"),
         ),
+        Index(
+            "uq_worker_jobs_tag_project_active",
+            "kind",
+            "subject_table",
+            "subject_id",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'TAG_PROJECT' "
+                "AND status IN ('QUEUED', 'RETRYING') "
+                "AND subject_id IS NOT NULL"
+            ),
+        ),
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
@@ -1120,10 +1148,7 @@ class APIKeyModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
-    # Organization scope
-    org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Key identification
     name: Mapped[str] = mapped_column(
@@ -1147,10 +1172,7 @@ class APIKeyModel(TimestampedMixin, Base):
         nullable=False,
     )
 
-    # Creator tracking
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Status and expiry
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
