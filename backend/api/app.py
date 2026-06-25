@@ -206,6 +206,7 @@ def create_app() -> FastAPI:
         api_keys,
         cc_chat,
         clerk_webhooks,
+        cost,
         dashboard,
         documents,
         github_webhooks,
@@ -220,6 +221,7 @@ def create_app() -> FastAPI:
     )
 
     api.include_router(cc_chat.router)
+    api.include_router(cost.router)
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(api_keys.router)
