@@ -7,7 +7,6 @@ import {
 import {
   buildDashboardBackendParams,
   DASHBOARD_DEFAULT_USAGE_MINUTES,
-  DASHBOARD_SSR_FETCH_TIMEOUT_MS,
 } from "@/lib/dashboard-request";
 import type { DashboardResponse } from "@/lib/types";
 import { UsageClient } from "./usage-client";
@@ -36,7 +35,6 @@ async function getInitialUsageData(): Promise<DashboardResponse | null> {
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),
-      signal: AbortSignal.timeout(DASHBOARD_SSR_FETCH_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.error(
