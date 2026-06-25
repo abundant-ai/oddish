@@ -6,9 +6,9 @@ import heapq
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
 
 from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
@@ -677,6 +677,29 @@ async def fetch_experiment_effective_version_ids(
         for task_id, version_id in result.all()
         if version_id is not None
     }
+
+
+def filter_probe_trials_for_effective_versions(
+    probe_trials: Sequence[TrialModel],
+    effective_by_task: Mapping[str, str | None],
+) -> dict[str, list[TrialModel]]:
+    """Group probe trials under their task, keeping only those whose
+    ``task_version_id`` matches that task's effective version.
+
+    ``effective_by_task`` maps ``task_id`` -> the version the experiment view
+    displays for that task. Probes whose task has no effective version, or whose
+    ``task_version_id`` differs from it, are dropped. Superseded probes must be
+    excluded by the caller's query before this is called.
+    """
+    grouped: dict[str, list[TrialModel]] = {}
+    for trial in probe_trials:
+        effective = effective_by_task.get(trial.task_id)
+        if effective is None:
+            continue
+        if trial.task_version_id != effective:
+            continue
+        grouped.setdefault(trial.task_id, []).append(trial)
+    return grouped
 
 
 def get_task_status_trials(
