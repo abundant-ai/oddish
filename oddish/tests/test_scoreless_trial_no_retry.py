@@ -13,7 +13,6 @@ from oddish.db import TrialStatus  # noqa: E402
 from oddish.workers.harbor.runner import HarborOutcome  # noqa: E402
 from oddish.workers.queue import trial_handler as th  # noqa: E402
 from oddish.workers.queue.trial_handler import (  # noqa: E402
-    SCORELESS_EXPECTED_MESSAGE,
     _expects_no_reward,
     _store_trial_results,
 )
@@ -83,9 +82,11 @@ def _patch_session(monkeypatch, trial):
     [
         (_trial(harbor_config={"verifier": {"disable": True}}), True),
         (_trial(harbor_config={"verifier": {"disable": False}}), False),
-        (_trial(agent="nop"), True),
-        (_trial(agent="oracle"), True),
-        (_trial(agent="agent-nop"), True),
+        # nop/oracle are *scored* baselines (nop expected to fail, oracle to
+        # pass). A missing reward is a real failure for them, not "expected".
+        (_trial(agent="nop"), False),
+        (_trial(agent="oracle"), False),
+        (_trial(agent="agent-nop"), False),
         (_trial(agent="codex", harbor_config={"verifier": {}}), False),
     ],
 )
@@ -95,7 +96,7 @@ def test_expects_no_reward(trial, expected):
 
 @pytest.mark.parametrize(
     "trial",
-    [_trial(harbor_config={"verifier": {"disable": True}}), _trial(agent="nop")],
+    [_trial(harbor_config={"verifier": {"disable": True}})],
 )
 @pytest.mark.asyncio
 async def test_expected_scoreless_reward_none_terminal_success(monkeypatch, trial):
@@ -107,14 +108,17 @@ async def test_expected_scoreless_reward_none_terminal_success(monkeypatch, tria
         execution_error=None,
     )
     assert trial.status == TrialStatus.SUCCESS
-    assert trial.error_message == SCORELESS_EXPECTED_MESSAGE
+    # The success explanation is *not* persisted as an error_message: the
+    # frontend maps any non-empty error_message to a harness error.
+    assert trial.error_message is None
     assert trial.finished_at is not None
     assert trial.attempts == 1
 
 
+@pytest.mark.parametrize("agent", ["codex", "nop", "oracle"])
 @pytest.mark.asyncio
-async def test_genuine_missing_reward_still_retries(monkeypatch):
-    trial = _trial(agent="codex", harbor_config=None, attempts=1, max_attempts=6)
+async def test_genuine_missing_reward_still_retries(monkeypatch, agent):
+    trial = _trial(agent=agent, harbor_config=None, attempts=1, max_attempts=6)
     _patch_session(monkeypatch, trial)
     await _store_trial_results(
         trial_id="trial-1",
