@@ -533,7 +533,12 @@ export function ExperimentClientPage({
           headerRight={
             experimentId ? (
               <div className="flex items-center gap-2">
-                <ChatButton scopeKind="experiment" scopeId={experimentId} />
+                <ChatButton
+                  scopeKind="experiment"
+                  scopeId={experimentId}
+                  variant="ghost"
+                  className="h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+                />
                 <ExperimentShareButton
                   experimentId={experimentId}
                   canManageShare={canManageExperimentShare}
