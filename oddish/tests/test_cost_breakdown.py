@@ -14,7 +14,9 @@ Covered behaviors:
 * per-user attribution flows through ``experiments.owner_user_id`` (including
   the unattributed ``None`` owner);
 * soft-deleted experiments (and soft-deleted trials) are excluded;
-* the trailing-window filter bounds the detail rollups; and
+* the trailing-window filter bounds the rollups;
+* model ids are normalized so spellings (case/whitespace) collapse onto one row;
+* the time-bucketed ``series`` reconciles with the windowed totals; and
 * experiments rank by descending cost.
 """
 
@@ -138,7 +140,8 @@ async def seeded_cost_data():
                     cache_tokens=_EST_CACHE,
                     created_at=recent,
                 ),
-                _trial(E3, 0, model="claude-opus-4-8", cost_usd=1.5, created_at=recent),
+                # Mixed-case model id -> must normalize to "claude-opus-4-8".
+                _trial(E3, 0, model="Claude-Opus-4-8", cost_usd=1.5, created_at=recent),
                 # Excluded: trial of a soft-deleted experiment.
                 _trial(
                     E4, 0, model="claude-opus-4-8", cost_usd=99.0, created_at=recent
@@ -231,8 +234,10 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E2].models[0].model == _EST_MODEL
     assert exps[E2].input_tokens == _EST_IN
 
-    # Unattributed-owner experiment still aggregates.
+    # Unattributed-owner experiment still aggregates, and its mixed-case model
+    # id is normalized to the canonical lowercase form.
     assert _approx(exps[E3].cost_usd, 1.5)
+    assert exps[E3].models[0].model == "claude-opus-4-8"
 
     # Per-user attribution via experiment ownership.
     by_user = {u.owner_user_id: u for u in result.by_user}
@@ -245,10 +250,23 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     costs = [e.cost_usd for e in result.experiments]
     assert costs == sorted(costs, reverse=True)
 
-    # Window summary exposes the four trailing windows; all-time is a superset.
-    windows = {w.label: w for w in result.windows}
-    assert set(windows) == {"24h", "7d", "30d", "All"}
-    assert windows["All"].cost_usd >= windows["7d"].cost_usd - 1e-9
+    # The time series reconciles with the windowed totals (both are global over
+    # the same window) and is chronological. Tolerance covers per-bucket
+    # rounding. ``series`` / ``totals`` are global, so this holds regardless of
+    # other rows in a shared DB.
+    assert result.bucket == "day"
+    assert result.series, "expected at least one series bucket"
+    assert _approx(
+        sum(p.cost_usd for p in result.series), result.totals.cost_usd, tol=0.01
+    )
+    assert _approx(
+        sum(p.cost_native_usd for p in result.series),
+        result.totals.cost_native_usd,
+        tol=0.01,
+    )
+    assert sum(p.trial_count for p in result.series) == result.totals.trial_count
+    starts = [p.bucket_start for p in result.series]
+    assert starts == sorted(starts)
 
 
 @pytest.mark.asyncio

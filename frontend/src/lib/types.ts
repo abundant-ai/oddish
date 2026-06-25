@@ -721,12 +721,11 @@ export interface CostExperimentBreakdown {
   models: CostModelBreakdown[];
 }
 
-export interface CostWindowTotal {
-  window_days: number | null;
-  label: string;
+export interface CostSeriesPoint {
+  bucket_start: string;
   trial_count: number;
-  total_tokens: number;
   cost_usd: number;
+  cost_native_usd: number;
   cost_estimated_usd: number;
 }
 
@@ -745,7 +744,8 @@ export interface CostTotals {
 
 export interface CostBreakdownResponse {
   window_days: number | null;
-  windows: CostWindowTotal[];
+  bucket: string;
+  series: CostSeriesPoint[];
   totals: CostTotals;
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];

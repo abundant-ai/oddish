@@ -28,17 +28,33 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import type { TooltipContentProps } from "recharts";
 import type {
   CostBreakdownResponse,
   CostExperimentBreakdown,
   CostModelBreakdown,
+  CostSeriesPoint,
   CostUserBreakdown,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
-import { AlertCircle, DollarSign, RefreshCw } from "lucide-react";
+import { AlertCircle, DollarSign, Info, RefreshCw } from "lucide-react";
 
 // window_days values the backend understands (0 == all-time).
 const WINDOW_OPTIONS: { value: string; label: string }[] = [
@@ -153,39 +169,170 @@ function EstimatedBadge({
 }
 
 // =============================================================================
-// Window summary cards (24h / 7d / 30d / all-time)
+// Cost-over-time chart
 // =============================================================================
 
-function WindowSummary({
-  data,
-  selectedWindowDays,
-}: {
-  data: CostBreakdownResponse;
-  selectedWindowDays: number | null;
-}) {
+function bucketTickFormatter(bucket: string) {
+  return (value: string) => {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    if (bucket === "hour")
+      return d.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        hour12: true,
+      });
+    if (bucket === "week" || bucket === "day")
+      return d.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      });
+    return d.toLocaleDateString();
+  };
+}
+
+type ChartTooltipValue = number | string | ReadonlyArray<number | string>;
+type ChartTooltipName = number | string;
+
+function ChartTooltip(
+  props: TooltipContentProps<ChartTooltipValue, ChartTooltipName> & {
+    bucket: string;
+  }
+) {
+  const { active, payload, bucket } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const point = payload[0].payload as CostSeriesPoint;
+  const label =
+    bucket === "hour"
+      ? new Date(point.bucket_start).toLocaleString()
+      : new Date(point.bucket_start).toLocaleDateString();
   return (
-    <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-      {data.windows.map((w) => {
-        const active = w.window_days === selectedWindowDays;
-        return (
-          <div
-            key={w.label}
-            className={`rounded-lg border p-3 ${
-              active ? "border-primary bg-primary/5" : "border-border"
-            }`}
-          >
-            <div className="text-muted-foreground text-xs">{w.label}</div>
-            <div className="mt-1 text-xl font-semibold">
-              {formatCostUsd(w.cost_usd)}
-            </div>
-            <div className="text-muted-foreground mt-1 text-[11px]">
-              {w.trial_count.toLocaleString()} trials ·{" "}
-              {formatTokens(w.total_tokens)} tok
-            </div>
-          </div>
-        );
-      })}
+    <div className="bg-popover rounded-md border px-3 py-2 text-xs shadow-md">
+      <div className="mb-1 font-medium">{label}</div>
+      <div className="flex justify-between gap-4">
+        <span className="text-muted-foreground">Total</span>
+        <span className="font-mono">{formatCostUsd(point.cost_usd)}</span>
+      </div>
+      <div className="flex justify-between gap-4">
+        <span className="text-muted-foreground">Native</span>
+        <span className="font-mono">
+          {formatCostUsd(point.cost_native_usd)}
+        </span>
+      </div>
+      <div className="flex justify-between gap-4">
+        <span className="text-muted-foreground">Estimated</span>
+        <span className="font-mono">
+          {formatCostUsd(point.cost_estimated_usd)}
+        </span>
+      </div>
+      <div className="text-muted-foreground mt-1">
+        {point.trial_count.toLocaleString()} trials
+      </div>
     </div>
+  );
+}
+
+function CostChart({
+  series,
+  bucket,
+}: {
+  series: CostSeriesPoint[];
+  bucket: string;
+}) {
+  if (series.length === 0)
+    return (
+      <div className="text-muted-foreground flex h-[220px] items-center justify-center rounded-lg border text-sm">
+        No trial spend in this window.
+      </div>
+    );
+  return (
+    <div className="h-[220px] w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={series}
+          margin={{ top: 8, right: 8, bottom: 0, left: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+          <XAxis
+            dataKey="bucket_start"
+            tickFormatter={bucketTickFormatter(bucket)}
+            tick={{ fontSize: 11 }}
+            minTickGap={24}
+          />
+          <YAxis
+            tickFormatter={(v: number) => formatCostUsd(v)}
+            tick={{ fontSize: 11 }}
+            width={56}
+          />
+          <RechartsTooltip
+            content={(props) => <ChartTooltip {...props} bucket={bucket} />}
+            cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+          />
+          {/* Native + estimated stacked so the split is visible over time. */}
+          <Bar
+            dataKey="cost_native_usd"
+            stackId="cost"
+            fill="#3b82f6"
+            name="Native"
+          />
+          <Bar
+            dataKey="cost_estimated_usd"
+            stackId="cost"
+            fill="#f59e0b"
+            name="Estimated"
+            radius={[2, 2, 0, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+// =============================================================================
+// Methodology note
+// =============================================================================
+
+function MethodologyNote() {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          aria-label="How costs are computed"
+        >
+          <Info className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-[360px] text-xs leading-relaxed"
+      >
+        <p className="mb-2 font-medium">How costs are computed</p>
+        <ul className="text-muted-foreground list-disc space-y-1.5 pl-4">
+          <li>
+            Cost is tallied <strong>per trial</strong>. When the agent runtime
+            reports a cost we use that (<strong>native</strong>); otherwise we
+            estimate it from the trial&apos;s token counts × per-model pricing
+            (LiteLLM&apos;s table plus a small local fallback) —{" "}
+            <strong>estimated</strong>. This is the same estimator the rest of
+            the app already uses for per-trial cost.
+          </li>
+          <li>
+            Native and estimated are mutually exclusive per trial, so they sum
+            to the total with no double-counting. A low estimated share just
+            means most trials&apos; runtimes reported a cost (e.g. Claude Code);
+            agents that report tokens but not cost get estimated.
+          </li>
+          <li>
+            Per-user figures attribute each experiment to its owner; per-model
+            and per-user are the same per-trial costs grouped differently, so
+            each view sums back to the same total.
+          </li>
+          <li>Figures span all organizations.</li>
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -195,7 +342,6 @@ function WindowSummary({
 
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("7");
-  const selectedWindowDays = windowDays === "0" ? null : Number(windowDays);
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
@@ -213,6 +359,7 @@ export function CostBreakdownCard() {
           <div className="flex items-center gap-2">
             <DollarSign className="h-5 w-5" />
             <CardTitle className="text-base">Cost Breakdown</CardTitle>
+            <MethodologyNote />
             {data && (
               <Badge variant="outline" className="text-xs">
                 {formatCostUsd(data.totals.cost_usd)} ·{" "}
@@ -253,9 +400,9 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Total trial spend across all organizations. Cost uses the
-          runtime-reported value when present and a per-model token estimate
-          otherwise. Per-user attribution follows experiment ownership.
+          Total trial spend across all organizations. Native runtime cost when
+          reported, otherwise a per-model token estimate — see the info icon for
+          methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -273,10 +420,22 @@ export function CostBreakdownCard() {
           <p className="text-muted-foreground">Loading...</p>
         ) : (
           <TooltipProvider delayDuration={150}>
-            <WindowSummary
-              data={data}
-              selectedWindowDays={selectedWindowDays}
-            />
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Cost over time</h3>
+                <div className="flex items-center gap-3 text-[11px]">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-sm bg-[#3b82f6]" />
+                    <span className="text-muted-foreground">Native</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="inline-block h-2 w-2 rounded-sm bg-[#f59e0b]" />
+                    <span className="text-muted-foreground">Estimated</span>
+                  </span>
+                </div>
+              </div>
+              <CostChart series={data.series} bucket={data.bucket} />
+            </div>
 
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
