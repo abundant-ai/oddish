@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -28,14 +29,6 @@ import {
   accumulateTrial,
 } from "@/lib/trial-aggregation";
 import type { Task, Trial, UserTagRef } from "@/lib/types";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { ProbeSubmitForm } from "@/components/probe-submit-form";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
@@ -680,25 +673,13 @@ function ExperimentProbeLaunchButton({
   experimentId?: string;
   hostTaskId?: string;
 }) {
-  const [dialogOpen, setDialogOpen] = useState(false);
   if (!experimentId || !hostTaskId) return null;
+  // Probes run against the experiment's host task, so route to that task's
+  // probe page rather than opening an inline form.
   return (
-    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">New probe</Button>
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>New experiment probe</DialogTitle>
-        </DialogHeader>
-        <ProbeSubmitForm
-          taskId={hostTaskId}
-          scope="experiment"
-          experimentId={experimentId}
-          onSubmitted={() => setDialogOpen(false)}
-        />
-      </DialogContent>
-    </Dialog>
+    <Button asChild size="sm">
+      <Link href={`/tasks/${hostTaskId}/probe`}>New probe</Link>
+    </Button>
   );
 }
 
