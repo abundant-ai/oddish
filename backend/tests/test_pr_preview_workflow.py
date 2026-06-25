@@ -91,15 +91,11 @@ def test_vercel_modal_url_gated_with_prod_fallback():
 
 
 def test_banner_env_threaded_to_vercel_and_cleaned_up():
-    # The preview banner surfaces the PR (link + title) and makes the backend/DB
-    # targets clickable. Each field is only populated if the value is threaded
-    # all the way through the Vercel env, so guard the full chain here -- the
-    # frontend has no test suite to catch a broken var.
+    # The frontend has no test suite, so guard the whole chain here: a banner
+    # var is only useful if it's threaded through the Vercel env and cleaned up.
     job_env = _wf()["jobs"]["update-vercel-preview"]["env"]
     assert "html_url" in job_env["PR_URL"]
     assert "title" in job_env["PR_TITLE"]
-    # The DB link is the preview branch's own project dashboard, so it only
-    # needs the branch ref (which is that branch's Supabase project ref).
     assert "SUPABASE_BRANCH_REF" in job_env
 
     update = (PREVIEW / "update_vercel_preview.sh").read_text()
