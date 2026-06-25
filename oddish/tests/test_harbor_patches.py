@@ -580,6 +580,28 @@ def test_entry_applies_sibling_harbor_patches(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_entry_hook_uploads_probe_task_on_agent_start(monkeypatch, tmp_path):
+    uploads: list[dict] = []
+
+    class Environment:
+        async def upload_dir(self, *, source_dir, target_dir):
+            uploads.append({"source_dir": source_dir, "target_dir": target_dir})
+
+    event = SimpleNamespace(
+        event=SimpleNamespace(value="agent-start"),
+        trial_id="t-1",
+        environment=Environment(),
+        result=None,
+    )
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", lambda _payload: None)
+
+    hook = harbor_entry._make_hook(str(tmp_path / "task"), "/probe")
+    await hook(event)
+
+    assert uploads == [{"source_dir": tmp_path / "task", "target_dir": "/probe"}]
+
+
+@pytest.mark.asyncio
 async def test_entry_run_applies_patches_before_job_create(monkeypatch, tmp_path):
     order: list[str] = []
     harbor_module = ModuleType("harbor")

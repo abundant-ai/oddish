@@ -24,6 +24,7 @@ ClaudeCode = importlib.import_module("harbor.agents.installed.claude_code").Clau
 logger = logging.getLogger("oddish.harbor_entry")
 
 EVENT_SENTINEL = "_oddish_harbor_event"
+_AGENT_START_EVENTS = {"AGENT_START", "agent-start", "agent_start"}
 
 
 def _apply_sibling_harbor_patches() -> None:
@@ -86,7 +87,7 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
         event_name = getattr(event.event, "value", str(event.event))
         environment = getattr(event, "environment", None)
         if (
-            event_name == "AGENT_START"
+            event_name in _AGENT_START_EVENTS
             and probe_task_dir
             and probe_harness_dir
             and environment is not None
