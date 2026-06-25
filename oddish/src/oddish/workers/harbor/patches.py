@@ -136,30 +136,58 @@ def _raise_for_bad_result(result: Any) -> None:
         raise RuntimeError((stderr or stdout or f"command failed with {code}").strip())
 
 
-def _daytona_merge_mirror_command(path: str = _DAEMON_JSON_PATH) -> str:
+def _sed_json_string(value: str) -> str:
+    return re.escape(json.dumps(value)).replace("/", r"\/")
+
+
+def _daytona_merge_mirror_command(
+    path: str = _DAEMON_JSON_PATH, mirrors: list[str] | None = None
+) -> str:
+    desired = list(dict.fromkeys(mirrors or [_MIRROR_URL]))
+    desired_json = ", ".join(json.dumps(m).replace("/", r"\/") for m in desired)
+    strip_existing = "; ".join(
+        (
+            rf"s/{_sed_json_string(m)}[[:space:]]*,[[:space:]]*//g; "
+            rf"s/,[[:space:]]*{_sed_json_string(m)}//g; "
+            rf"s/{_sed_json_string(m)}//g"
+        )
+        for m in desired
+    )
     flat_path = f"{path}.flat"
+    clean_path = f"{path}.clean"
     tmp_path = f"{path}.tmp"
     empty = (
         'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[[[:space:]]*\\]/'
-        '"registry-mirrors": ["https:\\/\\/mirror.gcr.io"]/'
+        f'"registry-mirrors": [{desired_json}]/'
         "' "
         f"{flat_path} > {tmp_path}"
     )
     prefix = (
         'sed \'s/"registry-mirrors"[[:space:]]*:[[:space:]]*\\[/'
-        '"registry-mirrors": ["https:\\/\\/mirror.gcr.io", /'
+        f'"registry-mirrors": [{desired_json}, /'
         "' "
         f"{flat_path} > {tmp_path}"
     )
     return (
         f"(tr -d '\\n' < {path} > {flat_path} && "
+        f"sed '{strip_existing}' {flat_path} > {clean_path} && "
+        f"mv {clean_path} {flat_path} && "
         f'if grep -q \'"registry-mirrors"[[:space:]]*:[[:space:]]*'
         f"\\[[[:space:]]*\\]' {flat_path} 2>/dev/null; then\n"
         f"{empty}\nelse\n{prefix}\nfi &&\n"
         f"mv {tmp_path} {path})\n"
-        f"status=$?\nrm -f {flat_path} {tmp_path}\n"
+        f"status=$?\nrm -f {flat_path} {clean_path} {tmp_path}\n"
         "test $status -eq 0"
     )
+
+
+def _registry_mirror_flags(command: str) -> list[str]:
+    return [
+        match.group(1) or match.group(2)
+        for match in re.finditer(
+            r"\s+--registry-mirror=(\S+)|\s+--registry-mirror\s+(\S+)", command
+        )
+    ]
 
 
 def _strip_registry_mirror_flags(command: str) -> str:
@@ -181,16 +209,19 @@ def _daytona_command_with_mirror(command: str) -> str:
     before, after = command.split(_DAYTONA_DOCKERD_MARKER, 1)
     existing = f"{_DAYTONA_DOCKERD_MARKER}{after}"
     config_command = _strip_registry_mirror_flags(existing)
+    mirrors = [
+        _MIRROR_URL,
+        *[m for m in _registry_mirror_flags(existing) if m != _MIRROR_URL],
+    ]
     if _has_gcr_registry_mirror_flag(existing):
         mirrored = existing
     else:
         mirrored = f"{_DAYTONA_DOCKERD_MARKER} --registry-mirror={_MIRROR_URL}{after}"
-    merge = _daytona_merge_mirror_command()
+    merge = _daytona_merge_mirror_command(mirrors=mirrors)
     return (
         f"{before}if grep -q '\"registry-mirrors\"' {_DAEMON_JSON_PATH} "
         f"2>/dev/null; then\n"
-        f"if grep -q '{_MIRROR_URL}' {_DAEMON_JSON_PATH} 2>/dev/null; then\n"
-        f"{config_command}\nelse\n{merge} && {{\n{config_command}\n}}\nfi\n"
+        f"{merge} && {{\n{config_command}\n}}\n"
         f"else\n{mirrored}\nfi"
     )
 

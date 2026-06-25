@@ -216,7 +216,6 @@ async def test_daytona_vm_exec_adds_registry_mirror_flag_for_dockerd():
 
     sent = strategy.calls[0]["command"]
     assert "grep -q '\"registry-mirrors\"'" in sent
-    assert "grep -q 'https://mirror.gcr.io'" in sent
     assert 'sed \'s/"registry-mirrors"' in sent
     assert "mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json" in sent
     assert (
@@ -243,7 +242,8 @@ async def test_daytona_vm_exec_does_not_duplicate_registry_mirror_flag():
     await wrapped(strategy, cmd)
 
     sent = strategy.calls[0]["command"]
-    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
+    assert "then\n(tr -d '\\n' < /etc/docker/daemon.json" in sent
+    assert "&& {\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     assert (
         "else\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
@@ -268,6 +268,8 @@ async def test_daytona_vm_exec_does_not_duplicate_split_registry_mirror_flag():
     await wrapped(strategy, cmd)
 
     sent = strategy.calls[0]["command"]
+    assert "then\n(tr -d '\\n' < /etc/docker/daemon.json" in sent
+    assert "&& {\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     fallback = (
         "else\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror https://mirror.gcr.io "
@@ -293,9 +295,8 @@ async def test_daytona_vm_exec_preserves_different_registry_mirror_flag():
     sent = strategy.calls[0]["command"]
     assert "--registry-mirror=https://mirror.gcr.io" in sent
     assert "--registry-mirror=https://example.com" in sent
-    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
-    else_branch = 'else\nsed \'s/"registry-mirrors"'
-    assert else_branch in sent
+    assert '"https:\\/\\/mirror.gcr.io", "https:\\/\\/example.com"' in sent
+    assert "&& {\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     cli_branch = (
         "else\n"
         "dockerd-entrypoint.sh dockerd --registry-mirror=https://mirror.gcr.io "
@@ -319,9 +320,9 @@ async def test_daytona_vm_exec_strips_split_registry_mirror_flag_from_config_bra
     await wrapped(strategy, cmd)
 
     sent = strategy.calls[0]["command"]
-    assert "then\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     assert "&& {\ndockerd-entrypoint.sh dockerd > /var/log/dockerd.log" in sent
     assert "--registry-mirror https://example.com" in sent
+    assert '"https:\\/\\/mirror.gcr.io", "https:\\/\\/example.com"' in sent
     assert "&& {\ndockerd-entrypoint.sh dockerd --registry-mirror" not in sent
     assert "&;" not in sent
     _assert_shell_parses(sent)
@@ -377,6 +378,23 @@ def test_daytona_merge_mirror_command_preserves_failures(tmp_path):
     assert not stale_tmp.exists()
 
 
+def test_daytona_merge_mirror_command_preserves_custom_mirrors(tmp_path):
+    daemon_json = tmp_path / "daemon.json"
+    daemon_json.write_text(json.dumps({"registry-mirrors": ["https://mirror.gcr.io"]}))
+
+    command = harbor_patches._daytona_merge_mirror_command(
+        str(daemon_json), mirrors=["https://mirror.gcr.io", "https://example.com"]
+    )
+    _assert_shell_parses(command)
+    subprocess.run(["sh", "-c", command], check=True)
+
+    cfg = json.loads(daemon_json.read_text())
+    assert cfg["registry-mirrors"] == [
+        "https://mirror.gcr.io",
+        "https://example.com",
+    ]
+
+
 def test_daytona_command_with_mirror_stops_when_merge_fails(tmp_path, monkeypatch):
     bin_dir = tmp_path / "bin"
     state_dir = tmp_path / "state"
@@ -391,7 +409,7 @@ def test_daytona_command_with_mirror_stops_when_merge_fails(tmp_path, monkeypatc
     entrypoint.chmod(0o755)
     monkeypatch.setattr(harbor_patches, "_DAEMON_JSON_PATH", str(daemon_json))
     monkeypatch.setattr(
-        harbor_patches, "_daytona_merge_mirror_command", lambda: "false"
+        harbor_patches, "_daytona_merge_mirror_command", lambda **_kwargs: "false"
     )
 
     command = harbor_patches._daytona_command_with_mirror(
@@ -577,6 +595,23 @@ def test_entry_applies_sibling_harbor_patches(monkeypatch):
     harbor_entry._apply_sibling_harbor_patches()
 
     assert calls == ["patched"]
+
+
+@pytest.mark.asyncio
+async def test_entry_hook_emits_canonical_agent_start_event(monkeypatch):
+    payloads: list[dict] = []
+    event = SimpleNamespace(
+        event=SimpleNamespace(value="AGENT_START"),
+        trial_id="t-1",
+        environment=None,
+        result=None,
+    )
+    monkeypatch.setattr(harbor_entry, "_emit_event_line", payloads.append)
+
+    hook = harbor_entry._make_hook(None, None)
+    await hook(event)
+
+    assert payloads[0]["event"] == "agent-start"
 
 
 @pytest.mark.asyncio

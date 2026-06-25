@@ -24,7 +24,12 @@ ClaudeCode = importlib.import_module("harbor.agents.installed.claude_code").Clau
 logger = logging.getLogger("oddish.harbor_entry")
 
 EVENT_SENTINEL = "_oddish_harbor_event"
-_AGENT_START_EVENTS = {"AGENT_START", "agent-start", "agent_start"}
+_EVENT_ALIASES = {"AGENT_START": "agent-start", "agent_start": "agent-start"}
+
+
+def _event_name(event: Any) -> str:
+    raw = getattr(event, "value", str(event))
+    return _EVENT_ALIASES.get(raw, raw)
 
 
 def _apply_sibling_harbor_patches() -> None:
@@ -66,11 +71,12 @@ def _serialize_result(result: Any) -> dict[str, Any] | None:
 
 def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
     async def _hook(event: Any) -> None:
+        event_name = _event_name(event.event)
         try:
             _emit_event_line(
                 {
                     EVENT_SENTINEL: True,
-                    "event": getattr(event.event, "value", str(event.event)),
+                    "event": event_name,
                     "trial_id": getattr(event, "trial_id", None),
                     "environment_provider": getattr(
                         event, "environment_provider", None
@@ -84,10 +90,9 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
         except Exception:
             pass
 
-        event_name = getattr(event.event, "value", str(event.event))
         environment = getattr(event, "environment", None)
         if (
-            event_name in _AGENT_START_EVENTS
+            event_name == "agent-start"
             and probe_task_dir
             and probe_harness_dir
             and environment is not None
