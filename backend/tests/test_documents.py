@@ -14,7 +14,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 
-from oddish.core import documents as docs
+from oddish.core.sharing import documents as docs
 from oddish.core.digest import DigestResult
 from oddish.db import DocumentModel, get_session
 from oddish.schemas import DocumentCreate, DocumentUpdate

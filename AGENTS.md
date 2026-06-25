@@ -115,8 +115,10 @@ High-level flow:
    nothing enqueues them anymore. `trials.analysis` holds the per-trial
    classification and `tasks.verdict` the task-level result — both are outputs
    of the one QA job.)
-5. Use the CLI or dashboard to watch progress and pull logs/artifacts
-   back locally.
+5. Trial completion persists queryable execution metrics on the trial row:
+   input/cache/output tokens, total trajectory steps, native runtime cost when
+   reported, phase timing, and trajectory availability. Use the CLI or dashboard
+   to watch progress and pull logs/artifacts back locally.
 
 ## Package Boundaries
 
@@ -392,7 +394,7 @@ Claude Code invokes Bedrock via the legacy `InvokeModel` API, which only
 accepts **cross-region inference profile ids** (a `global.`/`us.`/... prefix)
 or ARNs. A bare `anthropic.claude-...` foundation-model id is *not* invokable
 on-demand — Bedrock rejects it with "Retry your request with the ID or ARN
-of an inference profile". So `harbor_runner` normalizes whatever model id a
+of an inference profile". So `oddish.workers.harbor.runner` normalizes whatever model id a
 trial supplies via `oddish.config.to_bedrock_model_id` before handing it to
 Harbor. That normalizer accepts any of these forms:
 
@@ -436,7 +438,7 @@ this with a dedicated z.ai route:
   kept on the model id handed to Harbor so its per-agent network allowlist
   resolves `api.z.ai` for closed-internet tasks.
 - **Env injection.** For a `claude-code` agent on a GLM model,
-  `harbor_runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
+  `oddish.workers.harbor.runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
   sets `ANTHROPIC_BASE_URL` (default `https://api.z.ai/api/anthropic`,
   overridable via `ZAI_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`
   (resolved by Harbor's Modal env at exec time), pins `ANTHROPIC_MODEL` and all
@@ -492,7 +494,7 @@ with Bedrock for concurrency slots:
     provider prefix is kept on the id handed to Harbor so its per-agent network
     allowlist resolves the direct endpoint for closed-internet tasks.
 - **Env injection.** For a `claude-code` agent on a MiniMax/Moonshot model,
-  `harbor_runner._apply_claude_code_minimax_env` /
+  `oddish.workers.harbor.runner._apply_claude_code_minimax_env` /
   `_apply_claude_code_moonshot_env` mirror the z.ai path: they set
   `ANTHROPIC_BASE_URL` (defaults `https://api.minimax.io/anthropic` /
   `https://api.moonshot.ai/anthropic`, overridable via `MINIMAX_BASE_URL` /
@@ -554,7 +556,7 @@ run Claude/Opus.
   and its `queue_key` to `fireworks/<short>` — a dedicated concurrency bucket,
   separate from Bedrock and from the per-vendor direct buckets.
 - **Env injection.** For a `claude-code` agent on a `fireworks/` model,
-  `harbor_runner._apply_claude_code_fireworks_env` sets `ANTHROPIC_BASE_URL`
+  `oddish.workers.harbor.runner._apply_claude_code_fireworks_env` sets `ANTHROPIC_BASE_URL`
   (default `https://api.fireworks.ai/inference` — **no `/v1` suffix**, the SDK
   appends `/v1/messages`; overridable via `FIREWORKS_BASE_URL`),
   `ANTHROPIC_AUTH_TOKEN=${FIREWORKS_API_KEY}` (resolved by Harbor's Modal env at

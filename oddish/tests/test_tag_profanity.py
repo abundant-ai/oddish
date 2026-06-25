@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_check_tag_text_off_mode_always_allows(monkeypatch):
-    from oddish.core import tag_profanity
+    from oddish.core.tags import profanity as tag_profanity
 
     policy = SimpleNamespace(
         profanity_mode="OFF",
@@ -28,7 +28,7 @@ def test_check_tag_text_off_mode_always_allows(monkeypatch):
 
 
 def test_check_tag_text_enforce_with_denylist_rejects(monkeypatch):
-    from oddish.core import tag_profanity
+    from oddish.core.tags import profanity as tag_profanity
 
     class _FakeFilter:
         def add_censor_words(self, words):
@@ -53,7 +53,7 @@ def test_check_tag_text_enforce_with_denylist_rejects(monkeypatch):
 
 
 def test_check_tag_text_report_mode_allows_but_flags(monkeypatch):
-    from oddish.core import tag_profanity
+    from oddish.core.tags import profanity as tag_profanity
 
     class _FakeFilter:
         def add_censor_words(self, words):

@@ -19,25 +19,25 @@ from oddish.config import BEDROCK_ENV_VARS, settings
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_staging import stage_org_skills
-from oddish.workers.harbor_agent_config import (
+from .agent_config import (
     _build_agent_config,
     _claude_code_forces_direct_api,
     _temporary_env,
     _trial_requested_model,
     _trial_uses_openai_provider,
 )
-from oddish.workers.harbor_modal_debug import (
+from .modal_debug import (
     _capture_modal_output,
     _format_exception_message,
     _maybe_add_modal_debug_hint,
     _write_debug_result_json,
 )
-from oddish.workers.harbor_outcome import (
+from .outcome import (
     HarborOutcome,
     _extract_outcome_from_job_result,
 )
-from oddish.workers.harbor_patches import apply_harbor_patches
-from oddish.workers.harbor_storage import (
+from .patches import apply_harbor_patches
+from .storage import (
     _MIN_REQUIRED_FREE_GB,
     _MIN_REQUIRED_FREE_INODES,
     _probe_storage_root,
@@ -137,6 +137,26 @@ async def run_harbor_trial_async(
 
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
+
+    # An allowlisted override that is neither the locked default nor a blessed
+    # image variant runs out-of-process against its own Harbor: a different
+    # Harbor than the one baked into this container cannot be swapped in-process
+    # (sys.modules caches it), so route to the child-interpreter engine.
+    if hc.variant_id == "ephemeral":
+        from .ephemeral import run_ephemeral_harbor_trial
+
+        return await run_ephemeral_harbor_trial(
+            task_path=task_path,
+            agent=agent,
+            jobs_dir=jobs_dir,
+            model=model,
+            environment=environment,
+            hook_callback=hook_callback,
+            trial_id=trial_id,
+            harbor_config=harbor_config,
+            org_id=org_id,
+            extra_agent_env=extra_agent_env,
+        )
 
     # Probes attach to an existing task and inherit its task.toml, which may
     # predate the timeout requirement. Rather than hard-fail, skip strict

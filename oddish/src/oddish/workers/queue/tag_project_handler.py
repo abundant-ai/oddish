@@ -22,8 +22,8 @@ from typing import Any
 
 from sqlalchemy import text
 
-from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
-from oddish.core.tags_projection import (
+from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags.projection import (
     recompute_all_versions_for_task,
     recompute_task_browse_projection,
 )
@@ -141,7 +141,7 @@ async def run_tag_project_job(*, payload: dict[str, Any]) -> dict[str, Any]:
     async with get_session() as session:
         if scope == "VERSION":
             assert task_id is not None
-            from oddish.core.tags_projection import (
+            from oddish.core.tags.projection import (
                 recompute_version_effective_tags,
             )
 

@@ -6,7 +6,7 @@ import shlex
 from harbor.agents.installed.codex import Codex
 from harbor.agents.installed.base import NonZeroAgentExitCodeError
 
-from oddish.workers.codex_stdout_trajectory import write_trajectory_if_richer
+from .codex_stdout_trajectory import write_trajectory_if_richer
 
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"

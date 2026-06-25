@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typer
+from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.combine import combine
 from oddish.cli.delete import delete
@@ -19,6 +20,7 @@ app = typer.Typer(
 
 app.command()(run)
 app.command()(probe)
+app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command(name="ls")(ls)
 app.command()(status)

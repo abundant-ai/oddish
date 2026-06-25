@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from oddish.core.digest import generate_digest
-from oddish.core.extraction import extract_text
+from oddish.core.ingest.extraction import extract_text
 from oddish.core.helpers import escape_like
 from oddish.db import DocumentModel, get_storage_client, utcnow
 from oddish.schemas import DocumentCreate, DocumentUpdate
