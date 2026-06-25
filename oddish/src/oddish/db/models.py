@@ -1148,10 +1148,7 @@ class APIKeyModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
-    # Organization scope
-    org_id: Mapped[str] = mapped_column(
-        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Key identification
     name: Mapped[str] = mapped_column(
@@ -1175,10 +1172,7 @@ class APIKeyModel(TimestampedMixin, Base):
         nullable=False,
     )
 
-    # Creator tracking
-    created_by_user_id: Mapped[str | None] = mapped_column(
-        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Status and expiry
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
