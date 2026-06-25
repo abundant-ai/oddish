@@ -66,6 +66,38 @@ def _model_fingerprint() -> str:
     return _fingerprint_metadata(_load_base().metadata)
 
 
+async def _assert_model_columns_exist(url: str) -> None:
+    metadata = _load_base().metadata
+    engine = _engine(url)
+    missing = []
+    try:
+        async with engine.connect() as conn:
+            for table in sorted(metadata.tables.values(), key=lambda t: t.name):
+                columns = await conn.execute(
+                    text(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = :table_name
+                        """
+                    ),
+                    {"table_name": table.name},
+                )
+                actual = {row[0] for row in columns}
+                if not actual:
+                    missing.append(table.name)
+                    continue
+                for column in table.columns:
+                    if column.name not in actual:
+                        missing.append(f"{table.name}.{column.name}")
+    finally:
+        await engine.dispose()
+    if missing:
+        preview = ", ".join(missing[:20])
+        extra = "" if len(missing) <= 20 else f", and {len(missing) - 20} more"
+        raise RuntimeError(f"preview schema missing model columns: {preview}{extra}")
+
+
 def _migration_fingerprint() -> str:
     digest = hashlib.sha256()
     for project in STACKS:
@@ -145,6 +177,7 @@ def main() -> None:
         asyncio.run(_reset_schema(url))
         for project in STACKS:
             _upgrade_head(project)
+        asyncio.run(_assert_model_columns_exist(url))
         asyncio.run(_mark_trusted(url))
         rebuilt = True
 
