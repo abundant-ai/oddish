@@ -400,7 +400,7 @@ class ExperimentModel(TimestampedMixin, Base):
     # -------------------------------------------------------------------------
     # Cloud-ready column (denormalized for efficient org-scoped queries)
     # -------------------------------------------------------------------------
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Denormalized "last activity" timestamp for the dashboard recent
     # experiments sort. Updated best-effort by ``create_task``, the
@@ -518,7 +518,7 @@ class TaskModel(TimestampedMixin, Base):
     # In OSS: these are just nullable strings, ignored or used for basic grouping
     # In Cloud: FK constraints are added via migration to enforce relationships
     # -------------------------------------------------------------------------
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     user: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -705,19 +705,16 @@ class TrialModel(TimestampedMixin, Base):
         String(64),
         ForeignKey("experiments.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
 
     # -------------------------------------------------------------------------
     # Cloud-ready column (denormalized for efficient org-scoped queries)
     # Backfilled from task.org_id - eliminates JOIN in queue stats queries
     # -------------------------------------------------------------------------
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Idempotency key for preventing duplicate processing of retried jobs
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
-    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Trial spec
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1310,7 +1307,7 @@ class ProbePresetModel(TimestampedMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     agent: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -1338,7 +1335,7 @@ class TagModel(TimestampedMixin, Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     key: Mapped[str] = mapped_column(String(64), nullable=False)
     normalized_key: Mapped[str] = mapped_column(String(64), nullable=False)
     value: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -1416,7 +1413,7 @@ class TagAssignmentModel(TimestampedMixin, Base):
     tag_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
     )
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     scope: Mapped[TagAssignmentScope] = mapped_column(
         SQLEnum(
             TagAssignmentScope,
@@ -1488,7 +1485,7 @@ class TagExclusionModel(TimestampedMixin, Base):
     tag_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
     )
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     experiment_id: Mapped[str] = mapped_column(String(64), nullable=False)
     scope: Mapped[TagAssignmentScope] = mapped_column(
         SQLEnum(
@@ -1524,7 +1521,7 @@ class TagGrantModel(TimestampedMixin, Base):
     tag_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("tags.id", ondelete="CASCADE"), nullable=False
     )
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     principal_type: Mapped[TagGrantPrincipal] = mapped_column(
         SQLEnum(
             TagGrantPrincipal,
