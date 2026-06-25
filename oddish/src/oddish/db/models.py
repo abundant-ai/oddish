@@ -1098,22 +1098,6 @@ class WorkerJobModel(TimestampedMixin, Base):
             "subject_table",
             "subject_id",
         ),
-        # Coalescing arbiter for TAG_PROJECT enqueues: at most one in-flight
-        # job per subject. This is the ON CONFLICT target in
-        # ``enqueue_tag_project_worker_job``; it must live on the model (not
-        # just in the migration) so create_all-built schemas -- e.g. fresh
-        # preview branches -- get it too, otherwise the insert 500s.
-        Index(
-            "uq_worker_jobs_tag_project_active",
-            "kind",
-            "subject_table",
-            "subject_id",
-            unique=True,
-            postgresql_where=text(
-                "kind = 'TAG_PROJECT' AND status IN ('QUEUED', 'RETRYING') "
-                "AND subject_id IS NOT NULL"
-            ),
-        ),
         # Recent-terminal branch of ``fetch_visible_worker_jobs``: we
         # filter by ``finished_at IS NOT NULL`` and ORDER BY
         # ``finished_at DESC``, so the partial index gives us a tight
