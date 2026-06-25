@@ -235,7 +235,10 @@ async def run_harbor_trial_async(
         # failure never blocks a trial run.
         if org_id is not None:
             skills_root = unique_parent / "agent_skills"
-            n_skills = await stage_org_skills(skills_root, org_id=org_id)
+            skill_ids = raw.get("skill_ids")
+            n_skills = await stage_org_skills(
+                skills_root, org_id=org_id, skill_ids=skill_ids
+            )
             if n_skills:
                 agent_config.skills = [*agent_config.skills, skills_root]
 
