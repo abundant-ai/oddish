@@ -1480,6 +1480,9 @@ class SkillCreate(BaseModel):
     name: str
     description: str
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillUpdate(BaseModel):
@@ -1489,6 +1492,9 @@ class SkillUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     files: list[SkillFile] | None = None
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillResponse(BaseModel):
@@ -1501,6 +1507,9 @@ class SkillResponse(BaseModel):
     description: str
     is_seed: bool
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
     created_at: datetime
     updated_at: datetime
 
