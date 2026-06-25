@@ -1,8 +1,10 @@
 """Built-in directive skill definitions for fresh-DB seeding.
 
 Prompts are copied verbatim from probe_presets_001_add_probe_presets.py so that
-fresh DBs and deployed DBs (migrated via skills_from_presets_001) end up with
-identical skill rows.
+fresh DBs and deployed DBs (migrated via skills_from_presets_001) share the same
+directive (operator_prompt/result_focus/evaluation_metric), name, and id.
+The description may differ cosmetically: fresh DBs use the curated value here,
+while migrated DBs derive it from the operator_prompt's first line.
 """
 
 import yaml
