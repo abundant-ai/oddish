@@ -1148,10 +1148,6 @@ class APIKeyModel(TimestampedMixin, Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
-    # Organization scope. No DB-level FK to organizations: that table is owned
-    # by the backend migration chain, which runs after oddish, so the oddish
-    # stack cannot bootstrap a cross-stack constraint. Integrity is enforced in
-    # backend auth (verification joins api_keys -> organizations).
     org_id: Mapped[str] = mapped_column(String(64), nullable=False)
 
     # Key identification
@@ -1176,7 +1172,6 @@ class APIKeyModel(TimestampedMixin, Base):
         nullable=False,
     )
 
-    # Creator tracking. No DB-level FK to users (backend-owned table); see org_id.
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Status and expiry
