@@ -5,7 +5,8 @@ import hashlib
 import json
 import logging
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -30,20 +31,43 @@ current_registry_credentials: ContextVar[list["RegistryCredential"] | None] = (
 _warned_about_derived_key = False
 
 
+class RegistryAuthDecryptError(ValueError):
+    """Raised when a present registry-auth blob cannot be decrypted or parsed."""
+
+
+def normalize_registry_host(registry: str | None) -> str:
+    raw = (registry or DEFAULT_REGISTRY).strip()
+    if not raw:
+        return DEFAULT_REGISTRY
+    if raw.lower() in _DOCKER_HUB_ALIASES:
+        return DEFAULT_REGISTRY
+    if any(ord(ch) < 32 or ch.isspace() for ch in raw):
+        raise ValueError("registry must be a host name without whitespace")
+
+    parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+    host = (parsed.hostname or "").lower()
+    if parsed.username or parsed.password:
+        raise ValueError("registry must not include username or password")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ValueError("registry must be a host name, not a URL path")
+    if not host:
+        raise ValueError("registry must be a host name")
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return DEFAULT_REGISTRY if host in _DOCKER_HUB_ALIASES else host
+
+
 @dataclass(frozen=True)
 class RegistryCredential:
     username: str
-    token: str
+    token: str = field(repr=False)
     registry: str = DEFAULT_REGISTRY
 
     def auth_key(self) -> str:
-        host = (self.registry or "").strip().lower()
+        host = normalize_registry_host(self.registry)
         if host in _DOCKER_HUB_ALIASES:
             return DOCKER_HUB_AUTH_KEY
-        for scheme in ("https://", "http://"):
-            if host.startswith(scheme):
-                host = host[len(scheme) :]
-        return host.rstrip("/")
+        return host
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -56,9 +80,7 @@ class RegistryCredential:
     def from_dict(cls, raw: dict) -> "RegistryCredential":
         username = str(raw.get("username") or "").strip()
         token = str(raw.get("token") or raw.get("password") or "")
-        registry = (
-            str(raw.get("registry") or DEFAULT_REGISTRY).strip() or DEFAULT_REGISTRY
-        )
+        registry = normalize_registry_host(str(raw.get("registry") or DEFAULT_REGISTRY))
         if not username or not token:
             raise ValueError("registry credential requires both 'username' and 'token'")
         return cls(username=username, token=token, registry=registry)
@@ -135,18 +157,22 @@ def decrypt_credentials(blob: str | None) -> list[RegistryCredential]:
         plaintext = _resolve_fernet().decrypt(blob.encode())
     except Exception as exc:
         logger.error(
-            "Could not decrypt per-run registry credentials (%s); running unauthenticated",
+            "Could not decrypt per-run registry credentials (%s)",
             type(exc).__name__,
         )
-        return []
+        raise RegistryAuthDecryptError(
+            "Could not decrypt per-run registry credentials"
+        ) from exc
     try:
         return normalize_credentials(json.loads(plaintext.decode()))
     except Exception as exc:
         logger.error(
-            "Could not parse decrypted registry credentials (%s); running unauthenticated",
+            "Could not parse decrypted registry credentials (%s)",
             type(exc).__name__,
         )
-        return []
+        raise RegistryAuthDecryptError(
+            "Could not parse decrypted registry credentials"
+        ) from exc
 
 
 _LOGIN_KEYS = ("registry", "username", "token", "password")

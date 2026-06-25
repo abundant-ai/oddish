@@ -26,7 +26,8 @@ from oddish.db import (
     TrialStatus,
     utcnow,
 )
-from oddish.schemas import TrialResponse
+from oddish.registry_auth import RegistryCredential, encrypt_credentials
+from oddish.schemas import RegistryAuth, TrialResponse
 
 
 async def get_trial_by_index_core(
@@ -66,6 +67,7 @@ async def retry_trial_core(
     *,
     trial_id: str,
     org_id: str | None = None,
+    registry_auth: list[RegistryAuth] | None = None,
 ) -> dict[str, str]:
     """Spawn a fresh immutable trial that replaces ``trial_id``.
 
@@ -155,20 +157,32 @@ async def retry_trial_core(
         old_trial.current_worker_id = None
         old_trial.current_queue_slot = None
 
-    registry_auth_enc = await session.scalar(
-        text(
-            """
-            SELECT payload->>'registry_auth_enc'
-            FROM   worker_jobs
-            WHERE  kind::text = 'TRIAL'
-              AND  subject_table = 'trials'
-              AND  subject_id = :trial_id
-            ORDER BY created_at DESC
-            LIMIT  1
-            """
-        ),
-        {"trial_id": trial_id},
-    )
+    if registry_auth:
+        registry_auth_enc = encrypt_credentials(
+            [
+                RegistryCredential(
+                    username=auth.username,
+                    token=auth.token.get_secret_value(),
+                    registry=auth.registry,
+                )
+                for auth in registry_auth
+            ]
+        )
+    else:
+        registry_auth_enc = await session.scalar(
+            text(
+                """
+                SELECT payload->>'registry_auth_enc'
+                FROM   worker_jobs
+                WHERE  kind::text = 'TRIAL'
+                  AND  subject_table = 'trials'
+                  AND  subject_id = :trial_id
+                ORDER BY created_at DESC
+                LIMIT  1
+                """
+            ),
+            {"trial_id": trial_id},
+        )
 
     # Cancel every live worker_jobs row anchored to the OLD trial id
     # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating

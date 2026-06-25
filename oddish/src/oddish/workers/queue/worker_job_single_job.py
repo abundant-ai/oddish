@@ -351,13 +351,16 @@ async def _record_outcome(
     subject_table: str | None = None,
     subject_id: str | None = None,
 ) -> None:
+    def row_was_updated(command: str) -> bool:
+        return command.endswith(" 1")
+
     connection = await _open_connection()
     try:
         if outcome.success is not None:
             import json
 
             summary = outcome.success.result_summary
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'SUCCESS',
@@ -368,10 +371,15 @@ async def _record_outcome(
                        error_message = NULL,
                        payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
                 """,
                 job_id,
                 json.dumps(summary) if summary is not None else None,
             )
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
+                )
             return
 
         assert outcome.failure is not None
@@ -392,7 +400,7 @@ async def _record_outcome(
             # next attempt without special-casing; the duration query
             # already filters to SUCCESS/FAILED so it doesn't observe
             # RETRYING rows either way.
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'RETRYING',
@@ -403,11 +411,17 @@ async def _record_outcome(
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
                 """,
                 job_id,
                 outcome.failure.error_message,
                 retry_at,
             )
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
+                )
+                return
             if (
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
@@ -437,7 +451,7 @@ async def _record_outcome(
                 f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
         else:
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'FAILED',
@@ -446,10 +460,15 @@ async def _record_outcome(
                        next_retry_at = NULL,
                        payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
                 """,
                 job_id,
                 outcome.failure.error_message,
             )
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
+                )
     finally:
         await connection.close()
 

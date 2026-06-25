@@ -611,6 +611,7 @@ def run(
             do_qa=retry_qa,
             yes=yes,
             json_output=json_output,
+            registry_auth=registry_auth,
         )
         return
     if retry_qa:

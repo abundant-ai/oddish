@@ -232,6 +232,9 @@ async def test_retry_preserves_is_probe(monkeypatch):
         async def execute(self, _stmt, _params=None):
             return _Result(scalar=trial)
 
+        async def scalar(self, _stmt, _params=None):
+            return None
+
         async def get(self, _model, _key):
             return task
 
@@ -253,11 +256,12 @@ async def test_retry_preserves_is_probe(monkeypatch):
         trial_id,
         queue_key,
         org_id,
-        max_attempts,
-        parent_job_id=None,
-        harbor_variant_id="default",
-    ):
-        pass
+            max_attempts,
+            parent_job_id=None,
+            harbor_variant_id="default",
+            registry_auth_enc=None,
+        ):
+            pass
 
     monkeypatch.setattr(queue_mod, "reserve_next_trial_index", fake_reserve)
     monkeypatch.setattr(queue_mod, "enqueue_trial_worker_job", fake_enqueue)

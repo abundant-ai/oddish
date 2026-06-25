@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
@@ -24,6 +32,7 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
 )
+from oddish.registry_auth import normalize_registry_host
 
 
 # =============================================================================
@@ -172,17 +181,49 @@ class AgentModelPair(TrialSpec):
 
 
 class RegistryAuth(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
     registry: str = Field(
         "docker.io", description="Registry host. Defaults to Docker Hub (docker.io)."
     )
     username: str = Field(..., description="Registry username.")
     token: SecretStr = Field(..., description="Registry password or access token.")
 
-    @model_validator(mode="after")
-    def require_username_and_token(self):
-        if not self.username.strip() or not self.token.get_secret_value().strip():
-            raise ValueError("registry_auth requires a non-empty username and token")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def redact_registry_userinfo(cls, data):
+        if not isinstance(data, dict) or "registry" not in data:
+            return data
+        raw = str(data.get("registry") or "")
+        parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        if parsed.username or parsed.password:
+            data = dict(data)
+            data["registry"] = "https://redacted@redacted.invalid"
+        return data
+
+    @field_validator("registry")
+    @classmethod
+    def validate_registry(cls, value: str) -> str:
+        return normalize_registry_host(value)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("registry_auth requires a non-empty username")
+        return value
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("registry_auth requires a non-empty token")
+        return value
+
+
+class TrialRetryRequest(BaseModel):
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
 
 class TaskSubmission(BaseModel):
