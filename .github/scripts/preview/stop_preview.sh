@@ -39,7 +39,8 @@ if is_configured_vercel; then
       NEXT_PUBLIC_ODDISH_PREVIEW \
       NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL \
       NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL \
-      NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA; do
+      NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA \
+      NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL; do
       vercel env rm "$name" preview "$VERCEL_GIT_BRANCH" --yes --token="$VERCEL_TOKEN" || true
     done
     if [ -n "${PREVIEW_ALIAS_HOSTNAME:-}" ]; then

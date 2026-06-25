@@ -2,6 +2,11 @@ function shortSha(value: string) {
   return value.length > 7 ? value.slice(0, 7) : value;
 }
 
+function prNumberFromUrl(url: string) {
+  const match = url.match(/\/pull\/(\d+)/);
+  return match ? match[1] : null;
+}
+
 export function PreviewBanner() {
   const isPreview = process.env.NEXT_PUBLIC_ODDISH_PREVIEW === "true";
 
@@ -14,6 +19,8 @@ export function PreviewBanner() {
   const databaseLabel =
     process.env.NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL || "unknown database";
   const commitSha = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA || "";
+  const prUrl = process.env.NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL || "";
+  const prNumber = prUrl ? prNumberFromUrl(prUrl) : null;
 
   return (
     <div className="sticky top-0 z-50 h-[var(--preview-banner-h)] border-b border-amber-400/40 bg-amber-100 text-amber-950 dark:border-amber-300/25 dark:bg-amber-500/15 dark:text-amber-100">
@@ -21,6 +28,16 @@ export function PreviewBanner() {
         <span className="font-semibold tracking-wider uppercase">Preview</span>
         <span className="truncate">Backend: {backendLabel}</span>
         <span className="truncate">DB: {databaseLabel}</span>
+        {prUrl ? (
+          <a
+            href={prUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="truncate font-medium underline underline-offset-2 hover:no-underline"
+          >
+            {prNumber ? `PR #${prNumber}` : "View PR"}
+          </a>
+        ) : null}
         {commitSha ? (
           <span className="truncate">Commit: {shortSha(commitSha)}</span>
         ) : null}
