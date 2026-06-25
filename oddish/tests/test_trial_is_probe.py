@@ -178,8 +178,9 @@ async def test_retry_preserves_is_probe(monkeypatch):
     from oddish.db import TaskStatus, TrialStatus
 
     class _Result:
-        def __init__(self, scalar=None):
+        def __init__(self, scalar=None, rowcount=0):
             self._scalar = scalar
+            self.rowcount = rowcount
 
         def scalar_one_or_none(self):
             return self._scalar
@@ -230,10 +231,19 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
     class _Session:
         async def execute(self, _stmt, _params=None):
+            sql = str(_stmt)
+            if "UPDATE trials" in sql and "superseded_by_trial_id IS NULL" in sql:
+                if trial.superseded_by_trial_id is not None:
+                    return _Result(rowcount=0)
+                trial.superseded_by_trial_id = _params["new_trial_id"]
+                return _Result(rowcount=1)
             return _Result(scalar=trial)
 
         async def scalar(self, _stmt, _params=None):
             return None
+
+        def expire(self, _obj):
+            pass
 
         async def get(self, _model, _key, **_kwargs):
             from oddish.db import TaskModel as _TaskModel
