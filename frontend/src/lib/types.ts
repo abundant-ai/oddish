@@ -240,6 +240,10 @@ export interface TaskBrowseItem {
   last_run_at?: string | null;
   link?: string | null;
   github_meta?: Record<string, string> | null;
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -667,6 +671,101 @@ export interface QueueHealthResponse {
   capacity: QueueCapacityStat[];
   dispatcher: QueueRuntimeComponentStatus | null;
   reconciler: QueueRuntimeComponentStatus | null;
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Admin cost breakdown (GET /api/admin/costs)
+// ---------------------------------------------------------------------------
+
+export interface CostModelBreakdown {
+  model: string;
+  provider: string;
+  trial_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  // Portion of cost_usd derived from token counts (no native cost reported).
+  cost_estimated_usd: number;
+}
+
+export interface CostUserBreakdown {
+  owner_user_id: string | null;
+  org_id: string | null;
+  name: string | null;
+  email: string | null;
+  org_name: string | null;
+  trial_count: number;
+  experiment_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+  models: CostModelBreakdown[];
+}
+
+export interface CostExperimentBreakdown {
+  experiment_id: string;
+  name: string | null;
+  org_id: string | null;
+  owner_user_id: string | null;
+  owner_name: string | null;
+  owner_email: string | null;
+  org_name: string | null;
+  created_at: string | null;
+  last_activity_at: string | null;
+  trial_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+  models: CostModelBreakdown[];
+}
+
+export interface CostSeriesKey {
+  key: string;
+  label: string;
+}
+
+export interface CostSeriesBucket {
+  bucket_start: string;
+  cost_usd: number;
+  trial_count: number;
+  costs: Record<string, number>;
+}
+
+export interface CostSeries {
+  dimension: string;
+  keys: CostSeriesKey[];
+  buckets: CostSeriesBucket[];
+}
+
+export interface CostTotals {
+  window_days: number | null;
+  trial_count: number;
+  experiment_count: number;
+  user_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+  cost_usd: number;
+  cost_native_usd: number;
+  cost_estimated_usd: number;
+}
+
+export interface CostBreakdownResponse {
+  window_days: number | null;
+  bucket: string;
+  series_by_agent: CostSeries;
+  series_by_model: CostSeries;
+  series_by_user: CostSeries;
+  totals: CostTotals;
+  by_user: CostUserBreakdown[];
+  by_model: CostModelBreakdown[];
+  experiments: CostExperimentBreakdown[];
   timestamp: string;
 }
 

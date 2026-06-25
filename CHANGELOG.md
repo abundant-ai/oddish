@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-25]
+
+### Added
+
+- `oddish backfill-analysis` CLI command to (re)run trial analysis (LLM trajectory classification + task verdict) for an experiment, a task, or a single trial; `POST /tasks/{task_id}/qa/backfill` backend endpoint on both cloud and local server with `force`, `enable_analysis`, and `trial_ids` options; `rerun_task_qa_core` refactored to delegate to the new `backfill_task_analysis_core` primitive (#456)
+- "Open task page" link button in the experiment trials table for direct navigation from the experiment view to a task's dedicated page; hidden on read-only share view since `/tasks/[id]` requires authentication (#442)
+
+### Changed
+
+- Chat button across all scopes (global `/tasks` header, per-task detail, per-experiment header) switched from outline to solid blue fill (`bg-blue-600`) for improved visibility (#465)
+- Preview database schema rebuilt by running `alembic upgrade head` for both stacks in order instead of `Base.metadata.create_all` + `alembic stamp head`; eliminates missing DB objects (e.g. `queue_runtime_status`, `tag_projection_sweep_state`, partial unique indexes) that only exist as raw DDL in migrations and are invisible to the ORM graph; production DROP SCHEMA guard re-introduced (#460)
+- Preview schema trust marker now folds in a migration fingerprint (SHA256 of both stacks' Alembic head revisions) in addition to the model-graph fingerprint, so a cached schema is also invalidated when a migration is added without any ORM model change (#460, #440)
+- Core package layout reorganized into focused subpackages: `oddish.core.tags` (service, projection, enqueue, filter_ast, naming, permissions, policies, profanity, ownership_transfer, saved_filters), `oddish.core.sharing` (public, helpers, documents), `oddish.core.ingest` (trial_imports, zip_imports, extraction), `oddish.core.probe` (auto_probe, presets); workers reorganized into `oddish.workers.agents` (claude_code, codex) and `oddish.workers.harbor` (runner, ephemeral, agent_config, outcome, storage, patches, modal_debug) (#438)
+
+### Fixed
+
+- `api_keys` cross-stack foreign keys dropped from `org_id` and `created_by_user_id` columns; new migration `apk01dropfk` drops constraints `IF EXISTS` so production converges; fixes `NoReferencedTableError` that prevented the oddish Alembic chain from bootstrapping independently (e.g. in the schema-parity CI job) (#466)
+- Probe and offline trials now get `network_mode = "public"` (and `allowed_hosts` cleared) instead of the legacy `allow_internet = true` flag in `enable_local_internet`; fixes silent no-op on Harbor tasks that set `network_mode`/`allowed_hosts` explicitly, which caused claude-code installs to SYN-timeout (~127s, curl exit 28) and the oddish-query CLI to lose egress; applies to both local Docker and cloud Modal probe paths (#464)
+- Chat session provisioning (`POST /chat-sessions`) no longer fails with "could not start chat" when the harbor pip install errors; harbor install is now best-effort (logs a warning and continues) since chat reads trial data through the oddish-query CLI, not the harbor package; claude-code install remains fatal (#458)
+- `uq_worker_jobs_tag_project_active` partial unique index declared on `WorkerJobModel.__table_args__`; prevents silent omission from model-built schemas where `ON CONFLICT … DO NOTHING` index inference for TAG_PROJECT job coalescing had nothing to infer against; no new migration (index already exists in the DB via `aa00ta01core`) (#454)
+- Preview bootstrap `_rebuild_schema` now calls `_assert_preview_branch` before `DROP SCHEMA`, refusing to proceed when `ODDISH_DATABASE_URL` resolves to production (matched via `SUPABASE_PROJECT_REF` or `PREVIEW_SAMPLE_SOURCE_DB_URL`) (#450)
+- Cloud auth migrations `a1b2c3d4e5f6` and `r4s5t6u7v8w9` made replay-safe against schemas built from the current model graph: `supabase_user_id` index creation guarded on column existence; `userrole` enum rebuild guarded on `owner` still being an enum value; fixes `Supabase DB Migrations` workflow failing with `column "supabase_user_id" does not exist` (#443)
+- Daytona dependency floor raised from `>=0.165.0` to `>=0.185.0`; fixes Daytona trials failing with a misleading `MissingExtraError` caused by Harbor importing `GpuType` from the daytona SDK, which was only added in version 0.185.0 (#439)
+
+---
+
 ## [2026-06-24]
 
 ### Added

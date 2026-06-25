@@ -142,6 +142,26 @@ def test_codex_mini_does_not_shadow_gpt_5_codex_mini() -> None:
     assert v51 < v_codex
 
 
+def test_cursor_composer_is_priced_from_token_counts() -> None:
+    """cursor-cli reports tokens but no native cost; bare ``cursor/composer``
+    must price (default = Composer 2.5 standard: $0.50 / $2.50 / $0.20 cache)."""
+    assert has_pricing("cursor/composer")
+    # 1M uncached input + 1M cached input + 100K output.
+    value = estimate_cost_usd("cursor/composer", 2_000_000, 100_000, 1_000_000)
+    expected = 1_000_000 * 5e-7 + 1_000_000 * 2e-7 + 100_000 * 2.5e-6
+    assert value == pytest.approx(expected)
+
+
+def test_cursor_composer_versioned_ids_do_not_fall_back_to_bare() -> None:
+    """Versioned composer ids must hit their own tier, not bare ``composer``.
+    composer-2-fast is the fast tier; composer-1.5 is pricier still."""
+    bare = estimate_cost_usd("cursor/composer", 1_000_000, 100_000, 0)
+    fast = estimate_cost_usd("cursor/composer-2-fast", 1_000_000, 100_000, 0)
+    v15 = estimate_cost_usd("composer-1.5", 1_000_000, 100_000, 0)
+    assert bare is not None and fast is not None and v15 is not None
+    assert bare < fast < v15
+
+
 def test_pricing_dataclass_is_immutable() -> None:
     p = ModelPricing(input=1e-6, output=2e-6)
     with pytest.raises(Exception):  # frozen dataclass -> FrozenInstanceError

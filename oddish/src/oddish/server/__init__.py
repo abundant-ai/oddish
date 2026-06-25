@@ -15,6 +15,7 @@ import uvicorn
 from rich.console import Console
 
 from oddish.core.endpoints import (
+    backfill_task_analysis_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -82,6 +83,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    BackfillQARequest,
     TaskBatchCancelRequest,
     TaskBrowseResponse,
     ExperimentCombineRequest,
@@ -272,6 +274,7 @@ async def get_dashboard(
     experiments_status: str = Query("all"),
     experiments_author: str | None = Query(None),
     usage_minutes: int | None = Query(None, ge=1, le=86400),
+    include_queues: bool = Query(True),
     include_tasks: bool = Query(True),
     include_usage: bool = Query(True),
     include_experiments: bool = Query(True),
@@ -293,6 +296,7 @@ async def get_dashboard(
             experiments_status=experiments_status,
             experiments_author_user_id=author_user_id,
             usage_minutes=usage_minutes,
+            include_queues=include_queues,
             include_tasks=include_tasks,
             include_usage=include_usage,
             include_experiments=include_experiments,
@@ -630,6 +634,24 @@ async def cancel_task_qa(task_id: str) -> dict:
     """Cancel a task's in-flight QA job."""
     async with get_session() as session:
         return await cancel_task_qa_core(session, task_id=task_id)
+
+
+@api.post("/tasks/{task_id}/qa/backfill")
+async def backfill_task_qa(task_id: str, body: BackfillQARequest) -> dict:
+    """Backfill trial analysis for a task: (re)run the task-level QA job.
+
+    Fills only missing/never-analyzed trials by default; ``force`` re-runs
+    (optionally just ``trial_ids``); ``enable_analysis`` also opts the task
+    into analysis going forward.
+    """
+    async with get_session() as session:
+        return await backfill_task_analysis_core(
+            session,
+            task_id=task_id,
+            trial_ids=body.trial_ids,
+            force=body.force,
+            enable_analysis=body.enable_analysis,
+        )
 
 
 @api.post("/trials/{trial_id}/retry")
