@@ -526,7 +526,6 @@ export function TasksPageClient({
               </div>
             </div>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
               <div className="relative w-full sm:w-[260px]">
                 <Input
                   value={searchQuery}
@@ -575,6 +574,14 @@ export function TasksPageClient({
                 query={searchQuery}
                 onApply={(text) => setSearchQuery(text)}
               />
+              {orgId ? (
+                <ChatButton
+                  scopeKind="global"
+                  scopeId={orgId}
+                  variant="outline"
+                  className="h-8 px-3 text-[11px]"
+                />
+              ) : null}
               <ImportDialog onImported={() => mutate()} />
             </div>
           </CardHeader>
