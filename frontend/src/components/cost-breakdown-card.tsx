@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -57,7 +57,15 @@ import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
-import { AlertCircle, DollarSign, Info, RefreshCw, Search } from "lucide-react";
+import {
+  AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  DollarSign,
+  Info,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 
 // window_days values the backend understands (0 == all-time).
 const WINDOW_OPTIONS: { value: string; label: string }[] = [
@@ -454,6 +462,8 @@ type CostBreakdownCardProps = {
   enableSearch?: boolean;
   experimentLimit?: number;
   userLimit?: number;
+  // SWR auto-refresh interval in ms; 0 disables polling (manual refresh only).
+  refreshIntervalMs?: number;
 };
 
 function matchesQuery(
@@ -469,6 +479,7 @@ export function CostBreakdownCard({
   enableSearch = false,
   experimentLimit = 100,
   userLimit = 100,
+  refreshIntervalMs = 30000,
 }: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
@@ -477,7 +488,7 @@ export function CostBreakdownCard({
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}`,
     fetcher,
-    { refreshInterval: 30000, fallbackData: initialData ?? undefined }
+    { refreshInterval: refreshIntervalMs, fallbackData: initialData ?? undefined }
   );
 
   const q = enableSearch ? search.trim().toLowerCase() : "";
@@ -507,6 +518,35 @@ export function CostBreakdownCard({
             matchesQuery([e.name, e.owner_name, e.owner_email, e.org_name], q),
           ),
     [data, q],
+  );
+
+  // Client-side, page-based pagination over the (already-fetched) filtered
+  // rows. The user and experiment tables page independently; the model table
+  // is short enough to leave unpaginated. Reset to page 1 when the filter, page
+  // size, or window changes (but NOT on the 30s auto-refresh).
+  const [pageSize, setPageSize] = useState(25);
+  const [userPage, setUserPage] = useState(1);
+  const [expPage, setExpPage] = useState(1);
+  useEffect(() => {
+    setUserPage(1);
+    setExpPage(1);
+  }, [q, pageSize, windowDays]);
+
+  const userPageCount = Math.max(1, Math.ceil(filteredUsers.length / pageSize));
+  const safeUserPage = Math.min(userPage, userPageCount);
+  const pagedUsers = filteredUsers.slice(
+    (safeUserPage - 1) * pageSize,
+    safeUserPage * pageSize,
+  );
+
+  const expPageCount = Math.max(
+    1,
+    Math.ceil(filteredExperiments.length / pageSize),
+  );
+  const safeExpPage = Math.min(expPage, expPageCount);
+  const pagedExperiments = filteredExperiments.slice(
+    (safeExpPage - 1) * pageSize,
+    safeExpPage * pageSize,
   );
 
   const windowLabel =
@@ -656,7 +696,16 @@ export function CostBreakdownCard({
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by user</h3>
-              <UserTable users={filteredUsers} />
+              <UserTable users={pagedUsers} />
+              {filteredUsers.length > 10 && (
+                <TablePagination
+                  total={filteredUsers.length}
+                  page={safeUserPage}
+                  pageSize={pageSize}
+                  onPage={setUserPage}
+                  onPageSize={setPageSize}
+                />
+              )}
             </section>
 
             <section className="space-y-2">
@@ -671,12 +720,124 @@ export function CostBreakdownCard({
                   ranked descending · {windowLabel.toLowerCase()}
                 </span>
               </div>
-              <ExperimentTable experiments={filteredExperiments} />
+              <ExperimentTable experiments={pagedExperiments} />
+              {filteredExperiments.length > 10 && (
+                <TablePagination
+                  total={filteredExperiments.length}
+                  page={safeExpPage}
+                  pageSize={pageSize}
+                  onPage={setExpPage}
+                  onPageSize={setPageSize}
+                />
+              )}
             </section>
           </TooltipProvider>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+const PAGE_SIZE_OPTIONS = [10, 25, 50];
+
+function TablePagination({
+  total,
+  page,
+  pageSize,
+  onPage,
+  onPageSize,
+}: {
+  total: number;
+  page: number;
+  pageSize: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total ? (page - 1) * pageSize + 1 : 0;
+  const end = Math.min(page * pageSize, total);
+
+  const windowPages: number[] = [];
+  for (let p = Math.max(1, page - 1); p <= Math.min(pages, page + 1); p += 1) {
+    windowPages.push(p);
+  }
+
+  const pageButton = (p: number) => (
+    <Button
+      key={p}
+      type="button"
+      variant={p === page ? "secondary" : "outline"}
+      size="sm"
+      className="h-7 min-w-7 px-2 text-[11px]"
+      onClick={() => onPage(p)}
+      aria-current={p === page ? "page" : undefined}
+    >
+      {p}
+    </Button>
+  );
+
+  return (
+    <div className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 pt-1 text-[11px]">
+      <div className="flex items-center gap-2">
+        <span>
+          Showing {start}–{end} of {total}
+        </span>
+        <Select
+          value={String(pageSize)}
+          onValueChange={(v) => onPageSize(Number(v))}
+        >
+          <SelectTrigger className="h-7 w-[84px] text-[11px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_SIZE_OPTIONS.map((s) => (
+              <SelectItem key={s} value={String(s)}>
+                {s} / page
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex items-center gap-1">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          disabled={page <= 1}
+          onClick={() => onPage(page - 1)}
+          aria-label="Previous page"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        {windowPages[0] > 1 && (
+          <>
+            {pageButton(1)}
+            {windowPages[0] > 2 && <span className="px-1">…</span>}
+          </>
+        )}
+        {windowPages.map(pageButton)}
+        {windowPages[windowPages.length - 1] < pages && (
+          <>
+            {windowPages[windowPages.length - 1] < pages - 1 && (
+              <span className="px-1">…</span>
+            )}
+            {pageButton(pages)}
+          </>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="h-7 w-7"
+          disabled={page >= pages}
+          onClick={() => onPage(page + 1)}
+          aria-label="Next page"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
+    </div>
   );
 }
 

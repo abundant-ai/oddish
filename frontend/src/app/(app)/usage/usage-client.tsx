@@ -90,13 +90,12 @@ export function UsageClient({
         {queueState}
       </TabsContent>
       <TabsContent value="cost" className="space-y-4">
-        {/* Client-fetched (no SSR); the card shows its own skeleton while the
-            heavy /admin/costs query loads, and SWR caches it for revisits. */}
         <CostBreakdownCard
           showChart={false}
           enableSearch
           experimentLimit={500}
           userLimit={500}
+          refreshIntervalMs={0}
         />
       </TabsContent>
     </Tabs>
