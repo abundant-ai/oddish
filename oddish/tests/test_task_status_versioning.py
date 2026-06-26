@@ -49,6 +49,7 @@ def test_task_status_response_includes_experiment_created_at():
         task_path="/tmp/demo-task",
         current_version_id=None,
         run_analysis=False,
+        run_probe=False,
         verdict_status=None,
         verdict=None,
         verdict_error=None,
@@ -56,6 +57,7 @@ def test_task_status_response_includes_experiment_created_at():
         created_at=task_created_at,
         started_at=None,
         finished_at=None,
+        link=None,
     )
 
     response = helpers._build_task_status_response(

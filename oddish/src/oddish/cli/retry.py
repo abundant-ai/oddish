@@ -77,9 +77,9 @@ def _resolve_target(
     )
 
 
-def _post(api_url: str, path: str) -> httpx.Response:
+def _post(api_url: str, path: str, payload: dict | None = None) -> httpx.Response:
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
-        return client.post(f"{api_url}{path}")
+        return client.post(f"{api_url}{path}", json=payload)
 
 
 def _failed_trial_ids(task: dict) -> list[str]:
@@ -95,11 +95,17 @@ def _failed_trial_ids(task: dict) -> list[str]:
     return ids
 
 
-def _retry_trial_ids(api_url: str, trial_ids: list[str]) -> list[dict]:
+def _retry_trial_ids(
+    api_url: str,
+    trial_ids: list[str],
+    *,
+    registry_auth: list[dict] | None = None,
+) -> list[dict]:
     """Retry each trial id, returning a per-trial result record."""
     results: list[dict] = []
+    payload = {"registry_auth": registry_auth} if registry_auth else None
     for trial_id in trial_ids:
-        response = _post(api_url, f"/trials/{trial_id}/retry")
+        response = _post(api_url, f"/trials/{trial_id}/retry", payload)
         ok = response.status_code == 200
         record: dict = {"trial_id": trial_id, "ok": ok, "status": response.status_code}
         if ok:
@@ -138,6 +144,7 @@ def run_retry(
     do_qa: bool,
     yes: bool,
     json_output: bool,
+    registry_auth: list[dict] | None = None,
 ) -> None:
     """Re-run trials, or the task-level QA job, for an existing target.
 
@@ -161,6 +168,7 @@ def run_retry(
             target_id,
             yes=yes,
             json_output=json_output,
+            registry_auth=registry_auth,
         )
     else:
         results = _run_task_level_retries(
@@ -189,10 +197,13 @@ def _run_trial_retries(
     *,
     yes: bool,
     json_output: bool,
+    registry_auth: list[dict] | None,
 ) -> dict:
     if target_type == "trial":
         _confirm(f"Retry trial {target_id}?", yes=yes, json_output=json_output)
-        trial_results = _retry_trial_ids(api_url, [target_id])
+        trial_results = _retry_trial_ids(
+            api_url, [target_id], registry_auth=registry_auth
+        )
         return {
             "kind": "trials",
             "target": {"type": "trial", "id": target_id},
@@ -219,7 +230,9 @@ def _run_trial_retries(
         return {
             "kind": "trials",
             "target": {"type": "task", "id": target_id},
-            "trials": _retry_trial_ids(api_url, trial_ids),
+            "trials": _retry_trial_ids(
+                api_url, trial_ids, registry_auth=registry_auth
+            ),
         }
 
     # experiment
@@ -242,7 +255,7 @@ def _run_trial_retries(
     return {
         "kind": "trials",
         "target": {"type": "experiment", "id": target_id},
-        "trials": _retry_trial_ids(api_url, trial_ids),
+        "trials": _retry_trial_ids(api_url, trial_ids, registry_auth=registry_auth),
     }
 
 

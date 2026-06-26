@@ -122,6 +122,7 @@ async def seeded_cost_data():
                     name=f"{exp_id}-task",
                     user="test",
                     org_id=org_id,
+                    task_path="some/path",
                 )
             )
         session.add_all(
