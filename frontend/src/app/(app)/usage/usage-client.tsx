@@ -80,6 +80,22 @@ export function UsageClient({
     window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
   };
 
+  const urlDays = searchParams.get("days") ?? "7";
+  const [windowDays, setWindowDays] = useState(urlDays);
+
+  useEffect(() => {
+    setWindowDays(urlDays);
+  }, [urlDays]);
+
+  const handleWindowDaysChange = (value: string) => {
+    setWindowDays(value);
+    const params = new URLSearchParams(searchParams.toString());
+    if (value && value !== "7") params.set("days", value);
+    else params.delete("days");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  };
+
   const queueState = (
     <UsageOverviewCard
       queues={queues}
@@ -119,6 +135,8 @@ export function UsageClient({
           refreshIntervalMs={0}
           searchValue={searchQuery}
           onSearchChange={handleSearchChange}
+          windowDaysValue={windowDays}
+          onWindowDaysChange={handleWindowDaysChange}
         />
       </TabsContent>
     </Tabs>
