@@ -13,18 +13,29 @@ export type ExperimentAgentSummary = {
   isModelScoped: boolean;
 };
 
+// The "nop" baseline (no-op) makes no changes; the "oracle" baseline runs the
+// known-good gold solution. Each may appear bare or with a suffix/prefix
+// (`nop-foo`, `agent-oracle`), so match the family rather than the exact name.
+export function isNopAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "nop" || lower.startsWith("nop-") || lower.startsWith("agent-nop")
+  );
+}
+
+export function isOracleAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "oracle" ||
+    lower.startsWith("oracle-") ||
+    lower.startsWith("agent-oracle")
+  );
+}
+
 // Baseline agents (nop / oracle) are deterministic validation runs, so they
 // are excluded from score aggregation and row-filter evaluation.
 export function isBaselineAgentName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return (
-    lower === "nop" ||
-    lower === "oracle" ||
-    lower.startsWith("nop-") ||
-    lower.startsWith("oracle-") ||
-    lower.startsWith("agent-nop") ||
-    lower.startsWith("agent-oracle")
-  );
+  return isNopAgentName(name) || isOracleAgentName(name);
 }
 
 function getModelKey(model: string | null | undefined): string {

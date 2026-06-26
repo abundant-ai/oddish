@@ -18,9 +18,13 @@ import {
   XAI,
   Yi,
 } from "@lobehub/icons";
-import { SearchCheck, Sparkles } from "lucide-react";
+import { BadgeCheck, CircleSlash, SearchCheck, Sparkles } from "lucide-react";
 
-import { PROBE_AGENT_KEY } from "@/lib/experiment-agent-grouping";
+import {
+  isNopAgentName,
+  isOracleAgentName,
+  PROBE_AGENT_KEY,
+} from "@/lib/experiment-agent-grouping";
 
 type QueueKeyIconProps = {
   queueKey?: string | null;
@@ -242,6 +246,19 @@ export function QueueKeyIcon({
   // probe glyph (magnifying glass + check) instead of the unknown-provider star.
   if (agent === PROBE_AGENT_KEY) {
     return <SearchCheck size={size} className={className} />;
+  }
+
+  // The nop / oracle baselines have no provider either, so they'd otherwise both
+  // fall through to the generic Sparkles fallback. Give them distinct glyphs:
+  // a null/no-op circle for nop, a verified-answer badge for oracle.
+  const trimmedAgent = agent?.trim() ?? "";
+  if (trimmedAgent.length > 0) {
+    if (isNopAgentName(trimmedAgent)) {
+      return <CircleSlash size={size} className={className} />;
+    }
+    if (isOracleAgentName(trimmedAgent)) {
+      return <BadgeCheck size={size} className={className} />;
+    }
   }
 
   const resolvedProvider = resolveProvider({ queueKey, model, agent });
