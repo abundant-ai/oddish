@@ -24,6 +24,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import endpoints
+from oddish.core.endpoints import task_detail as _task_detail
 from oddish.db import TrialStatus
 from oddish.schemas import TaskVersionResponse
 
@@ -98,7 +99,9 @@ def test_list_task_versions_core_skips_task_fetch_when_task_passed(monkeypatch):
         fetched["count"] += 1
         return SimpleNamespace(id="task-1")
 
-    monkeypatch.setattr(endpoints, "get_task_for_org_core", fake_get_task_for_org_core)
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
 
     session = _RecordingSession(
         results=[_Result(scalars=[_VersionRow("v1", 1), _VersionRow("v2", 2)])]
@@ -125,7 +128,9 @@ def test_list_task_versions_core_fetches_task_when_not_passed(monkeypatch):
         fetched["count"] += 1
         return SimpleNamespace(id="task-1")
 
-    monkeypatch.setattr(endpoints, "get_task_for_org_core", fake_get_task_for_org_core)
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
 
     session = _RecordingSession(results=[_Result(scalars=[])])
 

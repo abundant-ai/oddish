@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
@@ -24,6 +32,7 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
 )
+from oddish.registry_auth import normalize_registry_host
 
 
 # =============================================================================
@@ -171,6 +180,70 @@ class AgentModelPair(TrialSpec):
     )
 
 
+class RegistryAuth(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    registry: str = Field(
+        "docker.io", description="Registry host. Defaults to Docker Hub (docker.io)."
+    )
+    username: str = Field(..., description="Registry username.")
+    token: SecretStr = Field(..., description="Registry password or access token.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def redact_registry_userinfo(cls, data):
+        if not isinstance(data, dict) or "registry" not in data:
+            return data
+        raw = str(data.get("registry") or "")
+        try:
+            parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        except ValueError:
+            parsed = None
+        if parsed and (parsed.username or parsed.password):
+            data = dict(data)
+            data["registry"] = "https://redacted:redacted@redacted.invalid"
+            return data
+        try:
+            normalize_registry_host(raw)
+        except ValueError as exc:
+            message = str(exc)
+            data = dict(data)
+            if message == "registry port must be a valid numeric port":
+                data["registry"] = "redacted.invalid:badport"
+            elif message == "registry must be a host name without whitespace":
+                data["registry"] = "redacted invalid"
+            elif message == "registry must be a host name":
+                data["registry"] = "https://[::1"
+            else:
+                data["registry"] = "redacted.invalid/path"
+            return data
+        return data
+
+    @field_validator("registry")
+    @classmethod
+    def validate_registry(cls, value: str) -> str:
+        return normalize_registry_host(value)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("registry_auth requires a non-empty username")
+        return value
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("registry_auth requires a non-empty token")
+        return value
+
+
+class TrialRetryRequest(BaseModel):
+    registry_auth: list[RegistryAuth] | None = Field(None)
+
+
 class TaskSubmission(BaseModel):
     """Task submission request (API input)."""
 
@@ -255,6 +328,7 @@ class TaskSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):
@@ -399,6 +473,7 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):
@@ -1254,6 +1329,16 @@ class TagListItem(BaseModel):
     usage_count: int = 0
     row_version: int = 1
     owner_user_id: str | None = None
+    # Per-scope assignment breakdown (active assignments only). Summed across
+    # all scopes these equal ``usage_count``. Populated by the tags list
+    # endpoint; other endpoints that build a TagListItem leave them at 0.
+    task_count: int = 0
+    version_count: int = 0
+    experiment_count: int = 0
+    # Resolved display label / avatar for ``owner_user_id`` (creator). Populated
+    # by the tags list endpoint via a join against the ``users`` table.
+    owner_label: str | None = None
+    owner_avatar_url: str | None = None
 
 
 class TagListResponse(BaseModel):
