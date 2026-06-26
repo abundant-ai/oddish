@@ -61,6 +61,41 @@ async def get_trial_by_index_core(
     )
 
 
+async def get_trial_response_for_org_core(
+    session: AsyncSession,
+    *,
+    trial_id: str,
+    org_id: str | None = None,
+) -> TrialResponse:
+    """Full TrialResponse for one trial by id (org-scoped via its task).
+
+    Powers ``GET /trials/{trial_id}`` -- the on-click full-detail fetch for the
+    experiment grid, which loads only slim trials up front. Same builder as
+    ``get_trial_by_index_core`` but keyed on the trial id directly.
+    """
+    result = await session.execute(
+        select(TrialModel, TaskModel.task_path, TaskModel.org_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TrialModel.id == trial_id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    trial, task_path, task_org_id = row
+    if org_id is not None and task_org_id != org_id:
+        raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
+
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=[trial])
+    jobs_by_subject = await fetch_visible_worker_jobs(session, trial_ids=[trial.id])
+    return build_trial_response(
+        trial,
+        task_path,
+        queue_info=queue_info_by_trial_id.get(trial.id),
+        jobs=jobs_by_subject.get(("trials", trial.id), []),
+    )
+
+
 async def retry_trial_core(
     session: AsyncSession,
     *,
