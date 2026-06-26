@@ -773,7 +773,10 @@ export function CostBreakdownCard({
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by user</h3>
-              <UserTable users={pagedUsers} />
+              <UserTable
+                users={pagedUsers}
+                onSelect={enableSearch ? (queryValue) => setSearch(queryValue) : undefined}
+              />
               {filteredUsers.length > 10 && (
                 <TablePagination
                   total={filteredUsers.length}
@@ -930,7 +933,13 @@ function TablePagination({
   );
 }
 
-function UserTable({ users }: { users: CostUserBreakdown[] }) {
+function UserTable({
+  users,
+  onSelect,
+}: {
+  users: CostUserBreakdown[];
+  onSelect?: (query: string) => void;
+}) {
   if (users.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -953,8 +962,19 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
         {users.map((user) => (
           <TableRow key={user.owner_user_id ?? "unattributed"}>
             <TableCell>
-              <div className="flex flex-col">
-                <span className="text-xs font-medium">{userLabel(user)}</span>
+              <div className="flex flex-col items-start">
+                {onSelect ? (
+                  <button
+                    type="button"
+                    onClick={() => onSelect(user.email || userLabel(user))}
+                    className="text-left text-xs font-medium hover:underline"
+                    title="Filter by this user"
+                  >
+                    {userLabel(user)}
+                  </button>
+                ) : (
+                  <span className="text-xs font-medium">{userLabel(user)}</span>
+                )}
                 {user.email && user.email !== userLabel(user) && (
                   <span className="text-muted-foreground text-[10px]">
                     {user.email}
