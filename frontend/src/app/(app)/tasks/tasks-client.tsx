@@ -536,8 +536,8 @@ export function TasksPageClient({
                 <SearchSyntaxHelp>
                   <p className="font-medium">Search syntax</p>
                   <p className="text-muted-foreground">
-                    Matches task name, author, or tags. Add a prefix below to
-                    specify filters.
+                    Matches task name, author, or tags. Add a
+                    prefix below to specify filters.
                   </p>
                   <SearchSyntaxRow
                     example="node vulnerability"
@@ -556,13 +556,10 @@ export function TasksPageClient({
                     examples={["github:alice", "author:alice", "user:alice"]}
                     hint="by author — GitHub handle, email, or name"
                   />
-                  <SearchSyntaxRow
-                    example="tag:smoke"
-                    hint="by a specific tag"
-                  />
+                  <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
                   <p className="text-muted-foreground">
-                    Filters stack (AND) and are case-insensitive, e.g.{" "}
-                    <code className="bg-muted rounded px-1 font-mono">
+                    Filters stack (AND) and are case-insensitive, e.g. {" "}
+                    <code className="rounded bg-muted px-1 font-mono">
                       rbac github:alice tag:smoke
                     </code>
                   </p>
