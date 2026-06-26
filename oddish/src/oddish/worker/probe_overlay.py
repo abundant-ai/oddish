@@ -7,6 +7,10 @@ renders the mutated ``instruction.md``.
 
 from __future__ import annotations
 
+import json
+
+from oddish.core.result_focus_schema import parse_result_focus
+
 
 # Out-of-band mount for ALL probe-only material. The real agent's container is
 # built from environment/ only and mounted at /app; the probe additionally gets
@@ -112,7 +116,63 @@ def _trial_data_section() -> str:
         "context would be useful, look: read the `--trajectory` of prior real "
         "(non-probe) attempts to see how earlier agents approached the task, where "
         "they passed or failed, and what the verifier rewarded. Pulling a trial's "
-        "trajectory is the most direct way to understand what actually happened in a run."
+        "trajectory is the most direct way to understand what actually happened in a run.\n\n"
+        "Start here: check whether prior trial logs exist for the task you're auditing "
+        "before forming conclusions. Use `tasks search` to locate the task, then "
+        "`tasks trials <task_id>` to list its trials, and read the `--trajectory` of any "
+        "prior real (non-probe) attempts that exist. If logs exist, review them first — "
+        "they are your strongest evidence for what the verifier actually rewards and how "
+        "agents have already passed or failed it."
+    )
+
+
+def _action_items_section() -> str:
+    """Tell the probe its deliverable is a small set of verified action items.
+
+    The downstream analyzer turns the run into operator-facing recommendations,
+    but it can only work from what the probe actually surfaced. Asking the probe
+    to (a) produce concrete, high-quality action items and (b) verify each one
+    before reporting keeps speculative or unreproducible findings out of the
+    final report.
+    """
+    return (
+        "## ACTION ITEMS — your deliverable\n\n"
+        "Finish by writing a short set of high-quality, operator-facing action items: "
+        "concrete fixes to the TASK or VERIFIER that close the holes you found. A good "
+        "action item is specific (names the exact file, check, or boundary it touches), "
+        "states which hole it closes, and is something an operator can act on directly — "
+        "not a vague observation. Prefer a few well-supported items over a long list of "
+        "speculative ones.\n\n"
+        "VERIFY before you report. Do not surface an action item you have not confirmed: "
+        "actually reproduce the hole it addresses — run the verifier under "
+        f"`{PROBE_HARNESS_DIR}/tests/`, exercise the exploit from `/app`, or pull the "
+        "relevant trial logs — and only keep items the evidence backs. Drop or clearly "
+        "flag anything you could not substantiate."
+    )
+
+
+def _output_json_section(schema: dict) -> str:
+    """Replace the free-form action-items deliverable with the operator's
+    required JSON output.
+
+    When the operator supplies ``result_focus`` as a JSON object (a schema or
+    a literal output spec, per ``parse_result_focus``), the probe must emit that
+    structure instead of prose action items. The analyzer enforces the same
+    schema post-run via structured outputs; rendering it here makes the probe's
+    own output already match what the operator asked for.
+    """
+    rendered = json.dumps(schema, indent=2)
+    return (
+        "## OUTPUT — required JSON\n\n"
+        "The operator has specified an exact output format. Finish your run by "
+        "producing a single JSON object that conforms to the schema below — that "
+        "JSON is your deliverable. Do NOT emit free-form action items. Populate it "
+        "only with claims you have verified (reproduced against the verifier under "
+        f"`{PROBE_HARNESS_DIR}/tests/`, exercised from `/app`, or backed by trial "
+        "logs); leave a field null or empty rather than guessing.\n\n"
+        "```json\n"
+        f"{rendered}\n"
+        "```"
     )
 
 
@@ -178,6 +238,7 @@ def render_probe_instruction(
     *,
     time_budget_sec: float | None = None,
     probe_only_paths: list[str] | None = None,
+    result_focus: str | None = None,
 ) -> str:
     """Render the full mutated ``instruction.md`` for a probe trial.
 
@@ -186,6 +247,10 @@ def render_probe_instruction(
     instructions), the visibility map (what the real agent sees vs what the
     probe sees), then the always-appended sections (running tests + trial data
     CLI).
+
+    The final deliverable section depends on ``result_focus``: when the operator
+    supplies a JSON output spec we render that JSON and ask the probe to emit it;
+    otherwise the probe is asked for free-form, verified action items.
     """
     # NOTE (experiment): present the operator directive as the natural top of
     # instruction.md flowing straight into the task -- the shape proven to work
@@ -209,6 +274,12 @@ def render_probe_instruction(
     budget_block = (
         f"{_time_budget_section(time_budget_sec)}\n\n---\n\n" if time_budget_sec else ""
     )
+    output_schema = parse_result_focus(result_focus)
+    deliverable_section = (
+        _output_json_section(output_schema)
+        if output_schema is not None
+        else _action_items_section()
+    )
     return (
         f"{directive}\n\n"
         f"The brief below is what the REAL solving agent is given — it is your "
@@ -224,7 +295,9 @@ def render_probe_instruction(
         f"{budget_block}"
         f"{_RUNNING_TESTS_SECTION}\n\n"
         f"---\n\n"
-        f"{_trial_data_section()}"
+        f"{_trial_data_section()}\n\n"
+        f"---\n\n"
+        f"{deliverable_section}"
     )
 
 

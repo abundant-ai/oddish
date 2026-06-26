@@ -1015,6 +1015,9 @@ async def run_trial_job(
     probe_scope = (prepared_trial.trial_harbor_config or {}).get(
         "probe_scope", "task"
     )
+    probe_result_focus = (prepared_trial.trial_harbor_config or {}).get(
+        "result_focus"
+    )
     # Read-only oddish CLI creds minted for a probe trial; injected into the
     # agent env only (never persisted to harbor_config / S3). Best-effort
     # deleted after the run.
@@ -1033,6 +1036,7 @@ async def run_trial_job(
             trial_id=trial_id,
             extra_instructions=probe_extra_instructions,
             probe_scope=probe_scope,
+            result_focus=probe_result_focus,
         )
         # Probes get network egress so the oddish-query CLI can reach the API.
         enable_local_internet(task_path_to_run)

@@ -9,12 +9,13 @@ from oddish.worker.probe_overlay import (
 )
 
 
-def _render() -> str:
+def _render(result_focus: str | None = None) -> str:
     return render_probe_instruction(
         "FRAMING-TEXT",
         "DIRECTIVE-TEXT",
         "ORIGINAL-TEXT",
         probe_only_paths=["tests/", "solution/"],
+        result_focus=result_focus,
     )
 
 
@@ -27,6 +28,40 @@ def test_render_includes_all_sections():
     assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
     assert "## RUNNING TESTS" in out
     assert "## TRIAL DATA" in out
+    assert "## ACTION ITEMS" in out
+
+
+def test_trial_data_section_asks_to_check_audited_task_logs():
+    out = _render()
+    # The probe is told to check the audited task's prior trial logs up front.
+    assert "task you're auditing" in out
+    assert "tasks search" in out
+    assert "tasks trials <task_id>" in out
+
+
+def test_action_items_section_demands_verified_high_quality_items():
+    out = _render()
+    # Deliverable: high-quality action items, verified before reporting.
+    assert "high-quality" in out
+    assert "VERIFY before you report" in out
+
+
+def test_json_output_replaces_action_items_when_schema_provided():
+    schema = '{"type": "object", "properties": {"verdict": {"type": "string"}}}'
+    out = _render(result_focus=schema)
+    # The JSON output deliverable replaces the free-form action items section.
+    assert "## OUTPUT — required JSON" in out
+    assert "## ACTION ITEMS" not in out
+    # The operator's schema is rendered verbatim in a json code block.
+    assert '"verdict"' in out
+    assert "```json" in out
+
+
+def test_plain_text_result_focus_keeps_action_items():
+    # A prose focus question is NOT a JSON object, so action items stay.
+    out = _render(result_focus="Did the agent attempt reward hacking?")
+    assert "## ACTION ITEMS" in out
+    assert "## OUTPUT — required JSON" not in out
 
 
 def test_render_does_not_label_spec_as_probes_own_task():

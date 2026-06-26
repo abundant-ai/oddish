@@ -382,6 +382,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
         probe_scope = harbor_config.get("probe_scope", "task")
+        probe_result_focus = harbor_config.get("result_focus")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -421,6 +422,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             extra_instructions=extra_instructions,
             probe_scope=probe_scope,
             time_budget_sec=_PROBE_AGENT_TIMEOUT_SEC,
+            result_focus=probe_result_focus,
         )
         actual_task_path = work_task_dir
         # Stage the org's shared skills into a root under work_root and hand it

@@ -141,6 +141,7 @@ async def apply_probe_overlay(
     extra_instructions: str,
     probe_scope: str = "task",
     time_budget_sec: float | None = None,
+    result_focus: str | None = None,
 ) -> None:
     """Stage the query CLI and rewrite ``task_dir/instruction.md`` in place.
 
@@ -184,5 +185,6 @@ async def apply_probe_overlay(
             original,
             time_budget_sec=time_budget_sec,
             probe_only_paths=probe_only,
+            result_focus=result_focus,
         )
     )
