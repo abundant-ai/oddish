@@ -30,7 +30,6 @@ import {
   LogOut,
   SearchCheck,
   Shield,
-  Tags,
   User,
 } from "lucide-react";
 
@@ -153,21 +152,6 @@ export function Nav() {
               >
                 <Gauge className="h-4 w-4" />
                 <span>Usage</span>
-              </Link>
-            </Button>
-            <Button
-              variant={pathname.startsWith("/tags") ? "secondary" : "ghost"}
-              size="sm"
-              asChild
-              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
-            >
-              <Link
-                href="/tags"
-                className="flex items-center gap-2"
-                data-active={pathname.startsWith("/tags")}
-              >
-                <Tags className="h-4 w-4" />
-                <span>Tags</span>
               </Link>
             </Button>
           </div>

@@ -3,35 +3,12 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
-import {
-  FileText,
-  FlaskConical,
-  Plus,
-  Search,
-  Tags as TagsIcon,
-} from "lucide-react";
+import { FileText, FlaskConical, Search, Tags as TagsIcon } from "lucide-react";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -41,9 +18,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { TagChip } from "@/components/tag-chip";
-import { TagColorBar } from "@/components/tag-color-bar";
 import { fetcher } from "@/lib/api";
-import { tagColor } from "@/lib/tag-colors";
 import type { TagListResponse, TagSummary, UserTagRef } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -112,124 +87,12 @@ function AssociationCount({
   );
 }
 
-/** Define a new tag (without assigning it). Refreshes the list on success. */
-function CreateTagDialog({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState<string | null>(null);
-  const [visibility, setVisibility] = useState<"PRIVATE" | "PUBLIC">("PRIVATE");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const key = name.trim();
-  const effectiveColor = color ?? tagColor(key || "tag");
-
-  function reset() {
-    setName("");
-    setColor(null);
-    setVisibility("PRIVATE");
-    setError(null);
-  }
-
-  async function submit() {
-    if (!key || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/tags", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, color: effectiveColor, visibility }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        setError(body?.detail ?? body?.error ?? "Failed to create tag.");
-        return;
-      }
-      setOpen(false);
-      reset();
-      onCreated();
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o) reset();
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button size="sm" className="gap-1.5">
-          <Plus className="h-4 w-4" />
-          New tag
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Create tag</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label htmlFor="new-tag-name">Name</Label>
-            <Input
-              id="new-tag-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. smoke-test"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
-              }}
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Color</Label>
-            <TagColorBar value={effectiveColor} onChange={setColor} />
-          </div>
-          <div className="space-y-1.5">
-            <Label>Visibility</Label>
-            <Select
-              value={visibility}
-              onValueChange={(v) => setVisibility(v as "PRIVATE" | "PUBLIC")}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="PRIVATE">Private</SelectItem>
-                <SelectItem value="PUBLIC">Public</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {error ? <p className="text-destructive text-sm">{error}</p> : null}
-        </div>
-        <DialogFooter>
-          <Button
-            variant="ghost"
-            onClick={() => setOpen(false)}
-            disabled={submitting}
-          >
-            Cancel
-          </Button>
-          <Button onClick={submit} disabled={!key || submitting}>
-            {submitting ? "Creating…" : "Create tag"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function TagsPageClient({
   initialData,
 }: {
   initialData: TagListResponse | null;
 }) {
-  const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
+  const { data, error, isLoading } = useSWR<TagListResponse>(
     "/api/tags",
     fetcher,
     {
@@ -270,17 +133,14 @@ export function TagsPageClient({
             to see the matching tasks or experiments.
           </p>
         </div>
-        <div className="flex w-full items-center gap-2 sm:w-auto">
-          <div className="relative w-full sm:w-72">
-            <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search tags…"
-              className="pl-8"
-            />
-          </div>
-          <CreateTagDialog onCreated={() => mutate()} />
+        <div className="relative w-full sm:w-72">
+          <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-4 w-4 -translate-y-1/2" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search tags…"
+            className="pl-8"
+          />
         </div>
       </div>
 
