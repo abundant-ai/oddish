@@ -67,6 +67,7 @@ import {
   Info,
   RefreshCw,
   Search,
+  X,
 } from "lucide-react";
 
 // window_days values the backend understands (0 == all-time).
@@ -644,9 +645,19 @@ export function CostBreakdownCard({
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search users, models, experiments…"
-                  className="h-8 w-[240px] pl-7 text-xs"
+                  className="h-8 w-[240px] pr-7 pl-7 text-xs"
                   aria-label="Search cost breakdown"
                 />
+                {search && (
+                  <button
+                    type="button"
+                    onClick={() => setSearch("")}
+                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
+                    aria-label="Clear search"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             )}
             <Select value={windowDays} onValueChange={setWindowDays}>
