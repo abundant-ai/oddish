@@ -1,4 +1,0 @@
-interface:
-  display_name: "Harbor Task LLMJ Agentic Refactor"
-  short_description: "Refactor Harbor LLMJ tasks."
-  default_prompt: "Refactor this Harbor task PR from legacy llm_judge.py, visual_judge.py, or vlm_judge.py to the new agentic_judge.json plus agentic_rubric.json format."
