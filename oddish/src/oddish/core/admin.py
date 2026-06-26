@@ -892,9 +892,12 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
 
 
 # Per-user and per-experiment model lists are capped so the payload stays
-# small; the rolled-up totals/cost columns are always over the full set.
-_MAX_MODELS_PER_USER = 6
-_MAX_MODELS_PER_EXPERIMENT = 12
+# small; the rolled-up totals/cost columns are always over the full set. The
+# caps are set above the number of distinct models in practice so the lists are
+# effectively complete — the Cost dashboard re-costs rows by model client-side
+# and needs every model present to reconcile with the per-model totals.
+_MAX_MODELS_PER_USER = 50
+_MAX_MODELS_PER_EXPERIMENT = 50
 
 
 def _series_bucket(window_days: int | None) -> str:

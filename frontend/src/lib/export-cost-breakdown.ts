@@ -66,7 +66,6 @@ export async function exportCostBreakdownXlsx({
   const userRows = users.map((u) => ({
     User: u.name || u.email || u.owner_user_id || "Unattributed",
     Email: u.email ?? "",
-    Org: u.org_name ?? u.org_id ?? "",
     "Cost (USD)": money(u.cost_usd),
     "Estimated (USD)": money(u.cost_estimated_usd),
     Trials: u.trial_count,
@@ -91,7 +90,6 @@ export async function exportCostBreakdownXlsx({
   const experimentRows = experiments.map((e) => ({
     Experiment: e.name ?? e.experiment_id,
     Owner: e.owner_name || e.owner_email || e.owner_user_id || "Unattributed",
-    Org: e.org_name ?? e.org_id ?? "",
     "Cost (USD)": money(e.cost_usd),
     "Estimated (USD)": money(e.cost_estimated_usd),
     Trials: e.trial_count,
@@ -106,7 +104,6 @@ export async function exportCostBreakdownXlsx({
   const userHeaders = [
     "User",
     "Email",
-    "Org",
     "Cost (USD)",
     "Estimated (USD)",
     "Trials",
@@ -129,7 +126,6 @@ export async function exportCostBreakdownXlsx({
   const experimentHeaders = [
     "Experiment",
     "Owner",
-    "Org",
     "Cost (USD)",
     "Estimated (USD)",
     "Trials",

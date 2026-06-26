@@ -480,6 +480,36 @@ function matchesQuery(
   return values.some((v) => (v ?? "").toLowerCase().includes(q));
 }
 
+// Sum a set of per-model rows into row-shaped cost/token totals. Used to re-cost
+// a user/experiment to just the model(s) matched by the search ("model mode").
+function sumModelRows(models: CostModelBreakdown[]): {
+  cost_usd: number;
+  cost_estimated_usd: number;
+  trial_count: number;
+  input_tokens: number;
+  cache_tokens: number;
+  output_tokens: number;
+} {
+  return models.reduce(
+    (acc, m) => ({
+      cost_usd: acc.cost_usd + m.cost_usd,
+      cost_estimated_usd: acc.cost_estimated_usd + m.cost_estimated_usd,
+      trial_count: acc.trial_count + m.trial_count,
+      input_tokens: acc.input_tokens + m.input_tokens,
+      cache_tokens: acc.cache_tokens + m.cache_tokens,
+      output_tokens: acc.output_tokens + m.output_tokens,
+    }),
+    {
+      cost_usd: 0,
+      cost_estimated_usd: 0,
+      trial_count: 0,
+      input_tokens: 0,
+      cache_tokens: 0,
+      output_tokens: 0,
+    },
+  );
+}
+
 export function CostBreakdownCard({
   initialData = null,
   showChart = true,
@@ -504,17 +534,7 @@ export function CostBreakdownCard({
   );
 
   const q = enableSearch ? search.trim().toLowerCase() : "";
-  const filteredUsers = useMemo(
-    () =>
-      !q
-        ? (data?.by_user ?? [])
-        : (data?.by_user ?? []).filter((u) =>
-            // userLabel() covers owner_user_id and the "Unattributed" fallback,
-            // so clicking a row's displayed label always matches it.
-            matchesQuery([u.name, u.email, u.org_name, userLabel(u)], q),
-          ),
-    [data, q],
-  );
+
   const filteredModels = useMemo(
     () =>
       !q
@@ -524,24 +544,73 @@ export function CostBreakdownCard({
           ),
     [data, q],
   );
-  const filteredExperiments = useMemo(
-    () =>
-      !q
-        ? (data?.experiments ?? [])
-        : (data?.experiments ?? []).filter((e) =>
-            matchesQuery(
-              [
-                e.name,
-                e.owner_name,
-                e.owner_email,
-                e.org_name,
-                e.owner_user_id,
-              ],
-              q,
-            ),
-          ),
-    [data, q],
-  );
+
+  // "Model mode": when the query matches one or more models, scope the user and
+  // experiment tables to that model and re-cost each row to just the matching
+  // model's portion (so the figures reconcile with the Cost-by-model totals).
+  // Otherwise it's a plain text filter on each table's own fields.
+  const modelMode = q !== "" && filteredModels.length > 0;
+
+  const filteredExperiments = useMemo(() => {
+    const experiments = data?.experiments ?? [];
+    if (!q) return experiments;
+    if (modelMode) {
+      return experiments
+        .flatMap((e) => {
+          const matched = e.models.filter((m) =>
+            matchesQuery([m.model, m.provider], q),
+          );
+          if (matched.length === 0) return [];
+          return [{ ...e, ...sumModelRows(matched), models: matched }];
+        })
+        .sort((a, b) => b.cost_usd - a.cost_usd);
+    }
+    return experiments.filter((e) =>
+      matchesQuery(
+        [e.name, e.owner_name, e.owner_email, e.org_name, e.owner_user_id],
+        q,
+      ),
+    );
+  }, [data, q, modelMode]);
+
+  // In model mode, recompute each user's experiment count from the (already
+  // model-scoped) experiments so the "Exps" column reflects the model too.
+  const ownerExperimentCounts = useMemo(() => {
+    const counts = new Map<string | null, number>();
+    if (!modelMode) return counts;
+    for (const e of filteredExperiments) {
+      counts.set(e.owner_user_id, (counts.get(e.owner_user_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [filteredExperiments, modelMode]);
+
+  const filteredUsers = useMemo(() => {
+    const users = data?.by_user ?? [];
+    if (!q) return users;
+    if (modelMode) {
+      return users
+        .flatMap((u) => {
+          const matched = u.models.filter((m) =>
+            matchesQuery([m.model, m.provider], q),
+          );
+          if (matched.length === 0) return [];
+          return [
+            {
+              ...u,
+              ...sumModelRows(matched),
+              models: matched,
+              experiment_count: ownerExperimentCounts.get(u.owner_user_id) ?? 0,
+            },
+          ];
+        })
+        .sort((a, b) => b.cost_usd - a.cost_usd);
+    }
+    // userLabel() covers owner_user_id and the "Unattributed" fallback, so
+    // clicking a row's displayed label always matches it.
+    return users.filter((u) =>
+      matchesQuery([u.name, u.email, u.org_name, userLabel(u)], q),
+    );
+  }, [data, q, modelMode, ownerExperimentCounts]);
 
   // Summary chips reflect the current (filtered) view
   const filteredTotals = useMemo(() => {
@@ -812,7 +881,12 @@ export function CostBreakdownCard({
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={pagedModels} />
+              <ModelTable
+                models={pagedModels}
+                onSelect={
+                  enableSearch ? (queryValue) => setSearch(queryValue) : undefined
+                }
+              />
               {filteredModels.length > 10 && (
                 <TablePagination
                   total={filteredModels.length}
@@ -978,7 +1052,6 @@ function UserTable({
       <TableHeader>
         <TableRow>
           <TableHead>User</TableHead>
-          <TableHead>Org</TableHead>
           <TableHead className="text-right">Cost</TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead className="text-right">Exps</TableHead>
@@ -1009,9 +1082,6 @@ function UserTable({
                 )}
               </div>
             </TableCell>
-            <TableCell className="text-muted-foreground text-[11px]">
-              {user.org_name ?? user.org_id ?? "—"}
-            </TableCell>
             <CostCell
               cost={user.cost_usd}
               estimated={user.cost_estimated_usd}
@@ -1032,7 +1102,13 @@ function UserTable({
   );
 }
 
-function ModelTable({ models }: { models: CostModelBreakdown[] }) {
+function ModelTable({
+  models,
+  onSelect,
+}: {
+  models: CostModelBreakdown[];
+  onSelect?: (query: string) => void;
+}) {
   if (models.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -1054,7 +1130,18 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
         {models.map((model) => (
           <TableRow key={`${model.model}-${model.provider}`}>
             <TableCell>
-              <ModelLabel model={model} />
+              {onSelect ? (
+                <button
+                  type="button"
+                  onClick={() => onSelect(model.model)}
+                  className="hover:underline"
+                  title="Filter by this model"
+                >
+                  <ModelLabel model={model} />
+                </button>
+              ) : (
+                <ModelLabel model={model} />
+              )}
             </TableCell>
             <CostCell
               cost={model.cost_usd}
