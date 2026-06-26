@@ -19,6 +19,7 @@ import {
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
+import { TagFilterDropdown } from "@/components/tag-filter-dropdown";
 import {
   SearchSyntaxHelp,
   SearchSyntaxMultiRow,
@@ -565,6 +566,11 @@ export function TasksPageClient({
                   </p>
                 </SearchSyntaxHelp>
               </div>
+              <TagFilterDropdown
+                query={searchQuery}
+                onQueryChange={setSearchQuery}
+                countField="task_count"
+              />
               <SavedFiltersMenu
                 query={searchQuery}
                 onApply={(text) => setSearchQuery(text)}
