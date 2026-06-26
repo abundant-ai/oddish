@@ -10,23 +10,30 @@ import { cn, encodeExperimentRouteParam } from "@/lib/utils";
 export type ExperimentRef = { id: string; name: string };
 
 /**
- * Renders a list of experiments a task belongs to. Shows the first
- * `maxVisible` inline (·-separated) and collapses the rest behind a
- * "+N more" popover that lists every experiment in a scrollable panel.
+ * Renders the experiments a task belongs to. Shows the first `maxVisible`
+ * and collapses the rest behind a "+N more" popover that lists every
+ * experiment in a scrollable panel.
  *
- * Shared between the task-detail header and the /tasks card so both views
- * render affiliated experiments identically.
+ * `layout`:
+ *  - "inline"  — ·-separated on one wrapping line (task-detail header)
+ *  - "stacked" — one experiment per line (task card, where the narrow box
+ *    makes ·-separated names wrap awkwardly)
+ *
+ * Shared between the header and the /tasks card so both render affiliated
+ * experiments consistently.
  */
 export function ExperimentsList({
   experiments,
   maxVisible = 5,
+  layout = "inline",
   className,
   linkClassName,
 }: {
   experiments: ExperimentRef[];
   maxVisible?: number;
+  layout?: "inline" | "stacked";
   className?: string;
-  /** Applied to the inline experiment links so each consumer can match its
+  /** Applied to the experiment links so each consumer can match its
    * surrounding text color. */
   linkClassName?: string;
 }) {
@@ -34,6 +41,58 @@ export function ExperimentsList({
 
   const visible = experiments.slice(0, maxVisible);
   const overflowCount = experiments.length - visible.length;
+
+  const moreButton =
+    overflowCount > 0 ? (
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground rounded text-left underline-offset-2 hover:underline"
+          >
+            +{overflowCount} more
+          </button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="start"
+          className="max-h-72 w-64 overflow-y-auto p-1"
+        >
+          <div className="flex flex-col">
+            {experiments.map((exp) => (
+              <Link
+                key={exp.id}
+                href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
+                className="hover:bg-muted truncate rounded px-2 py-1 text-xs"
+                title={exp.name}
+              >
+                {exp.name}
+              </Link>
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    ) : null;
+
+  if (layout === "stacked") {
+    return (
+      <div className={cn("flex flex-col gap-0.5", className)}>
+        {visible.map((exp) => (
+          <Link
+            key={exp.id}
+            href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
+            className={cn(
+              "truncate underline-offset-2 hover:underline",
+              linkClassName
+            )}
+            title={exp.name}
+          >
+            {exp.name}
+          </Link>
+        ))}
+        {moreButton}
+      </div>
+    );
+  }
 
   return (
     <span
@@ -53,36 +112,10 @@ export function ExperimentsList({
           </Link>
         </span>
       ))}
-      {overflowCount > 0 ? (
+      {moreButton ? (
         <span className="inline-flex items-center gap-x-2">
           <span aria-hidden>·</span>
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                type="button"
-                className="text-muted-foreground hover:text-foreground rounded underline-offset-2 hover:underline"
-              >
-                +{overflowCount} more
-              </button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="start"
-              className="max-h-72 w-64 overflow-y-auto p-1"
-            >
-              <div className="flex flex-col">
-                {experiments.map((exp) => (
-                  <Link
-                    key={exp.id}
-                    href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
-                    className="hover:bg-muted truncate rounded px-2 py-1 text-xs"
-                    title={exp.name}
-                  >
-                    {exp.name}
-                  </Link>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
+          {moreButton}
         </span>
       ) : null}
     </span>
