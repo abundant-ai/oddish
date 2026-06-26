@@ -468,6 +468,8 @@ type CostBreakdownCardProps = {
   refreshIntervalMs?: number;
   // Show an "Export" button that downloads the current (filtered) rows as xlsx.
   enableExport?: boolean;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
 };
 
 function matchesQuery(
@@ -485,10 +487,14 @@ export function CostBreakdownCard({
   userLimit = 100,
   refreshIntervalMs = 30000,
   enableExport = false,
+  searchValue,
+  onSearchChange,
 }: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
-  const [search, setSearch] = useState("");
+  const [internalSearch, setInternalSearch] = useState("");
+  const search = searchValue ?? internalSearch;
+  const setSearch = onSearchChange ?? setInternalSearch;
 
   const { data, error, isValidating, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}`,
