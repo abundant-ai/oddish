@@ -509,7 +509,9 @@ export function CostBreakdownCard({
       !q
         ? (data?.by_user ?? [])
         : (data?.by_user ?? []).filter((u) =>
-            matchesQuery([u.name, u.email, u.org_name], q),
+            // userLabel() covers owner_user_id and the "Unattributed" fallback,
+            // so clicking a row's displayed label always matches it.
+            matchesQuery([u.name, u.email, u.org_name, userLabel(u)], q),
           ),
     [data, q],
   );
@@ -527,7 +529,16 @@ export function CostBreakdownCard({
       !q
         ? (data?.experiments ?? [])
         : (data?.experiments ?? []).filter((e) =>
-            matchesQuery([e.name, e.owner_name, e.owner_email, e.org_name], q),
+            matchesQuery(
+              [
+                e.name,
+                e.owner_name,
+                e.owner_email,
+                e.org_name,
+                e.owner_user_id,
+              ],
+              q,
+            ),
           ),
     [data, q],
   );
