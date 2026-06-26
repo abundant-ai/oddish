@@ -11,13 +11,27 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 
 import jsonschema
 
+logger = logging.getLogger(__name__)
+
 # Keys the structured-outputs subset does not support (see plan Global Constraints).
 _UNSUPPORTED_KEYS = frozenset(
-    {"minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
-     "exclusiveMaximum", "multipleOf", "minItems", "maxItems", "pattern", "$ref"}
+    {
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+        "pattern",
+        "$ref",
+    }
 )
 
 
@@ -32,6 +46,9 @@ def parse_result_focus(result_focus: str | None) -> dict | None:
     try:
         parsed = json.loads(result_focus)
     except (ValueError, TypeError):
+        # Expected for prose focus questions; callers handle None. Debug-only so
+        # it's available when diagnosing a malformed schema without spamming.
+        logger.debug("result_focus is not JSON; treating as prose: %r", result_focus)
         return None
     return parsed if isinstance(parsed, dict) else None
 

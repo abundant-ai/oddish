@@ -80,6 +80,29 @@ def test_plain_text_result_focus_keeps_action_items():
     assert "## OUTPUT — required JSON" not in out
 
 
+def test_fenced_json_is_unwrapped_and_rendered():
+    # Operators often paste the spec inside a ```json fence; strip and parse it.
+    schema = '```json\n{"type": "object", "properties": {"verdict": {"type": "string"}}}\n```'
+    out = _render(result_focus=schema)
+    assert "## OUTPUT — required JSON" in out
+    assert "## ACTION ITEMS" not in out
+    assert '"verdict"' in out
+    # Cleanly parsed -> no malformed caveat.
+    assert "did not parse as valid JSON" not in out
+
+
+def test_malformed_json_is_rendered_best_effort_not_discarded():
+    # JSON-ish but unparseable (trailing comma): keep the operator's intent
+    # rather than silently falling back to action items.
+    schema = '{"verdict": "string", "evidence": "string",}'
+    out = _render(result_focus=schema)
+    assert "## OUTPUT — required JSON" in out
+    assert "## ACTION ITEMS" not in out
+    # Rendered verbatim, with a caveat telling the probe to repair it.
+    assert '"verdict"' in out
+    assert "did not parse as valid JSON" in out
+
+
 def test_render_does_not_label_spec_as_probes_own_task():
     # Regression: the old "THIS IS THE TASK:" framing made the probe adopt the
     # solving-agent persona and flag its own staged files as vulnerabilities.

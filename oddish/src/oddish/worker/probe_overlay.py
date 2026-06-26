@@ -114,7 +114,7 @@ def _trial_data_section() -> str:
         "- `trials logs <trial_id> [--trajectory]` — one trial's logs, or its full "
         "message+action trajectory with `--trajectory` (large; one at a time).\n\n"
         "Examples — copy the literal invocations and substitute the ids you find:\n"
-        f"- `node {QUERY_CLI_CONTAINER_PATH} tasks search --q \"oauth\"` — search by keyword.\n"
+        f'- `node {QUERY_CLI_CONTAINER_PATH} tasks search --q "oauth"` — search by keyword.\n'
         f"- `node {QUERY_CLI_CONTAINER_PATH} tasks get <task_id>` — read a task's detail.\n"
         f"- `node {QUERY_CLI_CONTAINER_PATH} tasks trials <task_id>` — list that task's trials, then\n"
         f"- `node {QUERY_CLI_CONTAINER_PATH} trials logs <trial_id> --trajectory` — read one trial's "
@@ -161,21 +161,64 @@ def _action_items_section() -> str:
     )
 
 
-def _output_json_section(schema: dict) -> str:
+def _strip_code_fence(text: str) -> str:
+    """Drop a leading/trailing markdown code fence (```json … ```), if present.
+
+    Operators routinely paste the output spec wrapped in a fenced block; the
+    fence is not valid JSON, so strip it before attempting to parse.
+    """
+    s = text.strip()
+    if not s.startswith("```"):
+        return text
+    lines = s.splitlines()[1:]  # drop the opening ``` / ```json line
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _render_output_spec(result_focus: str | None) -> str | None:
+    """Render the operator's JSON output spec, best-effort.
+
+    Returns None when ``result_focus`` is absent or reads as a prose focus
+    question, so the caller falls back to free-form action items. When it parses
+    as a JSON object we pretty-print it; when it is clearly *intended* as a JSON
+    object but doesn't parse (trailing comma, single quotes, stray prose, code
+    fences) we still render it verbatim rather than discarding the operator's
+    intent — the probe is told to repair it and emit valid JSON.
+    """
+    if not result_focus or not result_focus.strip():
+        return None
+    body = _strip_code_fence(result_focus).strip()
+    parsed = parse_result_focus(body)
+    if parsed is not None:
+        return _output_json_section(json.dumps(parsed, indent=2), malformed=False)
+    if body.startswith("{"):
+        return _output_json_section(body, malformed=True)
+    return None
+
+
+def _output_json_section(rendered: str, *, malformed: bool) -> str:
     """Replace the free-form action-items deliverable with the operator's
     required JSON output.
 
-    When the operator supplies ``result_focus`` as a JSON object (a schema or
-    a literal output spec, per ``parse_result_focus``), the probe must emit that
-    structure instead of prose action items. The analyzer enforces the same
-    schema post-run via structured outputs; rendering it here makes the probe's
-    own output already match what the operator asked for.
+    When the operator supplies ``result_focus`` as a JSON object output spec,
+    the probe must emit that structure instead of prose action items. The
+    analyzer enforces the same schema post-run via structured outputs; rendering
+    it here makes the probe's own output already match what the operator asked
+    for. ``malformed`` flags a best-effort render of JSON-ish-but-unparseable
+    input so the probe knows to clean it up instead of copying it blindly.
     """
-    rendered = json.dumps(schema, indent=2)
+    caveat = (
+        "\n\nNote: the spec above did not parse as valid JSON. Treat it as the "
+        "intended output shape, repair the obvious formatting problems, and make "
+        "sure your actual output is a single valid JSON object."
+        if malformed
+        else ""
+    )
     return (
         "## OUTPUT — required JSON\n\n"
         "The operator has specified an exact output format. Finish your run by "
-        "producing a single JSON object that conforms to the schema below — that "
+        "producing a single JSON object that conforms to the spec below — that "
         "JSON is your deliverable. Do NOT emit free-form action items. Populate it "
         "only with claims you have verified (reproduced against the verifier under "
         f"`{PROBE_HARNESS_DIR}/tests/`, exercised from `/app`, or backed by trial "
@@ -183,6 +226,7 @@ def _output_json_section(schema: dict) -> str:
         "```json\n"
         f"{rendered}\n"
         "```"
+        f"{caveat}"
     )
 
 
@@ -284,12 +328,8 @@ def render_probe_instruction(
     budget_block = (
         f"{_time_budget_section(time_budget_sec)}\n\n---\n\n" if time_budget_sec else ""
     )
-    output_schema = parse_result_focus(result_focus)
-    deliverable_section = (
-        _output_json_section(output_schema)
-        if output_schema is not None
-        else _action_items_section()
-    )
+    output_section = _render_output_spec(result_focus)
+    deliverable_section = output_section or _action_items_section()
     return (
         f"{directive}\n\n"
         f"The brief below is what the REAL solving agent is given — it is your "
@@ -309,5 +349,3 @@ def render_probe_instruction(
         f"---\n\n"
         f"{deliverable_section}"
     )
-
-
