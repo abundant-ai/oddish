@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import yaml
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import SkillFileModel, SkillModel, utcnow
@@ -140,6 +140,27 @@ def _validate_result_focus(result_focus: str | None) -> None:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+async def _resolve_skill_name(
+    session: AsyncSession, base_name: str, *, org_id: str | None
+) -> str:
+    """Smallest free name in ``base``, ``base-2``, ``base-3``, … within the
+    org's uniqueness bucket (matching ``idx_skills_unique_org_name``). The
+    soft-delete auto-filter excludes tombstoned rows, so reused names are free.
+    """
+    result = await session.execute(
+        select(SkillModel.name).where(
+            func.coalesce(SkillModel.org_id, "") == (org_id or "")
+        )
+    )
+    existing = {row[0] for row in result.all()}
+    if base_name not in existing:
+        return base_name
+    n = 2
+    while f"{base_name}-{n}" in existing:
+        n += 1
+    return f"{base_name}-{n}"
+
+
 async def create_skill_core(
     session: AsyncSession,
     *,
@@ -147,9 +168,16 @@ async def create_skill_core(
     org_id: str | None = None,
     user_id: str | None = None,
 ) -> SkillModel:
-    """Create a custom skill owned by ``org_id``, validating its SKILL.md."""
-    name, description = parse_skill(data.files)
+    """Create a custom skill owned by ``org_id``, validating its SKILL.md.
+
+    On a name collision within the org, the skill is stored under a
+    version-suffixed name (``my-skill`` → ``my-skill-2`` → …) and its SKILL.md
+    frontmatter ``name:`` is rewritten to match.
+    """
+    base_name, description = parse_skill(data.files)
     _validate_result_focus(data.result_focus)
+    name = await _resolve_skill_name(session, base_name, org_id=org_id)
+    files = data.files if name == base_name else _rewrite_skill_name(data.files, name)
     skill = SkillModel(
         org_id=org_id,
         created_by_user_id=user_id,
@@ -161,7 +189,7 @@ async def create_skill_core(
         evaluation_metric=data.evaluation_metric,
         files=[
             SkillFileModel(relative_path=f.relative_path, content=f.content)
-            for f in data.files
+            for f in files
         ],
     )
     session.add(skill)
