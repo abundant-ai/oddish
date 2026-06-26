@@ -6,6 +6,7 @@ CRUD follows the repo's router->core layering: functions receive an AsyncSession
 
 from __future__ import annotations
 
+import re
 import yaml
 from fastapi import HTTPException
 from sqlalchemy import or_, select
@@ -66,6 +67,38 @@ def parse_skill(files: list[SkillFile]) -> tuple[str, str]:
             status_code=422, detail="SKILL.md frontmatter missing 'description'"
         )
     return name, description
+
+
+def _rewrite_skill_name(files: list[SkillFile], new_name: str) -> list[SkillFile]:
+    """Return ``files`` with the root SKILL.md frontmatter ``name:`` set to
+    ``new_name`` (used when a collision forces a version-suffixed name).
+
+    Targeted line edit, not a YAML re-dump, so the rest of the file's
+    formatting is preserved. Assumes ``files`` already passed ``parse_skill``.
+    """
+    out: list[SkillFile] = []
+    for f in files:
+        if f.relative_path != "SKILL.md":
+            out.append(f)
+            continue
+        stripped = f.content.lstrip()
+        prefix = f.content[: len(f.content) - len(stripped)]
+        _, frontmatter, body = stripped.split(_FRONTMATTER_DELIM, 2)
+        frontmatter = re.sub(
+            r"(?m)^(\s*name:).*$",
+            lambda m: f"{m.group(1)} {new_name}",
+            frontmatter,
+            count=1,
+        )
+        rebuilt = (
+            prefix
+            + _FRONTMATTER_DELIM
+            + frontmatter
+            + _FRONTMATTER_DELIM
+            + body
+        )
+        out.append(SkillFile(relative_path=f.relative_path, content=rebuilt))
+    return out
 
 
 async def list_skills_core(

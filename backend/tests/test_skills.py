@@ -10,6 +10,7 @@ import pytest_asyncio
 from fastapi import HTTPException
 
 from oddish.core.skills import (
+    _rewrite_skill_name,
     create_skill_core,
     delete_skill_core,
     get_skill_core,
@@ -30,6 +31,23 @@ def _payload(name="my-skill"):
             SkillFile(relative_path="scripts/run.sh", content="echo hi"),
         ],
     )
+
+
+def test_rewrite_skill_name_updates_frontmatter_only():
+    files = [
+        SkillFile(
+            relative_path="SKILL.md",
+            content="---\nname: my-skill\ndescription: does a thing\n---\n\n# Body\nkeep me\n",
+        ),
+        SkillFile(relative_path="scripts/run.sh", content="echo hi"),
+    ]
+    out = _rewrite_skill_name(files, "my-skill-2")
+    skill_md = next(f for f in out if f.relative_path == "SKILL.md")
+    assert "name: my-skill-2" in skill_md.content
+    assert "description: does a thing" in skill_md.content  # untouched
+    assert "# Body\nkeep me" in skill_md.content  # body untouched
+    # other files pass through unchanged
+    assert next(f for f in out if f.relative_path == "scripts/run.sh").content == "echo hi"
 
 
 @pytest_asyncio.fixture
