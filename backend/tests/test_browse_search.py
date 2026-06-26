@@ -53,6 +53,8 @@ async def _setup(engine):
             insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,finished_at,attempts,max_attempts,heartbeat_failure_count,has_trajectory,created_at,updated_at)
             values ('tr-real','tr-real','t-new','v-new','exp-real','org1','claude','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,now() - interval '1 day',1,6,0,false,now() - interval '1 day',now()),
                    ('tr-probe','tr-probe','t-old','v-old','exp-probe','org1','claude','anthropic','q',30,'modal','{}'::jsonb,'FAILED','oddish',true,0.0,now(),1,6,0,false,now(),now());
+            insert into task_experiments (task_id,experiment_id,created_at)
+            values ('t-new','exp-real',now());
         """
         for stmt in stmts.split(";"):
             if stmt.strip():
@@ -72,7 +74,9 @@ async def test_probe_runs_do_not_pollute_browse():
         # the probe FAILED run must not count as a trial or a failure ...
         assert old.total_trials == 0
         assert old.failed_trials == 0
-        # ... must not surface as a latest-trial chip or an experiment chip
+        # ... must not surface as a latest-trial chip. Experiment chips now come
+        # from task_experiments membership (all-time, matching the task-detail
+        # page), not from trials; the probe-only task has no membership row.
         assert old.latest_trials == []
         assert old.experiments == []
 
@@ -83,6 +87,7 @@ async def test_probe_runs_do_not_pollute_browse():
 
         new = items["newer-task"]
         assert new.total_trials == 1  # the real trial still counts
+        # surfaced via its task_experiments membership row
         assert [e.name for e in new.experiments] == ["Real Exp"]
     finally:
         await engine.dispose()
