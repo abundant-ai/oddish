@@ -531,6 +531,28 @@ export function CostBreakdownCard({
     [data, q],
   );
 
+  // Summary chips reflect the current (filtered) view
+  const filteredTotals = useMemo(() => {
+    let cost = 0;
+    let estimated = 0;
+    let trials = 0;
+    let experiments = 0;
+    for (const u of filteredUsers) {
+      cost += u.cost_usd;
+      estimated += u.cost_estimated_usd;
+      trials += u.trial_count;
+      experiments += u.experiment_count;
+    }
+    return {
+      cost,
+      estimated,
+      native: cost - estimated,
+      trials,
+      experiments,
+      users: filteredUsers.length,
+    };
+  }, [filteredUsers]);
+
   // Client-side, page-based pagination over the (already-fetched) filtered
   // rows. The user and experiment tables page independently; the model table
   // is short enough to leave unpaginated. Reset to page 1 when the filter, page
@@ -609,7 +631,7 @@ export function CostBreakdownCard({
             <MethodologyNote />
             {data && (
               <Badge variant="outline" className="text-xs">
-                {formatCostUsd(data.totals.cost_usd)} ·{" "}
+                {formatCostUsd(filteredTotals.cost)} ·{" "}
                 {windowLabel.toLowerCase()}
               </Badge>
             )}
@@ -730,22 +752,22 @@ export function CostBreakdownCard({
 
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                total {formatCostUsd(data.totals.cost_usd)}
+                total {formatCostUsd(filteredTotals.cost)}
               </Badge>
               <Badge variant="outline">
-                native {formatCostUsd(data.totals.cost_native_usd)}
+                native {formatCostUsd(filteredTotals.native)}
               </Badge>
               <Badge variant="outline">
-                estimated {formatCostUsd(data.totals.cost_estimated_usd)}
+                estimated {formatCostUsd(filteredTotals.estimated)}
               </Badge>
               <Badge variant="outline">
-                {data.totals.trial_count.toLocaleString()} trials
+                {filteredTotals.trials.toLocaleString()} trials
               </Badge>
               <Badge variant="outline">
-                {data.totals.experiment_count.toLocaleString()} experiments
+                {filteredTotals.experiments.toLocaleString()} experiments
               </Badge>
               <Badge variant="outline">
-                {data.totals.user_count.toLocaleString()} users
+                {filteredTotals.users.toLocaleString()} users
               </Badge>
             </div>
 
