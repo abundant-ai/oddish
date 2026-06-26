@@ -125,9 +125,6 @@ git commit -m "feat(skills): add _rewrite_skill_name frontmatter helper"
 Add to `backend/tests/test_skills.py` (the existing `_payload()` helper builds a skill named `my-skill`; the existing `org_id` fixture cleans up rows after each test):
 
 ```python
-from oddish.core.skills import _resolve_skill_name  # noqa: F401  (kept for clarity)
-
-
 @pytest.mark.asyncio
 async def test_create_versions_on_collision(org_id):
     async with get_session() as session:
@@ -242,6 +239,7 @@ async def create_skill_core(
     frontmatter ``name:`` is rewritten to match.
     """
     base_name, description = parse_skill(data.files)
+    _validate_result_focus(data.result_focus)
     name = await _resolve_skill_name(session, base_name, org_id=org_id)
     files = data.files if name == base_name else _rewrite_skill_name(data.files, name)
     skill = SkillModel(
@@ -250,6 +248,9 @@ async def create_skill_core(
         name=name,
         description=description,
         is_seed=False,
+        operator_prompt=data.operator_prompt,
+        result_focus=data.result_focus,
+        evaluation_metric=data.evaluation_metric,
         files=[
             SkillFileModel(relative_path=f.relative_path, content=f.content)
             for f in files
@@ -259,6 +260,11 @@ async def create_skill_core(
     await session.flush()
     return skill
 ```
+
+> **Note (base updated):** `main` already includes the unify-skills work, so
+> `create_skill_core` sets `operator_prompt`/`result_focus`/`evaluation_metric`
+> and calls `_validate_result_focus`. This task **adds** name resolution +
+> frontmatter rewrite *around* that existing logic — preserve those lines.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
