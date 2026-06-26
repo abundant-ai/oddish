@@ -56,7 +56,7 @@ function CountBubble({
   const full = String(count);
   const truncated = full.length > 5;
   const bubble = (
-    <span className="bg-muted text-muted-foreground ml-auto flex w-[4.25rem] shrink-0 items-center justify-center gap-1 rounded-full px-2 py-0.5 text-xs tabular-nums">
+    <span className="border-border bg-background text-muted-foreground ml-auto flex w-[4.25rem] shrink-0 items-center justify-center gap-1 rounded-full border px-2 py-0.5 text-xs tabular-nums">
       <Icon className="h-3 w-3 shrink-0" />
       {truncated ? `${full.slice(0, 5)}…` : full}
     </span>
