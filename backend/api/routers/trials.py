@@ -9,6 +9,7 @@ from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_task_for_org_core,
     get_trial_for_org_core,
+    get_trial_response_for_org_core,
     retry_trial_core,
 )
 from oddish.core.trial_io import (
@@ -72,6 +73,24 @@ async def get_trial(
     async with get_session() as session:
         return await get_trial_by_index_core(
             session, task_id=task_id, index=index, org_id=auth.org_id
+        )
+
+
+@router.get("/trials/{trial_id}", response_model=TrialResponse)
+async def get_trial_full(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TrialResponse:
+    """Full detail for a single trial by id.
+
+    The experiment grid loads only slim trials; clicking a cell fetches the
+    full trial here (timing, harbor, tokens, full analysis, etc.).
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_trial_response_for_org_core(
+            session, trial_id=trial_id, org_id=auth.org_id
         )
 
 
