@@ -54,6 +54,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
+import { exportCostBreakdownXlsx } from "@/lib/export-cost-breakdown";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
@@ -62,6 +63,7 @@ import {
   ChevronLeft,
   ChevronRight,
   DollarSign,
+  Download,
   Info,
   RefreshCw,
   Search,
@@ -464,6 +466,8 @@ type CostBreakdownCardProps = {
   userLimit?: number;
   // SWR auto-refresh interval in ms; 0 disables polling (manual refresh only).
   refreshIntervalMs?: number;
+  // Show an "Export" button that downloads the current (filtered) rows as xlsx.
+  enableExport?: boolean;
 };
 
 function matchesQuery(
@@ -480,6 +484,7 @@ export function CostBreakdownCard({
   experimentLimit = 100,
   userLimit = 100,
   refreshIntervalMs = 30000,
+  enableExport = false,
 }: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
@@ -561,6 +566,23 @@ export function CostBreakdownCard({
     safeExpPage * pageSize,
   );
 
+  const [exporting, setExporting] = useState(false);
+  const handleExport = async () => {
+    if (!data) return;
+    setExporting(true);
+    try {
+      // All FE fitlers applied
+      await exportCostBreakdownXlsx({
+        users: filteredUsers,
+        models: filteredModels,
+        experiments: filteredExperiments,
+        windowDays,
+      });
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const windowLabel =
     WINDOW_OPTIONS.find((o) => o.value === windowDays)?.label ?? windowDays;
   const series = data
@@ -615,6 +637,21 @@ export function CostBreakdownCard({
               <span className="text-muted-foreground hidden text-[10px] sm:inline">
                 Updated {new Date(data.timestamp).toLocaleTimeString()}
               </span>
+            )}
+            {enableExport && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+                onClick={handleExport}
+                disabled={!data || exporting}
+                aria-label="Export cost breakdown to Excel"
+              >
+                <Download
+                  className={`h-4 w-4 ${exporting ? "animate-pulse" : ""}`}
+                />
+                Export
+              </Button>
             )}
             <Button
               variant="outline"
