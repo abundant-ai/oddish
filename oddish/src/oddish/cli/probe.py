@@ -24,15 +24,22 @@ from oddish.cli.config import (
 
 console = Console()
 
+probe_app = typer.Typer(
+    help="Queue probe trials against a task, and manage org skills.",
+    no_args_is_help=False,
+)
 
+
+@probe_app.callback(invoke_without_command=True)
 def probe(
+    ctx: typer.Context,
     task_id: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--task",
             help="Existing task ID to queue the probe against.",
         ),
-    ],
+    ] = None,
     instructions: Annotated[
         Optional[str],
         typer.Option(
@@ -88,6 +95,13 @@ def probe(
         oddish probe --task task_123 --instructions "investigate test flakiness"
         oddish probe --task task_123 -i "find the slow query" --result-focus "root cause"
     """
+    if ctx.invoked_subcommand is not None:
+        return
+    if not task_id:
+        error_console.print(
+            "[red]--task is required to queue a probe.[/red]"
+        )
+        raise typer.Exit(1)
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
