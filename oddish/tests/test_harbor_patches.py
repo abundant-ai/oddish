@@ -4,7 +4,9 @@ import base64
 import importlib
 import importlib.machinery
 import json
+import logging
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -16,22 +18,37 @@ import pytest
 from harbor.trial.hooks import TrialEvent
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+_registry_auth = importlib.import_module("oddish.registry_auth")
 harbor_patches = importlib.import_module("oddish.workers.harbor.patches")
 harbor_entry = importlib.import_module("oddish.workers.harbor._entry")
 
+RegistryCredential = _registry_auth.RegistryCredential
+current_registry_credentials = _registry_auth.current_registry_credentials
+
 
 class _FakeStrategy:
-    def __init__(self, *, stdout="", stderr="", raises: Exception | None = None):
+    def __init__(
+        self, *, stdout="", stderr="", return_code=0, raises: Exception | None = None
+    ):
         self._stdout = stdout
         self._stderr = stderr
+        self._return_code = return_code
         self._raises = raises
-        self.calls: list[str] = []
+        self.calls: list[tuple[str, dict | None]] = []
+        self.uploads: list[tuple[str, str]] = []
 
-    async def _vm_exec(self, command, timeout_sec=None):
-        self.calls.append(command)
+    async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+        self.calls.append((command, env))
         if self._raises is not None:
             raise self._raises
-        return SimpleNamespace(stdout=self._stdout, stderr=self._stderr, return_code=0)
+        return SimpleNamespace(
+            stdout=self._stdout, stderr=self._stderr, return_code=self._return_code
+        )
+
+    def _stage_file_to_host(self, local_path, target_path):
+        with open(local_path, encoding="utf-8") as handle:
+            self.uploads.append((handle.read(), target_path))
 
 
 async def _ok(_self):
@@ -49,10 +66,20 @@ def _assert_shell_parses(command: str) -> None:
     subprocess.run(["sh", "-n", "-c", command], check=True)
 
 
+@pytest.fixture
+def creds():
+    cred = RegistryCredential("alice", "secrettoken", "docker.io")
+    token = current_registry_credentials.set([cred])
+    try:
+        yield [cred]
+    finally:
+        current_registry_credentials.reset(token)
+
+
 @pytest.mark.asyncio
 async def test_wrapper_passes_through_on_success():
     strategy = _FakeStrategy()
-    wrapped = harbor_patches._wrap_wait_for_docker_daemon(_ok)
+    wrapped = harbor_patches._wrap_wait_for_docker_daemon(_ok, with_diagnostics=True)
 
     assert await wrapped(strategy) is None
     assert strategy.calls == []
@@ -62,7 +89,9 @@ async def test_wrapper_passes_through_on_success():
 async def test_wrapper_folds_dockerd_log_into_error():
     original = "Docker daemon not ready after 60s. Last output: Cannot connect"
     strategy = _FakeStrategy(stdout="overlay2: driver failed: not supported")
-    wrapped = harbor_patches._wrap_wait_for_docker_daemon(_boom(original))
+    wrapped = harbor_patches._wrap_wait_for_docker_daemon(
+        _boom(original), with_diagnostics=True
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         await wrapped(strategy)
@@ -74,10 +103,27 @@ async def test_wrapper_folds_dockerd_log_into_error():
 
 
 @pytest.mark.asyncio
+async def test_wrapper_without_diagnostics_reraises_bare():
+    original = "Docker daemon not ready after 60s. Last output: Cannot connect"
+    strategy = _FakeStrategy(stdout="should not be gathered")
+    wrapped = harbor_patches._wrap_wait_for_docker_daemon(
+        _boom(original), with_diagnostics=False
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await wrapped(strategy)
+
+    assert str(excinfo.value) == original
+    assert strategy.calls == []
+
+
+@pytest.mark.asyncio
 async def test_wrapper_never_masks_original_when_diagnostics_fail():
     original = "Docker daemon not ready after 60s. Last output: Cannot connect"
     strategy = _FakeStrategy(raises=RuntimeError("sandbox gone"))
-    wrapped = harbor_patches._wrap_wait_for_docker_daemon(_boom(original))
+    wrapped = harbor_patches._wrap_wait_for_docker_daemon(
+        _boom(original), with_diagnostics=True
+    )
 
     with pytest.raises(RuntimeError) as excinfo:
         await wrapped(strategy)
@@ -87,30 +133,192 @@ async def test_wrapper_never_masks_original_when_diagnostics_fail():
     assert "diagnostics unavailable" in message
 
 
-def test_apply_harbor_patches_is_idempotent(monkeypatch):
-    calls = {"diag": 0, "daytona_mirror": 0, "modal_mirror": 0}
+@pytest.mark.asyncio
+async def test_collect_diagnostics_never_raises():
+    strategy = _FakeStrategy(raises=ValueError("boom"))
+    out = await harbor_patches._collect_dockerd_diagnostics(strategy)
+    assert "diagnostics unavailable" in out
 
+
+@pytest.mark.asyncio
+async def test_login_stages_docker_config_without_token_in_command(creds):
+    strategy = _FakeStrategy()
+    await harbor_patches._wrap_wait_for_docker_daemon(_ok, with_diagnostics=True)(
+        strategy
+    )
+
+    assert len(strategy.calls) == 1
+    command, env = strategy.calls[0]
+    assert command == harbor_patches._REGISTRY_LOGIN_CMD
+    assert env is None
+    assert "secrettoken" not in command
+
+    assert len(strategy.uploads) == 1
+    text, target = strategy.uploads[0]
+    assert target == harbor_patches._DOCKER_CONFIG_STAGED_PATH
+    cfg = json.loads(text)
+    encoded = base64.b64encode(b"alice:secrettoken").decode()
+    assert cfg["auths"]["https://index.docker.io/v1/"]["auth"] == encoded
+
+
+@pytest.mark.asyncio
+async def test_login_is_noop_without_credentials():
+    token = current_registry_credentials.set(None)
+    try:
+        strategy = _FakeStrategy()
+        await harbor_patches._perform_registry_login(strategy)
+        assert strategy.calls == []
+        assert strategy.uploads == []
+        assert not getattr(strategy, harbor_patches._LOGGED_IN_ATTR, False)
+    finally:
+        current_registry_credentials.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_login_failure_raises_into_daemon_wait(creds):
+    strategy = _FakeStrategy(raises=RuntimeError("exec failed"))
+    with pytest.raises(RuntimeError, match="Registry login failed"):
+        await harbor_patches._wrap_wait_for_docker_daemon(_ok, with_diagnostics=True)(
+            strategy
+        )
+
+
+@pytest.mark.asyncio
+async def test_login_failure_has_no_secret_cause(creds):
+    strategy = _FakeStrategy(raises=RuntimeError("exec failed: secrettoken"))
+
+    with pytest.raises(RuntimeError, match="Registry login failed") as excinfo:
+        await harbor_patches._perform_registry_login(strategy)
+
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "secrettoken" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_login_skips_second_login(creds):
+    strategy = _FakeStrategy()
+
+    await harbor_patches._perform_registry_login(strategy)
+    await harbor_patches._perform_registry_login(strategy)
+
+    assert len(strategy.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_token(creds, caplog):
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError("exec failed: secrettoken")
+
+    strategy = _LeakyStrategy()
+    with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+        with pytest.raises(RuntimeError):
+            await harbor_patches._perform_registry_login(strategy)
+
+    assert "secrettoken" not in caplog.text
+    assert "***" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_shell_quoted_token(caplog):
+    token_value = "abc'def"
+    token = current_registry_credentials.set(
+        [RegistryCredential("alice", token_value, "docker.io")]
+    )
+
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError(f"exec failed: {shlex.quote(token_value)}")
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+            with pytest.raises(RuntimeError):
+                await harbor_patches._perform_registry_login(_LeakyStrategy())
+    finally:
+        current_registry_credentials.reset(token)
+
+    assert token_value not in caplog.text
+    assert shlex.quote(token_value) not in caplog.text
+    assert "***" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_login_exception_log_redacts_json_escaped_token(caplog):
+    token_value = 'abc"def'
+    token = current_registry_credentials.set(
+        [RegistryCredential("alice", token_value, "docker.io")]
+    )
+
+    class _LeakyStrategy(_FakeStrategy):
+        async def _vm_exec(self, command, *, env=None, timeout_sec=None):
+            self.calls.append((command, env))
+            raise RuntimeError(f"exec failed: {json.dumps(token_value)[1:-1]}")
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+            with pytest.raises(RuntimeError):
+                await harbor_patches._perform_registry_login(_LeakyStrategy())
+    finally:
+        current_registry_credentials.reset(token)
+
+    assert token_value not in caplog.text
+    assert json.dumps(token_value)[1:-1] not in caplog.text
+    assert "***" in caplog.text
+
+
+def test_redact_replaces_overlapping_secrets_longest_first():
+    redacted = harbor_patches._redact(
+        "token abc abcdef bob:abc bob:abcdef",
+        ["abc", "abcdef", "bob:abc", "bob:abcdef"],
+    )
+
+    assert "abc" not in redacted
+    assert "abcdef" not in redacted
+    assert "bob:" not in redacted
+    assert redacted == "token *** *** *** ***"
+
+
+def test_login_config_redacts_docker_config_auth(creds):
+    _config, secrets, _registries = harbor_patches._registry_login_config(creds)
+    encoded = base64.b64encode(b"alice:secrettoken").decode()
+
+    assert encoded in secrets
+    assert encoded not in harbor_patches._redact(encoded, secrets)
+
+
+@pytest.mark.asyncio
+async def test_login_nonzero_log_redacts_token(creds, caplog):
+    strategy = _FakeStrategy(stdout="bad secrettoken", return_code=1)
+
+    with caplog.at_level(logging.WARNING, logger=harbor_patches.__name__):
+        with pytest.raises(RuntimeError):
+            await harbor_patches._perform_registry_login(strategy)
+
+    assert "secrettoken" not in caplog.text
+    assert "***" in caplog.text
+
+
+def test_apply_harbor_patches_is_idempotent(monkeypatch):
+    calls = {"daytona": 0, "modal": 0}
     monkeypatch.setattr(harbor_patches, "_PATCHED", False)
     monkeypatch.setattr(
         harbor_patches,
-        "_patch_dind_docker_daemon_diagnostics",
-        lambda: calls.__setitem__("diag", calls["diag"] + 1),
+        "_patch_daytona_dind",
+        lambda: calls.__setitem__("daytona", calls["daytona"] + 1),
     )
     monkeypatch.setattr(
         harbor_patches,
-        "_patch_daytona_registry_mirror",
-        lambda: calls.__setitem__("daytona_mirror", calls["daytona_mirror"] + 1),
-    )
-    monkeypatch.setattr(
-        harbor_patches,
-        "_patch_modal_registry_mirror",
-        lambda: calls.__setitem__("modal_mirror", calls["modal_mirror"] + 1),
+        "_patch_modal_dind",
+        lambda: calls.__setitem__("modal", calls["modal"] + 1),
     )
 
     harbor_patches.apply_harbor_patches()
     harbor_patches.apply_harbor_patches()
 
-    assert calls == {"diag": 1, "daytona_mirror": 1, "modal_mirror": 1}
+    assert calls == {"daytona": 1, "modal": 1}
 
 
 def test_install_method_patch_replaces_target_once(monkeypatch):
@@ -412,7 +620,9 @@ async def test_modal_wait_wrapper_runs_orig_before_inject(monkeypatch):
 
     monkeypatch.setattr(harbor_patches, "_inject_mirror_and_reload", _fake_inject)
 
-    wrapped = harbor_patches._wrap_modal_wait_for_docker_daemon(_orig)
+    wrapped = harbor_patches._wrap_wait_for_docker_daemon(
+        _orig, with_diagnostics=False, with_mirror=True
+    )
     await wrapped(object())
 
     assert order == ["orig", "inject"]
@@ -424,10 +634,6 @@ async def test_modal_wait_wrapper_runs_orig_before_inject(monkeypatch):
         (lambda: harbor_patches._wrap_wait_for_docker_daemon(_ok), "_oddish_wrapped"),
         (
             lambda: harbor_patches._wrap_daytona_vm_exec(_CaptureStrategy._vm_exec),
-            "_oddish_mirror_wrapped",
-        ),
-        (
-            lambda: harbor_patches._wrap_modal_wait_for_docker_daemon(_ok),
             "_oddish_mirror_wrapped",
         ),
     ],

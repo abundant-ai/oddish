@@ -1625,6 +1625,7 @@ name = "oddish"
 version = "0.1.12"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "harbor" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -1735,6 +1736,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'worker'", specifier = "==0.76.0" },
     { name = "asyncpg", marker = "extra == 'server'", specifier = "==0.31.0" },
     { name = "better-profanity", marker = "extra == 'server'", specifier = ">=0.7.0,<1.0" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.185.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },

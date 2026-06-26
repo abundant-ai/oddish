@@ -18,7 +18,7 @@ export ODDISH_API_KEY="ok_..."
 
 **Commands:**
 
-- `oddish run` - submit a job (or re-run trials/analysis/verdict with `--retry`)
+- `oddish run` - submit work, retry failed trials, or re-run task-level QA
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
@@ -38,7 +38,7 @@ A typical run flows through these commands:
 1. `oddish run` (or `oddish upload`) — submit a task, dataset, or sweep and get back a task ID and experiment ID.
 2. `oddish status` — discover what's in flight, then drill into a specific task or experiment to see trial-level progress and rewards.
 3. `oddish pull` — once you have a trial, task, or experiment ID, download its logs, results, trajectories, and artifact files to disk.
-4. `oddish run --retry` — re-queue failed trials, or re-run analysis/verdict, for a trial, task, or experiment.
+4. `oddish run --retry` — re-queue failed trials or re-run task-level QA.
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
@@ -94,6 +94,11 @@ Options
 - `--ae`, `--agent-env TEXT` - Pass agent env vars as `KEY=VALUE`; can be used multiple times
 - `--ak`, `--agent-kwarg TEXT` - Pass agent kwargs as `key=value`; can be used multiple times
 - `--artifact TEXT` - Download an environment path as an artifact after the trial
+- `--registry-login TEXT` - Per-run container-registry login as `username=USER,token=TOKEN[,registry=docker.io]`; repeatable and honored by `--retry`.
+  Wrap comma-bearing values like `--registry-login "username=USER,token='a,b'"`.
+  Credentials authenticate sandbox image pulls, are encrypted across the queue, and are logged out on teardown.
+  Docker Hub creds can also come from `ODDISH_DOCKERHUB_USERNAME` / `ODDISH_DOCKERHUB_TOKEN`.
+  Prefer a Docker Hub access token over an account password.
 - `--retry` - Re-run an existing target instead of submitting new work (see below)
 - `--qa` - With `--retry`: re-run the task-level QA job (classify every trial + synthesize the verdict) instead of retrying trials
 - `--yes`, `-y` - Skip confirmation prompts (used with `--retry`)
@@ -341,12 +346,9 @@ Options
 
 ## Delete Data
 
-Use `oddish delete` to delete task data.
+Use `oddish delete` to delete experiments or trials.
 
 ```bash
-# Delete task
-oddish delete <task_id>
-
 # Delete an experiment
 oddish delete --experiment <experiment_id>
 
