@@ -230,6 +230,7 @@ function ExperimentHeaderMeta({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {headerStatus}
       {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
@@ -237,7 +238,6 @@ function ExperimentHeaderMeta({
           <span>{isInitialLoading ? "Loading tasks..." : "Refreshing..."}</span>
         </div>
       )}
-      {headerStatus}
       <Button
         type="button"
         variant="ghost"
