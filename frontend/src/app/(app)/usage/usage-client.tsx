@@ -93,6 +93,7 @@ export function UsageClient({
         <CostBreakdownCard
           showChart={false}
           enableSearch
+          enableExport
           experimentLimit={500}
           userLimit={500}
           refreshIntervalMs={0}
