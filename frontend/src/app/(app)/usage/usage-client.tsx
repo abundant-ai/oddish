@@ -62,6 +62,24 @@ export function UsageClient({
     window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
   };
 
+  // Mirror the Cost tab's search in ?q= so it's deep-linkable and survives
+  // reload / back-forward, updated client-side via the History API.
+  const urlSearch = searchParams.get("q") ?? "";
+  const [searchQuery, setSearchQuery] = useState(urlSearch);
+
+  useEffect(() => {
+    setSearchQuery(urlSearch);
+  }, [urlSearch]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set("q", value);
+    else params.delete("q");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  };
+
   const queueState = (
     <UsageOverviewCard
       queues={queues}
@@ -97,6 +115,8 @@ export function UsageClient({
           experimentLimit={500}
           userLimit={500}
           refreshIntervalMs={0}
+          searchValue={searchQuery}
+          onSearchChange={handleSearchChange}
         />
       </TabsContent>
     </Tabs>
