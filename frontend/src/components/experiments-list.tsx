@@ -107,11 +107,7 @@ export function ExperimentsList({
           {i > 0 ? <span aria-hidden>·</span> : null}
           <Link
             href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
-            className={cn(
-              "inline-block max-w-[220px] truncate align-bottom underline-offset-2 hover:underline",
-              linkClassName
-            )}
-            title={exp.name}
+            className={cn("underline-offset-2 hover:underline", linkClassName)}
           >
             {exp.name}
           </Link>
