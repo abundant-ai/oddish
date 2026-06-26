@@ -223,7 +223,7 @@ function ModelMix({
                     key={`${m.model}-${m.provider}`}
                     type="button"
                     onClick={() => onSelect(m.model)}
-                    className="flex w-full cursor-pointer justify-between gap-4 font-mono text-[11px] hover:underline"
+                    className="flex w-full cursor-pointer justify-between gap-4 text-left font-mono text-[11px] hover:underline"
                     title="Filter by this model"
                   >
                     {content}
@@ -518,12 +518,17 @@ function CostTrendChart({
     () => (filterKeys ? new Set(filterKeys) : null),
     [filterKeys],
   );
-  const visibleKeys = useMemo(() => {
-    let keys = series.keys.map((k) => k.key);
-    if (filterSet) keys = keys.filter((k) => filterSet.has(k));
-    else keys = keys.filter((k) => !hidden.has(k));
-    return keys;
-  }, [series.keys, hidden, filterSet]);
+  // The keys this chart can show: all of them, or — when a filter is active —
+  // just the matched ones. The legend (Show all / Hide all / per-chip toggle)
+  // always operates on this set, so the selected series can be removed/re-added.
+  const candidateKeys = useMemo(() => {
+    const all = series.keys.map((k) => k.key);
+    return filterSet ? all.filter((k) => filterSet.has(k)) : all;
+  }, [series.keys, filterSet]);
+  const visibleKeys = useMemo(
+    () => candidateKeys.filter((k) => !hidden.has(k)),
+    [candidateKeys, hidden],
+  );
 
   const data = useMemo(() => {
     const runKey: Record<string, number> = {};
@@ -562,25 +567,21 @@ function CostTrendChart({
     <div className="space-y-2 rounded-lg border p-3">
       <div className="flex items-center justify-between">
         <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
-          {!filterSet && (
-            <>
-              <button
-                type="button"
-                onClick={() => setHidden(new Set())}
-                className="hover:text-foreground"
-              >
-                Show all
-              </button>
-              <span>·</span>
-              <button
-                type="button"
-                onClick={() => setHidden(new Set(series.keys.map((k) => k.key)))}
-                className="hover:text-foreground"
-              >
-                Hide all
-              </button>
-            </>
-          )}
+          <button
+            type="button"
+            onClick={() => setHidden(new Set())}
+            className="hover:text-foreground"
+          >
+            Show all
+          </button>
+          <span>·</span>
+          <button
+            type="button"
+            onClick={() => setHidden(new Set(candidateKeys))}
+            className="hover:text-foreground"
+          >
+            Hide all
+          </button>
         </div>
         <div className="flex items-center gap-1">
           {(["interval", "cumulative"] as const).map((m) => (
@@ -643,12 +644,11 @@ function CostTrendChart({
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
         {legendKeys.map((k) => {
-          const isHidden = !filterSet && hidden.has(k.key);
+          const isHidden = hidden.has(k.key);
           return (
             <button
               key={k.key}
               type="button"
-              disabled={!!filterSet}
               onClick={() =>
                 setHidden((prev) => {
                   const next = new Set(prev);
@@ -657,9 +657,9 @@ function CostTrendChart({
                   return next;
                 })
               }
-              className={`inline-flex items-center gap-1 ${
+              className={`inline-flex items-center gap-1 hover:opacity-80 ${
                 isHidden ? "opacity-40" : ""
-              } ${filterSet ? "cursor-default" : "hover:opacity-80"}`}
+              }`}
             >
               <span
                 className="inline-block h-2 w-2 rounded-sm"
