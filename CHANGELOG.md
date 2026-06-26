@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-26]
+
+### Added
+
+- Admin cost breakdown dashboard tab (`/admin` → Costs) with per-window totals (24h/7d/30d/all-time), cost-over-time chart stacked by model/user/agent dimensions, and ranked tables by user, model, and experiment; `GET /api/admin/costs` backend endpoint aggregates globally using native `cost_usd` when present and per-model token estimates otherwise; cost split between native and estimated spend is surfaced per entry (#452)
+- Run Probe tab in the QA tab bar (`/qa/run`) with a full-page task search that replaces the old "+ New probe run" dialog on the Probe Runs page; typing filters tasks, clicking one navigates to `/tasks/{id}/probe` to configure and launch; default landing on `/qa` still shows Probe Runs (#478)
+
+### Changed
+
+- Probe presets and skills unified into a single Skills feature: `SkillModel` gains optional `operator_prompt`, `result_focus`, and `evaluation_metric` directive columns; probe form now selects a Skill (not a preset); skills mount **only** when explicitly selected at launch via `skill_ids` rather than auto-mounting into every probe; `probe_presets` table, router, and schemas fully removed; `/qa/presets` redirects to `/qa/skills`; existing presets migrated into skills (ids preserved); 13 built-in directive and bundle seed skills seeded on fresh databases; auto-probe default repointed to the `cheat-detector` seed skill (#477)
+- Probe trials now render as a sorted-last "Probe" agent group inside the normal trials grid on both the task detail page and the experiment matrix, scoped to the task's effective version; the separate Probe tab is removed from the experiment view; backend batch-loads effective-version probe trials and merges them into each task's trials while keeping aggregate counts (total/completed/reward) probe-free (#471)
+- Probe launch buttons (task detail header, experiment trials table icon, and experiment "New probe") now navigate directly to `/tasks/{id}/probe` instead of opening an inline modal; the "Submit a probe run" CTA interstitial on the probe page is removed so the form renders immediately (#474)
+- Preview database schema bootstrap reverted to model-based creation (`Base.metadata.create_all` + `alembic stamp head`) instead of running the full Alembic migration chain on rebuild; migration fingerprint removed from schema trust marker (#469)
+
+### Fixed
+
+- Production incident: every `GET /tasks` (experiments page) 500-ing and all worker jobs failing with `InvalidRequestError: One or more mappers failed to initialize` — `OrganizationModel.api_keys` and `UserModel.api_keys` lost their join condition after #466 dropped DB-level FKs; fixed by adding explicit `primaryjoin` with `foreign()` annotation and `viewonly=True` on both relationships (#468)
+- Trials with verification disabled (`verifier.disable: true`) that complete with `reward=None` no longer consume all retry attempts before failing; the worker now terminates them as `SUCCESS` on the first attempt; the UI shows a new `scoreless` status (slate "SCORELESS" badge, minus-circle icon) instead of treating them as perpetually pending (#462)
+
+---
+
 ## [2026-06-25]
 
 ### Added
