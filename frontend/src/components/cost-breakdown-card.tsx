@@ -161,7 +161,9 @@ function ModelLabel({ model }: { model: CostModelBreakdown }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <QueueKeyIcon model={model.model} size={13} />
-      <span className="font-mono text-[11px]">{model.model}</span>
+      <span className="font-mono text-[11px] group-hover:underline">
+        {model.model}
+      </span>
       <span className="text-muted-foreground text-[10px]">
         {model.provider}
       </span>
@@ -170,14 +172,31 @@ function ModelLabel({ model }: { model: CostModelBreakdown }) {
 }
 
 // Top model inline + "+N more" with a tooltip listing every model's cost.
-function ModelMix({ models }: { models: CostModelBreakdown[] }) {
+function ModelMix({
+  models,
+  onSelect,
+}: {
+  models: CostModelBreakdown[];
+  onSelect?: (query: string) => void;
+}) {
   if (models.length === 0)
     return <span className="text-muted-foreground">—</span>;
   const [top, ...rest] = models;
   return (
     <span className="inline-flex items-center gap-1.5">
       <QueueKeyIcon model={top.model} size={13} />
-      <span className="font-mono text-[11px]">{top.model}</span>
+      {onSelect ? (
+        <button
+          type="button"
+          onClick={() => onSelect(top.model)}
+          className="cursor-pointer font-mono text-[11px] hover:underline"
+          title="Filter by this model"
+        >
+          {top.model}
+        </button>
+      ) : (
+        <span className="font-mono text-[11px]">{top.model}</span>
+      )}
       {rest.length > 0 && (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -187,18 +206,37 @@ function ModelMix({ models }: { models: CostModelBreakdown[] }) {
           </TooltipTrigger>
           <TooltipContent className="max-w-[320px]">
             <div className="space-y-0.5">
-              {models.map((m) => (
-                <div
-                  key={`${m.model}-${m.provider}`}
-                  className="flex justify-between gap-4 font-mono text-[11px]"
-                >
-                  <span>
-                    {m.model}{" "}
-                    <span className="text-muted-foreground">{m.provider}</span>
-                  </span>
-                  <span>{formatCostUsd(m.cost_usd)}</span>
-                </div>
-              ))}
+              {models.map((m) => {
+                const content = (
+                  <>
+                    <span>
+                      {m.model}{" "}
+                      <span className="text-muted-foreground">
+                        {m.provider}
+                      </span>
+                    </span>
+                    <span>{formatCostUsd(m.cost_usd)}</span>
+                  </>
+                );
+                return onSelect ? (
+                  <button
+                    key={`${m.model}-${m.provider}`}
+                    type="button"
+                    onClick={() => onSelect(m.model)}
+                    className="flex w-full cursor-pointer justify-between gap-4 font-mono text-[11px] hover:underline"
+                    title="Filter by this model"
+                  >
+                    {content}
+                  </button>
+                ) : (
+                  <div
+                    key={`${m.model}-${m.provider}`}
+                    className="flex justify-between gap-4 font-mono text-[11px]"
+                  >
+                    {content}
+                  </div>
+                );
+              })}
             </div>
           </TooltipContent>
         </Tooltip>
@@ -1418,7 +1456,7 @@ function UserTable({
               {user.experiment_count.toLocaleString()}
             </TableCell>
             <TableCell>
-              <ModelMix models={user.models} />
+              <ModelMix models={user.models} onSelect={onSelect} />
             </TableCell>
           </TableRow>
         ))}
@@ -1459,7 +1497,7 @@ function ModelTable({
                 <button
                   type="button"
                   onClick={() => onSelect(model.model)}
-                  className="hover:underline"
+                  className="group cursor-pointer"
                   title="Filter by this model"
                 >
                   <ModelLabel model={model} />
@@ -1549,7 +1587,7 @@ function ExperimentTable({
               {exp.trial_count.toLocaleString()}
             </TableCell>
             <TableCell>
-              <ModelMix models={exp.models} />
+              <ModelMix models={exp.models} onSelect={onSelect} />
             </TableCell>
             <TableCell className="text-muted-foreground text-right text-[11px]">
               {formatAge(exp.last_activity_at)}
