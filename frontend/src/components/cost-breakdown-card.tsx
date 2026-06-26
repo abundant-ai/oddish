@@ -820,7 +820,12 @@ export function CostBreakdownCard({
                   ranked descending · {windowLabel.toLowerCase()}
                 </span>
               </div>
-              <ExperimentTable experiments={pagedExperiments} />
+              <ExperimentTable
+                experiments={pagedExperiments}
+                onSelect={
+                  enableSearch ? (queryValue) => setSearch(queryValue) : undefined
+                }
+              />
               {filteredExperiments.length > 10 && (
                 <TablePagination
                   total={filteredExperiments.length}
@@ -1062,8 +1067,10 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
 
 function ExperimentTable({
   experiments,
+  onSelect,
 }: {
   experiments: CostExperimentBreakdown[];
+  onSelect?: (query: string) => void;
 }) {
   if (experiments.length === 0)
     return (
@@ -1096,7 +1103,23 @@ function ExperimentTable({
               </Link>
             </TableCell>
             <TableCell className="text-muted-foreground text-[11px]">
-              {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
+              {onSelect &&
+              (exp.owner_email || exp.owner_name || exp.owner_user_id) ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    onSelect(
+                      exp.owner_email || exp.owner_name || exp.owner_user_id || "",
+                    )
+                  }
+                  className="hover:text-foreground text-left hover:underline"
+                  title="Filter by this owner"
+                >
+                  {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
+                </button>
+              ) : (
+                (exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—")
+              )}
             </TableCell>
             <CostCell cost={exp.cost_usd} estimated={exp.cost_estimated_usd} />
             <TableCell className="text-right font-mono text-xs">
