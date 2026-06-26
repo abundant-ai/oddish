@@ -846,11 +846,8 @@ async def browse_tasks_core(
         counters_by_task = {
             str(row["task_id"]): dict(row) for row in counter_rows.mappings()
         }
-        # All-time experiment membership (every experiment the task has ever
-        # belonged to, across all versions) via the ``task_experiments``
-        # association table. Mirrors the task-detail page, which loads the
-        # ``TaskModel.experiments`` relationship, and keeps the card in sync
-        # with how user tags are surfaced (also all-time, not version-scoped).
+        # All-time experiment membership via ``task_experiments``, matching the
+        # task-detail page (and user tags) rather than the current-version trials.
         exp_where = [
             task_experiments.c.task_id.in_(task_ids),
             task_experiments.c.deleted_at.is_(None),

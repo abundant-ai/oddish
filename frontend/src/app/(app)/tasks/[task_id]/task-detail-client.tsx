@@ -69,18 +69,18 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  }
+  },
 );
 
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel
+      (mod) => mod.TrialDetailPanel,
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  }
+  },
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -99,7 +99,7 @@ function readVersionFromQuery(): string | null {
 
 function writeVersionToQuery(
   versionId: string | null,
-  defaultId: string | null
+  defaultId: string | null,
 ) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -294,7 +294,7 @@ function TaskDetailHeader({
                   ? `${title} — view on GitHub`
                   : "View pull request on GitHub"
               }
-              className="hover:bg-accent inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors"
+              className="inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors hover:bg-accent"
             >
               <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
               <span className="min-w-0 truncate">
@@ -417,7 +417,7 @@ function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   const status = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message
+    trial.error_message,
   );
   const config = STATUS_CONFIG[status];
   const badgeLabel =
@@ -503,7 +503,7 @@ function AgentCard({
         const bTime = b.finished_at || b.started_at || b.created_at;
         return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
       }),
-    [trials]
+    [trials],
   );
 
   return (
@@ -617,7 +617,7 @@ export function TaskDetailClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: initialDetail ?? undefined,
-    }
+    },
   );
 
   const detail = data ?? initialDetail ?? null;
@@ -628,7 +628,7 @@ export function TaskDetailClient({
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
-    () => initialVersionId ?? null
+    () => initialVersionId ?? null,
   );
 
   useEffect(() => {
@@ -651,7 +651,7 @@ export function TaskDetailClient({
       setSelectedVersionId(id);
       writeVersionToQuery(id, defaultVersionId);
     },
-    [defaultVersionId]
+    [defaultVersionId],
   );
 
   const trialsForVersion = useMemo(() => {
@@ -675,21 +675,21 @@ export function TaskDetailClient({
             },
           ]
         : [],
-    [task, trialsForVersion]
+    [task, trialsForVersion],
   );
 
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
-    [tasksForGrouping]
+    [tasksForGrouping],
   );
 
   const realAgentCount = useMemo(
     () => agentSummaries.filter((s) => s.key !== PROBE_AGENT_KEY).length,
-    [agentSummaries]
+    [agentSummaries],
   );
   const realTrialCount = useMemo(
     () => trialsForVersion.filter((t) => !t.is_probe).length,
-    [trialsForVersion]
+    [trialsForVersion],
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -713,7 +713,7 @@ export function TaskDetailClient({
           trials,
         };
       }),
-    [agentSummaries, trialsByAgentKey]
+    [agentSummaries, trialsByAgentKey],
   );
 
   const orderedTrials = useMemo(() => {
@@ -737,7 +737,7 @@ export function TaskDetailClient({
         trialGroups,
       });
     },
-    [orderedTrials, trialGroups]
+    [orderedTrials, trialGroups],
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -753,10 +753,10 @@ export function TaskDetailClient({
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
       setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
+        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev,
       );
     },
-    []
+    [],
   );
 
   const handleRerun = useCallback(() => {
@@ -783,7 +783,7 @@ export function TaskDetailClient({
       void mutate();
     } catch (err) {
       setJudgeError(
-        err instanceof Error ? err.message : "Failed to queue judge"
+        err instanceof Error ? err.message : "Failed to queue judge",
       );
     } finally {
       setIsRunningJudge(false);
@@ -990,7 +990,8 @@ export function TaskDetailClient({
             </h2>
             <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
               {realAgentCount} agent
-              {realAgentCount === 1 ? "" : "s"} · {realTrialCount} trial
+              {realAgentCount === 1 ? "" : "s"} ·{" "}
+              {realTrialCount} trial
               {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>
@@ -1076,7 +1077,7 @@ export function TaskDetailClient({
                             trial: null,
                             trialIndex: null,
                           }
-                        : prev
+                        : prev,
                     )
                   }
                   onRetry={handleRerun}
