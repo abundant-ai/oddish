@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
 from oddish.core.result_focus_schema import (
     UnsupportedSchemaError,
     normalize_findings_schema,
@@ -56,7 +57,11 @@ async def create_probe_preset_core(
     org_id: str | None = None,
 ) -> ProbePresetModel:
     """Create a custom (non-seed) preset owned by ``org_id``."""
-    spec = parse_result_focus(data.result_focus)
+    # A JSON-intended but malformed result_focus is repaired here, at the head of
+    # the same extraction stream the probe paths use, so the stored value is the
+    # cleaned JSON and downstream parsing never sees the malformed input.
+    result_focus = await repair_result_focus_if_needed(data.result_focus, kind="schema")
+    spec = parse_result_focus(result_focus)
     if spec is not None:
         try:
             normalize_findings_schema(spec)
@@ -69,7 +74,7 @@ async def create_probe_preset_core(
         agent=data.agent,
         model=data.model,
         operator_prompt=data.operator_prompt,
-        result_focus=data.result_focus,
+        result_focus=result_focus,
         evaluation_metric=data.evaluation_metric,
         is_seed=False,
     )
@@ -113,6 +118,9 @@ async def update_probe_preset_core(
     preset = await _get_owned_preset(session, preset_id=preset_id, org_id=org_id)
     updates = data.model_dump(exclude_unset=True)
     if "result_focus" in updates:
+        updates["result_focus"] = await repair_result_focus_if_needed(
+            updates["result_focus"], kind="schema"
+        )
         spec = parse_result_focus(updates["result_focus"])
         if spec is not None:
             try:

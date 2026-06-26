@@ -36,6 +36,23 @@ class _FakeClient:
         self.messages = _FakeMessages(text, exc)
 
 
+class _SeqMessages:
+    """Returns a different text per ``create`` call (for multi-pass repair)."""
+
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = texts
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return _FakeMessage(self._texts[len(self.calls) - 1])
+
+
+class _SeqClient:
+    def __init__(self, texts: list[str]) -> None:
+        self.messages = _SeqMessages(texts)
+
+
 @pytest.mark.asyncio
 async def test_repair_parses_clean_llm_json():
     client = _FakeClient(text='{"verdict": "string"}')
@@ -50,6 +67,25 @@ async def test_repair_extracts_object_from_fenced_or_prose_output():
     client = _FakeClient(text='Here you go:\n```json\n{"a": 1}\n```')
     obj, _ = await repair_result_focus_json("{'a': 1}", client=client)
     assert obj == {"a": 1}
+
+
+@pytest.mark.asyncio
+async def test_repair_llm_extraction_fallback_salvages_unparseable_output():
+    # First repair pass returns prose with no JSON at all -> deterministic
+    # extraction fails -> a second LLM pass salvages the object.
+    client = _SeqClient(["sorry, here is the spec", '{"verdict": "string"}'])
+    obj, raw = await repair_result_focus_json('{"verdict": "string",}', client=client)
+    assert obj == {"verdict": "string"}
+    assert raw == "sorry, here is the spec"
+    assert len(client.messages.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_repair_returns_none_when_both_passes_fail():
+    client = _SeqClient(["not json", "still not json"])
+    obj, _ = await repair_result_focus_json('{"verdict": "string",}', client=client)
+    assert obj is None
+    assert len(client.messages.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -91,3 +127,54 @@ async def test_if_needed_falls_back_to_original_when_repair_fails():
     malformed = '{"verdict": "string",}'
     out = await repair_result_focus_if_needed(malformed, client=client)
     assert out == malformed  # unchanged -> renderer does verbatim best-effort
+
+
+@pytest.mark.asyncio
+async def test_if_needed_repairs_array_intended_json():
+    # Leading "[" is JSON-intended (the leaf parser flags it as such), so a
+    # malformed array spec is queued for repair, not silently treated as prose.
+    client = _FakeClient(text='{"items": [1, 2]}')
+    out = await repair_result_focus_if_needed("[1, 2,]", client=client)
+    assert out == '{"items": [1, 2]}'
+    assert len(client.messages.calls) == 1
+
+
+def _sent_prompt(client: _FakeClient) -> str:
+    return client.messages.calls[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_kind_schema_uses_schema_repair_prompt():
+    client = _FakeClient(text='{"type": "object"}')
+    await repair_result_focus_json('{"type": "object",}', client=client, kind="schema")
+    prompt = _sent_prompt(client)
+    assert "JSON Schema" in prompt
+    assert "output specification" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_kind_output_spec_uses_output_spec_repair_prompt():
+    client = _FakeClient(text='{"verdict": "yes"}')
+    await repair_result_focus_json(
+        '{"verdict": "yes",}', client=client, kind="output_spec"
+    )
+    prompt = _sent_prompt(client)
+    assert "output specification" in prompt
+    assert "JSON Schema" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_default_kind_is_output_spec():
+    client = _FakeClient(text='{"verdict": "yes"}')
+    await repair_result_focus_json('{"verdict": "yes",}', client=client)
+    assert "output specification" in _sent_prompt(client)
+
+
+@pytest.mark.asyncio
+async def test_if_needed_threads_kind_to_repair_prompt():
+    client = _FakeClient(text='{"type": "object"}')
+    out = await repair_result_focus_if_needed(
+        '{"type": "object",}', client=client, kind="schema"
+    )
+    assert out == '{"type": "object"}'
+    assert "JSON Schema" in _sent_prompt(client)

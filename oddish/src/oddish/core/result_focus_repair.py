@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Literal
 
 from oddish.core.result_focus_schema import parse_result_focus
 
@@ -21,12 +22,48 @@ logger = logging.getLogger(__name__)
 # runs on the direct Anthropic API (ANTHROPIC_API_KEY), like the probe summary.
 REPAIR_MODEL = "claude-haiku-4-5"
 
-_REPAIR_PROMPT = (
-    "An operator supplied the text below as a JSON output specification, but it "
-    "does not parse as valid JSON. Repair it into a single valid JSON object that "
-    "preserves their intent as closely as possible. Output ONLY the JSON object — "
-    "no prose, no markdown, no code fences.\n\n"
+# ``result_focus`` is reused as JSON in two distinct ways and a malformed value
+# needs a different repair target for each:
+#   - "output_spec": the probe overlay renders it as the exact JSON the probe must
+#     emit, so we repair toward a single valid JSON *object/example*.
+#   - "schema": the analyzer feeds it to the Anthropic structured-outputs envelope,
+#     so we repair toward a single valid JSON *Schema* (type/properties/required).
+RepairKind = Literal["output_spec", "schema"]
+
+_REPAIR_PROMPT_OUTPUT_SPEC = (
+    "An operator supplied the text below as a JSON output specification — an "
+    "example of the exact JSON object they want produced — but it does not parse "
+    "as valid JSON. Repair it into a single valid JSON object that preserves their "
+    "intended fields and structure as closely as possible. Output ONLY the JSON "
+    "object — no prose, no markdown, no code fences.\n\n"
     "--- BEGIN result_focus ---\n{raw}\n--- END result_focus ---"
+)
+
+_REPAIR_PROMPT_SCHEMA = (
+    "An operator supplied the text below as a JSON Schema describing the required "
+    "shape of an analysis result, but it does not parse as valid JSON. Repair it "
+    "into a single valid JSON Schema object (Draft-7 style: a top-level \"type\", "
+    "\"properties\", and optionally \"required\"). Preserve their intended property "
+    "names, types, and nesting as closely as possible; do not invent constraints "
+    "or example values. Output ONLY the JSON object — no prose, no markdown, no "
+    "code fences.\n\n"
+    "--- BEGIN result_focus ---\n{raw}\n--- END result_focus ---"
+)
+
+_REPAIR_PROMPTS: dict[str, str] = {
+    "output_spec": _REPAIR_PROMPT_OUTPUT_SPEC,
+    "schema": _REPAIR_PROMPT_SCHEMA,
+}
+
+# Last-resort extraction: when even the repaired output won't parse deterministically,
+# ask the model to pull just the JSON object back out of its own messy text.
+_EXTRACT_PROMPT = (
+    "The text below is supposed to contain a single JSON object, but it may be "
+    "wrapped in prose, markdown, or code fences, or be slightly malformed. Extract "
+    "the intended JSON object and return it as a single valid JSON value, preserving "
+    "its fields and structure. Output ONLY the JSON object — no prose, no markdown, "
+    "no code fences.\n\n"
+    "--- BEGIN text ---\n{raw}\n--- END text ---"
 )
 
 
@@ -41,8 +78,38 @@ def _extract_object(text: str) -> dict | None:
     return None
 
 
-async def repair_result_focus_json(raw: str, *, client=None) -> tuple[dict | None, str]:
+async def _extract_object_llm(text: str, *, client) -> dict | None:
+    """LLM fallback for :func:`_extract_object`: ask the model to extract the JSON.
+
+    Used only when deterministic extraction fails on the repaired output. Never
+    raises — any error (network, still-unparseable) yields ``None`` so the caller
+    falls back to its existing best-effort path.
+    """
+    llm_output = ""
+    try:
+        msg = await client.messages.create(
+            model=REPAIR_MODEL,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": _EXTRACT_PROMPT.format(raw=text)}],
+        )
+        for block in msg.content:
+            if hasattr(block, "text"):
+                llm_output += block.text
+        llm_output = llm_output.strip()
+    except Exception:
+        logger.exception("result_focus LLM extraction fallback failed for %r", text)
+        return None
+    return _extract_object(llm_output)
+
+
+async def repair_result_focus_json(
+    raw: str, *, client=None, kind: RepairKind = "output_spec"
+) -> tuple[dict | None, str]:
     """Ask a cheap model to coerce malformed ``raw`` into a JSON object.
+
+    ``kind`` selects the repair target (see ``RepairKind``): ``"output_spec"``
+    repairs toward a literal JSON object/example, ``"schema"`` toward a valid JSON
+    Schema.
 
     Returns ``(parsed_object_or_None, raw_llm_text)``. Never raises: on any error
     (missing API key, network failure, still-unparseable output) it returns
@@ -58,7 +125,9 @@ async def repair_result_focus_json(raw: str, *, client=None) -> tuple[dict | Non
         msg = await client.messages.create(
             model=REPAIR_MODEL,
             max_tokens=2048,
-            messages=[{"role": "user", "content": _REPAIR_PROMPT.format(raw=raw)}],
+            messages=[
+                {"role": "user", "content": _REPAIR_PROMPTS[kind].format(raw=raw)}
+            ],
         )
         for block in msg.content:
             if hasattr(block, "text"):
@@ -69,25 +138,37 @@ async def repair_result_focus_json(raw: str, *, client=None) -> tuple[dict | Non
         return None, llm_output
 
     logger.warning("we failed to parse %s and the llm outputted: %s", raw, llm_output)
-    return _extract_object(llm_output), llm_output
+    obj = _extract_object(llm_output)
+    if obj is None and llm_output:
+        # Deterministic extraction failed too -> one more LLM pass to salvage it.
+        obj = await _extract_object_llm(llm_output, client=client)
+    return obj, llm_output
 
 
 async def repair_result_focus_if_needed(
-    result_focus: str | None, *, client=None
+    result_focus: str | None, *, client=None, kind: RepairKind = "output_spec"
 ) -> str | None:
-    """Return an effective ``result_focus`` for rendering, repairing if needed.
+    """Return an effective ``result_focus``, repairing if needed.
+
+    ``kind`` selects the repair target for the JSON-ish-but-unparseable case (see
+    ``RepairKind``): the probe overlay passes ``"output_spec"``, the analyzer
+    passes ``"schema"``.
 
     - Already-valid JSON or a prose focus question: returned unchanged.
     - JSON-ish but unparseable: attempt an LLM repair; on success return the
-      repaired JSON string, otherwise return the original (the renderer still
-      does a verbatim best-effort render).
+      repaired JSON string, otherwise return the original (callers still do a
+      best-effort render / fall back to prose mode).
     """
     if not result_focus or not result_focus.strip():
         return result_focus
     body = result_focus.strip()
     if parse_result_focus(body) is not None:
         return result_focus
-    if not body.startswith("{"):
+    if not body.startswith(("{", "[")):
         return result_focus  # prose focus question, not a JSON spec
-    repaired, _ = await repair_result_focus_json(body, client=client)
+    # JSON-intended but unparseable. This is the single funnel every probe consumer
+    # passes through before the deterministic leaf parser, so repairing once here
+    # covers the whole downstream chain (overlay render, schema analysis).
+    logger.warning("result_focus did not parse as JSON; queuing LLM repair: %r", body)
+    repaired, _ = await repair_result_focus_json(body, client=client, kind=kind)
     return json.dumps(repaired) if repaired is not None else result_focus
