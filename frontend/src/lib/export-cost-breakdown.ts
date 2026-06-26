@@ -19,12 +19,9 @@ function money(n: number): number {
 
 type SheetRow = Record<string, string | number>;
 
-// Size each column to its widest cell (header included), capped so the long
-// "Top models" / token columns don't blow out. SheetJS CE supports column
-// widths (!cols) and autofilter, but not cell styling (fills/bold/color).
-function autoCols(rows: SheetRow[]): { wch: number }[] {
-  if (rows.length === 0) return [];
-  return Object.keys(rows[0]).map((key) => {
+// Size each column to its widest cell
+function autoCols(headers: string[], rows: SheetRow[]): { wch: number }[] {
+  return headers.map((key) => {
     let max = key.length;
     for (const row of rows) {
       const len = String(row[key] ?? "").length;
@@ -34,10 +31,16 @@ function autoCols(rows: SheetRow[]): { wch: number }[] {
   });
 }
 
-function makeSheet(XLSX: typeof import("xlsx"), rows: SheetRow[]) {
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws["!cols"] = autoCols(rows);
-  if (ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };
+function makeSheet(
+  XLSX: typeof import("xlsx"),
+  headers: string[],
+  rows: SheetRow[],
+) {
+  const ws =
+    rows.length > 0
+      ? XLSX.utils.json_to_sheet(rows, { header: headers })
+      : XLSX.utils.aoa_to_sheet([headers]);
+  ws["!cols"] = autoCols(headers, rows);
   return ws;
 }
 
@@ -100,12 +103,58 @@ export async function exportCostBreakdownXlsx({
     "Top models": topModelsLabel(e.models),
   }));
 
+  const userHeaders = [
+    "User",
+    "Email",
+    "Org",
+    "Cost (USD)",
+    "Estimated (USD)",
+    "Trials",
+    "Experiments",
+    "Input tokens",
+    "Cache tokens",
+    "Output tokens",
+    "Top models",
+  ];
+  const modelHeaders = [
+    "Model",
+    "Provider",
+    "Cost (USD)",
+    "Estimated (USD)",
+    "Trials",
+    "Input tokens",
+    "Cache tokens",
+    "Output tokens",
+  ];
+  const experimentHeaders = [
+    "Experiment",
+    "Owner",
+    "Org",
+    "Cost (USD)",
+    "Estimated (USD)",
+    "Trials",
+    "Input tokens",
+    "Cache tokens",
+    "Output tokens",
+    "Created",
+    "Last activity",
+    "Top models",
+  ];
+
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, makeSheet(XLSX, userRows), "Cost by user");
-  XLSX.utils.book_append_sheet(wb, makeSheet(XLSX, modelRows), "Cost by model");
   XLSX.utils.book_append_sheet(
     wb,
-    makeSheet(XLSX, experimentRows),
+    makeSheet(XLSX, userHeaders, userRows),
+    "Cost by user",
+  );
+  XLSX.utils.book_append_sheet(
+    wb,
+    makeSheet(XLSX, modelHeaders, modelRows),
+    "Cost by model",
+  );
+  XLSX.utils.book_append_sheet(
+    wb,
+    makeSheet(XLSX, experimentHeaders, experimentRows),
     "Top experiments by cost",
   );
 
