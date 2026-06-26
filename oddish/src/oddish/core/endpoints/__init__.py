@@ -51,6 +51,7 @@ from oddish.core.endpoints.tasks_query import (
     _task_freetext_match,
     browse_tasks_core,
     get_task_status_core,
+    list_experiment_task_shells_core,
     list_tasks_core,
 )
 from oddish.core.endpoints.trials import (
@@ -90,6 +91,7 @@ __all__ = [
     "get_trial_logs_structured_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",
+    "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_task_qa_core",
