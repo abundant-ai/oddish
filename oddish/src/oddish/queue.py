@@ -31,6 +31,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.workers.jobs.enqueue import (
@@ -137,54 +138,59 @@ async def cancel_tasks_runs(
     # tasks. One UPDATE, every kind. Returning the canceled rows gives
     # us the Modal function-call ids to terminate remotely and the kind
     # breakdown for the domain-mirror pass below.
-    canceled_rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                WITH to_cancel AS (
-                    SELECT id,
-                           kind::text AS kind,
-                           subject_id,
-                           modal_function_call_id,
-                           provider,
-                           external_id
-                    FROM   worker_jobs
-                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                      AND  (
-                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                      )
-                    ORDER BY id
-                    FOR UPDATE
-                )
-                UPDATE worker_jobs AS w
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = :cancel_msg,
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                FROM   to_cancel
-                WHERE  w.id = to_cancel.id
-                RETURNING w.id,
-                          to_cancel.kind,
-                          to_cancel.subject_id,
-                          to_cancel.modal_function_call_id,
-                          to_cancel.provider,
-                          to_cancel.external_id
-                """
-                ),
-                {
-                    "cancel_msg": USER_CANCELLED_MESSAGE,
-                    "task_ids": found_task_ids,
-                    "trial_ids": trial_ids or [""],
-                },
-            )
-        )
-        .mappings()
-        .all()
+    #
+    # When the task has no trials yet the trial_ids list is empty; omit the
+    # trials branch entirely so we don't pass an empty array to ANY() (asyncpg
+    # cannot infer the element type of an empty list) and avoid a spurious
+    # FALSE predicate that PostgreSQL still has to plan.
+    trial_branch = (
+        "OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
+        if trial_ids
+        else ""
     )
+    cancel_sql = text(
+        f"""
+        WITH to_cancel AS (
+            SELECT id,
+                   kind::text AS kind,
+                   subject_id,
+                   modal_function_call_id,
+                   provider,
+                   external_id
+            FROM   worker_jobs
+            WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+              AND  (
+                  (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                  {trial_branch}
+              )
+            ORDER BY id
+            FOR UPDATE
+        )
+        UPDATE worker_jobs AS w
+        SET    status = 'CANCELLED',
+               finished_at = NOW(),
+               error_message = :cancel_msg,
+               current_worker_id = NULL,
+               current_queue_slot = NULL,
+               modal_function_call_id = NULL,
+               payload = w.payload - 'registry_auth_enc'
+        FROM   to_cancel
+        WHERE  w.id = to_cancel.id
+        RETURNING w.id,
+                  to_cancel.kind,
+                  to_cancel.subject_id,
+                  to_cancel.modal_function_call_id,
+                  to_cancel.provider,
+                  to_cancel.external_id
+        """
+    )
+    cancel_params: dict[str, Any] = {
+        "cancel_msg": USER_CANCELLED_MESSAGE,
+        "task_ids": found_task_ids,
+    }
+    if trial_ids:
+        cancel_params["trial_ids"] = trial_ids
+    canceled_rows = (await session.execute(cancel_sql, cancel_params)).mappings().all()
 
     modal_fc_ids: list[str] = []
     worker_targets: set[tuple[str, str]] = set()
@@ -382,6 +388,28 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # legacy ANALYSIS rows across a deploy.
 
 
+def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
+    models = getattr(submission, "registry_auth", None)
+    if not models:
+        return None
+    creds = [
+        RegistryCredential(
+            username=m.username,
+            token=m.token.get_secret_value(),
+            registry=m.registry,
+        )
+        for m in models
+    ]
+    return encrypt_credentials(creds)
+
+
+def _trial_job_payload(trial_id: str, registry_auth_enc: str | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"trial_id": trial_id}
+    if registry_auth_enc:
+        payload["registry_auth_enc"] = registry_auth_enc
+    return payload
+
+
 async def enqueue_trial_worker_job(
     session: AsyncSession,
     *,
@@ -391,13 +419,14 @@ async def enqueue_trial_worker_job(
     max_attempts: int,
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
+    registry_auth_enc: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
-            payload={"trial_id": trial_id},
+            payload=_trial_job_payload(trial_id, registry_auth_enc),
             subject_table="trials",
             subject_id=trial_id,
             org_id=org_id,
@@ -786,6 +815,7 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
@@ -818,7 +848,7 @@ async def create_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=org_id,
@@ -1024,6 +1054,7 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
@@ -1057,7 +1088,7 @@ async def append_trials_to_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=task.org_id,
