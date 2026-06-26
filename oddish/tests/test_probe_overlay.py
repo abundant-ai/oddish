@@ -39,6 +39,22 @@ def test_trial_data_section_asks_to_check_audited_task_logs():
     assert "tasks trials <task_id>" in out
 
 
+def test_trial_data_section_documents_all_cli_commands():
+    out = _render()
+    # Every oddish-query subcommand is documented, including `tasks get`.
+    for cmd in ("tasks search", "tasks get", "tasks trials",
+                "experiments trials", "trials logs"):
+        assert cmd in out
+
+
+def test_trial_data_section_gives_runnable_examples():
+    out = _render()
+    # Copy-pasteable invocations with the real `node <cli>` prefix.
+    assert f"node {QUERY_CLI_CONTAINER_PATH} tasks search" in out
+    assert f"node {QUERY_CLI_CONTAINER_PATH} tasks get <task_id>" in out
+    assert f"node {QUERY_CLI_CONTAINER_PATH} trials logs <trial_id> --trajectory" in out
+
+
 def test_action_items_section_demands_verified_high_quality_items():
     out = _render()
     # Deliverable: high-quality action items, verified before reporting.
