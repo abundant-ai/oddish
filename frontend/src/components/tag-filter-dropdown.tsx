@@ -1,9 +1,14 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo } from "react";
 import useSWR from "swr";
-import { ArrowRight, Check, ChevronDown, Tag as TagIcon } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  FileText,
+  FlaskConical,
+  Tag as TagIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -36,7 +41,8 @@ function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
  * state is derived from it, and toggling a tag rewrites it via
  * serialize/parse — so free text, author, and OR/NOT tokens are preserved.
  *
- * `countField` is the context count shown per row (task vs experiment).
+ * `countField` is the per-tag context count shown on each row (task vs
+ * experiment) along with its icon.
  */
 export function TagFilterDropdown({
   query,
@@ -56,6 +62,7 @@ export function TagFilterDropdown({
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
     [data],
   );
+  const CountIcon = countField === "task_count" ? FileText : FlaskConical;
 
   // Any tag token currently in the query counts as selected (all/any/none).
   const selected = useMemo(() => {
@@ -79,6 +86,13 @@ export function TagFilterDropdown({
     onQueryChange(serializeTaskSearch(next).trim());
   }
 
+  function clear() {
+    const p = parseTaskSearch(query);
+    onQueryChange(
+      serializeTaskSearch({ ...p, all: [], any: [], none: [] }).trim(),
+    );
+  }
+
   const selectedCount = selected.size;
 
   return (
@@ -94,9 +108,7 @@ export function TagFilterDropdown({
         >
           <span className="flex items-center gap-1.5">
             <TagIcon className="h-3.5 w-3.5 opacity-60" />
-            {selectedCount > 0
-              ? `${selectedCount} tag${selectedCount === 1 ? "" : "s"}`
-              : "Tags"}
+            {selectedCount > 0 ? `${selectedCount} selected` : "Filter by tag"}
           </span>
           <ChevronDown className="h-4 w-4 opacity-50" />
         </Button>
@@ -109,27 +121,31 @@ export function TagFilterDropdown({
             <CommandGroup>
               {tags.map((t) => {
                 const name = tagToken(t);
-                const color = tagColor(t.key, t.color);
+                const isSelected = selected.has(name);
                 return (
                   <CommandItem
                     key={t.id}
                     value={name}
                     onSelect={() => toggle(t)}
+                    className="gap-2"
                   >
-                    <Check
+                    <span
                       className={cn(
-                        "mr-1.5 h-3.5 w-3.5 shrink-0",
-                        selected.has(name) ? "opacity-100" : "opacity-0",
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
+                        isSelected
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input",
                       )}
-                    />
-                    <TagIcon
-                      className="mr-1.5 h-3.5 w-3.5 shrink-0"
-                      style={{ color }}
-                      fill={color}
-                      fillOpacity={0.25}
+                    >
+                      {isSelected ? <Check className="h-3 w-3" /> : null}
+                    </span>
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: tagColor(t.key, t.color) }}
                     />
                     <span className="truncate">{name}</span>
-                    <span className="text-muted-foreground ml-auto pl-2 text-xs tabular-nums">
+                    <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1 pl-2 text-xs tabular-nums">
+                      <CountIcon className="h-3 w-3" />
                       {t[countField]}
                     </span>
                   </CommandItem>
@@ -137,19 +153,18 @@ export function TagFilterDropdown({
               })}
             </CommandGroup>
           </CommandList>
-          <div className="border-t p-1">
-            <Button
-              variant="ghost"
-              size="sm"
-              asChild
-              className="text-muted-foreground h-7 w-full justify-between text-xs"
-            >
-              <Link href="/tags">
-                See all tags
-                <ArrowRight className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
-          </div>
+          {selectedCount > 0 ? (
+            <div className="border-t p-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={clear}
+                className="text-muted-foreground h-7 w-full justify-start text-xs"
+              >
+                Clear {selectedCount} selected
+              </Button>
+            </div>
+          ) : null}
         </Command>
       </PopoverContent>
     </Popover>
