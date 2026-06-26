@@ -126,7 +126,11 @@ export function ExperimentClientPage({
       if (previousPageData && previousPageData.length < TRIALS_BATCH_SIZE)
         return null;
       const offset = pageIndex * TRIALS_BATCH_SIZE;
-      return `/api/experiments/${encodedId}/tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}&include_trials=true`;
+      // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
+      // per-trial payloads (grid fields + cost). Full per-trial detail is
+      // fetched on click via /api/trials/{id} (see ExperimentDetailView's
+      // loadFullTrialOnOpen). The old /tasks proxy is left untouched.
+      return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
     },
     [experimentId, encodedId],
   );
@@ -450,6 +454,8 @@ export function ExperimentClientPage({
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
+          loadFullTrialOnOpen
+
           headerLeft={
             isEditingName ? (
               <div className="flex flex-wrap items-center gap-2">

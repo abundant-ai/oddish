@@ -23,6 +23,7 @@ from oddish.core.helpers import (
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
+    build_slim_task_status_response,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
@@ -529,6 +530,79 @@ async def list_experiment_task_shells_core(
     if record_timing is not None:
         record_timing(
             "tasks_build", elapsed_ms(build_started_at), "Build task shells"
+        )
+    return response
+
+
+async def list_experiment_slim_tasks(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+    limit: int = 2000,
+    offset: int = 0,
+    include_empty_rewards: bool = True,
+    record_timing: TimingRecorder | None = None,
+) -> list[TaskStatusResponse]:
+    """Slim per-trial grid data for the experiment page (Phase 2).
+
+    Loads each task's experiment-scoped, non-probe trials (same scoping as
+    ``list_tasks_core``'s compact-trials path), but builds SLIM trial objects
+    via ``build_slim_task_status_response``: only the fields the grid renders
+    (+ cost, kept for the header total). The heavy per-trial fields
+    (harbor_config, phase_timing, tokens, full analysis, ...) are omitted from
+    the payload and fetched on demand via ``GET /trials/{id}`` when a cell is
+    clicked.
+
+    The per-task ``experiments`` fan-out is skipped (only the context
+    experiment is attached, as in ``list_experiment_task_shells_core``). Kept
+    separate so ``list_tasks_core`` / ``/tasks`` stays unchanged.
+
+    First cut loads full trial columns for safety (no ``load_only`` -> no
+    MissingGreenlet risk); a slim ``load_only`` is a verified follow-up.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    trials_relationship = TaskModel.trials.and_(
+        TrialModel.experiment_id == experiment_id,
+        TrialModel.is_probe.is_(False),
+    )
+    query = (
+        select(TaskModel)
+        .order_by(TaskModel.created_at.desc())
+        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
+        .options(selectinload(trials_relationship))
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    query = query.limit(limit).offset(offset)
+
+    query_started_at = now()
+    result = await session.execute(query)
+    if record_timing is not None:
+        record_timing(
+            "tasks_query", elapsed_ms(query_started_at), "Slim tasks query"
+        )
+    tasks = result.scalars().all()
+
+    if tasks:
+        context_experiment = await session.get(ExperimentModel, experiment_id)
+        scoped_experiments = [context_experiment] if context_experiment else []
+        for task in tasks:
+            set_committed_value(task, "experiments", scoped_experiments)
+
+    build_started_at = now()
+    response = [
+        build_slim_task_status_response(
+            task,
+            include_empty_rewards=include_empty_rewards,
+            experiment_context_id=experiment_id,
+        )
+        for task in tasks
+    ]
+    if record_timing is not None:
+        record_timing(
+            "tasks_build", elapsed_ms(build_started_at), "Build slim tasks"
         )
     return response
 
