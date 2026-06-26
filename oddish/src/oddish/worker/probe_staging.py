@@ -17,6 +17,7 @@ import shutil
 from importlib import resources
 from pathlib import Path
 
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
 from oddish.core.skills import list_skills_core
 from oddish.db import get_session
 from oddish.worker.probe_overlay import (
@@ -177,6 +178,10 @@ async def apply_probe_overlay(
     # all staged dirs are in place.
     (task_dir / AGENT_BRIEF_NAME).write_text(original)
     probe_only = collect_visibility(task_dir)
+
+    # If result_focus is a JSON output spec that doesn't parse, try a cheap LLM
+    # repair before rendering (best-effort; falls back to verbatim on failure).
+    result_focus = await repair_result_focus_if_needed(result_focus)
 
     instr_path.write_text(
         render_probe_instruction(
