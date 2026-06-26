@@ -526,9 +526,11 @@ export function CostBreakdownCard({
   // size, or window changes (but NOT on the 30s auto-refresh).
   const [pageSize, setPageSize] = useState(25);
   const [userPage, setUserPage] = useState(1);
+  const [modelPage, setModelPage] = useState(1);
   const [expPage, setExpPage] = useState(1);
   useEffect(() => {
     setUserPage(1);
+    setModelPage(1);
     setExpPage(1);
   }, [q, pageSize, windowDays]);
 
@@ -537,6 +539,16 @@ export function CostBreakdownCard({
   const pagedUsers = filteredUsers.slice(
     (safeUserPage - 1) * pageSize,
     safeUserPage * pageSize,
+  );
+
+  const modelPageCount = Math.max(
+    1,
+    Math.ceil(filteredModels.length / pageSize),
+  );
+  const safeModelPage = Math.min(modelPage, modelPageCount);
+  const pagedModels = filteredModels.slice(
+    (safeModelPage - 1) * pageSize,
+    safeModelPage * pageSize,
   );
 
   const expPageCount = Math.max(
@@ -710,7 +722,16 @@ export function CostBreakdownCard({
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={filteredModels} />
+              <ModelTable models={pagedModels} />
+              {filteredModels.length > 10 && (
+                <TablePagination
+                  total={filteredModels.length}
+                  page={safeModelPage}
+                  pageSize={pageSize}
+                  onPage={setModelPage}
+                  onPageSize={setPageSize}
+                />
+              )}
             </section>
 
             <section className="space-y-2">
@@ -782,21 +803,24 @@ function TablePagination({
         <span>
           Showing {start}–{end} of {total}
         </span>
-        <Select
-          value={String(pageSize)}
-          onValueChange={(v) => onPageSize(Number(v))}
-        >
-          <SelectTrigger className="h-7 w-[84px] text-[11px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PAGE_SIZE_OPTIONS.map((s) => (
-              <SelectItem key={s} value={String(s)}>
-                {s} / page
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-1">
+          <Select
+            value={String(pageSize)}
+            onValueChange={(v) => onPageSize(Number(v))}
+          >
+            <SelectTrigger className="h-7 w-[58px] text-[11px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PAGE_SIZE_OPTIONS.map((s) => (
+                <SelectItem key={s} value={String(s)}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="whitespace-nowrap">/ page</span>
+        </div>
       </div>
       <div className="flex items-center gap-1">
         <Button
