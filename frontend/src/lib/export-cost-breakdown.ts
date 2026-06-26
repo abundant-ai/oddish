@@ -58,7 +58,7 @@ export async function exportCostBreakdownXlsx({
   experiments: CostExperimentBreakdown[];
   windowDays: string;
 }): Promise<void> {
-  const XLSX = await import("");
+  const XLSX = await import("xlsx");
 
   const userRows = users.map((u) => ({
     User: u.name || u.email || u.owner_user_id || "Unattributed",
