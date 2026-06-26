@@ -247,7 +247,7 @@ function TaskDetailHeader({
               </span>
               <ExperimentsList
                 experiments={affiliated}
-                maxVisible={5}
+                maxVisible={2}
                 linkClassName="text-[color:var(--paper-ink-2)]"
               />
             </div>
