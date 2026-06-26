@@ -977,6 +977,106 @@ def build_task_status_response_compact(
     )
 
 
+def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+    """Minimal TrialResponse for the experiment grid (slim Phase-2 path).
+
+    Populates only what the grid renders (status / reward / error / agent /
+    model / analysis classification) plus the schema-required fields and
+    ``cost_usd`` (kept so the exp-page header cost total still works). The
+    heavy fields the grid never shows -- ``harbor_config`` / ``phase_timing``
+    (large JSONB), ``harbor_sha`` / ``harbor_source``, ``total_steps``,
+    ``has_trajectory``, ``origin``, ``result`` -- are left at their defaults
+    and fetched on demand via ``GET /trials/{id}`` when a cell is clicked.
+
+    Unlike ``build_compact_trial_response`` this only surfaces the analysis
+    classification/subtype/evidence triplet the grid marker needs; the full
+    analysis (root_cause, recommendation, etc.) arrives with the on-click
+    full-trial fetch.
+    """
+    resolved_analysis_summary: dict[str, str | None] | None = None
+    if isinstance(trial.analysis, dict):
+        resolved_analysis_summary = {
+            "classification": trial.analysis.get("classification"),
+            "subtype": trial.analysis.get("subtype"),
+            "evidence": trial.analysis.get("evidence"),
+        }
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
+    cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
+
+    return TrialResponse(
+        id=trial.id,
+        name=trial.name,
+        task_id=trial.task_id,
+        task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
+        experiment_id=trial.experiment_id,
+        agent=trial.agent,
+        provider=trial.provider,
+        queue_key=settings.normalize_queue_key(trial.queue_key),
+        model=normalized_model,
+        status=trial.status,
+        attempts=trial.attempts,
+        max_attempts=trial.max_attempts,
+        harbor_stage=None,
+        reward=trial.reward,
+        error_message=trial.error_message,
+        result=None,
+        is_probe=trial.is_probe,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        analysis_status=trial.analysis_status,
+        analysis=resolved_analysis_summary,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
+        created_at=trial.created_at,
+        started_at=trial.started_at,
+        finished_at=trial.finished_at,
+    )
+
+
+def build_slim_task_status_response(
+    task: TaskModel,
+    *,
+    include_empty_rewards: bool = True,
+    experiment_context_id: str | None = None,
+    effective_version_id: str | None | object = _VERSION_ID_UNSET,
+) -> TaskStatusResponse:
+    """``build_task_status_response_compact`` with SLIM per-trial payloads.
+
+    Same aggregate counts and version scoping, but each trial is built with
+    :func:`build_slim_trial_response` instead of the full compact builder.
+    Used only by the experiment-grid slim path.
+    """
+    if effective_version_id is _VERSION_ID_UNSET:
+        effective_version_id = resolve_effective_version_id(
+            task, experiment_context_id=experiment_context_id
+        )
+    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+    total = len(task_trials)
+    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
+    reward_total = sum(1 for t in task_trials if t.reward is not None)
+    trials = [build_slim_trial_response(t, task.task_path) for t in task_trials]
+
+    return _build_task_status_response(
+        task,
+        total=total,
+        completed=completed,
+        failed=failed,
+        reward_success=reward_success,
+        reward_sum=reward_sum,
+        reward_total=reward_total,
+        include_empty_rewards=include_empty_rewards,
+        trials=trials,
+        jobs=[],
+        experiment_context_id=experiment_context_id,
+        effective_version_id=effective_version_id,
+    )
+
+
 async def fetch_trial_analysis_summaries(
     session: AsyncSession,
     *,

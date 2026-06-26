@@ -110,6 +110,10 @@ interface ExperimentDetailViewProps {
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
+  // Logged-in exp page sends slim trials, so set true to fetch a clicked
+  // trial's full detail on open. Public share page omits it (it passes full
+  // trials and can't use the authed /api/trials route).
+  loadFullTrialOnOpen?: boolean;
 }
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
@@ -703,6 +707,7 @@ export function ExperimentDetailView({
   onTaskDelete,
   onTrialDelete,
   onRerun,
+  loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
@@ -717,6 +722,36 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false },
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
+  // the clicked/navigated trial's full detail; the popup renders the slim trial
+  // until this resolves. No-op (and never fetches) on the public share page.
+  const [fullTrial, setFullTrial] = useState<Trial | null>(null);
+  const openTrialId =
+    drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
+  useEffect(() => {
+    if (!loadFullTrialOnOpen || !openTrialId) {
+      setFullTrial(null);
+      return;
+    }
+    let cancelled = false;
+    setFullTrial(null);
+    (async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${encodeURIComponent(openTrialId)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as Trial;
+        if (!cancelled) setFullTrial(data);
+      } catch {
+        // Keep the slim trial on failure -- the popup just shows less.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadFullTrialOnOpen, openTrialId, apiBaseUrl]);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
@@ -1215,7 +1250,7 @@ export function ExperimentDetailView({
               <TrialDetailPanel
                 isOpen={true}
                 onClose={closeDrawer}
-                trial={drawerState.trial}
+                trial={fullTrial ?? drawerState.trial}
                 task={drawerState.task}
                 orderedTrials={drawerState.orderedTrials}
                 trialIndex={drawerState.trialIndex}
