@@ -715,6 +715,9 @@ type CostBreakdownCardProps = {
   enableSectionCharts?: boolean;
   // Remove cap on timeseries data from backend
   seriesTopN?: number;
+  // Controlled time-window (window_days value, e.g. "7")
+  windowDaysValue?: string;
+  onWindowDaysChange?: (value: string) => void;
 };
 
 function matchesQuery(
@@ -766,8 +769,12 @@ export function CostBreakdownCard({
   onSearchChange,
   enableSectionCharts = false,
   seriesTopN,
+  windowDaysValue,
+  onWindowDaysChange,
 }: CostBreakdownCardProps = {}) {
-  const [windowDays, setWindowDays] = useState("7");
+  const [internalWindowDays, setInternalWindowDays] = useState("7");
+  const windowDays = windowDaysValue ?? internalWindowDays;
+  const setWindowDays = onWindowDaysChange ?? setInternalWindowDays;
   const [dimension, setDimension] = useState<ChartDimension>("agent");
   const [internalSearch, setInternalSearch] = useState("");
   const [userChartOpen, setUserChartOpen] = useState(true);
@@ -801,20 +808,21 @@ export function CostBreakdownCard({
   // Otherwise it's a plain text filter on each table's own fields.
   const modelMode = q !== "" && filteredModels.length > 0;
 
-  // When a search is active, restrict each trend chart to the matching series
-  // keys (within its own dimension); undefined means "no filter, all keys".
-  const userSeriesFilterKeys = useMemo(() => {
-    if (!q || !data) return undefined;
-    return data.series_by_user.keys
-      .filter((k) => matchesQuery([k.key, k.label], q))
-      .map((k) => k.key);
-  }, [data, q]);
+  // A trend chart only locks to a filter when the search matches ITS dimension:
+  // a model search locks the model chart (total + matched model) and leaves the
+  // user chart full control, and vice-versa. undefined => full control.
   const modelSeriesFilterKeys = useMemo(() => {
-    if (!q || !data) return undefined;
+    if (!data || !modelMode) return undefined;
     return data.series_by_model.keys
       .filter((k) => matchesQuery([k.key, k.label], q))
       .map((k) => k.key);
-  }, [data, q]);
+  }, [data, q, modelMode]);
+  const userSeriesFilterKeys = useMemo(() => {
+    if (!data || !q || modelMode) return undefined;
+    return data.series_by_user.keys
+      .filter((k) => matchesQuery([k.key, k.label], q))
+      .map((k) => k.key);
+  }, [data, q, modelMode]);
 
   const filteredExperiments = useMemo(() => {
     const experiments = data?.experiments ?? [];
