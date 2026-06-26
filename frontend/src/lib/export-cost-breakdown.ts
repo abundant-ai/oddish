@@ -17,6 +17,30 @@ function money(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+type SheetRow = Record<string, string | number>;
+
+// Size each column to its widest cell (header included), capped so the long
+// "Top models" / token columns don't blow out. SheetJS CE supports column
+// widths (!cols) and autofilter, but not cell styling (fills/bold/color).
+function autoCols(rows: SheetRow[]): { wch: number }[] {
+  if (rows.length === 0) return [];
+  return Object.keys(rows[0]).map((key) => {
+    let max = key.length;
+    for (const row of rows) {
+      const len = String(row[key] ?? "").length;
+      if (len > max) max = len;
+    }
+    return { wch: Math.min(Math.max(max + 2, 8), 50) };
+  });
+}
+
+function makeSheet(XLSX: typeof import("xlsx"), rows: SheetRow[]) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws["!cols"] = autoCols(rows);
+  if (ws["!ref"]) ws["!autofilter"] = { ref: ws["!ref"] };
+  return ws;
+}
+
 /**
  * Build and download a 3-sheet .xlsx (Cost by user / Cost by model / Top
  * experiments by cost) from the *already-filtered* cost breakdown rows — i.e.
@@ -34,7 +58,7 @@ export async function exportCostBreakdownXlsx({
   experiments: CostExperimentBreakdown[];
   windowDays: string;
 }): Promise<void> {
-  const XLSX = await import("xlsx");
+  const XLSX = await import("");
 
   const userRows = users.map((u) => ({
     User: u.name || u.email || u.owner_user_id || "Unattributed",
@@ -77,19 +101,11 @@ export async function exportCostBreakdownXlsx({
   }));
 
   const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, makeSheet(XLSX, userRows), "Cost by user");
+  XLSX.utils.book_append_sheet(wb, makeSheet(XLSX, modelRows), "Cost by model");
   XLSX.utils.book_append_sheet(
     wb,
-    XLSX.utils.json_to_sheet(userRows),
-    "Cost by user",
-  );
-  XLSX.utils.book_append_sheet(
-    wb,
-    XLSX.utils.json_to_sheet(modelRows),
-    "Cost by model",
-  );
-  XLSX.utils.book_append_sheet(
-    wb,
-    XLSX.utils.json_to_sheet(experimentRows),
+    makeSheet(XLSX, experimentRows),
     "Top experiments by cost",
   );
 
