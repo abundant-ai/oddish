@@ -485,7 +485,7 @@ export function CostBreakdownCard({
   const [dimension, setDimension] = useState<ChartDimension>("agent");
   const [search, setSearch] = useState("");
 
-  const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
+  const { data, error, isValidating, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}`,
     fetcher,
     { refreshInterval: refreshIntervalMs, fallbackData: initialData ?? undefined }
@@ -621,11 +621,11 @@ export function CostBreakdownCard({
               size="icon"
               className="h-8 w-8"
               onClick={() => mutate()}
-              disabled={isLoading}
+              disabled={isValidating}
               aria-label="Refresh cost breakdown"
             >
               <RefreshCw
-                className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
+                className={`h-4 w-4 ${isValidating ? "animate-spin" : ""}`}
               />
             </Button>
           </div>
