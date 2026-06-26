@@ -713,6 +713,8 @@ type CostBreakdownCardProps = {
   onSearchChange?: (value: string) => void;
   // Show a collapsible cost-trend line chart above the user and model tables.
   enableSectionCharts?: boolean;
+  // Remove cap on timeseries data from backend
+  seriesTopN?: number;
 };
 
 function matchesQuery(
@@ -763,6 +765,7 @@ export function CostBreakdownCard({
   searchValue,
   onSearchChange,
   enableSectionCharts = false,
+  seriesTopN,
 }: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
@@ -773,7 +776,9 @@ export function CostBreakdownCard({
   const setSearch = onSearchChange ?? setInternalSearch;
 
   const { data, error, isValidating, mutate } = useSWR<CostBreakdownResponse>(
-    `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}`,
+    `/api/admin/costs?window_days=${windowDays}&experiment_limit=${experimentLimit}&user_limit=${userLimit}${
+      seriesTopN !== undefined ? `&series_top_n=${seriesTopN}` : ""
+    }`,
     fetcher,
     { refreshInterval: refreshIntervalMs, fallbackData: initialData ?? undefined }
   );

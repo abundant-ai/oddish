@@ -113,6 +113,7 @@ export function UsageClient({
           enableSearch
           enableExport
           enableSectionCharts
+          seriesTopN={0}
           experimentLimit={500}
           userLimit={500}
           refreshIntervalMs={0}
