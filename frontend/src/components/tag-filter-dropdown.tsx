@@ -24,6 +24,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
 import { parseTaskSearch, serializeTaskSearch } from "@/lib/tag-query";
@@ -33,6 +39,35 @@ import { cn } from "@/lib/utils";
 /** The `tag:` token form the search grammar expects for a tag. */
 function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
   return tag.value ? `${tag.key}:${tag.value}` : tag.key;
+}
+
+/**
+ * The per-row count as a fixed-width rounded bubble (icon + number, centered)
+ * so the column lines up vertically across rows. Numbers are capped at 5
+ * digits; anything larger truncates with a tooltip carrying the full value.
+ */
+function CountBubble({
+  icon: Icon,
+  count,
+}: {
+  icon: typeof FileText;
+  count: number;
+}) {
+  const full = String(count);
+  const truncated = full.length > 5;
+  const bubble = (
+    <span className="bg-muted text-muted-foreground ml-auto flex w-[4.25rem] shrink-0 items-center justify-center gap-1 rounded-full px-2 py-0.5 text-xs tabular-nums">
+      <Icon className="h-3 w-3 shrink-0" />
+      {truncated ? `${full.slice(0, 5)}…` : full}
+    </span>
+  );
+  if (!truncated) return bubble;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{bubble}</TooltipTrigger>
+      <TooltipContent>{full}</TooltipContent>
+    </Tooltip>
+  );
 }
 
 /**
@@ -114,58 +149,57 @@ export function TagFilterDropdown({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-0" align="end">
-        <Command>
-          <CommandInput placeholder="Filter tags…" />
-          <CommandList>
-            <CommandEmpty>No tags.</CommandEmpty>
-            <CommandGroup>
-              {tags.map((t) => {
-                const name = tagToken(t);
-                const isSelected = selected.has(name);
-                return (
-                  <CommandItem
-                    key={t.id}
-                    value={name}
-                    onSelect={() => toggle(t)}
-                    className="gap-2"
-                  >
-                    <span
-                      className={cn(
-                        "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
-                        isSelected
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-input",
-                      )}
+        <TooltipProvider>
+          <Command>
+            <CommandInput placeholder="Filter tags…" />
+            <CommandList>
+              <CommandEmpty>No tags.</CommandEmpty>
+              <CommandGroup>
+                {tags.map((t) => {
+                  const name = tagToken(t);
+                  const isSelected = selected.has(name);
+                  return (
+                    <CommandItem
+                      key={t.id}
+                      value={name}
+                      onSelect={() => toggle(t)}
+                      className="gap-2"
                     >
-                      {isSelected ? <Check className="h-3 w-3" /> : null}
-                    </span>
-                    <span
-                      className="h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: tagColor(t.key, t.color) }}
-                    />
-                    <span className="truncate">{name}</span>
-                    <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1 pl-2 text-xs tabular-nums">
-                      <CountIcon className="h-3 w-3" />
-                      {t[countField]}
-                    </span>
-                  </CommandItem>
-                );
-              })}
-            </CommandGroup>
-          </CommandList>
-          {selectedCount > 0 ? (
-            <div className="border-t p-1">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clear}
-                className="text-muted-foreground h-7 w-full justify-start text-xs"
-              >
-                Clear {selectedCount} selected
-              </Button>
-            </div>
-          ) : null}
-        </Command>
+                      <span
+                        className={cn(
+                          "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
+                          isSelected
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-input",
+                        )}
+                      >
+                        {isSelected ? <Check className="h-3 w-3" /> : null}
+                      </span>
+                      <span
+                        className="h-2.5 w-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: tagColor(t.key, t.color) }}
+                      />
+                      <span className="truncate">{name}</span>
+                      <CountBubble icon={CountIcon} count={t[countField]} />
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </CommandList>
+            {selectedCount > 0 ? (
+              <div className="border-t p-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={clear}
+                  className="text-muted-foreground h-7 w-full justify-start text-xs"
+                >
+                  Clear {selectedCount} selected
+                </Button>
+              </div>
+            ) : null}
+          </Command>
+        </TooltipProvider>
       </PopoverContent>
     </Popover>
   );
