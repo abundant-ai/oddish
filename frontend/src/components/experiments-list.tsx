@@ -40,7 +40,8 @@ export function ExperimentsList({
   if (experiments.length === 0) return null;
 
   const visible = experiments.slice(0, maxVisible);
-  const overflowCount = experiments.length - visible.length;
+  const hidden = experiments.slice(maxVisible);
+  const overflowCount = hidden.length;
 
   const moreButton =
     overflowCount > 0 ? (
@@ -58,7 +59,7 @@ export function ExperimentsList({
           className="max-h-72 w-64 overflow-y-auto p-1"
         >
           <div className="flex flex-col">
-            {experiments.map((exp) => (
+            {hidden.map((exp) => (
               <Link
                 key={exp.id}
                 href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
