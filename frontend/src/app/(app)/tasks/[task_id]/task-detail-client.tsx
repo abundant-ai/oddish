@@ -26,6 +26,7 @@ import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { ExperimentsList } from "@/components/experiments-list";
 import { fetcher } from "@/lib/api";
 import {
   buildExperimentAgentSummaries,
@@ -232,51 +233,41 @@ function TaskDetailHeader({
             {tagEditor}
           </div>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
-          {(() => {
-            const affiliated = task.experiments?.length
-              ? task.experiments
-              : task.experiment_name
-                ? [{ id: task.experiment_id, name: task.experiment_name }]
-                : [];
-            if (affiliated.length === 0) return null;
-            return (
-              <>
-                <span>
-                  {affiliated.length > 1 ? "experiments" : "experiment"}
-                </span>
-                {affiliated.map((exp, i) => (
-                  <span
-                    key={exp.id}
-                    className="inline-flex items-center gap-x-2"
-                  >
-                    {i > 0 ? <span aria-hidden>·</span> : null}
-                    <Link
-                      href={`/experiments/${encodeURIComponent(encodeURIComponent(exp.id))}`}
-                      className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-                    >
-                      {exp.name}
-                    </Link>
-                  </span>
-                ))}
-              </>
-            );
-          })()}
-          {task.github_username || task.user ? (
-            <>
-              <span aria-hidden>·</span>
-              <span>by {task.github_username || task.user}</span>
-            </>
-          ) : null}
-          {task.created_at ? (
-            <>
-              <span aria-hidden>·</span>
-              <span title={new Date(task.created_at).toLocaleString()}>
-                created {formatRelativeTime(task.created_at)}
+        {(() => {
+          const affiliated = task.experiments?.length
+            ? task.experiments
+            : task.experiment_name
+              ? [{ id: task.experiment_id, name: task.experiment_name }]
+              : [];
+          if (affiliated.length === 0) return null;
+          return (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+              <span>
+                {affiliated.length > 1 ? "experiments" : "experiment"}
               </span>
-            </>
-          ) : null}
-        </div>
+              <ExperimentsList
+                experiments={affiliated}
+                maxVisible={2}
+                linkClassName="text-[color:var(--paper-ink-2)]"
+              />
+            </div>
+          );
+        })()}
+        {(() => {
+          const byline = task.github_username || task.user;
+          if (!byline && !task.created_at) return null;
+          return (
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+              {byline ? <span>by {byline}</span> : null}
+              {byline && task.created_at ? <span aria-hidden>·</span> : null}
+              {task.created_at ? (
+                <span title={new Date(task.created_at).toLocaleString()}>
+                  created {formatRelativeTime(task.created_at)}
+                </span>
+              ) : null}
+            </div>
+          );
+        })()}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <ChatButton scopeKind="task" scopeId={task.name} />
