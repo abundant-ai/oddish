@@ -39,12 +39,12 @@ import {
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
   cn,
-  encodeExperimentRouteParam,
   formatRelativeTime,
   formatShortDateTime,
   prBadge,
   taskPrUrl,
 } from "@/lib/utils";
+import { ExperimentsList } from "@/components/experiments-list";
 import {
   ChevronLeft,
   ChevronRight,
@@ -105,19 +105,12 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   }
 
   return (
-    <div className="text-muted-foreground flex flex-wrap gap-x-2 gap-y-1 text-xs">
-      {task.experiments.map((experiment, index) => (
-        <span key={experiment.id}>
-          <Link
-            href={`/experiments/${encodeExperimentRouteParam(experiment.id)}`}
-            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-          >
-            {experiment.name}
-          </Link>
-          {index < task.experiments.length - 1 ? "," : null}
-        </span>
-      ))}
-    </div>
+    <ExperimentsList
+      experiments={task.experiments}
+      maxVisible={3}
+      className="text-muted-foreground text-xs"
+      linkClassName="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+    />
   );
 }
 
@@ -542,8 +535,8 @@ export function TasksPageClient({
                 <SearchSyntaxHelp>
                   <p className="font-medium">Search syntax</p>
                   <p className="text-muted-foreground">
-                    Matches task name, author, or tags. Add a
-                    prefix below to specify filters.
+                    Matches task name, author, or tags. Add a prefix below to
+                    specify filters.
                   </p>
                   <SearchSyntaxRow
                     example="node vulnerability"
@@ -562,10 +555,13 @@ export function TasksPageClient({
                     examples={["github:alice", "author:alice", "user:alice"]}
                     hint="by author — GitHub handle, email, or name"
                   />
-                  <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
+                  <SearchSyntaxRow
+                    example="tag:smoke"
+                    hint="by a specific tag"
+                  />
                   <p className="text-muted-foreground">
-                    Filters stack (AND) and are case-insensitive, e.g. {" "}
-                    <code className="rounded bg-muted px-1 font-mono">
+                    Filters stack (AND) and are case-insensitive, e.g.{" "}
+                    <code className="bg-muted rounded px-1 font-mono">
                       rbac github:alice tag:smoke
                     </code>
                   </p>
