@@ -8,8 +8,11 @@ renders the mutated ``instruction.md``.
 from __future__ import annotations
 
 import json
+import logging
 
 from oddish.core.result_focus_schema import parse_result_focus
+
+logger = logging.getLogger(__name__)
 
 
 # Out-of-band mount for ALL probe-only material. The real agent's container is
@@ -208,6 +211,11 @@ def _output_json_section(rendered: str, *, malformed: bool) -> str:
     for. ``malformed`` flags a best-effort render of JSON-ish-but-unparseable
     input so the probe knows to clean it up instead of copying it blindly.
     """
+    if malformed:
+        logger.error(
+            "Could not parse result_focus as JSON; rendering best-effort: %r",
+            rendered,
+        )
     caveat = (
         "\n\nNote: the spec above did not parse as valid JSON. Treat it as the "
         "intended output shape, repair the obvious formatting problems, and make "

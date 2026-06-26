@@ -46,9 +46,13 @@ def parse_result_focus(result_focus: str | None) -> dict | None:
     try:
         parsed = json.loads(result_focus)
     except (ValueError, TypeError):
-        # Expected for prose focus questions; callers handle None. Debug-only so
-        # it's available when diagnosing a malformed schema without spamming.
-        logger.debug("result_focus is not JSON; treating as prose: %r", result_focus)
+        # A prose focus question legitimately isn't JSON (callers handle None), so
+        # only flag an error when the input clearly meant to be JSON; otherwise
+        # debug to avoid burying real failures under every prose probe.
+        if result_focus.lstrip().startswith(("{", "[")):
+            logger.error("Could not parse result_focus as JSON: %r", result_focus)
+        else:
+            logger.debug("result_focus is prose, not JSON: %r", result_focus)
         return None
     return parsed if isinstance(parsed, dict) else None
 
