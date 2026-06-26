@@ -107,7 +107,7 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   return (
     <ExperimentsList
       experiments={task.experiments}
-      maxVisible={2}
+      maxVisible={3}
       layout="stacked"
       className="text-muted-foreground text-xs"
       linkClassName="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
