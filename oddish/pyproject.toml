@@ -37,6 +37,8 @@ dependencies = [
     # Validation & settings
     "pydantic==2.12.5",
     "pydantic-settings==2.12.0",
+    # Envelope encryption for per-run registry credentials (oddish.registry_auth)
+    "cryptography>=42",
     # Harbor (task models, agent config, dataset handling).
     # Installed from the rishidesai/harbor fork's main branch via
     # [tool.uv.sources] below.  When bumping, run

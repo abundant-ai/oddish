@@ -20,7 +20,7 @@ from oddish.core.sweeps import (
 )
 from oddish.db import ExperimentModel, SkillModel, TaskModel, TrialModel
 from oddish.queue import append_trials_to_task
-from oddish.schemas import AgentModelPair, TaskSweepSubmission
+from oddish.schemas import AgentModelPair, RegistryAuth, TaskSweepSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -56,10 +56,8 @@ async def maybe_enqueue_auto_probe(
     task: TaskModel,
     experiment: ExperimentModel | None,
     org_id: str | None,
+    registry_auth: list[RegistryAuth] | None = None,
 ) -> None:
-    """Enqueue one probe trial for ``task``'s current version, if not already
-    probed. Best-effort: any failure is logged and swallowed so a probe problem
-    never blocks the caller's real sweep."""
     try:
         version_id = task.current_version_id
         if not version_id:
@@ -94,6 +92,7 @@ async def maybe_enqueue_auto_probe(
             skill_ids=[skill.id],
             experiment_id=(experiment.id if experiment is not None else None),
             user=task.user,
+            registry_auth=registry_auth,
         )
         trials = build_trial_specs_from_sweep(submission)
         expanded = build_task_submission_from_sweep(

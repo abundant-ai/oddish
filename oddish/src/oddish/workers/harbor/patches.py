@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import base64
 import importlib
+import inspect
 import json
 import logging
+import os
 import re
+import shlex
+import tempfile
+from functools import partial
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -26,15 +31,26 @@ _DOCKERD_DIAG_CMD = (
     "echo '=== disk ==='; df -h /var/lib/docker 2>/dev/null || df -h 2>/dev/null || true"
 )
 
+_DOCKER_CONFIG_PATH = "/root/.docker/config.json"
+_DOCKER_CONFIG_STAGED_PATH = "/tmp/oddish-docker-config.registry-auth.json"
+_REGISTRY_LOGIN_CMD = """
+set -eu
+staged="/tmp/oddish-docker-config.registry-auth.json"
+mkdir -p /root/.docker
+cp "$staged" /root/.docker/config.json
+chmod 600 /root/.docker/config.json
+rm -f "$staged"
+""".strip()
+_LOGGED_IN_ATTR = "_oddish_registry_logged_in"
+
 
 def apply_harbor_patches() -> None:
     """Install Harbor patches once."""
     global _PATCHED
     if _PATCHED:
         return
-    _patch_dind_docker_daemon_diagnostics()
-    _patch_daytona_registry_mirror()
-    _patch_modal_registry_mirror()
+    _patch_daytona_dind()
+    _patch_modal_dind()
     _PATCHED = True
 
 
@@ -53,15 +69,126 @@ async def _collect_dockerd_diagnostics(strategy: Any) -> str:
         return f"dockerd diagnostics unavailable: {exc!r}"
 
 
+def _redact(text: str, secrets: list[str]) -> str:
+    out = text
+    for secret in sorted(
+        {secret for secret in secrets if secret}, key=len, reverse=True
+    ):
+        out = out.replace(secret, "***")
+    return out
+
+
+def _result_text(result: Any) -> str:
+    return (getattr(result, "stdout", "") or "") + (getattr(result, "stderr", "") or "")
+
+
+def _secret_variants(secret: str) -> list[str]:
+    quoted = shlex.quote(secret)
+    json_secret = json.dumps(secret)[1:-1]
+    json_quoted = json.dumps(quoted)[1:-1]
+    return [
+        secret,
+        quoted,
+        repr(secret)[1:-1],
+        repr(quoted)[1:-1],
+        json_secret,
+        json_quoted,
+        repr(json_secret)[1:-1],
+        repr(json_quoted)[1:-1],
+    ]
+
+
+def _registry_login_config(creds: list[Any]) -> tuple[str, list[str], list[str]]:
+    auths: dict[str, dict[str, str]] = {}
+    secrets: list[str] = []
+    registries: list[str] = []
+    for cred in creds:
+        registry = cred.auth_key()
+        if registry == "https://index.docker.io/v1/":
+            auth_key = "https://index.docker.io/v1/"
+            registry_label = "docker.io"
+        else:
+            auth_key = registry
+            registry_label = registry
+        registries.append(registry_label)
+        basic = f"{cred.username}:{cred.token}"
+        encoded_basic = base64.b64encode(basic.encode()).decode()
+        auths[auth_key] = {"auth": encoded_basic}
+        secrets.extend(_secret_variants(cred.token))
+        secrets.extend(_secret_variants(basic))
+        secrets.extend(_secret_variants(encoded_basic))
+    return json.dumps({"auths": auths}), secrets, registries
+
+
+async def _upload_text(strategy: Any, text: str, target_path: str) -> None:
+    tmp_name = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
+            tmp.write(text)
+            tmp_name = tmp.name
+        uploaded = strategy._stage_file_to_host(tmp_name, target_path)
+        if inspect.isawaitable(uploaded):
+            await uploaded
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+
+async def _perform_registry_login(strategy: Any) -> None:
+    from oddish.registry_auth import current_registry_credentials
+
+    creds = current_registry_credentials.get()
+    if not creds:
+        return
+    if getattr(strategy, _LOGGED_IN_ATTR, False):
+        return
+
+    config_json, secrets, registries = _registry_login_config(creds)
+    logged_registries = sorted(set(registries))
+    setattr(strategy, _LOGGED_IN_ATTR, True)
+    labels = ", ".join(logged_registries)
+    message: str | None = None
+    try:
+        await _upload_text(strategy, config_json, _DOCKER_CONFIG_STAGED_PATH)
+        result = await strategy._vm_exec(
+            _REGISTRY_LOGIN_CMD,
+            timeout_sec=30,
+        )
+    except Exception as exc:
+        message = f"Registry login failed for {labels}: {_redact(repr(exc), secrets)}"
+        logger.warning(message)
+    if message is not None:
+        raise RuntimeError(message)
+    if getattr(result, "return_code", 1) != 0:
+        message = (
+            f"Registry login failed (rc={getattr(result, 'return_code', '?')}) "
+            f"for {labels}: {_redact(_result_text(result), secrets)}"
+        )
+        logger.warning(message)
+        raise RuntimeError(message)
+    logger.info("Authenticated DinD daemon for registries: %s", labels)
+
+
 def _wrap_wait_for_docker_daemon(
     orig: Callable[[Any], Awaitable[None]],
+    *,
+    with_diagnostics: bool = False,
+    with_mirror: bool = False,
 ) -> Callable[[Any], Awaitable[None]]:
     async def _wait_for_docker_daemon(self: Any) -> None:
         try:
-            return await orig(self)
+            await orig(self)
         except RuntimeError as exc:
-            diag = await _collect_dockerd_diagnostics(self)
-            raise RuntimeError(f"{exc}\n\n{diag}") from exc
+            if with_diagnostics:
+                diag = await _collect_dockerd_diagnostics(self)
+                raise RuntimeError(f"{exc}\n\n{diag}") from exc
+            raise
+        if with_mirror:
+            await _inject_mirror_and_reload(self)
+        await _perform_registry_login(self)
 
     setattr(_wait_for_docker_daemon, "_oddish_wrapped", True)
     return _wait_for_docker_daemon
@@ -94,17 +221,6 @@ def _install_method_patch(
 
     setattr(cls, method_name, wrap(orig))
     logger.info("Installed oddish %s patch on Harbor %s", label, class_name)
-
-
-def _patch_dind_docker_daemon_diagnostics() -> None:
-    _install_method_patch(
-        "harbor.environments.daytona.environment",
-        "_DaytonaDinD",
-        "_wait_for_docker_daemon",
-        _wrap_wait_for_docker_daemon,
-        marker="_oddish_wrapped",
-        label="dockerd-diagnostics",
-    )
 
 
 _DAYTONA_DOCKERD_MARKER = "dockerd-entrypoint.sh dockerd"
@@ -172,17 +288,6 @@ def _wrap_daytona_vm_exec(
     return _vm_exec
 
 
-def _patch_daytona_registry_mirror() -> None:
-    _install_method_patch(
-        "harbor.environments.daytona.environment",
-        "_DaytonaDinD",
-        "_vm_exec",
-        _wrap_daytona_vm_exec,
-        marker="_oddish_mirror_wrapped",
-        label="registry-mirror",
-    )
-
-
 async def _inject_mirror_and_reload(strategy: Any) -> None:
     try:
         res = await strategy._vm_exec(
@@ -218,23 +323,35 @@ async def _inject_mirror_and_reload(strategy: Any) -> None:
         logger.warning("Failed to inject registry mirror into Modal DinD: %r", exc)
 
 
-def _wrap_modal_wait_for_docker_daemon(
-    orig: Callable[[Any], Awaitable[None]],
-) -> Callable[[Any], Awaitable[None]]:
-    async def _wait_for_docker_daemon(self: Any) -> None:
-        await orig(self)
-        await _inject_mirror_and_reload(self)
-
-    setattr(_wait_for_docker_daemon, "_oddish_mirror_wrapped", True)
-    return _wait_for_docker_daemon
-
-
-def _patch_modal_registry_mirror() -> None:
+def _patch_daytona_dind() -> None:
+    module_path = "harbor.environments.daytona.environment"
+    class_name = "_DaytonaDinD"
     _install_method_patch(
-        "harbor.environments.modal",
-        "_ModalDinD",
+        module_path,
+        class_name,
         "_wait_for_docker_daemon",
-        _wrap_modal_wait_for_docker_daemon,
+        partial(_wrap_wait_for_docker_daemon, with_diagnostics=True, with_mirror=False),
+        marker="_oddish_wrapped",
+        label="dockerd-diagnostics+registry-login",
+    )
+    _install_method_patch(
+        module_path,
+        class_name,
+        "_vm_exec",
+        _wrap_daytona_vm_exec,
         marker="_oddish_mirror_wrapped",
         label="registry-mirror",
+    )
+
+
+def _patch_modal_dind() -> None:
+    module_path = "harbor.environments.modal"
+    class_name = "_ModalDinD"
+    _install_method_patch(
+        module_path,
+        class_name,
+        "_wait_for_docker_daemon",
+        partial(_wrap_wait_for_docker_daemon, with_diagnostics=False, with_mirror=True),
+        marker="_oddish_wrapped",
+        label="registry-mirror+registry-login",
     )

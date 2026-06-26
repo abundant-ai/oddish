@@ -47,6 +47,7 @@ from oddish.db import (
     TaskVersionModel,
     TrialModel,
     TrialStatus,
+    task_experiments,
 )
 from oddish.schemas import (
     TaskBrowseExperiment,
@@ -878,6 +879,7 @@ async def browse_tasks_core(
         for row in visible_rows
         if row["current_version_id"] is not None
     ]
+    task_ids = [str(row["task_id"]) for row in visible_rows]
 
     if task_version_pairs:
         counters_query = (
@@ -918,34 +920,33 @@ async def browse_tasks_core(
         counters_by_task = {
             str(row["task_id"]): dict(row) for row in counter_rows.mappings()
         }
-        exp_join_condition = [ExperimentModel.id == TrialModel.experiment_id]
+        # All-time experiment membership via ``task_experiments``, matching the
+        # task-detail page (and user tags) rather than the current-version trials.
+        exp_where = [
+            task_experiments.c.task_id.in_(task_ids),
+            task_experiments.c.deleted_at.is_(None),
+        ]
         if org_id is not None:
-            exp_join_condition.append(ExperimentModel.org_id == org_id)
+            exp_where.append(ExperimentModel.org_id == org_id)
         exp_query = (
             select(
-                TrialModel.task_id.label("task_id"),
+                task_experiments.c.task_id.label("task_id"),
                 ExperimentModel.id.label("experiment_id"),
                 ExperimentModel.name.label("experiment_name"),
             )
-            .select_from(TrialModel)
-            .join(ExperimentModel, and_(*exp_join_condition))
-            .where(
-                TrialModel.experiment_id.isnot(None),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.is_probe.isnot(True),
-                tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
-                    task_version_pairs
-                ),
+            .select_from(task_experiments)
+            .join(
+                ExperimentModel,
+                ExperimentModel.id == task_experiments.c.experiment_id,
             )
+            .where(*exp_where)
             .distinct()
             .order_by(
-                TrialModel.task_id.asc(),
+                task_experiments.c.task_id.asc(),
                 ExperimentModel.name.asc(),
                 ExperimentModel.id.asc(),
             )
         )
-        if org_id is not None:
-            exp_query = exp_query.where(TrialModel.org_id == org_id)
         experiments_started_at = now()
         experiment_rows = await session.execute(exp_query)
         if record_timing is not None:
