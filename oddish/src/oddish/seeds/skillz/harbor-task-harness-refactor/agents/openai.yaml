@@ -1,4 +1,0 @@
-interface:
-  display_name: "Harbor Task Harness Refactor"
-  short_description: "Refactor Harbor tasks through the Taiga loop"
-  default_prompt: "Use $harbor-task-harness-refactor to convert or review this Harbor task for Taiga, split the harness if needed, prefer direct Taiga API validation when auth is available, fall back to the smithy PR/CI loop when needed, and keep going until Taiga critical issues are resolved or blocked."

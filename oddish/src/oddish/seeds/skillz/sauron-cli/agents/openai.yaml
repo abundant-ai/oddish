@@ -1,4 +1,0 @@
-interface:
-  display_name: "Sauron CLI"
-  short_description: "Inspect and pull Sauron benchmark runs"
-  default_prompt: "Use $sauron-cli to inspect this Sauron run, summarize agent results, and pull relevant artifacts if needed."

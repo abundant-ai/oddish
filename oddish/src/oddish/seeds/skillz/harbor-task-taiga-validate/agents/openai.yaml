@@ -1,4 +1,0 @@
-interface:
-  display_name: "Harbor Task Taiga Validate"
-  short_description: "Validate Harbor tasks through Taiga"
-  default_prompt: "Use $harbor-task-taiga-validate to validate this Harbor task in Taiga, prefer direct local Taiga execution when auth and publish access are available, fall back to the PR/CI platform path when blocked, and keep going until Taiga critical issues are resolved or explicitly blocked."

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Harbor Task Audit"
-  short_description: "Audit a Harbor task end-to-end"
-  default_prompt: "Use $harbor-task-audit to review the Harbor task in this branch and produce a markdown report."
