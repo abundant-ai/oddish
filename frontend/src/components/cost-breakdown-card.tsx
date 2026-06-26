@@ -37,6 +37,8 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip as RechartsTooltip,
   XAxis,
@@ -60,6 +62,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
 import {
   AlertCircle,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   DollarSign,
@@ -399,6 +402,243 @@ function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
 }
 
 // =============================================================================
+// Per-section cost trend (line chart): total + per-series, toggleable
+// =============================================================================
+
+function TrendTooltip(
+  props: TooltipContentProps<ChartTooltipValue, ChartTooltipName> & {
+    bucket: string;
+    labels: Record<string, string>;
+  },
+) {
+  const { active, payload, label, bucket, labels } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const when =
+    bucket === "hour"
+      ? new Date(String(label)).toLocaleString()
+      : new Date(String(label)).toLocaleDateString();
+  const totalEntry = payload.find((p) => String(p.dataKey) === "total");
+  const total = totalEntry && typeof totalEntry.value === "number" ? totalEntry.value : 0;
+  const entries = payload
+    .filter((p) => String(p.dataKey) !== "total")
+    .map((p) => ({
+      key: String(p.dataKey),
+      color: p.color,
+      value: typeof p.value === "number" ? p.value : 0,
+    }))
+    .filter((e) => e.value > 0)
+    .sort((a, b) => b.value - a.value);
+  return (
+    <div className="bg-popover max-w-[280px] rounded-md border px-3 py-2 text-xs shadow-md">
+      <div className="mb-1 font-medium">{when}</div>
+      <div className="space-y-0.5">
+        {entries.map((e) => (
+          <div key={e.key} className="flex items-center justify-between gap-3">
+            <span className="flex items-center gap-1.5">
+              <span
+                className="inline-block h-2 w-2 rounded-sm"
+                style={{ backgroundColor: e.color }}
+              />
+              <span className="max-w-[160px] truncate">
+                {labels[e.key] ?? e.key}
+              </span>
+            </span>
+            <span className="font-mono">{formatCostUsd(e.value)}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1 flex justify-between gap-3 border-t pt-1 font-medium">
+        <span>Total</span>
+        <span className="font-mono">{formatCostUsd(total)}</span>
+      </div>
+    </div>
+  );
+}
+
+function CostTrendChart({
+  series,
+  bucket,
+  filterKeys,
+}: {
+  series: CostSeries;
+  bucket: string;
+  // When set (search active), restrict per-series lines to these keys; only the
+  // total + matching series show, and the legend toggles are disabled.
+  filterKeys?: string[];
+}) {
+  const [mode, setMode] = useState<"cumulative" | "interval">("cumulative");
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+
+  const labels = useMemo(() => {
+    const map: Record<string, string> = { total: "Total" };
+    series.keys.forEach((k) => (map[k.key] = k.label));
+    return map;
+  }, [series.keys]);
+  const colorByKey = useMemo(() => buildSeriesColors(series.keys), [series.keys]);
+
+  const filterSet = useMemo(
+    () => (filterKeys ? new Set(filterKeys) : null),
+    [filterKeys],
+  );
+  const visibleKeys = useMemo(() => {
+    let keys = series.keys.map((k) => k.key);
+    if (filterSet) keys = keys.filter((k) => filterSet.has(k));
+    else keys = keys.filter((k) => !hidden.has(k));
+    return keys;
+  }, [series.keys, hidden, filterSet]);
+
+  const data = useMemo(() => {
+    const runKey: Record<string, number> = {};
+    let runTotal = 0;
+    return series.buckets.map((b) => {
+      const row: Record<string, number | string> = {
+        bucket_start: b.bucket_start,
+      };
+      if (mode === "cumulative") {
+        runTotal += b.cost_usd;
+        row.total = Math.round(runTotal * 100) / 100;
+        for (const k of series.keys) {
+          runKey[k.key] = (runKey[k.key] ?? 0) + (b.costs[k.key] ?? 0);
+          row[k.key] = Math.round(runKey[k.key] * 100) / 100;
+        }
+      } else {
+        row.total = b.cost_usd;
+        for (const k of series.keys) row[k.key] = b.costs[k.key] ?? 0;
+      }
+      return row;
+    });
+  }, [series.buckets, series.keys, mode]);
+
+  if (series.buckets.length === 0)
+    return (
+      <div className="text-muted-foreground flex h-[200px] items-center justify-center rounded-lg border text-xs">
+        No trial spend in this window.
+      </div>
+    );
+
+  const legendKeys = filterSet
+    ? series.keys.filter((k) => filterSet.has(k.key))
+    : series.keys;
+
+  return (
+    <div className="space-y-2 rounded-lg border p-3">
+      <div className="flex items-center justify-between">
+        <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+          {!filterSet && (
+            <>
+              <button
+                type="button"
+                onClick={() => setHidden(new Set())}
+                className="hover:text-foreground"
+              >
+                Show all
+              </button>
+              <span>·</span>
+              <button
+                type="button"
+                onClick={() => setHidden(new Set(series.keys.map((k) => k.key)))}
+                className="hover:text-foreground"
+              >
+                Hide all
+              </button>
+            </>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          {(["interval", "cumulative"] as const).map((m) => (
+            <Button
+              key={m}
+              type="button"
+              variant={mode === m ? "secondary" : "ghost"}
+              size="sm"
+              className="h-6 px-2 text-[11px]"
+              onClick={() => setMode(m)}
+            >
+              {m === "interval" ? "Per interval" : "Cumulative"}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <div className="text-foreground h-[200px] w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis
+              dataKey="bucket_start"
+              tickFormatter={bucketTickFormatter(bucket)}
+              tick={{ fontSize: 11 }}
+              minTickGap={24}
+            />
+            <YAxis
+              tickFormatter={(v: number) => formatCostUsd(v)}
+              tick={{ fontSize: 11 }}
+              width={56}
+            />
+            <RechartsTooltip
+              content={(props) => (
+                <TrendTooltip {...props} bucket={bucket} labels={labels} />
+              )}
+            />
+            <Line
+              type="monotone"
+              dataKey="total"
+              name="Total"
+              stroke="currentColor"
+              strokeWidth={2}
+              dot={false}
+              isAnimationActive={false}
+            />
+            {visibleKeys.map((k) => (
+              <Line
+                key={k}
+                type="monotone"
+                dataKey={k}
+                name={labels[k]}
+                stroke={colorByKey[k]}
+                strokeWidth={1.5}
+                dot={false}
+                isAnimationActive={false}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+        {legendKeys.map((k) => {
+          const isHidden = !filterSet && hidden.has(k.key);
+          return (
+            <button
+              key={k.key}
+              type="button"
+              disabled={!!filterSet}
+              onClick={() =>
+                setHidden((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(k.key)) next.delete(k.key);
+                  else next.add(k.key);
+                  return next;
+                })
+              }
+              className={`inline-flex items-center gap-1 ${
+                isHidden ? "opacity-40" : ""
+              } ${filterSet ? "cursor-default" : "hover:opacity-80"}`}
+            >
+              <span
+                className="inline-block h-2 w-2 rounded-sm"
+                style={{ backgroundColor: colorByKey[k.key] }}
+              />
+              <span className="text-muted-foreground max-w-[160px] truncate">
+                {k.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // Methodology note
 // =============================================================================
 
@@ -471,6 +711,8 @@ type CostBreakdownCardProps = {
   enableExport?: boolean;
   searchValue?: string;
   onSearchChange?: (value: string) => void;
+  // Show a collapsible cost-trend line chart above the user and model tables.
+  enableSectionCharts?: boolean;
 };
 
 function matchesQuery(
@@ -520,10 +762,13 @@ export function CostBreakdownCard({
   enableExport = false,
   searchValue,
   onSearchChange,
+  enableSectionCharts = false,
 }: CostBreakdownCardProps = {}) {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
   const [internalSearch, setInternalSearch] = useState("");
+  const [userChartOpen, setUserChartOpen] = useState(true);
+  const [modelChartOpen, setModelChartOpen] = useState(true);
   const search = searchValue ?? internalSearch;
   const setSearch = onSearchChange ?? setInternalSearch;
 
@@ -550,6 +795,21 @@ export function CostBreakdownCard({
   // model's portion (so the figures reconcile with the Cost-by-model totals).
   // Otherwise it's a plain text filter on each table's own fields.
   const modelMode = q !== "" && filteredModels.length > 0;
+
+  // When a search is active, restrict each trend chart to the matching series
+  // keys (within its own dimension); undefined means "no filter, all keys".
+  const userSeriesFilterKeys = useMemo(() => {
+    if (!q || !data) return undefined;
+    return data.series_by_user.keys
+      .filter((k) => matchesQuery([k.key, k.label], q))
+      .map((k) => k.key);
+  }, [data, q]);
+  const modelSeriesFilterKeys = useMemo(() => {
+    if (!q || !data) return undefined;
+    return data.series_by_model.keys
+      .filter((k) => matchesQuery([k.key, k.label], q))
+      .map((k) => k.key);
+  }, [data, q]);
 
   const filteredExperiments = useMemo(() => {
     const experiments = data?.experiments ?? [];
@@ -863,7 +1123,33 @@ export function CostBreakdownCard({
             </div>
 
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Cost by user</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Cost by user</h3>
+                {enableSectionCharts && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground h-6 gap-1 px-2 text-[11px]"
+                    onClick={() => setUserChartOpen((o) => !o)}
+                    aria-expanded={userChartOpen}
+                  >
+                    {userChartOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    Trend
+                  </Button>
+                )}
+              </div>
+              {enableSectionCharts && userChartOpen && (
+                <CostTrendChart
+                  series={data.series_by_user}
+                  bucket={data.bucket}
+                  filterKeys={userSeriesFilterKeys}
+                />
+              )}
               <UserTable
                 users={pagedUsers}
                 onSelect={enableSearch ? (queryValue) => setSearch(queryValue) : undefined}
@@ -880,7 +1166,33 @@ export function CostBreakdownCard({
             </section>
 
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Cost by model</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Cost by model</h3>
+                {enableSectionCharts && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-muted-foreground h-6 gap-1 px-2 text-[11px]"
+                    onClick={() => setModelChartOpen((o) => !o)}
+                    aria-expanded={modelChartOpen}
+                  >
+                    {modelChartOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    )}
+                    Trend
+                  </Button>
+                )}
+              </div>
+              {enableSectionCharts && modelChartOpen && (
+                <CostTrendChart
+                  series={data.series_by_model}
+                  bucket={data.bucket}
+                  filterKeys={modelSeriesFilterKeys}
+                />
+              )}
               <ModelTable
                 models={pagedModels}
                 onSelect={
