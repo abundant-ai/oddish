@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-27]
+
+### Fixed
+
+- Probe result cells in the experiment trials table now navigate to the probe's dedicated run page (`/tasks/{id}/probe/{trial_id}`) instead of opening the trial drawer; non-probe cells are unchanged (#490)
+
+---
+
 ## [2026-06-26]
 
 ### Added
