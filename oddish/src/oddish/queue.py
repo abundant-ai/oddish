@@ -702,6 +702,28 @@ async def _bulk_insert_trials(
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
 
 
+def _submission_gates_llm_trials(submission: TaskSubmission) -> bool:
+    """True when this submission should hold its LLM trials on its baselines.
+
+    Active only when the global flag is on and the submission mixes nop/oracle
+    baselines with LLM agents. Applies to both the initial create and later
+    appends, so a re-run that adds fresh baselines re-gates its agent trials.
+    """
+    if not settings.gate_llm_on_baselines:
+        return False
+    specs = submission.trials
+    has_baseline = any(is_nop_oracle_agent(s.agent) for s in specs)
+    has_llm = any(not is_nop_oracle_agent(s.agent) for s in specs)
+    return has_baseline and has_llm
+
+
+def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
+    """BLOCKED for LLM trials under an armed gate, else QUEUED."""
+    if gating and not is_nop_oracle_agent(agent):
+        return WorkerJobStatus.BLOCKED
+    return WorkerJobStatus.QUEUED
+
+
 async def create_task(
     session: AsyncSession,
     submission: TaskSubmission,
@@ -825,9 +847,7 @@ async def create_task(
     # are enqueued BLOCKED and released (or cancelled) once the nop/oracle
     # baselines finish. Only active when the global flag is on and both kinds
     # are present, so every other submission is unaffected.
-    has_baseline = any(is_nop_oracle_agent(s.agent) for s in submission.trials)
-    has_llm = any(not is_nop_oracle_agent(s.agent) for s in submission.trials)
-    gate_llm_trials = settings.gate_llm_on_baselines and has_baseline and has_llm
+    gate_llm_trials = _submission_gates_llm_trials(submission)
     trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
@@ -856,16 +876,11 @@ async def create_task(
                 "max_attempts": submission.max_trial_attempts,
             }
         )
-        job_status = (
-            WorkerJobStatus.BLOCKED
-            if gate_llm_trials and not is_nop_oracle_agent(spec.agent)
-            else WorkerJobStatus.QUEUED
-        )
         worker_job_requests.append(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                status=job_status,
+                status=_initial_trial_job_status(spec.agent, gating=gate_llm_trials),
                 payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
@@ -1073,6 +1088,11 @@ async def append_trials_to_task(
         )
 
     registry_auth_enc = _encrypt_submission_registry_auth(submission)
+    # Re-gate on append too: when this batch adds nop/oracle baselines alongside
+    # LLM agents, hold the appended LLM trials BLOCKED until the baselines
+    # finish. The release/cancel decision pools all of the task's baselines
+    # (existing + appended), so a re-run validates against the full picture.
+    gate_llm_trials = _submission_gates_llm_trials(submission)
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
@@ -1106,6 +1126,7 @@ async def append_trials_to_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
+                status=_initial_trial_job_status(spec.agent, gating=gate_llm_trials),
                 payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,

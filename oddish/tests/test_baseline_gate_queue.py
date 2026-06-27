@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy import select, update
+from sqlalchemy.orm import selectinload
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -32,7 +33,11 @@ from oddish.db import (  # noqa: E402
     get_session,
     utcnow,
 )
-from oddish.queue import create_task, maybe_gate_llm_trials  # noqa: E402
+from oddish.queue import (  # noqa: E402
+    append_trials_to_task,
+    create_task,
+    maybe_gate_llm_trials,
+)
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
@@ -193,3 +198,66 @@ async def test_faulty_baselines_cancel_llm(monkeypatch, cleanup_task_ids):
         ).scalar_one()
     assert llm_trial.status == TrialStatus.FAILED
     assert GATE_SKIP_PREFIX in (llm_trial.error_message or "")
+
+
+def _baseline_submission(name: str) -> TaskSubmission:
+    return TaskSubmission(
+        name=name,
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[TrialSpec(agent="nop", model=None)],
+    )
+
+
+def _append_submission() -> TaskSubmission:
+    return TaskSubmission(
+        name="append",
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[
+            TrialSpec(agent="oracle", model=None),
+            TrialSpec(agent="nop", model=None),
+            TrialSpec(agent=_LLM_AGENT, model=_LLM_MODEL),
+        ],
+    )
+
+
+async def _load_task(task_id: str) -> TaskModel:
+    async with get_session() as session:
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.experiments))
+                .where(TaskModel.id == task_id)
+            )
+        ).scalar_one()
+        await append_trials_to_task(session, task=task, submission=_append_submission())
+    return task
+
+
+@pytest.mark.asyncio
+async def test_appended_llm_blocked_with_new_baselines(monkeypatch, cleanup_task_ids):
+    # Initial task created without gating (single nop baseline, flag off).
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
+    task_id = f"gate-append-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _baseline_submission("seed"), task_id=task_id)
+
+    # Append oracle + nop + LLM with gating on: the appended LLM trial blocks.
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    await _load_task(task_id)
+
+    statuses = await _job_status_by_agent(task_id)
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.BLOCKED
+    assert statuses["oracle"] == WorkerJobStatus.QUEUED
+
+    # Appended baselines validate the task -> the appended LLM trial releases.
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=1.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, baseline_id) is True
+
+    statuses = await _job_status_by_agent(task_id)
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.QUEUED
