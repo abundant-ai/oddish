@@ -53,7 +53,7 @@ import {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
@@ -458,6 +458,7 @@ export function ExperimentTrialsTable({
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -2411,6 +2412,12 @@ export function ExperimentTrialsTable({
                                         type="button"
                                         variant="unstyled"
                                         onClick={() => {
+                                          if (trial.is_probe) {
+                                            router.push(
+                                              `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
+                                            );
+                                            return;
+                                          }
                                           const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
                                           onTrialSelect?.(trial, task, {
