@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 
 import jsonschema
+
+logger = logging.getLogger(__name__)
 
 # Keys the structured-outputs subset does not support (see plan Global Constraints).
 _UNSUPPORTED_KEYS = frozenset(
@@ -26,12 +29,35 @@ class UnsupportedSchemaError(ValueError):
 
 
 def parse_result_focus(result_focus: str | None) -> dict | None:
-    """Return the parsed schema dict if ``result_focus`` is a JSON object, else None."""
+    """Return the parsed schema dict if ``result_focus`` is a JSON object, else None.
+
+    Deterministic and synchronous — no LLM. The best-effort LLM repair of a
+    malformed-but-JSON-ish value lives in the async wrapper layer
+    (``result_focus_repair.repair_result_focus_if_needed``); callers run that
+    first, then parse the repaired string here."""
     if not result_focus or not result_focus.strip():
         return None
     try:
         parsed = json.loads(result_focus)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
+        # A prose focus question legitimately isn't JSON (callers handle None), so
+        # only flag an error when the input clearly meant to be JSON; otherwise
+        # debug to avoid burying real failures under every prose probe. Either way
+        # capture the exception and the value we tried to parse.
+        if result_focus.lstrip().startswith(("{", "[")):
+            logger.error(
+                "Could not parse result_focus as JSON (%s: %s): %r",
+                type(exc).__name__,
+                exc,
+                result_focus,
+            )
+        else:
+            logger.debug(
+                "result_focus is prose, not JSON (%s: %s): %r",
+                type(exc).__name__,
+                exc,
+                result_focus,
+            )
         return None
     return parsed if isinstance(parsed, dict) else None
 
