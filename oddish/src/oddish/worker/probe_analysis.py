@@ -701,8 +701,16 @@ async def run_probe_analyzer(
         "messages": [{"role": "user", "content": prompt}],
     }
     if findings_schema is not None and _supports_structured_outputs(model):
-        create_kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": _build_envelope_schema(findings_schema)}
+        # anthropic==0.76.0 doesn't expose output_config as a typed kwarg (passing
+        # it raises "unexpected keyword argument 'output_config'"), so forward the
+        # structured-outputs body field via extra_body instead.
+        create_kwargs["extra_body"] = {
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "schema": _build_envelope_schema(findings_schema),
+                }
+            }
         }
     msg = await client.messages.create(**create_kwargs)
 
