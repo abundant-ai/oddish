@@ -268,6 +268,12 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # Extra exact emails allowed to mint API keys (beyond the @abundant.ai
+    # admins). Empty in prod; preview sets a tester email so testing isn't
+    # blocked on org/domain membership.
+    "ODDISH_EXTRA_API_KEY_CREATOR_EMAILS": os.environ.get(
+        "ODDISH_EXTRA_API_KEY_CREATOR_EMAILS", ""
+    ),
 }
 
 
