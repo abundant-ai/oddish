@@ -48,14 +48,25 @@ def _parse_json_object(result_focus: str | None) -> dict | None:
         return None
     try:
         parsed = json.loads(result_focus)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as exc:
         # A prose focus question legitimately isn't JSON (callers handle None), so
         # only flag an error when the input clearly meant to be JSON; otherwise
-        # debug to avoid burying real failures under every prose probe.
+        # debug to avoid burying real failures under every prose probe. Either way
+        # capture the exception and the value we tried to parse.
         if result_focus.lstrip().startswith(("{", "[")):
-            logger.error("Could not parse result_focus as JSON: %r", result_focus)
+            logger.error(
+                "Could not parse result_focus as JSON (%s: %s): %r",
+                type(exc).__name__,
+                exc,
+                result_focus,
+            )
         else:
-            logger.debug("result_focus is prose, not JSON: %r", result_focus)
+            logger.debug(
+                "result_focus is prose, not JSON (%s: %s): %r",
+                type(exc).__name__,
+                exc,
+                result_focus,
+            )
         return None
     return parsed if isinstance(parsed, dict) else None
 
