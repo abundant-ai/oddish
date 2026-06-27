@@ -4,11 +4,10 @@ name: load_only Guard
 # every Trial/Task/Experiment column read on the compact /tasks response-builder
 # path must be present in the matching load_only(...) set in list_tasks_core.
 #
-# This prevents the class of bug behind the 2026-06-24 prod incident, where
-# PR #413 surfaced trials.harbor_sha in the compact builder without adding it to
-# the load_only set. The column then lazy-loaded outside the request greenlet
-# (sqlalchemy.exc.MissingGreenlet) and every GET /tasks returned 500 for 20
-# minutes, blanking the experiment/dashboard views.
+# Surfacing a column in the compact builder without adding it to the load_only
+# set leaves it deferred; the builder's read then lazy-loads outside the request
+# greenlet (sqlalchemy.exc.MissingGreenlet) and 500s every GET /tasks, blanking
+# the experiment/dashboard views.
 #
 # Builder unit tests can't catch this (in-memory models have all attributes
 # set); the bug lives in the query options. See oddish/scripts/load_only_guard.py.

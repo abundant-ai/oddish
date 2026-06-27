@@ -11,12 +11,13 @@ everything else**. Under async SQLAlchemy, reading a deferred column inside a
 response builder fires a lazy-load outside the request greenlet and 500s with
 ``sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called``.
 
-On 2026-06-24, PR #413 surfaced ``trials.harbor_sha`` in the compact builder
-without adding it to the trial ``load_only`` set. Every ``GET /tasks`` 500'd for
-20 minutes (1,977 errors, 23:47-00:07 UTC), blanking the experiment/dashboard
-views, until #433 eager-loaded it. Builder unit tests can't catch this: in-memory
-model instances have every attribute set, so the deferred-column lazy-load never
-fires off a live session. The bug lives in the *query options*, not the builder.
+Concretely: surfacing a new column in the compact builder (e.g.
+``harbor_sha=trial.harbor_sha``) without adding it to the trial ``load_only``
+set leaves that column deferred, so the builder's read lazy-loads outside the
+greenlet and 500s every ``GET /tasks`` -- blanking the experiment/dashboard
+views. Builder unit tests can't catch this: in-memory model instances have every
+attribute set, so the deferred-column lazy-load never fires off a live session.
+The bug lives in the *query options*, not the builder.
 
 What this guard does
 --------------------
@@ -615,7 +616,7 @@ def main() -> int:
             "are\nmissing from the matching load_only() set in list_tasks_core\n"
             "(oddish/core/endpoints/tasks_query.py). Under async SQLAlchemy each "
             "one\nwould lazy-load outside the request greenlet and 500 every GET "
-            "/tasks\nwith MissingGreenlet (the 2026-06-24 incident).\n",
+            "/tasks\nwith MissingGreenlet.\n",
             file=sys.stderr,
         )
         for model_name in sorted(violations):

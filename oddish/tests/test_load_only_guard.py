@@ -1,9 +1,9 @@
 """Enforce ``load_only()`` coverage for FE-surfaced model columns.
 
 This is the executable form of the CLAUDE.md "load_only / MissingGreenlet"
-gotcha and a regression guard for the 2026-06-24 incident (PR #413 surfaced
-``trials.harbor_sha`` in the compact ``/tasks`` builder without adding it to the
-``load_only`` set, 500ing every ``GET /tasks`` for 20 minutes).
+gotcha: surfacing a column in the compact ``/tasks`` builder without adding it to
+the matching ``load_only`` set leaves it deferred, so its read lazy-loads outside
+the request greenlet and 500s every ``GET /tasks``.
 
 The live checks diff the columns read on the compact response-builder path
 against the columns declared in the matching ``load_only`` sets, and trip if a
@@ -55,7 +55,7 @@ def test_compact_builders_columns_are_load_only():
             "Columns read by the compact /tasks response builders are missing "
             "from their load_only() set in list_tasks_core -- under async "
             "SQLAlchemy these lazy-load outside the request greenlet and 500 "
-            "every GET /tasks with MissingGreenlet (the 2026-06-24 incident). "
+            "every GET /tasks with MissingGreenlet. "
             "Add each to the matching load_only(...) set:\n  " + "\n  ".join(lines)
         )
 
