@@ -160,6 +160,7 @@ jobs:
       ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
     defaults:
       run:
         working-directory: backend
