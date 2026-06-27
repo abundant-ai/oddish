@@ -14,20 +14,19 @@ name: load_only Guard
 # set); the bug lives in the query options. See oddish/scripts/load_only_guard.py.
 
 on:
+  # Broad on purpose: the tripwire scans the whole oddish package for stray
+  # load_only() sites, so a load_only added in *any* source file must run this
+  # check — not just edits to helpers.py / tasks_query.py.
   pull_request:
     paths:
-      - "oddish/src/oddish/core/helpers.py"
-      - "oddish/src/oddish/core/endpoints/tasks_query.py"
-      - "oddish/src/oddish/db/models.py"
+      - "oddish/src/oddish/**.py"
       - "oddish/scripts/load_only_guard.py"
       - ".github/workflows/load-only-guard.yml"
   push:
     branches:
       - main
     paths:
-      - "oddish/src/oddish/core/helpers.py"
-      - "oddish/src/oddish/core/endpoints/tasks_query.py"
-      - "oddish/src/oddish/db/models.py"
+      - "oddish/src/oddish/**.py"
       - "oddish/scripts/load_only_guard.py"
       - ".github/workflows/load-only-guard.yml"
 

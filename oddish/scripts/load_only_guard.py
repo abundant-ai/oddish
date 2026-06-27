@@ -24,28 +24,40 @@ It statically diffs the columns **read** on the compact response-builder path
 against the columns **declared** in the matching ``load_only(...)`` sets, and
 fails when a read column is missing from its set.
 
-* Introspects ``TrialModel`` / ``TaskModel`` / ``ExperimentModel`` to learn each
-  model's real column names, relationship names, and primary key. (``load_only``
+* **Models are derived, not hardcoded.** The set of models to check is whatever
+  appears in the ``load_only(...)`` sets in ``list_tasks_core`` (today
+  ``TrialModel`` / ``TaskModel`` / ``ExperimentModel``). A model restricted by a
+  new ``load_only`` set is picked up automatically -- a model with *no*
+  ``load_only`` is not checked because it can't defer (it's fully loaded, so no
+  ``MissingGreenlet``). Each discovered model is introspected via SQLAlchemy for
+  its real column names, relationship names, and primary key. (``load_only``
   never defers a primary key, so PKs are always allowed even when unlisted.)
-* Parses ``helpers.py`` and walks the call graph starting at the compact entry
-  point ``build_task_status_response_compact``, following only module-local
-  calls. The full (non-compact) builders -- ``build_trial_response`` /
-  ``build_task_status_response`` -- are intentionally *not* reachable from this
-  entry: the non-compact path applies no ``load_only``, so its reads are
-  unconstrained and must not be diffed against the compact sets (they
-  legitimately read columns the compact sets omit, e.g. ``trial.result``).
+* **The compact builder entry point is derived, not named.** The guard finds the
+  ``*_compact`` builder call inside ``list_tasks_core`` (today
+  ``build_task_status_response_compact``) and walks the call graph from there,
+  following only module-local calls. The full (non-compact) builders --
+  ``build_trial_response`` / ``build_task_status_response`` -- are intentionally
+  *not* reachable from this entry: the non-compact path applies no ``load_only``,
+  so its reads are unconstrained and must not be diffed against the compact sets
+  (they legitimately read columns the compact sets omit, e.g. ``trial.result``).
   ``_build_task_status_response`` *is* reachable and shared by both paths, so its
   task/experiment reads are checked against the compact sets.
 * Within each reachable function, binds local names to models from parameter
   annotations, model-returning helpers, and iteration over model relationships,
   then records every ``model.column`` and ``getattr(model, "column")`` read.
-* Parses the ``load_only(...)`` argument lists inside ``list_tasks_core``,
-  bucketed by model.
 * Reports ``read - declared - primary_key`` per model.
 
+Tripwire
+--------
+The guard is scoped to the single ``load_only`` site that exists today
+(``list_tasks_core``). To stop a *new* site from silently shipping uncovered, a
+tripwire scans ``oddish/src/oddish`` for any ``load_only(...)`` outside
+``list_tasks_core`` and fails -- prompting whoever added it to extend the guard.
+(``backend/`` is a separate package and is not scanned.)
+
 Run ``python scripts/load_only_guard.py`` from the ``oddish`` package root.
-Exits non-zero (with a report) if any read column is missing from its
-``load_only`` set.
+Exits non-zero (with a report) on any uncovered column or any stray
+``load_only`` site.
 """
 
 from __future__ import annotations
@@ -67,27 +79,22 @@ _SRC_ROOT = _REPO_ODDISH_ROOT / "src"
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
 
-# The three models whose compact ``load_only`` sets we enforce. Reads on any
-# other model (e.g. ``TaskVersionModel`` via ``task.current_version``) are out
-# of scope -- they're not governed by these sets.
-from oddish.db import ExperimentModel, TaskModel, TrialModel  # noqa: E402
+import oddish.db as _oddish_db  # noqa: E402  (after sys.path setup)
 
-_HELPERS_PATH = _REPO_ODDISH_ROOT / "src" / "oddish" / "core" / "helpers.py"
-_TASKS_QUERY_PATH = (
-    _REPO_ODDISH_ROOT / "src" / "oddish" / "core" / "endpoints" / "tasks_query.py"
-)
+_PKG_ROOT = _SRC_ROOT / "oddish"
+_HELPERS_PATH = _PKG_ROOT / "core" / "helpers.py"
+_TASKS_QUERY_PATH = _PKG_ROOT / "core" / "endpoints" / "tasks_query.py"
 
-# Entry point of the compact response-builder path. Everything reachable from
-# here (via module-local calls) reads columns governed by the compact
-# ``load_only`` sets. If this is ever renamed, the guard fails loudly rather
+# The function holding the compact-path query + its ``load_only`` sets. This is
+# the guard's one structural anchor; if it moves, the guard fails loudly rather
 # than silently checking nothing.
-_COMPACT_ENTRY = "build_task_status_response_compact"
+_QUERY_FUNCTION = "list_tasks_core"
 
-_MODELS = {
-    "TrialModel": TrialModel,
-    "TaskModel": TaskModel,
-    "ExperimentModel": ExperimentModel,
-}
+# Compact builder calls are recognised by this name suffix (repo convention:
+# ``build_task_status_response_compact``). The actual entry-point name is derived
+# from the call site in ``list_tasks_core`` rather than hardcoded, so a renamed
+# or additional ``*_compact`` builder is picked up automatically.
+_COMPACT_SUFFIX = "_compact"
 
 # Builtins that wrap an iterable but preserve element type (``list(xs)``,
 # ``sorted(xs)``, ...). Used to see through wrappers to the underlying
@@ -112,14 +119,32 @@ class _InferType:
     is_collection: bool
 
 
-def introspect_models() -> dict[str, _ModelMeta]:
-    """Map model name -> column/PK/relationship metadata via SQLAlchemy."""
+def introspect_models(model_names: set[str]) -> dict[str, _ModelMeta]:
+    """Map each model name to column/PK/relationship metadata via SQLAlchemy.
+
+    ``model_names`` is derived from the ``load_only`` sets, so a model can only be
+    checked if it's actually restricted by one. Each name must resolve to a mapped
+    class exported from ``oddish.db``; anything else fails loudly.
+    """
     metas: dict[str, _ModelMeta] = {}
-    for name, model in _MODELS.items():
-        insp = sa_inspect(model)
+    for name in sorted(model_names):
+        model = getattr(_oddish_db, name, None)
+        if model is None:
+            raise SystemExit(
+                f"load_only_guard: load_only references {name!r}, which is not "
+                f"exported from oddish.db. Cannot introspect it."
+            )
+        try:
+            insp = sa_inspect(model)
+            column_attrs = insp.column_attrs
+        except Exception as exc:  # noqa: BLE001 - report any non-mapped class
+            raise SystemExit(
+                f"load_only_guard: {name!r} is not a SQLAlchemy mapped model "
+                f"({exc})."
+            ) from exc
         metas[name] = _ModelMeta(
             name=name,
-            columns=frozenset(c.key for c in insp.column_attrs),
+            columns=frozenset(c.key for c in column_attrs),
             primary_key=frozenset(c.name for c in insp.primary_key),
             relationships={
                 rel.key: (rel.mapper.class_.__name__, bool(rel.uselist))
@@ -354,19 +379,78 @@ class _LoopElement:
     iterable: ast.expr
 
 
-def _reachable_functions(tree: ast.AST, entry: str) -> dict[str, ast.AST]:
-    """Return ``{name: FunctionDef}`` reachable from ``entry`` via local calls."""
+def _find_function(tree: ast.AST, name: str) -> ast.AST | None:
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == name
+        ):
+            return node
+    return None
+
+
+def _is_load_only_call(node: ast.AST) -> bool:
+    """True for ``load_only(...)`` and ``loader.load_only(...)`` calls."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (isinstance(func, ast.Name) and func.id == "load_only") or (
+        isinstance(func, ast.Attribute) and func.attr == "load_only"
+    )
+
+
+def _require_query_function(tasks_query_path: Path) -> ast.AST:
+    tree = ast.parse(tasks_query_path.read_text(), filename=str(tasks_query_path))
+    fn = _find_function(tree, _QUERY_FUNCTION)
+    if fn is None:
+        raise SystemExit(
+            f"load_only_guard: {_QUERY_FUNCTION}() not found in "
+            f"{tasks_query_path.name}. Did it get renamed or moved?"
+        )
+    return fn
+
+
+def derive_compact_entries(tasks_query_path: Path = _TASKS_QUERY_PATH) -> set[str]:
+    """Names of the ``*_compact`` builder(s) called inside ``list_tasks_core``.
+
+    The compact response builders are recognised by the ``_compact`` suffix and
+    discovered from their call sites, so the guard tracks renames / additions
+    without a hardcoded entry-point name.
+    """
+    fn = _require_query_function(tasks_query_path)
+    entries: set[str] = set()
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id.endswith(_COMPACT_SUFFIX)
+        ):
+            entries.add(node.func.id)
+    if not entries:
+        raise SystemExit(
+            f"load_only_guard: no '*{_COMPACT_SUFFIX}' builder call found in "
+            f"{_QUERY_FUNCTION}(). The compact builder may have been renamed; "
+            f"the guard recognises compact builders by the '{_COMPACT_SUFFIX}' "
+            f"suffix."
+        )
+    return entries
+
+
+def _reachable_functions(tree: ast.AST, entries: set[str]) -> dict[str, ast.AST]:
+    """Return ``{name: FunctionDef}`` reachable from ``entries`` via local calls."""
     local_funcs: dict[str, ast.AST] = {}
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             local_funcs[node.name] = node
-    if entry not in local_funcs:
+    missing = entries - local_funcs.keys()
+    if missing:
         raise SystemExit(
-            f"load_only_guard: compact entry point {entry!r} not found in "
-            f"helpers.py. Did it get renamed? Update _COMPACT_ENTRY."
+            f"load_only_guard: compact entry point(s) {sorted(missing)!r} called "
+            f"in {_QUERY_FUNCTION}() but not defined in helpers.py. Builders "
+            f"refactored to another module? Point the guard at it."
         )
     reachable: dict[str, ast.AST] = {}
-    queue = [entry]
+    queue = list(entries)
     while queue:
         name = queue.pop()
         if name in reachable:
@@ -382,12 +466,14 @@ def _reachable_functions(tree: ast.AST, entry: str) -> dict[str, ast.AST]:
 
 
 def collect_read_columns(
-    helpers_path: Path, metas: dict[str, _ModelMeta]
+    helpers_path: Path,
+    metas: dict[str, _ModelMeta],
+    entries: set[str],
 ) -> dict[str, set[str]]:
     """Columns read on the compact builder path, bucketed by model name."""
     tree = ast.parse(helpers_path.read_text(), filename=str(helpers_path))
     func_returns = _function_return_types(tree, metas)
-    reachable = _reachable_functions(tree, _COMPACT_ENTRY)
+    reachable = _reachable_functions(tree, entries)
 
     reads: dict[str, set[str]] = defaultdict(set)
     for fn in reachable.values():
@@ -408,55 +494,28 @@ def _all_args(fn: ast.AST) -> list[ast.arg]:
 
 
 def collect_declared_columns(
-    tasks_query_path: Path, metas: dict[str, _ModelMeta]
+    tasks_query_path: Path = _TASKS_QUERY_PATH,
 ) -> dict[str, set[str]]:
     """Columns declared in the ``load_only(...)`` sets inside ``list_tasks_core``.
 
     Buckets every ``Model.column`` argument to any ``load_only`` call (both the
-    bare ``load_only(...)`` and the ``loader.load_only(...)`` forms) by model.
-    All three compact sets live in ``list_tasks_core``; there are no other
-    ``load_only`` calls in that function.
+    bare ``load_only(...)`` and the ``loader.load_only(...)`` forms) by model
+    name. The model set is whatever appears here -- nothing is hardcoded.
     """
-    tree = ast.parse(tasks_query_path.read_text(), filename=str(tasks_query_path))
-    target_fn: ast.AST | None = None
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "list_tasks_core"
-        ):
-            target_fn = node
-            break
-    if target_fn is None:
-        raise SystemExit(
-            "load_only_guard: list_tasks_core not found in tasks_query.py. "
-            "Did it get renamed or moved?"
-        )
-
+    fn = _require_query_function(tasks_query_path)
     declared: dict[str, set[str]] = defaultdict(set)
-    found_any = False
-    for node in ast.walk(target_fn):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        is_load_only = (isinstance(func, ast.Name) and func.id == "load_only") or (
-            isinstance(func, ast.Attribute) and func.attr == "load_only"
-        )
-        if not is_load_only:
+    for node in ast.walk(fn):
+        if not _is_load_only_call(node):
             continue
         for arg in node.args:
-            if (
-                isinstance(arg, ast.Attribute)
-                and isinstance(arg.value, ast.Name)
-                and arg.value.id in metas
-            ):
+            if isinstance(arg, ast.Attribute) and isinstance(arg.value, ast.Name):
                 declared[arg.value.id].add(arg.attr)
-                found_any = True
-    if not found_any:
+    if not declared:
         raise SystemExit(
-            "load_only_guard: no load_only(Model.column, ...) calls found in "
-            "list_tasks_core. The compact load_only sets may have moved."
+            f"load_only_guard: no load_only(Model.column, ...) calls found in "
+            f"{_QUERY_FUNCTION}(). The compact load_only sets may have moved."
         )
-    return declared
+    return dict(declared)
 
 
 def compute_violations(
@@ -482,49 +541,111 @@ def find_violations(
     helpers_path: Path = _HELPERS_PATH,
     tasks_query_path: Path = _TASKS_QUERY_PATH,
 ) -> dict[str, list[str]]:
-    metas = introspect_models()
-    reads = collect_read_columns(helpers_path, metas)
-    declared = collect_declared_columns(tasks_query_path, metas)
+    declared = collect_declared_columns(tasks_query_path)
+    metas = introspect_models(set(declared))
+    entries = derive_compact_entries(tasks_query_path)
+    reads = collect_read_columns(helpers_path, metas, entries)
     return compute_violations(reads, declared, metas)
 
 
-# Which ``load_only`` set each model maps to, for actionable error messages.
-_SET_HINT = {
-    "TrialModel": "the trials `load_only(TrialModel.*)` set",
-    "TaskModel": "the `load_only(TaskModel.*)` set",
-    "ExperimentModel": "the experiments `load_only(ExperimentModel.*)` set",
-}
+def _load_only_sites_in_tree(tree: ast.AST) -> list[tuple[str | None, int]]:
+    """``(enclosing_function_name, lineno)`` for each load_only call in ``tree``.
+
+    ``enclosing_function_name`` is the *nearest* enclosing def (``None`` at module
+    scope).
+    """
+    sites: list[tuple[str | None, int]] = []
+
+    def visit(node: ast.AST, func_name: str | None) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func_name = node.name
+        if _is_load_only_call(node):
+            sites.append((func_name, node.lineno))
+        for child in ast.iter_child_nodes(node):
+            visit(child, func_name)
+
+    visit(tree, None)
+    return sites
+
+
+def find_stray_load_only_sites(
+    src_root: Path = _PKG_ROOT,
+    allowed_file: Path = _TASKS_QUERY_PATH,
+    allowed_function: str = _QUERY_FUNCTION,
+) -> list[tuple[Path, str | None, int]]:
+    """Find ``load_only`` calls outside the single covered site (the tripwire).
+
+    Scans every ``*.py`` under ``src_root`` and returns ``(path, function,
+    lineno)`` for any ``load_only`` not at ``(allowed_file, allowed_function)``.
+    A non-empty result means a new ``load_only`` site shipped that the column
+    check does not cover -- the guard must be extended to it.
+    """
+    allowed_file = allowed_file.resolve()
+    strays: list[tuple[Path, str | None, int]] = []
+    for path in sorted(src_root.rglob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(), filename=str(path))
+        except (SyntaxError, UnicodeDecodeError):
+            # Unparseable files can't run, so they can't host a live load_only.
+            continue
+        for func_name, lineno in _load_only_sites_in_tree(tree):
+            if path.resolve() == allowed_file and func_name == allowed_function:
+                continue
+            strays.append((path, func_name, lineno))
+    return strays
 
 
 def main() -> int:
     violations = find_violations()
-    if not violations:
+    strays = find_stray_load_only_sites()
+    if not violations and not strays:
+        models = ", ".join(sorted(introspect_models(set(collect_declared_columns()))))
         print(
-            "load_only_guard: OK -- every FE-surfaced Trial/Task/Experiment "
-            "column read on the compact /tasks path is covered by its "
-            "load_only() set."
+            "load_only_guard: OK -- every column read on the compact /tasks path "
+            f"is covered by its load_only() set (models: {models}); no stray "
+            "load_only sites."
         )
         return 0
 
     print("load_only_guard: FAILED\n", file=sys.stderr)
-    print(
-        "The compact /tasks response builders read these columns, but they are\n"
-        "missing from the matching load_only() set in list_tasks_core\n"
-        "(oddish/core/endpoints/tasks_query.py). Under async SQLAlchemy each one\n"
-        "would lazy-load outside the request greenlet and 500 every GET /tasks\n"
-        "with MissingGreenlet (the 2026-06-24 incident).\n",
-        file=sys.stderr,
-    )
-    for model_name in sorted(violations):
-        hint = _SET_HINT.get(model_name, f"the {model_name} load_only set")
-        for column in violations[model_name]:
-            print(f"  - {model_name}.{column}  ->  add to {hint}", file=sys.stderr)
-    print(
-        "\nFix: add each column above to its load_only(...) set, OR stop reading\n"
-        "it in the compact builders (build_compact_trial_response /\n"
-        "build_task_status_response_compact / _build_task_status_response).",
-        file=sys.stderr,
-    )
+
+    if violations:
+        print(
+            "The compact /tasks response builders read these columns, but they "
+            "are\nmissing from the matching load_only() set in list_tasks_core\n"
+            "(oddish/core/endpoints/tasks_query.py). Under async SQLAlchemy each "
+            "one\nwould lazy-load outside the request greenlet and 500 every GET "
+            "/tasks\nwith MissingGreenlet (the 2026-06-24 incident).\n",
+            file=sys.stderr,
+        )
+        for model_name in sorted(violations):
+            for column in violations[model_name]:
+                print(
+                    f"  - {model_name}.{column}  ->  add to the "
+                    f"`load_only({model_name}.*)` set",
+                    file=sys.stderr,
+                )
+        print(
+            "\nFix: add each column above to its load_only(...) set, OR stop "
+            "reading it\nin the compact builders.",
+            file=sys.stderr,
+        )
+
+    if strays:
+        if violations:
+            print(file=sys.stderr)
+        print(
+            "New load_only() site(s) found outside list_tasks_core. The guard "
+            "only\ncovers list_tasks_core, so these are NOT checked for "
+            "MissingGreenlet. Extend\nthe guard to cover them (or confirm they "
+            "need no compact-column coverage):\n",
+            file=sys.stderr,
+        )
+        for path, func_name, lineno in strays:
+            rel = path.resolve().relative_to(_REPO_ODDISH_ROOT.parent)
+            where = f"{func_name}()" if func_name else "<module scope>"
+            print(f"  - {rel}:{lineno}  in {where}", file=sys.stderr)
+
     return 1
 
 
