@@ -67,6 +67,28 @@ def build_task_sweep_response(
     )
 
 
+def _stamp_experiment_provenance(
+    experiment: ExperimentModel | None,
+    submission: TaskSweepSubmission,
+) -> None:
+    """Record the creating run's owner + PR link on the experiment (set-once).
+
+    ``submission.github_username`` / ``submission.user`` identify whoever
+    launched the run (resolved to the authenticated actor upstream), and
+    ``submission.link`` is the PR/run URL. We only set each field when it is
+    still empty, so the experiment reflects the run that *created* it and a
+    later run of a shared task never overwrites it. Tasks keep their own
+    (mutable) ``link``; this is the durable per-experiment copy.
+    """
+    if experiment is None:
+        return
+    owner = submission.github_username or submission.user
+    if not experiment.owner and owner:
+        experiment.owner = owner
+    if not experiment.link and submission.link:
+        experiment.link = submission.link
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -223,6 +245,9 @@ async def create_task_sweep_core(
             )
             new_experiment_id = experiment.id
 
+        # Stamp the run's owner + PR link onto the experiment (set-once).
+        _stamp_experiment_provenance(experiment, submission)
+
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(
             select(TrialModel.environment)
@@ -361,6 +386,9 @@ async def create_task_sweep_core(
         task.task_s3_key = task_s3_key
 
     experiment = await _primary_experiment_for_task_model(task)
+
+    # Stamp the run's owner + PR link onto the experiment (set-once).
+    _stamp_experiment_provenance(experiment, submission)
 
     new_trials = list(task.trials)
 
