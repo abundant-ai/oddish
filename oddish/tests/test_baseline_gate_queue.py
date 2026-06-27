@@ -1,0 +1,195 @@
+"""Integration tests for the baseline gate on the task-create / completion path.
+
+When ``settings.gate_llm_on_baselines`` is on and a task mixes nop/oracle
+baselines with LLM agents, the LLM trials are enqueued ``BLOCKED`` and only
+released once the baselines finish: ``QUEUED`` if the baselines validate the
+task, ``CANCELLED`` (trial mirrored to ``FAILED``) if they prove it faulty.
+
+Runs against a real Postgres (``ODDISH_DATABASE_URL``), like the other
+queue tests.
+"""
+
+from __future__ import annotations
+
+import sys
+import uuid
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select, update
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from oddish.config import settings  # noqa: E402
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX  # noqa: E402
+from oddish.db import (  # noqa: E402
+    TaskModel,
+    TrialModel,
+    TrialStatus,
+    WorkerJobModel,
+    WorkerJobStatus,
+    get_session,
+    utcnow,
+)
+from oddish.queue import create_task, maybe_gate_llm_trials  # noqa: E402
+from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
+
+_RUN = uuid.uuid4().hex[:8]
+_LLM_AGENT = "claude-code"
+_LLM_MODEL = "claude-sonnet-4-5"
+
+
+def _mixed_submission(name: str) -> TaskSubmission:
+    return TaskSubmission(
+        name=name,
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[
+            TrialSpec(agent="oracle", model=None),
+            TrialSpec(agent="nop", model=None),
+            TrialSpec(agent=_LLM_AGENT, model=_LLM_MODEL),
+        ],
+    )
+
+
+@pytest_asyncio.fixture
+async def cleanup_task_ids():
+    ids: list[str] = []
+    yield ids
+    async with get_session() as s:
+        for tid in ids:
+            # ON DELETE CASCADE removes trials + task_versions + worker_jobs.
+            await s.execute(
+                WorkerJobModel.__table__.delete().where(
+                    WorkerJobModel.subject_id == tid
+                )
+            )
+            await s.execute(TaskModel.__table__.delete().where(TaskModel.id == tid))
+
+
+async def _job_status_by_agent(task_id: str) -> dict[str, WorkerJobStatus]:
+    """Map each trial's agent -> its TRIAL worker_job status."""
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(TrialModel.agent, WorkerJobModel.status)
+                .join(
+                    WorkerJobModel,
+                    WorkerJobModel.subject_id == TrialModel.id,
+                )
+                .where(TrialModel.task_id == task_id)
+            )
+        ).all()
+    return {agent: status for agent, status in rows}
+
+
+async def _set_baseline_outcomes(
+    task_id: str, *, oracle_reward: float, nop_reward: float
+) -> str:
+    """Drive the baseline trials terminal; return a baseline trial id."""
+    async with get_session() as session:
+        for agent, reward in (("oracle", oracle_reward), ("nop", nop_reward)):
+            await session.execute(
+                update(TrialModel)
+                .where(TrialModel.task_id == task_id, TrialModel.agent == agent)
+                .values(
+                    status=TrialStatus.SUCCESS,
+                    reward=reward,
+                    finished_at=utcnow(),
+                )
+            )
+        baseline_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == "oracle"
+                )
+            )
+        ).scalar_one()
+    return baseline_id
+
+
+@pytest.mark.asyncio
+async def test_llm_trials_blocked_when_flag_on(monkeypatch, cleanup_task_ids):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-blocked-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("blocked"), task_id=task_id)
+
+    statuses = await _job_status_by_agent(task_id)
+    assert statuses["oracle"] == WorkerJobStatus.QUEUED
+    assert statuses["nop"] == WorkerJobStatus.QUEUED
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_no_gating_when_flag_off(monkeypatch, cleanup_task_ids):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
+    task_id = f"gate-off-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("off"), task_id=task_id)
+
+    statuses = await _job_status_by_agent(task_id)
+    assert set(statuses.values()) == {WorkerJobStatus.QUEUED}
+
+
+@pytest.mark.asyncio
+async def test_valid_baselines_unblock_llm(monkeypatch, cleanup_task_ids):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-valid-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("valid"), task_id=task_id)
+
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=1.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        gated = await maybe_gate_llm_trials(session, baseline_id)
+    assert gated is True
+
+    statuses = await _job_status_by_agent(task_id)
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+    async with get_session() as session:
+        llm_trial = (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                )
+            )
+        ).scalar_one()
+    assert llm_trial.status != TrialStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_faulty_baselines_cancel_llm(monkeypatch, cleanup_task_ids):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-faulty-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("faulty"), task_id=task_id)
+
+    # Oracle fails -> task faulty.
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=0.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        gated = await maybe_gate_llm_trials(session, baseline_id)
+    assert gated is True
+
+    statuses = await _job_status_by_agent(task_id)
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.CANCELLED
+
+    async with get_session() as session:
+        llm_trial = (
+            await session.execute(
+                select(TrialModel).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                )
+            )
+        ).scalar_one()
+    assert llm_trial.status == TrialStatus.FAILED
+    assert GATE_SKIP_PREFIX in (llm_trial.error_message or "")

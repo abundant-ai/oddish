@@ -27,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 
-from oddish.config import settings
+from oddish.config import NOP_ORACLE_QUEUE_KEY, settings
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
@@ -260,6 +260,7 @@ async def cleanup_orphaned_queue_state(
     # would race with module initialization.
     from oddish.queue import (
         maybe_advance_legacy_analyzing_task,
+        maybe_gate_llm_trials,
         maybe_start_qa_stage,
     )
 
@@ -461,6 +462,7 @@ async def cleanup_orphaned_queue_state(
         # failed, in case the failure marks the task "all trials done"
         # for the first time.
         for trial_id in stale_trial_ids:
+            await maybe_gate_llm_trials(session, trial_id)
             if await maybe_start_qa_stage(session, trial_id):
                 tasks_progressed_to_analysis += 1
 
@@ -494,6 +496,45 @@ async def cleanup_orphaned_queue_state(
         for (trial_id,) in tasks_ready_for_analysis:
             if trial_id and await maybe_start_qa_stage(session, str(trial_id)):
                 tasks_progressed_to_analysis += 1
+
+        # -----------------------------------------------------------------
+        # 2b. Baseline gate backstop: tasks whose nop/oracle baselines are
+        #     all terminal but whose LLM trials are still BLOCKED. Normally
+        #     the last baseline's handler resolves the gate; this re-drives
+        #     it if that handler was killed first. ``maybe_gate_llm_trials``
+        #     needs a baseline trial id, so select a representative one.
+        # -----------------------------------------------------------------
+        tasks_pending_gate = (
+            await session.execute(
+                text(
+                    """
+                    SELECT MIN(base.id) AS baseline_trial_id
+                    FROM trials base
+                    WHERE base.queue_key = :nop_oracle_queue_key
+                      AND base.deleted_at IS NULL
+                      AND base.superseded_by_trial_id IS NULL
+                      AND EXISTS (
+                          SELECT 1
+                          FROM worker_jobs wj
+                          JOIN trials llm ON llm.id = wj.subject_id
+                          WHERE wj.subject_table = 'trials'
+                            AND wj.kind::text = 'TRIAL'
+                            AND wj.status::text = 'BLOCKED'
+                            AND llm.task_id = base.task_id
+                      )
+                    GROUP BY base.task_id
+                    HAVING COUNT(*) FILTER (
+                        WHERE base.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                    ) = 0
+                    """
+                ),
+                {"nop_oracle_queue_key": NOP_ORACLE_QUEUE_KEY},
+            )
+        ).all()
+
+        for (baseline_trial_id,) in tasks_pending_gate:
+            if baseline_trial_id:
+                await maybe_gate_llm_trials(session, str(baseline_trial_id))
 
         # -----------------------------------------------------------------
         # 3. Legacy tasks stuck in ANALYZING (pre-QA-refactor) where all

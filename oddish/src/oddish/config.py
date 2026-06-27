@@ -974,6 +974,12 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+    # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
+    # the LLM trials BLOCKED until the baselines finish, then releases them only
+    # if the baselines validate the task (oracle passes, nop fails). Otherwise
+    # the LLM trials are cancelled. Global, env-driven via
+    # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
+    gate_llm_on_baselines: bool = False
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -1119,6 +1125,15 @@ class Settings(BaseSettings):
                 queue_key = self.normalize_queue_key(str(key))
                 normalized[queue_key] = int(value)
             self.model_concurrency_overrides = normalized
+
+        gate_raw = os.getenv("ODDISH_GATE_LLM_ON_BASELINES")
+        if gate_raw is not None:
+            self.gate_llm_on_baselines = gate_raw.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
         self.azure_openai_deployments = self._normalize_azure_openai_deployments(
             self.azure_openai_deployments

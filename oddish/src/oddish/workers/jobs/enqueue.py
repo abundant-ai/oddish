@@ -37,6 +37,10 @@ class EnqueueRequest:
     max_attempts: int = 6
     org_id: str | None = None
     parent_job_id: str | None = None
+    # Initial status of the row. Defaults to QUEUED (immediately claimable).
+    # Set to BLOCKED to enqueue work that a later transition must release
+    # (e.g. LLM trials gated on baseline outcomes).
+    status: WorkerJobStatus = WorkerJobStatus.QUEUED
     # Harbor execution variant ('default' | '<registry-id>' | 'ephemeral'). Part
     # of the effective dispatch key: the dispatcher counts/spawns per
     # (queue_key, harbor_variant_id) and the claim is scoped to it.
@@ -75,7 +79,7 @@ async def enqueue_worker_job(
     row = WorkerJobModel(
         id=generate_id(),
         kind=request.kind,
-        status=WorkerJobStatus.QUEUED,
+        status=request.status,
         queue_key=request.queue_key,
         priority=request.priority,
         subject_table=request.subject_table,
@@ -98,9 +102,9 @@ async def enqueue_worker_job(
 # Supavisor transaction pooling + ``statement_cache_size=0`` (asyncpg 0.31
 # anonymous statements), where a multi-row VALUES would re-Parse a distinct
 # statement per N. Every array parameter is explicitly cast so asyncpg
-# resolves types without a round-trip. Columns omitted here (``status``,
-# ``priority``, ``attempts``, ``available_after``, ...) fall to their DB
-# defaults, matching ``enqueue_worker_job``.
+# resolves types without a round-trip. Columns omitted here (``priority``,
+# ``attempts``, ``available_after``, ...) fall to their DB defaults, matching
+# ``enqueue_worker_job``.
 _BULK_INSERT_WORKER_JOBS_SQL = text(
     """
     INSERT INTO worker_jobs
@@ -110,7 +114,7 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
     SELECT
         j.id,
         j.kind::worker_job_kind,
-        'QUEUED'::worker_job_status,
+        j.status::worker_job_status,
         j.queue_key,
         j.priority,
         j.subject_table,
@@ -127,6 +131,7 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
     FROM unnest(
         CAST(:id AS text[]),
         CAST(:kind AS text[]),
+        CAST(:status AS text[]),
         CAST(:queue_key AS text[]),
         CAST(:priority AS int[]),
         CAST(:subject_table AS text[]),
@@ -137,7 +142,7 @@ _BULK_INSERT_WORKER_JOBS_SQL = text(
         CAST(:org_id AS text[]),
         CAST(:harbor_variant_id AS text[])
     ) WITH ORDINALITY AS j(
-        id, kind, queue_key, priority, subject_table, subject_id,
+        id, kind, status, queue_key, priority, subject_table, subject_id,
         parent_job_id, payload, max_attempts, org_id, harbor_variant_id, ord
     )
     """
@@ -166,6 +171,7 @@ async def bulk_enqueue_worker_jobs(
     params = {
         "id": ids,
         "kind": [r.kind.value for r in requests],
+        "status": [r.status.value for r in requests],
         "queue_key": [r.queue_key for r in requests],
         "priority": [r.priority for r in requests],
         "subject_table": [r.subject_table for r in requests],
