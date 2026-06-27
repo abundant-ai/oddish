@@ -619,7 +619,7 @@ function CostTrendChart({
               )}
             />
             <Line
-              type="monotone"
+              type="linear"
               dataKey="total"
               name="Total"
               stroke="currentColor"
@@ -630,7 +630,7 @@ function CostTrendChart({
             {visibleKeys.map((k) => (
               <Line
                 key={k}
-                type="monotone"
+                type="linear"
                 dataKey={k}
                 name={labels[k]}
                 stroke={colorByKey[k]}
