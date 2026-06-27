@@ -182,7 +182,6 @@ async def list_tasks_core(
                 # Must be loaded eagerly; otherwise the compact builder triggers a
                 # lazy-load on this column outside the async greenlet and fails
                 # with MissingGreenlet (same reason ``harbor_config`` is here).
-                TrialModel.harbor_sha,
                 # Read by the compact builder (``build_compact_trial_response``);
                 # the experiment-scoped path also filters on ``is_probe``, but
                 # that now happens in SQL via the filtered selectin above. Must
