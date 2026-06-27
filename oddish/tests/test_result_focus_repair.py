@@ -6,6 +6,7 @@ from oddish.core.result_focus_repair import (
     repair_result_focus_if_needed,
     repair_result_focus_json,
 )
+from oddish.core.result_focus_schema import parse_result_focus
 
 
 class _FakeBlock:
@@ -137,6 +138,54 @@ async def test_if_needed_repairs_array_intended_json():
     out = await repair_result_focus_if_needed("[1, 2,]", client=client)
     assert out == '{"items": [1, 2]}'
     assert len(client.messages.calls) == 1
+
+
+# --- parse_result_focus: the repair-capable parser ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_returns_object_without_llm_for_valid_json():
+    client = _FakeClient(text="SHOULD NOT BE CALLED")
+    out = await parse_result_focus('{"verdict": "string"}', client=client)
+    assert out == {"verdict": "string"}
+    assert client.messages.calls == []  # valid JSON -> deterministic, no LLM
+
+
+@pytest.mark.asyncio
+async def test_parse_repairs_malformed_object():
+    client = _FakeClient(text='{"verdict": "string"}')
+    out = await parse_result_focus('{"verdict": "string",}', client=client)
+    assert out == {"verdict": "string"}
+    assert len(client.messages.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_parse_does_not_repair_valid_non_object():
+    # "[1,2]" is valid JSON but not an object -> nothing to repair, no LLM call.
+    client = _FakeClient(text="SHOULD NOT BE CALLED")
+    assert await parse_result_focus("[1, 2]", client=client) is None
+    assert client.messages.calls == []
+
+
+@pytest.mark.asyncio
+async def test_parse_does_not_repair_prose():
+    client = _FakeClient(text="SHOULD NOT BE CALLED")
+    assert await parse_result_focus("Did the agent cheat?", client=client) is None
+    assert client.messages.calls == []
+
+
+@pytest.mark.asyncio
+async def test_parse_repair_false_skips_llm():
+    client = _FakeClient(text='{"verdict": "string"}')
+    assert await parse_result_focus('{"x": 1,}', client=client, repair=False) is None
+    assert client.messages.calls == []
+
+
+@pytest.mark.asyncio
+async def test_parse_threads_kind_to_repair_prompt():
+    client = _FakeClient(text='{"type": "object"}')
+    await parse_result_focus('{"type": "object",}', client=client, kind="schema")
+    assert "JSON Schema" in client.messages.calls[0]["messages"][0]["content"]
 
 
 def _sent_prompt(client: _FakeClient) -> str:
