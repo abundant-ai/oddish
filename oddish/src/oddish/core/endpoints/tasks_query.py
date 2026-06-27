@@ -220,6 +220,11 @@ async def list_tasks_core(
                 ExperimentModel.name,
                 ExperimentModel.is_public,
                 ExperimentModel.created_at,
+                # Read by the experiment page header (PR badge + author) via
+                # ``_build_task_status_response``; must be eager or the deferred
+                # access raises MissingGreenlet on the compact path.
+                ExperimentModel.owner,
+                ExperimentModel.link,
             )
             query = query.options(
                 load_only(
