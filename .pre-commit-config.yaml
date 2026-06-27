@@ -60,3 +60,15 @@ repos:
         language: system
         files: ^frontend/.*\.(ts|tsx|js|jsx)$
         pass_filenames: true
+
+      # Enforce the CLAUDE.md "load_only / MissingGreenlet" gotcha: every
+      # Trial/Task/Experiment column read on the compact /tasks response-builder
+      # path must be in the matching load_only(...) set in list_tasks_core.
+      # Prevents the 2026-06-24 incident (PR #413 surfaced trials.harbor_sha
+      # without load_only -> MissingGreenlet -> every GET /tasks 500'd).
+      - id: load-only-guard
+        name: load_only guard (compact /tasks columns)
+        entry: python oddish/scripts/load_only_guard.py
+        language: system
+        files: ^oddish/(src/oddish/core/(helpers\.py|endpoints/tasks_query\.py)|src/oddish/db/models\.py|scripts/load_only_guard\.py)$
+        pass_filenames: false

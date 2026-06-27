@@ -12,8 +12,8 @@ create a branch and move the work onto it before committing.
 
 ## Gotcha — `list_tasks_core` `load_only` and MissingGreenlet
 
-`list_tasks_core` (`oddish/src/oddish/core/endpoints.py`) powers every `/tasks`
-route, including the experiment page. Its **compact path** (`compact_trials=True`)
+`list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
+every `/tasks` route, including the experiment page. Its **compact path** (`compact_trials=True`)
 restricts the trial/task/experiment selectin loads with `load_only(...)`, which
 makes *only* the enumerated columns eager and **defers everything else**. Under
 async SQLAlchemy, reading a deferred column in a response builder fires a
@@ -28,6 +28,14 @@ set** in `list_tasks_core`. The full (non-compact) builder has no `load_only`, s
 it won't catch the omission — the failure only shows up on the compact experiment
 page. Builder unit tests can't catch it either (in-memory models have all attrs
 set); the bug lives in the query options, not the builder.
+
+This rule is **CI-enforced** by `oddish/scripts/load_only_guard.py` — a static
+guard that diffs the columns read on the compact builder path against the
+`load_only(...)` sets and fails on any gap. It runs as a pytest test
+(`oddish/tests/test_load_only_guard.py`), a pre-commit hook (`load-only-guard`),
+and a GitHub Actions check (`.github/workflows/load-only-guard.yml`). If you add
+a column read and the guard fails, add that column to the matching `load_only`
+set (don't suppress the guard).
 
 ## What this project is
 
