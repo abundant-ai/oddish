@@ -1,0 +1,69 @@
+name: load_only Guard
+
+# Enforces the CLAUDE.md "load_only / MissingGreenlet" gotcha as a CI check:
+# every Trial/Task/Experiment column read on the compact /tasks response-builder
+# path must be present in the matching load_only(...) set in list_tasks_core.
+#
+# This prevents the class of bug behind the 2026-06-24 prod incident, where
+# PR #413 surfaced trials.harbor_sha in the compact builder without adding it to
+# the load_only set. The column then lazy-loaded outside the request greenlet
+# (sqlalchemy.exc.MissingGreenlet) and every GET /tasks returned 500 for 20
+# minutes, blanking the experiment/dashboard views.
+#
+# Builder unit tests can't catch this (in-memory models have all attributes
+# set); the bug lives in the query options. See oddish/scripts/load_only_guard.py.
+
+on:
+  pull_request:
+    paths:
+      - "oddish/src/oddish/core/helpers.py"
+      - "oddish/src/oddish/core/endpoints/tasks_query.py"
+      - "oddish/src/oddish/db/models.py"
+      - "oddish/scripts/load_only_guard.py"
+      - ".github/workflows/load-only-guard.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "oddish/src/oddish/core/helpers.py"
+      - "oddish/src/oddish/core/endpoints/tasks_query.py"
+      - "oddish/src/oddish/db/models.py"
+      - "oddish/scripts/load_only_guard.py"
+      - ".github/workflows/load-only-guard.yml"
+
+concurrency:
+  group: load-only-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Check compact /tasks load_only coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, a warm uv cache, and a pre-built oddish venv live in the
+    # base image — refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      # Point uv at the venv pre-built into the base image. `uv sync --frozen`
+      # then validates it against the lockfile and only patches the editable
+      # oddish path — typically a ~1s no-op.
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/oddish
+    defaults:
+      run:
+        working-directory: oddish
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync oddish dependencies
+        run: uv sync --frozen --extra server
+
+      - name: Run load_only guard
+        run: uv run python scripts/load_only_guard.py
