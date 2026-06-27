@@ -312,9 +312,14 @@ function pickExperimentCreationMeta(tasks: Task[]): {
       earliest = task;
     }
   }
+  // Prefer the experiment's own owner (the creating run's submitter, stamped
+  // on the experiment). Fall back to the earliest task's author for
+  // experiments with no stamped owner.
+  const experimentOwner =
+    tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
   return {
     createdAt: experimentCreatedAt ?? earliest.created_at,
-    author: earliest.github_username || earliest.user || null,
+    author: experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
   };
 }
 
@@ -323,10 +328,18 @@ function pickExperimentPr(tasks: Task[]): {
   prTitle: string | null;
   prNumber: string | null;
 } {
-  // The URL can arrive two ways: structured `github_meta.pr_url`, or the
-  // canonical `task.link` column (set by `--link`, or auto-derived from
-  // github_meta on the backend). `link` is what the task page renders, so we
-  // treat it as a first-class source rather than relying on github_meta alone.
+  // Prefer the experiment's own PR link (stamped set-once from the creating
+  // run); it is immune to other experiments re-running a shared task. Fall back
+  // to the task-derived link for experiments with no stamped link.
+  const experimentLink =
+    tasks.find((t) => t.experiment_link)?.experiment_link ?? null;
+  if (experimentLink) {
+    return {
+      prUrl: experimentLink,
+      prTitle: null,
+      prNumber: prNumberFromUrl(experimentLink),
+    };
+  }
   const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
   const meta = task?.github_meta;
   const prUrl = taskPrUrl(task?.link, meta);
