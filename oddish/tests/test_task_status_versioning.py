@@ -38,6 +38,8 @@ def test_task_status_response_includes_experiment_created_at():
         name="demo experiment",
         is_public=False,
         created_at=experiment_created_at,
+        owner=None,
+        link=None,
     )
     task = SimpleNamespace(
         id="task-a",
