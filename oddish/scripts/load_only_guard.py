@@ -74,8 +74,8 @@ from sqlalchemy import inspect as sa_inspect
 _REPO_ODDISH_ROOT = Path(__file__).resolve().parents[1]
 
 # Resolve ``oddish`` against this working tree's ``src`` regardless of how the
-# guard is invoked (direct, pre-commit, CI, or as an imported module), so the
-# introspected models always match the code being checked.
+# guard is invoked (direct or in CI), so the introspected models always match
+# the code being checked.
 _SRC_ROOT = _REPO_ODDISH_ROOT / "src"
 if str(_SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(_SRC_ROOT))
