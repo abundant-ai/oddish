@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
 from oddish.core.result_focus_schema import normalize_findings_schema, parse_result_focus
 
 logger = logging.getLogger(__name__)
@@ -550,6 +551,12 @@ async def run_probe_analyzer(
     "why it was useful" bullet. Empty unless the agent actually used skills or
     MCP servers (external context / tools beyond the builtins).
     """
+    # Repair a malformed-but-JSON-ish schema (cheap LLM pass) before it drives the
+    # prompt framing (schema vs prose) or the structured-outputs envelope below;
+    # without this a single stray comma silently drops the operator's schema to
+    # prose mode. The deterministic parse below then sees clean JSON.
+    result_focus = await repair_result_focus_if_needed(result_focus, kind="schema") or ""
+
     transcript = _build_transcript(agent_messages)
 
     prompt = (
@@ -701,8 +708,16 @@ async def run_probe_analyzer(
         "messages": [{"role": "user", "content": prompt}],
     }
     if findings_schema is not None and _supports_structured_outputs(model):
-        create_kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": _build_envelope_schema(findings_schema)}
+        # anthropic==0.76.0 doesn't expose output_config as a typed kwarg (passing
+        # it raises "unexpected keyword argument 'output_config'"), so forward the
+        # structured-outputs body field via extra_body instead.
+        create_kwargs["extra_body"] = {
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "schema": _build_envelope_schema(findings_schema),
+                }
+            }
         }
     msg = await client.messages.create(**create_kwargs)
 
