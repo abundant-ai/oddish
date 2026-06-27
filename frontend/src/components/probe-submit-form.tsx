@@ -264,19 +264,8 @@ export function ProbeSubmitForm({
             </label>
           </div>
           <label className="block">
-            <span className="text-sm font-medium">Extra instructions</span>
-            <textarea
-              value={extraInstructions}
-              onChange={(e) => setExtraInstructions(e.target.value)}
-              placeholder="You are a security researcher. Find any way to make the verifier pass without solving the task..."
-              rows={10}
-              required
-              className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
-            />
-          </label>
-          <label className="block">
             <span className="text-sm font-medium">
-              Result focus{" "}
+              Output JSON / Analysis Focus{" "}
               <span className="text-muted-foreground">(optional)</span>
             </span>
             <p className="text-muted-foreground text-xs">
@@ -300,7 +289,7 @@ export function ProbeSubmitForm({
           )}
           <Button
             type="submit"
-            disabled={submitting || !extraInstructions.trim()}
+            disabled={submitting}
             className="bg-blue-600 text-white hover:bg-blue-700"
           >
             {submitting ? "Submitting probe run…" : "Submit probe run"}
