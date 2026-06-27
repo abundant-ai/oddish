@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 
-from oddish.core.result_focus_schema import _parse_json_object
+from oddish.core.result_focus_schema import parse_result_focus
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +194,7 @@ def _render_output_spec(result_focus: str | None) -> str | None:
     body = _strip_code_fence(result_focus).strip()
     # Deterministic parse only: probe_staging already ran the LLM repair upstream,
     # and this render path is sync (and unit-tested without network).
-    parsed = _parse_json_object(body)
+    parsed = parse_result_focus(body)
     if parsed is not None:
         return _output_json_section(json.dumps(parsed, indent=2), malformed=False)
     if body.startswith("{"):

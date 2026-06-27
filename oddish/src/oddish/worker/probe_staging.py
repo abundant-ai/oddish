@@ -181,7 +181,7 @@ async def apply_probe_overlay(
 
     # If result_focus is a JSON output spec that doesn't parse, try a cheap LLM
     # repair before rendering (best-effort; falls back to verbatim on failure).
-    result_focus = await repair_result_focus_if_needed(result_focus)
+    result_focus = await repair_result_focus_if_needed(result_focus, kind="output_spec")
 
     instr_path.write_text(
         render_probe_instruction(

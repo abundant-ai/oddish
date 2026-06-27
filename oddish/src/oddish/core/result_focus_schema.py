@@ -39,11 +39,13 @@ class UnsupportedSchemaError(ValueError):
     """Raised when a result_focus schema uses a construct the API can't enforce."""
 
 
-def _parse_json_object(result_focus: str | None) -> dict | None:
-    """Deterministic sync parse: the parsed dict if ``result_focus`` is a JSON
-    object, else None. Logs every failure (this is where "what failed to parse"
-    is recorded). Pure — no LLM, so it's safe to call from sync code and from the
-    repair machinery's own predicates without recursion."""
+def parse_result_focus(result_focus: str | None) -> dict | None:
+    """Return the parsed schema dict if ``result_focus`` is a JSON object, else None.
+
+    Deterministic and synchronous — no LLM. The best-effort LLM repair of a
+    malformed-but-JSON-ish value lives in the async wrapper layer
+    (``result_focus_repair.repair_result_focus_if_needed``); callers run that
+    first, then parse the repaired string here."""
     if not result_focus or not result_focus.strip():
         return None
     try:
@@ -69,41 +71,6 @@ def _parse_json_object(result_focus: str | None) -> dict | None:
             )
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-async def parse_result_focus(
-    result_focus: str | None,
-    *,
-    client=None,
-    kind: str = "output_spec",
-    repair: bool = True,
-) -> dict | None:
-    """Parse ``result_focus`` as a JSON object, repairing malformed input via a
-    cheap LLM pass when ``repair`` is set (the default).
-
-    The deterministic parse (:func:`_parse_json_object`) is tried first. Only
-    JSON-*intended-but-malformed* input — it starts with ``{``/``[`` yet
-    ``json.loads`` raises — is worth an LLM repair; valid JSON that simply isn't
-    an object (``"[1,2]"``, ``"42"``) and prose questions return None untouched.
-    ``kind`` selects the repair target (see ``RepairKind`` in
-    ``result_focus_repair``). Pass ``repair=False`` for a deterministic
-    sync-equivalent that never calls the LLM.
-    """
-    parsed = _parse_json_object(result_focus)
-    if parsed is not None or not repair or not result_focus:
-        return parsed
-    body = result_focus.strip()
-    if not body.startswith(("{", "[")):
-        return None  # prose focus question, not a JSON spec
-    try:
-        json.loads(body)
-        return None  # valid JSON but not an object -> nothing to repair
-    except (ValueError, TypeError):
-        pass  # genuinely malformed -> attempt an LLM repair
-    from oddish.core.result_focus_repair import repair_result_focus_json
-
-    repaired, _ = await repair_result_focus_json(body, client=client, kind=kind)
-    return repaired
 
 
 def normalize_findings_schema(spec: dict) -> dict:

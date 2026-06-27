@@ -14,7 +14,7 @@ import json
 import logging
 from typing import Literal
 
-from oddish.core.result_focus_schema import _parse_json_object
+from oddish.core.result_focus_schema import parse_result_focus
 
 logger = logging.getLogger(__name__)
 
@@ -68,16 +68,13 @@ _EXTRACT_PROMPT = (
 
 
 def _extract_object(text: str) -> dict | None:
-    """Parse ``text`` as a JSON object, tolerating surrounding prose/fences.
-
-    Uses the deterministic leaf (never the repair-capable parse) so the repair
-    machinery doesn't recurse into itself on the LLM's own output."""
-    obj = _parse_json_object(text)
+    """Parse ``text`` as a JSON object, tolerating surrounding prose/fences."""
+    obj = parse_result_focus(text)
     if obj is not None:
         return obj
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
-        return _parse_json_object(text[start : end + 1])
+        return parse_result_focus(text[start : end + 1])
     return None
 
 
@@ -165,7 +162,7 @@ async def repair_result_focus_if_needed(
     if not result_focus or not result_focus.strip():
         return result_focus
     body = result_focus.strip()
-    if _parse_json_object(body) is not None:
+    if parse_result_focus(body) is not None:
         return result_focus
     if not body.startswith(("{", "[")):
         return result_focus  # prose focus question, not a JSON spec

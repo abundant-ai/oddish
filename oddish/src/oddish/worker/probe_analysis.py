@@ -27,11 +27,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from oddish.core.result_focus_schema import (
-    _parse_json_object,
-    normalize_findings_schema,
-    parse_result_focus,
-)
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
+from oddish.core.result_focus_schema import normalize_findings_schema, parse_result_focus
 
 logger = logging.getLogger(__name__)
 
@@ -554,15 +551,11 @@ async def run_probe_analyzer(
     "why it was useful" bullet. Empty unless the agent actually used skills or
     MCP servers (external context / tools beyond the builtins).
     """
-    # Parse (repairing a malformed-but-JSON-ish schema via a cheap LLM pass) once,
-    # up front: the parsed schema drives the structured-outputs envelope below and
-    # the prompt framing (schema vs prose). Without the repair a single stray comma
-    # silently drops the operator's schema to prose mode. The canonical JSON string
-    # is what gets embedded in the prompt.
-    findings_schema = await parse_result_focus(result_focus, kind="schema")
-    result_focus = (
-        json.dumps(findings_schema) if findings_schema is not None else result_focus
-    ) or ""
+    # Repair a malformed-but-JSON-ish schema (cheap LLM pass) before it drives the
+    # prompt framing (schema vs prose) or the structured-outputs envelope below;
+    # without this a single stray comma silently drops the operator's schema to
+    # prose mode. The deterministic parse below then sees clean JSON.
+    result_focus = await repair_result_focus_if_needed(result_focus, kind="schema") or ""
 
     transcript = _build_transcript(agent_messages)
 
@@ -705,6 +698,7 @@ async def run_probe_analyzer(
     model = to_anthropic_api_model_id(model) or model
     client = _make_client()
 
+    findings_schema = parse_result_focus(result_focus)
     create_kwargs: dict = {
         "model": model,
         # Audit probes emit a large JSON object (summary + attempts[] + per-step
@@ -740,10 +734,7 @@ def _normalize_probe_summary(parsed: dict, *, result_focus: str, model: str) -> 
 
     Pure (no I/O); split out so it can be unit-tested without an API call.
     """
-    # ``result_focus`` here is already the repaired/canonical string from
-    # run_probe_analyzer, so a deterministic parse is correct (and keeps this
-    # helper pure/sync for unit tests).
-    schema_mode = _parse_json_object(result_focus) is not None
+    schema_mode = parse_result_focus(result_focus) is not None
     raw_findings = parsed.get("result_focus_findings")
     if schema_mode:
         # Pass the structured value through unchanged — coercing to str() here is

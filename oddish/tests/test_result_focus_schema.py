@@ -7,19 +7,16 @@ from oddish.core.result_focus_schema import (
 )
 
 
-@pytest.mark.asyncio
-async def test_parse_detects_object_schema():
-    assert await parse_result_focus('{"type": "object", "properties": {}}') == {
+def test_parse_detects_object_schema():
+    assert parse_result_focus('{"type": "object", "properties": {}}') == {
         "type": "object",
         "properties": {},
     }
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("value", [None, "", "  ", "What broke?", "[1,2]", "42"])
-async def test_parse_treats_non_object_as_prose(value):
-    # None of these are JSON-intended-but-malformed, so no LLM repair is attempted.
-    assert await parse_result_focus(value) is None
+def test_parse_treats_non_object_as_prose(value):
+    assert parse_result_focus(value) is None
 
 
 def test_normalize_inserts_additional_properties_false():
