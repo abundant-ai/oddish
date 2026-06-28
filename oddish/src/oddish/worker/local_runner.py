@@ -484,7 +484,13 @@ async def _run_harbor_trial(trial_id: str) -> None:
         _, probe_env = await mint_probe_creds(
             org_id=trial_org_id, trial_id=trial_id
         )
-        agent_config.env = {**(agent_config.env or {}), **probe_env}
+        # Pin the subagent model to the main agent's so the probe's Task-tool
+        # subagents have a model (mirrors the cloud path in agent_config.py);
+        # setdefault so an explicit config value still wins.
+        probe_agent_env = dict(agent_config.env or {})
+        probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
+        probe_agent_env.update(probe_env)
+        agent_config.env = probe_agent_env
 
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),
