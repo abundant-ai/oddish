@@ -707,6 +707,58 @@ def test_build_agent_config_probe_claude_code_forces_direct_api(monkeypatch):
     assert agent_config.model_name == "claude-sonnet-4-6"
 
 
+def test_build_agent_config_probe_sets_subagent_model(monkeypatch):
+    """A probe claude-code agent pins CLAUDE_CODE_SUBAGENT_MODEL to the same
+    normalized model id so Task-tool subagents have a model on the direct-API
+    path (Harbor's run() only sets it on the custom-base-url branch)."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert (agent_config.env or {}).get("CLAUDE_CODE_SUBAGENT_MODEL") == (
+        agent_config.model_name
+    )
+    assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_non_probe_omits_subagent_model(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert "CLAUDE_CODE_SUBAGENT_MODEL" not in (agent_config.env or {})
+
+
+def test_build_agent_config_probe_respects_existing_subagent_model(monkeypatch):
+    """A pre-set subagent model (e.g. from a provider env shaper) is never clobbered."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={
+            "agent_config": {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "preset-model"}}
+        },
+        is_probe=True,
+    )
+
+    assert (agent_config.env or {})["CLAUDE_CODE_SUBAGENT_MODEL"] == "preset-model"
+
+
 def test_build_agent_config_non_probe_claude_code_keeps_bedrock_id(monkeypatch):
     """With the global force-direct flag OFF, routing is probe-scoped: a normal
     (non-probe) claude-code trial with Bedrock env keeps the Bedrock id even when
