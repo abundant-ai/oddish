@@ -77,6 +77,12 @@ def normalize_findings_schema(spec: dict) -> dict:
 
 def _walk(node: object) -> None:
     if isinstance(node, dict):
+        # Structured outputs accept `anyOf` but reject `oneOf` (Pydantic v2
+        # discriminated unions emit `oneOf`). They're equivalent for constrained
+        # generation, so rewrite rather than failing the analysis call. Skip when
+        # `anyOf` is already present to avoid clobbering it.
+        if "oneOf" in node and "anyOf" not in node:
+            node["anyOf"] = node.pop("oneOf")
         bad = _UNSUPPORTED_KEYS.intersection(node)
         if bad:
             raise UnsupportedSchemaError(
