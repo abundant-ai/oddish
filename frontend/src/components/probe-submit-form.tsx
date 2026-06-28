@@ -12,22 +12,14 @@ import {
 } from "@/components/ui/select";
 import { extractSkillMdBody } from "@/lib/skill-md";
 
-const AGENTS = [
-  { value: "claude-code", label: "claude-code" },
-  { value: "codex", label: "codex" },
-  { value: "gemini-cli", label: "gemini-cli" },
-];
+// Probes always run on claude-code; only the model is selectable.
+const PROBE_AGENT = "claude-code";
 
-const MODELS_BY_AGENT: Record<string, { value: string; label: string }[]> = {
-  "claude-code": [
-    { value: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6" },
-    { value: "anthropic/claude-opus-4-7", label: "claude-opus-4-7" },
-  ],
-  codex: [{ value: "openai/gpt-5.4-codex", label: "gpt-5.4-codex" }],
-  "gemini-cli": [
-    { value: "google/gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview" },
-  ],
-};
+const MODELS = [
+  { value: "anthropic/claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+  { value: "anthropic/claude-opus-4-7", label: "claude-opus-4-7" },
+  { value: "anthropic/claude-haiku-4-5", label: "claude-haiku-4-5" },
+];
 
 type Skill = {
   id: string;
@@ -91,8 +83,8 @@ export function ProbeSubmitForm({
   onSubmitted?: () => void;
 }) {
   const router = useRouter();
-  const [agent, setAgent] = useState("claude-code");
-  const [model, setModel] = useState(MODELS_BY_AGENT["claude-code"][0].value);
+  const agent = PROBE_AGENT;
+  const [model, setModel] = useState(MODELS[0].value);
   const [extraInstructions, setExtraInstructions] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -233,44 +225,21 @@ export function ProbeSubmitForm({
               raw verifier reward (no specific evaluation metric).
             </div>
           )}
-          <div className="flex gap-4">
-            <label className="flex-1">
-              <span className="text-sm font-medium">Agent</span>
-              <Select
-                value={agent}
-                onValueChange={(a) => {
-                  setAgent(a);
-                  setModel(MODELS_BY_AGENT[a][0].value);
-                }}
-              >
-                <SelectTrigger className="mt-1 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {AGENTS.map((a) => (
-                    <SelectItem key={a.value} value={a.value}>
-                      {a.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-            <label className="flex-1">
-              <span className="text-sm font-medium">Model</span>
-              <Select value={model} onValueChange={setModel}>
-                <SelectTrigger className="mt-1 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(MODELS_BY_AGENT[agent] ?? []).map((m) => (
-                    <SelectItem key={m.value} value={m.value}>
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-          </div>
+          <label className="block">
+            <span className="text-sm font-medium">Model</span>
+            <Select value={model} onValueChange={setModel}>
+              <SelectTrigger className="mt-1 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MODELS.map((m) => (
+                  <SelectItem key={m.value} value={m.value}>
+                    {m.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
           <label className="block">
             <span className="text-sm font-medium">Instructions</span>
             <textarea
