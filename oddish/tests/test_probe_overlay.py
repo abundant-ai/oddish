@@ -73,3 +73,40 @@ def test_render_cli_section_present():
     assert QUERY_CLI_CONTAINER_PATH in out
     assert "node /probe-harness/oddish-query" in out
     assert "RELATED TRIAL LOGS" not in out
+
+
+def test_render_includes_oracle_seed_when_solution_staged():
+    # The reference solution is staged, so the probe is told it may seed from it.
+    out = _render()
+    assert "## REFERENCE SOLUTION" in out
+    assert f"{PROBE_HARNESS_DIR}/solution/" in out
+    # Framed as a copy-into-/app baseline, with the head-start caveat.
+    assert "/app" in out
+    assert "head start" in out.lower()
+
+
+def test_render_omits_oracle_seed_when_no_solution_staged():
+    out = render_probe_instruction(
+        "FRAMING-TEXT",
+        "DIRECTIVE-TEXT",
+        "ORIGINAL-TEXT",
+        probe_only_paths=["tests/", "harbor_src/"],
+    )
+    assert "## REFERENCE SOLUTION" not in out
+
+
+def test_render_includes_subagents_section():
+    out = _render()
+    assert "## SUBAGENTS" in out
+    # States the one-level nesting limit so the probe fans out directly.
+    assert "one level" in out.lower()
+
+
+def test_subagents_section_present_even_without_solution():
+    out = render_probe_instruction(
+        "FRAMING-TEXT",
+        "DIRECTIVE-TEXT",
+        "ORIGINAL-TEXT",
+        probe_only_paths=[],
+    )
+    assert "## SUBAGENTS" in out
