@@ -19,6 +19,15 @@ type Artifacts = {
   agent_messages?: AgentMessage[];
 };
 
+/** Whole-minute run time between two ISO timestamps, e.g. "32 min". */
+function durationLabel(start: string | null, finished: string | null): string | null {
+  if (!start || !finished) return null;
+  const ms = new Date(finished).getTime() - new Date(start).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const min = Math.round(ms / 60000);
+  return min < 1 ? "<1 min" : `${min} min`;
+}
+
 function kindLabel(m: AgentMessage): string {
   if (m.kind === "tool_use") return m.name ? `tool: ${m.name}` : "tool call";
   if (m.kind === "tool_result") return "tool result";
@@ -143,6 +152,7 @@ export default function ProbeResultPage({
   const artifacts = trial.result?._artifacts ?? fetchedArtifacts;
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
+  const agentDuration = durationLabel(trial.started_at, trial.finished_at);
 
   return (
     <div className="container mx-auto max-w-4xl py-8 space-y-6">
@@ -184,6 +194,11 @@ export default function ProbeResultPage({
       <section className="rounded border p-4 space-y-3">
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Agent process
+          {agentDuration ? (
+            <span className="ml-1 normal-case font-normal text-muted-foreground/80">
+              ({agentDuration})
+            </span>
+          ) : null}
         </h2>
         {messages.length === 0 ? (
           <p className="text-xs text-muted-foreground">(no messages yet)</p>
