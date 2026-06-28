@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-28]
+
+### Added
+
+- Batch probe-analysis backfill Modal script (`backend/scripts/backfill_analysis.py`) that accepts comma-separated task names, finds eligible probe trials with S3 artifacts whose analysis isn't `SUCCESS`, resets their analysis state, and re-runs the analyzer; dry-run by default, `--execute` to write; reports per-name match counts and trials skipped for having no S3 artifacts (#493)
+- LLM-powered `result_focus` repair (`core/result_focus_repair.py`): malformed-but-JSON-intended `result_focus` values (trailing commas, single quotes, code fences) are coerced into valid JSON via a cheap Haiku pass before driving probe analysis or being stored on a skill; falls back gracefully on any failure, leaving the original value unchanged (#492)
+
+### Changed
+
+- Experiment owner and PR link are now stamped set-once on the experiment itself (new `experiments.owner` / `experiments.link` columns, backfilled from each experiment's earliest linked task) from the creating run's submitter; re-runs of shared tasks no longer overwrite the original experiment's provenance; dashboard and experiment detail view prefer experiment-level fields with task-derived fallback for un-backfilled rows; `taskPrUrl` now prefers `link` over `github_meta.pr_url` (#358)
+- Probe directive fields (operator prompt, evaluation metric, result focus) removed from the skill upload/edit form as they duplicate configuration handled elsewhere; the form now only shows upload folder, name, description, SKILL.md body, and additional files (#497)
+
+### Fixed
+
+- Probe summaries using a structured-output `result_focus` schema no longer crash with `TypeError: unexpected keyword argument 'output_config'`; the field is now forwarded via the Anthropic SDK's `extra_body` escape hatch, compatible with the pinned `anthropic==0.76.0` (#493)
+
+---
+
 ## [2026-06-27]
 
 ### Fixed
