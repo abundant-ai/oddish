@@ -38,6 +38,8 @@ type Trial = {
   harbor_config: {
     mode?: string;
     extra_instructions?: string;
+    // Operator-selected preset name; absent on older / preset-less runs.
+    probe_name?: string | null;
     // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
     evaluation_metric?: "result_focus" | "none" | "cheat_ratio" | "ratio";
   } | null;
@@ -169,6 +171,13 @@ export default function ProbeResultPage({
           {trial.id}
         </p>
       </div>
+
+      <p className="text-sm">
+        Preset:{" "}
+        <span className="font-mono font-medium">
+          {trial.harbor_config?.probe_name?.trim() || trial.agent}
+        </span>
+      </p>
 
       {trial.error_message ? (
         <section className="rounded border p-4">
