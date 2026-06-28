@@ -48,10 +48,37 @@ def test_normalize_rejects_unsupported(spec):
         normalize_findings_schema(spec)
 
 
+def test_normalize_rewrites_oneof_to_anyof():
+    # Structured outputs accept anyOf but reject oneOf; Pydantic discriminated
+    # unions emit oneOf, so rewrite it rather than failing mid-analysis.
+    out = normalize_findings_schema(
+        {
+            "type": "object",
+            "properties": {
+                "v": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"a": {"type": "string"}}},
+                        {"type": "object", "properties": {"b": {"type": "integer"}}},
+                    ]
+                }
+            },
+        }
+    )
+    branch = out["properties"]["v"]
+    assert "oneOf" not in branch
+    assert "anyOf" in branch
+    # branches are still normalized (additionalProperties inserted)
+    assert branch["anyOf"][0]["additionalProperties"] is False
+
+
 def test_normalize_does_not_mutate_input():
     spec = {"type": "object", "properties": {}}
     normalize_findings_schema(spec)
     assert "additionalProperties" not in spec
+    # oneOf rewrite must not mutate the caller's dict either
+    oneof_spec = {"oneOf": [{"type": "string"}]}
+    normalize_findings_schema(oneof_spec)
+    assert "oneOf" in oneof_spec and "anyOf" not in oneof_spec
 
 
 def test_normalize_rejects_malformed_schema():
