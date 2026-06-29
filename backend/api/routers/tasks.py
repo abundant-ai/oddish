@@ -731,7 +731,6 @@ async def browse_tasks(
     trial_statuses: str | None = Query(None, description="Trial status CSV"),
     origins: str | None = Query(None, description="Trial origin CSV"),
     trial_is_probe: bool | None = Query(None),
-    harbor_sources: str | None = Query(None, description="Harbor source CSV"),
     harbor_shas: str | None = Query(None, description="Harbor SHA CSV"),
     harbor_stages: str | None = Query(None, description="Harbor stage CSV"),
     analysis_classifications: str | None = Query(
@@ -802,7 +801,6 @@ async def browse_tasks(
             trial_statuses=_split_tag_csv(trial_statuses),
             origins=_split_tag_csv(origins),
             trial_is_probe=trial_is_probe,
-            harbor_sources=_split_tag_csv(harbor_sources),
             harbor_shas=_split_tag_csv(harbor_shas),
             harbor_stages=_split_tag_csv(harbor_stages),
             analysis_classifications=_split_tag_csv(analysis_classifications),
