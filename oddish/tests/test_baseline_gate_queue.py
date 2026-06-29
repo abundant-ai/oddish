@@ -471,3 +471,73 @@ async def test_agent_only_append_ungated_without_baselines(
 
     kimi = await _append_llm_only(task_id)
     assert await _wj_status(kimi) == WorkerJobStatus.QUEUED
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: retry stays gated + QA excludes gate-skipped trials
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_task_ids):
+    from oddish.core.endpoints.trials import retry_trial_core
+
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"retry-gate-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("retry"), task_id=task_id)
+    # Faulty baselines -> the create-blocked kimi is cancelled.
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=0.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        await maybe_gate_llm_trials(session, baseline_id)
+
+    async with get_session() as session:
+        kimi_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                )
+            )
+        ).scalar_one()
+
+    # Retrying the gate-cancelled trial must re-gate: faulty baselines -> the
+    # new trial is cancelled too, and the endpoint reports its real state.
+    async with get_session() as session:
+        result = await retry_trial_core(session, trial_id=kimi_id, org_id=None)
+    assert result["status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task_ids):
+    from oddish.workers.queue.qa_handler import (
+        _load_live_trials_for_classification,
+    )
+
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"qa-skip-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("qa"), task_id=task_id)
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=0.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        await maybe_gate_llm_trials(session, baseline_id)
+
+    async with get_session() as session:
+        kimi_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                )
+            )
+        ).scalar_one()
+
+    live_ids = {tid for tid, _ in await _load_live_trials_for_classification(task_id)}
+    # The gate-skipped (never-run) kimi must not be handed to the classifier;
+    # the baselines (which produced verdicts) still are.
+    assert kimi_id not in live_ids
+    assert live_ids  # baselines remain

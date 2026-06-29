@@ -504,37 +504,48 @@ async def cleanup_orphaned_queue_state(
         #     gate; this re-drives it if that handler was killed first. The gate
         #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
         #     trials by (task_id, task_version_id, experiment_id) and hand it one
-        #     representative baseline trial id per group.
+        #     representative baseline trial id per group. ``IS NOT DISTINCT
+        #     FROM`` so a NULL version/experiment still matches itself (plain
+        #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
+        #     entirely when the gate is off so it never touches the hot path.
         # -----------------------------------------------------------------
         tasks_pending_gate = (
-            await session.execute(
-                text(
-                    """
-                    SELECT MIN(base.id) AS baseline_trial_id
-                    FROM trials base
-                    WHERE base.queue_key = :nop_oracle_queue_key
-                      AND base.deleted_at IS NULL
-                      AND base.superseded_by_trial_id IS NULL
-                      AND EXISTS (
-                          SELECT 1
-                          FROM worker_jobs wj
-                          JOIN trials llm ON llm.id = wj.subject_id
-                          WHERE wj.subject_table = 'trials'
-                            AND wj.kind::text = 'TRIAL'
-                            AND wj.status::text = 'BLOCKED'
-                            AND llm.task_id = base.task_id
-                            AND llm.task_version_id = base.task_version_id
-                            AND llm.experiment_id = base.experiment_id
-                      )
-                    GROUP BY base.task_id, base.task_version_id, base.experiment_id
-                    HAVING COUNT(*) FILTER (
-                        WHERE base.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
-                    ) = 0
-                    """
-                ),
-                {"nop_oracle_queue_key": NOP_ORACLE_QUEUE_KEY},
-            )
-        ).all()
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT MIN(base.id) AS baseline_trial_id
+                        FROM trials base
+                        WHERE base.queue_key = :nop_oracle_queue_key
+                          AND base.deleted_at IS NULL
+                          AND base.superseded_by_trial_id IS NULL
+                          AND EXISTS (
+                              SELECT 1
+                              FROM worker_jobs wj
+                              JOIN trials llm ON llm.id = wj.subject_id
+                              WHERE wj.subject_table = 'trials'
+                                AND wj.kind::text = 'TRIAL'
+                                AND wj.status::text = 'BLOCKED'
+                                AND llm.task_id = base.task_id
+                                AND llm.task_version_id
+                                    IS NOT DISTINCT FROM base.task_version_id
+                                AND llm.experiment_id
+                                    IS NOT DISTINCT FROM base.experiment_id
+                          )
+                        GROUP BY base.task_id, base.task_version_id,
+                                 base.experiment_id
+                        HAVING COUNT(*) FILTER (
+                            WHERE base.status
+                                IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                        ) = 0
+                        """
+                    ),
+                    {"nop_oracle_queue_key": NOP_ORACLE_QUEUE_KEY},
+                )
+            ).all()
+            if settings.gate_llm_on_baselines
+            else []
+        )
 
         for (baseline_trial_id,) in tasks_pending_gate:
             if baseline_trial_id:
