@@ -1291,6 +1291,8 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
     the task row so the "last baseline wins" decision is race-safe.
     """
+    if not settings.gate_llm_on_baselines:
+        return False
     trial = await session.get(TrialModel, trial_id)
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
@@ -1404,6 +1406,7 @@ async def _unblock_worker_jobs_for_trials(
             SET    status = 'QUEUED',
                    available_after = NOW()
             WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
               AND  subject_id = ANY(:trial_ids)
               AND  status::text = 'BLOCKED'
             """
@@ -1436,6 +1439,7 @@ async def _cancel_gated_llm_trials(
                    modal_function_call_id = NULL,
                    payload = payload - 'registry_auth_enc'
             WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
               AND  subject_id = ANY(:trial_ids)
               AND  status::text = 'BLOCKED'
             """

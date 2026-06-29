@@ -10,11 +10,16 @@ outcomes it returns VALID or FAULTY plus a human-readable reason. The scheduling
 side effects (unblock vs. cancel) live in ``oddish.queue``.
 
 Decision rule -- unanimity over *real verdicts*, infra errors ignored:
-  - A trial is a real verdict iff ``reward is not None`` (``reward == 1`` is a
-    pass, anything else a fail). ``reward is None`` is a terminal infra error and
-    carries no signal.
-  - oracle is VALID iff it has >=1 real verdict and every real verdict is a pass.
-  - nop is VALID iff it has >=1 real verdict and every real verdict is a fail.
+  - A trial is a real verdict iff ``reward is not None``. ``reward is None`` is
+    a terminal infra error and carries no signal.
+  - A baseline is "clean" only at the extremes: oracle must score exactly
+    ``1.0`` (it applies the known solution, so anything short of a full pass
+    means the solution/verifier is broken) and nop must score exactly ``0.0``
+    (it does nothing, so *any* nonzero reward means the task hands out credit
+    for free -- an over-lenient verifier). Partial credit on either baseline is
+    therefore treated as a faulty task, not a clean pass/fail.
+  - oracle is VALID iff it has >=1 real verdict and every real verdict == 1.0.
+  - nop is VALID iff it has >=1 real verdict and every real verdict == 0.0.
   - The gate is VALID iff every baseline kind present is VALID. Anything else
     (inverted outcome, flaky, or all-errored) is FAULTY. The "all errored /
     inconclusive" case folds into FAULTY for now but is reported distinctly so a

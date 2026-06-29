@@ -24,6 +24,9 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -136,7 +139,7 @@ async def retry_trial_core(
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    from oddish.config import is_nop_oracle_agent
+    from oddish.config import is_nop_oracle_agent, settings
     from oddish.queue import (
         apply_baseline_gate_to_new_llm_trials,
         enqueue_trial_worker_job,
@@ -292,7 +295,10 @@ async def retry_trial_core(
 
     # Retrying an LLM trial re-arms the gate: a retried agent trial consults its
     # scope's baselines just like a fresh one, so it can't bypass a faulty task.
-    if not is_nop_oracle_agent(new_trial.agent):
+    # The gate may leave it BLOCKED (baselines still running) or CANCELLED
+    # (faulty baselines), so report its real state rather than always "queued".
+    status_label = "queued"
+    if settings.gate_llm_on_baselines and not is_nop_oracle_agent(new_trial.agent):
         await apply_baseline_gate_to_new_llm_trials(
             session,
             task_id=new_trial.task_id,
@@ -300,10 +306,22 @@ async def retry_trial_core(
             experiment_id=new_trial.experiment_id,
             llm_trial_ids=[new_trial_id],
         )
+        final_status = await session.scalar(
+            select(WorkerJobModel.status).where(
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id == new_trial_id,
+            )
+        )
+        status_label = {
+            WorkerJobStatus.QUEUED: "queued",
+            WorkerJobStatus.BLOCKED: "blocked",
+            WorkerJobStatus.CANCELLED: "skipped",
+        }.get(final_status, "queued")
 
     await session.commit()
     return {
-        "status": "queued",
+        "status": status_label,
         "trial_id": new_trial_id,
         "superseded_trial_id": trial_id,
     }
