@@ -174,6 +174,7 @@ def test_claude_code_openrouter_agent_config_sets_anthropic_skin_env(
     assert agent_config.model_name == "openrouter/anthropic/claude-opus-4.8"
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://openrouter.ai/api"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${OPENROUTER_API_KEY}"
+    assert "openrouter.ai" in agent_config.extra_allowed_hosts
     assert agent_config.env["ENABLE_TOOL_SEARCH"] == "false"
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
     assert agent_config.env["CLAUDE_CODE_USE_BEDROCK"] == ""
@@ -233,11 +234,12 @@ def test_claude_code_glm_agent_config_sets_zai_anthropic_skin_env(
         raw_harbor_config={},
     )
 
-    # The "zai/" prefix stays on model_name so Harbor's per-agent network
-    # allowlist resolves api.z.ai for closed-internet tasks.
+    # The "zai/" prefix stays on model_name; Oddish declares api.z.ai on
+    # extra_allowed_hosts so closed-internet tasks can reach it.
     assert agent_config.model_name == "zai/glm-x-preview[1m]"
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.z.ai/api/anthropic"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${ZAI_API_KEY}"
+    assert "api.z.ai" in agent_config.extra_allowed_hosts
     # The bare GLM id (no prefix) is what Claude Code must send, mirrored across
     # every size alias since the image defaults to Bedrock mode.
     assert agent_config.env["ANTHROPIC_MODEL"] == "glm-x-preview[1m]"
@@ -310,11 +312,12 @@ def test_claude_code_minimax_agent_config_sets_minimax_skin_env(monkeypatch) -> 
         raw_harbor_config={},
     )
 
-    # The provider prefix stays so Harbor's allowlist resolves api.minimax.io
-    # for closed-internet tasks.
+    # The provider prefix stays; Oddish declares api.minimax.io on
+    # extra_allowed_hosts so closed-internet tasks can reach it.
     assert agent_config.model_name == "minimax/minimax-m3"
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.minimax.io/anthropic"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MINIMAX_API_KEY}"
+    assert "api.minimax.io" in agent_config.extra_allowed_hosts
     # The endpoint expects the exact mixed-case id, mirrored across aliases.
     assert agent_config.env["ANTHROPIC_MODEL"] == "MiniMax-M3"
     assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "MiniMax-M3"
@@ -342,6 +345,7 @@ def test_claude_code_moonshot_agent_config_sets_moonshot_skin_env(monkeypatch) -
     assert agent_config.model_name == "moonshot/kimi-k2.7-code"
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.moonshot.ai/anthropic"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${MOONSHOT_API_KEY}"
+    assert "api.moonshot.ai" in agent_config.extra_allowed_hosts
     assert agent_config.env["ANTHROPIC_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "kimi-k2.7-code"
     assert agent_config.env["CLAUDE_CODE_SUBAGENT_MODEL"] == "kimi-k2.7-code"
@@ -368,11 +372,15 @@ def test_claude_code_fireworks_agent_config_sets_fireworks_skin_env(
     )
 
     # Friendly alias collapses to the canonical short id; the ``fireworks/``
-    # prefix stays on model_name so Harbor's allowlist can resolve the Fireworks
-    # endpoint for closed-internet tasks (once the fork maps it).
+    # prefix stays on model_name.
     assert agent_config.model_name == "fireworks/glm-5p2"
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
+    # Oddish declares the Fireworks host so closed-internet (allowlist) tasks
+    # widen egress to reach it -- Harbor's per-agent auto-allowlist can't, since
+    # the stock claude-code hook mis-detects this route as Bedrock on the
+    # Bedrock worker image.
+    assert "api.fireworks.ai" in agent_config.extra_allowed_hosts
     # Claude Code must send the full Fireworks model path, mirrored across every
     # size alias since the image defaults to Bedrock mode.
     expected = "accounts/fireworks/models/glm-5p2"
@@ -443,6 +451,9 @@ def test_claude_code_fireworks_agent_config_preserves_explicit_env(monkeypatch) 
     assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://custom.example/anthropic"
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${CUSTOM_FW_TOKEN}"
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
+    # The allowlisted host follows whatever base URL the trial actually dials.
+    assert "custom.example" in agent_config.extra_allowed_hosts
+    assert "api.fireworks.ai" not in agent_config.extra_allowed_hosts
 
 
 def test_claude_code_openrouter_kimi_is_not_routed_to_moonshot(monkeypatch) -> None:

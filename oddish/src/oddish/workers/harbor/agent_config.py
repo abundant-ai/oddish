@@ -4,6 +4,7 @@ import contextlib
 import os
 import warnings
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 from harbor.models.trial.config import AgentConfig
 
@@ -39,6 +40,33 @@ _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCo
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
 
 
+def _allowlist_model_endpoint_host(agent_config: AgentConfig) -> None:
+    """Declare the agent's model-endpoint host on ``extra_allowed_hosts``.
+
+    Closed-internet (``allowlist``) tasks must widen egress to the host the
+    agent actually dials, or every model request is firewalled. For Oddish's
+    custom-base-url routes (Fireworks / z.ai / MiniMax / Moonshot / OpenRouter)
+    the host is whatever ``ANTHROPIC_BASE_URL`` we just injected, so declare it
+    explicitly here.
+
+    We cannot rely on Harbor's ``auto_agent_allowlist`` auto-derivation for
+    these routes: the stock ``claude-code`` ``required_outbound_domains`` hook
+    checks the ambient ``CLAUDE_CODE_USE_BEDROCK`` (baked into the Bedrock worker
+    image as ``1``) before the base-url branch, so it mis-reports a Bedrock host
+    for our non-Bedrock routes. Declaring the real injected host is correct
+    regardless of that flag. Harbor merges ``extra_allowed_hosts`` into the
+    agent-phase allowlist unconditionally, and ignores it on ``public`` tasks.
+    """
+    base_url = (agent_config.env or {}).get("ANTHROPIC_BASE_URL")
+    host = urlparse(base_url).hostname if base_url else None
+    if not host:
+        return
+    hosts = list(agent_config.extra_allowed_hosts or [])
+    if host not in hosts:
+        hosts.append(host)
+        agent_config.extra_allowed_hosts = hosts
+
+
 def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     """Apply the env shape Claude Code expects for OpenRouter's Anthropic skin."""
     agent_name = (agent_config.name or "").strip().lower()
@@ -60,6 +88,7 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
+    _allowlist_model_endpoint_host(agent_config)
 
 
 # Fireworks env is kept deliberately minimal: the default claude-code agent
@@ -105,6 +134,7 @@ def _apply_claude_code_fireworks_env(agent_config: AgentConfig) -> None:
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
+    _allowlist_model_endpoint_host(agent_config)
 
 
 _ZAI_RECOMMENDED_ENV: dict[str, str] = {
@@ -150,6 +180,7 @@ def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
+    _allowlist_model_endpoint_host(agent_config)
 
     kwargs = dict(agent_config.kwargs or {})
     kwargs.setdefault("thinking", "adaptive")
@@ -205,6 +236,7 @@ def _apply_claude_code_minimax_env(agent_config: AgentConfig) -> None:
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
+    _allowlist_model_endpoint_host(agent_config)
 
 
 def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
@@ -240,6 +272,7 @@ def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
     env["CLAUDE_CODE_USE_BEDROCK"] = ""
     env["AWS_BEARER_TOKEN_BEDROCK"] = ""
     agent_config.env = env
+    _allowlist_model_endpoint_host(agent_config)
 
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
