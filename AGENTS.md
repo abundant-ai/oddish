@@ -459,10 +459,12 @@ this with a dedicated z.ai route:
   the `thinking` and `reasoning_effort` kwargs as `--thinking adaptive
   --effort max`, so the z.ai route sets those kwargs as defaults. Override
   either per-trial via agent kwargs (`--agent-kwarg reasoning_effort=high`).
-- **Network allowlist.** The Harbor fork's per-agent allowlist already maps
-  `zai`/`z-ai`/`glm` model prefixes (and the `glm-claude-code` agent name) to
-  `api.z.ai`, so closed-internet tasks on the Modal environment reach z.ai
-  without further changes.
+- **Network allowlist (closed-internet).** Oddish declares `api.z.ai` on the
+  trial's `agent.extra_allowed_hosts` (via `_allowlist_model_endpoint_host` in
+  `oddish.workers.harbor.agent_config`, derived from the injected
+  `ANTHROPIC_BASE_URL`), which Harbor merges into the agent-phase allowlist, so
+  closed-internet tasks on the Modal environment reach z.ai without any
+  Harbor-fork change or Harbor's opt-in `auto_agent_allowlist`.
 
 Run GLM on a task: `oddish run -p <task> --agent claude-code --model
 zai/glm-x-preview[1m]` (bare `glm-x-preview[1m]` works too and is canonicalized
@@ -515,11 +517,12 @@ with Bedrock for concurrency slots:
   Modal secret (or the worker environment). They are referenced as
   `${MINIMAX_API_KEY}` / `${MOONSHOT_API_KEY}` and never persisted to the trial
   row.
-- **Network allowlist.** The Harbor fork's per-agent allowlist maps the
-  `minimax` and `moonshot`/`moonshotai`/`kimi` model prefixes (and the
-  dedicated `minimax-claude-code` / `kimi-claude-code` agent names) to
-  `api.minimax.io` / `api.moonshot.ai`, so closed-internet tasks reach the
-  direct endpoints without further changes.
+- **Network allowlist (closed-internet).** Oddish declares `api.minimax.io` /
+  `api.moonshot.ai` on the trial's `agent.extra_allowed_hosts` (via
+  `_allowlist_model_endpoint_host` in `oddish.workers.harbor.agent_config`,
+  derived from the injected `ANTHROPIC_BASE_URL`), which Harbor merges into the
+  agent-phase allowlist, so closed-internet tasks reach the direct endpoints
+  without any Harbor-fork change or Harbor's opt-in `auto_agent_allowlist`.
 
 Dedicated Harbor agents `minimax-claude-code` and `kimi-claude-code` (subclasses
 of `claude-code`, with closed-internet `*-api-key-no-search` variants) also
@@ -576,12 +579,18 @@ run Claude/Opus.
 - **Secret.** Provide `FIREWORKS_API_KEY` in the runtime Modal secret
   (`oddish-prod`) or the worker environment. It is referenced as
   `${FIREWORKS_API_KEY}` and never persisted to the trial row.
-- **Known gap (network allowlist).** Harbor's per-agent network allowlist (in
-  the Harbor fork) does not yet map the `fireworks` prefix to
-  `api.fireworks.ai`, so **closed-internet tasks** will not reach Fireworks
-  until the fork adds it. Open-internet tasks are unaffected. The `fireworks/`
-  prefix is intentionally kept on `model_name` so the allowlist resolves once
-  the fork is updated.
+- **Network allowlist (closed-internet).** Oddish declares the Fireworks host
+  on the trial's `agent.extra_allowed_hosts` (via
+  `_allowlist_model_endpoint_host` in
+  `oddish.workers.harbor.agent_config`), which Harbor merges into the
+  agent-phase allowlist, so **closed-internet tasks** reach `api.fireworks.ai`
+  without any Harbor-fork change. The host is derived from the resolved
+  `ANTHROPIC_BASE_URL`, so a per-trial `FIREWORKS_BASE_URL` / explicit base-url
+  override is allowlisted automatically. This is done explicitly (rather than
+  relying on Harbor's opt-in `auto_agent_allowlist`) because the stock
+  `claude-code` `required_outbound_domains` hook checks the ambient
+  `CLAUDE_CODE_USE_BEDROCK=1` baked into the worker image and would otherwise
+  mis-report a Bedrock host for this non-Bedrock route.
 
 Run GLM 5.2 / MiniMax M3 / Kimi K2.7 via Fireworks: `oddish run -p <task>
 --agent claude-code --model fireworks/glm-5.2`, `… --model fireworks/minimax-m3`,
