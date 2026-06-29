@@ -1271,16 +1271,18 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     """Release or cancel BLOCKED LLM trials once their baselines finish.
 
     Fires only when *trial_id* is a nop/oracle baseline. The decision is scoped
-    to the baseline's **(task, experiment)**: when every baseline trial for that
-    task in that experiment is terminal, evaluates them and — if they validate
-    the task (oracle passes, nop fails) — releases the experiment's BLOCKED LLM
-    trials to QUEUED; otherwise cancels them and mirrors them to FAILED so the
-    task can advance. Scoping by experiment keeps concurrent sweeps in different
-    experiments from sharing each other's gate timing or verdict.
+    to the baseline's **(task version, experiment)**: when every baseline trial
+    for that task version in that experiment is terminal, evaluates them and —
+    if they validate the task (oracle passes, nop fails) — releases that scope's
+    BLOCKED LLM trials to QUEUED; otherwise cancels them and mirrors them to
+    FAILED so the task can advance. Scoping by experiment keeps concurrent sweeps
+    in different experiments from sharing each other's gate timing or verdict;
+    scoping by task version keeps an older version's baselines from validating a
+    newer version's (different code) LLM trials.
 
-    A no-op when there are no BLOCKED LLM trials in this experiment (the gate
-    was never armed) or other baselines are still running. Uses SELECT FOR
-    UPDATE so the "last baseline wins" decision is race-safe.
+    A no-op when there are no BLOCKED LLM trials in this scope (the gate was
+    never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
+    the task row so the "last baseline wins" decision is race-safe.
     """
     trial = await session.get(TrialModel, trial_id)
     if not trial or not is_nop_oracle_agent(trial.agent):
@@ -1288,6 +1290,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
 
     task_id = trial.task_id
     experiment_id = trial.experiment_id
+    task_version_id = trial.task_version_id
 
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
@@ -1309,6 +1312,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
                                 and_(
                                     TrialModel.task_id == task_id,
                                     TrialModel.experiment_id == experiment_id,
+                                    TrialModel.task_version_id == task_version_id,
                                 )
                             )
                         ),
@@ -1327,6 +1331,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
             and_(
                 TrialModel.task_id == task_id,
                 TrialModel.experiment_id == experiment_id,
+                TrialModel.task_version_id == task_version_id,
                 TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
@@ -1342,6 +1347,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
                 and_(
                     TrialModel.task_id == task_id,
                     TrialModel.experiment_id == experiment_id,
+                    TrialModel.task_version_id == task_version_id,
                     TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
                     TrialModel.superseded_by_trial_id.is_(None),
                 )
