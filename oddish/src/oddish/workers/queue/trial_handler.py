@@ -36,8 +36,8 @@ from oddish.worker.probe_analysis import (
 )
 from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
-from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.worker.probe_staging import apply_probe_overlay
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
+from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.queue.db_helpers import _trial_session
@@ -690,6 +690,39 @@ async def _store_trial_results(
                 )
 
 
+async def _upload_probe_assets(environment, probe_task_dir: Path, trial_id: str) -> None:
+    """Two AGENT_START uploads, both best-effort (a failure must never block the
+    probe): the staged probe-only assets (verifier, reference solution,
+    gate-tests, harbor source) -> STAGE_DIR, hidden from the agent's browsable
+    tree and reachable only through the oddish-query CLI; and the CLI alone ->
+    PROBE_HARNESS_DIR, the single advertised entry point referenced in the probe
+    instruction."""
+    try:
+        await environment.upload_dir(source_dir=probe_task_dir, target_dir=STAGE_DIR)
+        console.print(
+            f"[dim]Trial {trial_id} probe assets uploaded to {STAGE_DIR}[/dim]"
+        )
+    except Exception as exc:
+        console.print(
+            f"[yellow]Trial {trial_id} probe asset upload failed: {exc}[/yellow]"
+        )
+    harness_mount = Path(tempfile.mkdtemp(prefix=f"probe-cli-{trial_id}-"))
+    try:
+        stage_cli_mount(harness_mount)
+        await environment.upload_dir(
+            source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR
+        )
+        console.print(
+            f"[dim]Trial {trial_id} probe CLI uploaded to {PROBE_HARNESS_DIR}[/dim]"
+        )
+    except Exception as exc:
+        console.print(
+            f"[yellow]Trial {trial_id} probe CLI upload failed: {exc}[/yellow]"
+        )
+    finally:
+        shutil.rmtree(harness_mount, ignore_errors=True)
+
+
 async def _handle_harbor_event(
     hook_event: TrialHookEvent,
     *,
@@ -725,18 +758,9 @@ async def _handle_harbor_event(
                         "(worker no longer owns it)[/dim]"
                     )
                     return
-            try:
-                await hook_event.environment.upload_dir(
-                    source_dir=probe_task_dir, target_dir=PROBE_HARNESS_DIR
-                )
-                console.print(
-                    f"[dim]Trial {trial_id} probe task dir uploaded to "
-                    f"{PROBE_HARNESS_DIR}[/dim]"
-                )
-            except Exception as exc:
-                console.print(
-                    f"[yellow]Trial {trial_id} probe task-dir upload failed: {exc}[/yellow]"
-                )
+            await _upload_probe_assets(
+                hook_event.environment, probe_task_dir, trial_id
+            )
 
         async with _trial_session(
             trial_id, allow_missing=True, with_for_update=True
@@ -1060,6 +1084,7 @@ async def run_trial_job(
             probe_key_id, probe_agent_env = await mint_probe_creds(
                 org_id=prepared_trial.org_id, trial_id=trial_id
             )
+            probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
         except ProbeCredsError as exc:
             # Record the failure on the trial row so the operator sees why the
             # probe failed; _execute_trial's handler never runs in this path.
