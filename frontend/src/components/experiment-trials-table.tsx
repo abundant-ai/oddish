@@ -121,6 +121,7 @@ type ExperimentTrialsTableProps = {
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
+  onProbeSelect?: (trial: Trial, task: Task) => void;
   readOnly?: boolean;
   showAnalysis?: boolean;
   onTrialSelect?: (
@@ -453,6 +454,7 @@ export function ExperimentTrialsTable({
   onTaskDelete,
   onRerun,
   allowRerun = true,
+  onProbeSelect,
   readOnly = false,
   showAnalysis = true,
   onTrialSelect,
@@ -2413,9 +2415,13 @@ export function ExperimentTrialsTable({
                                         variant="unstyled"
                                         onClick={() => {
                                           if (trial.is_probe) {
-                                            router.push(
-                                              `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
-                                            );
+                                            if (onProbeSelect) {
+                                              onProbeSelect(trial, task);
+                                            } else {
+                                              router.push(
+                                                `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
+                                              );
+                                            }
                                             return;
                                           }
                                           const trialIndexInGroup =

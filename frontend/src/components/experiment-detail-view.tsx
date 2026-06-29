@@ -45,6 +45,8 @@ import {
 
 type DrawerMode = "task" | "trial";
 
+import { ProbeDetailPanel } from "@/components/probe-detail-panel";
+
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
@@ -730,6 +732,10 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false },
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  const [probeDrawer, setProbeDrawer] = useState<{
+    taskId: string;
+    trialId: string;
+  } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
@@ -1145,6 +1151,9 @@ export function ExperimentDetailView({
                     trialGroups: context.trialGroups,
                   });
                 }}
+                onProbeSelect={(trial, task) =>
+                  setProbeDrawer({ taskId: task.id, trialId: trial.id })
+                }
                 onTaskSelect={(task, context) => {
                   const { trialGroups, orderedTrials } = buildTrialGroups(task);
                   // If the task has trials, jump straight into the first one
@@ -1246,6 +1255,14 @@ export function ExperimentDetailView({
               />
             )
           }
+        />
+      )}
+      {probeDrawer && (
+        <ProbeDetailPanel
+          taskId={probeDrawer.taskId}
+          trialId={probeDrawer.trialId}
+          isOpen
+          onClose={() => setProbeDrawer(null)}
         />
       )}
     </>
