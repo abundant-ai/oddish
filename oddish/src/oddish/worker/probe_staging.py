@@ -21,6 +21,8 @@ from oddish.core.skills import list_skills_core
 from oddish.db import get_session
 from oddish.worker.probe_overlay import (
     AGENT_BRIEF_NAME,
+    BOUNDARY_MARKER_NAME,
+    BOUNDARY_MARKER_TEXT,
     HARBOR_DIR_NAME,
     PROBE_SYSTEM_FRAMING,
     QUERY_CLI_NAME,
@@ -37,6 +39,28 @@ def stage_query_cli(work_task_dir: Path) -> None:
     dest = work_task_dir / QUERY_CLI_NAME
     dest.write_bytes(cli_bytes)
     dest.chmod(0o755)
+
+
+def stage_cli_mount(harness_dir: Path) -> None:
+    """Write ONLY the oddish-query CLI into ``harness_dir`` (the /probe-harness
+    mount). Everything else probe-only goes to the hidden stage, so this mount is
+    the single advertised entry point the agent sees."""
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    stage_query_cli(harness_dir)
+
+
+def write_boundary_markers(stage_root: Path) -> None:
+    """Plant the self-describing boundary marker in the hidden stage so direct
+    file discovery (an agent that greps the FS and reads a file instead of using
+    the CLI) still learns this is probe-only, deliberately-hidden infrastructure.
+    Root + answer-key subdirs only; ``harbor_src`` is left pristine (byte-exact)."""
+    targets = [stage_root, stage_root / "solution", stage_root / "tests"]
+    for d in targets:
+        try:
+            if d.is_dir():
+                (d / BOUNDARY_MARKER_NAME).write_text(BOUNDARY_MARKER_TEXT)
+        except Exception:
+            logger.exception("probe: writing boundary marker in %s failed", d)
 
 
 def stage_harbor_source(work_task_dir: Path) -> bool:
@@ -148,7 +172,13 @@ async def apply_probe_overlay(
     probe_scope: str = "task",
     time_budget_sec: float | None = None,
 ) -> None:
-    """Stage the query CLI and rewrite ``task_dir/instruction.md`` in place.
+    """Stage probe-only assets (harbor source, boundary markers) and rewrite
+    ``task_dir/instruction.md`` in place.
+
+    The oddish-query CLI is **not** staged here: the runners deliver it
+    separately to ``/probe-harness`` via :func:`stage_cli_mount`. Staging it
+    into ``task_dir`` would also land a redundant, never-referenced copy in the
+    hidden stage (``task_dir`` is uploaded to ``STAGE_DIR``).
 
     ``task_dir`` MUST be a writable temp copy of the task. Staging failures
     are logged and skipped; they never block the probe from running.
@@ -162,11 +192,6 @@ async def apply_probe_overlay(
     must reach the sandbox through Harbor's skill-upload path, not the task dir
     which Harbor never mounts into the container.)
     """
-    try:
-        stage_query_cli(task_dir)
-    except Exception:
-        logger.exception("probe: staging oddish-query CLI failed")
-
     # Stage harbor's own source as a reward-hack surface (read-only, in-mount,
     # network-immune). Best-effort: never blocks the probe.
     try:
@@ -182,6 +207,7 @@ async def apply_probe_overlay(
     # all staged dirs are in place.
     (task_dir / AGENT_BRIEF_NAME).write_text(original)
     probe_only = collect_visibility(task_dir)
+    write_boundary_markers(task_dir)
 
     instr_path.write_text(
         render_probe_instruction(

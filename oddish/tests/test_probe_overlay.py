@@ -1,7 +1,6 @@
 """Unit tests for the pure probe-overlay helpers (no DB/S3/filesystem)."""
 
 from oddish.worker.probe_overlay import (
-    AGENT_BRIEF_CONTAINER_PATH,
     PROBE_HARNESS_DIR,
     QUERY_CLI_CONTAINER_PATH,
     render_probe_instruction,
@@ -25,7 +24,7 @@ def test_render_includes_all_sections():
     assert "REAL AGENT BRIEF" in out
     assert "ORIGINAL-TEXT" in out
     assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
-    assert "## RUNNING TESTS" in out
+    assert "## RUNNING THE VERIFIER" in out
     assert "## TRIAL DATA" in out
 
 
@@ -34,38 +33,32 @@ def test_render_does_not_label_spec_as_probes_own_task():
     # solving-agent persona and flag its own staged files as vulnerabilities.
     out = _render()
     assert "THIS IS THE TASK" not in out
-    assert AGENT_BRIEF_CONTAINER_PATH in out
 
 
-def test_visibility_map_separates_app_from_harness():
+def test_visibility_map_is_cli_centric():
     out = render_visibility_map(["tests/", "solution/", "harbor_src/"])
-    # /app is framed as the real agent's pristine workspace.
+    assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
     assert "/app" in out
-    # Probe-only material is enumerated under the harness root, not /app.
-    for p in ("tests/", "solution/", "harbor_src/"):
-        assert f"{PROBE_HARNESS_DIR}/{p}" in out
-    # Rule 1: access to a harness file is not an agent-reachable vuln.
+    # No longer enumerates probe-only files as filesystem paths the agent could read.
+    assert f"{PROBE_HARNESS_DIR}/solution/" not in out
+    # Points at the CLI as the one channel for probe-only material.
+    assert "oddish-query" in out
+    # Rules preserved.
     assert "does not exist in a real run" in out
-    # Rule 2: a hidden answer key under the harness root is by design, not a leak.
     assert "by design" in out
     assert "leak" in out.lower()
 
 
 def test_visibility_map_handles_empty_harness():
     out = render_visibility_map([])
-    assert PROBE_HARNESS_DIR in out
-    # Still states the two rules even with nothing enumerated.
+    assert "oddish-query" in out
     assert "by design" in out
 
 
-def test_running_tests_points_at_harness_not_app():
+def test_running_tests_points_at_verify_cli():
     out = _render()
-    assert f"{PROBE_HARNESS_DIR}/tests/" in out
-    # Still names multiple possible verifier scripts rather than one hard path.
-    assert "run_tests.sh" in out
-    assert "test.sh" in out
-    # Explicitly redirects stale "/app/tests" directive references.
-    assert "stale" in out
+    assert "verify run" in out
+    assert "oddish-query" in out
 
 
 def test_render_cli_section_present():
@@ -73,3 +66,38 @@ def test_render_cli_section_present():
     assert QUERY_CLI_CONTAINER_PATH in out
     assert "node /probe-harness/oddish-query" in out
     assert "RELATED TRIAL LOGS" not in out
+
+
+def test_render_includes_oracle_seed_when_solution_staged():
+    out = _render()
+    assert "## REFERENCE SOLUTION" in out
+    # Seeds via the CLI now, not a mounted path.
+    assert "solution fetch" in out
+    assert "head start" in out.lower()
+
+
+def test_render_omits_oracle_seed_when_no_solution_staged():
+    out = render_probe_instruction(
+        "FRAMING-TEXT",
+        "DIRECTIVE-TEXT",
+        "ORIGINAL-TEXT",
+        probe_only_paths=["tests/", "harbor_src/"],
+    )
+    assert "## REFERENCE SOLUTION" not in out
+
+
+def test_render_includes_subagents_section():
+    out = _render()
+    assert "## SUBAGENTS" in out
+    # States the one-level nesting limit so the probe fans out directly.
+    assert "one level" in out.lower()
+
+
+def test_subagents_section_present_even_without_solution():
+    out = render_probe_instruction(
+        "FRAMING-TEXT",
+        "DIRECTIVE-TEXT",
+        "ORIGINAL-TEXT",
+        probe_only_paths=[],
+    )
+    assert "## SUBAGENTS" in out

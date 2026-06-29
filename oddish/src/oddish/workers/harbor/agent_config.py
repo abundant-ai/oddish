@@ -280,6 +280,30 @@ def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -
     agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
 
 
+def _apply_claude_code_probe_subagent_model(
+    agent_config: AgentConfig, is_probe: bool
+) -> None:
+    """Pin a probe claude-code agent's subagent model.
+
+    The per-provider env shapers (fireworks/z.ai/...) set
+    ``CLAUDE_CODE_SUBAGENT_MODEL``, but Harbor's claude-code ``run`` only forwards
+    it on the custom-base-url branch. On the direct Anthropic API / Bedrock path a
+    probe uses, nothing sets it, so a subagent the probe spawns has no explicit
+    model. Set it to the same (already provider-normalized) model id as the main
+    agent so Task-tool subagents work. Call while ``name`` is still
+    ``"claude-code"`` (before the probe-harbor wrapper nulls it); never overrides
+    an existing value.
+    """
+    if not is_probe or not agent_config.model_name:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "claude-code":
+        return
+    env = dict(agent_config.env or {})
+    env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_config.model_name)
+    agent_config.env = env
+
+
 def _agent_uses_bedrock() -> bool:
     """Mirror Harbor's claude-code Bedrock-mode detection."""
     if os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").strip() == "1":
@@ -392,6 +416,7 @@ def _build_agent_config(
     _apply_claude_code_zai_env(agent_config)
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
+    _apply_claude_code_probe_subagent_model(agent_config, is_probe)
 
     if _agent_uses_openai_provider(agent_config):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
