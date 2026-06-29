@@ -793,6 +793,8 @@ def _build_task_status_response(
     experiment_created_at = (
         primary_experiment.created_at if primary_experiment else None
     )
+    experiment_owner = primary_experiment.owner if primary_experiment else None
+    experiment_link = primary_experiment.link if primary_experiment else None
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -809,6 +811,8 @@ def _build_task_status_response(
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
         experiment_created_at=experiment_created_at,
+        experiment_owner=experiment_owner,
+        experiment_link=experiment_link,
         # Sorted (name, id) to match the browse chips and because the ORM
         # relationship has no order_by -- DB return order is not stable.
         experiments=[

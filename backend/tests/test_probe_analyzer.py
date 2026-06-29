@@ -64,7 +64,7 @@ async def test_schema_mode_returns_object_findings_and_enforces():
     assert result["result_focus_question"] is None
     # structured output was enforced
     _, kwargs = fake.messages.create.call_args
-    fmt = kwargs["output_config"]["format"]
+    fmt = kwargs["extra_body"]["output_config"]["format"]
     assert fmt["type"] == "json_schema"
     assert (
         fmt["schema"]["properties"]["result_focus_findings"]["properties"]["verdict"]
