@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-29]
+
+### Added
+
+- Probe instructions now include a **REFERENCE SOLUTION** section when the golden/oracle solution is staged, telling the probe it may copy or adapt it into `/app` as a baseline before pursuing the operator directive; omitted when no `solution/` directory was staged (#500)
+- Probe instructions always include a **SUBAGENTS** section encouraging the probe to fan out parallel Task-tool subagents for independent investigation threads, noting the one-level nesting limit so all parallel work is dispatched directly (#500)
+- Probe run page now shows a **Preset** line (between the run header and Summary section) displaying `harbor_config.probe_name`, falling back to the agent name for older or preset-less runs (#502)
+
+### Changed
+
+- Probe launch form "Instructions" field now populated from the selected skill's **SKILL.md body** (frontmatter stripped) instead of the legacy `operator_prompt`; skills without a SKILL.md file fall back to `operator_prompt` (#501)
+- Probe launch form fields renamed: "Extra instructions" → **"Instructions"**, "Result focus (optional)" → **"Output JSON / Result Focus"** (#501)
+- `extractSkillMdBody` extracted from `skills-client.tsx` into a new shared `frontend/src/lib/skill-md.ts` module, reused by both the skills editor and the probe form (#501)
+- `CLAUDE_CODE_SUBAGENT_MODEL` is now pinned to the main agent's normalized model id for probe claude-code trials on both cloud (`agent_config.py`) and local (`local_runner.py`) paths, ensuring Task-tool subagents have an explicit model on the direct Anthropic API path where Harbor's `run()` does not set it; a pre-set value is never overridden (#500)
+
+### Fixed
+
+- Probe summaries using a `result_focus` JSON Schema with `oneOf` (e.g. from Pydantic v2 discriminated unions) no longer fail with `BadRequestError: Schema type 'oneOf' is not supported`; `normalize_findings_schema` now rewrites `oneOf` → `anyOf` at analysis time since the two are equivalent for constrained generation, transparently unblocking already-saved skills without operator action (#499)
+
+---
+
 ## [2026-06-28]
 
 ### Added
