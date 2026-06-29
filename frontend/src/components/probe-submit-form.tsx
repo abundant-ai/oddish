@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { extractSkillMdBody } from "@/lib/skill-md";
 
 const AGENTS = [
   { value: "claude-code", label: "claude-code" },
@@ -129,7 +130,14 @@ export function ProbeSubmitForm({
     if (!id) return;
     const s = skills.find((x) => x.id === id);
     if (!s) return;
-    setExtraInstructions(s.operator_prompt ?? "");
+    // Instructions = the skill's SKILL.md body (frontmatter stripped). Fall back
+    // to the legacy operator_prompt for skills with no SKILL.md file.
+    const skillMd = s.files.find((f) => f.relative_path === "SKILL.md");
+    setExtraInstructions(
+      skillMd ? extractSkillMdBody(skillMd.content) : (s.operator_prompt ?? ""),
+    );
+    // Auto-fill the result focus / output JSON when the skill carries one
+    // (plain-text question or JSON Schema); leave editable either way.
     setResultFocus(s.result_focus ?? "");
   }
 
@@ -264,7 +272,7 @@ export function ProbeSubmitForm({
             </label>
           </div>
           <label className="block">
-            <span className="text-sm font-medium">Extra instructions</span>
+            <span className="text-sm font-medium">Instructions</span>
             <textarea
               value={extraInstructions}
               onChange={(e) => setExtraInstructions(e.target.value)}
@@ -276,7 +284,7 @@ export function ProbeSubmitForm({
           </label>
           <label className="block">
             <span className="text-sm font-medium">
-              Result focus{" "}
+              Output JSON / Result Focus{" "}
               <span className="text-muted-foreground">(optional)</span>
             </span>
             <p className="text-muted-foreground text-xs">

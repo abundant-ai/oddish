@@ -931,6 +931,8 @@ async def load_dashboard_experiments(
         ExperimentModel.name.label("experiment_name"),
         ExperimentModel.is_public.label("experiment_is_public"),
         ExperimentModel.last_activity_at.label("last_activity_at"),
+        ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.link.label("experiment_link"),
     )
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
@@ -1153,6 +1155,8 @@ async def load_dashboard_experiments(
             "experiment_id": exp_id,
             "experiment_name": page_row["experiment_name"],
             "experiment_is_public": page_row["experiment_is_public"],
+            "experiment_owner": page_row["experiment_owner"],
+            "experiment_link": page_row["experiment_link"],
             "task_count": int(agg["task_count"]) if agg else 0,
             "analysis_tasks": int(agg["analysis_tasks"]) if agg else 0,
             "verdict_good": int(agg["verdict_good"]) if agg else 0,
@@ -1220,29 +1224,34 @@ async def load_dashboard_experiments(
             last_created_at = max(candidates) if candidates else None
 
         github_meta = _parse_github_meta(merged["last_github_meta"])
-        author = _dashboard_author_from_task(
-            github_username=merged["primary_github_username"],
-            user=merged["primary_user"],
-        )
+        # Author = the experiment's own owner (the creating run's submitter,
+        # stamped set-once). Shown as-is (no source distinction). Fall back to
+        # the earliest task's author for experiments with no stamped owner.
+        if merged["experiment_owner"]:
+            author = _dashboard_author_from_task(
+                github_username=None, user=merged["experiment_owner"]
+            )
+        else:
+            author = _dashboard_author_from_task(
+                github_username=merged["primary_github_username"],
+                user=merged["primary_user"],
+            )
         last_runner = _dashboard_author_from_task(
             github_username=merged["last_github_username"],
             user=merged["last_user"],
         )
 
-        # The PR URL can arrive two ways: structured ``github_meta.pr_url`` or
-        # the canonical ``link`` column (set by ``--link``, or auto-derived from
-        # github_meta). ``link`` is what the task/experiment pages render, so we
-        # treat it as a first-class fallback rather than relying on github_meta
-        # alone. The number is parsed from the URL when github_meta omits it.
-        last_pr_url = (
+        # PR URL = the experiment's own link (stamped set-once). Fall back to the
+        # latest task's github_meta.pr_url / link for experiments with no stamped
+        # link. The number is parsed from whichever URL we end up using.
+        last_pr_url = merged["experiment_link"] or (
             str(github_meta["pr_url"])
             if github_meta and github_meta.get("pr_url") is not None
             else merged["last_link"]
         )
-        if github_meta and github_meta.get("pr_number") is not None:
-            last_pr_number = str(github_meta["pr_number"])
-        else:
-            last_pr_number = _pr_number_from_url(last_pr_url)
+        # Derive the number from the URL we actually link to, so the badge can
+        # never show a number that disagrees with its target.
+        last_pr_number = _pr_number_from_url(last_pr_url)
 
         experiments_response.append(
             {

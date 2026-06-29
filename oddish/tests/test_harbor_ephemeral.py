@@ -465,3 +465,32 @@ async def test_run_ephemeral_cancel_kills_child(tmp_path, monkeypatch):
         time.sleep(0.05)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+@pytest.mark.asyncio
+async def test_upload_probe_assets_splits_targets(tmp_path):
+    from oddish.workers.queue.trial_handler import _upload_probe_assets
+    from oddish.worker.probe_overlay import STAGE_DIR, PROBE_HARNESS_DIR
+
+    assets = tmp_path / "task"
+    (assets / "solution").mkdir(parents=True)
+    (assets / "solution" / "f.txt").write_text("x")
+
+    uploads = []
+
+    class FakeEnv:
+        async def upload_dir(self, *, source_dir, target_dir):
+            names = sorted(p.name for p in Path(source_dir).iterdir())
+            uploads.append((target_dir, names))
+
+    await _upload_probe_assets(FakeEnv(), assets, "t1")
+
+    targets = {t for t, _ in uploads}
+    assert STAGE_DIR in targets
+    assert PROBE_HARNESS_DIR in targets
+    # CLI mount carries ONLY the CLI.
+    harness = next(names for t, names in uploads if t == PROBE_HARNESS_DIR)
+    assert harness == ["oddish-query"]
+    # Hidden stage carries the task assets.
+    hidden = next(names for t, names in uploads if t == STAGE_DIR)
+    assert "solution" in hidden

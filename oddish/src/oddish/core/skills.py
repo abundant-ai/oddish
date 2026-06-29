@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import SkillFileModel, SkillModel, utcnow
 from oddish.schemas import SkillCreate, SkillFile, SkillUpdate
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
 from oddish.core.result_focus_schema import (
     UnsupportedSchemaError,
     normalize_findings_schema,
@@ -175,7 +176,10 @@ async def create_skill_core(
     frontmatter ``name:`` is rewritten to match.
     """
     base_name, description = parse_skill(data.files)
-    _validate_result_focus(data.result_focus)
+    # Repair a malformed-but-JSON-ish result_focus before validating/storing, so a
+    # stray comma is fixed into the operator's intended schema rather than 422'd.
+    result_focus = await repair_result_focus_if_needed(data.result_focus, kind="schema")
+    _validate_result_focus(result_focus)
     name = await _resolve_skill_name(session, base_name, org_id=org_id)
     files = data.files if name == base_name else _rewrite_skill_name(data.files, name)
     skill = SkillModel(
@@ -185,7 +189,7 @@ async def create_skill_core(
         description=description,
         is_seed=False,
         operator_prompt=data.operator_prompt,
-        result_focus=data.result_focus,
+        result_focus=result_focus,
         evaluation_metric=data.evaluation_metric,
         files=[
             SkillFileModel(relative_path=f.relative_path, content=f.content)
@@ -239,8 +243,11 @@ async def update_skill_core(
         if data.description is not None:
             skill.description = data.description
     if "result_focus" in payload:
-        _validate_result_focus(data.result_focus)
-        skill.result_focus = data.result_focus
+        result_focus = await repair_result_focus_if_needed(
+            data.result_focus, kind="schema"
+        )
+        _validate_result_focus(result_focus)
+        skill.result_focus = result_focus
     if "operator_prompt" in payload:
         skill.operator_prompt = data.operator_prompt
     if "evaluation_metric" in payload:
