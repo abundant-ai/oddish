@@ -3,8 +3,11 @@
 import { use, useEffect, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
+import { Search, X } from "lucide-react";
 import { type ProbeSummary } from "@/lib/probe-summary";
 import { ProbeRunSummary } from "@/components/probe-run-summary";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
@@ -89,6 +92,9 @@ export default function ProbeResultPage({
     return () => clearTimeout(t);
   }, [trial_id]);
 
+  // Keyword filter for the agent-process steps (mirrors the trials trajectory).
+  const [stepQuery, setStepQuery] = useState("");
+
   // Cloud trials don't inline `_artifacts` into `result` (only the local runner
   // does); the agent transcript + verifier output live in object storage. When
   // a finished trial has no inlined artifacts, pull them on demand so the panels
@@ -146,6 +152,18 @@ export default function ProbeResultPage({
   const messages = artifacts?.agent_messages ?? [];
   const verifierStdout = artifacts?.verifier_stdout;
 
+  // Filter steps by keyword while keeping each step's original 1-based number.
+  const q = stepQuery.trim().toLowerCase();
+  const visibleSteps = messages
+    .map((m, i) => ({ m, i }))
+    .filter(
+      ({ m }) =>
+        !q ||
+        kindLabel(m).toLowerCase().includes(q) ||
+        (m.name ?? "").toLowerCase().includes(q) ||
+        m.text.toLowerCase().includes(q),
+    );
+
   return (
     <div className="container mx-auto max-w-4xl py-8 space-y-6">
       <div>
@@ -197,28 +215,58 @@ export default function ProbeResultPage({
         {messages.length === 0 ? (
           <p className="text-xs text-muted-foreground">(no messages yet)</p>
         ) : (
-          <ol className="space-y-2 text-sm">
-            {messages.map((m, i) => (
-              <li key={i}>
-                <details className="rounded border bg-muted/30 p-2">
-                  <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    Step {i + 1} · {kindLabel(m)}
-                    {m.text ? (
-                      <span className="ml-2 font-normal text-muted-foreground/80">
-                        {m.text.slice(0, 80)}
-                        {m.text.length > 80 ? "…" : ""}
-                      </span>
-                    ) : null}
-                  </summary>
-                  <pre
-                    className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
-                  >
-                    {m.text}
-                  </pre>
-                </details>
-              </li>
-            ))}
-          </ol>
+          <>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="text"
+                value={stepQuery}
+                onChange={(e) => setStepQuery(e.target.value)}
+                placeholder="Filter steps by keyword…"
+                className="h-9 pl-8 pr-8 text-sm"
+              />
+              {stepQuery && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setStepQuery("")}
+                  aria-label="Clear search"
+                  className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </div>
+            {visibleSteps.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No steps match “{stepQuery}”.
+              </p>
+            ) : (
+              <ol className="space-y-2 text-sm">
+                {visibleSteps.map(({ m, i }) => (
+                  <li key={i}>
+                    <details className="rounded border bg-muted/30 p-2">
+                      <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                        Step {i + 1} · {kindLabel(m)}
+                        {m.text ? (
+                          <span className="ml-2 font-normal text-muted-foreground/80">
+                            {m.text.slice(0, 80)}
+                            {m.text.length > 80 ? "…" : ""}
+                          </span>
+                        ) : null}
+                      </summary>
+                      <pre
+                        className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
+                      >
+                        {m.text}
+                      </pre>
+                    </details>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </>
         )}
       </section>
 
