@@ -146,7 +146,7 @@ class AzureCompatibleCodex(OddishCodex):
         Codex hook) and the configured Azure endpoint, plus the public OpenAI
         defaults.
         """
-        from harbor.environments.modal_network import normalize_domain_or_url
+        from harbor.agents.agent_domains import normalize_domain_or_url
 
         domains = {"api.openai.com", "ab.chatgpt.com"}
         candidates: list[str | None] = []
