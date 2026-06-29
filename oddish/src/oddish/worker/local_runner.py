@@ -45,8 +45,8 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
-from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
+from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
@@ -489,6 +489,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # setdefault so an explicit config value still wins.
         probe_agent_env = dict(agent_config.env or {})
         probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
+        probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
         probe_agent_env.update(probe_env)
         agent_config.env = probe_agent_env
 
@@ -519,30 +520,32 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # plainly separated from the agent's own workspace. Best-effort: a failure
     # here must never block the probe (mirrors apply_probe_overlay).
     if work_root is not None:
-        probe_upload_src = actual_task_path  # the staged work_task_dir
+        probe_upload_src = actual_task_path  # the staged work_task_dir (→ hidden stage)
+        harness_mount = Path(work_root) / "_harness_mount"
+        try:
+            stage_cli_mount(harness_mount)
+        except Exception:
+            logger.exception("probe: building CLI harness mount failed for %s", trial_id)
 
         async def _upload_task_dir(event: TrialHookEvent) -> None:
             env = getattr(event, "environment", None)
             if env is None:
                 logger.warning(
                     "probe: hook fired without an environment handle; "
-                    "task dir not uploaded for trial %s",
+                    "assets not uploaded for trial %s",
                     trial_id,
                 )
                 return
+            # Probe-only assets → hidden stage (off the agent's browsable tree).
             try:
-                await env.upload_dir(
-                    source_dir=probe_upload_src, target_dir=PROBE_HARNESS_DIR
-                )
-                logger.info(
-                    "probe: uploaded task dir to %s for trial %s",
-                    PROBE_HARNESS_DIR,
-                    trial_id,
-                )
+                await env.upload_dir(source_dir=probe_upload_src, target_dir=STAGE_DIR)
             except Exception:
-                logger.exception(
-                    "probe: uploading task dir failed for trial %s", trial_id
-                )
+                logger.exception("probe: uploading assets to %s failed for %s", STAGE_DIR, trial_id)
+            # Only the CLI → the advertised /probe-harness mount.
+            try:
+                await env.upload_dir(source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR)
+            except Exception:
+                logger.exception("probe: uploading CLI to %s failed for %s", PROBE_HARNESS_DIR, trial_id)
 
         harbor_trial.add_hook(TrialEvent.AGENT_START, _upload_task_dir)
 
