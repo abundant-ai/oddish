@@ -560,6 +560,12 @@ async def list_experiment_slim_tasks(
     the payload and fetched on demand via ``GET /trials/{id}`` when a cell is
     clicked.
 
+    Probe trials are surfaced as their own group (the experiment grid's probe
+    cells / probe column / probe navigation depend on them), mirroring
+    ``list_tasks_core``: the main selectin excludes probes so they don't skew
+    the effective-version resolution, then probes are batch-loaded and merged
+    back, kept only on each task's displayed effective version.
+
     The per-task ``experiments`` fan-out is skipped (only the context
     experiment is attached, as in ``list_experiment_task_shells_core``). Kept
     separate so ``list_tasks_core`` / ``/tasks`` stays unchanged.
@@ -597,12 +603,53 @@ async def list_experiment_slim_tasks(
         for task in tasks:
             set_committed_value(task, "experiments", scoped_experiments)
 
+    # Resolve each task's experiment-effective version from its NON-probe trials
+    # first -- probes must not skew the resolution (a probe-only version would
+    # otherwise win), matching ``list_tasks_core``. ``task.trials`` here is the
+    # experiment-scoped, probe-excluded set from the selectin above.
+    effective_by_task: dict[str, str | None] = {
+        task.id: resolve_effective_version_id(
+            task, experiment_context_id=experiment_id
+        )
+        for task in tasks
+    }
+
+    # Surface probe trials as their own group. The slim selectin filters
+    # ``is_probe.is_(False)``, so without this re-add the experiment grid loses
+    # its probe cells / probe column / probe navigation. Batch-loaded with full
+    # columns (probe volume per task is tiny) and kept only on each task's
+    # effective version, then merged into ``task.trials`` BEFORE the builder so
+    # the precomputed effective version (passed below) governs both groups.
+    if tasks:
+        task_ids = [task.id for task in tasks]
+        probe_stmt = select(TrialModel).where(
+            TrialModel.task_id.in_(task_ids),
+            TrialModel.is_probe.is_(True),
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
+        if org_id is not None:
+            probe_stmt = probe_stmt.where(TrialModel.org_id == org_id)
+        probe_started_at = now()
+        probe_rows = (await session.execute(probe_stmt)).scalars().all()
+        if record_timing is not None:
+            record_timing(
+                "tasks_probes", elapsed_ms(probe_started_at), "Slim probe trials"
+            )
+        probes_by_task = filter_probe_trials_for_effective_versions(
+            probe_rows, effective_by_task
+        )
+        for task in tasks:
+            extra = probes_by_task.get(task.id)
+            if extra:
+                set_committed_value(task, "trials", [*task.trials, *extra])
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
+            effective_version_id=effective_by_task[task.id],
         )
         for task in tasks
     ]
