@@ -173,17 +173,6 @@ async def get_costs(
     ),
     experiment_limit: int = Query(100, ge=1, le=500),
     user_limit: int = Query(100, ge=1, le=500),
-    series_top_n: int = Query(
-        8,
-        ge=0,
-        le=500,
-        description=(
-            "Per-dimension cost-over-time series cap; the top-N keys by spend "
-            "get their own line and the rest fold into 'Other'. 0 = no cap "
-            "(every key its own line, no 'Other'). Defaults to 8 for the admin "
-            "stacked chart."
-        ),
-    ),
 ) -> CostBreakdownResponse:
     """Global trial-spend breakdown for the admin cost dashboard.
 
@@ -200,7 +189,6 @@ async def get_costs(
             window_days=effective_window,
             experiment_limit=experiment_limit,
             user_limit=user_limit,
-            series_top_n=series_top_n,
         )
         await _enrich_cost_breakdown(session, result)
     return result
