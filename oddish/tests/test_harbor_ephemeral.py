@@ -143,6 +143,9 @@ def test_child_applies_extra_agent_env_to_agent_config(tmp_path):
         }
     )
     assert config.agents[0].env.get("ODDISH_API_KEY") == "secret-mint"
+    # The ephemeral child mirrors the in-process runner: the agent's model
+    # endpoint is auto-merged into closed-internet allowlists.
+    assert config.auto_agent_allowlist is True
 
 
 _SOURCE = "https://github.com/dot-agi/harbor"

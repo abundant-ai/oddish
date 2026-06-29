@@ -588,6 +588,9 @@ def test_run_harbor_trial_async_probe_skips_timeout_validation(monkeypatch, tmp_
     assert (
         agent_config.override_timeout_sec == harbor_agent_config.PROBE_AGENT_TIMEOUT_SEC
     )
+    # Restore pre-#2050 behavior: the agent's model endpoint is auto-merged into
+    # closed-internet allowlists so Bedrock/codex/gemini trials reach their model.
+    assert captured["config"]["auto_agent_allowlist"] is True
 
 
 def test_run_harbor_trial_async_non_probe_still_validates(tmp_path):

@@ -249,6 +249,15 @@ async def run_harbor_trial_async(
             "verifier": hc.verifier,
             "artifacts": hc.artifacts,
             "jobs_dir": unique_parent,
+            # Restore the fork's pre-#2050 behavior: auto-merge the agent's model
+            # endpoint(s) into closed-internet (allowlist) tasks so Bedrock /
+            # codex / gemini trials reach their model without the task author
+            # hand-listing endpoints. Off by default upstream; a no-op on public
+            # tasks. Custom-base-url routes (Fireworks / z.ai / ...) additionally
+            # pin their host via agent.extra_allowed_hosts in _build_agent_config,
+            # since the stock claude-code hook mis-detects them as Bedrock on the
+            # Bedrock worker image.
+            "auto_agent_allowlist": True,
         }
         if hc.timeout_multiplier is not None:
             job_config_kwargs["timeout_multiplier"] = hc.timeout_multiplier
