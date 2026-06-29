@@ -71,3 +71,27 @@ test('solution cat refuses path traversal', () => {
   assert.match(out, /escapes|unavailable|no such/);
   assert.doesNotMatch(out, /SCORER/);
 });
+
+test('solution fetch copies the tree into --into and reports the path', () => {
+  const stage = mkStage();
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dest-'));
+  const out = runStage(['solution', 'fetch', '--into', dest], stage);
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, new RegExp(dest));
+  assert.equal(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'HELLO-SOLUTION');
+});
+
+test('harbor src reports unavailable when not staged', () => {
+  const out = runStage(['harbor', 'src', '--into', os.tmpdir()], mkStage());
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, /unavailable/);
+});
+
+test('solution fetch omits the boundary marker from the copied tree', () => {
+  const stage = mkStage();
+  fs.writeFileSync(path.join(stage, 'solution', '000-READ-ME-PROBE-ONLY.txt'), 'marker');
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dest-'));
+  runStage(['solution', 'fetch', '--into', dest], stage);
+  assert.ok(fs.existsSync(path.join(dest, 'a.txt')));
+  assert.ok(!fs.existsSync(path.join(dest, '000-READ-ME-PROBE-ONLY.txt')));
+});
