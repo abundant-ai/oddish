@@ -15,8 +15,8 @@ export interface FilterValues {
   hasError: boolean | null;
   hasTrajectory: boolean | null;
   trialIsProbe: boolean | null;
-  createdAfter: string | null; // YYYY-MM-DD
-  createdBefore: string | null; // YYYY-MM-DD
+  createdAfter: string | null; // ISO datetime
+  createdBefore: string | null; // ISO datetime
   minAttempts: number | null;
   minTokens: number | null;
   maxTokens: number | null;
@@ -316,10 +316,8 @@ export function filterParams(f: FilterValues): [string, string][] {
   bool("has_error", f.hasError);
   bool("has_trajectory", f.hasTrajectory);
   bool("trial_is_probe", f.trialIsProbe);
-  if (f.createdAfter)
-    out.push(["created_after", `${f.createdAfter}T00:00:00Z`]);
-  if (f.createdBefore)
-    out.push(["created_before", `${f.createdBefore}T23:59:59Z`]);
+  if (f.createdAfter) out.push(["created_after", f.createdAfter]);
+  if (f.createdBefore) out.push(["created_before", f.createdBefore]);
   num("min_attempts", f.minAttempts);
   num("min_tokens", f.minTokens);
   num("max_tokens", f.maxTokens);
