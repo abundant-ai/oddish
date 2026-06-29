@@ -32,8 +32,6 @@ export async function GET(request: NextRequest) {
     if (experimentLimit) params.experiment_limit = experimentLimit;
     const userLimit = searchParams.get("user_limit");
     if (userLimit) params.user_limit = userLimit;
-    const seriesTopN = searchParams.get("series_top_n");
-    if (seriesTopN !== null) params.series_top_n = seriesTopN;
 
     const url = getBackendUrl("admin/costs", "", params);
 

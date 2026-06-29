@@ -892,12 +892,9 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
 
 
 # Per-user and per-experiment model lists are capped so the payload stays
-# small; the rolled-up totals/cost columns are always over the full set. The
-# caps are set above the number of distinct models in practice so the lists are
-# effectively complete — the Cost dashboard re-costs rows by model client-side
-# and needs every model present to reconcile with the per-model totals.
-_MAX_MODELS_PER_USER = 50
-_MAX_MODELS_PER_EXPERIMENT = 50
+# small; the rolled-up totals/cost columns are always over the full set.
+_MAX_MODELS_PER_USER = 6
+_MAX_MODELS_PER_EXPERIMENT = 12
 
 
 def _series_bucket(window_days: int | None) -> str:
@@ -1096,18 +1093,15 @@ def _build_dimension_series(
     totals: dict[str, float],
     trials_per_bucket: dict[datetime, int],
     labels: dict[str, str],
-    top_n: int = _SERIES_TOP_N,
 ) -> CostSeries:
     """Fold a ``bucket -> key -> cost`` map into a top-N + "Other" stack.
 
-    Keeps the chart readable: only the ``top_n`` keys with the most total spend
-    get their own stack segment; the rest collapse into one ``Other`` segment
-    per bucket. ``top_n <= 0`` means no cap -- every key gets its own series and
-    there is no ``Other`` (used by the line-chart Cost view, which can show all
-    series and needs them all present for per-series filtering).
+    Keeps the chart readable: only the ``_SERIES_TOP_N`` keys with the most
+    total spend get their own stack segment; the rest collapse into one
+    ``Other`` segment per bucket.
     """
     ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
-    top_keys = [k for k, _ in (ranked if top_n <= 0 else ranked[:top_n])]
+    top_keys = [k for k, _ in ranked[:_SERIES_TOP_N]]
     top_set = set(top_keys)
     has_other = len(totals) > len(top_set)
 
@@ -1141,11 +1135,7 @@ def _build_dimension_series(
 
 
 async def _cost_time_series(
-    session: AsyncSession,
-    *,
-    since: datetime | None,
-    bucket: str,
-    top_n: int = _SERIES_TOP_N,
+    session: AsyncSession, *, since: datetime | None, bucket: str
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Cost over time, returned three ways: stacked by agent, model, and user.
 
@@ -1247,7 +1237,6 @@ async def _cost_time_series(
         totals=agent_totals,
         trials_per_bucket=trials_per_bucket,
         labels={},
-        top_n=top_n,
     )
     by_model = _build_dimension_series(
         "model",
@@ -1256,7 +1245,6 @@ async def _cost_time_series(
         totals=model_totals,
         trials_per_bucket=trials_per_bucket,
         labels={},
-        top_n=top_n,
     )
     by_user = _build_dimension_series(
         "user",
@@ -1265,7 +1253,6 @@ async def _cost_time_series(
         totals=user_totals,
         trials_per_bucket=trials_per_bucket,
         labels={_SERIES_UNATTRIBUTED_KEY: "Unattributed"},
-        top_n=top_n,
     )
     return by_agent, by_model, by_user
 
@@ -1276,7 +1263,6 @@ async def get_cost_breakdown_core(
     window_days: int | None = 7,
     experiment_limit: int = 100,
     user_limit: int = 100,
-    series_top_n: int = _SERIES_TOP_N,
 ) -> CostBreakdownResponse:
     """Aggregate trial spend globally for the admin cost dashboard.
 
@@ -1291,7 +1277,7 @@ async def get_cost_breakdown_core(
 
     bucket = _series_bucket(window_days)
     series_by_agent, series_by_model, series_by_user = await _cost_time_series(
-        session, since=since, bucket=bucket, top_n=series_top_n
+        session, since=since, bucket=bucket
     )
 
     detail_query = (
