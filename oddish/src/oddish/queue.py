@@ -1088,14 +1088,10 @@ async def append_trials_to_task(
         )
 
     registry_auth_enc = _encrypt_submission_registry_auth(submission)
-    # Re-gate on append too: when this batch adds nop/oracle baselines alongside
-    # LLM agents, hold the appended LLM trials BLOCKED until the baselines
-    # finish. The release/cancel decision pools all of the task's baselines
-    # (existing + appended), so a re-run validates against the full picture.
-    gate_llm_trials = _submission_gates_llm_trials(submission)
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
+    new_llm_trial_ids: list[str] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
@@ -1126,7 +1122,6 @@ async def append_trials_to_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                status=_initial_trial_job_status(spec.agent, gating=gate_llm_trials),
                 payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
@@ -1136,10 +1131,22 @@ async def append_trials_to_task(
             )
         )
         new_trial_ids.append(trial_id)
+        if not is_nop_oracle_agent(spec.agent):
+            new_llm_trial_ids.append(trial_id)
         next_index += 1
 
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+    # Gate the appended LLM trials on this scope's baselines (the just-added
+    # ones and any that already exist), blocking/releasing/cancelling under the
+    # task lock. An append with no baselines anywhere in scope is left QUEUED.
+    await apply_baseline_gate_to_new_llm_trials(
+        session,
+        task_id=task.id,
+        task_version_id=current_version_id,
+        experiment_id=trial_experiment_id,
+        llm_trial_ids=new_llm_trial_ids,
+    )
 
     # Re-read the inserted rows as ORM objects (in index order) so callers get
     # real ``TrialModel`` instances, matching the old per-row return.
@@ -1288,15 +1295,34 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
 
-    task_id = trial.task_id
-    experiment_id = trial.experiment_id
-    task_version_id = trial.task_version_id
-
-    result = await session.execute(
-        select(TaskModel).where(TaskModel.id == task_id).with_for_update()
+    return await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=trial.task_id,
+        task_version_id=trial.task_version_id,
+        experiment_id=trial.experiment_id,
     )
-    task = result.scalar_one_or_none()
-    if not task:
+
+
+async def _resolve_baseline_gate_for_scope(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+) -> bool:
+    """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
+
+    Locks the task row FOR UPDATE so the decision is serialized against
+    concurrent baseline completions *and* new-trial enqueues on the same task.
+    No-op (returns False) when the scope has no BLOCKED LLM trials or its
+    baselines are still running. When all the scope's baselines are terminal it
+    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED, FAULTY
+    cancels them (mirrored to FAILED).
+    """
+    locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if locked is None:
         return False
 
     blocked_trial_ids = (
@@ -1430,6 +1456,96 @@ async def _cancel_gated_llm_trials(
             finished_at=utcnow(),
             harbor_stage=CANCELLED_HARBOR_STAGE,
         )
+    )
+
+
+async def _scope_has_baseline_trials(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+) -> bool:
+    """True when a (task version, experiment) scope has any live baseline."""
+    count = await session.scalar(
+        select(func.count(TrialModel.id)).where(
+            and_(
+                TrialModel.task_id == task_id,
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.task_version_id == task_version_id,
+                TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+        )
+    )
+    return bool(count)
+
+
+async def _block_worker_jobs_for_trials(
+    session: AsyncSession, trial_ids: list[str]
+) -> None:
+    """Arm the gate on freshly-enqueued trials (QUEUED -> BLOCKED)."""
+    if not trial_ids:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'BLOCKED'
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'QUEUED'
+            """
+        ),
+        {"trial_ids": trial_ids},
+    )
+
+
+async def apply_baseline_gate_to_new_llm_trials(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+    llm_trial_ids: list[str],
+) -> None:
+    """Gate freshly-enqueued LLM trials on their scope's *existing* baselines.
+
+    The pull-path counterpart to :func:`maybe_gate_llm_trials` (the push path).
+    Used by append and retry so an LLM trial added on its own still respects the
+    baselines of its (task version, experiment): no baselines in scope leaves it
+    QUEUED (ungated); baselines present block it and immediately resolve —
+    released if the baselines already validate the task, cancelled if they are
+    faulty, or left BLOCKED for the push path if baselines are still running.
+
+    Holds the task row FOR UPDATE across the check + block + resolve so it can't
+    interleave with a concurrent baseline completion (which locks the same row),
+    closing the "blocked just after the last baseline finished" race.
+    """
+    if not settings.gate_llm_on_baselines or not llm_trial_ids:
+        return
+
+    locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if locked is None:
+        return
+
+    if not await _scope_has_baseline_trials(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
+    ):
+        return  # ungated: nothing validates this scope
+
+    await _block_worker_jobs_for_trials(session, llm_trial_ids)
+    await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
     )
 
 
