@@ -95,3 +95,15 @@ test('solution fetch omits the boundary marker from the copied tree', () => {
   assert.ok(fs.existsSync(path.join(dest, 'a.txt')));
   assert.ok(!fs.existsSync(path.join(dest, '000-READ-ME-PROBE-ONLY.txt')));
 });
+
+test('verify run executes test.sh and returns parseable JSON with note banner', () => {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
+  // Fake verifier writes a reward file, like the real test.sh does.
+  fs.writeFileSync(path.join(stage, 'test.sh'),
+    '#!/bin/bash\nmkdir -p /tmp/vlog\necho RUNNING_VERIFIER\n');
+  const out = runStage(['verify', 'run'], stage);
+  const obj = JSON.parse(out);            // must be a single parseable object
+  assert.match(obj.note, /PROBE-ONLY/);
+  assert.equal(obj.exit, 0);
+  assert.match(obj.build_log_tail, /RUNNING_VERIFIER/);
+});
