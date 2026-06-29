@@ -288,7 +288,6 @@ export interface TaskBrowseFacets {
   providers: string[];
   environments: string[];
   harbor_stages: string[];
-  harbor_sources: string[];
   analysis_classifications: string[];
   experiments: { id: string; name: string }[];
 }
