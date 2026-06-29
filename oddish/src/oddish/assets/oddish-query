@@ -124,7 +124,7 @@ function cmdVerify() {
   let reward = null, metrics = null;
   try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
   try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
-  const tail = (r.stdout || '').slice(-LOG_TAIL);
+  const tail = ((r.stdout || '') + (r.stderr || '')).slice(-LOG_TAIL);
   out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
 }
 
