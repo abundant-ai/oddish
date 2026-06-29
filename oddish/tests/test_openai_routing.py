@@ -127,7 +127,7 @@ def test_harbor_infer_agent_domains_uses_azure_codex_hook(monkeypatch):
     via the AzureCompatibleCodex import path. Without the hook it falls back to
     the static codex map (api.openai.com / ab.chatgpt.com) and the real Azure
     endpoint is firewalled."""
-    from harbor.environments.modal_network import infer_agent_domains
+    from harbor.agents.agent_domains import infer_agent_domains
 
     from oddish.config import settings as oddish_settings
 

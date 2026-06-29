@@ -112,7 +112,7 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "cursor/post-2050-feature-parity-f156" }
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]

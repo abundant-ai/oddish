@@ -913,8 +913,8 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.15.0"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#f546c56a76c8e6d4c2f4819472e636c404e5c5da" }
+version = "0.16.1"
+source = { git = "https://github.com/rishidesai/harbor?branch=cursor%2Fpost-2050-feature-parity-f156#49cdd1b1c7b5f747968bf54ac0465872ee392ee4" }
 dependencies = [
     { name = "datasets" },
     { name = "dirhash" },
@@ -1740,7 +1740,7 @@ requires-dist = [
     { name = "daytona", marker = "extra == 'worker'", specifier = ">=0.185.0" },
     { name = "fastapi", marker = "extra == 'server'", specifier = "==0.128.0" },
     { name = "google-generativeai", marker = "extra == 'worker'", specifier = "==0.8.6" },
-    { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" },
+    { name = "harbor", git = "https://github.com/rishidesai/harbor?branch=cursor%2Fpost-2050-feature-parity-f156" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "jsonschema", specifier = ">=4.0" },
     { name = "litellm", specifier = "==1.83.14" },
