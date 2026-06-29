@@ -12,8 +12,8 @@ create a branch and move the work onto it before committing.
 
 ## Gotcha — `list_tasks_core` `load_only` and MissingGreenlet
 
-`list_tasks_core` (`oddish/src/oddish/core/endpoints.py`) powers every `/tasks`
-route, including the experiment page. Its **compact path** (`compact_trials=True`)
+`list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
+every `/tasks` route, including the experiment page. Its **compact path** (`compact_trials=True`)
 restricts the trial/task/experiment selectin loads with `load_only(...)`, which
 makes *only* the enumerated columns eager and **defers everything else**. Under
 async SQLAlchemy, reading a deferred column in a response builder fires a
