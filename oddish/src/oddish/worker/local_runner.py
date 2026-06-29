@@ -499,6 +499,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         task=TaskConfig(path=actual_task_path),
         agent=agent_config,
         trials_dir=trials_dir,
+        # Match the cloud runner: auto-merge the agent's model endpoint(s) into
+        # closed-internet allowlists. A no-op for probes (forced to public).
+        auto_agent_allowlist=True,
     )
 
     # ``Trial.__init__`` requires a pre-loaded ``Task`` and is marked

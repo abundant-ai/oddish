@@ -510,6 +510,7 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
         def __init__(self, config: dict):
             self.job_dir = config["jobs_dir"] / "job-1"
             seen["environment_kwargs"] = config["environment"].kwargs
+            seen["auto_agent_allowlist"] = config["auto_agent_allowlist"]
 
         @classmethod
         async def create(cls, config: dict):
@@ -558,3 +559,31 @@ def test_harbor_runner_passes_environment_kwargs_to_job_config(
 
     assert outcome.error is None
     assert seen["environment_kwargs"]["agent_tools_image"] == AGENT_TOOLS_IMAGE
+    assert seen["auto_agent_allowlist"] is True
+
+
+def test_auto_allowlist_yields_bedrock_host_for_bedrock_claude_code() -> None:
+    """End-to-end guard for the Bedrock egress path after the post-2050 swap.
+
+    Oddish sets ``auto_agent_allowlist=True`` on the job config, so Harbor merges
+    the agent's ``required_outbound_domains`` into closed-internet allowlists.
+    For Bedrock claude-code that endpoint is a ``bedrock-runtime`` host -- the
+    same auto-injection the old fork did unconditionally -- so closed-internet
+    Bedrock trials keep reaching their model. This exercises the exact resolver
+    Harbor's trial calls (``infer_agent_domains``).
+    """
+    from harbor.agents.agent_domains import infer_agent_domains
+
+    domains = infer_agent_domains(
+        name="claude-code",
+        import_path=None,
+        model_name="global.anthropic.claude-opus-4-8",
+        agent_kwargs={
+            "extra_env": {
+                "CLAUDE_CODE_USE_BEDROCK": "1",
+                "AWS_REGION": "us-east-1",
+            }
+        },
+    )
+
+    assert any("bedrock" in d for d in domains), domains

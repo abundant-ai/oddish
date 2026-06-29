@@ -171,6 +171,10 @@ def _build_job_config(payload: dict[str, Any]):
         "verifier": VerifierConfig.model_validate(payload.get("verifier") or {}),
         "artifacts": payload.get("artifacts") or [],
         "jobs_dir": Path(payload["jobs_dir"]),
+        # Auto-merge the agent's model endpoint(s) into closed-internet
+        # allowlists so Bedrock / codex / gemini trials reach their model
+        # (mirrors the in-process runner; no-op on public tasks).
+        "auto_agent_allowlist": True,
     }
     for key in (
         "timeout_multiplier",
