@@ -26,6 +26,7 @@ from cloud_policy import (
 )
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_task_facets_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -84,6 +85,7 @@ from oddish.schemas import (
     ExperimentCombineResponse,
     ExperimentProbeRow,
     OrgProbeRow,
+    TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -815,6 +817,18 @@ async def browse_tasks(
             reward_max=reward_max,
             record_timing=_make_timing_recorder(request),
         )
+
+
+@router.get("/tasks/browse/facets", response_model=TaskBrowseFacets)
+async def browse_task_facets(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskBrowseFacets:
+    """Distinct filter-option values for the task browser sidebar."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        await session.connection()
+        return await browse_task_facets_core(session, org_id=auth.org_id)
 
 
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)

@@ -29,6 +29,13 @@ import { TagChip } from "@/components/tag-chip";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
 import { parseTaskSearch } from "@/lib/tag-query";
+import { TasksFilterSidebar } from "./tasks-filter-sidebar";
+import {
+  activeFilterCount,
+  EMPTY_FILTERS,
+  filterParams,
+  type FilterValues,
+} from "@/lib/tasks-filters";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -37,7 +44,11 @@ import {
   getRewardStyle,
   STATUS_CONFIG,
 } from "@/lib/status-config";
-import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
+import type {
+  TaskBrowseFacets,
+  TaskBrowseItem,
+  TaskBrowseResponse,
+} from "@/lib/types";
 import {
   cn,
   formatRelativeTime,
@@ -425,6 +436,7 @@ export function TasksPageClient({
   orgId?: string | null;
 }) {
   const [searchQuery, setSearchQuery] = useState(initialQuery);
+  const [filters, setFilters] = useState<FilterValues>(EMPTY_FILTERS);
   const [offset, setOffset] = useState(0);
   // Multi-select cost tracking. Keyed by task id, stores enough to total
   // across pages (the browse page only holds the current 25 items).
@@ -455,7 +467,7 @@ export function TasksPageClient({
 
   useEffect(() => {
     setOffset(0);
-  }, [debouncedQuery]);
+  }, [debouncedQuery, filters]);
 
   const swrKey = useMemo(() => {
     const params = new URLSearchParams({
@@ -477,8 +489,17 @@ export function TasksPageClient({
     if (parsed.authors.length) {
       params.set("author", parsed.authors.join(","));
     }
+    for (const [key, value] of filterParams(filters)) {
+      params.set(key, value);
+    }
     return `/api/tasks/browse?${params.toString()}`;
-  }, [offset, parsed]);
+  }, [offset, parsed, filters]);
+
+  const { data: facets } = useSWR<TaskBrowseFacets>(
+    "/api/tasks/browse/facets",
+    fetcher,
+    { revalidateOnFocus: false }
+  );
 
   const { data, error, isLoading, isValidating, mutate } =
     useSWR<TaskBrowseResponse>(swrKey, fetcher, {
@@ -486,7 +507,9 @@ export function TasksPageClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData:
-        offset === 0 && debouncedQuery.length === 0
+        offset === 0 &&
+        debouncedQuery.length === 0 &&
+        activeFilterCount(filters) === 0
           ? (initialData ?? undefined)
           : undefined,
     });
@@ -508,145 +531,163 @@ export function TasksPageClient({
   return (
     <TooltipProvider>
       <div className="space-y-6">
-        <Card className="border-[#6f88b4]/20 shadow-xs">
-          <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <CardTitle className="text-base">Recent Tasks</CardTitle>
-              <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
-                <span>
-                  Showing {items.length}
-                  {" • "}Page {currentPage}
-                </span>
-                {isRefreshing ? (
-                  <span className="inline-flex items-center gap-1">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Refreshing
-                  </span>
-                ) : null}
-              </div>
-            </div>
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {orgId ? <ChatButton scopeKind="global" scopeId={orgId} /> : null}
-              <div className="relative w-full sm:w-[260px]">
-                <Input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search anything..."
-                  className="h-8 w-full border-[#6f88b4]/20 pr-7"
-                />
-                <SearchSyntaxHelp>
-                  <p className="font-medium">Search syntax</p>
-                  <p className="text-muted-foreground">
-                    Matches task name, author, or tags. Add a
-                    prefix below to specify filters.
-                  </p>
-                  <SearchSyntaxRow
-                    example="node vulnerability"
-                    hint="every word must match (AND)"
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+          <TasksFilterSidebar
+            values={filters}
+            onChange={setFilters}
+            facets={facets ?? null}
+          />
+          <div className="min-w-0 flex-1">
+            <Card className="border-[#6f88b4]/20 shadow-xs">
+              <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="space-y-1">
+                  <CardTitle className="text-base">Recent Tasks</CardTitle>
+                  <div className="text-muted-foreground flex items-center gap-2 text-[11px]">
+                    <span>
+                      Showing {items.length}
+                      {" • "}Page {currentPage}
+                    </span>
+                    {isRefreshing ? (
+                      <span className="inline-flex items-center gap-1">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Refreshing
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  {orgId ? (
+                    <ChatButton scopeKind="global" scopeId={orgId} />
+                  ) : null}
+                  <div className="relative w-full sm:w-[260px]">
+                    <Input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Search anything..."
+                      className="h-8 w-full border-[#6f88b4]/20 pr-7"
+                    />
+                    <SearchSyntaxHelp>
+                      <p className="font-medium">Search syntax</p>
+                      <p className="text-muted-foreground">
+                        Matches task name, author, or tags. Add a prefix below
+                        to specify filters.
+                      </p>
+                      <SearchSyntaxRow
+                        example="node vulnerability"
+                        hint="every word must match (AND)"
+                      />
+                      <SearchSyntaxRow
+                        example="auth OR rbac"
+                        hint="either word (OR)"
+                      />
+                      <SearchSyntaxRow
+                        example={'"command exec"'}
+                        hint="exact phrase"
+                      />
+                      <SearchSyntaxRow example="-no-skill" hint="exclude" />
+                      <SearchSyntaxMultiRow
+                        examples={[
+                          "github:alice",
+                          "author:alice",
+                          "user:alice",
+                        ]}
+                        hint="by author — GitHub handle, email, or name"
+                      />
+                      <SearchSyntaxRow
+                        example="tag:smoke"
+                        hint="by a specific tag"
+                      />
+                      <p className="text-muted-foreground">
+                        Filters stack (AND) and are case-insensitive, e.g.{" "}
+                        <code className="bg-muted rounded px-1 font-mono">
+                          rbac github:alice tag:smoke
+                        </code>
+                      </p>
+                    </SearchSyntaxHelp>
+                  </div>
+                  <TagFilterDropdown
+                    query={searchQuery}
+                    onQueryChange={setSearchQuery}
+                    countField="task_count"
                   />
-                  <SearchSyntaxRow
-                    example="auth OR rbac"
-                    hint="either word (OR)"
+                  <SavedFiltersMenu
+                    query={searchQuery}
+                    onApply={(text) => setSearchQuery(text)}
                   />
-                  <SearchSyntaxRow
-                    example={'"command exec"'}
-                    hint="exact phrase"
-                  />
-                  <SearchSyntaxRow example="-no-skill" hint="exclude" />
-                  <SearchSyntaxMultiRow
-                    examples={["github:alice", "author:alice", "user:alice"]}
-                    hint="by author — GitHub handle, email, or name"
-                  />
-                  <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
-                  <p className="text-muted-foreground">
-                    Filters stack (AND) and are case-insensitive, e.g. {" "}
-                    <code className="rounded bg-muted px-1 font-mono">
-                      rbac github:alice tag:smoke
-                    </code>
-                  </p>
-                </SearchSyntaxHelp>
-              </div>
-              <TagFilterDropdown
-                query={searchQuery}
-                onQueryChange={setSearchQuery}
-                countField="task_count"
-              />
-              <SavedFiltersMenu
-                query={searchQuery}
-                onApply={(text) => setSearchQuery(text)}
-              />
-              <ImportDialog onImported={() => mutate()} />
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {error ? (
-              <Alert variant="destructive">
-                <AlertTitle>Failed to load tasks</AlertTitle>
-                <AlertDescription>
-                  Check the API connection and try again.
-                </AlertDescription>
-              </Alert>
-            ) : isLoading && items.length === 0 ? (
-              <TaskCardsSkeleton />
-            ) : items.length === 0 ? (
-              <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-                {debouncedQuery
-                  ? "No tasks match the current search."
-                  : "No tasks have been created yet."}
-              </div>
-            ) : (
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {items.map((task) => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    selected={selectedCosts.has(task.id)}
-                    onToggleSelected={toggleSelected}
-                  />
-                ))}
-              </div>
-            )}
+                  <ImportDialog onImported={() => mutate()} />
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {error ? (
+                  <Alert variant="destructive">
+                    <AlertTitle>Failed to load tasks</AlertTitle>
+                    <AlertDescription>
+                      Check the API connection and try again.
+                    </AlertDescription>
+                  </Alert>
+                ) : isLoading && items.length === 0 ? (
+                  <TaskCardsSkeleton />
+                ) : items.length === 0 ? (
+                  <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
+                    {debouncedQuery
+                      ? "No tasks match the current search."
+                      : "No tasks have been created yet."}
+                  </div>
+                ) : (
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                    {items.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        selected={selectedCosts.has(task.id)}
+                        onToggleSelected={toggleSelected}
+                      />
+                    ))}
+                  </div>
+                )}
 
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-muted-foreground text-xs">
-                {items.length > 0
-                  ? `${offset + 1}-${offset + items.length}`
-                  : "0"}{" "}
-                shown
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 px-3 text-[11px]"
-                  onClick={() =>
-                    setOffset((currentOffset) =>
-                      Math.max(currentOffset - PAGE_SIZE, 0)
-                    )
-                  }
-                  disabled={offset === 0 || isValidating}
-                >
-                  <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-                  Previous page
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 px-3 text-[11px]"
-                  onClick={() =>
-                    setOffset((currentOffset) => currentOffset + PAGE_SIZE)
-                  }
-                  disabled={!hasMore || isValidating}
-                >
-                  Next page
-                  <ChevronRight className="ml-1 h-3.5 w-3.5" />
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-muted-foreground text-xs">
+                    {items.length > 0
+                      ? `${offset + 1}-${offset + items.length}`
+                      : "0"}{" "}
+                    shown
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 px-3 text-[11px]"
+                      onClick={() =>
+                        setOffset((currentOffset) =>
+                          Math.max(currentOffset - PAGE_SIZE, 0)
+                        )
+                      }
+                      disabled={offset === 0 || isValidating}
+                    >
+                      <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                      Previous page
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 px-3 text-[11px]"
+                      onClick={() =>
+                        setOffset((currentOffset) => currentOffset + PAGE_SIZE)
+                      }
+                      disabled={!hasMore || isValidating}
+                    >
+                      Next page
+                      <ChevronRight className="ml-1 h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       </div>
       {selectedTotal.count > 0 ? (
         <div className="bg-card/95 sticky bottom-4 z-20 mx-auto flex w-fit max-w-[95%] items-center gap-4 rounded-full border border-[#6f88b4]/40 px-5 py-2.5 shadow-lg backdrop-blur">

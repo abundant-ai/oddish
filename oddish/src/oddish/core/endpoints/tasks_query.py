@@ -52,6 +52,7 @@ from oddish.db import (
 )
 from oddish.schemas import (
     TaskBrowseExperiment,
+    TaskBrowseFacets,
     TaskBrowseItem,
     TaskBrowseResponse,
     TaskBrowseTrial,
@@ -1248,6 +1249,55 @@ async def browse_tasks_core(
             "Build browse response",
         )
     return response
+
+
+async def browse_task_facets_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+) -> TaskBrowseFacets:
+    """Distinct filter-option values for the task browser.
+
+    Returns the trial-derived facets (agent, model, provider, environment,
+    harbor stage/source, analysis classification) plus the org's experiments.
+    Scoped to non-probe, non-superseded trials so the options mirror what the
+    browse filters actually match.
+    """
+
+    def _distinct(column: Any) -> Any:
+        stmt = select(column).where(
+            column.isnot(None),
+            TrialModel.is_probe.isnot(True),
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
+        if org_id is not None:
+            stmt = stmt.where(TrialModel.org_id == org_id)
+        return stmt.distinct().order_by(column)
+
+    async def _values(column: Any) -> list[str]:
+        result = await session.execute(_distinct(column))
+        return [v for v in result.scalars().all() if v]
+
+    classification = TrialModel.analysis["classification"].astext
+
+    experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
+    if org_id is not None:
+        experiments_stmt = experiments_stmt.where(ExperimentModel.org_id == org_id)
+    experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
+    experiment_rows = (await session.execute(experiments_stmt)).all()
+
+    return TaskBrowseFacets(
+        agents=await _values(TrialModel.agent),
+        models=await _values(TrialModel.model),
+        providers=await _values(TrialModel.provider),
+        environments=await _values(TrialModel.environment),
+        harbor_stages=await _values(TrialModel.harbor_stage),
+        harbor_sources=await _values(TrialModel.harbor_source),
+        analysis_classifications=await _values(classification),
+        experiments=[
+            TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
+        ],
+    )
 
 
 async def get_task_status_core(
