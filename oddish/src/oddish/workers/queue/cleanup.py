@@ -498,11 +498,13 @@ async def cleanup_orphaned_queue_state(
                 tasks_progressed_to_analysis += 1
 
         # -----------------------------------------------------------------
-        # 2b. Baseline gate backstop: tasks whose nop/oracle baselines are
-        #     all terminal but whose LLM trials are still BLOCKED. Normally
-        #     the last baseline's handler resolves the gate; this re-drives
-        #     it if that handler was killed first. ``maybe_gate_llm_trials``
-        #     needs a baseline trial id, so select a representative one.
+        # 2b. Baseline gate backstop: (task, experiment) groups whose
+        #     nop/oracle baselines are all terminal but whose LLM trials are
+        #     still BLOCKED. Normally the last baseline's handler resolves the
+        #     gate; this re-drives it if that handler was killed first. The
+        #     gate is experiment-scoped, so group + match BLOCKED LLM trials by
+        #     (task_id, experiment_id) and hand it one representative baseline
+        #     trial id per group.
         # -----------------------------------------------------------------
         tasks_pending_gate = (
             await session.execute(
@@ -521,8 +523,9 @@ async def cleanup_orphaned_queue_state(
                             AND wj.kind::text = 'TRIAL'
                             AND wj.status::text = 'BLOCKED'
                             AND llm.task_id = base.task_id
+                            AND llm.experiment_id = base.experiment_id
                       )
-                    GROUP BY base.task_id
+                    GROUP BY base.task_id, base.experiment_id
                     HAVING COUNT(*) FILTER (
                         WHERE base.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
                     ) = 0

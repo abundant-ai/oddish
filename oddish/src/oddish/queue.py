@@ -1268,22 +1268,26 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
 
 async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
-    """Release or cancel a task's BLOCKED LLM trials once its baselines finish.
+    """Release or cancel BLOCKED LLM trials once their baselines finish.
 
-    Fires only when *trial_id* is a nop/oracle baseline. When every baseline
-    trial for the task is terminal, evaluates them: if they validate the task
-    (oracle passes, nop fails) the BLOCKED LLM trials are released to QUEUED;
-    otherwise they are cancelled and mirrored to FAILED so the task can advance.
+    Fires only when *trial_id* is a nop/oracle baseline. The decision is scoped
+    to the baseline's **(task, experiment)**: when every baseline trial for that
+    task in that experiment is terminal, evaluates them and — if they validate
+    the task (oracle passes, nop fails) — releases the experiment's BLOCKED LLM
+    trials to QUEUED; otherwise cancels them and mirrors them to FAILED so the
+    task can advance. Scoping by experiment keeps concurrent sweeps in different
+    experiments from sharing each other's gate timing or verdict.
 
-    A no-op when the task has no BLOCKED LLM trials (the gate was never armed)
-    or when other baselines are still running. Uses SELECT FOR UPDATE so the
-    "last baseline wins" decision is race-safe.
+    A no-op when there are no BLOCKED LLM trials in this experiment (the gate
+    was never armed) or other baselines are still running. Uses SELECT FOR
+    UPDATE so the "last baseline wins" decision is race-safe.
     """
     trial = await session.get(TrialModel, trial_id)
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
 
     task_id = trial.task_id
+    experiment_id = trial.experiment_id
 
     result = await session.execute(
         select(TaskModel).where(TaskModel.id == task_id).with_for_update()
@@ -1301,7 +1305,12 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
                         WorkerJobModel.subject_table == "trials",
                         WorkerJobModel.status == WorkerJobStatus.BLOCKED,
                         WorkerJobModel.subject_id.in_(
-                            select(TrialModel.id).where(TrialModel.task_id == task_id)
+                            select(TrialModel.id).where(
+                                and_(
+                                    TrialModel.task_id == task_id,
+                                    TrialModel.experiment_id == experiment_id,
+                                )
+                            )
                         ),
                     )
                 )
@@ -1317,6 +1326,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
         select(func.count(TrialModel.id)).where(
             and_(
                 TrialModel.task_id == task_id,
+                TrialModel.experiment_id == experiment_id,
                 TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
                 TrialModel.superseded_by_trial_id.is_(None),
                 TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
@@ -1331,6 +1341,7 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
             select(TrialModel.agent, TrialModel.reward).where(
                 and_(
                     TrialModel.task_id == task_id,
+                    TrialModel.experiment_id == experiment_id,
                     TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
                     TrialModel.superseded_by_trial_id.is_(None),
                 )

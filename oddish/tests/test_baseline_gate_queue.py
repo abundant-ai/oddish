@@ -36,6 +36,7 @@ from oddish.db import (  # noqa: E402
 from oddish.queue import (  # noqa: E402
     append_trials_to_task,
     create_task,
+    get_or_create_experiment,
     maybe_gate_llm_trials,
 )
 from oddish.schemas import TaskSubmission, TrialSpec  # noqa: E402
@@ -261,3 +262,91 @@ async def test_appended_llm_blocked_with_new_baselines(monkeypatch, cleanup_task
 
     statuses = await _job_status_by_agent(task_id)
     assert statuses[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
+    """A faulty verdict in one experiment must not cancel another experiment's
+    blocked LLM trials on the same task."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"gate-expscope-{_RUN}"
+    cleanup_task_ids.append(task_id)
+
+    # Experiment A: created with the task (oracle + nop + kimi).
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("expA"), task_id=task_id)
+
+    # Experiment B: append the same trio under a second experiment.
+    async with get_session() as session:
+        exp_a = (
+            await session.execute(
+                select(TrialModel.experiment_id)
+                .where(TrialModel.task_id == task_id)
+                .limit(1)
+            )
+        ).scalar_one()
+        exp_b = (
+            await get_or_create_experiment(session, name=f"gate-expscope-B-{_RUN}")
+        ).id
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.experiments))
+                .where(TaskModel.id == task_id)
+            )
+        ).scalar_one()
+        await append_trials_to_task(
+            session,
+            task=task,
+            submission=_mixed_submission("expB"),
+            experiment_id=exp_b,
+        )
+
+    async def _llm_status_by_exp() -> dict[str, set]:
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    select(TrialModel.experiment_id, WorkerJobModel.status)
+                    .join(WorkerJobModel, WorkerJobModel.subject_id == TrialModel.id)
+                    .where(
+                        TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                    )
+                )
+            ).all()
+        out: dict[str, set] = {}
+        for exp, st in rows:
+            out.setdefault(exp, set()).add(st)
+        return out
+
+    before = await _llm_status_by_exp()
+    assert before[exp_a] == {WorkerJobStatus.BLOCKED}
+    assert before[exp_b] == {WorkerJobStatus.BLOCKED}
+
+    # Drive ONLY experiment A's baselines faulty (oracle fails).
+    async with get_session() as session:
+        await session.execute(
+            update(TrialModel)
+            .where(
+                TrialModel.task_id == task_id,
+                TrialModel.experiment_id == exp_a,
+                TrialModel.queue_key == "nop_oracle",
+            )
+            .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
+        )
+        a_oracle_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id,
+                    TrialModel.experiment_id == exp_a,
+                    TrialModel.agent == "oracle",
+                )
+            )
+        ).scalar_one()
+
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, a_oracle_id) is True
+
+    # A's kimi cancelled; B's kimi untouched (still blocked).
+    after = await _llm_status_by_exp()
+    assert after[exp_a] == {WorkerJobStatus.CANCELLED}
+    assert after[exp_b] == {WorkerJobStatus.BLOCKED}
