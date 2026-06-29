@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Annotated, cast
 
 from fastapi import (
@@ -712,6 +713,37 @@ async def browse_tasks(
             "ANDed with the free-text and tag filters."
         ),
     ),
+    statuses: str | None = Query(None, description="Task status CSV"),
+    priorities: str | None = Query(None, description="Task priority CSV"),
+    verdict_statuses: str | None = Query(None, description="Task verdict status CSV"),
+    has_link: bool | None = Query(None),
+    run_analysis: bool | None = Query(None),
+    run_probe: bool | None = Query(None),
+    created_after: datetime | None = Query(None),
+    created_before: datetime | None = Query(None),
+    experiment_ids: str | None = Query(None, description="Experiment id CSV"),
+    agents: str | None = Query(None, description="Trial agent CSV"),
+    models: str | None = Query(None, description="Trial model CSV"),
+    providers: str | None = Query(None, description="Trial provider CSV"),
+    environments: str | None = Query(None, description="Trial environment CSV"),
+    trial_statuses: str | None = Query(None, description="Trial status CSV"),
+    origins: str | None = Query(None, description="Trial origin CSV"),
+    trial_is_probe: bool | None = Query(None),
+    harbor_sources: str | None = Query(None, description="Harbor source CSV"),
+    harbor_shas: str | None = Query(None, description="Harbor SHA CSV"),
+    harbor_stages: str | None = Query(None, description="Harbor stage CSV"),
+    analysis_classifications: str | None = Query(
+        None, description="Trial analysis classification CSV"
+    ),
+    has_error: bool | None = Query(None),
+    has_trajectory: bool | None = Query(None),
+    min_attempts: int | None = Query(None, ge=1),
+    min_tokens: int | None = Query(None, ge=0),
+    max_tokens: int | None = Query(None, ge=0),
+    min_steps: int | None = Query(None, ge=0),
+    max_steps: int | None = Query(None, ge=0),
+    reward_min: float | None = Query(None, ge=0.0, le=1.0),
+    reward_max: float | None = Query(None, ge=0.0, le=1.0),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -752,6 +784,35 @@ async def browse_tasks(
             author_user_ids=author_user_ids,
             author_github_usernames=author_github_usernames,
             author_emails=author_emails,
+            statuses=_split_tag_csv(statuses),
+            priorities=_split_tag_csv(priorities),
+            verdict_statuses=_split_tag_csv(verdict_statuses),
+            has_link=has_link,
+            run_analysis=run_analysis,
+            run_probe=run_probe,
+            created_after=created_after,
+            created_before=created_before,
+            experiment_ids=_split_tag_csv(experiment_ids),
+            agents=_split_tag_csv(agents),
+            models=_split_tag_csv(models),
+            providers=_split_tag_csv(providers),
+            environments=_split_tag_csv(environments),
+            trial_statuses=_split_tag_csv(trial_statuses),
+            origins=_split_tag_csv(origins),
+            trial_is_probe=trial_is_probe,
+            harbor_sources=_split_tag_csv(harbor_sources),
+            harbor_shas=_split_tag_csv(harbor_shas),
+            harbor_stages=_split_tag_csv(harbor_stages),
+            analysis_classifications=_split_tag_csv(analysis_classifications),
+            has_error=has_error,
+            has_trajectory=has_trajectory,
+            min_attempts=min_attempts,
+            min_tokens=min_tokens,
+            max_tokens=max_tokens,
+            min_steps=min_steps,
+            max_steps=max_steps,
+            reward_min=reward_min,
+            reward_max=reward_max,
             record_timing=_make_timing_recorder(request),
         )
 
