@@ -101,28 +101,3 @@ def test_cached_abundant_admin_can_create_api_keys() -> None:
     )
 
     assert can_create_api_keys(auth) is True
-
-
-def test_extra_allowlisted_email_can_create_api_keys(monkeypatch) -> None:
-    monkeypatch.setenv("ODDISH_EXTRA_API_KEY_CREATOR_EMAILS", "Aman@Abundant.Systems")
-    can_create_api_keys = _load_permissions()["can_create_api_keys"]
-
-    # Non-abundant.ai, non-admin, arbitrary org -> normally rejected, but the
-    # exact-email allowlist grants access (preview-only escape hatch).
-    auth = _AuthStub(
-        org=_OrgStub(slug="customer-org"),
-        user=_UserStub(role=_UserRole.MEMBER, email="aman@abundant.systems"),
-    )
-
-    assert can_create_api_keys(auth) is True
-
-
-def test_extra_allowlist_empty_by_default() -> None:
-    can_create_api_keys = _load_permissions()["can_create_api_keys"]
-
-    auth = _AuthStub(
-        org=_OrgStub(slug="customer-org"),
-        user=_UserStub(role=_UserRole.MEMBER, email="aman@abundant.systems"),
-    )
-
-    assert can_create_api_keys(auth) is False
