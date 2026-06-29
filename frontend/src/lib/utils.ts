@@ -84,7 +84,10 @@ export function taskPrUrl(
   link: string | null | undefined,
   githubMeta?: Record<string, string> | null,
 ): string | null {
-  return githubMeta?.pr_url ?? link ?? null;
+  // Prefer the `link` column: it is rewritten on every re-run, whereas
+  // `github_meta` can be a stale PR from an earlier submission. Fall back to
+  // github_meta only when link is empty.
+  return link ?? githubMeta?.pr_url ?? null;
 }
 
 // Shared label/number for a PR badge given the canonical URL and optional

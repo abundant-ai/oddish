@@ -53,7 +53,7 @@ import {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
@@ -458,6 +458,7 @@ export function ExperimentTrialsTable({
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -2126,48 +2127,50 @@ export function ExperimentTrialsTable({
                                 : agent.agent}
                             </TooltipContent>
                           </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              {agent.model ? (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  onClick={() =>
-                                    handleCopyAgentModel(
-                                      agent.key,
-                                      agent.model!,
-                                    )
-                                  }
-                                  className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
-                                  aria-label={`Copy model id ${agent.model}`}
-                                  title="Copy model id"
-                                >
-                                  {copiedAgentModelKey === agent.key ? (
-                                    <Check className="h-3 w-3 shrink-0 text-emerald-500" />
-                                  ) : (
-                                    <QueueKeyIcon
-                                      queueKey={agent.queueKey}
-                                      model={agent.model}
-                                      size={10}
-                                      className="shrink-0"
-                                    />
-                                  )}
-                                  <span className="min-w-0 truncate">
-                                    {agent.model}
-                                  </span>
-                                </Button>
-                              ) : (
-                                <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
-                                  <span className="min-w-0 truncate">—</span>
-                                </div>
-                              )}
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                              {copiedAgentModelKey === agent.key
-                                ? "Copied model id"
-                                : (agent.model ?? "—")}
-                            </TooltipContent>
-                          </Tooltip>
+                          {!isBaselineAgentName(agent.agent) && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                {agent.model ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      handleCopyAgentModel(
+                                        agent.key,
+                                        agent.model!,
+                                      )
+                                    }
+                                    className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
+                                    aria-label={`Copy model id ${agent.model}`}
+                                    title="Copy model id"
+                                  >
+                                    {copiedAgentModelKey === agent.key ? (
+                                      <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                    ) : (
+                                      <QueueKeyIcon
+                                        queueKey={agent.queueKey}
+                                        model={agent.model}
+                                        size={10}
+                                        className="shrink-0"
+                                      />
+                                    )}
+                                    <span className="min-w-0 truncate">
+                                      {agent.model}
+                                    </span>
+                                  </Button>
+                                ) : (
+                                  <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
+                                    <span className="min-w-0 truncate">—</span>
+                                  </div>
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom">
+                                {copiedAgentModelKey === agent.key
+                                  ? "Copied model id"
+                                  : (agent.model ?? "—")}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
                         </div>
                       )}
                       {agentIndex < renderedAgents.length - 1 &&
@@ -2409,6 +2412,12 @@ export function ExperimentTrialsTable({
                                         type="button"
                                         variant="unstyled"
                                         onClick={() => {
+                                          if (trial.is_probe) {
+                                            router.push(
+                                              `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
+                                            );
+                                            return;
+                                          }
                                           const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
                                           onTrialSelect?.(trial, task, {

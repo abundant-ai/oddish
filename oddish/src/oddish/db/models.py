@@ -402,6 +402,16 @@ class ExperimentModel(TimestampedMixin, Base):
     # Primary owner for dashboard Mine filter (stamped from the first task submit).
     owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Per-experiment provenance, stamped set-once from the creating run's
+    # submitter. Unlike the shared, mutable ``task.link`` / ``task.tags`` (which
+    # any later run of a shared task overwrites), these belong to THIS
+    # experiment and never change once set, so the experiment always shows the
+    # PR/owner it was created for. ``owner`` is a display string (a GitHub
+    # handle or a plain username); distinct from ``owner_user_id`` (the internal
+    # user id used only by the Mine filter).
+    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
