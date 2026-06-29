@@ -8,6 +8,7 @@ const KEY = process.env.ODDISH_API_KEY || '';
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { spawnSync } = require('node:child_process');
 
 const STAGE = (process.env.ODDISH_PROBE_STAGE_DIR || '/opt/oddish-probe').replace(/\/+$/, '');
 const BOUNDARY_MARKER = '000-READ-ME-PROBE-ONLY.txt';
@@ -115,6 +116,18 @@ function copyTree(srcRel, into, label) {
 function cmdSolutionFetch(a) { copyTree('solution', a.into, 'solution'); }
 function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
 
+function cmdVerify() {
+  requireStage();
+  const sh = stagePath('test.sh');
+  if (!fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
+  const r = spawnSync('bash', [sh], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  let reward = null, metrics = null;
+  try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
+  try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
+  const tail = (r.stdout || '').slice(-LOG_TAIL);
+  out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
+}
+
 function cmdVerifierSource() {
   requireStage();
   const f = stagePath('test.sh');
@@ -150,6 +163,7 @@ async function main() {
   if (group === 'verifier' && cmd === 'source') return cmdVerifierSource();
   if (group === 'solution' && cmd === 'fetch') return cmdSolutionFetch({ into: opt.into });
   if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
+  if (group === 'verify' && cmd === 'run') return cmdVerify();
   die(`unknown command: ${group} ${cmd}`, 2);
 }
 main();
