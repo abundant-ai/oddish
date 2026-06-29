@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import (
     and_,
     case,
+    exists,
     func,
     nulls_last,
     or_,
@@ -627,9 +629,57 @@ async def browse_tasks_core(
     author_user_ids: Sequence[str] | None = None,
     author_github_usernames: Sequence[str] | None = None,
     author_emails: Sequence[str] | None = None,
+    statuses: Sequence[str] | None = None,
+    priorities: Sequence[str] | None = None,
+    verdict_statuses: Sequence[str] | None = None,
+    has_link: bool | None = None,
+    run_analysis: bool | None = None,
+    run_probe: bool | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    experiment_ids: Sequence[str] | None = None,
+    agents: Sequence[str] | None = None,
+    models: Sequence[str] | None = None,
+    providers: Sequence[str] | None = None,
+    environments: Sequence[str] | None = None,
+    trial_statuses: Sequence[str] | None = None,
+    origins: Sequence[str] | None = None,
+    trial_is_probe: bool | None = None,
+    harbor_sources: Sequence[str] | None = None,
+    harbor_shas: Sequence[str] | None = None,
+    harbor_stages: Sequence[str] | None = None,
+    analysis_classifications: Sequence[str] | None = None,
+    has_error: bool | None = None,
+    has_trajectory: bool | None = None,
+    min_attempts: int | None = None,
+    min_tokens: int | None = None,
+    max_tokens: int | None = None,
+    min_steps: int | None = None,
+    max_steps: int | None = None,
+    reward_min: float | None = None,
+    reward_max: float | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
-    """List latest-version task summaries for the task browser."""
+    """List latest-version task summaries for the task browser.
+
+    Beyond the free-text / tag / author filters, the browser supports a set of
+    "Phase 1.1.1" direct filters that require no schema change:
+
+    * Task-column filters (``statuses``, ``priorities``, ``verdict_statuses``,
+      ``has_link``, ``run_analysis``, ``run_probe``, ``created_after`` /
+      ``created_before``, ``experiment_ids``) are plain ``WHERE`` predicates on
+      the ``tasks`` row.
+    * Trial-level filters (``agents``, ``models``, ``providers``,
+      ``environments``, ``trial_statuses``, ``origins``, ``trial_is_probe``,
+      ``harbor_*``, ``analysis_classifications``, ``has_error``,
+      ``has_trajectory``, ``min_attempts``, token / step / reward ranges) are
+      "task has at least one current-version trial matching X" — expressed as a
+      correlated ``EXISTS`` over ``trials`` (non-superseded, current version,
+      non-probe unless ``trial_is_probe`` is set). They filter the task set; they
+      are NOT aggregates, so e.g. a token range matches a single trial's value,
+      not the task average. Aggregate filters (avg score, total cost) need the
+      denormalised roll-ups planned for Phase 1.2.
+    """
 
     current_version = aliased(TaskVersionModel)
     normalized_query = query.strip() if query else None
@@ -708,6 +758,144 @@ async def browse_tasks_core(
     )
     if author_filter is not None:
         ranked_tasks = ranked_tasks.where(author_filter)
+
+    # --- Phase 1.1.1 direct filters (no schema change) ---------------------
+    # Task-column predicates: plain WHERE on the tasks row.
+    if statuses:
+        ranked_tasks = ranked_tasks.where(TaskModel.status.in_(list(statuses)))
+    if priorities:
+        ranked_tasks = ranked_tasks.where(TaskModel.priority.in_(list(priorities)))
+    if verdict_statuses:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.verdict_status.in_(list(verdict_statuses))
+        )
+    if has_link is not None:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.link.isnot(None) if has_link else TaskModel.link.is_(None)
+        )
+    if run_analysis is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.run_analysis.is_(run_analysis))
+    if run_probe is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.run_probe.is_(run_probe))
+    if created_after is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.created_at >= created_after)
+    if created_before is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.created_at <= created_before)
+    if experiment_ids:
+        ranked_tasks = ranked_tasks.where(
+            exists(
+                select(task_experiments.c.task_id).where(
+                    task_experiments.c.task_id == TaskModel.id,
+                    task_experiments.c.experiment_id.in_(list(experiment_ids)),
+                    task_experiments.c.deleted_at.is_(None),
+                )
+            )
+        )
+
+    # Trial-level predicates: "task has >=1 current-version trial matching".
+    def _trial_exists(*predicates: Any, include_probes: bool = False) -> Any:
+        conds = [
+            TrialModel.task_id == TaskModel.id,
+            TrialModel.task_version_id == TaskModel.current_version_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+        ]
+        if not include_probes:
+            conds.append(TrialModel.is_probe.isnot(True))
+        conds.extend(predicates)
+        return exists(select(TrialModel.id).where(and_(*conds)))
+
+    if agents:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.agent.in_(list(agents)))
+        )
+    if models:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.model.in_(list(models)))
+        )
+    if providers:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.provider.in_(list(providers)))
+        )
+    if environments:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.environment.in_(list(environments)))
+        )
+    if trial_statuses:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.status.in_(list(trial_statuses)))
+        )
+    if origins:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.origin.in_(list(origins)))
+        )
+    if trial_is_probe is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(
+                TrialModel.is_probe.is_(trial_is_probe), include_probes=True
+            )
+        )
+    if harbor_sources:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.harbor_source.in_(list(harbor_sources)))
+        )
+    if harbor_shas:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.harbor_sha.in_(list(harbor_shas)))
+        )
+    if harbor_stages:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.harbor_stage.in_(list(harbor_stages)))
+        )
+    if analysis_classifications:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(
+                TrialModel.analysis["classification"].astext.in_(
+                    list(analysis_classifications)
+                )
+            )
+        )
+    if has_error is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(
+                TrialModel.error_message.isnot(None)
+                if has_error
+                else TrialModel.error_message.is_(None)
+            )
+        )
+    if has_trajectory is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.has_trajectory.is_(has_trajectory))
+        )
+    if min_attempts is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.attempts >= min_attempts)
+        )
+    if min_tokens is not None or max_tokens is not None:
+        total_tokens = (
+            func.coalesce(TrialModel.input_tokens, 0)
+            + func.coalesce(TrialModel.output_tokens, 0)
+            + func.coalesce(TrialModel.cache_tokens, 0)
+        )
+        token_preds = []
+        if min_tokens is not None:
+            token_preds.append(total_tokens >= min_tokens)
+        if max_tokens is not None:
+            token_preds.append(total_tokens <= max_tokens)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*token_preds))
+    if min_steps is not None or max_steps is not None:
+        step_preds = [TrialModel.total_steps.isnot(None)]
+        if min_steps is not None:
+            step_preds.append(TrialModel.total_steps >= min_steps)
+        if max_steps is not None:
+            step_preds.append(TrialModel.total_steps <= max_steps)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*step_preds))
+    if reward_min is not None or reward_max is not None:
+        reward_preds = [TrialModel.reward.isnot(None)]
+        if reward_min is not None:
+            reward_preds.append(TrialModel.reward >= reward_min)
+        if reward_max is not None:
+            reward_preds.append(TrialModel.reward <= reward_max)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*reward_preds))
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
