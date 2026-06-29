@@ -46,6 +46,7 @@ import {
   SearchSyntaxRow,
 } from "@/components/search-syntax-help";
 import { TagChip } from "@/components/tag-chip";
+import { TagFilterDropdown } from "@/components/tag-filter-dropdown";
 import {
   cn,
   encodeExperimentRouteParam,
@@ -722,6 +723,11 @@ function RecentTasksCard({
               </p>
             </SearchSyntaxHelp>
           </div>
+          <TagFilterDropdown
+            query={searchQuery}
+            onQueryChange={onSearchQueryChange}
+            countField="experiment_count"
+          />
           <DropdownMenu modal={false}>
             <DropdownMenuTrigger asChild>
               <Button

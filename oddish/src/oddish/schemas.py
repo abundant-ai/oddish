@@ -1081,6 +1081,8 @@ class TaskStatusResponse(BaseModel):
     experiment_name: str
     experiment_is_public: bool = False
     experiment_created_at: datetime | None = None
+    experiment_owner: str | None = None
+    experiment_link: str | None = None
     experiments: list[TaskBrowseExperiment] = Field(
         default_factory=list,
         description=(
