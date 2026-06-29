@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -467,6 +467,14 @@ function BooleanControl({
   );
 }
 
+type DateMode = "" | "24h" | "7d" | "30d" | "custom";
+
+const PRESET_MS: Record<"24h" | "7d" | "30d", number> = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+};
+
 function DateRange({
   values,
   set,
@@ -474,41 +482,100 @@ function DateRange({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
-  const preset = (days: number | null) => {
-    if (days === null) {
+  const hasValue =
+    values.createdAfter !== null || values.createdBefore !== null;
+  const [mode, setMode] = useState<DateMode>(hasValue ? "custom" : "");
+
+  // Drop a stale preset highlight if the dates were cleared elsewhere (e.g.
+  // "Clear all"). Custom stays open so its now-empty inputs remain visible.
+  useEffect(() => {
+    if (!hasValue && mode !== "custom") setMode("");
+  }, [hasValue, mode]);
+
+  const applyPreset = (key: "24h" | "7d" | "30d") => {
+    if (mode === key) {
+      setMode("");
       set({ createdAfter: null, createdBefore: null });
       return;
     }
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    set({ createdAfter: d.toISOString().slice(0, 10), createdBefore: null });
+    setMode(key);
+    set({
+      createdAfter: new Date(Date.now() - PRESET_MS[key]).toISOString(),
+      createdBefore: null,
+    });
   };
+
+  const tabClass = (active: boolean) =>
+    cn(
+      "flex-1 px-2 py-1 text-[11px]",
+      active
+        ? "bg-primary/10 text-foreground"
+        : "text-muted-foreground hover:bg-muted/60"
+    );
+
   return (
     <div className="space-y-2">
-      <Segmented
-        options={[
-          { value: "7", label: "7d" },
-          { value: "30", label: "30d" },
-          { value: "all", label: "All" },
-        ]}
-        value=""
-        onChange={(v) => preset(v === "all" ? null : Number(v))}
-      />
-      <div className="flex items-center gap-1">
-        <Input
-          type="date"
-          className="h-8 text-xs"
-          value={values.createdAfter ?? ""}
-          onChange={(e) => set({ createdAfter: e.target.value || null })}
-        />
-        <span className="text-muted-foreground text-xs">–</span>
-        <Input
-          type="date"
-          className="h-8 text-xs"
-          value={values.createdBefore ?? ""}
-          onChange={(e) => set({ createdBefore: e.target.value || null })}
-        />
+      <div className="flex overflow-hidden rounded-md border border-[#6f88b4]/20">
+        {(["24h", "7d", "30d"] as const).map((key) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => applyPreset(key)}
+            className={tabClass(mode === key)}
+          >
+            {key}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setMode("custom")}
+          className={tabClass(mode === "custom")}
+        >
+          Custom
+        </button>
       </div>
+      {mode === "custom" ? (
+        <div className="space-y-1.5">
+          <div>
+            <label className="text-muted-foreground mb-0.5 block text-[11px]">
+              From
+            </label>
+            <Input
+              type="date"
+              className="h-8 w-full text-xs"
+              value={
+                values.createdAfter ? values.createdAfter.slice(0, 10) : ""
+              }
+              onChange={(e) =>
+                set({
+                  createdAfter: e.target.value
+                    ? `${e.target.value}T00:00:00Z`
+                    : null,
+                })
+              }
+            />
+          </div>
+          <div>
+            <label className="text-muted-foreground mb-0.5 block text-[11px]">
+              To
+            </label>
+            <Input
+              type="date"
+              className="h-8 w-full text-xs"
+              value={
+                values.createdBefore ? values.createdBefore.slice(0, 10) : ""
+              }
+              onChange={(e) =>
+                set({
+                  createdBefore: e.target.value
+                    ? `${e.target.value}T23:59:59Z`
+                    : null,
+                })
+              }
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
