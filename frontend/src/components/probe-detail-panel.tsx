@@ -151,7 +151,9 @@ export function ProbeDetailPanel({
           <p className="text-xs uppercase tracking-wide text-muted-foreground">
             Probe run
           </p>
-          {probes.length > 1 ? (
+          {/* In contentOnly (standalone page) the URL drives which probe shows;
+              in-place nav belongs to the drawer, so hide it there. */}
+          {!contentOnly && probes.length > 1 ? (
             <div className="flex items-center gap-1">
               <button
                 type="button"
