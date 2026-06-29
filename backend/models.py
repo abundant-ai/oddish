@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+import os
+import secrets
+from datetime import datetime, timedelta
 from enum import Enum
 from uuid import uuid4
 
@@ -18,23 +21,36 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, relationship
 from sqlalchemy.orm import mapped_column as mapped_column  # type: ignore[attr-defined]
 
 # Import shared base from OSS oddish
 from oddish.db.models import Base, TimestampedMixin, utcnow
 
-# Re-export API key types and helpers from the shared oddish package so all
-# existing ``from models import ...`` call sites keep resolving unchanged.
-from oddish.db.models import APIKeyModel, APIKeyScope  # noqa: F401
-from oddish.core.api_keys import (  # noqa: F401
-    create_api_key, generate_api_key, hash_api_key,
-)
-
 
 def generate_id() -> str:
     """Generate a short unique ID."""
     return str(uuid4())[:8]
+
+
+def generate_api_key() -> str:
+    """Generate a secure API key with prefix for easy identification.
+
+    Prod keys: ``ok_<32 hex>``. Preview keys: ``ok_pr-<N>_<32 hex>`` —
+    the env marker is harmless in prod (won't match anything) and makes
+    a stray preview key visually obvious.
+    """
+    app_name = os.environ.get("MODAL_APP_NAME", "")
+    env_marker = ""
+    if app_name.startswith("oddish-pr-"):
+        env_marker = f"{app_name[len('oddish-') :]}_"
+    return f"ok_{env_marker}{secrets.token_hex(16)}"
+
+
+def hash_api_key(key: str) -> str:
+    """Hash an API key for storage."""
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 # =============================================================================
@@ -47,6 +63,14 @@ class UserRole(str, Enum):
 
     ADMIN = "admin"  # Can manage users and settings
     MEMBER = "member"  # Can run evals, view results
+
+
+class APIKeyScope(str, Enum):
+    """API key permission scopes."""
+
+    FULL = "full"  # All operations (tasks, trials, admin)
+    TASKS = "tasks"  # Create/view tasks and trials only
+    READ = "read"  # Read-only access
 
 
 # =============================================================================
@@ -79,14 +103,8 @@ class OrganizationModel(TimestampedMixin, Base):
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
         "UserModel", back_populates="organization", lazy="selectin"
     )
-    # api_keys.org_id has no DB-level FK (dropped so the oddish migration chain
-    # bootstraps independently), so spell out the join + foreign() side; without
-    # it mapper configuration fails and every ORM query 500s. Read-only path.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel",
-        primaryjoin="OrganizationModel.id == foreign(APIKeyModel.org_id)",
-        viewonly=True,
-        lazy="selectin",
+        "APIKeyModel", back_populates="organization", lazy="selectin"
     )
 
 
@@ -146,12 +164,8 @@ class UserModel(TimestampedMixin, Base):
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
         "OrganizationModel", back_populates="users", lazy="selectin"
     )
-    # created_by_user_id has no DB-level FK (see APIKeyModel); spell out the join.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel",
-        primaryjoin="UserModel.id == foreign(APIKeyModel.created_by_user_id)",
-        viewonly=True,
-        lazy="selectin",
+        "APIKeyModel", back_populates="created_by_user", lazy="selectin"
     )
 
     __table_args__ = (
@@ -161,6 +175,121 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
     )
+
+
+class APIKeyModel(TimestampedMixin, Base):
+    """API key for programmatic access.
+
+    API keys are scoped to an organization and have specific permissions.
+    The actual key is only shown once on creation; we store a hash.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+
+    # Organization scope
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+
+    # Key identification
+    name: Mapped[str] = mapped_column(
+        String(255), nullable=False
+    )  # Human-readable name
+    key_prefix: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # First 8 chars for display
+    key_hash: Mapped[str] = mapped_column(
+        String(128), unique=True, nullable=False
+    )  # SHA256 of full key
+
+    # Permissions
+    scope: Mapped[APIKeyScope] = mapped_column(
+        SQLEnum(
+            APIKeyScope,
+            name="apikeyscope",
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=APIKeyScope.FULL,
+        nullable=False,
+    )
+
+    # Creator tracking
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    # Status and expiry
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Visibility
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+    # Relationships
+    organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
+        "OrganizationModel", back_populates="api_keys", lazy="selectin"
+    )
+    created_by_user: Mapped["UserModel | None"] = relationship(  # type: ignore[assignment]
+        "UserModel", back_populates="api_keys", lazy="selectin"
+    )
+
+    __table_args__ = (
+        Index("idx_api_keys_org_id", "org_id"),
+        Index("idx_api_keys_key_hash", "key_hash"),
+    )
+
+
+def create_api_key(
+    org_id: str,
+    name: str,
+    scope: APIKeyScope = APIKeyScope.FULL,
+    created_by_user_id: str | None = None,
+    expires_at: datetime | None = None,
+    is_internal: bool = False,
+) -> tuple[APIKeyModel, str]:
+    """Create a new API key.
+
+    Returns a tuple of ``(APIKeyModel instance, raw key string)``. The raw key
+    is only available at creation time and should be shown to the user
+    immediately.
+    """
+    raw_key = generate_api_key()
+    api_key = APIKeyModel(
+        org_id=org_id,
+        name=name,
+        key_prefix=raw_key[:11],  # "ok_" + first 8 chars
+        key_hash=hash_api_key(raw_key),
+        scope=scope,
+        created_by_user_id=created_by_user_id,
+        expires_at=expires_at,
+        is_internal=is_internal,
+    )
+    return api_key, raw_key
+
+
+async def mint_internal_read_key(
+    session: AsyncSession, *, org_id: str, name: str, ttl_minutes: int
+) -> tuple[str, str]:
+    """Mint + persist a READ-scoped internal key. Returns (api_key_id, raw_key)."""
+    api_key, raw_key = create_api_key(
+        org_id=org_id,
+        name=name,
+        scope=APIKeyScope.READ,
+        expires_at=utcnow() + timedelta(minutes=ttl_minutes),
+        is_internal=True,
+    )
+    session.add(api_key)
+    await session.commit()
+    return api_key.id, raw_key
 
 
 # =============================================================================

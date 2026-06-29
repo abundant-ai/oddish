@@ -5,6 +5,7 @@ import pytest
 from oddish.worker.probe_creds import (
     PROBE_KEY_TTL_MINUTES,
     ProbeCredsError,
+    delete_probe_key,
     mint_probe_creds,
     resolve_probe_api_base_url,
 )
@@ -50,27 +51,24 @@ async def test_mint_probe_creds_requires_org_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mint_probe_creds_without_provider_raises(monkeypatch):
+    """With no cloud provider registered (OSS worker), minting must fail clearly."""
+    monkeypatch.setenv("ODDISH_PUBLIC_API_BASE_URL", "https://api.example")
+    monkeypatch.setattr("oddish.worker.probe_creds._mint_read_key", None)
+    with pytest.raises(ProbeCredsError) as exc:
+        await mint_probe_creds(org_id="org-1", trial_id="t1")
+    assert "provider" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_mint_probe_creds_wraps_mint_failure(monkeypatch):
     """A failure minting the read key must surface as ProbeCredsError, not leak."""
     monkeypatch.setenv("ODDISH_PUBLIC_API_BASE_URL", "https://api.example")
 
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
-    )
-
-    async def _boom(*_a, **_k):
+    async def _boom(*, org_id, name, ttl_minutes):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.mint_internal_read_key", _boom
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds._mint_read_key", _boom)
 
     with pytest.raises(ProbeCredsError) as exc:
         await mint_probe_creds(org_id="org-1", trial_id="t1")
@@ -81,26 +79,13 @@ async def test_mint_probe_creds_wraps_mint_failure(monkeypatch):
 async def test_mint_probe_creds_returns_env(monkeypatch):
     monkeypatch.setenv("ODDISH_PUBLIC_API_BASE_URL", "https://api.example")
 
-    class _FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
-    )
-
-    async def _mint(session, *, org_id, name, ttl_minutes):
+    async def _mint(*, org_id, name, ttl_minutes):
         assert org_id == "org-1"
         assert name == "probe:t1"
         assert ttl_minutes == PROBE_KEY_TTL_MINUTES
         return ("key-id-123", "ok_rawsecret")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.mint_internal_read_key", _mint
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds._mint_read_key", _mint)
 
     key_id, env = await mint_probe_creds(org_id="org-1", trial_id="t1")
     assert key_id == "key-id-123"
@@ -108,3 +93,22 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
         "ODDISH_API_KEY": "ok_rawsecret",
         "ODDISH_API_BASE_URL": "https://api.example",
     }
+
+
+@pytest.mark.asyncio
+async def test_delete_probe_key_noop_without_provider(monkeypatch):
+    monkeypatch.setattr("oddish.worker.probe_creds._delete_key", None)
+    # Must not raise when no cloud provider is registered.
+    await delete_probe_key("key-id-123")
+
+
+@pytest.mark.asyncio
+async def test_delete_probe_key_calls_provider(monkeypatch):
+    seen = {}
+
+    async def _delete(api_key_id):
+        seen["id"] = api_key_id
+
+    monkeypatch.setattr("oddish.worker.probe_creds._delete_key", _delete)
+    await delete_probe_key("key-id-123")
+    assert seen == {"id": "key-id-123"}

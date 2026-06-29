@@ -1,14 +1,22 @@
 from datetime import timedelta
-from oddish.db.models import APIKeyModel, APIKeyScope, utcnow
-from oddish.core.api_keys import (
-    create_api_key, generate_api_key, hash_api_key,
+
+from oddish.db.models import utcnow
+
+from models import (
+    APIKeyModel,
+    APIKeyScope,
+    create_api_key,
+    generate_api_key,
+    hash_api_key,
 )
+
 
 def test_generate_and_hash_roundtrip():
     raw = generate_api_key()
     assert raw.startswith("ok_")
     assert hash_api_key(raw) == hash_api_key(raw)
     assert len(hash_api_key(raw)) == 64  # sha256 hex
+
 
 def test_create_api_key_read_internal():
     key, raw = create_api_key(
@@ -24,5 +32,8 @@ def test_create_api_key_read_internal():
     assert key.org_id == "org_1"
 
 
-def test_api_key_model_has_no_cross_stack_foreign_keys():
-    assert not APIKeyModel.__table__.foreign_keys
+def test_api_key_model_has_cloud_foreign_keys():
+    # API keys are a hosted/cloud feature; the model lives alongside the
+    # organizations/users tables and carries DB-level FKs to both.
+    fk_columns = {fk.parent.name for fk in APIKeyModel.__table__.foreign_keys}
+    assert fk_columns == {"org_id", "created_by_user_id"}

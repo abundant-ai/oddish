@@ -15,8 +15,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from models import APIKeyScope
-from oddish.core.api_keys import create_api_key
+from models import APIKeyScope, create_api_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -42,7 +41,7 @@ async def _cleanup(
     api_key_ids: list[str] | None = None,
     org_ids: list[str] | None = None,
 ) -> None:
-    from oddish.db.models import APIKeyModel
+    from models import APIKeyModel
 
     async with get_session() as session:
         if trial_ids:

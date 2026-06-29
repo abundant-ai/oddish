@@ -85,6 +85,11 @@ async def _relation_exists(name: str) -> bool:
         await engine.dispose()
 
 
+# Revision that adds the submission_idempotency table; this test targets its
+# own up/down regardless of what later migrations are stacked on top of it.
+SUBMISSION_IDEMPOTENCY_REV = "s5t6u7v8w9x0"
+
+
 def test_migration_applies_and_downgrades_cleanly() -> None:
     """``downgrade -1`` drops the table + unique index, and re-applying recreates
     them cleanly (the migration's real up/down SQL run via Alembic)."""
@@ -92,6 +97,9 @@ def test_migration_applies_and_downgrades_cleanly() -> None:
     asyncio.run(_reset_and_create_all())
     command.stamp(cfg, "head")
 
+    # Undo anything stacked above the submission_idempotency migration so the
+    # following ``-1`` runs *its* downgrade rather than a later head's.
+    command.downgrade(cfg, SUBMISSION_IDEMPOTENCY_REV)
     # downgrade -1 runs this migration's downgrade().
     command.downgrade(cfg, "-1")
     assert not asyncio.run(_relation_exists("submission_idempotency"))

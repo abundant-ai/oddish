@@ -35,7 +35,11 @@ from oddish.worker.probe_analysis import (
     run_probe_analyzer,
 )
 from oddish.worker.local_offline_policy import enable_local_internet
-from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
+from oddish.worker.probe_creds import (
+    ProbeCredsError,
+    delete_probe_key,
+    mint_probe_creds,
+)
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
@@ -62,14 +66,7 @@ def _extract_trial_index(trial_id: str, task_id: str) -> int:
 async def _delete_probe_key(api_key_id: str, trial_id: str) -> None:
     """Best-effort revoke a minted probe read key; never raises."""
     try:
-        from oddish.db import get_session
-        from oddish.db.models import APIKeyModel
-
-        async with get_session() as session:
-            key = await session.get(APIKeyModel, api_key_id)
-            if key is not None:
-                await session.delete(key)
-                await session.commit()
+        await delete_probe_key(api_key_id)
     except Exception as exc:
         console.print(
             f"[yellow]Failed to revoke probe key for trial {trial_id} "

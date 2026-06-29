@@ -14,9 +14,9 @@ from models import (
     ChatSession,
     ChatStatus,
     generate_id,
+    mint_internal_read_key,
 )
 from oddish.db.models import utcnow as _utcnow
-from oddish.core.api_keys import mint_internal_read_key
 from api.services.cc_chat.archive import archive_native_session, restore_native_session
 from api.services.cc_chat.claude_md import (
     render_experiment_claude_md,

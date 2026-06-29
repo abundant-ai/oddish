@@ -92,6 +92,12 @@ from .runtime import configure_storage_paths, console
 # doing it here makes the startup order explicit for readers.
 ensure_builtin_handlers_registered()
 
+# Inject the cloud probe-creds implementation into the core worker so probe
+# agents can mint short-lived read keys against the hosted ``api_keys`` table.
+from .probe_creds_provider import register as _register_probe_creds_provider
+
+_register_probe_creds_provider()
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +
