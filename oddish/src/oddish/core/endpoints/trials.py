@@ -136,7 +136,12 @@ async def retry_trial_core(
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
+    from oddish.config import is_nop_oracle_agent
+    from oddish.queue import (
+        apply_baseline_gate_to_new_llm_trials,
+        enqueue_trial_worker_job,
+        reserve_next_trial_index,
+    )
 
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     new_trial_id = f"{task.id}-{next_index}"
@@ -284,6 +289,17 @@ async def retry_trial_core(
         or "default",
         registry_auth_enc=registry_auth_enc,
     )
+
+    # Retrying an LLM trial re-arms the gate: a retried agent trial consults its
+    # scope's baselines just like a fresh one, so it can't bypass a faulty task.
+    if not is_nop_oracle_agent(new_trial.agent):
+        await apply_baseline_gate_to_new_llm_trials(
+            session,
+            task_id=new_trial.task_id,
+            task_version_id=new_trial.task_version_id,
+            experiment_id=new_trial.experiment_id,
+            llm_trial_ids=[new_trial_id],
+        )
 
     await session.commit()
     return {

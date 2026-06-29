@@ -28,6 +28,7 @@ from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
     get_session,
@@ -350,3 +351,123 @@ async def test_gate_is_experiment_scoped(monkeypatch, cleanup_task_ids):
     after = await _llm_status_by_exp()
     assert after[exp_a] == {WorkerJobStatus.CANCELLED}
     assert after[exp_b] == {WorkerJobStatus.BLOCKED}
+
+
+# ---------------------------------------------------------------------------
+# Pull-path: an agent-only append/retry consults the scope's EXISTING baselines
+# ---------------------------------------------------------------------------
+
+
+def _baselines_only_submission() -> TaskSubmission:
+    return TaskSubmission(
+        name="baselines",
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[
+            TrialSpec(agent="oracle", model=None),
+            TrialSpec(agent="nop", model=None),
+        ],
+    )
+
+
+def _llm_only_submission() -> TaskSubmission:
+    return TaskSubmission(
+        name="llm-only",
+        task_path="s3://test-bucket/baseline-gate-fake-task",
+        user="test",
+        trials=[TrialSpec(agent=_LLM_AGENT, model=_LLM_MODEL)],
+    )
+
+
+async def _append_llm_only(task_id: str) -> str:
+    """Append a single agent-only LLM trial; return its id."""
+    async with get_session() as session:
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.experiments))
+                .where(TaskModel.id == task_id)
+            )
+        ).scalar_one()
+        new = await append_trials_to_task(
+            session, task=task, submission=_llm_only_submission()
+        )
+    return new[0].id
+
+
+async def _wj_status(trial_id: str) -> WorkerJobStatus:
+    async with get_session() as session:
+        return (
+            await session.execute(
+                select(WorkerJobModel.status).where(
+                    WorkerJobModel.subject_id == trial_id,
+                    WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                )
+            )
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_agent_only_append_runs_when_baselines_valid(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"pull-valid-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _baselines_only_submission(), task_id=task_id)
+    await _set_baseline_outcomes(task_id, oracle_reward=1.0, nop_reward=0.0)
+
+    kimi = await _append_llm_only(task_id)
+    assert await _wj_status(kimi) == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_agent_only_append_cancelled_when_baselines_faulty(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"pull-faulty-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _baselines_only_submission(), task_id=task_id)
+    await _set_baseline_outcomes(task_id, oracle_reward=0.0, nop_reward=0.0)
+
+    kimi = await _append_llm_only(task_id)
+    assert await _wj_status(kimi) == WorkerJobStatus.CANCELLED
+    async with get_session() as session:
+        tr = (
+            await session.execute(select(TrialModel).where(TrialModel.id == kimi))
+        ).scalar_one()
+    assert tr.status == TrialStatus.FAILED
+    assert GATE_SKIP_PREFIX in (tr.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_agent_only_append_blocked_when_baselines_pending(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"pull-pending-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    # Baselines created but left active (not driven terminal).
+    async with get_session() as session:
+        await create_task(session, _baselines_only_submission(), task_id=task_id)
+
+    kimi = await _append_llm_only(task_id)
+    assert await _wj_status(kimi) == WorkerJobStatus.BLOCKED
+
+
+@pytest.mark.asyncio
+async def test_agent_only_append_ungated_without_baselines(
+    monkeypatch, cleanup_task_ids
+):
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"pull-none-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    # Task has no baselines at all -> appended LLM trial runs ungated.
+    async with get_session() as session:
+        await create_task(session, _llm_only_submission(), task_id=task_id)
+
+    kimi = await _append_llm_only(task_id)
+    assert await _wj_status(kimi) == WorkerJobStatus.QUEUED
