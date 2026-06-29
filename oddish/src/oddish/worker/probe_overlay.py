@@ -114,11 +114,13 @@ def _time_budget_section(time_budget_sec: float) -> str:
 def _oracle_seed_section() -> str:
     """Tell the probe the reference solution is its starting point.
 
-    The golden/reference solution is staged at ``/probe-harness/solution/`` (the
-    whole task dir is uploaded under the harness root). Without this, the probe
-    only ever heard about ``solution/`` as a "don't report this as a leak"
-    disclaimer; here we positively offer it as a baseline so the probe spends its
-    budget on the operator directive instead of re-solving the task from scratch.
+    The golden/reference solution is NOT at a browsable path; it is reachable
+    only through the ``oddish-query`` CLI (``solution fetch`` / ``solution cat``),
+    which reads from the hidden stage and prints a PROBE-ONLY banner. Without
+    this section the probe only ever heard about ``solution/`` as a
+    "don't report this as a leak" disclaimer; here we positively offer it as a
+    baseline so the probe spends its budget on the operator directive instead of
+    re-solving the task from scratch.
     Only emitted when a ``solution/`` was actually staged (see ``_has_solution``).
     """
     return (

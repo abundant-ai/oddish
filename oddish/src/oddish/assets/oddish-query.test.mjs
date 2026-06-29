@@ -96,6 +96,15 @@ test('solution fetch omits the boundary marker from the copied tree', () => {
   assert.ok(!fs.existsSync(path.join(dest, '000-READ-ME-PROBE-ONLY.txt')));
 });
 
+test('verify run captures stderr in build_log_tail', () => {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
+  fs.writeFileSync(path.join(stage, 'test.sh'),
+    '#!/bin/bash\necho STDERR_MARKER >&2\n');
+  const out = runStage(['verify', 'run'], stage);
+  const obj = JSON.parse(out);
+  assert.match(obj.build_log_tail, /STDERR_MARKER/);
+});
+
 test('verify run executes test.sh and returns parseable JSON with note banner', () => {
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
   // Fake verifier writes a reward file, like the real test.sh does.
