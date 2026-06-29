@@ -489,8 +489,10 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # setdefault so an explicit config value still wins.
         probe_agent_env = dict(agent_config.env or {})
         probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
-        probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
         probe_agent_env.update(probe_env)
+        # Set the stage dir LAST so this infra var always wins over anything the
+        # minted creds bring (matches the cloud path in trial_handler.py).
+        probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
         agent_config.env = probe_agent_env
 
     cfg = TrialConfig(
