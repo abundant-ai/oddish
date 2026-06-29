@@ -1080,7 +1080,6 @@ class TaskBrowseFacets(BaseModel):
     providers: list[str] = Field(default_factory=list)
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
-    harbor_sources: list[str] = Field(default_factory=list)
     analysis_classifications: list[str] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 

@@ -646,7 +646,6 @@ async def browse_tasks_core(
     trial_statuses: Sequence[str] | None = None,
     origins: Sequence[str] | None = None,
     trial_is_probe: bool | None = None,
-    harbor_sources: Sequence[str] | None = None,
     harbor_shas: Sequence[str] | None = None,
     harbor_stages: Sequence[str] | None = None,
     analysis_classifications: Sequence[str] | None = None,
@@ -834,10 +833,6 @@ async def browse_tasks_core(
             _trial_exists(
                 TrialModel.is_probe.is_(trial_is_probe), include_probes=True
             )
-        )
-    if harbor_sources:
-        ranked_tasks = ranked_tasks.where(
-            _trial_exists(TrialModel.harbor_source.in_(list(harbor_sources)))
         )
     if harbor_shas:
         ranked_tasks = ranked_tasks.where(
@@ -1292,7 +1287,6 @@ async def browse_task_facets_core(
         providers=await _values(TrialModel.provider),
         environments=await _values(TrialModel.environment),
         harbor_stages=await _values(TrialModel.harbor_stage),
-        harbor_sources=await _values(TrialModel.harbor_source),
         analysis_classifications=await _values(classification),
         experiments=[
             TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
