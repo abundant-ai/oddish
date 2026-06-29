@@ -10,6 +10,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const STAGE = (process.env.ODDISH_PROBE_STAGE_DIR || '/opt/oddish-probe').replace(/\/+$/, '');
+const BOUNDARY_MARKER = '000-READ-ME-PROBE-ONLY.txt';
 
 const BOUNDARY_BANNER =
   '[PROBE-ONLY — the real solving agent never sees this]\n' +
@@ -102,6 +103,18 @@ function cmdSolutionCat(a) {
   if (!fs.existsSync(f) || !fs.statSync(f).isFile()) dieStage(`no such solution file: ${a.rel}`, 4);
   out(withBanner(fs.readFileSync(f, 'utf8')));
 }
+function copyTree(srcRel, into, label) {
+  requireStage();
+  const src = stagePath(srcRel);
+  if (!fs.existsSync(src)) dieStage(`probe asset unavailable: ${srcRel}`, 3);
+  const dest = into || fs.mkdtempSync(path.join(os.tmpdir(), `probe-${label}-`));
+  // Skip the boundary marker so it does not litter the agent's workspace.
+  fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== BOUNDARY_MARKER });
+  out(withBanner(`copied ${label} to ${dest}`));
+}
+function cmdSolutionFetch(a) { copyTree('solution', a.into, 'solution'); }
+function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
+
 function cmdVerifierSource() {
   requireStage();
   const f = stagePath('test.sh');
@@ -135,6 +148,8 @@ async function main() {
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
   if (group === 'solution' && cmd === 'cat') return cmdSolutionCat(a);
   if (group === 'verifier' && cmd === 'source') return cmdVerifierSource();
+  if (group === 'solution' && cmd === 'fetch') return cmdSolutionFetch({ into: opt.into });
+  if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
   die(`unknown command: ${group} ${cmd}`, 2);
 }
 main();
