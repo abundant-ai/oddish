@@ -161,6 +161,7 @@ jobs:
       ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
       ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
       ODDISH_GATE_LLM_ON_BASELINES: "0"
+      ODDISH_EXTRA_API_KEY_CREATOR_EMAILS: "aman@abundant.systems"
     defaults:
       run:
         working-directory: backend
