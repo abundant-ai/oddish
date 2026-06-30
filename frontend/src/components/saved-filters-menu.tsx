@@ -62,12 +62,12 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
     fetcher,
     {
       revalidateOnFocus: false,
-    },
+    }
   );
   const { data: tags } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
     fetcher,
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false }
   );
 
   // Search tokens are whitespace-free, so match keys through the same
@@ -79,10 +79,10 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   // whitespace-free to survive the parser's tokenizer, and the backend
   // resolver re-normalizes name tokens (NFKC/casefold) on lookup anyway.
   const idToKey = new Map(
-    (tags?.items ?? []).map((t) => [t.id, normalizeKey(t.key)]),
+    (tags?.items ?? []).map((t) => [t.id, normalizeKey(t.key)])
   );
   const keyToId = new Map(
-    (tags?.items ?? []).map((t) => [normalizeKey(t.key), t.id]),
+    (tags?.items ?? []).map((t) => [normalizeKey(t.key), t.id])
   );
 
   const parsed = parseTaskSearch(query);
@@ -101,7 +101,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         any: toNames(filter.filter_ast.any ?? []),
         none: toNames(filter.filter_ast.none ?? []),
         authors: [],
-      }),
+      })
     );
     setOpen(false);
   }
@@ -160,7 +160,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         async () => {
           const res = await fetch(
             `/api/tag-filters/${encodeURIComponent(filterId)}`,
-            { method: "DELETE" },
+            { method: "DELETE" }
           );
           // 404 means it was already deleted elsewhere; keep it removed.
           if (!res.ok && res.status !== 404) {
@@ -173,7 +173,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
           populateCache: (_res, current) => withoutFilter(current),
           rollbackOnError: true,
           revalidate: false,
-        },
+        }
       );
     } catch {
       setError("Could not delete filter.");
@@ -183,16 +183,16 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   function renderSection(
     label: string,
     section: SavedFilterItem[],
-    deletable: boolean,
+    deletable: boolean
   ) {
     if (section.length === 0) return null;
     return (
       <div>
-        <p className="px-3 pt-2 pb-1 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+        <p className="text-muted-foreground px-3 pt-2 pb-1 text-[10px] font-semibold tracking-wider uppercase">
           {label}
         </p>
         {section.map((f) => (
-          <div key={f.id} className="flex items-center hover:bg-accent">
+          <div key={f.id} className="hover:bg-accent flex items-center">
             <button
               type="button"
               className="flex min-w-0 flex-1 items-center gap-1.5 px-3 py-1.5 text-left text-sm"
@@ -209,7 +209,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
             {deletable ? (
               <button
                 type="button"
-                className="mr-2 rounded-full p-0.5 text-muted-foreground hover:bg-destructive/15 hover:text-destructive"
+                className="text-muted-foreground hover:bg-destructive/15 hover:text-destructive mr-2 rounded-full p-0.5"
                 aria-label={`Delete filter ${f.name}`}
                 title={`Delete ${f.name}`}
                 onClick={() => deleteFilter(f.id)}
@@ -229,24 +229,24 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         <Button
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+          className="text-muted-foreground hover:text-foreground h-8 w-8"
           aria-label="Saved filters"
           title="Saved filters"
         >
           <Bookmark className="h-4 w-4" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 p-0">
+      <PopoverContent align="end" className="z-30 w-72 p-0">
         {isLoading ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground">
+          <p className="text-muted-foreground px-3 py-2 text-xs">
             Loading filters…
           </p>
         ) : loadError && !filters ? (
-          <p className="px-3 py-2 text-xs text-destructive">
+          <p className="text-destructive px-3 py-2 text-xs">
             Could not load filters.
           </p>
         ) : items.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-muted-foreground">
+          <p className="text-muted-foreground px-3 py-2 text-xs">
             No saved filters yet.
           </p>
         ) : (
@@ -258,8 +258,9 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
         <div className="space-y-2 border-t p-3">
           {hasTagTokens ? (
             <>
-              <p className="truncate font-mono text-[11px] text-muted-foreground">
-                Save “{serializeTaskSearch({ ...parsed, text: "", authors: [] })}”
+              <p className="text-muted-foreground truncate font-mono text-[11px]">
+                Save “
+                {serializeTaskSearch({ ...parsed, text: "", authors: [] })}”
               </p>
               <Input
                 value={name}
@@ -281,7 +282,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
                         "rounded-md border px-2 py-0.5 text-[11px]",
                         visibility === v
                           ? "border-foreground/40 bg-accent"
-                          : "border-transparent text-muted-foreground hover:bg-accent/50",
+                          : "text-muted-foreground hover:bg-accent/50 border-transparent"
                       )}
                       onClick={() => setVisibility(v)}
                     >
@@ -299,11 +300,11 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
                 </Button>
               </div>
               {error ? (
-                <p className="text-xs text-destructive">{error}</p>
+                <p className="text-destructive text-xs">{error}</p>
               ) : null}
             </>
           ) : (
-            <p className="text-xs text-muted-foreground">
+            <p className="text-muted-foreground text-xs">
               Type a tag filter (e.g. <code>tag:flaky</code>) to save it.
             </p>
           )}
