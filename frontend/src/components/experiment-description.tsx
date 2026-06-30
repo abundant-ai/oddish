@@ -14,6 +14,8 @@ interface ExperimentDescriptionProps {
   description: string | null;
   /** Hide all edit affordances (public share page / non-editors). */
   readOnly?: boolean;
+  /** Start fully expanded instead of clamped (e.g. the public share page). */
+  defaultExpanded?: boolean;
   /** Called with the saved value so the caller can update its cache. */
   onSaved?: (next: string | null) => void;
 }
@@ -50,10 +52,11 @@ export function ExperimentDescription({
   experimentId,
   description,
   readOnly = false,
+  defaultExpanded = false,
   onSaved,
 }: ExperimentDescriptionProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [isOverflowing, setIsOverflowing] = useState(false);
   const [draft, setDraft] = useState(description ?? "");
   const [isSaving, setIsSaving] = useState(false);

@@ -104,6 +104,12 @@ interface ExperimentDetailViewProps {
   headerStatus?: React.ReactNode;
   headerRight?: React.ReactNode;
   headerDescription?: React.ReactNode;
+  /**
+   * Where `headerDescription` renders. "header" (default) places it directly
+   * under the title; "above-matrix" moves it below the leaderboards and right
+   * before the trial matrix (used by the public share page).
+   */
+  descriptionPlacement?: "header" | "above-matrix";
   inlineAlert?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
@@ -710,6 +716,7 @@ export function ExperimentDetailView({
   headerStatus,
   headerRight,
   headerDescription,
+  descriptionPlacement = "header",
   inlineAlert,
   readOnly = false,
   allowRetry = true,
@@ -1097,7 +1104,7 @@ export function ExperimentDetailView({
               />
             </div>
 
-            {headerDescription}
+            {descriptionPlacement === "header" ? headerDescription : null}
           </div>
 
           <ExperimentSummaryBar
@@ -1130,6 +1137,11 @@ export function ExperimentDetailView({
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
                 showPassAtK={showPassAtK}
+                matrixHeaderSlot={
+                  descriptionPlacement === "above-matrix"
+                    ? headerDescription
+                    : undefined
+                }
                 onTaskDelete={onTaskDelete}
                 onRerun={onRerun}
                 allowRerun={allowRetry}

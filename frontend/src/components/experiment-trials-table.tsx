@@ -124,6 +124,8 @@ type ExperimentTrialsTableProps = {
   onProbeSelect?: (trial: Trial, task: Task) => void;
   readOnly?: boolean;
   showAnalysis?: boolean;
+  /** Rendered between the pass@k leaderboards and the trial matrix. */
+  matrixHeaderSlot?: React.ReactNode;
   onTrialSelect?: (
     trial: Trial,
     task: Task,
@@ -457,6 +459,7 @@ export function ExperimentTrialsTable({
   onProbeSelect,
   readOnly = false,
   showAnalysis = true,
+  matrixHeaderSlot,
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
@@ -1452,6 +1455,8 @@ export function ExperimentTrialsTable({
           </div>
         ) : null}
 
+        {matrixHeaderSlot}
+
         <div className="border-border bg-card max-w-full overflow-hidden rounded-lg border shadow-xs">
           <div className="border-border bg-card/70 relative z-30 space-y-3 border-b px-3 py-3">
             <div className="flex flex-wrap items-start gap-3">
@@ -1819,6 +1824,8 @@ export function ExperimentTrialsTable({
             </div>
           </div>
         ) : null}
+
+        {matrixHeaderSlot}
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
           <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pt-3.5 pb-3">

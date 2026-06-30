@@ -88,8 +88,10 @@ export default function PublicExperimentPage() {
               <ExperimentDescription
                 description={experimentInfo?.description ?? null}
                 readOnly
+                defaultExpanded
               />
             }
+            descriptionPlacement="above-matrix"
             readOnly
             allowRetry={false}
             showAnalysis={false}
