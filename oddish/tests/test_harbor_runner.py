@@ -928,6 +928,40 @@ def test_build_agent_config_does_not_wrap_non_codex_agents(monkeypatch):
     assert agent_config.import_path is None
 
 
+def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-secret")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="xai/v9m-rl-learnability-tp8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name == "grok-build"
+    assert agent_config.import_path is None
+    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+    assert "XAI_API_KEY" not in (agent_config.env or {})
+    assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
+    assert "OPENAI_API_KEY" not in (agent_config.env or {})
+
+
+def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="grok/v9m-rl-learnability-tp8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name == "grok-build"
+    assert agent_config.import_path is None
+    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+
+
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
     seen: dict[str, str] = {}
 
