@@ -1,7 +1,8 @@
 "use client";
 
-import Link from "next/link";
+import { useState } from "react";
 import useSWR from "swr";
+import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 // "cheat_ratio"/"ratio" are legacy aliases — normalizeMetric maps them to "none".
 type EvaluationMetric = "result_focus" | "none" | "cheat_ratio" | "ratio";
@@ -184,6 +185,8 @@ const VARIANT_CLASS: Record<ResultDisplay["variant"], string> = {
 };
 
 export function ProbeHistoryTable({ taskId }: { taskId: string }) {
+  const [selectedProbeId, setSelectedProbeId] = useState<string | null>(null);
+
   // Fetch through the same-origin Next proxy (/api/...) so the browser never
   // hits the backend cross-origin — no CORS, auth attached server-side.
   const fetcher = async (url: string) => {
@@ -215,6 +218,7 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
   });
 
   return (
+    <>
     <div>
       <h2 className="mb-3 text-lg font-medium">History</h2>
       {probes.length === 0 ? (
@@ -252,12 +256,13 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
                   })()}
                 </td>
                 <td className="py-2">
-                  <Link
-                    href={`/tasks/${taskId}/probe/${t.id}`}
-                    className="text-xs underline"
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProbeId(t.id)}
+                    className="text-xs underline text-muted-foreground hover:text-foreground"
                   >
                     View →
-                  </Link>
+                  </button>
                 </td>
               </tr>
             ))}
@@ -265,5 +270,14 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
         </table>
       )}
     </div>
+    {selectedProbeId && (
+      <ProbeDetailPanel
+        taskId={taskId}
+        trialId={selectedProbeId}
+        isOpen
+        onClose={() => setSelectedProbeId(null)}
+      />
+    )}
+    </>
   );
 }
