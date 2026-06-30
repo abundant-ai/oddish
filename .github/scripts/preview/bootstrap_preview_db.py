@@ -54,10 +54,53 @@ def _load_base():
     return Base
 
 
+def _fingerprint_constraint(con) -> str:
+    """Render a constraint deterministically, including check exprs + FK targets."""
+    cols = ",".join(sorted(c.name for c in con.columns))
+    extra = ""
+    sqltext = getattr(con, "sqltext", None)
+    if sqltext is not None:  # CheckConstraint
+        extra += f":chk={sqltext}"
+    elements = getattr(con, "elements", None)  # ForeignKeyConstraint
+    if elements:
+        extra += ":fk=" + ",".join(
+            sorted(f"{fk.target_fullname}:{fk.ondelete}" for fk in elements)
+        )
+    return f"{type(con).__name__}:{con.name}:({cols}){extra}"
+
+
+def _fingerprint_table(table) -> str:
+    """Render a single table's schema-affecting shape deterministically."""
+    columns = sorted(
+        f"{col.name}:{col.type}:n{int(bool(col.nullable))}"
+        f":u{int(bool(col.unique))}:p{int(bool(col.primary_key))}"
+        for col in table.columns
+    )
+    constraints = sorted(
+        _fingerprint_constraint(con) for con in table.constraints
+    )
+    indexes = sorted(
+        f"{ix.name}:u{int(bool(ix.unique))}"
+        f":({','.join(sorted(c.name for c in ix.columns))})"
+        for ix in table.indexes
+    )
+    return (
+        f"{table.name}|{','.join(columns)}"
+        f"|{','.join(constraints)}|{','.join(indexes)}"
+    )
+
+
 def _fingerprint_metadata(metadata) -> str:
-    """Stable short hash of a metadata's table + column names."""
+    """Stable short hash of a metadata's schema-affecting shape.
+
+    Covers table + column names *and* the constraints/indexes that change the
+    emitted DDL (unique, primary-key, foreign-key, check). Hashing only names
+    let a constraint change — e.g. dropping the clerk_user_id global UNIQUE —
+    slip past the trust marker, so a reused preview silently kept the old
+    constraint. Folding constraints in busts the marker on any such change.
+    """
     parts = [
-        f"{table.name}:{','.join(sorted(col.name for col in table.columns))}"
+        _fingerprint_table(table)
         for table in sorted(metadata.tables.values(), key=lambda t: t.name)
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
