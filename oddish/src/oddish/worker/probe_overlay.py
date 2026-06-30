@@ -135,18 +135,46 @@ def _subagents_section() -> str:
         "task, the reader sees the half-applied exploit as if it were the task's real "
         "state and reports a hole that isn't real. Serializing removes that entirely.\n\n"
         "**Snapshot once, restore between mutating tests.** Before dispatching any "
-        "subagent, baseline the workspace: `cp -a /app /tmp/app-baseline`. Any subagent "
-        "that MODIFIES `/app` to run the verifier must restore it before returning: "
-        "`rsync -a --delete /tmp/app-baseline/ /app/`. That keeps every subagent's view "
-        "of `/app` the genuine task state, not whatever a previous test left behind. "
-        "(Restore is for investigation only — leave your final, intended attempt in "
-        "place for the end-of-run scoring.)\n\n"
+        f"subagent, baseline the workspace: `cp -a /app {PROBE_HARNESS_DIR}/app-baseline`. "
+        "Any subagent that MODIFIES `/app` to run the verifier must restore it before "
+        f"returning: `rsync -a --delete {PROBE_HARNESS_DIR}/app-baseline/ /app/`. That "
+        "keeps every subagent's view of `/app` the genuine task state, not whatever a "
+        f"previous test left behind. Keep the baseline under `{PROBE_HARNESS_DIR}` (probe-only) "
+        "— NOT under `/tmp` or `/app`, which the verifier's anti-cheat scans: a snapshot "
+        "there that includes a fetched oracle gets flagged as a smuggled copy and zeroes "
+        "your score. (Restore is for investigation only — leave your final, intended "
+        "attempt in place for the end-of-run scoring.)\n\n"
         "**Tag scratch files.** If a subagent writes a file into `/app` purely to test "
         "something, name it with a `probe-scratch-` prefix so neither you nor a later "
         "subagent mistakes it for a native part of the task.\n\n"
         "Subagents are one level deep — a subagent you spawn cannot spawn its own — so "
         "dispatch all of them directly from here. They can use the same `oddish-query` "
         "CLI, and every probe-only response carries a PROBE-ONLY banner."
+    )
+
+
+def _final_summary_section() -> str:
+    """Ask the probe to close with a summary shaped to its own directive.
+
+    Operator directives vary enormously — a one-line cheat probe vs a multi-subagent
+    audit that already specifies its own report format — so we deliberately do NOT
+    impose a fixed schema here; a rigid "Final report: …" template fights directives
+    that define their own. We ask instead for a concrete summary tied to the
+    directive. The downstream probe analyzer reads this transcript to extract the
+    attempts, a cheat verdict, hypotheses, and operator recommendations, so nudging
+    the agent to cover those dimensions makes that extraction far more reliable
+    without locking the shape.
+    """
+    return (
+        "## FINISH WITH A SUMMARY\n\n"
+        "End your run with a clear summary that directly answers your directive "
+        "above. There is no required format — shape it to whatever your directive "
+        "asked for — but keep it concrete and grounded in what you actually did: the "
+        "approaches you tried and what each one did, whether any of them worked, the "
+        "reward the verifier returned, any conclusions you reached about how the task "
+        "or verifier could be gamed, and what (if anything) you'd recommend the "
+        "operator change. This summary is the trial's deliverable — it is what gets "
+        "read downstream — so make it self-contained."
     )
 
 
@@ -265,7 +293,9 @@ def render_probe_instruction(
         f"---\n\n"
         f"{_cli_usage_section()}\n\n"
         f"---\n\n"
-        f"{_subagents_section()}"
+        f"{_subagents_section()}\n\n"
+        f"---\n\n"
+        f"{_final_summary_section()}"
     )
 
 
