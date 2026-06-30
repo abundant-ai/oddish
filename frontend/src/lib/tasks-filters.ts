@@ -1,5 +1,16 @@
 import type { TaskBrowseFacets } from "@/lib/types";
 
+// Rolling "Created" presets. Stored in the URL as a token (e.g. created_within=24h)
+// and resolved to (now - window) at query time, so the window is always relative
+// to when the page is loaded/refreshed — not frozen at the moment it was clicked.
+export const PRESET_MS = {
+  "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
+  "30d": 30 * 24 * 60 * 60 * 1000,
+} as const;
+
+export type CreatedPreset = keyof typeof PRESET_MS;
+
 export interface FilterValues {
   statuses: string[];
   priorities: string[];
@@ -19,8 +30,9 @@ export interface FilterValues {
   hasError: boolean | null;
   hasTrajectory: boolean | null;
   trialIsProbe: boolean | null;
-  createdAfter: string | null; // ISO datetime
-  createdBefore: string | null; // ISO datetime
+  createdAfter: string | null; // ISO datetime (custom From)
+  createdBefore: string | null; // ISO datetime (custom To)
+  createdWithin: CreatedPreset | null; // rolling preset (24h/7d/30d)
   minAttempts: number | null;
   minTokens: number | null;
   maxTokens: number | null;
@@ -51,6 +63,7 @@ export const EMPTY_FILTERS: FilterValues = {
   trialIsProbe: null,
   createdAfter: null,
   createdBefore: null,
+  createdWithin: null,
   minAttempts: null,
   minTokens: null,
   maxTokens: null,
@@ -287,7 +300,11 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
     case "trialIsProbe":
       return f.trialIsProbe !== null;
     case "created":
-      return f.createdAfter !== null || f.createdBefore !== null;
+      return (
+        f.createdAfter !== null ||
+        f.createdBefore !== null ||
+        f.createdWithin !== null
+      );
     case "minAttempts":
       return f.minAttempts !== null;
     case "tokens":
@@ -339,6 +356,7 @@ export function filterParams(f: FilterValues): [string, string][] {
   bool("trial_is_probe", f.trialIsProbe);
   if (f.createdAfter) out.push(["created_after", f.createdAfter]);
   if (f.createdBefore) out.push(["created_before", f.createdBefore]);
+  if (f.createdWithin) out.push(["created_within", f.createdWithin]);
   num("min_attempts", f.minAttempts);
   num("min_tokens", f.minTokens);
   num("max_tokens", f.maxTokens);
@@ -376,6 +394,7 @@ export const FILTER_PARAM_KEYS = [
   "trial_is_probe",
   "created_after",
   "created_before",
+  "created_within",
   "min_attempts",
   "min_tokens",
   "max_tokens",
@@ -440,6 +459,10 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     trialIsProbe: bool("trial_is_probe"),
     createdAfter: sp.get("created_after"),
     createdBefore: sp.get("created_before"),
+    createdWithin: ((): CreatedPreset | null => {
+      const v = sp.get("created_within");
+      return v && v in PRESET_MS ? (v as CreatedPreset) : null;
+    })(),
     minAttempts: num("min_attempts"),
     minTokens: num("min_tokens"),
     maxTokens: num("max_tokens"),

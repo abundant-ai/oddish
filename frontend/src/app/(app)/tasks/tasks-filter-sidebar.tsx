@@ -40,6 +40,7 @@ import {
   filterParams,
   isFilterActive,
   searchParamsToFilters,
+  type CreatedPreset,
   type FilterDef,
   type FilterValues,
   type Option,
@@ -156,7 +157,7 @@ export function TasksFilterSidebar() {
   const clearKey = (key: string) => {
     switch (key) {
       case "created":
-        set({ createdAfter: null, createdBefore: null });
+        set({ createdAfter: null, createdBefore: null, createdWithin: null });
         break;
       case "tokens":
         set({ minTokens: null, maxTokens: null });
@@ -796,11 +797,26 @@ function BooleanControl({
 
 type DateMode = "" | "24h" | "7d" | "30d" | "custom";
 
-const PRESET_MS: Record<"24h" | "7d" | "30d", number> = {
-  "24h": 24 * 60 * 60 * 1000,
-  "7d": 7 * 24 * 60 * 60 * 1000,
-  "30d": 30 * 24 * 60 * 60 * 1000,
-};
+// A `type="date"` picker yields a local calendar day ("YYYY-MM-DD"). Convert it
+// to a UTC instant anchored to the START / END of that day in the user's local
+// timezone, so the saved bound covers exactly the day they picked (no UTC shift).
+function localDayStartIso(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
+}
+function localDayEndIso(ymd: string): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+}
+// Format a stored instant back to the local "YYYY-MM-DD" the picker expects, so
+// the input shows the same day the user chose regardless of timezone.
+function isoToLocalDateInput(iso: string): string {
+  const dt = new Date(iso);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
 
 function DateRange({
   values,
@@ -809,9 +825,12 @@ function DateRange({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
-  const hasValue =
+  const hasCustom =
     values.createdAfter !== null || values.createdBefore !== null;
-  const [mode, setMode] = useState<DateMode>(hasValue ? "custom" : "");
+  const hasValue = hasCustom || values.createdWithin !== null;
+  const [mode, setMode] = useState<DateMode>(
+    values.createdWithin ?? (hasCustom ? "custom" : "")
+  );
 
   // Drop a stale preset highlight if the dates were cleared elsewhere (e.g.
   // "Clear all"). Custom stays open so its now-empty inputs remain visible.
@@ -819,17 +838,21 @@ function DateRange({
     if (!hasValue && mode !== "custom") setMode("");
   }, [hasValue, mode]);
 
-  const applyPreset = (key: "24h" | "7d" | "30d") => {
+  const applyPreset = (key: CreatedPreset) => {
     if (mode === key) {
       setMode("");
-      set({ createdAfter: null, createdBefore: null });
+      set({ createdWithin: null });
       return;
     }
     setMode(key);
-    set({
-      createdAfter: new Date(Date.now() - PRESET_MS[key]).toISOString(),
-      createdBefore: null,
-    });
+    // Store the preset as a rolling token; the absolute custom bounds are cleared.
+    set({ createdWithin: key, createdAfter: null, createdBefore: null });
+  };
+
+  const openCustom = () => {
+    setMode("custom");
+    // Leaving a rolling preset for an explicit range — drop the token.
+    if (values.createdWithin !== null) set({ createdWithin: null });
   };
 
   const tabClass = (active: boolean) =>
@@ -855,7 +878,7 @@ function DateRange({
         ))}
         <button
           type="button"
-          onClick={() => setMode("custom")}
+          onClick={openCustom}
           className={tabClass(mode === "custom")}
         >
           Custom
@@ -869,14 +892,16 @@ function DateRange({
             </label>
             <Input
               type="date"
-              className="h-8 w-full text-xs"
+              className="h-8 w-full text-xs [&::-webkit-calendar-picker-indicator]:ml-auto"
               value={
-                values.createdAfter ? values.createdAfter.slice(0, 10) : ""
+                values.createdAfter
+                  ? isoToLocalDateInput(values.createdAfter)
+                  : ""
               }
               onChange={(e) =>
                 set({
                   createdAfter: e.target.value
-                    ? `${e.target.value}T00:00:00Z`
+                    ? localDayStartIso(e.target.value)
                     : null,
                 })
               }
@@ -888,14 +913,16 @@ function DateRange({
             </label>
             <Input
               type="date"
-              className="h-8 w-full text-xs"
+              className="h-8 w-full text-xs [&::-webkit-calendar-picker-indicator]:ml-auto"
               value={
-                values.createdBefore ? values.createdBefore.slice(0, 10) : ""
+                values.createdBefore
+                  ? isoToLocalDateInput(values.createdBefore)
+                  : ""
               }
               onChange={(e) =>
                 set({
                   createdBefore: e.target.value
-                    ? `${e.target.value}T23:59:59Z`
+                    ? localDayEndIso(e.target.value)
                     : null,
                 })
               }
