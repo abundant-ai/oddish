@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
-import { ChevronDown, Filter, Plus, X } from "lucide-react";
+import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -370,9 +370,111 @@ function FilterControl({
       );
     case "tags":
       return <TagsControl values={values} set={set} />;
+    case "agentmodel":
+      return <AgentModelControl values={values} set={set} facets={facets} />;
     default:
       return null;
   }
+}
+
+function pairToken(agent: string, model: string | null): string {
+  return model ? `${agent}:${model}` : agent;
+}
+
+// Agent + model is the meaningful run unit (an agent AT a specific model), so we
+// filter on the distinct (agent, model) pairs, grouped by agent.
+function AgentModelControl({
+  values,
+  set,
+  facets,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+  facets: TaskBrowseFacets | null;
+}) {
+  const [search, setSearch] = useState("");
+  const pairs = facets?.agent_models ?? [];
+  const selected = values.agentModels;
+
+  const toggle = (token: string) => {
+    const next = selected.includes(token)
+      ? selected.filter((t) => t !== token)
+      : [...selected, token];
+    set({ agentModels: next });
+  };
+
+  const filtered = search
+    ? pairs.filter((p) =>
+        `${p.agent} ${p.model ?? ""}`
+          .toLowerCase()
+          .includes(search.toLowerCase())
+      )
+    : pairs;
+
+  const groups = new Map<string, typeof filtered>();
+  for (const p of filtered) {
+    const list = groups.get(p.agent) ?? [];
+    list.push(p);
+    groups.set(p.agent, list);
+  }
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 w-full justify-between text-xs font-normal"
+        >
+          <span className="truncate">
+            {selected.length === 0 ? "Any" : `${selected.length} selected`}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="z-30 w-64 p-2">
+        <Input
+          autoFocus
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Filter agent / model…"
+          className="mb-2 h-7 text-xs"
+        />
+        <div className="max-h-64 space-y-1 overflow-auto">
+          {groups.size === 0 ? (
+            <p className="text-muted-foreground px-1 py-2 text-xs">
+              No options
+            </p>
+          ) : (
+            [...groups.entries()].map(([agent, list]) => (
+              <div key={agent}>
+                <p className="text-muted-foreground px-1 pt-1 text-[10px] font-semibold tracking-wide uppercase">
+                  {agent}
+                </p>
+                {list.map((p) => {
+                  const token = pairToken(p.agent, p.model);
+                  return (
+                    <label
+                      key={token}
+                      className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+                    >
+                      <Checkbox
+                        checked={selected.includes(token)}
+                        onCheckedChange={() => toggle(token)}
+                      />
+                      <span className="truncate">
+                        {p.model ?? "(no model)"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ))
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 /** The `tag:` token form the backend expects for a tag. */
@@ -468,6 +570,10 @@ function TagsControl({
                       style={{ backgroundColor: tagColor(t.key, t.color) }}
                     />
                     <span className="truncate">{token}</span>
+                    <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-1 tabular-nums">
+                      <FileText className="h-3 w-3" />
+                      {t.task_count}
+                    </span>
                   </label>
                 );
               })

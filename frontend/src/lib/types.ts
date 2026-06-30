@@ -285,6 +285,7 @@ export interface TaskBrowseResponse {
 export interface TaskBrowseFacets {
   agents: string[];
   models: string[];
+  agent_models: { agent: string; model: string | null }[];
   providers: string[];
   environments: string[];
   harbor_stages: string[];
