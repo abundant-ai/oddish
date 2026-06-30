@@ -16,6 +16,7 @@ import pytest  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
 from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
@@ -940,8 +941,11 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
         raw_harbor_config={},
     )
 
-    assert agent_config.name == "grok-build"
-    assert agent_config.import_path is None
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
     assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
     assert "XAI_API_KEY" not in (agent_config.env or {})
     assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
@@ -957,9 +961,31 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
         raw_harbor_config={},
     )
 
-    assert agent_config.name == "grok-build"
-    assert agent_config.import_path is None
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
     assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+
+
+def test_oddish_grok_build_requests_streaming_json(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8")
+
+    asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
+
+    run_command = seen[-1]
+    assert "--output-format streaming-json" in run_command
+    assert "--output-format json" in run_command
+    assert "streaming-json|output-format|no-auto-update" in run_command
+    assert "> /logs/agent/grok-build.json" in run_command
 
 
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
