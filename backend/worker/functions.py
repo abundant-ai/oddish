@@ -519,28 +519,27 @@ async def poll_queue():
             },
         )
 
-        # Stamp the per-stage observability on the Modal path too: spawned_at for
-        # the queue_keys being dispatched, admission_reason for those still
-        # waiting. The variant split is dispatch-only, so this is stamped at
-        # queue_key granularity -- variants share a queue_key's ``worker_jobs``
-        # rows and concurrency pool. Additive + best-effort: the spawn / logging
-        # / heartbeat above are unchanged; this only writes the new columns.
+        # Per-stage observability: admission_reason (why-waiting) for queues that
+        # didn't get a worker this poll, and spawned_at for those that did. The
+        # variant split is dispatch-only, so this is stamped at queue_key
+        # granularity -- variants share a queue_key's ``worker_jobs`` rows and
+        # concurrency pool. Additive + best-effort. spawned_at is stamped *after*
+        # the spawn below so a failed spawn doesn't falsely read as 'spawned'.
         spawned_queue_keys = [queue_key for queue_key, _variant in spawn_plan]
-        try:
-            await stamp_dispatch_stage(
-                spawned_queue_keys,
-                compute_why_waiting(
-                    queued_by_queue=queued_by_queue,
-                    running_by_queue=running_by_queue_key,
-                    concurrency_limits=concurrency_limits,
-                    spawned_keys=spawned_queue_keys,
-                    max_workers=MAX_WORKERS_PER_POLL,
-                ),
-            )
-        except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
-            console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
+        why_waiting = compute_why_waiting(
+            queued_by_queue=queued_by_queue,
+            running_by_queue=running_by_queue_key,
+            concurrency_limits=concurrency_limits,
+            spawned_keys=spawned_queue_keys,
+            max_workers=MAX_WORKERS_PER_POLL,
+        )
 
         if not spawn_plan:
+            # Nothing to spawn: still record why the waiting queues are waiting.
+            try:
+                await stamp_dispatch_stage([], why_waiting)
+            except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
+                console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
             console.print("[dim]No queue capacity available, exiting[/dim]")
             return
 
@@ -566,6 +565,14 @@ async def poll_queue():
             )
 
         console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
+
+        # Stamp spawned_at only AFTER the spawn actually happened, so a worker
+        # that fails to spawn (the gather above raises -> caught below) leaves
+        # its row un-stamped instead of falsely reading as 'spawned'.
+        try:
+            await stamp_dispatch_stage(spawned_queue_keys, why_waiting)
+        except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
+            console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
 
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
