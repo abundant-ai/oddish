@@ -144,3 +144,46 @@ async def test_browse_facets_scope():
         assert pairs == {("claude-code", None), ("codex", None)}
     finally:
         await engine.dispose()
+
+
+async def _insert_mixed_trial_task(engine):
+    """Add task 'delta' whose two current-version real trials are MIXED:
+    one errored + one clean, one with a trajectory + one without."""
+    stmts = """
+        insert into tasks (id,name,org_id,"user",priority,status,task_path,link,tags,run_analysis,run_probe,created_at,updated_at)
+        values ('t-d','delta','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now());
+        insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
+        values ('v-d','t-d',1,'p',now(),now());
+        update tasks set current_version_id='v-d' where id='t-d';
+        insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,error_message,input_tokens,output_tokens,cache_tokens,total_steps,has_trajectory,finished_at,attempts,max_attempts,heartbeat_failure_count,created_at,updated_at)
+        values
+          ('tr-d1','tr-d1','t-d','v-d','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.5,'kaboom',1000,500,0,20,true,now(),1,6,0,now(),now()),
+          ('tr-d2','tr-d2','t-d','v-d','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'FAILED','oddish',false,0.5,null,1000,500,0,20,false,now(),1,6,0,now(),now());
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_browse_boolean_no_is_complement():
+    """``has_error`` / ``has_trajectory`` "No" is the complement of "Yes": the
+    task ran a real trial and NONE is positive. A task with a mix of positive
+    and negative trials therefore counts as "Yes" and is excluded from "No"."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_mixed_trial_task(engine)
+        async with maker() as session:
+            # delta HAS an errored trial -> "Yes"; excluded from "No".
+            assert await _names(session, has_error=True) == {"beta", "delta"}
+            assert await _names(session, has_error=False) == {"alpha"}
+            # delta HAS a trajectory trial -> "Yes"; excluded from "No".
+            assert await _names(session, has_trajectory=True) == {
+                "alpha",
+                "delta",
+            }
+            assert await _names(session, has_trajectory=False) == {"beta"}
+    finally:
+        await engine.dispose()
