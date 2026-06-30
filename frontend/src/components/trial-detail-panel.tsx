@@ -214,13 +214,13 @@ const SANDBOX_BACKENDS: Record<
     id: "daytona",
     label: "Daytona",
     logoSrc: "/daytona-logotype.svg",
-    logoWidth: 68,
+    logoWidth: 50,
   },
   modal: {
     id: "modal",
     label: "Modal",
     logoSrc: "/modal-logo-icon.png",
-    logoWidth: 13,
+    logoWidth: 10,
   },
 };
 
@@ -257,24 +257,24 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
     <>
-      <span className="inline-flex h-5 items-center justify-center rounded-sm bg-white px-1">
+      <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
         <Image
           src={backend.logoSrc}
           alt={`${backend.label} logo`}
           width={backend.logoWidth}
-          height={14}
-          className="h-3.5 w-auto object-contain"
+          height={10}
+          className="h-2.5 w-auto object-contain"
         />
       </span>
       {backend.id === "modal" && (
-        <span className="text-muted-foreground font-sans text-[10px] font-semibold tracking-wide uppercase">
+        <span className="text-muted-foreground font-sans text-[9px] font-semibold tracking-wide uppercase">
           {backend.label}
         </span>
       )}
     </>
   );
   const className =
-    "border-border bg-muted/50 ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
+    "border-border bg-muted/40 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
 
   if (backend.href) {
     return (
@@ -585,27 +585,29 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
-          {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
             </span>
           )}
           <span className="text-muted-foreground/50">·</span>
-          <span className="text-muted-foreground flex min-w-0 flex-col items-center text-center leading-tight">
-            <span className="truncate text-[10px] font-bold sm:text-xs">
-              {trial.agent}
+          <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 leading-tight">
+            <span className="flex min-w-0 flex-col items-center text-center leading-tight">
+              <span className="truncate text-[10px] font-bold sm:text-xs">
+                {trial.agent}
+              </span>
+              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
+                <QueueKeyIcon
+                  queueKey={trial.provider}
+                  model={trial.model}
+                  agent={trial.agent}
+                  size={11}
+                  className="shrink-0"
+                />
+                {trial.model ?? "—"}
+              </span>
             </span>
-            <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
-              <QueueKeyIcon
-                queueKey={trial.provider}
-                model={trial.model}
-                agent={trial.agent}
-                size={11}
-                className="shrink-0"
-              />
-              {trial.model ?? "—"}
-            </span>
+            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           </span>
         </DrawerTitle>
         <DrawerDescription className="text-muted-foreground font-mono">
