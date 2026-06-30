@@ -65,9 +65,11 @@ export interface Option {
   label: string;
 }
 
-// Enum-valued options are static. Values match the stored DB form (enum names
-// for task status / priority / verdict / trial status; enum values for origin),
-// which the backend resolves; see browse_tasks_core.
+// Enum-valued options are static and MUST match the stored DB form, because the
+// trial-status and origin columns use `values_callable` (no name coercion):
+//   - task status / priority / verdict: enum NAMES (uppercase) — default SQLEnum
+//   - trial status / origin: enum VALUES (lowercase) — values_callable columns
+// See db/models.py and browse_tasks_core.
 export const STATUS_OPTIONS: Option[] = [
   { value: "COMPLETED", label: "Completed" },
   { value: "RUNNING", label: "Running" },
@@ -88,14 +90,14 @@ export const VERDICT_OPTIONS: Option[] = [
   { value: "PENDING", label: "Pending" },
 ];
 
+// TrialStatus = JobStatus, stored as lowercase values via values_callable.
+// (BLOCKED/CANCELLED belong to WorkerJobStatus, not trials.)
 export const TRIAL_STATUS_OPTIONS: Option[] = [
-  { value: "SUCCESS", label: "Success" },
-  { value: "FAILED", label: "Failed" },
-  { value: "RUNNING", label: "Running" },
-  { value: "QUEUED", label: "Queued" },
-  { value: "BLOCKED", label: "Blocked" },
-  { value: "CANCELLED", label: "Cancelled" },
-  { value: "RETRYING", label: "Retrying" },
+  { value: "success", label: "Success" },
+  { value: "failed", label: "Failed" },
+  { value: "running", label: "Running" },
+  { value: "queued", label: "Queued" },
+  { value: "retrying", label: "Retrying" },
 ];
 
 export const ORIGIN_OPTIONS: Option[] = [

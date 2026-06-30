@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import (  # type: ignore[attr-defined]
 )
 
 import models  # noqa: F401  registers cloud tables on the shared Base
-from oddish.core.endpoints import browse_tasks_core
+from oddish.core.endpoints import browse_task_facets_core, browse_tasks_core
 from oddish.db.models import Base
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -56,6 +56,7 @@ async def _setup(engine):
                    ('t-c','gamma','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now());
             insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
             values ('v-a','t-a',1,'p',now(),now()),
+                   ('v-a-old','t-a',0,'p',now(),now()),
                    ('v-b','t-b',1,'p',now(),now()),
                    ('v-c','t-c',1,'p',now(),now());
             update tasks set current_version_id='v-a' where id='t-a';
@@ -65,7 +66,8 @@ async def _setup(engine):
             values
               ('tr-a','tr-a','t-a','v-a','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,1000,500,0,20,true,now() - interval '1 day',1,6,0,now() - interval '1 day',now()),
               ('tr-b','tr-b','t-b','v-b','exp-real','org1','codex','openai','q',30,'docker','{}'::jsonb,'FAILED','oddish',false,0.0,'boom',200000,100000,0,200,false,now(),3,6,0,now(),now()),
-              ('tr-c','tr-c','t-c','v-c','exp-probe','org1','gemini-cli','google','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',true,1.0,null,100,100,0,5,true,now(),1,6,0,now(),now());
+              ('tr-c','tr-c','t-c','v-c','exp-probe','org1','gemini-cli','google','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',true,1.0,null,100,100,0,5,true,now(),1,6,0,now(),now()),
+              ('tr-a-old','tr-a-old','t-a','v-a-old','exp-real','org1','legacy-agent','anthropic','q',30,'modal','{}'::jsonb,'success','oddish',false,1.0,null,100,50,0,10,true,now() - interval '3 day',1,6,0,now() - interval '3 day',now());
             insert into task_experiments (task_id,experiment_id,created_at)
             values ('t-a','exp-real',now()),('t-b','exp-real',now());
         """
@@ -123,5 +125,22 @@ async def test_browse_filters():
             assert await _names(session, agents=["gemini-cli"]) == set()
             # ... but trial_is_probe opts back into them.
             assert await _names(session, trial_is_probe=True) == {"gamma"}
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_facets_scope():
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            facets = await browse_task_facets_core(session, org_id=ORG)
+        # Facets mirror the browse filters: only current-version, non-probe,
+        # non-superseded trials. So 'gemini-cli' (probe) and 'legacy-agent'
+        # (on an old, non-current version) must NOT appear.
+        assert set(facets.agents) == {"claude-code", "codex"}
+        pairs = {(p.agent, p.model) for p in facets.agent_models}
+        assert pairs == {("claude-code", None), ("codex", None)}
     finally:
         await engine.dispose()
