@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,7 +24,10 @@ import {
   activeFilterCount,
   EMPTY_FILTERS,
   FILTER_DEFS,
+  FILTER_PARAM_KEYS,
+  filterParams,
   isFilterActive,
+  searchParamsToFilters,
   type FilterDef,
   type FilterValues,
   type Option,
@@ -51,14 +55,29 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
 }
 
 export function TasksFilterSidebar({
-  values,
-  onChange,
   facets,
 }: {
-  values: FilterValues;
-  onChange: (next: FilterValues) => void;
   facets: TaskBrowseFacets | null;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  // Filter state lives in the URL so the server-rendered results refetch (and a
+  // Suspense skeleton shows) whenever a filter changes — and links are shareable.
+  const values = useMemo(
+    () => searchParamsToFilters(new URLSearchParams(searchParams.toString())),
+    [searchParams]
+  );
+
+  const onChange = (next: FilterValues) => {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const key of FILTER_PARAM_KEYS) params.delete(key);
+    for (const [key, value] of filterParams(next)) params.set(key, value);
+    params.delete("offset");
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  };
+
   const set = (patch: Partial<FilterValues>) =>
     onChange({ ...values, ...patch });
 
