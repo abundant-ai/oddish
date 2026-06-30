@@ -106,13 +106,24 @@ def test_subagents_section_mandates_snapshot_restore():
     # Sequential alone leaves residue: a mutating subagent that returns without
     # reverting dirties /app for the next one. Require snapshot-once + restore.
     out = _render()
-    assert "/tmp/app-baseline" in out
+    # Baseline lives under /probe-harness, NOT /tmp: the verifier's anti-cheat
+    # scans /tmp (and /app) for smuggled oracle copies, so a /tmp snapshot that
+    # captured a fetched oracle would be flagged and zero the score.
+    assert "/probe-harness/app-baseline" in out
+    assert "/tmp/app-baseline" not in out
     assert "rsync" in out
 
 
 def test_subagents_section_mandates_scratch_provenance_tag():
     out = _render()
     assert "probe-scratch-" in out
+
+
+def test_render_includes_final_summary_section():
+    # Operator prompts vary, so the shared overlay (not each prompt) asks for a
+    # closing summary shaped to the directive — what the analyzer extracts from.
+    out = _render()
+    assert "## FINISH WITH A SUMMARY" in out
 
 
 def test_subagents_section_present_even_without_solution():
