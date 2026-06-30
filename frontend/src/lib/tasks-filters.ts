@@ -6,6 +6,7 @@ export interface FilterValues {
   verdictStatuses: string[];
   agents: string[];
   models: string[];
+  agentModels: string[];
   providers: string[];
   environments: string[];
   trialStatuses: string[];
@@ -35,6 +36,7 @@ export const EMPTY_FILTERS: FilterValues = {
   verdictStatuses: [],
   agents: [],
   models: [],
+  agentModels: [],
   providers: [],
   environments: [],
   trialStatuses: [],
@@ -109,7 +111,8 @@ export type ControlKind =
   | "numrange"
   | "rewardthreshold"
   | "num"
-  | "tags";
+  | "tags"
+  | "agentmodel";
 
 export interface FilterDef {
   key: string;
@@ -134,11 +137,10 @@ export const FILTER_DEFS: FilterDef[] = [
     pinned: true,
   },
   {
-    key: "agents",
-    label: "Agent",
+    key: "agentModels",
+    label: "Agent · Model",
     group: "Trial",
-    control: "multiselect",
-    facet: "agents",
+    control: "agentmodel",
     pinned: true,
   },
   {
@@ -146,7 +148,7 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Tags",
     group: "Task",
     control: "tags",
-    pinned: true
+    pinned: true,
   },
   {
     key: "created",
@@ -161,13 +163,6 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Trial",
     control: "multiselect",
     facet: "environments",
-  },
-  {
-    key: "models",
-    label: "Model",
-    group: "Trial",
-    control: "multiselect",
-    facet: "models",
   },
   {
     key: "providers",
@@ -265,6 +260,8 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.agents.length > 0;
     case "models":
       return f.models.length > 0;
+    case "agentModels":
+      return f.agentModels.length > 0;
     case "providers":
       return f.providers.length > 0;
     case "environments":
@@ -325,6 +322,7 @@ export function filterParams(f: FilterValues): [string, string][] {
   csv("verdict_statuses", f.verdictStatuses);
   csv("agents", f.agents);
   csv("models", f.models);
+  csv("agent_models", f.agentModels);
   csv("providers", f.providers);
   csv("environments", f.environments);
   csv("trial_statuses", f.trialStatuses);
@@ -361,6 +359,7 @@ export const FILTER_PARAM_KEYS = [
   "verdict_statuses",
   "agents",
   "models",
+  "agent_models",
   "providers",
   "environments",
   "trial_statuses",
@@ -405,6 +404,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     verdictStatuses: csv("verdict_statuses"),
     agents: csv("agents"),
     models: csv("models"),
+    agentModels: csv("agent_models"),
     providers: csv("providers"),
     environments: csv("environments"),
     trialStatuses: csv("trial_statuses"),
