@@ -14,7 +14,6 @@ from pathlib import Path
 MIGRATIONS = Path(__file__).resolve().parents[1] / "alembic" / "versions"
 MIG = "mca01_add_model_concurrency_advisory.py"
 REVISION = "mca01_model_concurrency_advisory"
-DOWN = "r8a9drop_probe_ratio_001"
 
 
 def _read(name: str) -> str:
@@ -24,6 +23,32 @@ def _read(name: str) -> str:
 def _down_revision_of(src: str) -> str | None:
     m = re.search(r'down_revision[^=]*=\s*"([^"]*)"', src)
     return m.group(1) if m else None
+
+
+def _current_prior_head() -> str:
+    """The revision mca01 must chain onto -- the oddish chain's head once mca01 is
+    excluded. Resolved via Alembic (merge-aware) rather than a hardcoded id, so a
+    ``main`` re-merge that advances the head doesn't strand these checks on a stale
+    revision (the exact failure mode that made the old hardcoded ``DOWN`` go out of
+    date). Reads the version files only -- no env.py / DB.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(
+        Config(str(MIGRATIONS.parent.parent / "alembic.ini"))
+    )
+    heads = tuple(script.get_heads())
+    assert heads == (REVISION,), (
+        f"oddish migrations must have a single head {REVISION!r}; got {heads}. "
+        "A stale or mis-chained down_revision forks the graph."
+    )
+    down = script.get_revision(REVISION).down_revision
+    assert isinstance(down, str), f"mca01 must have a single string parent, got {down!r}"
+    return down
+
+
+DOWN = _current_prior_head()
 
 
 def test_revision_chains_onto_current_head():
