@@ -248,14 +248,12 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Token size",
     group: "Trial",
     control: "numrange",
-    hidden: true,
   },
   {
     key: "steps",
     label: "Trajectory length",
     group: "Trial",
     control: "numrange",
-    hidden: true,
   },
   {
     key: "reward",
