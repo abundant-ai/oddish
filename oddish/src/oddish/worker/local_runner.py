@@ -31,6 +31,7 @@ from harbor.trial.trial import Trial
 from oddish.config import (
     ZAI_DEFAULT_BASE_URL,
     is_zai_model,
+    settings,
     zai_bare_model_id,
 )
 from oddish.db import (
@@ -45,7 +46,7 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
-from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, QUERY_CLI_CONTAINER_PATH
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
@@ -490,9 +491,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         probe_agent_env = dict(agent_config.env or {})
         probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
         probe_agent_env.update(probe_env)
-        # Set the stage dir LAST so this infra var always wins over anything the
-        # minted creds bring (matches the cloud path in trial_handler.py).
-        probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
+        probe_agent_env["ODDISH_PROBE_TASK_ID"] = task_db_id
+        probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
+        probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
         agent_config.env = probe_agent_env
 
     cfg = TrialConfig(
@@ -508,20 +509,11 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # identical between the real Harbor Trial and the test double.
     harbor_trial = await Trial.create(cfg)
 
-    # At AGENT_START we perform two uploads (best-effort; failure must never
-    # block the probe):
-    #
-    # 1. Staged task assets (verifier, reference solution, gate-tests, harbor
-    #    source — everything apply_probe_overlay writes to work_task_dir) →
-    #    STAGE_DIR (e.g. /opt/oddish-probe).  This dir is intentionally off
-    #    the agent's browsable tree so /app stays pixel-identical to a real
-    #    run; assets are reachable only through the ``oddish-query`` CLI.
-    #
-    # 2. The ``oddish-query`` CLI alone → PROBE_HARNESS_DIR (e.g.
-    #    /probe-harness), the single advertised entry point referenced in the
-    #    probe instruction.
+    # At AGENT_START upload the oddish-query CLI to PROBE_HARNESS_DIR (best-effort;
+    # failure must never block the probe). Task assets (verifier, reference solution,
+    # etc.) are no longer uploaded here — they are fetched on demand via the CLI
+    # from the backend (Modal injects the CLI bytes via probe_cli_content kwarg).
     if work_root is not None:
-        probe_upload_src = actual_task_path  # the staged work_task_dir (→ hidden stage)
         harness_mount = Path(work_root) / "_harness_mount"
         try:
             stage_cli_mount(harness_mount)
@@ -533,22 +525,22 @@ async def _run_harbor_trial(trial_id: str) -> None:
             if env is None:
                 logger.warning(
                     "probe: hook fired without an environment handle; "
-                    "assets not uploaded for trial %s",
+                    "CLI not uploaded for trial %s",
                     trial_id,
                 )
                 return
-            # Probe-only assets → hidden stage (off the agent's browsable tree).
-            try:
-                await env.upload_dir(source_dir=probe_upload_src, target_dir=STAGE_DIR)
-                logger.info("probe: uploaded task assets to %s for trial %s", STAGE_DIR, trial_id)
-            except Exception:
-                logger.exception("probe: uploading assets to %s failed for %s", STAGE_DIR, trial_id)
             # Only the CLI → the advertised /probe-harness mount.
             try:
                 await env.upload_dir(source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR)
                 logger.info("probe: uploaded CLI to %s for trial %s", PROBE_HARNESS_DIR, trial_id)
             except Exception:
                 logger.exception("probe: uploading CLI to %s failed for %s", PROBE_HARNESS_DIR, trial_id)
+            try:
+                check = await env.exec(f"test -x {QUERY_CLI_CONTAINER_PATH}")
+                if check.return_code != 0:
+                    logger.error("probe: CLI not executable in container for %s", trial_id)
+            except Exception:
+                logger.exception("probe: verifying CLI presence failed for %s", trial_id)
 
         harbor_trial.add_hook(TrialEvent.AGENT_START, _upload_task_dir)
 

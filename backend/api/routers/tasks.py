@@ -37,10 +37,12 @@ from oddish.core.endpoints import (
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
+    list_experiment_slim_tasks,
     list_experiment_task_shells_core,
     list_tasks_core,
     list_task_versions_core,
     rerun_task_qa_core,
+    unlink_task_from_experiment_core,
 )
 from oddish.core.dashboard import (
     EXPERIMENTS_UNATTRIBUTED_OWNER,
@@ -680,6 +682,47 @@ async def list_experiment_task_shells(
         )
 
 
+@router.get(
+    "/experiments/{experiment_id}/slim-tasks",
+    response_model=list[TaskStatusResponse],
+)
+async def list_experiment_slim_tasks_route(
+    request: Request,
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(2000, ge=1, le=2000),
+    offset: int = 0,
+) -> list[TaskStatusResponse]:
+    """Phase-2 grid data with SLIM per-trial payloads for the experiment page.
+
+    Like the experiment-scoped ``GET /tasks?include_trials=true`` path, but
+    each trial carries only the fields the grid renders (+ cost). Heavy
+    per-trial detail is fetched on demand via ``GET /trials/{trial_id}`` when a
+    cell is clicked. The generic ``/tasks`` route is left unchanged; only the
+    experiment-page Phase-2 fetch should call this.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Slim tasks DB connect",
+        )
+        return await list_experiment_slim_tasks(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
+            include_empty_rewards=True,
+            record_timing=_make_timing_recorder(request),
+        )
+
+
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)
 async def browse_tasks(
     request: Request,
@@ -867,6 +910,35 @@ async def delete_experiment(
     async with get_session() as session:
         result = await delete_experiment_core(
             session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
+
+    return result
+
+
+@router.delete("/experiments/{experiment_id}/tasks/{task_id}")
+async def unlink_task_from_experiment(
+    experiment_id: str,
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Remove a task from one experiment without deleting the task.
+
+    Soft-deletes just the task<->experiment association (the
+    ``task_experiments`` join row) plus this experiment's trials for the
+    task, so a **shared** task can be pulled out of one experiment while
+    staying intact in every other experiment it belongs to. The task row
+    itself is never deleted; use ``DELETE /tasks/{task_id}`` for that.
+    Artifacts remain in storage (the core path returns an empty
+    ``s3_prefixes`` list, so the API layer performs no hard-deletion).
+    """
+    async with get_session() as session:
+        result = await unlink_task_from_experiment_core(
+            session,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
         )
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
