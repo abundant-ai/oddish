@@ -197,6 +197,7 @@ type SandboxBackend = {
   id: SandboxBackendId;
   label: string;
   logoSrc: string;
+  logoWidth: number;
   href?: string;
 };
 
@@ -207,12 +208,14 @@ const SANDBOX_BACKENDS: Record<
   daytona: {
     id: "daytona",
     label: "Daytona",
-    logoSrc: "/daytona-glyph.svg",
+    logoSrc: "/daytona-logotype.svg",
+    logoWidth: 68,
   },
   modal: {
     id: "modal",
     label: "Modal",
-    logoSrc: "/modal-logo-icon.png",
+    logoSrc: "/modal-wordmark-primary-light.png",
+    logoWidth: 56,
   },
 };
 
@@ -248,21 +251,18 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
-    <>
-      <span className="inline-flex size-4 items-center justify-center rounded-sm bg-white">
-        <Image
-          src={backend.logoSrc}
-          alt={`${backend.label} logo`}
-          width={13}
-          height={13}
-          className="size-3 object-contain"
-        />
-      </span>
-      <span>{backend.label}</span>
-    </>
+    <span className="inline-flex h-5 items-center justify-center rounded-sm bg-white px-1">
+      <Image
+        src={backend.logoSrc}
+        alt={`${backend.label} logo`}
+        width={backend.logoWidth}
+        height={14}
+        className="h-3.5 w-auto object-contain"
+      />
+    </span>
   );
   const className =
-    "border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 font-sans text-[10px] font-semibold tracking-wide uppercase";
+    "border-border bg-muted/50 inline-flex shrink-0 items-center rounded-md border px-1 py-0.5";
 
   if (backend.href) {
     return (
