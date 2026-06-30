@@ -19,6 +19,7 @@ from oddish.config import (
     is_fireworks_model,
     is_minimax_model,
     is_moonshot_model,
+    is_xai_model,
     is_zai_model,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -29,6 +30,7 @@ from oddish.config import (
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
+    to_xai_model_id,
     to_zai_model_id,
     zai_bare_model_id,
 )
@@ -398,6 +400,8 @@ def _build_agent_config(
 
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
+    elif is_xai_model(agent_config.model_name):
+        agent_config.model_name = to_xai_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
         agent_config.model_name = to_zai_model_id(agent_config.model_name)
     elif is_minimax_model(agent_config.model_name):
