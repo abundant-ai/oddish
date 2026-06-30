@@ -158,6 +158,11 @@ function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--experiment ${task.experiment_id}`);
   }
 
+  const sandboxBackend = getSandboxBackend(trial);
+  if (sandboxBackend) {
+    parts.push(`-e ${sandboxBackend.id}`);
+  }
+
   if (trial.agent) {
     parts.push(`-a ${trial.agent}`);
   }
