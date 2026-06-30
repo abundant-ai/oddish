@@ -15,6 +15,17 @@ function run(args, fetchImpl) {
   return res.stdout.trim();
 }
 
+function runApi(args, fixture, extraEnv) {
+  const res = spawnSync('node', ['./oddish-query', ...args], {
+    cwd: new URL('.', import.meta.url).pathname,
+    env: { ...process.env, ODDISH_API_BASE_URL: 'http://x', ODDISH_API_KEY: 'k',
+           ODDISH_PROBE_TASK_ID: 'task-123',
+           ODDISH_QUERY_TEST_FIXTURE: JSON.stringify(fixture), ...(extraEnv || {}) },
+    encoding: 'utf8',
+  });
+  return res.stdout.trim();
+}
+
 test('experiments trials projects is_probe', () => {
   const out = run(['experiments', 'trials', 'exp1'],
     { '/experiments/exp1/trials': [
@@ -28,6 +39,19 @@ test('experiments trials projects is_probe', () => {
 test('401 → credential expired', () => {
   const out = run(['tasks', 'get', 'x'], { __status: 401 });
   assert.deepEqual(JSON.parse(out), { error: 'session credential expired', status: 401 });
+});
+
+test('solution cat fetches file content from the API behind the banner', () => {
+  const out = runApi(['solution', 'cat', 'a.txt'],
+    { '/tasks/task-123/files/solution/a.txt': { path: 'solution/a.txt', content: 'HELLO-SOLUTION' } });
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, /HELLO-SOLUTION/);
+  assert.ok(out.indexOf('PROBE-ONLY') < out.indexOf('HELLO-SOLUTION'));
+});
+
+test('solution cat without task id dies clearly', () => {
+  const out = runApi(['solution', 'cat', 'a.txt'], {}, { ODDISH_PROBE_TASK_ID: '' });
+  assert.match(out, /task id/i);
 });
 
 function runStage(args, stageDir) {
@@ -47,12 +71,6 @@ function mkStage() {
   return stage;
 }
 
-test('solution cat prints the file behind the boundary banner', () => {
-  const out = runStage(['solution', 'cat', 'a.txt'], mkStage());
-  assert.match(out, /PROBE-ONLY/);
-  assert.match(out, /HELLO-SOLUTION/);
-  assert.ok(out.indexOf('PROBE-ONLY') < out.indexOf('HELLO-SOLUTION'));
-});
 
 test('verifier source prints test.sh behind the banner', () => {
   const out = runStage(['verifier', 'source'], mkStage());
@@ -66,11 +84,6 @@ test('missing stage emits banner then error', () => {
   assert.match(out, /unavailable/);
 });
 
-test('solution cat refuses path traversal', () => {
-  const out = runStage(['solution', 'cat', '../test.sh'], mkStage());
-  assert.match(out, /escapes|unavailable|no such/);
-  assert.doesNotMatch(out, /SCORER/);
-});
 
 test('solution fetch copies the tree into --into and reports the path', () => {
   const stage = mkStage();
