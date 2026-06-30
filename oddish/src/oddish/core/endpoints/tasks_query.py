@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from sqlalchemy import (
@@ -1269,28 +1272,52 @@ async def browse_task_facets_core(
             stmt = stmt.where(TrialModel.org_id == org_id)
         return stmt.distinct().order_by(column)
 
-    async def _values(column: Any) -> list[str]:
-        result = await session.execute(_distinct(column))
-        return [v for v in result.scalars().all() if v]
+    # Each facet is computed independently and a failure in one (e.g. a
+    # data-dependent JSON query) must not 500 the whole endpoint and blank every
+    # filter dropdown. On error we log, roll back the aborted transaction so the
+    # next query runs clean, and return an empty list for just that facet.
+    async def _values(column: Any, name: str) -> list[str]:
+        try:
+            result = await session.execute(_distinct(column))
+            return [v for v in result.scalars().all() if v]
+        except Exception:  # noqa: BLE001 - facets are best-effort
+            logger.exception("browse facets: %s query failed", name)
+            await session.rollback()
+            return []
 
     classification = TrialModel.analysis["classification"].astext
 
-    experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
-    if org_id is not None:
-        experiments_stmt = experiments_stmt.where(ExperimentModel.org_id == org_id)
-    experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
-    experiment_rows = (await session.execute(experiments_stmt)).all()
+    agents = await _values(TrialModel.agent, "agent")
+    models = await _values(TrialModel.model, "model")
+    providers = await _values(TrialModel.provider, "provider")
+    environments = await _values(TrialModel.environment, "environment")
+    harbor_stages = await _values(TrialModel.harbor_stage, "harbor_stage")
+    analysis_classifications = await _values(classification, "analysis_classification")
+
+    experiments: list[TaskBrowseExperiment] = []
+    try:
+        experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
+        if org_id is not None:
+            experiments_stmt = experiments_stmt.where(
+                ExperimentModel.org_id == org_id
+            )
+        experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
+        experiment_rows = (await session.execute(experiments_stmt)).all()
+        experiments = [
+            TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
+        ]
+    except Exception:  # noqa: BLE001 - facets are best-effort
+        logger.exception("browse facets: experiments query failed")
+        await session.rollback()
 
     return TaskBrowseFacets(
-        agents=await _values(TrialModel.agent),
-        models=await _values(TrialModel.model),
-        providers=await _values(TrialModel.provider),
-        environments=await _values(TrialModel.environment),
-        harbor_stages=await _values(TrialModel.harbor_stage),
-        analysis_classifications=await _values(classification),
-        experiments=[
-            TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
-        ],
+        agents=agents,
+        models=models,
+        providers=providers,
+        environments=environments,
+        harbor_stages=harbor_stages,
+        analysis_classifications=analysis_classifications,
+        experiments=experiments,
     )
 
 
