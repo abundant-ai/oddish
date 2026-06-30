@@ -851,6 +851,9 @@ async def browse_tasks_core(
             _trial_exists(TrialModel.environment.in_(list(environments)))
         )
     if trial_statuses:
+        # Values are the uppercase enum NAMES (SUCCESS/FAILED/…), matching the
+        # frontend TRIAL_STATUS_OPTIONS. TrialModel.status uses SQLEnum without
+        # values_callable, so the column stores names, not the lowercase values.
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.status.in_(list(trial_statuses)))
         )
