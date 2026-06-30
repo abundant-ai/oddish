@@ -909,6 +909,8 @@ async def browse_tasks_core(
             _trial_exists(TrialModel.attempts >= min_attempts)
         )
     if min_tokens is not None or max_tokens is not None:
+        # Token size = input + output + cache for a single trial (per-trial
+        # existence, not a task aggregate). Backs the "Token size" sidebar filter.
         total_tokens = (
             func.coalesce(TrialModel.input_tokens, 0)
             + func.coalesce(TrialModel.output_tokens, 0)
