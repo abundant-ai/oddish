@@ -99,23 +99,19 @@ test('solution fetch downloads the solution tree into --into', () => {
   assert.ok(!fs.existsSync(path.join(dest, 'test.sh')));  // only solution/ subtree
 });
 
-test('verify run captures stderr in build_log_tail', () => {
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
-  fs.writeFileSync(path.join(stage, 'test.sh'),
-    '#!/bin/bash\necho STDERR_MARKER >&2\n');
-  const out = runStage(['verify', 'run'], stage);
+test('verify run materializes test.sh from the API, runs it, returns JSON', () => {
+  const out = runApi(['verify', 'run'],
+    { '/tasks/task-123/files': { files: [
+        { path: 'test.sh', content: '#!/bin/bash\necho RUNNING_VERIFIER\n' } ] } });
   const obj = JSON.parse(out);
-  assert.match(obj.build_log_tail, /STDERR_MARKER/);
-});
-
-test('verify run executes test.sh and returns parseable JSON with note banner', () => {
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
-  // Fake verifier writes a reward file, like the real test.sh does.
-  fs.writeFileSync(path.join(stage, 'test.sh'),
-    '#!/bin/bash\nmkdir -p /tmp/vlog\necho RUNNING_VERIFIER\n');
-  const out = runStage(['verify', 'run'], stage);
-  const obj = JSON.parse(out);            // must be a single parseable object
   assert.match(obj.note, /PROBE-ONLY/);
   assert.equal(obj.exit, 0);
   assert.match(obj.build_log_tail, /RUNNING_VERIFIER/);
+});
+
+test('verify run captures stderr in build_log_tail', () => {
+  const out = runApi(['verify', 'run'],
+    { '/tasks/task-123/files': { files: [
+        { path: 'test.sh', content: '#!/bin/bash\necho STDERR_MARKER >&2\n' } ] } });
+  assert.match(JSON.parse(out).build_log_tail, /STDERR_MARKER/);
 });
