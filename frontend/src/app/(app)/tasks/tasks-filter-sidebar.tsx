@@ -177,21 +177,24 @@ export function TasksFilterSidebar({
               </span>
             ) : null}
           </span>
-          {activeCount > 0 ? (
-            <button
-              type="button"
-              className="text-muted-foreground hover:text-foreground text-[11px]"
-              onClick={() => {
-                onChange(EMPTY_FILTERS);
-                setAddedKeys([]);
-              }}
-            >
-              Clear all
-            </button>
-          ) : null}
+          <div className="flex items-center gap-1">
+            <SavedFiltersMenu />
+            {activeCount > 0 ? (
+              <button
+                type="button"
+                className="text-muted-foreground hover:text-foreground text-[11px]"
+                onClick={() => {
+                  onChange(EMPTY_FILTERS);
+                  setAddedKeys([]);
+                }}
+              >
+                Clear all
+              </button>
+            ) : null}
+          </div>
         </div>
 
-        <div className="mb-3 space-y-2 border-b border-[#6f88b4]/10 pb-3">
+        <div className="mb-3 border-b border-[#6f88b4]/10 pb-3">
           <div className="relative">
             <Input
               value={searchQuery}
@@ -217,9 +220,6 @@ export function TasksFilterSidebar({
                 hint="by author — GitHub handle, email, or name"
               />
             </SearchSyntaxHelp>
-          </div>
-          <div className="flex justify-end">
-            <SavedFiltersMenu />
           </div>
         </div>
 
