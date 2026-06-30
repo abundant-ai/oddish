@@ -303,6 +303,7 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
+| POST | `/trials/{trial_id}/retry` | Retry a trial by creating a fresh replacement row. Optional body: `registry_auth` to supply fresh per-run registry credentials for the replacement trial |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
@@ -394,7 +395,7 @@ Claude Code invokes Bedrock via the legacy `InvokeModel` API, which only
 accepts **cross-region inference profile ids** (a `global.`/`us.`/... prefix)
 or ARNs. A bare `anthropic.claude-...` foundation-model id is *not* invokable
 on-demand — Bedrock rejects it with "Retry your request with the ID or ARN
-of an inference profile". So `harbor_runner` normalizes whatever model id a
+of an inference profile". So `oddish.workers.harbor.runner` normalizes whatever model id a
 trial supplies via `oddish.config.to_bedrock_model_id` before handing it to
 Harbor. That normalizer accepts any of these forms:
 
@@ -438,7 +439,7 @@ this with a dedicated z.ai route:
   kept on the model id handed to Harbor so its per-agent network allowlist
   resolves `api.z.ai` for closed-internet tasks.
 - **Env injection.** For a `claude-code` agent on a GLM model,
-  `harbor_runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
+  `oddish.workers.harbor.runner._apply_claude_code_zai_env` mirrors the OpenRouter path: it
   sets `ANTHROPIC_BASE_URL` (default `https://api.z.ai/api/anthropic`,
   overridable via `ZAI_BASE_URL`), `ANTHROPIC_AUTH_TOKEN=${ZAI_API_KEY}`
   (resolved by Harbor's Modal env at exec time), pins `ANTHROPIC_MODEL` and all
@@ -494,7 +495,7 @@ with Bedrock for concurrency slots:
     provider prefix is kept on the id handed to Harbor so its per-agent network
     allowlist resolves the direct endpoint for closed-internet tasks.
 - **Env injection.** For a `claude-code` agent on a MiniMax/Moonshot model,
-  `harbor_runner._apply_claude_code_minimax_env` /
+  `oddish.workers.harbor.runner._apply_claude_code_minimax_env` /
   `_apply_claude_code_moonshot_env` mirror the z.ai path: they set
   `ANTHROPIC_BASE_URL` (defaults `https://api.minimax.io/anthropic` /
   `https://api.moonshot.ai/anthropic`, overridable via `MINIMAX_BASE_URL` /
@@ -556,7 +557,7 @@ run Claude/Opus.
   and its `queue_key` to `fireworks/<short>` — a dedicated concurrency bucket,
   separate from Bedrock and from the per-vendor direct buckets.
 - **Env injection.** For a `claude-code` agent on a `fireworks/` model,
-  `harbor_runner._apply_claude_code_fireworks_env` sets `ANTHROPIC_BASE_URL`
+  `oddish.workers.harbor.runner._apply_claude_code_fireworks_env` sets `ANTHROPIC_BASE_URL`
   (default `https://api.fireworks.ai/inference` — **no `/v1` suffix**, the SDK
   appends `/v1/messages`; overridable via `FIREWORKS_BASE_URL`),
   `ANTHROPIC_AUTH_TOKEN=${FIREWORKS_API_KEY}` (resolved by Harbor's Modal env at
@@ -585,6 +586,25 @@ run Claude/Opus.
 Run GLM 5.2 / MiniMax M3 / Kimi K2.7 via Fireworks: `oddish run -p <task>
 --agent claude-code --model fireworks/glm-5.2`, `… --model fireworks/minimax-m3`,
 `… --model fireworks/kimi-k2.7-code`.
+
+### Grok Build / xAI routing (Harbor installed agent)
+
+Harbor's `grok-build` agent runs directly against xAI, not through Claude Code
+or Codex compatibility wrappers.
+
+- **Canonical id / queue key.** `xai/<id>` is the canonical model form; an
+  explicit `grok/<id>` prefix is normalized to `xai/<id>`. The trial provider
+  resolves to `xai`, and the queue key for
+  `xai/redacted-model` stays exactly that string. If a `grok-build`
+  trial omits a model, it falls back to the `xai` provider bucket rather than
+  `default`.
+- **Secret.** Provide `XAI_API_KEY` in the runtime Modal secret (`oddish-prod`)
+  or the local worker environment. Oddish does not persist the key; Harbor's
+  Grok config references the env var name (`env_key = "XAI_API_KEY"`) and reads
+  the value at runtime.
+
+Run Grok Build on a task: `oddish run -p <task> --agent grok-build --model
+xai/redacted-model`.
 
 Storage defaults:
 
@@ -725,8 +745,8 @@ silently breaks throughput or correctness — read before touching
    (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
    `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
    `normalize_queue_key`): nop/oracle + variants collapse to the single
-   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot map to
-   `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
+   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot / xAI map
+   to `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
    `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
    model across two buckets.
 

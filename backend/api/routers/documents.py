@@ -12,7 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from auth import APIKeyScope, AuthContext, require_auth
-from oddish.core.documents import (
+from oddish.core.sharing.documents import (
     create_document_core,
     delete_document_core,
     get_document_core,

@@ -47,7 +47,7 @@ class _FakeSession:
 
 
 def test_create_saved_filter_inserts_row():
-    from oddish.core.saved_tag_filters_core import create_saved_tag_filter_core
+    from oddish.core.tags.saved_filters import create_saved_tag_filter_core
 
     s = _FakeSession()
     _run(
@@ -64,7 +64,7 @@ def test_create_saved_filter_inserts_row():
 
 
 def test_list_saved_filters_returns_owner_and_org_visible():
-    from oddish.core.saved_tag_filters_core import list_saved_tag_filters_core
+    from oddish.core.tags.saved_filters import list_saved_tag_filters_core
 
     rows = [
         ("f-1", "Mine", '{"all":[],"any":[],"none":[]}', "PRIVATE", "u-1"),

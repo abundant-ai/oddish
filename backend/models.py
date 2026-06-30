@@ -79,8 +79,14 @@ class OrganizationModel(TimestampedMixin, Base):
     users: Mapped[list["UserModel"]] = relationship(  # type: ignore[assignment]
         "UserModel", back_populates="organization", lazy="selectin"
     )
+    # api_keys.org_id has no DB-level FK (dropped so the oddish migration chain
+    # bootstraps independently), so spell out the join + foreign() side; without
+    # it mapper configuration fails and every ORM query 500s. Read-only path.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", lazy="selectin"
+        "APIKeyModel",
+        primaryjoin="OrganizationModel.id == foreign(APIKeyModel.org_id)",
+        viewonly=True,
+        lazy="selectin",
     )
 
 
@@ -140,8 +146,12 @@ class UserModel(TimestampedMixin, Base):
     organization: Mapped["OrganizationModel"] = relationship(  # type: ignore[assignment]
         "OrganizationModel", back_populates="users", lazy="selectin"
     )
+    # created_by_user_id has no DB-level FK (see APIKeyModel); spell out the join.
     api_keys: Mapped[list["APIKeyModel"]] = relationship(  # type: ignore[assignment]
-        "APIKeyModel", lazy="selectin"
+        "APIKeyModel",
+        primaryjoin="UserModel.id == foreign(APIKeyModel.created_by_user_id)",
+        viewonly=True,
+        lazy="selectin",
     )
 
     __table_args__ = (

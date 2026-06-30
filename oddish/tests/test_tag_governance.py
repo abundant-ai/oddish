@@ -47,7 +47,7 @@ class _FakeSession:
 
 
 def test_get_or_create_tag_policy_creates_default_row(monkeypatch):
-    from oddish.core import tag_policies_core
+    from oddish.core.tags import policies as tag_policies_core
 
     session = _FakeSession(scalar=None)
     _run(tag_policies_core.get_or_create_tag_policy(session, org_id="org-1"))
@@ -55,7 +55,7 @@ def test_get_or_create_tag_policy_creates_default_row(monkeypatch):
 
 
 def test_count_direct_active_tags_at_target_scope():
-    from oddish.core import tag_policies_core
+    from oddish.core.tags import policies as tag_policies_core
 
     session = _FakeSession(scalar=7)
     n = _run(
@@ -67,7 +67,7 @@ def test_count_direct_active_tags_at_target_scope():
 
 
 def test_assert_under_tag_cap_raises_when_over_limit():
-    from oddish.core import tag_policies_core
+    from oddish.core.tags import policies as tag_policies_core
 
     session = _FakeSession(scalar=10)
     import pytest
@@ -85,8 +85,8 @@ def test_assert_under_tag_cap_raises_when_over_limit():
 
 
 def test_create_tag_core_rejects_profanity_in_enforce_mode(monkeypatch):
-    from oddish.core import tags_core
-    from oddish.core import tag_profanity
+    from oddish.core.tags import service as tags_core
+    from oddish.core.tags import profanity as tag_profanity
 
     def _fake_check(text, policy):
         return tag_profanity.ProfanityResult(allowed=False, hits=["x"], mode="ENFORCE")
@@ -121,7 +121,7 @@ def test_create_tag_core_rejects_profanity_in_enforce_mode(monkeypatch):
 
 
 def test_create_tag_core_rejects_reserved_prefix_for_non_admin(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     monkeypatch.setattr(
         tags_core,
@@ -158,7 +158,7 @@ def test_create_tag_core_rejects_reserved_prefix_for_non_admin(monkeypatch):
 
 
 def test_create_tag_core_admin_only_policy_blocks_member(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     monkeypatch.setattr(
         tags_core,
@@ -195,7 +195,7 @@ def test_create_tag_core_admin_only_policy_blocks_member(monkeypatch):
 
 
 def test_create_tag_core_rejects_invalid_visibility():
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
 
@@ -224,7 +224,7 @@ def test_create_tag_core_rejects_invalid_visibility():
 
 
 def test_set_tag_visibility_core_writes_update_and_event(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
     _run(
@@ -250,7 +250,7 @@ def test_set_tag_visibility_core_writes_update_and_event(monkeypatch):
 
 
 def test_archive_tag_core_optimistic_concurrency_zero_rows_raises(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     class _RowCountSession(_FakeSession):
         async def execute(self, stmt, params=None):
@@ -279,7 +279,7 @@ def test_archive_tag_core_optimistic_concurrency_zero_rows_raises(monkeypatch):
 
 
 def test_merge_tag_core_rejects_chained_merge(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     class _ChainSession(_FakeSession):
         async def execute(self, stmt, params=None):

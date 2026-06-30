@@ -5,7 +5,7 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from oddish.core import documents as docs
+from oddish.core.sharing import documents as docs
 from oddish.db import DocumentModel, get_session, utcnow
 
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import typer
+from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.combine import combine
 from oddish.cli.delete import delete
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
-from oddish.cli.probe import probe
+from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
 from oddish.cli.run import run
 from oddish.cli.status import status
@@ -18,7 +19,8 @@ app = typer.Typer(
 )
 
 app.command()(run)
-app.command()(probe)
+app.add_typer(probe_app, name="probe")
+app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command(name="ls")(ls)
 app.command()(status)

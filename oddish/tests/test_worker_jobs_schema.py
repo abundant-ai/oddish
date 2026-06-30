@@ -172,6 +172,7 @@ def test_worker_jobs_has_required_indexes():
         "idx_worker_jobs_subject",
         "idx_worker_jobs_parent",
         "idx_worker_jobs_org",
+        "uq_worker_jobs_tag_project_active",
     }
     got = {idx.name for idx in WorkerJobModel.__table__.indexes}
     missing = expected - got
@@ -191,6 +192,24 @@ def test_worker_jobs_partial_claim_index_is_scoped():
     # must lead the index or the hot claim path loses coverage and table-scans.
     cols = [c.name for c in claim_idx.columns]
     assert cols[:2] == ["queue_key", "harbor_variant_id"], cols
+
+
+def test_worker_jobs_tag_project_coalescing_index_matches_enqueue_sql():
+    idx = next(
+        idx
+        for idx in WorkerJobModel.__table__.indexes
+        if idx.name == "uq_worker_jobs_tag_project_active"
+    )
+    assert idx.unique is True
+    assert [expr.name for expr in idx.expressions] == [
+        "kind",
+        "subject_table",
+        "subject_id",
+    ]
+    where_clause = str(idx.dialect_options["postgresql"]["where"])
+    assert "kind = 'TAG_PROJECT'" in where_clause
+    assert "status IN ('QUEUED', 'RETRYING')" in where_clause
+    assert "subject_id IS NOT NULL" in where_clause
 
 
 def test_worker_jobs_partial_heartbeat_index_is_scoped():

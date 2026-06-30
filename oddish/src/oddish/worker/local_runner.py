@@ -45,8 +45,8 @@ from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
 )
-from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
-from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
+from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
@@ -382,6 +382,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial_org_id = trial.org_id
         extra_instructions = harbor_config.get("extra_instructions")
         probe_scope = harbor_config.get("probe_scope", "task")
+        skill_ids = harbor_config.get("skill_ids")
 
     # Resolve the task files. Cloud-created tasks store their files in S3
     # (MinIO in local dev) with a ``s3://`` task_path, so a bare ``Path``
@@ -426,7 +427,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         # Stage the org's shared skills into a root under work_root and hand it
         # to Harbor below. Best-effort; never blocks the probe.
         skills_root = work_root / "agent_skills"
-        n_skills = await stage_org_skills(skills_root, org_id=trial_org_id)
+        n_skills = await stage_org_skills(
+            skills_root, org_id=trial_org_id, skill_ids=skill_ids
+        )
         if n_skills:
             agent_skill_paths = [skills_root]
             logger.info("probe: staged %d skill(s) for trial %s", n_skills, trial_id)
@@ -481,7 +484,16 @@ async def _run_harbor_trial(trial_id: str) -> None:
         _, probe_env = await mint_probe_creds(
             org_id=trial_org_id, trial_id=trial_id
         )
-        agent_config.env = {**(agent_config.env or {}), **probe_env}
+        # Pin the subagent model to the main agent's so the probe's Task-tool
+        # subagents have a model (mirrors the cloud path in agent_config.py);
+        # setdefault so an explicit config value still wins.
+        probe_agent_env = dict(agent_config.env or {})
+        probe_agent_env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", model_name)
+        probe_agent_env.update(probe_env)
+        # Set the stage dir LAST so this infra var always wins over anything the
+        # minted creds bring (matches the cloud path in trial_handler.py).
+        probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
+        agent_config.env = probe_agent_env
 
     cfg = TrialConfig(
         task=TaskConfig(path=actual_task_path),
@@ -496,44 +508,47 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # identical between the real Harbor Trial and the test double.
     harbor_trial = await Trial.create(cfg)
 
-    # Push the staged task dir into the agent's container under the probe-harness
-    # root -- NOT /app. Harbor builds the image from ``environment/`` only and
-    # hands instruction.md to the agent as a string, so the related_trials/ +
-    # harbor_src/ + tests/ + solution/ that apply_probe_overlay stages into
-    # ``work_task_dir`` never reach the agent on their own. The fork exposes
-    # ``event.environment`` on the hook, so we upload the whole staged dir at
-    # AGENT_START -- after the container is up and right before the agent runs.
-    # We target ``PROBE_HARNESS_DIR`` (e.g. /probe-harness) so /app stays
-    # pixel-identical to a real run: the probe-only verifier + reference solution
-    # land at the exact paths the probe instruction references
-    # (HARBOR_CONTAINER_DIR, AGENT_BRIEF_CONTAINER_PATH, oddish-query CLI),
-    # plainly separated from the agent's own workspace. Best-effort: a failure
-    # here must never block the probe (mirrors apply_probe_overlay).
+    # At AGENT_START we perform two uploads (best-effort; failure must never
+    # block the probe):
+    #
+    # 1. Staged task assets (verifier, reference solution, gate-tests, harbor
+    #    source — everything apply_probe_overlay writes to work_task_dir) →
+    #    STAGE_DIR (e.g. /opt/oddish-probe).  This dir is intentionally off
+    #    the agent's browsable tree so /app stays pixel-identical to a real
+    #    run; assets are reachable only through the ``oddish-query`` CLI.
+    #
+    # 2. The ``oddish-query`` CLI alone → PROBE_HARNESS_DIR (e.g.
+    #    /probe-harness), the single advertised entry point referenced in the
+    #    probe instruction.
     if work_root is not None:
-        probe_upload_src = actual_task_path  # the staged work_task_dir
+        probe_upload_src = actual_task_path  # the staged work_task_dir (→ hidden stage)
+        harness_mount = Path(work_root) / "_harness_mount"
+        try:
+            stage_cli_mount(harness_mount)
+        except Exception:
+            logger.exception("probe: building CLI harness mount failed for %s", trial_id)
 
         async def _upload_task_dir(event: TrialHookEvent) -> None:
             env = getattr(event, "environment", None)
             if env is None:
                 logger.warning(
                     "probe: hook fired without an environment handle; "
-                    "task dir not uploaded for trial %s",
+                    "assets not uploaded for trial %s",
                     trial_id,
                 )
                 return
+            # Probe-only assets → hidden stage (off the agent's browsable tree).
             try:
-                await env.upload_dir(
-                    source_dir=probe_upload_src, target_dir=PROBE_HARNESS_DIR
-                )
-                logger.info(
-                    "probe: uploaded task dir to %s for trial %s",
-                    PROBE_HARNESS_DIR,
-                    trial_id,
-                )
+                await env.upload_dir(source_dir=probe_upload_src, target_dir=STAGE_DIR)
+                logger.info("probe: uploaded task assets to %s for trial %s", STAGE_DIR, trial_id)
             except Exception:
-                logger.exception(
-                    "probe: uploading task dir failed for trial %s", trial_id
-                )
+                logger.exception("probe: uploading assets to %s failed for %s", STAGE_DIR, trial_id)
+            # Only the CLI → the advertised /probe-harness mount.
+            try:
+                await env.upload_dir(source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR)
+                logger.info("probe: uploaded CLI to %s for trial %s", PROBE_HARNESS_DIR, trial_id)
+            except Exception:
+                logger.exception("probe: uploading CLI to %s failed for %s", PROBE_HARNESS_DIR, trial_id)
 
         harbor_trial.add_hook(TrialEvent.AGENT_START, _upload_task_dir)
 

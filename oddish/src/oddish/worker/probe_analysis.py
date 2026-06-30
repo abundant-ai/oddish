@@ -27,6 +27,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
 from oddish.core.result_focus_schema import normalize_findings_schema, parse_result_focus
 
 logger = logging.getLogger(__name__)
@@ -550,6 +551,12 @@ async def run_probe_analyzer(
     "why it was useful" bullet. Empty unless the agent actually used skills or
     MCP servers (external context / tools beyond the builtins).
     """
+    # Repair a malformed-but-JSON-ish schema (cheap LLM pass) before it drives the
+    # prompt framing (schema vs prose) or the structured-outputs envelope below;
+    # without this a single stray comma silently drops the operator's schema to
+    # prose mode. The deterministic parse below then sees clean JSON.
+    result_focus = await repair_result_focus_if_needed(result_focus, kind="schema") or ""
+
     transcript = _build_transcript(agent_messages)
 
     prompt = (
@@ -642,6 +649,14 @@ async def run_probe_analyzer(
         "verifier or a reference solution is BY DESIGN, not a leak.\n"
         "- Count a leak / gameability as real ONLY if it is reachable from the "
         "agent's own `/app` workspace or its prompt.\n"
+        "- Do NOT treat an observed `/app` file-state as the task's NATIVE state if "
+        "a subagent could have mutated it. The probe may dispatch subagents that "
+        "modify `/app` to test exploits; a file's contents/permissions seen mid-run "
+        "may be a probe's own scratch edit, not how the task ships. Treat `/app` "
+        "state as native only when confirmed against a clean baseline (the reference "
+        "solution, or a `verify run` on an unmodified `/app`) — never report "
+        "`/app`-was-writable / a-file-existed as a hole on the strength of a "
+        "transcript snapshot alone.\n"
         "- RESPECT the agent's own caveats. If the agent hedged a finding (e.g. "
         "'not visible to the real agent', 'by design', 'only if an agent could "
         "read tests/'), do NOT strip the hedge or upgrade it to `must_fix`: carry "
@@ -701,8 +716,16 @@ async def run_probe_analyzer(
         "messages": [{"role": "user", "content": prompt}],
     }
     if findings_schema is not None and _supports_structured_outputs(model):
-        create_kwargs["output_config"] = {
-            "format": {"type": "json_schema", "schema": _build_envelope_schema(findings_schema)}
+        # anthropic==0.76.0 doesn't expose output_config as a typed kwarg (passing
+        # it raises "unexpected keyword argument 'output_config'"), so forward the
+        # structured-outputs body field via extra_body instead.
+        create_kwargs["extra_body"] = {
+            "output_config": {
+                "format": {
+                    "type": "json_schema",
+                    "schema": _build_envelope_schema(findings_schema),
+                }
+            }
         }
     msg = await client.messages.create(**create_kwargs)
 

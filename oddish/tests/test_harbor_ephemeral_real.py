@@ -18,7 +18,7 @@ import shutil
 import pytest
 
 from oddish.config import HARBOR_DEFAULT_SOURCE
-from oddish.workers.harbor_ephemeral import run_ephemeral_harbor_trial
+from oddish.workers.harbor.ephemeral import run_ephemeral_harbor_trial
 
 pytestmark = pytest.mark.asyncio
 

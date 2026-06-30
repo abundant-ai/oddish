@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
-from oddish.workers import claude_code_agent
-from oddish.workers.claude_code_agent import (
+from oddish.workers.agents import claude_code as claude_code_agent
+from oddish.workers.agents.claude_code import (
     OddishClaudeCode,
     _pinned_harbor_requirement,
 )

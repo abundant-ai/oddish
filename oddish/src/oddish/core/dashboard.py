@@ -27,12 +27,12 @@ from oddish.core.helpers import (
     escape_like,
     parse_search_query,
 )
-from oddish.core.tag_filter_ast import (
+from oddish.core.tags.filter_ast import (
     ResolvedTagFilter,
     TagFilterAST,
     resolve_names_to_ids,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     UserTagView,
     list_direct_tags_for_targets,
     list_effective_user_tags_for_task_versions,
@@ -931,6 +931,8 @@ async def load_dashboard_experiments(
         ExperimentModel.name.label("experiment_name"),
         ExperimentModel.is_public.label("experiment_is_public"),
         ExperimentModel.last_activity_at.label("last_activity_at"),
+        ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.link.label("experiment_link"),
     )
     if org_id is not None:
         page_query = page_query.where(ExperimentModel.org_id == org_id)
@@ -1153,6 +1155,8 @@ async def load_dashboard_experiments(
             "experiment_id": exp_id,
             "experiment_name": page_row["experiment_name"],
             "experiment_is_public": page_row["experiment_is_public"],
+            "experiment_owner": page_row["experiment_owner"],
+            "experiment_link": page_row["experiment_link"],
             "task_count": int(agg["task_count"]) if agg else 0,
             "analysis_tasks": int(agg["analysis_tasks"]) if agg else 0,
             "verdict_good": int(agg["verdict_good"]) if agg else 0,
@@ -1220,29 +1224,34 @@ async def load_dashboard_experiments(
             last_created_at = max(candidates) if candidates else None
 
         github_meta = _parse_github_meta(merged["last_github_meta"])
-        author = _dashboard_author_from_task(
-            github_username=merged["primary_github_username"],
-            user=merged["primary_user"],
-        )
+        # Author = the experiment's own owner (the creating run's submitter,
+        # stamped set-once). Shown as-is (no source distinction). Fall back to
+        # the earliest task's author for experiments with no stamped owner.
+        if merged["experiment_owner"]:
+            author = _dashboard_author_from_task(
+                github_username=None, user=merged["experiment_owner"]
+            )
+        else:
+            author = _dashboard_author_from_task(
+                github_username=merged["primary_github_username"],
+                user=merged["primary_user"],
+            )
         last_runner = _dashboard_author_from_task(
             github_username=merged["last_github_username"],
             user=merged["last_user"],
         )
 
-        # The PR URL can arrive two ways: structured ``github_meta.pr_url`` or
-        # the canonical ``link`` column (set by ``--link``, or auto-derived from
-        # github_meta). ``link`` is what the task/experiment pages render, so we
-        # treat it as a first-class fallback rather than relying on github_meta
-        # alone. The number is parsed from the URL when github_meta omits it.
-        last_pr_url = (
+        # PR URL = the experiment's own link (stamped set-once). Fall back to the
+        # latest task's github_meta.pr_url / link for experiments with no stamped
+        # link. The number is parsed from whichever URL we end up using.
+        last_pr_url = merged["experiment_link"] or (
             str(github_meta["pr_url"])
             if github_meta and github_meta.get("pr_url") is not None
             else merged["last_link"]
         )
-        if github_meta and github_meta.get("pr_number") is not None:
-            last_pr_number = str(github_meta["pr_number"])
-        else:
-            last_pr_number = _pr_number_from_url(last_pr_url)
+        # Derive the number from the URL we actually link to, so the badge can
+        # never show a number that disagrees with its target.
+        last_pr_number = _pr_number_from_url(last_pr_url)
 
         experiments_response.append(
             {
@@ -1539,6 +1548,7 @@ async def get_dashboard_core(
     experiments_search_author_github_usernames: Sequence[str] | None = None,
     experiments_search_author_emails: Sequence[str] | None = None,
     usage_minutes: int | None = None,
+    include_queues: bool = True,
     include_tasks: bool = True,
     include_usage: bool = True,
     include_experiments: bool = True,
@@ -1567,7 +1577,7 @@ async def get_dashboard_core(
     primary_cache_key = (
         f"dashboard.primary:{org_id}:"
         f"{tasks_limit}:{tasks_offset}:{usage_minutes}:"
-        f"{include_tasks}:{include_usage}"
+        f"{include_queues}:{include_tasks}:{include_usage}"
     )
     experiments_cache_key = (
         f"dashboard.experiments:{org_id}:"
@@ -1581,13 +1591,9 @@ async def get_dashboard_core(
         f"{experiments_tags}:{experiments_tags_any}:{experiments_tags_none}"
     )
 
-    is_usage_only_request = (
-        include_usage and not include_tasks and not include_experiments
-    )
-
     async def _fetch_primary():
         """Queue stats, pipeline stats, usage, and tasks on the caller's session."""
-        if is_usage_only_request:
+        if not include_queues:
             qs: dict = {}
             ps: dict[str, dict[str, int]] = {
                 "trials": {},

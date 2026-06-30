@@ -12,7 +12,7 @@ from oddish.core.helpers import (
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
 )

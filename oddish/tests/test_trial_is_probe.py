@@ -122,7 +122,7 @@ def test_trial_response_exposes_is_probe():
 
 @pytest.mark.asyncio
 async def test_list_task_trials_filters_by_probe(cleanup_task_ids):
-    from oddish.core.public_helpers import list_task_trials_for_task
+    from oddish.core.sharing.helpers import list_task_trials_for_task
 
     # create_task seeds one probe trial; append_trials_to_task adds one normal
     # trial to the SAME task, in the same session. append takes the TaskModel
@@ -178,8 +178,9 @@ async def test_retry_preserves_is_probe(monkeypatch):
     from oddish.db import TaskStatus, TrialStatus
 
     class _Result:
-        def __init__(self, scalar=None):
+        def __init__(self, scalar=None, rowcount=0):
             self._scalar = scalar
+            self.rowcount = rowcount
 
         def scalar_one_or_none(self):
             return self._scalar
@@ -230,10 +231,26 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
     class _Session:
         async def execute(self, _stmt, _params=None):
+            sql = str(_stmt)
+            if "UPDATE trials" in sql and "superseded_by_trial_id IS NULL" in sql:
+                if trial.superseded_by_trial_id is not None:
+                    return _Result(rowcount=0)
+                trial.superseded_by_trial_id = _params["new_trial_id"]
+                return _Result(rowcount=1)
             return _Result(scalar=trial)
 
-        async def get(self, _model, _key):
-            return task
+        async def scalar(self, _stmt, _params=None):
+            return None
+
+        def expire(self, _obj):
+            pass
+
+        async def get(self, _model, _key, **_kwargs):
+            from oddish.db import TaskModel as _TaskModel
+
+            if _model is _TaskModel:
+                return task
+            return trial
 
         def add(self, obj):
             added.append(obj)
@@ -256,6 +273,7 @@ async def test_retry_preserves_is_probe(monkeypatch):
         max_attempts,
         parent_job_id=None,
         harbor_variant_id="default",
+        registry_auth_enc=None,
     ):
         pass
 
@@ -266,6 +284,6 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
     assert added, "retry_trial_core should have added a new TrialModel"
     new_trial = added[0]
-    assert (
-        new_trial.is_probe is True
-    ), f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"
+    assert new_trial.is_probe is True, (
+        f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"
+    )

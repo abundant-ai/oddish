@@ -8,7 +8,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.tags_enqueue import enqueue_tag_project_worker_job
+from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.db import Priority, TaskModel, TaskVersionModel, get_session
 from oddish.db.storage import StorageClient, get_storage_client
 from oddish.schemas import TaskUploadInitResponse, UploadResponse

@@ -25,6 +25,7 @@ from cloud_policy import (
 from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.core.endpoints import (
+    backfill_task_analysis_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -36,6 +37,7 @@ from oddish.core.endpoints import (
     get_task_for_org_core,
     get_task_status_core,
     get_task_version_core,
+    list_experiment_task_shells_core,
     list_tasks_core,
     list_task_versions_core,
     rerun_task_qa_core,
@@ -48,7 +50,7 @@ from oddish.core.experiments import (
     list_experiment_probes_core,
     list_org_probes_core,
 )
-from oddish.core.public_helpers import (
+from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     get_task_file_content_s3,
     list_task_files_s3,
@@ -77,6 +79,7 @@ from oddish.queue import (
     cancel_tasks_runs,
 )
 from oddish.schemas import (
+    BackfillQARequest,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
     ExperimentProbeRow,
@@ -637,6 +640,46 @@ async def list_tasks(
         return tasks
 
 
+@router.get(
+    "/experiments/{experiment_id}/task-shells",
+    response_model=list[TaskStatusResponse],
+)
+async def list_experiment_task_shells(
+    request: Request,
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    limit: int = Query(2000, ge=1, le=2000),
+    offset: int = 0,
+) -> list[TaskStatusResponse]:
+    """Lightweight task shells for the experiment-details first paint.
+
+    A dedicated, trimmed alternative to ``GET /tasks?...&compact_tasks=true``
+    that additionally drops the per-task ``experiments`` fan-out. The generic
+    ``/tasks`` route (and ``list_tasks_core``) are intentionally left unchanged;
+    only the experiment-page first paint should call this.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        connect_started_at = now()
+        await session.connection()
+        add_server_timing_metric(
+            request,
+            "db_connect",
+            elapsed_ms(connect_started_at),
+            "Task shells DB connect",
+        )
+        return await list_experiment_task_shells_core(
+            session,
+            experiment_id=experiment_id,
+            org_id=auth.org_id,
+            limit=limit,
+            offset=offset,
+            include_empty_rewards=True,
+            record_timing=_make_timing_recorder(request),
+        )
+
+
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)
 async def browse_tasks(
     request: Request,
@@ -1001,6 +1044,31 @@ async def retry_task_qa(
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
+
+
+@router.post("/tasks/{task_id}/qa/backfill")
+async def backfill_task_qa(
+    task_id: str,
+    body: BackfillQARequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Backfill trial analysis for a task: fill trials with no successful analysis yet.
+
+    Default fills only missing/never-analyzed trials; ``force`` re-runs
+    (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
+    into analysis going forward.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        return await backfill_task_analysis_core(
+            session,
+            task_id=task_id,
+            org_id=auth.org_id,
+            trial_ids=body.trial_ids,
+            force=body.force,
+            enable_analysis=body.enable_analysis,
+        )
 
 
 @router.post("/tasks/{task_id}/qa/cancel")

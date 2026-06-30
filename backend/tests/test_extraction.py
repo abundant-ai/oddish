@@ -2,7 +2,7 @@
 
 import os
 
-from oddish.core.extraction import extract_text
+from oddish.core.ingest.extraction import extract_text
 
 _FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.pdf")
 

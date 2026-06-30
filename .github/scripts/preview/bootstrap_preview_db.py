@@ -54,12 +54,24 @@ def _load_base():
     return Base
 
 
+def _index_descriptor(index) -> str:
+    """One index's identity (name, columns, uniqueness) for the fingerprint.
+
+    Folding indexes in means an index-only model change invalidates the cached
+    schema; create_all only builds indexes the models declare, so otherwise it
+    would never reach a preview.
+    """
+    cols = ",".join(sorted(col.name for col in index.columns))
+    return f"{index.name}({cols}){'!u' if index.unique else ''}"
+
+
 def _fingerprint_metadata(metadata) -> str:
-    """Stable short hash of a metadata's table + column names."""
-    parts = [
-        f"{table.name}:{','.join(sorted(col.name for col in table.columns))}"
-        for table in sorted(metadata.tables.values(), key=lambda t: t.name)
-    ]
+    """Stable short hash of a metadata's table + column + index names."""
+    parts = []
+    for table in sorted(metadata.tables.values(), key=lambda t: t.name):
+        cols = ",".join(sorted(col.name for col in table.columns))
+        idxs = ",".join(sorted(_index_descriptor(ix) for ix in table.indexes))
+        parts.append(f"{table.name}:{cols}:{idxs}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
@@ -94,7 +106,21 @@ async def _schema_trusted(url: str) -> bool:
     return marker == _trust_marker()
 
 
+def _assert_preview_branch(url: str) -> None:
+    prod_ref = os.environ.get("SUPABASE_PROJECT_REF")
+    source = os.environ.get("PREVIEW_SAMPLE_SOURCE_DB_URL", "")
+    if (prod_ref and prod_ref in url) or (
+        source and url.split("://", 1)[-1] == source.split("://", 1)[-1]
+    ):
+        raise RuntimeError(
+            "bootstrap_preview_db: ODDISH_DATABASE_URL resolves to production "
+            "(matched SUPABASE_PROJECT_REF / PREVIEW_SAMPLE_SOURCE_DB_URL); "
+            "refusing to DROP SCHEMA. This script only rebuilds preview branches."
+        )
+
+
 async def _rebuild_schema(url: str) -> None:
+    _assert_preview_branch(url)
     base = _load_base()
 
     engine = _engine(url)

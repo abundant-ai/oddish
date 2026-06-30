@@ -47,16 +47,17 @@ async def org_id():
 @pytest.mark.asyncio
 async def test_stages_skills_into_root_per_skill_dirs(org_id, tmp_path):
     async with get_session() as session:
-        await create_skill_core(
+        alpha = await create_skill_core(
             session, data=_payload("alpha"), org_id=org_id, user_id="u"
         )
-        await create_skill_core(
+        beta = await create_skill_core(
             session, data=_payload("beta"), org_id=org_id, user_id="u"
         )
+        alpha_id, beta_id = alpha.id, beta.id  # capture before commit expires instances
         await session.commit()
 
     skills_root = tmp_path / "agent_skills"
-    n = await stage_org_skills(skills_root, org_id=org_id)
+    n = await stage_org_skills(skills_root, org_id=org_id, skill_ids=[alpha_id, beta_id])
     assert n == 2
 
     # Layout is <root>/<name>/<relative_path> — NOT nested under .claude/skills.
@@ -72,16 +73,17 @@ async def test_staged_root_is_harbor_resolvable(org_id, tmp_path):
     from harbor.skills import resolve_skills
 
     async with get_session() as session:
-        await create_skill_core(
+        alpha = await create_skill_core(
             session, data=_payload("alpha"), org_id=org_id, user_id="u"
         )
-        await create_skill_core(
+        beta = await create_skill_core(
             session, data=_payload("beta"), org_id=org_id, user_id="u"
         )
+        alpha_id, beta_id = alpha.id, beta.id  # capture before commit expires instances
         await session.commit()
 
     skills_root = tmp_path / "agent_skills"
-    await stage_org_skills(skills_root, org_id=org_id)
+    await stage_org_skills(skills_root, org_id=org_id, skill_ids=[alpha_id, beta_id])
 
     resolved = resolve_skills([skills_root])
     assert {s.name for s in resolved} == {"alpha", "beta"}
@@ -99,9 +101,10 @@ async def test_no_skills_stages_nothing(org_id, tmp_path):
 @pytest.mark.asyncio
 async def test_one_bad_skill_does_not_block_others(org_id, tmp_path, monkeypatch):
     async with get_session() as session:
-        await create_skill_core(
+        good = await create_skill_core(
             session, data=_payload("good"), org_id=org_id, user_id="u"
         )
+        good_id = good.id  # capture before commit expires the instance
         await session.commit()
 
     # Force materialize_skills to raise for one specific bundle name, proving
@@ -117,7 +120,7 @@ async def test_one_bad_skill_does_not_block_others(org_id, tmp_path, monkeypatch
         return real(bundles, root)
 
     monkeypatch.setattr(ps, "materialize_skills", flaky)
-    n = await stage_org_skills(tmp_path / "agent_skills", org_id=org_id)
+    n = await stage_org_skills(tmp_path / "agent_skills", org_id=org_id, skill_ids=[good_id])
     assert n == 0  # the only skill failed, but no exception propagated
 
 
