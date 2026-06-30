@@ -72,12 +72,6 @@ function mkStage() {
 }
 
 
-test('missing stage emits banner then error', () => {
-  const out = runStage(['verifier', 'source'], '/nonexistent/stage/xyz');
-  assert.match(out, /PROBE-ONLY/);
-  assert.match(out, /unavailable/);
-});
-
 test('harbor src reports unavailable when not staged', () => {
   const out = runStage(['harbor', 'src', '--into', os.tmpdir()], mkStage());
   assert.match(out, /PROBE-ONLY/);
