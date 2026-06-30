@@ -327,3 +327,77 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("reward_max", f.rewardMax);
   return out;
 }
+
+// Tasks per browse page. 24 fills the 3-column tile grid evenly (8 rows).
+export const TASKS_PAGE_SIZE = 24;
+
+// Backend query-param keys the filters serialize to (also the URL keys). Used
+// to clear stale filter params before re-writing, and to forward them to the
+// browse fetch.
+export const FILTER_PARAM_KEYS = [
+  "statuses",
+  "priorities",
+  "verdict_statuses",
+  "agents",
+  "models",
+  "providers",
+  "environments",
+  "trial_statuses",
+  "origins",
+  "analysis_classifications",
+  "has_link",
+  "has_error",
+  "has_trajectory",
+  "trial_is_probe",
+  "created_after",
+  "created_before",
+  "min_attempts",
+  "min_tokens",
+  "max_tokens",
+  "min_steps",
+  "max_steps",
+  "reward_min",
+  "reward_max",
+] as const;
+
+// Inverse of filterParams: read filter values back out of URL search params so
+// the sidebar controls can seed from the URL.
+export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
+  const csv = (k: string) => {
+    const v = sp.get(k);
+    return v ? v.split(",").filter(Boolean) : [];
+  };
+  const bool = (k: string) => {
+    const v = sp.get(k);
+    return v === null ? null : v === "true";
+  };
+  const num = (k: string) => {
+    const v = sp.get(k);
+    return v === null || v === "" ? null : Number(v);
+  };
+  return {
+    statuses: csv("statuses"),
+    priorities: csv("priorities"),
+    verdictStatuses: csv("verdict_statuses"),
+    agents: csv("agents"),
+    models: csv("models"),
+    providers: csv("providers"),
+    environments: csv("environments"),
+    trialStatuses: csv("trial_statuses"),
+    origins: csv("origins"),
+    analysisClassifications: csv("analysis_classifications"),
+    hasLink: bool("has_link"),
+    hasError: bool("has_error"),
+    hasTrajectory: bool("has_trajectory"),
+    trialIsProbe: bool("trial_is_probe"),
+    createdAfter: sp.get("created_after"),
+    createdBefore: sp.get("created_before"),
+    minAttempts: num("min_attempts"),
+    minTokens: num("min_tokens"),
+    maxTokens: num("max_tokens"),
+    minSteps: num("min_steps"),
+    maxSteps: num("max_steps"),
+    rewardMin: num("reward_min"),
+    rewardMax: num("reward_max"),
+  };
+}
