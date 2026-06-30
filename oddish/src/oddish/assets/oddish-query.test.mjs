@@ -72,10 +72,21 @@ function mkStage() {
 }
 
 
-test('harbor src reports unavailable when not staged', () => {
-  const out = runStage(['harbor', 'src', '--into', os.tmpdir()], mkStage());
+test('harbor src reports the repo+ref it fetches and the destination', () => {
+  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'harbor-'));
+  const out = runApi(['harbor', 'src', '--into', dest], {},
+    { ODDISH_PROBE_HARBOR_REPO: 'owner/repo', ODDISH_PROBE_HARBOR_REF: 'abc123',
+      ODDISH_QUERY_HARBOR_DRYRUN: '1' });
   assert.match(out, /PROBE-ONLY/);
-  assert.match(out, /unavailable/);
+  assert.match(out, /owner\/repo/);
+  assert.match(out, /abc123/);
+  assert.match(out, new RegExp(dest));
+});
+
+test('harbor src without a pin dies clearly', () => {
+  const out = runApi(['harbor', 'src'], {},
+    { ODDISH_PROBE_HARBOR_REPO: '', ODDISH_PROBE_HARBOR_REF: '' });
+  assert.match(out, /harbor (repo|ref)/i);
 });
 
 test('verifier source prints test.sh from the API', () => {

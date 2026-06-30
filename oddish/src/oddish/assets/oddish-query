@@ -155,7 +155,28 @@ function copyTree(srcRel, into, label) {
   fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== BOUNDARY_MARKER });
   out(withBanner(`copied ${label} to ${dest}`));
 }
-function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
+function cmdHarborSrc(a) {
+  const repo = process.env.ODDISH_PROBE_HARBOR_REPO || '';
+  const ref = process.env.ODDISH_PROBE_HARBOR_REF || '';
+  if (!repo) dieStage('harbor repo not configured (ODDISH_PROBE_HARBOR_REPO)', 2);
+  if (!ref) dieStage('harbor ref not configured (ODDISH_PROBE_HARBOR_REF)', 2);
+  const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-harbor-'));
+  const url = `https://codeload.github.com/${repo}/tar.gz/${ref}`;
+  if (process.env.ODDISH_QUERY_HARBOR_DRYRUN) {
+    out(withBanner(`would fetch ${repo}@${ref} from ${url} into ${dest}`));
+    return;
+  }
+  fs.mkdirSync(dest, { recursive: true });
+  const tgz = path.join(dest, '.harbor-src.tgz');
+  const token = process.env.ODDISH_PROBE_HARBOR_TOKEN;
+  const hdr = token ? ['-H', `Authorization: Bearer ${token}`] : [];
+  const dl = spawnSync('curl', ['-sfL', ...hdr, '-o', tgz, url], { encoding: 'utf8' });
+  if (dl.status !== 0) dieStage(`harbor source fetch failed (${dl.status}): ${(dl.stderr || '').slice(-400)}`, 3);
+  const x = spawnSync('tar', ['-xzf', tgz, '-C', dest, '--strip-components=1'], { encoding: 'utf8' });
+  if (x.status !== 0) dieStage(`harbor source extract failed: ${(x.stderr || '').slice(-400)}`, 3);
+  fs.rmSync(tgz, { force: true });
+  out(withBanner(`fetched ${repo}@${ref} to ${dest}`));
+}
 
 async function cmdVerify() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-verify-'));
