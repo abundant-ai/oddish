@@ -144,14 +144,15 @@ export function TasksFilterSidebar() {
   const visibleDefs = useMemo(() => {
     return FILTER_DEFS.filter(
       (def) =>
-        def.pinned ||
-        addedKeys.includes(def.key) ||
-        isFilterActive(def.key, values)
+        !def.hidden &&
+        (def.pinned ||
+          addedKeys.includes(def.key) ||
+          isFilterActive(def.key, values))
     );
   }, [addedKeys, values]);
 
   const inactiveDefs = FILTER_DEFS.filter(
-    (def) => !visibleDefs.some((v) => v.key === def.key)
+    (def) => !def.hidden && !visibleDefs.some((v) => v.key === def.key)
   );
 
   const clearKey = (key: string) => {
