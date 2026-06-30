@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import useSWR from "swr";
 import { ChevronDown, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -19,14 +20,19 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
-import { TagFilterDropdown } from "@/components/tag-filter-dropdown";
 import {
   SearchSyntaxHelp,
   SearchSyntaxMultiRow,
   SearchSyntaxRow,
 } from "@/components/search-syntax-help";
+import { fetcher } from "@/lib/api";
+import { tagColor } from "@/lib/tag-colors";
 import { cn } from "@/lib/utils";
-import type { TaskBrowseFacets } from "@/lib/types";
+import type {
+  TagListResponse,
+  TagSummary,
+  TaskBrowseFacets,
+} from "@/lib/types";
 import {
   activeFilterCount,
   EMPTY_FILTERS,
@@ -196,8 +202,8 @@ export function TasksFilterSidebar({
             <SearchSyntaxHelp>
               <p className="font-medium">Search syntax</p>
               <p className="text-muted-foreground">
-                Matches task name, author, or tags. Add a prefix below to
-                specify filters.
+                Matches task name or author. Use the Tags filter below for tag
+                filtering.
               </p>
               <SearchSyntaxRow
                 example="node vulnerability"
@@ -210,19 +216,10 @@ export function TasksFilterSidebar({
                 examples={["github:alice", "author:alice", "user:alice"]}
                 hint="by author — GitHub handle, email, or name"
               />
-              <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
             </SearchSyntaxHelp>
           </div>
-          <div className="flex gap-2">
-            <TagFilterDropdown
-              query={searchQuery}
-              onQueryChange={setSearchQuery}
-              countField="task_count"
-            />
-            <SavedFiltersMenu
-              query={searchQuery}
-              onApply={(text) => setSearchQuery(text)}
-            />
+          <div className="flex justify-end">
+            <SavedFiltersMenu />
           </div>
         </div>
 
@@ -371,9 +368,115 @@ function FilterControl({
           placeholder="2"
         />
       );
+    case "tags":
+      return <TagsControl values={values} set={set} />;
     default:
       return null;
   }
+}
+
+/** The `tag:` token form the backend expects for a tag. */
+function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
+  return tag.value ? `${tag.key}:${tag.value}` : tag.key;
+}
+
+function TagsControl({
+  values,
+  set,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const { data } = useSWR<TagListResponse>("/api/tags", fetcher, {
+    revalidateOnFocus: false,
+  });
+  const tags = useMemo(
+    () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
+    [data]
+  );
+  const [mode, setMode] = useState<"all" | "any" | "none">("all");
+  const [search, setSearch] = useState("");
+
+  const field: keyof FilterValues =
+    mode === "all" ? "tagsAll" : mode === "any" ? "tagsAny" : "tagsNone";
+  const selected = (values[field] as string[]) ?? [];
+  const total =
+    values.tagsAll.length + values.tagsAny.length + values.tagsNone.length;
+
+  const toggle = (token: string) => {
+    const next = selected.includes(token)
+      ? selected.filter((t) => t !== token)
+      : [...selected, token];
+    set({ [field]: next } as Partial<FilterValues>);
+  };
+
+  const filtered = search
+    ? tags.filter((t) =>
+        tagToken(t).toLowerCase().includes(search.toLowerCase())
+      )
+    : tags;
+
+  return (
+    <div className="space-y-2">
+      <Segmented
+        options={[
+          { value: "all", label: "All" },
+          { value: "any", label: "Any" },
+          { value: "none", label: "None" },
+        ]}
+        value={mode}
+        onChange={(v) => setMode(v as "all" | "any" | "none")}
+      />
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 w-full justify-between text-xs font-normal"
+          >
+            <span className="truncate">
+              {total === 0 ? "Any" : `${total} selected`}
+            </span>
+            <ChevronDown className="h-3.5 w-3.5 opacity-60" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="z-30 w-56 p-2">
+          <Input
+            autoFocus
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Filter tags…"
+            className="mb-2 h-7 text-xs"
+          />
+          <div className="max-h-56 space-y-0.5 overflow-auto">
+            {filtered.length === 0 ? (
+              <p className="text-muted-foreground px-1 py-2 text-xs">No tags</p>
+            ) : (
+              filtered.map((t) => {
+                const token = tagToken(t);
+                return (
+                  <label
+                    key={t.id}
+                    className="hover:bg-muted/60 flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs"
+                  >
+                    <Checkbox
+                      checked={selected.includes(token)}
+                      onCheckedChange={() => toggle(token)}
+                    />
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: tagColor(t.key, t.color) }}
+                    />
+                    <span className="truncate">{token}</span>
+                  </label>
+                );
+              })
+            )}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
 }
 
 function MultiSelect({
