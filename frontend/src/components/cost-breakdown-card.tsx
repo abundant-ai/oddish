@@ -220,6 +220,20 @@ function EstimateMarker({
   );
 }
 
+// A non-total cost column (exec / probe / QA split). Renders a muted dash for
+// zero so the eye lands on the columns that actually carry spend.
+function SubCostCell({ value }: { value: number }) {
+  return (
+    <TableCell className="text-right font-mono text-xs">
+      {value > 0 ? (
+        formatCostUsd(value)
+      ) : (
+        <span className="text-muted-foreground">—</span>
+      )}
+    </TableCell>
+  );
+}
+
 function CostCell({ cost, estimated }: { cost: number; estimated: number }) {
   return (
     <TableCell className="text-right font-mono text-xs font-medium">
@@ -422,6 +436,18 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
+            The per-experiment table splits spend into{" "}
+            <strong>Exec</strong> (real trial runs), <strong>Probe</strong>{" "}
+            (internal probe trial runs), and <strong>QA</strong> (the LLM
+            analysis pipeline: per-trial trajectory classification + the
+            per-task verdict synthesis). Exec + Probe + QA = Total. QA cost is
+            tracked only from when this was deployed; older analyses show $0.
+          </li>
+          <li>
+            The over-time chart, per-user, and per-model views cover trial
+            execution only (not QA), so they still sum to the execution total.
+          </li>
+          <li>
             Per-user figures attribute each experiment to its owner; per-model
             and per-user are the same per-trial costs grouped differently, so
             each view sums back to the same total.
@@ -471,7 +497,7 @@ export function CostBreakdownCard() {
             <MethodologyNote />
             {data && (
               <Badge variant="outline" className="text-xs">
-                {formatCostUsd(data.totals.cost_usd)} ·{" "}
+                {formatCostUsd(data.totals.cost_total_usd)} ·{" "}
                 {windowLabel.toLowerCase()}
               </Badge>
             )}
@@ -552,7 +578,18 @@ export function CostBreakdownCard() {
 
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                total {formatCostUsd(data.totals.cost_usd)}
+                total {formatCostUsd(data.totals.cost_total_usd)}
+              </Badge>
+              <Badge variant="outline">
+                execution {formatCostUsd(data.totals.cost_real_execution_usd)}
+              </Badge>
+              {data.totals.cost_probe_execution_usd > 0 && (
+                <Badge variant="outline">
+                  probe {formatCostUsd(data.totals.cost_probe_execution_usd)}
+                </Badge>
+              )}
+              <Badge variant="outline">
+                QA {formatCostUsd(data.totals.cost_qa_usd)}
               </Badge>
               <Badge variant="outline">
                 native {formatCostUsd(data.totals.cost_native_usd)}
@@ -713,7 +750,10 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Exec</TableHead>
+          <TableHead className="text-right">Probe</TableHead>
+          <TableHead className="text-right">QA</TableHead>
+          <TableHead className="text-right">Total</TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>
@@ -734,7 +774,13 @@ function ExperimentTable({
             <TableCell className="text-muted-foreground text-[11px]">
               {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
             </TableCell>
-            <CostCell cost={exp.cost_usd} estimated={exp.cost_estimated_usd} />
+            <SubCostCell value={exp.cost_real_execution_usd} />
+            <SubCostCell value={exp.cost_probe_execution_usd} />
+            <SubCostCell value={exp.cost_qa_usd} />
+            <CostCell
+              cost={exp.cost_total_usd}
+              estimated={exp.cost_estimated_usd}
+            />
             <TableCell className="text-right font-mono text-xs">
               {exp.trial_count.toLocaleString()}
             </TableCell>

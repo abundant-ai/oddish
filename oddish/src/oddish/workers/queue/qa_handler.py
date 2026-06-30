@@ -161,6 +161,7 @@ async def run_task_qa_job(
 
     verdict_result = None
     verdict_error = None
+    verdict_cost_usd: float | None = None
     heartbeat_stop = asyncio.Event()
     heartbeat_task: asyncio.Task | None = None
     if worker_job_id:
@@ -253,6 +254,7 @@ async def run_task_qa_job(
             "success_count": verdict.success_count,
             "harness_error_count": verdict.harness_error_count,
         }
+        verdict_cost_usd = verdict.cost_usd
 
         console.print(
             f"[green]Verdict computed:[/green] {'GOOD' if verdict.is_good else 'NEEDS REVIEW'} "
@@ -289,6 +291,7 @@ async def run_task_qa_job(
                 task.verdict = verdict_result
                 task.verdict_status = VerdictStatus.SUCCESS
                 task.verdict_error = None
+                task.verdict_cost_usd = verdict_cost_usd
                 task.verdict_finished_at = utcnow()
                 task.status = TaskStatus.COMPLETED
                 task.finished_at = utcnow()
