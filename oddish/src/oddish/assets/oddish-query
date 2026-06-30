@@ -96,14 +96,23 @@ async function cmdLogs(a) {
   out(text);
 }
 
-function cmdSolutionCat(a) {
-  requireStage();
-  const solutionDir = stagePath('solution');
-  const f = path.resolve(solutionDir, a.rel || '');
-  if (f !== solutionDir && !f.startsWith(solutionDir + path.sep)) dieStage('path escapes probe stage', 2);
-  if (!fs.existsSync(f) || !fs.statSync(f).isFile()) dieStage(`no such solution file: ${a.rel}`, 4);
-  out(withBanner(fs.readFileSync(f, 'utf8')));
+function taskId() {
+  const id = process.env.ODDISH_PROBE_TASK_ID || '';
+  if (!id) die('missing task id: ODDISH_PROBE_TASK_ID not set', 2);
+  return id;
 }
+
+async function fetchFileContent(relPath) {
+  const data = await get(`/tasks/${taskId()}/files/${relPath}`);
+  if (data == null || typeof data.content !== 'string') die(`no such file: ${relPath}`, 4);
+  return data.content;
+}
+
+async function cmdSolutionCat(a) {
+  const rel = (a.rel || '').replace(/^\/+/, '');
+  out(withBanner(await fetchFileContent(`solution/${rel}`)));
+}
+
 function copyTree(srcRel, into, label) {
   requireStage();
   const src = stagePath(srcRel);
