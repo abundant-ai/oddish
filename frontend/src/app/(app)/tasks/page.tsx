@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import { auth } from "@clerk/nextjs/server";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   getAuthHeaders,
   getBackendUrl,
@@ -66,32 +67,34 @@ export default async function TasksPage({
 
   return (
     <SelectionProvider>
-      <div className="space-y-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-          <TasksFilterSidebar facets={facets} />
-          <div className="min-w-0 flex-1">
-            <Card className="border-[#6f88b4]/20 shadow-xs">
-              <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <CardTitle className="text-base">Recent Tasks</CardTitle>
-                  <div className="text-muted-foreground text-[11px]">
-                    Page {page}
+      <TooltipProvider>
+        <div className="space-y-6">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <TasksFilterSidebar facets={facets} />
+            <div className="min-w-0 flex-1">
+              <Card className="border-[#6f88b4]/20 shadow-xs">
+                <CardHeader className="flex flex-col gap-3 pb-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <CardTitle className="text-base">Recent Tasks</CardTitle>
+                    <div className="text-muted-foreground text-[11px]">
+                      Page {page}
+                    </div>
                   </div>
-                </div>
-                <TasksToolbar orgId={orgId ?? null} />
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <Suspense
-                  key={suspenseKeyFor(sp)}
-                  fallback={<TasksGridSkeleton />}
-                >
-                  <RecentTasksResults searchParams={sp} />
-                </Suspense>
-              </CardContent>
-            </Card>
+                  <TasksToolbar orgId={orgId ?? null} />
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Suspense
+                    key={suspenseKeyFor(sp)}
+                    fallback={<TasksGridSkeleton />}
+                  >
+                    <RecentTasksResults searchParams={sp} />
+                  </Suspense>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
-      </div>
+      </TooltipProvider>
     </SelectionProvider>
   );
 }
