@@ -404,7 +404,9 @@ async def _legacy_per_row_create(session, task_id, experiment_id, submission):
             queue_key=queue_key,
             model=model,
             timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment,
+            environment=spec.environment or (
+                "modal" if (harbor_config or {}).get("mode") == "probe" else None
+            ),
             harbor_config=harbor_config,
             is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,

@@ -837,7 +837,9 @@ async def create_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment,
+                "environment": spec.environment or (
+                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
+                ),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1077,7 +1079,9 @@ async def append_trials_to_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment,
+                "environment": spec.environment or (
+                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
+                ),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
