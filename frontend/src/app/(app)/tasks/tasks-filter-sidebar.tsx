@@ -253,7 +253,7 @@ export function TasksFilterSidebar({
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="start"
-              className="max-h-80 overflow-auto"
+              className="z-30 max-h-80 overflow-auto"
             >
               {(["Task", "Trial"] as const).map((group) => {
                 const groupDefs = inactiveDefs.filter((d) => d.group === group);
@@ -419,7 +419,7 @@ function MultiSelect({
           <ChevronDown className="h-3.5 w-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-2">
+      <PopoverContent align="start" className="z-30 w-56 p-2">
         {options.length > 8 ? (
           <Input
             autoFocus
