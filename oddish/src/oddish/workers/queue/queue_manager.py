@@ -146,11 +146,16 @@ async def run_assigned_queue_worker(
         return 0
 
     try:
+        # Off-Modal workers are image-agnostic (no per-variant images), so one
+        # worker per queue_key drains EVERY variant -- claim any variant
+        # (harbor_variant_id=None) rather than only the "default" one, which
+        # would strand jobs queued for non-default variants.
         return await drain_worker_jobs(
             queue_key,
             worker_id=worker_id,
             queue_slot=slot,
             budget_seconds=budget_seconds,
+            harbor_variant_id=None,
         )
     finally:
         await release_queue_slot(

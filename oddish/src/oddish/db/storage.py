@@ -558,7 +558,7 @@ class StorageClient:
 
         semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
 
-        async def upload_one(file_path: Path) -> None:
+        async def upload_one(file_path: Path) -> str | None:
             relative_path = file_path.relative_to(local_path)
             s3_key = f"{s3_prefix}{relative_path}"
             if authorized_prefix is not None:
@@ -571,11 +571,25 @@ class StorageClient:
                         s3_key,
                         authorized_prefix,
                     )
-                    return
+                    return s3_key
             async with semaphore:
                 await self.upload_file(file_path, s3_key)
+            return None
 
-        await asyncio.gather(*(upload_one(file_path) for file_path in file_paths))
+        results = await asyncio.gather(
+            *(upload_one(file_path) for file_path in file_paths)
+        )
+        refused = [key for key in results if key is not None]
+        if refused:
+            # A refused write must not read back as a complete upload: surface it
+            # so a mis-scoped job-token prefix (one that doesn't cover the trial's
+            # artifacts) fails loudly instead of silently dropping files.
+            raise RuntimeError(
+                f"Refused {len(refused)} S3 upload(s) outside the job's authorized "
+                f"prefix {authorized_prefix!r}; upload is incomplete "
+                f"(first: {refused[0]}). The job token's prefix likely does not "
+                "cover the trial's artifacts."
+            )
 
     async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
         """

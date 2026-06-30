@@ -23,6 +23,8 @@ from oddish.dispatch.ports import Dispatcher, WorkerHandle
 logger = logging.getLogger(__name__)
 
 RunJob = Callable[..., Awaitable[bool]]
+AcquireSlot = Callable[..., Awaitable["int | None"]]
+ReleaseSlot = Callable[..., Awaitable[None]]
 
 
 async def _default_run_job(queue_key: str, **kwargs: Any) -> bool:
@@ -33,6 +35,25 @@ async def _default_run_job(queue_key: str, **kwargs: Any) -> bool:
     return await run_single_worker_job(queue_key, **kwargs)
 
 
+async def _default_acquire_slot(
+    *, queue_key: str, limit: int, worker_id: str, lease_seconds: float
+) -> int | None:
+    from oddish.workers.queue.slots import acquire_queue_slot
+
+    return await acquire_queue_slot(
+        queue_key=queue_key,
+        limit=limit,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
+
+
+async def _default_release_slot(*, queue_key: str, slot: int, worker_id: str) -> None:
+    from oddish.workers.queue.slots import release_queue_slot
+
+    await release_queue_slot(queue_key=queue_key, slot=slot, worker_id=worker_id)
+
+
 class InProcessDispatcher:
     name = "inprocess"
 
@@ -41,8 +62,12 @@ class InProcessDispatcher:
         *,
         run_job: RunJob | None = None,
         worker_id_prefix: str = "inproc",
+        acquire_slot: AcquireSlot | None = None,
+        release_slot: ReleaseSlot | None = None,
     ) -> None:
         self._run_job: RunJob = run_job or _default_run_job
+        self._acquire_slot: AcquireSlot = acquire_slot or _default_acquire_slot
+        self._release_slot: ReleaseSlot = release_slot or _default_release_slot
         self._worker_id_prefix = worker_id_prefix
         self._tasks: dict[str, asyncio.Task] = {}
         self._counter = 0
@@ -68,8 +93,39 @@ class InProcessDispatcher:
         return handles
 
     async def _safe_run(self, queue_key: str, worker_id: str) -> None:
+        from oddish.config import settings
+        from oddish.workers.queue.queue_manager import DEFAULT_SLOT_LEASE_SECONDS
+
         try:
-            await self._run_job(queue_key, worker_id=worker_id, queue_slot=0)
+            limit = settings.get_model_concurrency(queue_key)
+            if limit <= 0:
+                return
+            # Hold a queue_slots lease for the run, mirroring the Modal /
+            # off-Modal container workers (run_assigned_queue_worker). Without it,
+            # multiple in-process asyncio workers for one queue_key could run past
+            # the per-queue_key concurrency limit in the dispatch cycle's
+            # spawn->claim race window.
+            slot = await self._acquire_slot(
+                queue_key=queue_key,
+                limit=limit,
+                worker_id=worker_id,
+                lease_seconds=DEFAULT_SLOT_LEASE_SECONDS,
+            )
+            if slot is None:
+                return  # no free slot this tick; the cycle re-spawns next tick
+            try:
+                # Image-agnostic in-process worker: claim any variant for the
+                # queue_key (harbor_variant_id=None), not just the "default" one.
+                await self._run_job(
+                    queue_key,
+                    worker_id=worker_id,
+                    queue_slot=slot,
+                    harbor_variant_id=None,
+                )
+            finally:
+                await self._release_slot(
+                    queue_key=queue_key, slot=slot, worker_id=worker_id
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - worker errors must not crash the loop

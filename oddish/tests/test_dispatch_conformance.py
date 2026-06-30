@@ -98,9 +98,19 @@ def _noop_dispatchers() -> list[Dispatcher]:
     async def _noop_run_job(queue_key: str, **_kwargs) -> bool:
         return False
 
+    async def _noop_acquire_slot(**_kwargs) -> int:
+        return 0
+
+    async def _noop_release_slot(**_kwargs) -> None:
+        return None
+
     return [
         FakeDispatcher(),
-        InProcessDispatcher(run_job=_noop_run_job),
+        InProcessDispatcher(
+            run_job=_noop_run_job,
+            acquire_slot=_noop_acquire_slot,
+            release_slot=_noop_release_slot,
+        ),
         _hermetic_modal_dispatcher(),
         DockerPoolDispatcher(image="oddish-worker:test", run_command=_FakeDockerCLI()),
         K8sJobDispatcher(image="oddish-worker:test", batch_api=_FakeBatchApi()),

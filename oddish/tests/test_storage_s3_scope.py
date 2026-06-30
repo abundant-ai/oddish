@@ -33,17 +33,23 @@ def test_upload_enforces_authorized_prefix(tmp_path, monkeypatch) -> None:
 
 
 def test_upload_refuses_keys_outside_authorized_prefix(tmp_path) -> None:
+    import pytest
+
     (tmp_path / "result.json").write_text("{}", encoding="utf-8")
     client, uploaded = _client_with_recorder()
 
-    # The write prefix differs from the job's authorized prefix -> refused.
-    asyncio.run(
-        client._upload_directory(
-            tmp_path,
-            "tasks/other/trials/other-0/",
-            authorized_prefix="tasks/task_a/trials/task_a-0/",
+    # The write prefix differs from the job's authorized prefix -> refused. The
+    # upload now fails loudly so a mis-scoped prefix can't read back as a
+    # complete upload while silently dropping the file.
+    with pytest.raises(RuntimeError, match="authorized prefix"):
+        asyncio.run(
+            client._upload_directory(
+                tmp_path,
+                "tasks/other/trials/other-0/",
+                authorized_prefix="tasks/task_a/trials/task_a-0/",
+            )
         )
-    )
+    # The out-of-prefix key was never written.
     assert uploaded == []
 
 
