@@ -385,6 +385,25 @@ export const FILTER_PARAM_KEYS = [
   "reward_max",
 ] as const;
 
+// Backend filter params that have no sidebar control yet but are still valid on
+// /tasks/browse (set via deep links or saved filters). The server results
+// loader forwards these in addition to FILTER_PARAM_KEYS so they aren't
+// silently dropped. They're intentionally NOT in FILTER_PARAM_KEYS so the
+// sidebar's clear-on-change loop doesn't wipe deep-linked values.
+export const EXTRA_BROWSE_PARAM_KEYS = [
+  "experiment_ids",
+  "run_analysis",
+  "run_probe",
+  "harbor_shas",
+  "harbor_stages",
+] as const;
+
+// Everything the browse fetch should forward / saved filters should capture.
+export const BROWSE_FORWARD_KEYS = [
+  ...FILTER_PARAM_KEYS,
+  ...EXTRA_BROWSE_PARAM_KEYS,
+] as const;
+
 // Inverse of filterParams: read filter values back out of URL search params so
 // the sidebar controls can seed from the URL.
 export function searchParamsToFilters(sp: URLSearchParams): FilterValues {

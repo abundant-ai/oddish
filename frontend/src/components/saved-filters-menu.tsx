@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/popover";
 import { fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
-import { FILTER_PARAM_KEYS } from "@/lib/tasks-filters";
+import { BROWSE_FORWARD_KEYS } from "@/lib/tasks-filters";
 import type { TagListResponse, TagSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -41,7 +41,9 @@ type SavedBlobV2 = {
 type LegacyBlob = { all?: string[]; any?: string[]; none?: string[] };
 
 const TAG_PARAM_KEYS = ["tags", "tags_any", "tags_none"] as const;
-const STRUCTURED_KEYS = FILTER_PARAM_KEYS.filter(
+// Snapshot every browse param (filters + extra backend keys) except tags,
+// which are persisted separately as stable ids.
+const STRUCTURED_KEYS = BROWSE_FORWARD_KEYS.filter(
   (k) => !TAG_PARAM_KEYS.includes(k as (typeof TAG_PARAM_KEYS)[number])
 );
 
