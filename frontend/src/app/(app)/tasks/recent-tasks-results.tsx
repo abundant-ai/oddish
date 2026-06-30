@@ -8,7 +8,11 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 import { parseTaskSearch } from "@/lib/tag-query";
-import { BROWSE_FORWARD_KEYS, TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import {
+  BROWSE_FORWARD_KEYS,
+  PRESET_MS,
+  TASKS_PAGE_SIZE,
+} from "@/lib/tasks-filters";
 import { cn } from "@/lib/utils";
 import type { TaskBrowseResponse } from "@/lib/types";
 import { TaskCard } from "./task-card";
@@ -45,7 +49,18 @@ async function fetchBrowse(
     const parsed = parseTaskSearch(sp.get("q") ?? sp.get("query") ?? "");
     if (parsed.text) query.query = parsed.text;
     if (parsed.authors.length) query.author = parsed.authors.join(",");
+
+    // Rolling "Created" preset: resolve the token to (now - window) at query
+    // time so the window is always relative to this request, not when it was
+    // picked. Resolved here — `created_within` is not a backend param.
+    const within = sp.get("created_within");
+    if (within && within in PRESET_MS) {
+      const ms = PRESET_MS[within as keyof typeof PRESET_MS];
+      query.created_after = new Date(Date.now() - ms).toISOString();
+    }
+
     for (const key of BROWSE_FORWARD_KEYS) {
+      if (key === "created_within") continue; // resolved above
       const value = sp.get(key);
       if (value) query[key] = value;
     }
