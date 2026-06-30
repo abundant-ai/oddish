@@ -54,13 +54,17 @@ async function fetchBrowse(
     // time so the window is always relative to this request, not when it was
     // picked. Resolved here — `created_within` is not a backend param.
     const within = sp.get("created_within");
-    if (within && within in PRESET_MS) {
+    const presetActive = !!(within && within in PRESET_MS);
+    if (presetActive) {
       const ms = PRESET_MS[within as keyof typeof PRESET_MS];
       query.created_after = new Date(Date.now() - ms).toISOString();
     }
 
     for (const key of BROWSE_FORWARD_KEYS) {
       if (key === "created_within") continue; // resolved above
+      // A live preset owns created_after; don't let a stale absolute bound in
+      // the URL / saved filter clobber the rolling window.
+      if (key === "created_after" && presetActive) continue;
       const value = sp.get(key);
       if (value) query[key] = value;
     }
