@@ -105,12 +105,15 @@ export const VERDICT_OPTIONS: Option[] = [
 
 // TrialStatus = JobStatus, stored as lowercase values via values_callable.
 // (BLOCKED/CANCELLED belong to WorkerJobStatus, not trials.)
+// Values are the enum *names* (uppercase): TrialModel.status uses SQLEnum without
+// values_callable, so the column stores SUCCESS/FAILED/… not the lowercase enum
+// values. Matches the TaskStatus filter pattern; lowercase here matches no rows.
 export const TRIAL_STATUS_OPTIONS: Option[] = [
-  { value: "success", label: "Success" },
-  { value: "failed", label: "Failed" },
-  { value: "running", label: "Running" },
-  { value: "queued", label: "Queued" },
-  { value: "retrying", label: "Retrying" },
+  { value: "SUCCESS", label: "Success" },
+  { value: "FAILED", label: "Failed" },
+  { value: "RUNNING", label: "Running" },
+  { value: "QUEUED", label: "Queued" },
+  { value: "RETRYING", label: "Retrying" },
 ];
 
 export const ORIGIN_OPTIONS: Option[] = [
