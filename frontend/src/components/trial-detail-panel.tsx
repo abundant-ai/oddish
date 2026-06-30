@@ -214,8 +214,8 @@ const SANDBOX_BACKENDS: Record<
   modal: {
     id: "modal",
     label: "Modal",
-    logoSrc: "/modal-wordmark-primary-light.png",
-    logoWidth: 56,
+    logoSrc: "/modal-logo-icon.png",
+    logoWidth: 13,
   },
 };
 
@@ -251,18 +251,25 @@ function getSandboxBackend(trial: Trial): SandboxBackend | null {
 
 function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
   const content = (
-    <span className="inline-flex h-5 items-center justify-center rounded-sm bg-white px-1">
-      <Image
-        src={backend.logoSrc}
-        alt={`${backend.label} logo`}
-        width={backend.logoWidth}
-        height={14}
-        className="h-3.5 w-auto object-contain"
-      />
-    </span>
+    <>
+      <span className="inline-flex h-5 items-center justify-center rounded-sm bg-white px-1">
+        <Image
+          src={backend.logoSrc}
+          alt={`${backend.label} logo`}
+          width={backend.logoWidth}
+          height={14}
+          className="h-3.5 w-auto object-contain"
+        />
+      </span>
+      {backend.id === "modal" && (
+        <span className="text-muted-foreground font-sans text-[10px] font-semibold tracking-wide uppercase">
+          {backend.label}
+        </span>
+      )}
+    </>
   );
   const className =
-    "border-border bg-muted/50 inline-flex shrink-0 items-center rounded-md border px-1 py-0.5";
+    "border-border bg-muted/50 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
 
   if (backend.href) {
     return (
