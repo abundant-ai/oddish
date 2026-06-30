@@ -67,11 +67,17 @@ function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
   return [];
 }
 
-export function TasksFilterSidebar({
-  facets,
-}: {
-  facets: TaskBrowseFacets | null;
-}) {
+export function TasksFilterSidebar() {
+  // Facets are fetched client-side once so a router.refresh() of the task
+  // results never reloads the filter options. revalidateOnFocus stays off and
+  // there's no interval, so this loads a single time per mount.
+  const { data: facetsData } = useSWR<TaskBrowseFacets>(
+    "/api/tasks/browse/facets",
+    fetcher,
+    { revalidateOnFocus: false }
+  );
+  const facets = facetsData ?? null;
+
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
