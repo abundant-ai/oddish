@@ -234,17 +234,16 @@ async def _lookup_user_by_github_username(
     github_username: str,
     org_id: str,
 ) -> UserModel | None:
-    normalized = (github_username or "").strip().lstrip("@")
-    if not normalized:
-        return None
-    user_result = await session.execute(
-        select(UserModel).where(
-            func.lower(UserModel.github_username) == normalized.lower(),
-            UserModel.org_id == org_id,
-            UserModel.is_active == True,  # noqa: E712
-        )
+    """The exactly-one connection predicate shared by owner resolution and the
+    linkage endpoint: a handle resolves to a user only when a single active org
+    member carries it. Zero or 2+ (ambiguous) active matches both resolve to
+    None — never an error — so a duplicated handle is a graceful no-owner, not a
+    500. Reuses the plural query for identical normalization/org-scope/active.
+    """
+    users = await _lookup_users_by_github_username(
+        session, github_username=github_username, org_id=org_id
     )
-    return user_result.scalar_one_or_none()
+    return users[0] if len(users) == 1 else None
 
 
 async def _lookup_users_by_github_username(

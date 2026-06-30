@@ -208,6 +208,7 @@ def create_app() -> FastAPI:
         clerk_webhooks,
         dashboard,
         documents,
+        github_linkage,
         github_webhooks,
         imports,
         orgs,
@@ -225,6 +226,7 @@ def create_app() -> FastAPI:
     api.include_router(api_keys.router)
     api.include_router(clerk_webhooks.router)
     api.include_router(github_webhooks.router)
+    api.include_router(github_linkage.router)
     api.include_router(tasks.router)
     api.include_router(trials.router)
     api.include_router(imports.router)
