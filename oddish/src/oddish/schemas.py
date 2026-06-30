@@ -516,7 +516,8 @@ class ExperimentCombineRequest(BaseModel):
         ...,
         description=(
             "IDs (or names) of the experiments to combine. At least two "
-            "distinct sources are required."
+            "distinct sources are required, unless task_ids is given (then a "
+            "single source is allowed to extract a subset)."
         ),
     )
     name: str | None = Field(
@@ -535,6 +536,21 @@ class ExperimentCombineRequest(BaseModel):
             "trials' artifacts in place (cheaper, but shared storage)."
         ),
     )
+    task_ids: list[str] | None = Field(
+        None,
+        description=(
+            "Optional subset: copy only these tasks (by id or name) into the "
+            "result instead of every task. Lets you extract a clean subset out "
+            "of an experiment; a single source experiment is allowed when set."
+        ),
+    )
+    only_successful: bool = Field(
+        False,
+        description=(
+            "When True, copy only SUCCESS trials and link only tasks that have "
+            "at least one such trial (no empty task rows in the result)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_sources(self) -> "ExperimentCombineRequest":
@@ -547,9 +563,20 @@ class ExperimentCombineRequest(BaseModel):
                 if s and (stripped := s.strip())
             )
         )
-        if len(deduped) < 2:
+        # A subset extract is meaningful from a single source; a plain merge
+        # still needs at least two distinct experiments.
+        if self.task_ids is not None:
+            self.task_ids = list(
+                dict.fromkeys(t.strip() for t in self.task_ids if t and t.strip())
+            ) or None
+        min_sources = 1 if self.task_ids else 2
+        if len(deduped) < min_sources:
             raise ValueError(
-                "source_experiment_ids must contain at least two distinct experiments"
+                "source_experiment_ids must contain at least one experiment "
+                "when task_ids is given"
+                if self.task_ids
+                else "source_experiment_ids must contain at least two distinct "
+                "experiments"
             )
         self.source_experiment_ids = deduped
         if self.name is not None:

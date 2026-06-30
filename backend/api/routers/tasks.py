@@ -820,6 +820,8 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+            task_ids=payload.task_ids,
+            only_successful=payload.only_successful,
         )
         await session.commit()
 

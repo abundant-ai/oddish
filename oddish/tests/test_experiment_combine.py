@@ -316,9 +316,160 @@ def test_request_dedupes_and_requires_two_sources():
     assert req.source_experiment_ids == ["a", "b"]
     assert req.name == "result"
     assert req.copy_artifacts is True
+    assert req.task_ids is None
+    assert req.only_successful is False
 
     with pytest.raises(ValidationError):
         ExperimentCombineRequest(source_experiment_ids=["only-one"])
+
+
+def test_request_allows_single_source_when_extracting_subset():
+    # A subset extract is meaningful from one source; task_ids is deduped too.
+    req = ExperimentCombineRequest(
+        source_experiment_ids=["solo"],
+        task_ids=[" task-a ", "task-b", "task-a", ""],
+        only_successful=True,
+    )
+    assert req.source_experiment_ids == ["solo"]
+    assert req.task_ids == ["task-a", "task-b"]
+    assert req.only_successful is True
+
+
+def test_request_blank_task_ids_still_require_two_sources():
+    from pydantic import ValidationError
+
+    # task_ids that strip to nothing must not unlock the single-source path.
+    with pytest.raises(ValidationError):
+        ExperimentCombineRequest(
+            source_experiment_ids=["only-one"], task_ids=["", "  "]
+        )
+
+
+# ---------------------------------------------------------------------------
+# Subset / only-successful extraction
+# ---------------------------------------------------------------------------
+
+
+class _FakeSeqSession(_FakeCombineSession):
+    """Like ``_FakeCombineSession`` but with an explicit, ordered result list.
+
+    The subset path issues an extra SELECT (task id/name lookup) between the
+    linked-task-ids and source-trials queries, so the canned-three ordering of
+    the base fake no longer matches.
+    """
+
+    def __init__(self, results):
+        self._results = list(results)
+        self.execute_calls = 0
+        self.added = []
+        self.flush_calls = 0
+
+
+@pytest.mark.asyncio
+async def test_combine_subset_by_task_id_or_name(monkeypatch):
+    experiments = {"exp-A": ExperimentModel(id="exp-A", name="alpha", org_id="org-1")}
+    # Only task-1 (matched by name) and task-3 (matched by id) are requested.
+    source_trials = [
+        _trial("task-1-0", "task-1", TrialStatus.SUCCESS, reward=1.0),
+        _trial("task-3-0", "task-3", TrialStatus.FAILED, reward=0.0),
+    ]
+    storage = _FakeStorage(per_call=3)
+    link_calls, _ = _patch_helpers(
+        monkeypatch,
+        experiments=experiments,
+        storage=storage,
+        reserve={"task-1": 1, "task-3": 1},
+    )
+
+    session = _FakeSeqSession(
+        [
+            _FakeRowsResult([("task-1",), ("task-2",), ("task-3",)]),  # linked ids
+            _FakeRowsResult(  # id/name lookup for the subset filter
+                [
+                    ("task-1", "task-one"),
+                    ("task-2", "task-two"),
+                    ("task-3", "task-three"),
+                ]
+            ),
+            _FakeScalarsResult(source_trials),  # trials (already filtered by query)
+            _FakeRowsResult(  # task metadata
+                [("task-1", "task-one", "org-1"), ("task-3", "task-three", "org-1")]
+            ),
+        ]
+    )
+
+    result = await endpoints.combine_experiments_core(
+        session,
+        source_experiment_ids=["exp-A"],  # single source allowed for a subset
+        name="subset",
+        org_id="org-1",
+        task_ids=["task-one", "task-3"],
+    )
+
+    # task-2 is excluded; only the two requested tasks land in the result.
+    assert result.tasks_linked == 2
+    assert result.trials_copied == 2
+    assert link_calls == [("task-1", "exp-result"), ("task-3", "exp-result")]
+
+
+@pytest.mark.asyncio
+async def test_combine_only_successful_links_only_tasks_with_a_success(monkeypatch):
+    experiments = {
+        "exp-A": ExperimentModel(id="exp-A", name="alpha", org_id="org-1"),
+        "exp-B": ExperimentModel(id="exp-B", name="beta", org_id="org-1"),
+    }
+    # The trial query already filters to SUCCESS, so the fake returns only the
+    # surviving SUCCESS trial. task-2 (no success) must NOT be linked.
+    source_trials = [_trial("task-1-0", "task-1", TrialStatus.SUCCESS, reward=1.0)]
+    storage = _FakeStorage(per_call=2)
+    link_calls, _ = _patch_helpers(
+        monkeypatch,
+        experiments=experiments,
+        storage=storage,
+        reserve={"task-1": 1},
+    )
+
+    session = _FakeCombineSession(
+        linked_task_ids=["task-1", "task-2"],
+        source_trials=source_trials,
+        task_meta_rows=[("task-1", "task-one", "org-1")],
+    )
+
+    result = await endpoints.combine_experiments_core(
+        session,
+        source_experiment_ids=["exp-A", "exp-B"],
+        org_id="org-1",
+        only_successful=True,
+    )
+
+    assert result.tasks_linked == 1  # task-2 dropped (no success trial)
+    assert result.trials_copied == 1
+    assert link_calls == [("task-1", "exp-result")]
+
+
+@pytest.mark.asyncio
+async def test_combine_subset_no_match_is_400(monkeypatch):
+    experiments = {"exp-A": ExperimentModel(id="exp-A", name="alpha", org_id="org-1")}
+    storage = _FakeStorage()
+    _patch_helpers(monkeypatch, experiments=experiments, storage=storage, reserve={})
+
+    session = _FakeSeqSession(
+        [
+            _FakeRowsResult([("task-1",)]),
+            _FakeRowsResult([("task-1", "task-one")]),
+        ]
+    )
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await endpoints.combine_experiments_core(
+            session,
+            source_experiment_ids=["exp-A"],
+            org_id="org-1",
+            task_ids=["does-not-exist"],
+        )
+    assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------

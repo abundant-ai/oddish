@@ -141,6 +141,48 @@ def test_combine_defaults_copy_artifacts_true_and_omits_name(monkeypatch):
     }
 
 
+def test_combine_subset_allows_single_source_and_sends_task_ids(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "combine",
+            "solo",
+            "-t",
+            "task-a",
+            "--task",
+            "task-b",
+            "--only-successful",
+            "--name",
+            "subset",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert _FakeClient.last_request["json"] == {
+        "source_experiment_ids": ["solo"],
+        "copy_artifacts": True,
+        "task_ids": ["task-a", "task-b"],
+        "only_successful": True,
+        "name": "subset",
+    }
+
+
+def test_combine_omits_task_ids_and_only_successful_by_default(monkeypatch):
+    _FakeClient.last_request = {}
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    _set_env(monkeypatch)
+
+    result = CliRunner().invoke(app, ["combine", "a", "b"])
+
+    assert result.exit_code == 0, result.output
+    assert "task_ids" not in _FakeClient.last_request["json"]
+    assert "only_successful" not in _FakeClient.last_request["json"]
+
+
 def test_combine_rejects_single_distinct_source_without_http(monkeypatch):
     # Collapses to one source -> rejected client-side, before any HTTP call.
     monkeypatch.setattr(httpx, "Client", _ExplodingClient)

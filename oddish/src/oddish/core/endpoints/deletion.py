@@ -673,8 +673,17 @@ async def combine_experiments_core(
     name: str | None = None,
     org_id: str | None = None,
     copy_artifacts: bool = True,
+    task_ids: Collection[str] | None = None,
+    only_successful: bool = False,
 ) -> ExperimentCombineResponse:
     """Create a new experiment that merges the data of several others.
+
+    When ``task_ids`` is given (task ids or names), only those tasks and their
+    trials are copied into the result -- a subset extract rather than a full
+    merge. A single source experiment is allowed in that case, so you can pull
+    a clean subset out of one mixed experiment without re-running. When
+    ``only_successful`` is True, only ``SUCCESS`` trials are copied and only
+    tasks that have at least one such trial are linked.
 
     The source experiments are read-only here: a fresh result experiment
     is created and the *underlying data* of every source is copied into
@@ -731,10 +740,21 @@ async def combine_experiments_core(
         seen_ids.add(experiment.id)
         resolved.append(experiment)
 
-    if len(resolved) < 2:
+    # A subset extract (task_ids given) is meaningful from a single source;
+    # a plain merge still needs at least two distinct experiments.
+    task_filter_input: set[str] | None = (
+        {t.strip() for t in task_ids if t and t.strip()} or None
+    ) if task_ids is not None else None
+    min_sources = 1 if task_filter_input is not None else 2
+    if len(resolved) < min_sources:
         raise HTTPException(
             status_code=400,
-            detail="Provide at least two distinct experiments to combine",
+            detail=(
+                "Provide at least one source experiment when extracting a "
+                "task subset"
+                if task_filter_input is not None
+                else "Provide at least two distinct experiments to combine"
+            ),
         )
 
     resolved_ids = [experiment.id for experiment in resolved]
@@ -758,26 +778,56 @@ async def combine_experiments_core(
     )
     linked_task_ids = [row[0] for row in linked_task_rows.all()]
 
-    # 4. Finished, non-superseded trials across every source. Ordered by
-    #    task so per-task index allocation stays contiguous and stable.
-    source_trials = list(
-        (
-            await session.execute(
-                select(TrialModel)
-                .where(TrialModel.experiment_id.in_(resolved_ids))
-                .where(TrialModel.superseded_by_trial_id.is_(None))
-                .order_by(TrialModel.task_id, TrialModel.created_at)
+    # 3b. Resolve an optional task subset. Entries may be task ids or names;
+    #     match against the tasks belonging to the source experiments only.
+    task_subset_ids: set[str] | None = None
+    if task_filter_input is not None:
+        name_rows = await session.execute(
+            select(TaskModel.id, TaskModel.name).where(
+                TaskModel.id.in_(linked_task_ids)
             )
         )
-        .scalars()
-        .all()
+        task_subset_ids = {
+            tid
+            for tid, tname in name_rows.all()
+            if tid in task_filter_input or tname in task_filter_input
+        }
+        if not task_subset_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "None of the requested task_ids match tasks in the source "
+                    "experiment(s)"
+                ),
+            )
+        linked_task_ids = [tid for tid in linked_task_ids if tid in task_subset_ids]
+
+    # 4. Finished, non-superseded trials across every source. Ordered by
+    #    task so per-task index allocation stays contiguous and stable.
+    trial_query = (
+        select(TrialModel)
+        .where(TrialModel.experiment_id.in_(resolved_ids))
+        .where(TrialModel.superseded_by_trial_id.is_(None))
     )
+    if task_subset_ids is not None:
+        trial_query = trial_query.where(TrialModel.task_id.in_(task_subset_ids))
+    if only_successful:
+        trial_query = trial_query.where(TrialModel.status == TrialStatus.SUCCESS)
+    trial_query = trial_query.order_by(
+        TrialModel.task_id, TrialModel.created_at
+    )
+    source_trials = list((await session.execute(trial_query)).scalars().all())
 
     # Defensive: make sure tasks that own a copied trial are linked too,
-    # even if a ``task_experiments`` row was somehow missing.
-    all_task_ids = list(
-        dict.fromkeys([*linked_task_ids, *(t.task_id for t in source_trials)])
-    )
+    # even if a ``task_experiments`` row was somehow missing. With
+    # ``only_successful`` we link only tasks that have a SUCCESS trial to copy,
+    # so the result has no empty task rows.
+    if only_successful:
+        all_task_ids = list(dict.fromkeys(t.task_id for t in source_trials))
+    else:
+        all_task_ids = list(
+            dict.fromkeys([*linked_task_ids, *(t.task_id for t in source_trials)])
+        )
     for task_id in all_task_ids:
         await _link_task_to_experiment(
             session, task_id=task_id, experiment_id=result.id

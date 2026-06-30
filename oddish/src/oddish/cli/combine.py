@@ -73,6 +73,28 @@ def combine(
             ),
         ),
     ] = True,
+    task: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--task",
+            "-t",
+            help=(
+                "Copy only this task (by id or name) into the result. Repeat to "
+                "select several. Lets you extract a clean subset; a single "
+                "source experiment is allowed when used."
+            ),
+        ),
+    ] = None,
+    only_successful: Annotated[
+        bool,
+        typer.Option(
+            "--only-successful",
+            help=(
+                "Copy only SUCCESS trials and link only tasks that have at least "
+                "one (no empty task rows in the result)."
+            ),
+        ),
+    ] = False,
     json_output: Annotated[
         bool,
         typer.Option("--json", help="Print the raw JSON response."),
@@ -96,11 +118,19 @@ def combine(
         oddish combine <exp_a> <exp_b>
         oddish combine <exp_a> <exp_b> <exp_c> --name nightly-rollup
         oddish combine <exp_a> <exp_b> --no-copy-artifacts
+        oddish combine <exp> -t task-a -t task-b --name subset
+        oddish combine <exp> --only-successful --name passing-only
     """
     sources = _normalize_sources(source_experiment_ids)
-    if len(sources) < 2:
+    tasks = _normalize_sources(task or [])
+    # A subset extract (or a successful-only pull) is meaningful from a single
+    # source; a plain merge still needs two distinct experiments.
+    min_sources = 1 if tasks else 2
+    if len(sources) < min_sources:
         console.print(
-            "[red]Provide at least two distinct experiments to combine.[/red]"
+            "[red]Provide at least one experiment when selecting tasks.[/red]"
+            if tasks
+            else "[red]Provide at least two distinct experiments to combine.[/red]"
         )
         raise typer.Exit(1)
 
@@ -112,6 +142,10 @@ def combine(
         "source_experiment_ids": sources,
         "copy_artifacts": copy_artifacts,
     }
+    if tasks:
+        payload["task_ids"] = tasks
+    if only_successful:
+        payload["only_successful"] = True
     if name:
         payload["name"] = name
 

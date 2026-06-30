@@ -585,6 +585,8 @@ async def combine_experiments(
             source_experiment_ids=payload.source_experiment_ids,
             name=payload.name,
             copy_artifacts=payload.copy_artifacts,
+            task_ids=payload.task_ids,
+            only_successful=payload.only_successful,
         )
 
 
