@@ -758,6 +758,10 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    environment: str | None = Field(
+        None,
+        description="Execution sandbox environment recorded on the trial row.",
+    )
     status: TrialStatus = Field(
         ...,
         description="Execution status: 'success'=completed (regardless of test result), 'failed'=execution error",

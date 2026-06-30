@@ -130,6 +130,7 @@ export interface Trial {
   agent: string;
   provider: string;
   model: string | null;
+  environment?: string | null;
   status: TrialStatus;
   attempts: number;
   max_attempts: number;

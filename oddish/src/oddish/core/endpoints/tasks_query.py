@@ -160,6 +160,10 @@ async def list_tasks_core(
                 TrialModel.provider,
                 TrialModel.queue_key,
                 TrialModel.model,
+                # Surfaced by ``build_compact_trial_response`` so the UI can
+                # show the trial's sandbox backend without waiting for
+                # worker_jobs metadata.
+                TrialModel.environment,
                 TrialModel.status,
                 # ``origin`` is surfaced in compact responses, so it must
                 # be loaded eagerly; otherwise the response builder
