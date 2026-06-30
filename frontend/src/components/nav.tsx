@@ -229,11 +229,11 @@ export function Nav() {
                     </DropdownMenuItem>
                     <DropdownMenuItem asChild>
                       <Link
-                        href="/admin"
+                        href="/usage"
                         className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
                       >
                         <Shield className="h-4 w-4" />
-                        Admin
+                        Usage dashboard
                       </Link>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator className="my-2" />

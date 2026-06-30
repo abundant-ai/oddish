@@ -23,6 +23,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import type {
+  DashboardResponse,
   QueueSlotsResponse,
   QueueStatusResponse,
   OrphanedStateResponse,
@@ -34,6 +35,13 @@ import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
+import {
+  getMinutesFromTimeRange,
+  UsageOverviewCard,
+  useDashboardUsage,
+  type TimeRangeKey,
+} from "@/components/usage-overview";
+import { DASHBOARD_DEFAULT_USAGE_MINUTES } from "@/lib/dashboard-request";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
 const formatAge = (dateStr: string | null) => {
@@ -648,24 +656,57 @@ function OrphanedStateCard() {
 // Main Admin Page
 // =============================================================================
 
-export default function AdminPage() {
+type AdminDashboardProps = {
+  initialUsageData?: DashboardResponse | null;
+};
+
+export function AdminDashboard({
+  initialUsageData = null,
+}: AdminDashboardProps) {
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
+  const usageMinutes = getMinutesFromTimeRange(timeRange);
+  const usageFallbackData =
+    usageMinutes === DASHBOARD_DEFAULT_USAGE_MINUTES ? initialUsageData : null;
+  const {
+    queues,
+    modelUsage,
+    jobUsage,
+    error: usageError,
+    isLoading: usageIsLoading,
+    isRefreshing: usageIsRefreshing,
+  } = useDashboardUsage(usageMinutes, usageFallbackData);
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Admin Dashboard</h1>
+        <h1 className="text-2xl font-bold">Usage Dashboard</h1>
         <p className="text-muted-foreground text-sm">
-          Internal system monitoring for workers and job queues
+          Usage, cost, worker, and queue monitoring for the current organization
         </p>
       </div>
 
-      <Tabs defaultValue="overview" className="space-y-4">
+      <Tabs defaultValue="usage" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="usage">Usage</TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="usage" className="space-y-4">
+          <UsageOverviewCard
+            queues={queues}
+            modelUsage={modelUsage}
+            jobUsage={jobUsage}
+            error={usageError}
+            isLoading={usageIsLoading}
+            isRefreshing={usageIsRefreshing}
+            timeRange={timeRange}
+            onTimeRangeChange={setTimeRange}
+          />
+        </TabsContent>
 
         <TabsContent value="overview" className="space-y-4">
           <QueueHealthOverviewCard />
@@ -698,4 +739,8 @@ export default function AdminPage() {
       </Tabs>
     </div>
   );
+}
+
+export default function AdminPage() {
+  return <AdminDashboard />;
 }

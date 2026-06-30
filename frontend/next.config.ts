@@ -3,6 +3,15 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["local.oddish.app"],
   output: "standalone",
+  async redirects() {
+    return [
+      {
+        source: "/admin",
+        destination: "/usage",
+        permanent: false,
+      },
+    ];
+  },
   // Expose Vercel git/env vars to the browser bundle so Logfire spans
   // emitted from the browser carry the same PR / commit / branch tags
   // as backend and edge spans.

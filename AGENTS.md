@@ -891,12 +891,12 @@ uv run alembic upgrade head
 - `/tasks` — authenticated task browser with search, pagination, version summaries
 - `/experiments/[experiment]` — experiment detail, task and trial inspection, logs, results, files, version history, share controls, cancel. Trajectory QA is a single task-level action: the trials table toolbar exposes one **Run QA** / **Cancel QA** per selected task, `TaskFilesPanel` exposes one **Run QA** button, and `TaskVerdictBadge` renders the unified QA state (**Running QA…** / **QA failed** / **Task is good** / **Needs review**) with **Run QA** / **Cancel QA**. Per-trial analysis run/cancel controls were removed (the trial drawer still shows each trial's classification read-only); Run QA proxies to `POST /tasks/{id}/qa/retry` and Cancel QA to `POST /tasks/{id}/qa/cancel`.
 - `/settings` — organization and API key management
-- `/admin` — two tabs:
-  - **Worker Jobs** (default): unified `worker_jobs` kind×status matrix
-    (`Task QA` is the task-level `QA` job; `Task Verdict` and `Trial Analysis`
-    are shown as legacy and only drain in-flight rows), stale-RUNNING samples, recent
-    failures/cancels, duration percentiles, plus `OrphanedStateCard`
-  - **Concurrency**: `queue_slots` leases and per-queue-key health
+- `/usage` — consolidated usage/admin dashboard. The default **Usage** tab
+  shows per-model usage, active queue status, tokens, costs, and task-QA job
+  pipeline counts. Additional tabs expose the former admin surface: **Overview**
+  queue health, **Costs**, **Worker Jobs** (unified `worker_jobs` kind×status
+  matrix plus `OrphanedStateCard`), **Concurrency** (`queue_slots` leases and
+  per-queue-key health), and **Tag Policy**. `/admin` redirects here.
 - `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all QA UI (matrix classification dots, the "Trial analysis" legend section, the trial classification card, and the task QA verdict badge) from public viewers.
 - `/datasets` and `/datasets/[token]` — public dataset listing and detail
 
