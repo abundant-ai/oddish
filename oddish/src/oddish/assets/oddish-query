@@ -10,9 +10,6 @@ const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
-const STAGE = (process.env.ODDISH_PROBE_STAGE_DIR || '/opt/oddish-probe').replace(/\/+$/, '');
-const BOUNDARY_MARKER = '000-READ-ME-PROBE-ONLY.txt';
-
 const BOUNDARY_BANNER =
   '[PROBE-ONLY — the real solving agent never sees this]\n' +
   'You can read this only because you are a probe. The agent under test has no\n' +
@@ -25,12 +22,6 @@ function die(msg, status) { out(JSON.stringify({ error: msg, status })); process
 
 function withBanner(body) { return BOUNDARY_BANNER + '\n---\n' + body; }
 function dieStage(msg, status) { out(BOUNDARY_BANNER); die(msg, status); }
-function requireStage() { if (!fs.existsSync(STAGE)) dieStage('probe asset unavailable: stage not mounted', 3); }
-function stagePath(...parts) {
-  const p = path.resolve(STAGE, ...parts);
-  if (p !== STAGE && !p.startsWith(STAGE + path.sep)) dieStage('path escapes probe stage', 2);
-  return p;
-}
 
 async function get(path, params) {
   const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
@@ -146,15 +137,6 @@ async function cmdSolutionCat(a) {
   out(withBanner(await fetchFileContent(`solution/${rel}`)));
 }
 
-function copyTree(srcRel, into, label) {
-  requireStage();
-  const src = stagePath(srcRel);
-  if (!fs.existsSync(src)) dieStage(`probe asset unavailable: ${srcRel}`, 3);
-  const dest = into || fs.mkdtempSync(path.join(os.tmpdir(), `probe-${label}-`));
-  // Skip the boundary marker so it does not litter the agent's workspace.
-  fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== BOUNDARY_MARKER });
-  out(withBanner(`copied ${label} to ${dest}`));
-}
 function cmdHarborSrc(a) {
   const repo = process.env.ODDISH_PROBE_HARBOR_REPO || '';
   const ref = process.env.ODDISH_PROBE_HARBOR_REF || '';
@@ -206,6 +188,23 @@ async function cmdSolutionFetch(a) {
   out(withBanner(`copied solution (${n} files) to ${dest}`));
 }
 
+const HELP = `oddish-query — probe-only read access to task data (every command prints a PROBE-ONLY banner)
+
+USAGE: node /probe-harness/oddish-query <group> <command> [args]
+
+  solution cat <relpath>      print one file from the reference solution
+  solution fetch [--into DIR] copy the whole reference solution into DIR
+  verifier source             print the verifier (test.sh)
+  verify run                  fetch + run the verifier against /app; prints reward/metrics
+  harbor src [--into DIR]      fetch the pinned harbor framework source into DIR
+  tasks search [--q TEXT]     find tasks
+  tasks get <task_id>         task detail
+  tasks trials <task_id>      a task's trials
+  experiments trials <exp_id> trials in an experiment (trial_id, task, status, reward, is_probe)
+  trials logs <trial_id> [--trajectory]   a trial's logs, or full trajectory
+
+Use your judgement about which of these to call for your probe — not every probe needs every command.`;
+
 function parse(argv) {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -213,6 +212,7 @@ function parse(argv) {
     if (t.startsWith('--')) {
       const k = t.slice(2);
       if (k === 'trajectory') opt.trajectory = true;
+      else if (k === 'help') opt.help = true;
       else opt[k] = argv[++i];
     } else pos.push(t);
   }
@@ -222,6 +222,8 @@ function parse(argv) {
 async function main() {
   const { pos, opt } = parse(process.argv.slice(2));
   const [group, cmd, id] = pos;
+  if (!group || group === '--help' || group === '-h' || opt.help) { out(HELP); return; }
+  if (cmd === '--help' || cmd === '-h') { out(HELP); return; }
   const a = { id, rel: id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
     tagsNone: opt['tags-none'], limit: opt.limit || 25, offset: opt.offset || 0,
     trajectory: !!opt.trajectory };
