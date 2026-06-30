@@ -29,7 +29,6 @@ import {
   Gauge,
   LogOut,
   SearchCheck,
-  Shield,
   User,
 } from "lucide-react";
 
@@ -83,7 +82,7 @@ export function Nav() {
   }, [organization?.id, mutate]);
 
   return (
-    <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
+    <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card">
       <div className="mx-auto flex h-14 max-w-(--breakpoint-2xl) items-center px-4">
         <div className="flex w-full items-center justify-between">
           {/* Left side - primary nav */}
@@ -225,15 +224,6 @@ export function Nav() {
                       >
                         <User className="h-4 w-4" />
                         Settings
-                      </Link>
-                    </DropdownMenuItem>
-                    <DropdownMenuItem asChild>
-                      <Link
-                        href="/usage"
-                        className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-hidden hover:bg-muted focus:bg-muted"
-                      >
-                        <Shield className="h-4 w-4" />
-                        Usage dashboard
                       </Link>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator className="my-2" />
