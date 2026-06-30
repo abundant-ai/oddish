@@ -162,6 +162,35 @@ def test_cursor_composer_versioned_ids_do_not_fall_back_to_bare() -> None:
     assert bare < fast < v15
 
 
+def test_estimate_cost_includes_cache_write_tokens() -> None:
+    # Sonnet 4.5: in=3e-6, out=15e-6, cache_read=3e-7
+    # cache_write defaults to 1.25 * input = 3.75e-6 when not set in litellm.
+    # 1000 uncached input, 500 output, 200 cache-read, 400 cache-write.
+    value = estimate_cost_usd("claude-sonnet-4-5", 1200, 500, 200, 400)
+    expected = (
+        1000 * 3e-6       # uncached input (1200 - 200)
+        + 200 * 3e-7      # cache read
+        + 400 * 3.75e-6   # cache write at 1.25x input
+        + 500 * 15e-6     # output
+    )
+    assert value == pytest.approx(expected)
+
+
+def test_estimate_cost_cache_write_zero_unchanged() -> None:
+    base = estimate_cost_usd("claude-sonnet-4-5", 1000, 500, 0)
+    with_zero_write = estimate_cost_usd("claude-sonnet-4-5", 1000, 500, 0, 0)
+    assert base == pytest.approx(with_zero_write)
+
+
+def test_anthropic_pricing_table_has_cache_write() -> None:
+    from oddish.model_pricing import _find_local_pricing
+    for name in ("claude-haiku-4", "claude-3-7-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku"):
+        p = _find_local_pricing(name)
+        assert p is not None, f"No pricing for {name}"
+        assert p.cache_write is not None, f"No cache_write for {name}"
+        assert p.cache_write == pytest.approx(p.input * 1.25)
+
+
 def test_pricing_dataclass_is_immutable() -> None:
     p = ModelPricing(input=1e-6, output=2e-6)
     with pytest.raises(Exception):  # frozen dataclass -> FrozenInstanceError
