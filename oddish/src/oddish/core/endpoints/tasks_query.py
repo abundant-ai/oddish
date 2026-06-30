@@ -1284,16 +1284,21 @@ async def browse_task_facets_core(
     """Distinct filter-option values for the task browser.
 
     Returns the trial-derived facets (agent, model, provider, environment,
-    harbor stage/source, analysis classification) plus the org's experiments.
-    Scoped to non-probe, non-superseded trials so the options mirror what the
-    browse filters actually match.
+    harbor stage, analysis classification) plus the org's experiments. Scoped to
+    the same trials the browse filters match — non-probe, non-superseded, and on
+    each task's CURRENT version — so every option yields at least one task.
     """
 
     def _distinct(column: Any) -> Any:
-        stmt = select(column).where(
-            column.isnot(None),
-            TrialModel.is_probe.isnot(True),
-            TrialModel.superseded_by_trial_id.is_(None),
+        stmt = (
+            select(column)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                column.isnot(None),
+                TrialModel.is_probe.isnot(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+            )
         )
         if org_id is not None:
             stmt = stmt.where(TrialModel.org_id == org_id)
@@ -1322,10 +1327,15 @@ async def browse_task_facets_core(
     # is an agent at a specific model, so this is the primary run-config facet.
     agent_models: list[AgentModelFacet] = []
     try:
-        pairs_stmt = select(TrialModel.agent, TrialModel.model).where(
-            TrialModel.agent.isnot(None),
-            TrialModel.is_probe.isnot(True),
-            TrialModel.superseded_by_trial_id.is_(None),
+        pairs_stmt = (
+            select(TrialModel.agent, TrialModel.model)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                TrialModel.agent.isnot(None),
+                TrialModel.is_probe.isnot(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+            )
         )
         if org_id is not None:
             pairs_stmt = pairs_stmt.where(TrialModel.org_id == org_id)
