@@ -35,7 +35,6 @@ import type {
 } from "@/lib/types";
 import {
   activeFilterCount,
-  EMPTY_FILTERS,
   FILTER_DEFS,
   FILTER_PARAM_KEYS,
   filterParams,
@@ -100,9 +99,24 @@ export function TasksFilterSidebar() {
   const set = (patch: Partial<FilterValues>) =>
     onChange({ ...values, ...patch });
 
-  // Free-text search + tag tokens live in the URL `q` param (debounced).
-  const [searchQuery, setSearchQuery] = useState(searchParams.get("q") ?? "");
+  // Free-text search lives in the URL `q` param (debounced). `query` is the
+  // legacy param some deep links still use — read it as a fallback.
+  const urlSearch = searchParams.get("q") ?? searchParams.get("query") ?? "";
+  const [searchQuery, setSearchQuery] = useState(urlSearch);
+
+  // Keep the freshest searchParams in a ref so the debounced write reads the
+  // current URL — a filter change inside the 300ms window isn't clobbered.
+  const searchParamsRef = useRef(searchParams);
+  searchParamsRef.current = searchParams;
+
   const isFirstSearchRender = useRef(true);
+
+  // Re-sync the input when the URL search text changes externally (back/forward,
+  // applying a saved filter, Clear all). No-op while the user is typing (the URL
+  // already matches the trimmed input).
+  useEffect(() => {
+    setSearchQuery((prev) => (prev.trim() === urlSearch ? prev : urlSearch));
+  }, [urlSearch]);
 
   useEffect(() => {
     if (isFirstSearchRender.current) {
@@ -110,10 +124,11 @@ export function TasksFilterSidebar() {
       return;
     }
     const handle = window.setTimeout(() => {
-      const params = new URLSearchParams(searchParams.toString());
+      const params = new URLSearchParams(searchParamsRef.current.toString());
       const trimmed = searchQuery.trim();
       if (trimmed) params.set("q", trimmed);
       else params.delete("q");
+      params.delete("query"); // collapse the legacy param into `q`
       params.delete("offset");
       router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     }, 300);
@@ -185,12 +200,14 @@ export function TasksFilterSidebar() {
           </span>
           <div className="flex items-center gap-1">
             <SavedFiltersMenu />
-            {activeCount > 0 ? (
+            {activeCount > 0 || searchQuery.trim().length > 0 ? (
               <button
                 type="button"
                 className="text-muted-foreground hover:text-foreground text-[11px]"
                 onClick={() => {
-                  onChange(EMPTY_FILTERS);
+                  // Wipe every browse param (filters, tags, search, offset).
+                  router.replace(pathname, { scroll: false });
+                  setSearchQuery("");
                   setAddedKeys([]);
                 }}
               >
@@ -512,10 +529,17 @@ function TagsControl({
     values.tagsAll.length + values.tagsAny.length + values.tagsNone.length;
 
   const toggle = (token: string) => {
-    const next = selected.includes(token)
-      ? selected.filter((t) => t !== token)
-      : [...selected, token];
-    set({ [field]: next } as Partial<FilterValues>);
+    // A tag lives in at most one bucket. Strip it from all three first, then
+    // add it back to the active bucket unless we're unchecking it there.
+    const patch: Partial<FilterValues> = {
+      tagsAll: values.tagsAll.filter((t) => t !== token),
+      tagsAny: values.tagsAny.filter((t) => t !== token),
+      tagsNone: values.tagsNone.filter((t) => t !== token),
+    };
+    if (!selected.includes(token)) {
+      patch[field] = [...(patch[field] as string[]), token];
+    }
+    set(patch);
   };
 
   const filtered = search

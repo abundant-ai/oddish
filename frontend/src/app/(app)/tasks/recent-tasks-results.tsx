@@ -8,7 +8,7 @@ import {
   getClerkToken,
 } from "@/lib/backend-config";
 import { parseTaskSearch } from "@/lib/tag-query";
-import { FILTER_PARAM_KEYS, TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
+import { BROWSE_FORWARD_KEYS, TASKS_PAGE_SIZE } from "@/lib/tasks-filters";
 import { cn } from "@/lib/utils";
 import type { TaskBrowseResponse } from "@/lib/types";
 import { TaskCard } from "./task-card";
@@ -39,12 +39,13 @@ async function fetchBrowse(
       limit: String(TASKS_PAGE_SIZE),
       offset: String(offset),
     };
-    // Tags are a structured filter (tags/tags_any/tags_none params via
-    // FILTER_PARAM_KEYS), so only free text + author are taken from `q`.
-    const parsed = parseTaskSearch(sp.get("q") ?? "");
+    // Tags are a structured filter (tags/tags_any/tags_none params), so only
+    // free text + author are taken from the search box. `query` is the legacy
+    // search param (e.g. worker-job deep links); `q` is the current one.
+    const parsed = parseTaskSearch(sp.get("q") ?? sp.get("query") ?? "");
     if (parsed.text) query.query = parsed.text;
     if (parsed.authors.length) query.author = parsed.authors.join(",");
-    for (const key of FILTER_PARAM_KEYS) {
+    for (const key of BROWSE_FORWARD_KEYS) {
       const value = sp.get(key);
       if (value) query[key] = value;
     }
