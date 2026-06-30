@@ -482,9 +482,21 @@ def test_user_model_github_id_org_scoped_unique_and_indexed():
     ), "missing index over (org_id, github_id)"
 
 
-@pytest.mark.xfail(strict=True, reason="github_id not yet on TaskSweepSubmission (oddish/schemas.py:373)")
 def test_submission_carries_github_id():
     assert "github_id" in TaskSweepSubmission.model_fields
+
+
+def test_submission_github_id_round_trips_through_serialization():
+    """G2 transport: github_id survives model_dump → model_validate intact."""
+    submission = _submission("octocat")
+    submission.github_id = "123456"
+    restored = TaskSweepSubmission.model_validate(submission.model_dump())
+    assert restored.github_id == "123456"
+
+
+def test_submission_github_id_defaults_to_none():
+    """Back-compat: github_id is optional; omitting it leaves it None."""
+    assert _submission("octocat").github_id is None
 
 
 # ===========================================================================

@@ -72,7 +72,15 @@ def compute_request_hash(submission: Any) -> str:
     the submission as received, before the core mutates it (append flip, link
     defaulting), so the original and its faithful retry fingerprint identically.
     """
-    return _canonical_digest(submission.model_dump(mode="json"))
+    data = submission.model_dump(mode="json")
+    # github_id was added after launch; a submission that doesn't use it must
+    # fingerprint identically to its pre-github_id form, or an in-flight
+    # Idempotency-Key retried across the deploy boundary would see a changed
+    # hash and spuriously 409. Drop only the unset case (set values stay,
+    # so a key reused with a different github_id still conflicts correctly).
+    if data.get("github_id") is None:
+        data.pop("github_id", None)
+    return _canonical_digest(data)
 
 
 @dataclass(frozen=True)
