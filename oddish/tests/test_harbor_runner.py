@@ -16,6 +16,7 @@ import pytest  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
 from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
@@ -940,8 +941,11 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
         raw_harbor_config={},
     )
 
-    assert agent_config.name == "grok-build"
-    assert agent_config.import_path is None
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
     assert agent_config.model_name == "xai/redacted-model"
     assert "XAI_API_KEY" not in (agent_config.env or {})
     assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
@@ -957,9 +961,84 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
         raw_harbor_config={},
     )
 
-    assert agent_config.name == "grok-build"
-    assert agent_config.import_path is None
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
     assert agent_config.model_name == "xai/redacted-model"
+
+
+def test_oddish_grok_build_requests_streaming_json(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/redacted-model")
+
+    asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
+
+    run_command = seen[-1]
+    assert "--output-format streaming-json" in run_command
+    assert "--output-format json" in run_command
+    assert "streaming-json|output-format|no-auto-update" in run_command
+    assert ">/logs/agent/grok-build.json" in run_command
+
+
+def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
+    (tmp_path / "grok-build.json").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "reasoning", "text": "Need to inspect files."}),
+                json.dumps(
+                    {
+                        "type": "tool_call",
+                        "id": "call_1",
+                        "name": "shell",
+                        "arguments": {"command": "ls"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_1",
+                        "output": "README.md\n",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace(
+        cost_usd=None,
+        n_input_tokens=0,
+        n_cache_tokens=0,
+        n_output_tokens=0,
+    )
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/redacted-model")
+
+    agent.populate_context_post_run(context)
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["schema_version"] == "ATIF-v1.7"
+    assert trajectory["agent"]["name"] == "grok-build"
+    assert len(trajectory["steps"]) == 3
+    assert trajectory["steps"][0]["reasoning_content"] == "Need to inspect files."
+    assert trajectory["steps"][0]["tool_calls"][0]["function_name"] == "shell"
+    assert trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    assert trajectory["steps"][2]["message"] == "Done."
+    assert trajectory["final_metrics"]["total_steps"] == 3
 
 
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
