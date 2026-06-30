@@ -103,6 +103,12 @@ async def test_browse_filters():
             # Trial-level EXISTS filters.
             assert await _names(session, agents=["claude-code"]) == {"alpha"}
             assert await _names(session, agents=["codex"]) == {"beta"}
+            # Agent+model pair: trials have a null model, so the token is the
+            # bare agent and matches the same trial's (agent, null) pair.
+            assert await _names(session, agent_models=["claude-code"]) == {
+                "alpha"
+            }
+            assert await _names(session, agent_models=["nope"]) == set()
             assert await _names(session, environments=["docker"]) == {"beta"}
             assert await _names(session, has_trajectory=True) == {"alpha"}
             assert await _names(session, has_error=True) == {"beta"}
