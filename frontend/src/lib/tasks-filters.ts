@@ -137,6 +137,8 @@ export interface FilterDef {
   options?: Option[];
   facet?: keyof TaskBrowseFacets;
   pinned?: boolean;
+  // Hidden from the sidebar this is UI-only.
+  hidden?: boolean;
 }
 
 // Ordered registry. `pinned` filters always render in the sidebar; the rest are
@@ -206,6 +208,7 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "select",
     options: PRIORITY_OPTIONS,
+    hidden: true,
   },
   {
     key: "verdictStatuses",
@@ -213,6 +216,7 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "select",
     options: VERDICT_OPTIONS,
+    hidden: true,
   },
   {
     key: "analysisClassifications",
@@ -226,6 +230,7 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Has trajectory",
     group: "Trial",
     control: "boolean",
+    hidden: true,
   },
   { key: "hasError", label: "Has error", group: "Trial", control: "boolean" },
   {
@@ -233,13 +238,21 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Has source link",
     group: "Task",
     control: "boolean",
+    hidden: true,
   },
-  { key: "tokens", label: "Token size", group: "Trial", control: "numrange" },
+  {
+    key: "tokens",
+    label: "Token size",
+    group: "Trial",
+    control: "numrange",
+    hidden: true,
+  },
   {
     key: "steps",
     label: "Trajectory length",
     group: "Trial",
     control: "numrange",
+    hidden: true,
   },
   {
     key: "reward",
@@ -258,6 +271,7 @@ export const FILTER_DEFS: FilterDef[] = [
     label: "Only probe trials",
     group: "Trial",
     control: "boolean",
+    hidden: true,
   },
 ];
 
