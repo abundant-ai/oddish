@@ -63,11 +63,14 @@ _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
 # ``_baseline_agent_clause`` and the frontend's ``isBaselineAgentName`` so every
 # code path agrees on what counts as a nop/oracle baseline.
+# Per-kind prefix lists are the single source of truth: the combined membership
+# tuple below composes from them, so adding a variant to one kind flows to both
+# ``is_nop_oracle_agent`` (membership) and ``nop_oracle_kind`` (classification)
+# without the two drifting.
+_ORACLE_AGENT_PREFIXES: tuple[str, ...] = ("oracle-", "agent-oracle")
+_NOP_AGENT_PREFIXES: tuple[str, ...] = ("nop-", "agent-nop")
 _NOP_ORACLE_AGENT_PREFIXES: tuple[str, ...] = (
-    "nop-",
-    "oracle-",
-    "agent-nop",
-    "agent-oracle",
+    _NOP_AGENT_PREFIXES + _ORACLE_AGENT_PREFIXES
 )
 
 
@@ -100,11 +103,11 @@ def nop_oracle_kind(agent: str | None) -> str | None:
     if not normalized:
         return None
     if normalized == AgentName.ORACLE.value or normalized.startswith(
-        ("oracle-", "agent-oracle")
+        _ORACLE_AGENT_PREFIXES
     ):
         return AgentName.ORACLE.value
     if normalized == AgentName.NOP.value or normalized.startswith(
-        ("nop-", "agent-nop")
+        _NOP_AGENT_PREFIXES
     ):
         return AgentName.NOP.value
     return None
