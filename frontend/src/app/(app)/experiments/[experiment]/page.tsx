@@ -49,18 +49,19 @@ async function getInitialTasks(experimentId: string): Promise<Task[] | null> {
     const token = await getClerkToken(authObj.getToken);
     if (!token) return null;
 
-    const url = getBackendUrl("tasks", "", {
-      experiment_id: experimentId,
-      limit: "2000",
-      offset: "0",
-      include_trials: "false",
-      // Lightweight first-paint shell: skips the experiment-scoped
-      // ``effective_version_ids`` IN-list and the per-task
-      // ``visible_worker_jobs`` fetch on the backend. Trial data and
-      // worker-job badges arrive via the phase-2 batched fetch in
-      // ``experiment-client.tsx``.
-      compact_tasks: "true",
-    });
+    // Lightweight first-paint shell via the dedicated ``task-shells``
+    // endpoint: skips the experiment-scoped ``effective_version_ids`` IN-list,
+    // the per-task ``visible_worker_jobs`` fetch, AND the per-task
+    // ``experiments`` fan-out on the backend. Trial data and worker-job badges
+    // arrive via the phase-2 batched fetch in ``experiment-client.tsx``.
+    const url = getBackendUrl(
+      "experiments",
+      `/${encodeURIComponent(experimentId)}/task-shells`,
+      {
+        limit: "2000",
+        offset: "0",
+      },
+    );
     const response = await fetch(url, {
       cache: "no-store",
       headers: getAuthHeaders(token),

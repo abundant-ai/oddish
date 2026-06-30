@@ -26,10 +26,12 @@ import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import { TaskProbeRunCard } from "@/components/task-probe-run-card";
 import { TaskVerdictBadge } from "@/components/task-verdict-badge";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
+import { ExperimentsList } from "@/components/experiments-list";
 import { fetcher } from "@/lib/api";
 import {
   buildExperimentAgentSummaries,
   getExperimentAgentKey,
+  PROBE_AGENT_KEY,
 } from "@/lib/experiment-agent-grouping";
 import {
   formatCostUsd,
@@ -231,51 +233,41 @@ function TaskDetailHeader({
             {tagEditor}
           </div>
         </div>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
-          {(() => {
-            const affiliated = task.experiments?.length
-              ? task.experiments
-              : task.experiment_name
-                ? [{ id: task.experiment_id, name: task.experiment_name }]
-                : [];
-            if (affiliated.length === 0) return null;
-            return (
-              <>
-                <span>
-                  {affiliated.length > 1 ? "experiments" : "experiment"}
-                </span>
-                {affiliated.map((exp, i) => (
-                  <span
-                    key={exp.id}
-                    className="inline-flex items-center gap-x-2"
-                  >
-                    {i > 0 ? <span aria-hidden>·</span> : null}
-                    <Link
-                      href={`/experiments/${encodeURIComponent(encodeURIComponent(exp.id))}`}
-                      className="text-[color:var(--paper-ink-2)] underline-offset-2 hover:underline"
-                    >
-                      {exp.name}
-                    </Link>
-                  </span>
-                ))}
-              </>
-            );
-          })()}
-          {task.github_username || task.user ? (
-            <>
-              <span aria-hidden>·</span>
-              <span>by {task.github_username || task.user}</span>
-            </>
-          ) : null}
-          {task.created_at ? (
-            <>
-              <span aria-hidden>·</span>
-              <span title={new Date(task.created_at).toLocaleString()}>
-                created {formatRelativeTime(task.created_at)}
+        {(() => {
+          const affiliated = task.experiments?.length
+            ? task.experiments
+            : task.experiment_name
+              ? [{ id: task.experiment_id, name: task.experiment_name }]
+              : [];
+          if (affiliated.length === 0) return null;
+          return (
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+              <span>
+                {affiliated.length > 1 ? "experiments" : "experiment"}
               </span>
-            </>
-          ) : null}
-        </div>
+              <ExperimentsList
+                experiments={affiliated}
+                maxVisible={2}
+                linkClassName="text-[color:var(--paper-ink-2)]"
+              />
+            </div>
+          );
+        })()}
+        {(() => {
+          const byline = task.github_username || task.user;
+          if (!byline && !task.created_at) return null;
+          return (
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[color:var(--paper-ink-3)]">
+              {byline ? <span>by {byline}</span> : null}
+              {byline && task.created_at ? <span aria-hidden>·</span> : null}
+              {task.created_at ? (
+                <span title={new Date(task.created_at).toLocaleString()}>
+                  created {formatRelativeTime(task.created_at)}
+                </span>
+              ) : null}
+            </div>
+          );
+        })()}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <ChatButton scopeKind="task" scopeId={task.name} />
@@ -664,9 +656,7 @@ export function TaskDetailClient({
 
   const trialsForVersion = useMemo(() => {
     if (!task?.trials || selectedVersionId == null) return [] as Trial[];
-    return task.trials.filter(
-      (t) => t.task_version_id === selectedVersionId && !t.is_probe,
-    );
+    return task.trials.filter((t) => t.task_version_id === selectedVersionId);
   }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
@@ -691,6 +681,15 @@ export function TaskDetailClient({
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
     [tasksForGrouping],
+  );
+
+  const realAgentCount = useMemo(
+    () => agentSummaries.filter((s) => s.key !== PROBE_AGENT_KEY).length,
+    [agentSummaries],
+  );
+  const realTrialCount = useMemo(
+    () => trialsForVersion.filter((t) => !t.is_probe).length,
+    [trialsForVersion],
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -990,10 +989,10 @@ export function TaskDetailClient({
               Agents
             </h2>
             <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
-              {agentSummaries.length} agent
-              {agentSummaries.length === 1 ? "" : "s"} ·{" "}
-              {trialsForVersion.length} trial
-              {trialsForVersion.length === 1 ? "" : "s"}
+              {realAgentCount} agent
+              {realAgentCount === 1 ? "" : "s"} ·{" "}
+              {realTrialCount} trial
+              {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>
           {agentSummaries.length === 0 ? (

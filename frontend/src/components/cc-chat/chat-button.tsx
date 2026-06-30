@@ -2,23 +2,29 @@
 
 import { useState } from "react";
 import { MessageSquare } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button, type ButtonProps } from "@/components/ui/button";
 import type { ChatScopeKind } from "@/lib/cc-chat-types";
 import { ChatDrawer } from "./chat-drawer";
 
 export function ChatButton({
   scopeKind,
   scopeId,
+  variant = "default",
+  className = "gap-1.5 bg-blue-600 text-white hover:bg-blue-700",
 }: {
   scopeKind: ChatScopeKind;
   scopeId: string;
+  variant?: ButtonProps["variant"];
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <Button
+        type="button"
         size="sm"
-        className="gap-1.5 bg-blue-600 text-white hover:bg-blue-700"
+        variant={variant}
+        className={className}
         aria-expanded={open}
         aria-haspopup="dialog"
         onClick={() => setOpen(true)}

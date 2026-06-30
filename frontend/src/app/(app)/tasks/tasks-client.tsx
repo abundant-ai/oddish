@@ -19,6 +19,7 @@ import {
 import { ChatButton } from "@/components/cc-chat/chat-button";
 import { ImportDialog } from "@/components/import-dialog";
 import { SavedFiltersMenu } from "@/components/saved-filters-menu";
+import { TagFilterDropdown } from "@/components/tag-filter-dropdown";
 import {
   SearchSyntaxHelp,
   SearchSyntaxMultiRow,
@@ -39,12 +40,12 @@ import {
 import type { TaskBrowseItem, TaskBrowseResponse } from "@/lib/types";
 import {
   cn,
-  encodeExperimentRouteParam,
   formatRelativeTime,
   formatShortDateTime,
   prBadge,
   taskPrUrl,
 } from "@/lib/utils";
+import { ExperimentsList } from "@/components/experiments-list";
 import {
   ChevronLeft,
   ChevronRight,
@@ -105,19 +106,13 @@ function ExperimentsCell({ task }: { task: TaskBrowseItem }) {
   }
 
   return (
-    <div className="text-muted-foreground flex flex-wrap gap-x-2 gap-y-1 text-xs">
-      {task.experiments.map((experiment, index) => (
-        <span key={experiment.id}>
-          <Link
-            href={`/experiments/${encodeExperimentRouteParam(experiment.id)}`}
-            className="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
-          >
-            {experiment.name}
-          </Link>
-          {index < task.experiments.length - 1 ? "," : null}
-        </span>
-      ))}
-    </div>
+    <ExperimentsList
+      experiments={task.experiments}
+      maxVisible={3}
+      layout="stacked"
+      className="text-muted-foreground text-xs"
+      linkClassName="text-[#5d77a5] transition-colors hover:text-[#526a95] dark:text-[#a8b8d2] dark:hover:text-[#c0cde1]"
+    />
   );
 }
 
@@ -571,6 +566,11 @@ export function TasksPageClient({
                   </p>
                 </SearchSyntaxHelp>
               </div>
+              <TagFilterDropdown
+                query={searchQuery}
+                onQueryChange={setSearchQuery}
+                countField="task_count"
+              />
               <SavedFiltersMenu
                 query={searchQuery}
                 onApply={(text) => setSearchQuery(text)}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from oddish.core.dashboard import invalidate_dashboard_cache
 from oddish.core.endpoints import (
     delete_trial_core,
@@ -35,6 +35,7 @@ from oddish.db import (
     TrialModel,
     get_session,
 )
+from oddish.schemas import TrialRetryRequest
 from oddish.schemas import (
     TrialImportCompleteRequest,
     TrialImportCompleteResponse,
@@ -144,12 +145,18 @@ async def finalize_trial_import(
 async def retry_trial(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
+    payload: TrialRetryRequest | None = Body(default=None),
 ) -> dict:
     """Re-queue a failed or completed trial for another attempt."""
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        return await retry_trial_core(session, trial_id=trial_id, org_id=auth.org_id)
+        return await retry_trial_core(
+            session,
+            trial_id=trial_id,
+            org_id=auth.org_id,
+            registry_auth=(payload.registry_auth if payload else None),
+        )
 
 
 @router.delete("/trials/{trial_id}")

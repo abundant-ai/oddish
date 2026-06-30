@@ -303,6 +303,7 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
+| POST | `/trials/{trial_id}/retry` | Retry a trial by creating a fresh replacement row. Optional body: `registry_auth` to supply fresh per-run registry credentials for the replacement trial |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
@@ -586,6 +587,25 @@ Run GLM 5.2 / MiniMax M3 / Kimi K2.7 via Fireworks: `oddish run -p <task>
 --agent claude-code --model fireworks/glm-5.2`, `… --model fireworks/minimax-m3`,
 `… --model fireworks/kimi-k2.7-code`.
 
+### Grok Build / xAI routing (Harbor installed agent)
+
+Harbor's `grok-build` agent runs directly against xAI, not through Claude Code
+or Codex compatibility wrappers.
+
+- **Canonical id / queue key.** `xai/<id>` is the canonical model form; an
+  explicit `grok/<id>` prefix is normalized to `xai/<id>`. The trial provider
+  resolves to `xai`, and the queue key for
+  `xai/redacted-model` stays exactly that string. If a `grok-build`
+  trial omits a model, it falls back to the `xai` provider bucket rather than
+  `default`.
+- **Secret.** Provide `XAI_API_KEY` in the runtime Modal secret (`oddish-prod`)
+  or the local worker environment. Oddish does not persist the key; Harbor's
+  Grok config references the env var name (`env_key = "XAI_API_KEY"`) and reads
+  the value at runtime.
+
+Run Grok Build on a task: `oddish run -p <task> --agent grok-build --model
+xai/redacted-model`.
+
 Storage defaults:
 
 - S3-compatible storage is **required**. Clients PUT task bundles directly
@@ -725,8 +745,8 @@ silently breaks throughput or correctness — read before touching
    (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
    `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
    `normalize_queue_key`): nop/oracle + variants collapse to the single
-   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot map to
-   `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
+   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot / xAI map
+   to `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
    `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
    model across two buckets.
 
