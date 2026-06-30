@@ -985,7 +985,7 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
     assert "--output-format streaming-json" in run_command
     assert "--output-format json" in run_command
     assert "streaming-json|output-format|no-auto-update" in run_command
-    assert "> /logs/agent/grok-build.json" in run_command
+    assert ">/logs/agent/grok-build.json" in run_command
 
 
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
