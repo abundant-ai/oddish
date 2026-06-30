@@ -548,8 +548,15 @@ async def cleanup_orphaned_queue_state(
         )
 
         for (baseline_trial_id,) in tasks_pending_gate:
-            if baseline_trial_id:
-                await maybe_gate_llm_trials(session, str(baseline_trial_id))
+            if not baseline_trial_id:
+                continue
+            await maybe_gate_llm_trials(session, str(baseline_trial_id))
+            # A FAULTY gate cancels the scope's LLM trials, which can make the
+            # task "all trials done" for the first time. Advance it in the same
+            # pass (block 2 above already ran while they were still BLOCKED), so
+            # the task isn't left RUNNING until the next cleanup cycle.
+            if await maybe_start_qa_stage(session, str(baseline_trial_id)):
+                tasks_progressed_to_analysis += 1
 
         # -----------------------------------------------------------------
         # 3. Legacy tasks stuck in ANALYZING (pre-QA-refactor) where all
