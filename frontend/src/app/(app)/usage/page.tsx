@@ -11,6 +11,8 @@ import {
 import type { DashboardResponse } from "@/lib/types";
 import { UsageClient } from "./usage-client";
 
+export const dynamic = "force-dynamic";
+
 async function getInitialUsageData(): Promise<DashboardResponse | null> {
   try {
     const authObj = await auth();
