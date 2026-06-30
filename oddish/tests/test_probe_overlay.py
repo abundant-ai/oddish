@@ -93,6 +93,28 @@ def test_render_includes_subagents_section():
     assert "one level" in out.lower()
 
 
+def test_subagents_section_mandates_sequential_dispatch():
+    # Subagents share one /app + one verifier, so running a mutator concurrently
+    # with a reader makes the reader observe the half-applied exploit as native
+    # state. The section must tell the probe to dispatch them one at a time.
+    out = _render()
+    assert "one at a time" in out.lower()
+    assert "wait for each" in out.lower()
+
+
+def test_subagents_section_mandates_snapshot_restore():
+    # Sequential alone leaves residue: a mutating subagent that returns without
+    # reverting dirties /app for the next one. Require snapshot-once + restore.
+    out = _render()
+    assert "/tmp/app-baseline" in out
+    assert "rsync" in out
+
+
+def test_subagents_section_mandates_scratch_provenance_tag():
+    out = _render()
+    assert "probe-scratch-" in out
+
+
 def test_subagents_section_present_even_without_solution():
     out = render_probe_instruction(
         "FRAMING-TEXT",
