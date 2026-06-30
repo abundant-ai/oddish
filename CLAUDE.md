@@ -10,6 +10,26 @@ a PR for review. This applies to every change, no matter how small — even a
 one-line fix. If you find yourself on `main` with staged or unstaged changes,
 create a branch and move the work onto it before committing.
 
+## Rule — never expose probes in public/share views
+
+Probes are an **experimental, internal-only** feature. They must never appear in
+any public, unauthenticated surface — the `/share/[token]` experiment view, the
+`/datasets/[token]` view, or any `/public/*` API response. Both public views are
+fed by the same endpoints in `oddish/src/oddish/core/sharing/public.py`, so the
+filtering lives at the **data layer** (don't return `is_probe` trials), not just
+the UI:
+
+- `get_public_task` (`sharing/helpers.py`) strips `is_probe` trials from the
+  loaded task, covering `get_public_task_status`.
+- `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
+  trials.
+- `list_public_task_trials` always passes `probe=False` (never honors a
+  caller-supplied probe filter publicly).
+
+When adding a new public/share endpoint or surfacing a new trial/task field
+publicly, exclude probes the same way. Filter at the query/data layer — UI guards
+alone are not enough, since the trials still ship to the browser.
+
 ## Gotcha — `list_tasks_core` `load_only` and MissingGreenlet
 
 `list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
