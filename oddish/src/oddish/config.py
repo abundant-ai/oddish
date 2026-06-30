@@ -919,6 +919,11 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    harbor_source_repo: str = "rishidesai/harbor"
+    # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
+    # the harbor dependency pin in pyproject.
+    harbor_source_ref: str = "main"
+
     registry_auth_key: str | None = None
 
     # --- Configurable Harbor source (override which Harbor runs a trial) ---
