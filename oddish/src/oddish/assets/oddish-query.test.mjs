@@ -54,23 +54,6 @@ test('solution cat without task id dies clearly', () => {
   assert.match(out, /task id/i);
 });
 
-function runStage(args, stageDir) {
-  const res = spawnSync('node', ['./oddish-query', ...args], {
-    cwd: new URL('.', import.meta.url).pathname,
-    env: { ...process.env, ODDISH_PROBE_STAGE_DIR: stageDir },
-    encoding: 'utf8',
-  });
-  return res.stdout.trim();
-}
-
-function mkStage() {
-  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-stage-'));
-  fs.mkdirSync(path.join(stage, 'solution'), { recursive: true });
-  fs.writeFileSync(path.join(stage, 'solution', 'a.txt'), 'HELLO-SOLUTION');
-  fs.writeFileSync(path.join(stage, 'test.sh'), '#!/bin/bash\necho SCORER\n');
-  return stage;
-}
-
 
 test('harbor src reports the repo+ref it fetches and the destination', () => {
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'harbor-'));
@@ -125,4 +108,24 @@ test('verify run captures stderr in build_log_tail', () => {
     { '/tasks/task-123/files': { files: [
         { path: 'test.sh', content: '#!/bin/bash\necho STDERR_MARKER >&2\n' } ] } });
   assert.match(JSON.parse(out).build_log_tail, /STDERR_MARKER/);
+});
+
+test('--help lists the command groups', () => {
+  const out = runApi(['--help'], {});
+  assert.match(out, /solution/);
+  assert.match(out, /verifier/);
+  assert.match(out, /verify run/);
+  assert.match(out, /harbor src/);
+  assert.match(out, /trials logs/);
+});
+
+test('per-command help explains usage', () => {
+  const out = runApi(['solution', '--help'], {});
+  assert.match(out, /solution (cat|fetch)/);
+});
+
+test('no stage-dir env is referenced', () => {
+  const src = fs.readFileSync(new URL('./oddish-query', import.meta.url).pathname, 'utf8');
+  assert.doesNotMatch(src, /ODDISH_PROBE_STAGE_DIR/);
+  assert.doesNotMatch(src, /requireStage|stagePath/);
 });
