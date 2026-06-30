@@ -27,6 +27,7 @@ from pathlib import Path
 
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.trial.trial import Trial
+from sqlalchemy import and_, exists, select, update
 
 from oddish.config import (
     ZAI_DEFAULT_BASE_URL,
@@ -40,6 +41,7 @@ from oddish.db import (
     TrialStatus,
     get_session,
 )
+from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
@@ -309,14 +311,43 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
     tests to exercise the status-transition path without spinning up
     Docker.
     """
+    # Atomic claim: flip QUEUED -> RUNNING in a single UPDATE ... RETURNING,
+    # only if no BLOCKED worker_job gates this trial. Two concurrent dispatches
+    # of the same trial can't both win (the loser matches no row and returns),
+    # and a gated (BLOCKED) LLM trial is skipped until the baseline gate
+    # releases it. ``run_trial_locally`` is the only dispatch entrypoint, so
+    # this claim is the single choke point that prevents double-dispatch.
     async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
-        if trial is None:
-            raise ValueError(f"Trial {trial_id} not found")
-        trial.status = TrialStatus.RUNNING
-        trial.started_at = datetime.now(timezone.utc)
-        logger.info("local_runner: trial %s -> RUNNING", trial_id)
+        claimed = await session.scalar(
+            update(TrialModel)
+            .where(
+                TrialModel.id == trial_id,
+                TrialModel.status == TrialStatus.QUEUED,
+                ~exists().where(
+                    and_(
+                        WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                        WorkerJobModel.subject_table == "trials",
+                        WorkerJobModel.subject_id == TrialModel.id,
+                        WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                    )
+                ),
+            )
+            .values(
+                status=TrialStatus.RUNNING,
+                started_at=datetime.now(timezone.utc),
+            )
+            .returning(TrialModel.id)
+        )
+    if claimed is None:
+        logger.info(
+            "local_runner: trial %s not claimable (already dispatched, gated, "
+            "or gone), skipping",
+            trial_id,
+        )
+        return
+    logger.info("local_runner: trial %s -> RUNNING", trial_id)
 
+    failure: Exception | None = None
     try:
         if not dry_run:
             await _run_harbor_trial(trial_id)
@@ -328,17 +359,61 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 trial.status = TrialStatus.FAILED
                 trial.error_message = str(exc)
                 trial.finished_at = datetime.now(timezone.utc)
-        raise
+        failure = exc
+    else:
+        async with get_session() as session:
+            trial = await session.get(TrialModel, trial_id)
+            if trial is None:
+                raise ValueError(
+                    f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
+                )
+            trial.status = TrialStatus.SUCCESS
+            trial.finished_at = datetime.now(timezone.utc)
+            logger.info("local_runner: trial %s -> SUCCESS", trial_id)
 
+    # The trial is terminal now. Modal drives the baseline gate + QA stage from
+    # the trial handler/dispatcher; local mode has neither, so run them here and
+    # locally dispatch any LLM trials the gate just released.
+    await _local_post_trial_hooks(trial_id, dry_run=dry_run)
+
+    if failure is not None:
+        raise failure
+
+
+async def _local_post_trial_hooks(trial_id: str, *, dry_run: bool) -> None:
+    """Drive the baseline gate + QA stage and dispatch any released trials.
+
+    Called once ``trial_id`` reaches a terminal state. ``maybe_gate_llm_trials``
+    resolves the scope's baseline gate when this was the last baseline: VALID
+    releases the BLOCKED LLM trials (BLOCKED -> QUEUED), FAULTY cancels them
+    (-> FAILED). When something was resolved we dispatch the task's now-QUEUED
+    trials to the in-process runner; their atomic self-claim makes this safe
+    even if siblings are still gated in another scope (they self-skip).
+    """
+    from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+
+    sibling_ids: list[str] = []
     async with get_session() as session:
-        trial = await session.get(TrialModel, trial_id)
-        if trial is None:
-            raise ValueError(
-                f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
-            )
-        trial.status = TrialStatus.SUCCESS
-        trial.finished_at = datetime.now(timezone.utc)
-        logger.info("local_runner: trial %s -> SUCCESS", trial_id)
+        resolved = await maybe_gate_llm_trials(session, trial_id)
+        await maybe_start_qa_stage(session, trial_id)
+        if resolved:
+            trial = await session.get(TrialModel, trial_id)
+            if trial is not None:
+                sibling_ids = list(
+                    (
+                        await session.execute(
+                            select(TrialModel.id).where(
+                                and_(
+                                    TrialModel.task_id == trial.task_id,
+                                    TrialModel.status == TrialStatus.QUEUED,
+                                )
+                            )
+                        )
+                    ).scalars()
+                )
+
+    for sid in sibling_ids:
+        asyncio.create_task(run_trial_locally(sid, dry_run=dry_run))
 
 
 async def _run_harbor_trial(trial_id: str) -> None:
