@@ -48,6 +48,28 @@ from .storage import (
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 
 
+def _read_query_cli_text() -> str:
+    """Thin wrapper so tests can monkeypatch without reaching into probe_staging."""
+    from oddish.worker.probe_staging import read_query_cli_text
+
+    return read_query_cli_text()
+
+
+def _probe_modal_kwargs(is_probe: bool, environment: EnvironmentType) -> dict[str, Any]:
+    """Return extra env_config.kwargs to inject when running a probe on Modal.
+
+    Passes the oddish-query CLI source to the Modal image so the harbor fork
+    can bake it in at instantiation. Returns empty dict for non-probe or
+    non-Modal trials so the caller can unconditionally merge.
+    """
+    if not is_probe or environment != EnvironmentType.MODAL:
+        return {}
+    return {
+        "probe_cli_content": _read_query_cli_text(),
+        "probe_cli_path": "/probe-harness/oddish-query",
+    }
+
+
 def _check_local_storage_preflight(
     jobs_dir: Path,
     *,
@@ -212,6 +234,9 @@ async def run_harbor_trial_async(
                 "ephemeral": settings.daytona_ephemeral,
                 **env_config.kwargs,
             }
+        probe_modal = _probe_modal_kwargs(is_probe, environment)
+        if probe_modal:
+            env_config.kwargs = {**probe_modal, **env_config.kwargs}
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
