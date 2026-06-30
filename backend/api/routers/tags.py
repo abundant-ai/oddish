@@ -17,21 +17,21 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
-from oddish.core.tag_permissions import (
+from oddish.core.tags.permissions import (
     can_definition_capability,
     can_manage_grants,
     can_use_apply,
     is_org_admin,
 )
 from oddish.core.dashboard import invalidate_dashboard_cache
-from oddish.core.tag_policies_core import (
+from oddish.core.tags.policies import (
     TagCapExceededError,
     assert_under_tag_cap,
     get_or_create_tag_policy,
     update_tag_policy_core,
 )
-from oddish.core.tag_naming import TagNameError, is_reserved_prefix
-from oddish.core.tags_core import (
+from oddish.core.tags.naming import TagNameError, is_reserved_prefix
+from oddish.core.tags.service import (
     TagConcurrencyError,
     TagMergeChainError,
     TagPolicyError,
@@ -52,7 +52,7 @@ from oddish.core.tags_core import (
     unassign_tag_core,
     unexclude_tag_core,
 )
-from oddish.core.saved_tag_filters_core import (
+from oddish.core.tags.saved_filters import (
     create_saved_tag_filter_core,
     delete_saved_tag_filter_core,
     list_saved_tag_filters_core,
@@ -85,7 +85,7 @@ from oddish.schemas import (
     TagUpdateRequest,
     UserTagRef,
 )
-from oddish.core.tags_projection import list_direct_target_tags
+from oddish.core.tags.projection import list_direct_target_tags
 
 router = APIRouter(tags=["Tags"])
 
@@ -180,15 +180,50 @@ async def list_tags(
                     """
                     SELECT t.id, t.key, t.value, t.color,
                            t.visibility::text, t.state::text,
-                           COALESCE(usage.count, 0) AS usage_count,
-                           t.row_version, t.owner_user_id
+                           COALESCE(tc.task_count, 0)
+                             + COALESCE(vc.version_count, 0)
+                             + COALESCE(ec.experiment_count, 0) AS usage_count,
+                           t.row_version, t.owner_user_id,
+                           COALESCE(tc.task_count, 0) AS task_count,
+                           COALESCE(vc.version_count, 0) AS version_count,
+                           COALESCE(ec.experiment_count, 0) AS experiment_count,
+                           COALESCE(u.name, u.github_username, u.email) AS owner_label,
+                           u.avatar_url AS owner_avatar_url
                     FROM tags t
+                    -- Tasks/versions counted from the effective-tag arrays (the
+                    -- same source the /tasks filter and the chips use), so the
+                    -- counts include experiment-inherited tags. Experiments are
+                    -- the direct EXPERIMENT-scope assignments (the dashboard
+                    -- filter's source).
                     LEFT JOIN (
-                        SELECT tag_id, COUNT(*) AS count
+                        SELECT te.tag_id, COUNT(*) AS task_count
+                        FROM tasks tk
+                        CROSS JOIN LATERAL unnest(tk.effective_tag_ids)
+                            AS te(tag_id)
+                        WHERE tk.deleted_at IS NULL
+                          AND COALESCE(tk.org_id, '')
+                              = COALESCE(CAST(:org_id AS TEXT), '')
+                        GROUP BY te.tag_id
+                    ) tc ON tc.tag_id = t.id
+                    LEFT JOIN (
+                        SELECT ve.tag_id, COUNT(*) AS version_count
+                        FROM task_versions tv
+                        JOIN tasks tk2 ON tk2.id = tv.task_id
+                        CROSS JOIN LATERAL unnest(tv.effective_tag_ids)
+                            AS ve(tag_id)
+                        WHERE tk2.deleted_at IS NULL
+                          AND COALESCE(tk2.org_id, '')
+                              = COALESCE(CAST(:org_id AS TEXT), '')
+                        GROUP BY ve.tag_id
+                    ) vc ON vc.tag_id = t.id
+                    LEFT JOIN (
+                        SELECT tag_id, COUNT(*) AS experiment_count
                         FROM tag_assignments
                         WHERE deleted_at IS NULL AND state = 'ACTIVE'
+                          AND scope = 'EXPERIMENT'
                         GROUP BY tag_id
-                    ) usage ON usage.tag_id = t.id
+                    ) ec ON ec.tag_id = t.id
+                    LEFT JOIN users u ON u.id = t.owner_user_id
                     WHERE t.deleted_at IS NULL
                       AND t.state <> 'DELETED'
                       AND COALESCE(t.org_id, '') = COALESCE(CAST(:org_id AS TEXT), '')
@@ -209,6 +244,11 @@ async def list_tags(
             usage_count=int(r[6]),
             row_version=int(r[7]),
             owner_user_id=r[8],
+            task_count=int(r[9]),
+            version_count=int(r[10]),
+            experiment_count=int(r[11]),
+            owner_label=r[12],
+            owner_avatar_url=r[13],
         )
         for r in rows
     ]

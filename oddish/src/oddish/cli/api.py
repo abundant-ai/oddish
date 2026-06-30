@@ -901,18 +901,8 @@ def build_sweep_payload(
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
     link: str | None = None,
+    registry_auth: list[dict] | None = None,
 ) -> dict:
-    """Build the JSON body for a single ``/tasks/sweep`` submission.
-
-    Split out from the network call so the same payload can be posted on its own
-    or bundled into a ``/tasks/sweep/batch`` request.
-
-    Probe trials are ordinary sweeps with ``extra_instructions`` set: the
-    server sets ``mode: "probe"`` in harbor_config (see
-    ``queue._build_harbor_config_for_trial``) and the cloud worker applies the
-    instruction overlay. ``result_focus`` / ``evaluation_metric`` are the same
-    optional probe fields the UI sends from a selected preset.
-    """
     env_value = environment.value if environment else None
 
     if env_value is not None:
@@ -989,6 +979,8 @@ def build_sweep_payload(
         payload["evaluation_metric"] = evaluation_metric
     if link:
         payload["link"] = link
+    if registry_auth:
+        payload["registry_auth"] = registry_auth
 
     return payload
 
@@ -1059,15 +1051,8 @@ def submit_sweep(
     result_focus: str | None = None,
     evaluation_metric: str | None = None,
     link: str | None = None,
+    registry_auth: list[dict] | None = None,
 ) -> dict:
-    """Build and submit a single task sweep to ``/tasks/sweep``.
-
-    Convenience wrapper over :func:`build_sweep_payload` +
-    :func:`post_sweep_payload` for callers that build and submit one sweep in a
-    single step (e.g. the probe CLI). The explicit signature mirrors
-    :func:`build_sweep_payload` so existing positional and keyword callers keep
-    working unchanged.
-    """
     payload = build_sweep_payload(
         task_id=task_id,
         configs=configs,
@@ -1098,6 +1083,7 @@ def submit_sweep(
         result_focus=result_focus,
         evaluation_metric=evaluation_metric,
         link=link,
+        registry_auth=registry_auth,
     )
     return post_sweep_payload(api_url, payload)
 
@@ -1319,7 +1305,7 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
 
 
 def detect_trajectory_in_dir(trial_dir: Path) -> bool:
-    """Mirror ``oddish.workers.harbor_runner._detect_trajectory``."""
+    """Mirror ``oddish.workers.harbor.runner._detect_trajectory``."""
     if not trial_dir.exists():
         return False
     if any(trial_dir.rglob("trajectory.json")):
@@ -1358,7 +1344,7 @@ def trial_result_to_import_spec(
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
 
     Per-trial equivalent of
-    ``oddish.workers.harbor_runner._extract_outcome_from_job_result``.
+    ``oddish.workers.harbor.runner._extract_outcome_from_job_result``.
     Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
     oddish trial rows.
     """
@@ -1979,13 +1965,15 @@ def print_experiment_status(api_url: str, experiment_id: str) -> bool:
 def watch_experiment(api_url: str, experiment_id: str) -> None:
     """Watch an experiment until all tasks complete."""
     headers = get_auth_headers()
-    with Live(console=console, refresh_per_second=2) as live:
+    with (
+        Live(console=console, refresh_per_second=2) as live,
+        httpx.Client(timeout=10.0, headers=headers) as client,
+    ):
         while True:
             try:
-                with httpx.Client(timeout=10.0, headers=headers) as client:
-                    response = client.get(
-                        f"{api_url}/tasks", params={"experiment_id": experiment_id}
-                    )
+                response = client.get(
+                    f"{api_url}/tasks", params={"experiment_id": experiment_id}
+                )
 
                 if response.status_code != 200:
                     live.update(f"[red]Failed to get status:[/red] {response.text}")
@@ -2101,11 +2089,13 @@ def watch_task(
     final_result = None
     headers = get_auth_headers()
     trial_id_filter = set(trial_ids) if trial_ids is not None else None
-    with Live(console=console, refresh_per_second=2) as live:
+    with (
+        Live(console=console, refresh_per_second=2) as live,
+        httpx.Client(timeout=10.0, headers=headers) as client,
+    ):
         while True:
             try:
-                with httpx.Client(timeout=10.0, headers=headers) as client:
-                    response = client.get(f"{api_url}/tasks/{task_id}")
+                response = client.get(f"{api_url}/tasks/{task_id}")
 
                 if response.status_code != 200:
                     live.update(f"[red]Failed to get status:[/red] {response.text}")

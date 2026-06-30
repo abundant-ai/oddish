@@ -56,7 +56,7 @@ class _FakeSession:
 
 
 def test_assign_tag_core_writes_assignment_and_enqueues_projection(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
 
@@ -90,7 +90,7 @@ def test_assign_tag_core_writes_assignment_and_enqueues_projection(monkeypatch):
 
 
 def test_unassign_tag_core_emits_remove_event_and_enqueues_projection(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
     enqueued: list[dict] = []
@@ -122,7 +122,7 @@ def test_unassign_tag_core_emits_remove_event_and_enqueues_projection(monkeypatc
 
 
 def test_apply_snapshot_experiment_tag_materializes_to_each_member(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
     member_ids = ["task-a", "task-b", "task-c"]
@@ -156,7 +156,7 @@ def test_apply_snapshot_experiment_tag_materializes_to_each_member(monkeypatch):
 
 
 def test_apply_living_experiment_tag_writes_single_experiment_row(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession()
 

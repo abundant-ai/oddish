@@ -447,6 +447,19 @@ def run(
             help="Environment path to download as an artifact after the trial (can be used multiple times)",
         ),
     ] = None,
+    registry_login: Annotated[
+        Optional[list[str]],
+        typer.Option(
+            "--registry-login",
+            help=(
+                "Per-run container-registry login as comma-separated pairs "
+                "'username=USER,token=TOKEN[,registry=docker.io]' (repeatable). "
+                "If a value contains commas, wrap the whole argument and quote the value. "
+                "Docker Hub creds can also be set via "
+                "ODDISH_DOCKERHUB_USERNAME / ODDISH_DOCKERHUB_TOKEN."
+            ),
+        ),
+    ] = None,
     retry: Annotated[
         bool,
         typer.Option(
@@ -576,9 +589,16 @@ def run(
     require_api_key(api_url)
     is_modal_api = is_modal_api_url(api_url)
 
-    # Retry mode: re-run existing trials, or the task-level QA job, for a
-    # target instead of submitting new work. Kept on `run` (rather than a
-    # separate command) so the CLI surface stays small.
+    import os as _os
+
+    from oddish.registry_auth import parse_registry_login
+
+    try:
+        registry_auth = parse_registry_login(registry_login, dict(_os.environ)) or None
+    except ValueError as exc:
+        error_console.print(f"[red]Invalid --registry-login:[/red] {exc}")
+        raise typer.Exit(1)
+
     if retry:
         from oddish.cli.retry import run_retry
 
@@ -590,6 +610,7 @@ def run(
             do_qa=retry_qa,
             yes=yes,
             json_output=json_output,
+            registry_auth=registry_auth,
         )
         return
     if retry_qa:
@@ -775,6 +796,7 @@ def run(
             append_to_task=append_to_task,
             content_hash=task_content_hash,
             link=link,
+            registry_auth=registry_auth,
         )
 
     def submit_task(

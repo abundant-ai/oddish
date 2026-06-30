@@ -51,7 +51,7 @@ class _FakeSession:
 
 
 def test_transfer_tag_ownership_reassigns_to_org_admin():
-    from oddish.core.tag_ownership_transfer import transfer_tag_ownership_to_admin
+    from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 
     session = _FakeSession(admin_id="admin-1", updated_rows=4)
     transferred = _run(
@@ -66,7 +66,7 @@ def test_transfer_tag_ownership_reassigns_to_org_admin():
 
 
 def test_transfer_is_noop_when_no_admin_present():
-    from oddish.core.tag_ownership_transfer import transfer_tag_ownership_to_admin
+    from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 
     session = _FakeSession(admin_id=None, updated_rows=0)
     transferred = _run(

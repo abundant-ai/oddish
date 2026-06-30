@@ -54,7 +54,7 @@ class _FakeSession:
 
 
 def test_delete_without_cascade_rejects_assigned_tag():
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     session = _FakeSession(active_count=3)
     try:
@@ -76,7 +76,7 @@ def test_delete_without_cascade_rejects_assigned_tag():
 
 
 def test_delete_with_cascade_removes_assignments_and_reprojects(monkeypatch):
-    from oddish.core import tags_core
+    from oddish.core.tags import service as tags_core
 
     state_updates: list[dict] = []
     events: list[dict] = []

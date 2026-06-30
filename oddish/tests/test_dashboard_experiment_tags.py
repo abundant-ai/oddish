@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 def test_experiment_tag_predicates_buckets():
     from oddish.core.dashboard import _experiment_tag_predicates
-    from oddish.core.tag_filter_ast import ResolvedTagFilter
+    from oddish.core.tags.filter_ast import ResolvedTagFilter
 
     resolved = ResolvedTagFilter(all_ids=["a", "b"], any_ids=["c"], none_ids=["d"])
     clauses = _experiment_tag_predicates(resolved)
@@ -31,13 +31,13 @@ def test_experiment_tag_predicates_buckets():
 
 def test_experiment_tag_predicates_empty_filter():
     from oddish.core.dashboard import _experiment_tag_predicates
-    from oddish.core.tag_filter_ast import ResolvedTagFilter
+    from oddish.core.tags.filter_ast import ResolvedTagFilter
 
     assert _experiment_tag_predicates(ResolvedTagFilter([], [], [])) == []
 
 
 def test_direct_tags_for_targets_maps_rows():
-    from oddish.core.tags_projection import list_direct_tags_for_targets
+    from oddish.core.tags.projection import list_direct_tags_for_targets
 
     class _S:
         def __init__(self):
@@ -71,7 +71,7 @@ def test_direct_tags_for_targets_maps_rows():
 
 
 def test_direct_tags_for_targets_empty_input():
-    from oddish.core.tags_projection import list_direct_tags_for_targets
+    from oddish.core.tags.projection import list_direct_tags_for_targets
 
     out = asyncio.run(
         list_direct_tags_for_targets(object(), scope="EXPERIMENT", target_ids=[])
@@ -81,7 +81,7 @@ def test_direct_tags_for_targets_empty_input():
 
 def test_user_tag_view_payload_shape():
     from oddish.core.dashboard import _user_tag_view_payload
-    from oddish.core.tags_projection import UserTagView
+    from oddish.core.tags.projection import UserTagView
 
     view = UserTagView(
         tag_id="tg9",
@@ -105,7 +105,7 @@ def test_user_tag_view_payload_shape():
 
 def test_attach_user_tags_to_task_payloads():
     from oddish.core.dashboard import _attach_user_tags_to_task_payloads
-    from oddish.core.tags_projection import UserTagView
+    from oddish.core.tags.projection import UserTagView
 
     payloads = [{"id": "t1", "user_tags": []}, {"id": "t2", "user_tags": []}]
     by_task = {
@@ -138,7 +138,7 @@ def test_attach_user_tags_to_task_payloads():
 
 def test_unknown_positive_token_returns_empty_page():
     from oddish.core.dashboard import _has_unknown_positive_tokens
-    from oddish.core.tag_filter_ast import TagFilterAST
+    from oddish.core.tags.filter_ast import TagFilterAST
 
     # resolve_names_to_ids reports unknown RAW tokens; positive buckets gate.
     ast = TagFilterAST(all=["ghost"], any_=[], none=[])

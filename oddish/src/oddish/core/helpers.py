@@ -6,9 +6,9 @@ import heapq
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,7 @@ from oddish.db import (
     WorkerJobModel,
     WorkerJobStatus,
 )
-from oddish.core.tags_projection import (
+from oddish.core.tags.projection import (
     list_effective_user_tags_for_task_versions,
 )
 from oddish.model_pricing import estimate_cost_usd
@@ -678,6 +678,29 @@ async def fetch_experiment_effective_version_ids(
     }
 
 
+def filter_probe_trials_for_effective_versions(
+    probe_trials: Sequence[TrialModel],
+    effective_by_task: Mapping[str, str | None],
+) -> dict[str, list[TrialModel]]:
+    """Group probe trials under their task, keeping only those whose
+    ``task_version_id`` matches that task's effective version.
+
+    ``effective_by_task`` maps ``task_id`` -> the version the experiment view
+    displays for that task. Probes whose task has no effective version, or whose
+    ``task_version_id`` differs from it, are dropped. Superseded probes must be
+    excluded by the caller's query before this is called.
+    """
+    grouped: dict[str, list[TrialModel]] = {}
+    for trial in probe_trials:
+        effective = effective_by_task.get(trial.task_id)
+        if effective is None:
+            continue
+        if trial.task_version_id != effective:
+            continue
+        grouped.setdefault(trial.task_id, []).append(trial)
+    return grouped
+
+
 def get_task_status_trials(
     task: TaskModel,
     *,
@@ -769,6 +792,8 @@ def _build_task_status_response(
     experiment_created_at = (
         primary_experiment.created_at if primary_experiment else None
     )
+    experiment_owner = primary_experiment.owner if primary_experiment else None
+    experiment_link = primary_experiment.link if primary_experiment else None
     return TaskStatusResponse(
         id=task.id,
         name=task.name,
@@ -785,6 +810,8 @@ def _build_task_status_response(
         experiment_name=experiment_name,
         experiment_is_public=experiment_is_public,
         experiment_created_at=experiment_created_at,
+        experiment_owner=experiment_owner,
+        experiment_link=experiment_link,
         # Sorted (name, id) to match the browse chips and because the ORM
         # relationship has no order_by -- DB return order is not stable.
         experiments=[
@@ -902,12 +929,13 @@ def build_task_status_response_compact(
             task, experiment_context_id=experiment_context_id
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = len(task_trials)
-    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
-    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
-    reward_success = sum(1 for t in task_trials if t.reward == 1)
-    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
-    reward_total = sum(1 for t in task_trials if t.reward is not None)
+    real_trials = [t for t in task_trials if not t.is_probe]
+    total = len(real_trials)
+    completed = sum(1 for t in real_trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in real_trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in real_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in real_trials if t.reward is not None)
+    reward_total = sum(1 for t in real_trials if t.reward is not None)
     trials = [
         build_compact_trial_response(
             t,

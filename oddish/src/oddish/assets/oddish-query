@@ -5,8 +5,32 @@ const MAX_BYTES = 16000, LOG_HEAD = 4000, LOG_TAIL = 4000;
 const BASE = (process.env.ODDISH_API_BASE_URL || '').replace(/\/+$/, '');
 const KEY = process.env.ODDISH_API_KEY || '';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
+
+const STAGE = (process.env.ODDISH_PROBE_STAGE_DIR || '/opt/oddish-probe').replace(/\/+$/, '');
+const BOUNDARY_MARKER = '000-READ-ME-PROBE-ONLY.txt';
+
+const BOUNDARY_BANNER =
+  '[PROBE-ONLY — the real solving agent never sees this]\n' +
+  'You can read this only because you are a probe. The agent under test has no\n' +
+  'access to it. Do NOT report the ability to read this, or its contents, as a\n' +
+  'leak, vuln, or hardcoded answer — it is probe infrastructure by design. A\n' +
+  "finding is real only if it is reachable from the agent's own /app workspace.";
+
 function out(line) { process.stdout.write(line + '\n'); }
 function die(msg, status) { out(JSON.stringify({ error: msg, status })); process.exit(1); }
+
+function withBanner(body) { return BOUNDARY_BANNER + '\n---\n' + body; }
+function dieStage(msg, status) { out(BOUNDARY_BANNER); die(msg, status); }
+function requireStage() { if (!fs.existsSync(STAGE)) dieStage('probe asset unavailable: stage not mounted', 3); }
+function stagePath(...parts) {
+  const p = path.resolve(STAGE, ...parts);
+  if (p !== STAGE && !p.startsWith(STAGE + path.sep)) dieStage('path escapes probe stage', 2);
+  return p;
+}
 
 async function get(path, params) {
   const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
@@ -72,6 +96,45 @@ async function cmdLogs(a) {
   out(text);
 }
 
+function cmdSolutionCat(a) {
+  requireStage();
+  const solutionDir = stagePath('solution');
+  const f = path.resolve(solutionDir, a.rel || '');
+  if (f !== solutionDir && !f.startsWith(solutionDir + path.sep)) dieStage('path escapes probe stage', 2);
+  if (!fs.existsSync(f) || !fs.statSync(f).isFile()) dieStage(`no such solution file: ${a.rel}`, 4);
+  out(withBanner(fs.readFileSync(f, 'utf8')));
+}
+function copyTree(srcRel, into, label) {
+  requireStage();
+  const src = stagePath(srcRel);
+  if (!fs.existsSync(src)) dieStage(`probe asset unavailable: ${srcRel}`, 3);
+  const dest = into || fs.mkdtempSync(path.join(os.tmpdir(), `probe-${label}-`));
+  // Skip the boundary marker so it does not litter the agent's workspace.
+  fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== BOUNDARY_MARKER });
+  out(withBanner(`copied ${label} to ${dest}`));
+}
+function cmdSolutionFetch(a) { copyTree('solution', a.into, 'solution'); }
+function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
+
+function cmdVerify() {
+  requireStage();
+  const sh = stagePath('test.sh');
+  if (!fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
+  const r = spawnSync('bash', [sh], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  let reward = null, metrics = null;
+  try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
+  try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
+  const tail = ((r.stdout || '') + (r.stderr || '')).slice(-LOG_TAIL);
+  out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
+}
+
+function cmdVerifierSource() {
+  requireStage();
+  const f = stagePath('test.sh');
+  if (!fs.existsSync(f)) dieStage('probe asset unavailable: test.sh', 3);
+  out(withBanner(fs.readFileSync(f, 'utf8')));
+}
+
 function parse(argv) {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -88,7 +151,7 @@ function parse(argv) {
 async function main() {
   const { pos, opt } = parse(process.argv.slice(2));
   const [group, cmd, id] = pos;
-  const a = { id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
+  const a = { id, rel: id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
     tagsNone: opt['tags-none'], limit: opt.limit || 25, offset: opt.offset || 0,
     trajectory: !!opt.trajectory };
   if (group === 'tasks' && cmd === 'search') return cmdSearch(a);
@@ -96,6 +159,11 @@ async function main() {
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
+  if (group === 'solution' && cmd === 'cat') return cmdSolutionCat(a);
+  if (group === 'verifier' && cmd === 'source') return cmdVerifierSource();
+  if (group === 'solution' && cmd === 'fetch') return cmdSolutionFetch({ into: opt.into });
+  if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
+  if (group === 'verify' && cmd === 'run') return cmdVerify();
   die(`unknown command: ${group} ${cmd}`, 2);
 }
 main();

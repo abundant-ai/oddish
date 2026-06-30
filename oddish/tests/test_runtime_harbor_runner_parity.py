@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.config import settings
-from oddish.workers import harbor_runner
+from oddish.workers.harbor import runner as harbor_runner
 
 AGENT_TOOLS_IMAGE = "ghcr.io/org/harbor-agent-tools:tag"
 

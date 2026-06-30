@@ -20,6 +20,7 @@ class _UserStub:
 @dataclass
 class _OrgStub:
     slug: str | None
+    clerk_org_id: str | None = None
 
 
 @dataclass

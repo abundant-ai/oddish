@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from harbor.models.environment_type import EnvironmentType
 
 from oddish.runtime.backends.modal import ModalBackend
-from oddish.workers.harbor_modal_debug import _capture_modal_output
+from oddish.workers.harbor.modal_debug import _capture_modal_output
 
 
 def _install_fake_modal(monkeypatch) -> dict:

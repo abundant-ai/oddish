@@ -7,7 +7,7 @@ Additive + idempotent (IF NOT EXISTS), so re-applying on an inherited schema is
 a no-op.
 
 Revision ID: wjstage01_stage_timestamps
-Revises: hv2claimidx01
+Revises: exp_owner_link_001
 Create Date: 2026-06-22 00:00:00.000000
 
 """
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "wjstage01_stage_timestamps"
-down_revision: Union[str, Sequence[str], None] = "hv2claimidx01"
+down_revision: Union[str, Sequence[str], None] = "exp_owner_link_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

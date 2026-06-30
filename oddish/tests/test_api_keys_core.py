@@ -22,3 +22,7 @@ def test_create_api_key_read_internal():
     assert key.is_internal is True
     assert key.key_hash == hash_api_key(raw)
     assert key.org_id == "org_1"
+
+
+def test_api_key_model_has_no_cross_stack_foreign_keys():
+    assert not APIKeyModel.__table__.foreign_keys

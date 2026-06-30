@@ -29,7 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from oddish.config import settings
 from oddish.core.helpers import cancel_job_by_worker
-from oddish.core.tag_ownership_transfer import sweep_orphaned_tag_owners
+from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -281,6 +281,10 @@ async def cleanup_orphaned_queue_state(
                     SET    status = CASE
                                WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
                                ELSE 'FAILED'::worker_job_status
+                           END,
+                           payload = CASE
+                               WHEN attempts < max_attempts THEN payload
+                               ELSE payload - 'registry_auth_enc'
                            END,
                            stale_reaped_at = NOW(),
                            finished_at = CASE
@@ -858,7 +862,7 @@ async def _recompute_drifted_task_projections(session) -> int:
     touched in the last hour but whose ``effective_tag_ids`` array is
     empty despite the experiment carrying a living tag. Bounded so we
     never scan the whole table."""
-    from oddish.core.tags_projection import recompute_task_browse_projection
+    from oddish.core.tags.projection import recompute_task_browse_projection
 
     rows = (
         await session.execute(
