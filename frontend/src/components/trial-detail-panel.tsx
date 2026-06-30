@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
@@ -157,6 +158,11 @@ function buildOddishRunCommand(trial: Trial, task: Task): string {
     parts.push(`--experiment ${task.experiment_id}`);
   }
 
+  const sandboxBackend = getSandboxBackend(trial);
+  if (sandboxBackend) {
+    parts.push(`-e ${sandboxBackend.id}`);
+  }
+
   if (trial.agent) {
     parts.push(`-a ${trial.agent}`);
   }
@@ -190,17 +196,105 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
-function getDaytonaSandboxUrl(trial: Trial): string | null {
-  const sandboxJob = trial.jobs?.find(
-    (job) =>
-      job.provider?.toLowerCase() === "daytona" &&
-      typeof job.external_id === "string" &&
-      job.external_id.length > 0,
+type SandboxBackendId = "daytona" | "modal";
+
+type SandboxBackend = {
+  id: SandboxBackendId;
+  label: string;
+  logoSrc: string;
+  logoWidth: number;
+  href?: string;
+};
+
+const SANDBOX_BACKENDS: Record<
+  SandboxBackendId,
+  Omit<SandboxBackend, "href">
+> = {
+  daytona: {
+    id: "daytona",
+    label: "Daytona",
+    logoSrc: "/daytona-logotype.svg",
+    logoWidth: 50,
+  },
+  modal: {
+    id: "modal",
+    label: "Modal",
+    logoSrc: "/modal-logo-icon.png",
+    logoWidth: 10,
+  },
+};
+
+function normalizeSandboxBackend(
+  provider: string | null | undefined,
+): SandboxBackendId | null {
+  const normalized = provider?.trim().toLowerCase();
+  if (normalized === "daytona" || normalized === "modal") {
+    return normalized;
+  }
+  return null;
+}
+
+function getSandboxBackend(trial: Trial): SandboxBackend | null {
+  const sandboxJob = trial.jobs?.find((job) =>
+    Boolean(normalizeSandboxBackend(job.provider)),
   );
-  if (!sandboxJob?.external_id) return null;
-  return `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
-    sandboxJob.external_id,
-  )}`;
+  const backendId = normalizeSandboxBackend(sandboxJob?.provider);
+  if (!backendId) return null;
+
+  const backend = SANDBOX_BACKENDS[backendId];
+  if (backendId === "daytona" && sandboxJob?.external_id) {
+    return {
+      ...backend,
+      href: `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
+        sandboxJob.external_id,
+      )}`,
+    };
+  }
+
+  return backend;
+}
+
+function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
+  const content = (
+    <>
+      <span className="inline-flex h-4 items-center justify-center rounded-sm bg-white px-1">
+        <Image
+          src={backend.logoSrc}
+          alt={`${backend.label} logo`}
+          width={backend.logoWidth}
+          height={10}
+          className="h-2.5 w-auto object-contain"
+        />
+      </span>
+      {backend.id === "modal" && (
+        <span className="text-muted-foreground font-sans text-[9px] font-semibold tracking-wide uppercase">
+          {backend.label}
+        </span>
+      )}
+    </>
+  );
+  const className =
+    "border-border bg-muted/40 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
+
+  if (backend.href) {
+    return (
+      <a
+        href={backend.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className}
+        title={`Open ${backend.label} sandbox`}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <span className={className} title={`${backend.label} sandbox`}>
+      {content}
+    </span>
+  );
 }
 
 /**
@@ -453,7 +547,9 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
-  const daytonaSandboxUrl = getDaytonaSandboxUrl(trial);
+  const sandboxBackend = getSandboxBackend(trial);
+  const daytonaSandboxUrl =
+    sandboxBackend?.id === "daytona" ? (sandboxBackend.href ?? null) : null;
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -495,20 +591,23 @@ export function TrialDetailPanel({
             </span>
           )}
           <span className="text-muted-foreground/50">·</span>
-          <span className="text-muted-foreground flex min-w-0 flex-col items-center text-center leading-tight">
-            <span className="truncate text-[10px] font-bold sm:text-xs">
-              {trial.agent}
+          <span className="text-muted-foreground flex min-w-0 items-center gap-1.5 leading-tight">
+            <span className="flex min-w-0 flex-col items-center text-center leading-tight">
+              <span className="truncate text-[10px] font-bold sm:text-xs">
+                {trial.agent}
+              </span>
+              <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
+                <QueueKeyIcon
+                  queueKey={trial.provider}
+                  model={trial.model}
+                  agent={trial.agent}
+                  size={11}
+                  className="shrink-0"
+                />
+                {trial.model ?? "—"}
+              </span>
             </span>
-            <span className="flex items-center gap-1 truncate font-mono text-[9px] font-normal sm:text-[10px]">
-              <QueueKeyIcon
-                queueKey={trial.provider}
-                model={trial.model}
-                agent={trial.agent}
-                size={11}
-                className="shrink-0"
-              />
-              {trial.model ?? "—"}
-            </span>
+            {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           </span>
         </DrawerTitle>
         <DrawerDescription className="text-muted-foreground font-mono">
