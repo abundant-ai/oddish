@@ -1742,3 +1742,39 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
 
     assert outcome.exception_type is None
     assert outcome.reward == 1.0
+
+
+def test_probe_modal_kwargs_injects_cli_content(monkeypatch):
+    """Modal + probe: env_config.kwargs gets probe_cli_content + probe_cli_path."""
+    monkeypatch.setattr(
+        harbor_runner,
+        "_read_query_cli_text",
+        lambda: "#!/usr/bin/env node\nconsole.log('hello');",
+    )
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=True, environment=EnvironmentType.MODAL
+    )
+    assert kwargs["probe_cli_content"].startswith("#!/usr/bin/env node")
+    assert kwargs["probe_cli_path"] == "/probe-harness/oddish-query"
+
+
+def test_probe_modal_kwargs_returns_empty_for_non_probe(monkeypatch):
+    """Non-probe: no CLI content injected even on Modal."""
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=False, environment=EnvironmentType.MODAL
+    )
+    assert kwargs == {}
+
+
+def test_probe_modal_kwargs_returns_empty_for_non_modal_probe(monkeypatch):
+    """Probe on Daytona (non-Modal): no CLI content injected."""
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=True, environment=EnvironmentType.DAYTONA
+    )
+    assert kwargs == {}
