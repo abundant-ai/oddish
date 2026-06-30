@@ -39,11 +39,10 @@ async function fetchBrowse(
       limit: String(TASKS_PAGE_SIZE),
       offset: String(offset),
     };
+    // Tags are a structured filter (tags/tags_any/tags_none params via
+    // FILTER_PARAM_KEYS), so only free text + author are taken from `q`.
     const parsed = parseTaskSearch(sp.get("q") ?? "");
     if (parsed.text) query.query = parsed.text;
-    if (parsed.all.length) query.tags = parsed.all.join(",");
-    if (parsed.any.length) query.tags_any = parsed.any.join(",");
-    if (parsed.none.length) query.tags_none = parsed.none.join(",");
     if (parsed.authors.length) query.author = parsed.authors.join(",");
     for (const key of FILTER_PARAM_KEYS) {
       const value = sp.get(key);

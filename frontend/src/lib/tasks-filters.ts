@@ -11,6 +11,9 @@ export interface FilterValues {
   trialStatuses: string[];
   origins: string[];
   analysisClassifications: string[];
+  tagsAll: string[];
+  tagsAny: string[];
+  tagsNone: string[];
   hasLink: boolean | null;
   hasError: boolean | null;
   hasTrajectory: boolean | null;
@@ -37,6 +40,9 @@ export const EMPTY_FILTERS: FilterValues = {
   trialStatuses: [],
   origins: [],
   analysisClassifications: [],
+  tagsAll: [],
+  tagsAny: [],
+  tagsNone: [],
   hasLink: null,
   hasError: null,
   hasTrajectory: null,
@@ -102,7 +108,8 @@ export type ControlKind =
   | "daterange"
   | "numrange"
   | "rewardthreshold"
-  | "num";
+  | "num"
+  | "tags";
 
 export interface FilterDef {
   key: string;
@@ -133,6 +140,13 @@ export const FILTER_DEFS: FilterDef[] = [
     control: "multiselect",
     facet: "agents",
     pinned: true,
+  },
+  {
+    key: "tags",
+    label: "Tags",
+    group: "Task",
+    control: "tags",
+    pinned: true
   },
   {
     key: "created",
@@ -261,6 +275,10 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.origins.length > 0;
     case "analysisClassifications":
       return f.analysisClassifications.length > 0;
+    case "tags":
+      return (
+        f.tagsAll.length > 0 || f.tagsAny.length > 0 || f.tagsNone.length > 0
+      );
     case "hasLink":
       return f.hasLink !== null;
     case "hasError":
@@ -312,6 +330,9 @@ export function filterParams(f: FilterValues): [string, string][] {
   csv("trial_statuses", f.trialStatuses);
   csv("origins", f.origins);
   csv("analysis_classifications", f.analysisClassifications);
+  csv("tags", f.tagsAll);
+  csv("tags_any", f.tagsAny);
+  csv("tags_none", f.tagsNone);
   bool("has_link", f.hasLink);
   bool("has_error", f.hasError);
   bool("has_trajectory", f.hasTrajectory);
@@ -345,6 +366,9 @@ export const FILTER_PARAM_KEYS = [
   "trial_statuses",
   "origins",
   "analysis_classifications",
+  "tags",
+  "tags_any",
+  "tags_none",
   "has_link",
   "has_error",
   "has_trajectory",
@@ -386,6 +410,9 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     trialStatuses: csv("trial_statuses"),
     origins: csv("origins"),
     analysisClassifications: csv("analysis_classifications"),
+    tagsAll: csv("tags"),
+    tagsAny: csv("tags_any"),
+    tagsNone: csv("tags_none"),
     hasLink: bool("has_link"),
     hasError: bool("has_error"),
     hasTrajectory: bool("has_trajectory"),

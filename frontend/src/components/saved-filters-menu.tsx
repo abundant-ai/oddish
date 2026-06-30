@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Bookmark, Tag, X } from "lucide-react";
 import useSWR from "swr";
 
@@ -13,14 +14,14 @@ import {
 } from "@/components/ui/popover";
 import { fetcher } from "@/lib/api";
 import { tagColor } from "@/lib/tag-colors";
-import { parseTaskSearch, serializeTaskSearch } from "@/lib/tag-query";
-import type { TagFilterAST } from "@/lib/types";
+import { FILTER_PARAM_KEYS } from "@/lib/tasks-filters";
+import type { TagListResponse, TagSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 interface SavedFilterItem {
   id: string;
   name: string;
-  filter_ast: TagFilterAST;
+  filter_ast: Record<string, unknown>;
   visibility: "PRIVATE" | "ORG";
 }
 
@@ -28,24 +29,41 @@ interface SavedFilterListResponse {
   items: SavedFilterItem[];
 }
 
-interface TagListResponse {
-  items: { id: string; key: string }[];
+// Versioned blob stored in `filter_ast`. v2 captures the whole sidebar config;
+// tags are persisted as STABLE IDS so they survive renames/merges. Legacy blobs
+// have no `v` and only carry `{ all, any, none }` tag ids.
+type SavedBlobV2 = {
+  v: 2;
+  q?: string;
+  params?: Record<string, string>;
+  tags?: { all?: string[]; any?: string[]; none?: string[] };
+};
+type LegacyBlob = { all?: string[]; any?: string[]; none?: string[] };
+
+const TAG_PARAM_KEYS = ["tags", "tags_any", "tags_none"] as const;
+const STRUCTURED_KEYS = FILTER_PARAM_KEYS.filter(
+  (k) => !TAG_PARAM_KEYS.includes(k as (typeof TAG_PARAM_KEYS)[number])
+);
+
+function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
+  return tag.value ? `${tag.key}:${tag.value}` : tag.key;
 }
 
-interface SavedFiltersMenuProps {
-  // The current search-bar text; saving snapshots its tag tokens.
-  query: string;
-  // Applying a filter writes serialized `tag:` syntax back into the bar.
-  onApply: (queryText: string) => void;
+function csv(value: string | null): string[] {
+  return value ? value.split(",").filter(Boolean) : [];
 }
 
 /**
- * Bookmark dropdown beside the tasks search bar: lists org-shared and
- * private saved filters, applies one as search text, and saves the current
- * query under a name. Filters persist STABLE TAG IDS (so they survive
- * renames/merges); names are resolved both ways through the tag list.
+ * Bookmark dropdown in the filter sidebar: lists org-shared and private saved
+ * filters, applies one by rewriting the URL, and saves the CURRENT full filter
+ * config (search text + structured filters + tags). Tags persist as stable ids
+ * (so they survive renames/merges); ids are resolved both ways via the tag list.
  */
-export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
+export function SavedFiltersMenu() {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [visibility, setVisibility] = useState<"PRIVATE" | "ORG">("PRIVATE");
@@ -60,71 +78,89 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
   } = useSWR<SavedFilterListResponse>(
     open ? "/api/tag-filters" : null,
     fetcher,
-    {
-      revalidateOnFocus: false,
-    }
+    { revalidateOnFocus: false }
   );
-  const { data: tags } = useSWR<TagListResponse>(
+  const { data: tagData } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
     fetcher,
     { revalidateOnFocus: false }
   );
 
-  // Search tokens are whitespace-free, so match keys through the same
-  // client-side normalization the pending-chip preview uses (spaces →
-  // hyphens, lowercase) — display keys may carry spaces/casing.
-  const normalizeKey = (key: string) =>
-    key.trim().replace(/\s+/g, "-").toLowerCase();
-  // idToKey emits the NORMALIZED form: serialized tokens must be
-  // whitespace-free to survive the parser's tokenizer, and the backend
-  // resolver re-normalizes name tokens (NFKC/casefold) on lookup anyway.
-  const idToKey = new Map(
-    (tags?.items ?? []).map((t) => [t.id, normalizeKey(t.key)])
-  );
-  const keyToId = new Map(
-    (tags?.items ?? []).map((t) => [normalizeKey(t.key), t.id])
-  );
+  const tags = tagData?.items ?? [];
+  const idToToken = new Map(tags.map((t) => [t.id, tagToken(t)]));
+  const tokenToId = new Map(tags.map((t) => [tagToken(t), t.id]));
+  const toIds = (tokens: string[]) => tokens.map((t) => tokenToId.get(t) ?? t);
+  const toTokens = (ids: string[]) => ids.map((id) => idToToken.get(id) ?? id);
 
-  const parsed = parseTaskSearch(query);
-  const hasTagTokens =
-    parsed.all.length > 0 || parsed.any.length > 0 || parsed.none.length > 0;
+  // Snapshot the current URL filter state.
+  const currentQ = (searchParams.get("q") ?? "").trim();
+  const currentParams: Record<string, string> = {};
+  for (const key of STRUCTURED_KEYS) {
+    const value = searchParams.get(key);
+    if (value) currentParams[key] = value;
+  }
+  const currentTags = {
+    all: csv(searchParams.get("tags")),
+    any: csv(searchParams.get("tags_any")),
+    none: csv(searchParams.get("tags_none")),
+  };
+  const hasActive =
+    currentQ.length > 0 ||
+    Object.keys(currentParams).length > 0 ||
+    currentTags.all.length > 0 ||
+    currentTags.any.length > 0 ||
+    currentTags.none.length > 0;
 
   function applyFilter(filter: SavedFilterItem) {
-    // Stored tokens are stable ids (or legacy names); render ids back to
-    // the tag's CURRENT name so the search bar stays human-readable.
-    const toNames = (tokens: string[]) =>
-      tokens.map((t) => idToKey.get(t) ?? t);
-    onApply(
-      serializeTaskSearch({
-        text: "",
-        all: toNames(filter.filter_ast.all ?? []),
-        any: toNames(filter.filter_ast.any ?? []),
-        none: toNames(filter.filter_ast.none ?? []),
-        authors: [],
-      })
-    );
+    const ast = filter.filter_ast as SavedBlobV2 & LegacyBlob;
+    const params = new URLSearchParams();
+    const setTags = (
+      tagIds: { all?: string[]; any?: string[]; none?: string[] } | undefined
+    ) => {
+      const all = toTokens(tagIds?.all ?? []);
+      const any = toTokens(tagIds?.any ?? []);
+      const none = toTokens(tagIds?.none ?? []);
+      if (all.length) params.set("tags", all.join(","));
+      if (any.length) params.set("tags_any", any.join(","));
+      if (none.length) params.set("tags_none", none.join(","));
+    };
+
+    if (ast.v === 2) {
+      if (ast.q) params.set("q", ast.q);
+      for (const [key, value] of Object.entries(ast.params ?? {})) {
+        params.set(key, String(value));
+      }
+      setTags(ast.tags);
+    } else {
+      // Legacy tag-only blob.
+      setTags({ all: ast.all, any: ast.any, none: ast.none });
+    }
+
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
     setOpen(false);
   }
 
   async function saveCurrent() {
-    if (!name.trim() || !hasTagTokens) return;
+    if (!name.trim() || !hasActive) return;
     setSaving(true);
     setError(null);
-    // Persist ids where the name resolves; unknown tokens stay as names
-    // (the browse resolver accepts both).
-    const toIds = (tokens: string[]) =>
-      tokens.map((t) => keyToId.get(normalizeKey(t)) ?? t);
+    const filterAst: SavedBlobV2 = {
+      v: 2,
+      ...(currentQ ? { q: currentQ } : {}),
+      ...(Object.keys(currentParams).length ? { params: currentParams } : {}),
+      tags: {
+        all: toIds(currentTags.all),
+        any: toIds(currentTags.any),
+        none: toIds(currentTags.none),
+      },
+    };
     const res = await fetch("/api/tag-filters", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: name.trim(),
         visibility,
-        filter_ast: {
-          all: toIds(parsed.all),
-          any: toIds(parsed.any),
-          none: toIds(parsed.none),
-        },
+        filter_ast: filterAst,
       }),
     });
     setSaving(false);
@@ -150,19 +186,12 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
       items: (current?.items ?? []).filter((f) => f.id !== filterId),
     });
     try {
-      // Drop the row at click time instead of after the DELETE + refetch
-      // round-trips (~2s warm, 5s+ behind Modal cold starts); SWR restores
-      // the previous list if the request fails. populateCache recomputes
-      // from the latest cache so rapid deletes compose, and skipping
-      // revalidation avoids a second round-trip — reopening the popover
-      // refetches regardless.
       await mutate(
         async () => {
           const res = await fetch(
             `/api/tag-filters/${encodeURIComponent(filterId)}`,
             { method: "DELETE" }
           );
-          // 404 means it was already deleted elsewhere; keep it removed.
           if (!res.ok && res.status !== 404) {
             throw new Error(`Delete failed: ${res.status}`);
           }
@@ -256,11 +285,10 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
           </div>
         )}
         <div className="space-y-2 border-t p-3">
-          {hasTagTokens ? (
+          {hasActive ? (
             <>
-              <p className="text-muted-foreground truncate font-mono text-[11px]">
-                Save “
-                {serializeTaskSearch({ ...parsed, text: "", authors: [] })}”
+              <p className="text-muted-foreground text-[11px]">
+                Save the current filters as a named view.
               </p>
               <Input
                 value={name}
@@ -305,7 +333,7 @@ export function SavedFiltersMenu({ query, onApply }: SavedFiltersMenuProps) {
             </>
           ) : (
             <p className="text-muted-foreground text-xs">
-              Type a tag filter (e.g. <code>tag:flaky</code>) to save it.
+              Apply some filters to save them as a view.
             </p>
           )}
         </div>
