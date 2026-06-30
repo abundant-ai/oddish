@@ -1067,6 +1067,14 @@ class TaskBrowseResponse(BaseModel):
     has_more: bool
 
 
+class AgentModelFacet(BaseModel):
+    """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
+    rows with no recorded model."""
+
+    agent: str
+    model: str | None = None
+
+
 class TaskBrowseFacets(BaseModel):
     """Distinct values for populating the task-browser filter controls.
 
@@ -1077,6 +1085,7 @@ class TaskBrowseFacets(BaseModel):
 
     agents: list[str] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
+    agent_models: list[AgentModelFacet] = Field(default_factory=list)
     providers: list[str] = Field(default_factory=list)
     environments: list[str] = Field(default_factory=list)
     harbor_stages: list[str] = Field(default_factory=list)
