@@ -881,17 +881,26 @@ async def browse_tasks_core(
             )
         )
     if has_error is not None:
-        ranked_tasks = ranked_tasks.where(
-            _trial_exists(
-                TrialModel.error_message.isnot(None)
-                if has_error
-                else TrialModel.error_message.is_(None)
+        has_errored_trial = _trial_exists(TrialModel.error_message.isnot(None))
+        if has_error:
+            ranked_tasks = ranked_tasks.where(has_errored_trial)
+        else:
+            # "No" is the complement of "Yes": the task ran at least one real
+            # trial and none of them errored (so a task with a mix of errored
+            # and clean trials counts as "Yes", not "No").
+            ranked_tasks = ranked_tasks.where(
+                and_(_trial_exists(), ~has_errored_trial)
             )
-        )
     if has_trajectory is not None:
-        ranked_tasks = ranked_tasks.where(
-            _trial_exists(TrialModel.has_trajectory.is_(has_trajectory))
-        )
+        has_trajectory_trial = _trial_exists(TrialModel.has_trajectory.is_(True))
+        if has_trajectory:
+            ranked_tasks = ranked_tasks.where(has_trajectory_trial)
+        else:
+            # Same complement semantics as has_error: ran a real trial, none
+            # of which has a trajectory.
+            ranked_tasks = ranked_tasks.where(
+                and_(_trial_exists(), ~has_trajectory_trial)
+            )
     if min_attempts is not None:
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.attempts >= min_attempts)
