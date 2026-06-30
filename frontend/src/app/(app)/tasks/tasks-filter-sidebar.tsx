@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDown, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,13 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { SavedFiltersMenu } from "@/components/saved-filters-menu";
+import { TagFilterDropdown } from "@/components/tag-filter-dropdown";
+import {
+  SearchSyntaxHelp,
+  SearchSyntaxMultiRow,
+  SearchSyntaxRow,
+} from "@/components/search-syntax-help";
 import { cn } from "@/lib/utils";
 import type { TaskBrowseFacets } from "@/lib/types";
 import {
@@ -80,6 +87,27 @@ export function TasksFilterSidebar({
 
   const set = (patch: Partial<FilterValues>) =>
     onChange({ ...values, ...patch });
+
+  // Free-text search + tag tokens live in the URL `q` param (debounced).
+  const [searchQuery, setSearchQuery] = useState(searchParams.get("q") ?? "");
+  const isFirstSearchRender = useRef(true);
+
+  useEffect(() => {
+    if (isFirstSearchRender.current) {
+      isFirstSearchRender.current = false;
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      const params = new URLSearchParams(searchParams.toString());
+      const trimmed = searchQuery.trim();
+      if (trimmed) params.set("q", trimmed);
+      else params.delete("q");
+      params.delete("offset");
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    }, 300);
+    return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
 
   const [addedKeys, setAddedKeys] = useState<string[]>([]);
 
@@ -155,6 +183,47 @@ export function TasksFilterSidebar({
               Clear all
             </button>
           ) : null}
+        </div>
+
+        <div className="mb-3 space-y-2 border-b border-[#6f88b4]/10 pb-3">
+          <div className="relative">
+            <Input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search anything..."
+              className="h-8 w-full border-[#6f88b4]/20 pr-7"
+            />
+            <SearchSyntaxHelp>
+              <p className="font-medium">Search syntax</p>
+              <p className="text-muted-foreground">
+                Matches task name, author, or tags. Add a prefix below to
+                specify filters.
+              </p>
+              <SearchSyntaxRow
+                example="node vulnerability"
+                hint="every word must match (AND)"
+              />
+              <SearchSyntaxRow example="auth OR rbac" hint="either word (OR)" />
+              <SearchSyntaxRow example={'"command exec"'} hint="exact phrase" />
+              <SearchSyntaxRow example="-no-skill" hint="exclude" />
+              <SearchSyntaxMultiRow
+                examples={["github:alice", "author:alice", "user:alice"]}
+                hint="by author — GitHub handle, email, or name"
+              />
+              <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
+            </SearchSyntaxHelp>
+          </div>
+          <div className="flex gap-2">
+            <TagFilterDropdown
+              query={searchQuery}
+              onQueryChange={setSearchQuery}
+              countField="task_count"
+            />
+            <SavedFiltersMenu
+              query={searchQuery}
+              onApply={(text) => setSearchQuery(text)}
+            />
+          </div>
         </div>
 
         <div className="space-y-3">
