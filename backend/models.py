@@ -123,6 +123,9 @@ class UserModel(TimestampedMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Immutable Clerk provider_user_id; survives github_username renames/recycles.
+    # Org-scoped unique (NULLs distinct in PG, so all-NULL legacy rows don't collide).
+    github_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
     attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -150,9 +153,11 @@ class UserModel(TimestampedMixin, Base):
     __table_args__ = (
         # A user can only be in one org with one email
         UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+        UniqueConstraint("org_id", "github_id", name="uq_users_org_github_id"),
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
+        Index("idx_users_org_github_id", "org_id", "github_id"),
     )
 
 

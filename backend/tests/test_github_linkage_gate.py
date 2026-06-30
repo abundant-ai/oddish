@@ -466,9 +466,20 @@ def test_M1_fingerprint_covers_unique_constraint_change():
 # ===========================================================================
 
 
-@pytest.mark.xfail(strict=True, reason="github_id column not yet added (models.py)")
 def test_user_model_has_github_id():
     assert "github_id" in UserModel.__table__.c
+
+
+def test_user_model_github_id_org_scoped_unique_and_indexed():
+    """G1: github_id is org-scoped unique (NOT global) and indexed for lookup."""
+    cols = {"org_id", "github_id"}
+    assert any(
+        isinstance(c, sa.UniqueConstraint) and {col.name for col in c.columns} == cols
+        for c in UserModel.__table__.constraints
+    ), "missing UniqueConstraint over (org_id, github_id)"
+    assert any(
+        {col.name for col in idx.columns} == cols for idx in UserModel.__table__.indexes
+    ), "missing index over (org_id, github_id)"
 
 
 @pytest.mark.xfail(strict=True, reason="github_id not yet on TaskSweepSubmission (oddish/schemas.py:373)")
