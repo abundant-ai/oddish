@@ -23,8 +23,14 @@ configure_logfire(service_name="oddish-worker")
 with _otel_span("worker.container_init"):
     from .functions import (  # noqa: E402
         poll_queue,
+        precompute_dashboard_stats,
         process_single_job,
         reconcile_queue_state,
     )
 
-__all__ = ["poll_queue", "process_single_job", "reconcile_queue_state"]
+__all__ = [
+    "poll_queue",
+    "precompute_dashboard_stats",
+    "process_single_job",
+    "reconcile_queue_state",
+]
