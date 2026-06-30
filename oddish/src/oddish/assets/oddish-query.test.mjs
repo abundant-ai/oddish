@@ -72,26 +72,10 @@ function mkStage() {
 }
 
 
-test('verifier source prints test.sh behind the banner', () => {
-  const out = runStage(['verifier', 'source'], mkStage());
-  assert.match(out, /PROBE-ONLY/);
-  assert.match(out, /SCORER/);
-});
-
 test('missing stage emits banner then error', () => {
   const out = runStage(['verifier', 'source'], '/nonexistent/stage/xyz');
   assert.match(out, /PROBE-ONLY/);
   assert.match(out, /unavailable/);
-});
-
-
-test('solution fetch copies the tree into --into and reports the path', () => {
-  const stage = mkStage();
-  const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dest-'));
-  const out = runStage(['solution', 'fetch', '--into', dest], stage);
-  assert.match(out, /PROBE-ONLY/);
-  assert.match(out, new RegExp(dest));
-  assert.equal(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'HELLO-SOLUTION');
 });
 
 test('harbor src reports unavailable when not staged', () => {
@@ -100,13 +84,25 @@ test('harbor src reports unavailable when not staged', () => {
   assert.match(out, /unavailable/);
 });
 
-test('solution fetch omits the boundary marker from the copied tree', () => {
-  const stage = mkStage();
-  fs.writeFileSync(path.join(stage, 'solution', '000-READ-ME-PROBE-ONLY.txt'), 'marker');
+test('verifier source prints test.sh from the API', () => {
+  const out = runApi(['verifier', 'source'],
+    { '/tasks/task-123/files/test.sh': { path: 'test.sh', content: '#!/bin/bash\necho SCORER\n' } });
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, /SCORER/);
+});
+
+test('solution fetch downloads the solution tree into --into', () => {
   const dest = fs.mkdtempSync(path.join(os.tmpdir(), 'dest-'));
-  runStage(['solution', 'fetch', '--into', dest], stage);
-  assert.ok(fs.existsSync(path.join(dest, 'a.txt')));
-  assert.ok(!fs.existsSync(path.join(dest, '000-READ-ME-PROBE-ONLY.txt')));
+  const out = runApi(['solution', 'fetch', '--into', dest],
+    { '/tasks/task-123/files': { files: [
+        { path: 'solution/a.txt', content: 'HELLO-SOLUTION' },
+        { path: 'solution/sub/b.txt', content: 'NESTED' },
+        { path: 'tests/test.sh', content: 'IGNORED' } ] } });
+  assert.match(out, /PROBE-ONLY/);
+  assert.match(out, new RegExp(dest));
+  assert.equal(fs.readFileSync(path.join(dest, 'a.txt'), 'utf8'), 'HELLO-SOLUTION');
+  assert.equal(fs.readFileSync(path.join(dest, 'sub', 'b.txt'), 'utf8'), 'NESTED');
+  assert.ok(!fs.existsSync(path.join(dest, 'test.sh')));  // only solution/ subtree
 });
 
 test('verify run captures stderr in build_log_tail', () => {

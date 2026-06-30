@@ -108,6 +108,39 @@ async function fetchFileContent(relPath) {
   return data.content;
 }
 
+async function listFiles(prefix) {
+  const data = await get(`/tasks/${taskId()}/files`, { prefix, recursive: true, presign: true });
+  return (data && data.files) || [];
+}
+
+async function fetchUrl(url) {
+  let r;
+  try { r = await fetch(url); } catch (e) { die(String(e), 0); }
+  if (!r.ok) die(r.statusText || `HTTP ${r.status}`, r.status);
+  return r.text();
+}
+
+// Download every file under `prefix` into destDir, preserving the path tail
+// after `prefix`. Uses presigned `url` when present, else inline `content`
+// (test fixture), else a per-file content GET.
+async function materializeFiles(prefix, destDir) {
+  const files = await listFiles(prefix);
+  let n = 0;
+  for (const f of files) {
+    if (prefix && !f.path.startsWith(prefix)) continue;
+    const rel = prefix ? f.path.slice(prefix.length).replace(/^\/+/, '') : f.path;
+    const dest = path.join(destDir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    let body;
+    if (f.url) body = await fetchUrl(f.url);
+    else if (typeof f.content === 'string') body = f.content;
+    else body = await fetchFileContent(f.path);
+    fs.writeFileSync(dest, body);
+    n += 1;
+  }
+  return n;
+}
+
 async function cmdSolutionCat(a) {
   const rel = (a.rel || '').replace(/^\/+/, '');
   out(withBanner(await fetchFileContent(`solution/${rel}`)));
@@ -122,7 +155,6 @@ function copyTree(srcRel, into, label) {
   fs.cpSync(src, dest, { recursive: true, filter: (s) => path.basename(s) !== BOUNDARY_MARKER });
   out(withBanner(`copied ${label} to ${dest}`));
 }
-function cmdSolutionFetch(a) { copyTree('solution', a.into, 'solution'); }
 function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
 
 function cmdVerify() {
@@ -137,11 +169,25 @@ function cmdVerify() {
   out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
 }
 
-function cmdVerifierSource() {
-  requireStage();
-  const f = stagePath('test.sh');
-  if (!fs.existsSync(f)) dieStage('probe asset unavailable: test.sh', 3);
-  out(withBanner(fs.readFileSync(f, 'utf8')));
+async function cmdVerifierSource() {
+  const id = process.env.ODDISH_PROBE_TASK_ID || '';
+  if (!id) {
+    // Fall back to stage-based path for backward compatibility
+    requireStage();
+    const f = stagePath('test.sh');
+    if (!fs.existsSync(f)) dieStage('probe asset unavailable: test.sh', 3);
+    out(withBanner(fs.readFileSync(f, 'utf8')));
+  } else {
+    // API-based path
+    out(withBanner(await fetchFileContent('test.sh')));
+  }
+}
+
+async function cmdSolutionFetch(a) {
+  const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-solution-'));
+  const n = await materializeFiles('solution/', dest);
+  if (!n) die('probe asset unavailable: solution', 3);
+  out(withBanner(`copied solution (${n} files) to ${dest}`));
 }
 
 function parse(argv) {
@@ -169,8 +215,8 @@ async function main() {
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
   if (group === 'solution' && cmd === 'cat') return cmdSolutionCat(a);
-  if (group === 'verifier' && cmd === 'source') return cmdVerifierSource();
-  if (group === 'solution' && cmd === 'fetch') return cmdSolutionFetch({ into: opt.into });
+  if (group === 'verifier' && cmd === 'source') return await cmdVerifierSource();
+  if (group === 'solution' && cmd === 'fetch') return await cmdSolutionFetch({ into: opt.into });
   if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
   if (group === 'verify' && cmd === 'run') return cmdVerify();
   die(`unknown command: ${group} ${cmd}`, 2);
