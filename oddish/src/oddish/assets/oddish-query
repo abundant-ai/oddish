@@ -170,17 +170,7 @@ function cmdVerify() {
 }
 
 async function cmdVerifierSource() {
-  const id = process.env.ODDISH_PROBE_TASK_ID || '';
-  if (!id) {
-    // Fall back to stage-based path for backward compatibility
-    requireStage();
-    const f = stagePath('test.sh');
-    if (!fs.existsSync(f)) dieStage('probe asset unavailable: test.sh', 3);
-    out(withBanner(fs.readFileSync(f, 'utf8')));
-  } else {
-    // API-based path
-    out(withBanner(await fetchFileContent('test.sh')));
-  }
+  out(withBanner(await fetchFileContent('test.sh')));
 }
 
 async function cmdSolutionFetch(a) {
