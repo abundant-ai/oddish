@@ -224,7 +224,8 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
-    '"openai/gpt-5.4-mini": 128}',
+    '"openai/gpt-5.4-mini": 128, '
+    '"xai/redacted-model": 128}',
 )
 
 ENV_VARS = {
