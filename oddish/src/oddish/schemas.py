@@ -374,6 +374,10 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
     )
+    github_id: str | None = Field(
+        None,
+        description="GitHub user id (Clerk provider_user_id) to attribute this task to; immutable across handle renames",
+    )
     publish_experiment: bool | None = Field(
         None,
         description="If true, publish the experiment for public read-only access",

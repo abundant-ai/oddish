@@ -298,6 +298,13 @@ def run(
             help="GitHub username to attribute this task to. Used for CI attribution.",
         ),
     ] = None,
+    github_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--github-id",
+            help="GitHub user id (immutable) to attribute this task to. Survives handle renames.",
+        ),
+    ] = None,
     github_meta: Annotated[
         Optional[str],
         typer.Option(
@@ -758,6 +765,7 @@ def run(
             run_analysis=run_analysis,
             run_probe=run_probe,
             github_username=github_user,
+            github_id=github_id,
             tags=tags or None,
             publish_experiment=publish,
             disable_verification=disable_verification,

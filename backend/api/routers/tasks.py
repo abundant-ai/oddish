@@ -147,6 +147,11 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
     if submission.github_username:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_username", submission.github_username)
+    # Carry github_id as metadata so it survives transport; resolution/precedence
+    # is G4's job, not here.
+    if submission.github_id:
+        submission.tags = submission.tags or {}
+        submission.tags.setdefault("github_id", submission.github_id)
 
 
 async def _resolve_actor_user(

@@ -882,6 +882,7 @@ def build_sweep_payload(
     run_analysis: bool = False,
     run_probe: bool = False,
     github_username: str | None = None,
+    github_id: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
     disable_verification: bool = False,
@@ -972,6 +973,8 @@ def build_sweep_payload(
 
     if github_username:
         payload["github_username"] = github_username
+    if github_id:
+        payload["github_id"] = github_id
     if tags:
         payload["tags"] = tags
     payload["publish_experiment"] = publish_experiment
@@ -1040,6 +1043,7 @@ def submit_sweep(
     run_analysis: bool = False,
     run_probe: bool = False,
     github_username: str | None = None,
+    github_id: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
     disable_verification: bool = False,
@@ -1079,6 +1083,7 @@ def submit_sweep(
         run_analysis=run_analysis,
         run_probe=run_probe,
         github_username=github_username,
+        github_id=github_id,
         tags=tags,
         publish_experiment=publish_experiment,
         disable_verification=disable_verification,
