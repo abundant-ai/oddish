@@ -282,6 +282,22 @@ async def _upsert_advisory(
     )
 
 
+async def _clear_advisory(session, queue_key: str) -> None:
+    """Drop a queue's advisory row.
+
+    Called when a queue is statically disabled (limit 0): the reconciler stops
+    refreshing its advisory, so leaving the row in place would let the
+    dispatcher's ``merge_advisory_over_static`` overlay the stale pre-disable
+    value over the operator's new static limit on re-enable (until the next
+    reconcile catches up). Clearing it makes a re-enabled queue start from its
+    static limit.
+    """
+    await session.execute(
+        text("DELETE FROM model_concurrency_advisory WHERE queue_key = :queue_key"),
+        {"queue_key": queue_key},
+    )
+
+
 async def recompute_advisory_limits(session) -> dict[str, int]:
     """Recompute + persist every active queue's advisory limit (best-effort).
 
@@ -314,8 +330,13 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
             queue_key = cap.queue_key
             base = settings.get_model_concurrency(queue_key)
             # A statically-disabled queue (limit 0) stays disabled: never advise
-            # it above zero, so the operator's off switch is honored.
+            # it above zero, so the operator's off switch is honored. Also clear
+            # any prior advisory row so a later re-enable starts from the static
+            # limit instead of briefly overlaying the stale pre-disable advisory
+            # (merge_advisory_over_static only overlays where static > 0, so the
+            # disabled state itself stays correct regardless).
             if base <= 0:
+                await _clear_advisory(session, queue_key)
                 continue
             normalized = settings.normalize_queue_key(queue_key)
             override = settings.model_concurrency_overrides.get(normalized)
