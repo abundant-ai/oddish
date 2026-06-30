@@ -36,7 +36,7 @@ from oddish.worker.probe_analysis import (
 )
 from oddish.worker.local_offline_policy import enable_local_internet
 from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
-from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, STAGE_DIR, STAGE_DIR_ENV
+from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
@@ -752,21 +752,8 @@ async def _store_trial_results(
 
 
 async def _upload_probe_assets(environment, probe_task_dir: Path, trial_id: str) -> None:
-    """Two AGENT_START uploads, both best-effort (a failure must never block the
-    probe): the staged probe-only assets (verifier, reference solution,
-    gate-tests, harbor source) -> STAGE_DIR, hidden from the agent's browsable
-    tree and reachable only through the oddish-query CLI; and the CLI alone ->
-    PROBE_HARNESS_DIR, the single advertised entry point referenced in the probe
-    instruction."""
-    try:
-        await environment.upload_dir(source_dir=probe_task_dir, target_dir=STAGE_DIR)
-        console.print(
-            f"[dim]Trial {trial_id} probe assets uploaded to {STAGE_DIR}[/dim]"
-        )
-    except Exception as exc:
-        console.print(
-            f"[yellow]Trial {trial_id} probe asset upload failed: {exc}[/yellow]"
-        )
+    """Upload the oddish-query CLI to PROBE_HARNESS_DIR (best-effort Daytona/non-Modal
+    fallback; a failure must never block the probe)."""
     harness_mount = Path(tempfile.mkdtemp(prefix=f"probe-cli-{trial_id}-"))
     try:
         stage_cli_mount(harness_mount)
@@ -1147,7 +1134,9 @@ async def run_trial_job(
             probe_key_id, probe_agent_env = await mint_probe_creds(
                 org_id=prepared_trial.org_id, trial_id=trial_id
             )
-            probe_agent_env[STAGE_DIR_ENV] = STAGE_DIR
+            probe_agent_env["ODDISH_PROBE_TASK_ID"] = prepared_trial.task_id
+            probe_agent_env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
+            probe_agent_env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
         except ProbeCredsError as exc:
             # Record the failure on the trial row so the operator sees why the
             # probe failed; _execute_trial's handler never runs in this path.

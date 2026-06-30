@@ -105,6 +105,19 @@ DISPATCHER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS",
 # to run as often as dispatch.
 CLEANUP_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS", 240)
 CLEANUP_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS", 600)
+# Dashboard queue/pipeline precompute. A scheduled grouped scan warms every
+# org's cached queue/pipeline slice so the dashboard request path never runs the
+# whole-``trials`` aggregate. The interval MUST stay <= the read-side TTL
+# (``_QUEUE_PIPELINE_CACHE_TTL_SECONDS`` in ``oddish.core.dashboard``, currently
+# 120s) or precomputed entries would expire between runs and force on-demand
+# recomputes. The timeout bounds one grouped scan; with max_containers=1 it also
+# guards against overlapping runs.
+DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS", 60
+)
+DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
+)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -224,7 +237,8 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     "ODDISH_MODEL_CONCURRENCY_OVERRIDES",
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
-    '"openai/gpt-5.4-mini": 128}',
+    '"openai/gpt-5.4-mini": 128, '
+    '"xai/redacted-model": 128}',
 )
 
 ENV_VARS = {

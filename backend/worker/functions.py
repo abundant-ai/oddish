@@ -33,6 +33,8 @@ from observability import span as _otel_span
 from modal_app import (
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
+    DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
+    DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
     DISPATCHER_CPU,
     DISPATCHER_MEMORY_MB,
     DISPATCHER_NONPREEMPTIBLE,
@@ -396,6 +398,56 @@ async def reconcile_queue_state():
         except Exception:
             pass
         console.print("[green]Reconciler complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
+    cpu=RECONCILER_CPU,
+    memory=RECONCILER_MEMORY_MB,
+    min_containers=0,  # Background refresh; tolerate a cold start each run.
+    max_containers=1,  # Singleton: never run two grouped scans at once.
+    schedule=modal.Period(seconds=DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
+)
+async def precompute_dashboard_stats():
+    """Warm the dashboard's shared queue/pipeline cache for every org.
+
+    Runs the expensive whole-``trials`` aggregate once per interval as a single
+    grouped-by-org scan and writes each org's slice into the shared Modal Dict
+    the API reads, so the dashboard request path never runs that scan itself.
+
+    Best-effort: any failure is logged and swallowed (not re-raised) so a
+    transient DB hiccup doesn't trip Modal failure alerts -- the dashboard just
+    falls back to on-demand computation until the next run.
+    """
+    cycle_span = _otel_span("worker.precompute_dashboard_stats")
+    cycle_span.__enter__()
+    started = time.monotonic()
+    try:
+        from dashboard_cache import precompute_dashboard_queue_pipeline
+
+        org_count = await precompute_dashboard_queue_pipeline()
+        console.print(
+            f"metric=dashboard_precompute orgs={org_count} "
+            f"duration_seconds={round(time.monotonic() - started, 2)}"
+        )
+    except OSError as e:
+        console.print(
+            f"[yellow]Dashboard precompute skipped (transient network error): {e}[/yellow]"
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort background refresh
+        console.print(f"[yellow]Dashboard precompute skipped: {e}[/yellow]")
+    finally:
+        await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
 
 
 # Blessed Harbor variants get their own image-bound single-job Function so the
