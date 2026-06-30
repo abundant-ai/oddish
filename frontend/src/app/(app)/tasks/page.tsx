@@ -32,7 +32,14 @@ async function getFacets(): Promise<TaskBrowseFacets | null> {
       cache: "no-store",
       headers: getAuthHeaders(token),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error(
+        `[tasks/page] facets fetch failed: ${res.status} - ${await res
+          .text()
+          .catch(() => "")}`
+      );
+      return null;
+    }
     return (await res.json()) as TaskBrowseFacets;
   } catch (error) {
     console.error("[tasks/page] facets fetch failed", error);
