@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
@@ -104,7 +105,14 @@ async def get_public_task(
         .where(TaskModel.id == task_id)
         .where(public_link_exists)
     )
-    return result.scalar_one_or_none()
+    task = result.scalar_one_or_none()
+    if task is not None:
+        # Probes are an experimental, internal-only feature; never expose them
+        # through the public share/datasets views.
+        set_committed_value(
+            task, "trials", [t for t in task.trials if not t.is_probe]
+        )
+    return task
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
