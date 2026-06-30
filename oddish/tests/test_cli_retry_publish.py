@@ -115,7 +115,7 @@ def test_retry_resolves_trial_and_posts_retry(monkeypatch) -> None:
     monkeypatch.setattr(retry_mod, "get_task_summary", fake_get_task_summary)
     monkeypatch.setattr(retry_mod, "get_experiment_tasks", lambda *a, **k: None)
 
-    def fake_post(api_url: str, path: str) -> _Resp:
+    def fake_post(api_url: str, path: str, payload: dict | None = None) -> _Resp:
         posted.append(path)
         return _Resp(200, {"status": "queued", "trial_id": "abc-1"})
 
@@ -152,7 +152,7 @@ def test_retry_task_only_retries_failed_trials(monkeypatch) -> None:
     monkeypatch.setattr(retry_mod, "get_task_summary", fake_get_task_summary)
     monkeypatch.setattr(retry_mod, "get_experiment_tasks", lambda *a, **k: None)
 
-    def fake_post(api_url: str, path: str) -> _Resp:
+    def fake_post(api_url: str, path: str, payload: dict | None = None) -> _Resp:
         posted.append(path)
         return _Resp(200, {"status": "queued"})
 
@@ -174,7 +174,7 @@ def test_retry_qa_dispatches_task_endpoint(monkeypatch) -> None:
         retry_mod, "get_task_summary", lambda a, t: {"id": t, "trials": []}
     )
 
-    def fake_post(api_url: str, path: str) -> _Resp:
+    def fake_post(api_url: str, path: str, payload: dict | None = None) -> _Resp:
         posted.append(path)
         return _Resp(200, {"status": "queued", "task_id": "tsk"})
 

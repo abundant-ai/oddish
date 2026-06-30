@@ -90,6 +90,27 @@ def test_vercel_modal_url_gated_with_prod_fallback():
     assert expr.rstrip().endswith("|| '' }}")
 
 
+def test_banner_env_threaded_to_vercel_and_cleaned_up():
+    # The frontend has no test suite, so guard the whole chain here: a banner
+    # var is only useful if it's threaded through the Vercel env and cleaned up.
+    job_env = _wf()["jobs"]["update-vercel-preview"]["env"]
+    assert "html_url" in job_env["PR_URL"]
+    assert "title" in job_env["PR_TITLE"]
+    assert "SUPABASE_BRANCH_REF" in job_env
+
+    update = (PREVIEW / "update_vercel_preview.sh").read_text()
+    stop = (PREVIEW / "stop_preview.sh").read_text()
+    assert "dashboard/project/${SUPABASE_BRANCH_REF}" in update
+    for name in (
+        "NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL",
+        "NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL",
+    ):
+        assert name in update, f"{name} not published in update_vercel_preview.sh"
+        assert name in stop, f"{name} not cleaned up in stop_preview.sh"
+
+
 def test_url_fragment_derives_from_modal_app_label():
     m = re.search(r'f"\{MODAL_APP_NAME\}(-\w+)"', MODAL_APP.read_text())
     assert m, "preview webhook label formula not found in modal_app.py"

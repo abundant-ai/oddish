@@ -429,6 +429,22 @@ async def _resolve_target_user_id(
     normalized_author: str,
 ) -> str | None:
     if normalized_author.lower() != "me":
+        # Accept an org member's email as an alias for their user id so dashboard
+        # URLs can carry a human-readable owner filter (?author=kate@abundant.ai).
+        # Org-scoped + active-only; a raw user id (no "@") still returns as-is.
+        if "@" in normalized_author:
+            email_lower = normalized_author.strip().lower()
+            resolved = (
+                await session.execute(
+                    select(UserModel.id).where(
+                        UserModel.org_id == auth.org_id,
+                        UserModel.is_active == True,  # noqa: E712
+                        func.lower(UserModel.email) == email_lower,
+                    )
+                )
+            ).scalar_one_or_none()
+            if resolved:
+                return resolved
         return normalized_author
 
     if auth.user_id:
