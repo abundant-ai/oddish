@@ -54,6 +54,7 @@ from oddish.db import (
     task_experiments,
 )
 from oddish.schemas import (
+    AgentModelFacet,
     TaskBrowseExperiment,
     TaskBrowseFacets,
     TaskBrowseItem,
@@ -644,6 +645,7 @@ async def browse_tasks_core(
     experiment_ids: Sequence[str] | None = None,
     agents: Sequence[str] | None = None,
     models: Sequence[str] | None = None,
+    agent_models: Sequence[str] | None = None,
     providers: Sequence[str] | None = None,
     environments: Sequence[str] | None = None,
     trial_statuses: Sequence[str] | None = None,
@@ -815,6 +817,31 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.model.in_(list(models)))
         )
+    if agent_models:
+        # Each token is "agent:model" (model = everything after the first colon;
+        # agent names have no colons) or bare "agent" for a null model. Match a
+        # single trial whose (agent, model) equals one of the selected pairs.
+        pair_conds = []
+        for token in agent_models:
+            agent_name, sep, model_name = token.partition(":")
+            if not agent_name:
+                continue
+            if sep and model_name:
+                pair_conds.append(
+                    and_(
+                        TrialModel.agent == agent_name,
+                        TrialModel.model == model_name,
+                    )
+                )
+            else:
+                pair_conds.append(
+                    and_(
+                        TrialModel.agent == agent_name,
+                        TrialModel.model.is_(None),
+                    )
+                )
+        if pair_conds:
+            ranked_tasks = ranked_tasks.where(_trial_exists(or_(*pair_conds)))
     if providers:
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.provider.in_(list(providers)))
@@ -1290,6 +1317,28 @@ async def browse_task_facets_core(
     agents = await _values(TrialModel.agent, "agent")
     models = await _values(TrialModel.model, "model")
     providers = await _values(TrialModel.provider, "provider")
+
+    # Distinct (agent, model) pairs — the meaningful "what was run" unit. A trial
+    # is an agent at a specific model, so this is the primary run-config facet.
+    agent_models: list[AgentModelFacet] = []
+    try:
+        pairs_stmt = select(TrialModel.agent, TrialModel.model).where(
+            TrialModel.agent.isnot(None),
+            TrialModel.is_probe.isnot(True),
+            TrialModel.superseded_by_trial_id.is_(None),
+        )
+        if org_id is not None:
+            pairs_stmt = pairs_stmt.where(TrialModel.org_id == org_id)
+        pairs_stmt = pairs_stmt.distinct().order_by(
+            TrialModel.agent, TrialModel.model
+        )
+        pair_rows = (await session.execute(pairs_stmt)).all()
+        agent_models = [
+            AgentModelFacet(agent=row[0], model=row[1]) for row in pair_rows
+        ]
+    except Exception:  # noqa: BLE001 - facets are best-effort
+        logger.exception("browse facets: agent_models query failed")
+        await session.rollback()
     environments = await _values(TrialModel.environment, "environment")
     harbor_stages = await _values(TrialModel.harbor_stage, "harbor_stage")
     analysis_classifications = await _values(classification, "analysis_classification")
@@ -1313,6 +1362,7 @@ async def browse_task_facets_core(
     return TaskBrowseFacets(
         agents=agents,
         models=models,
+        agent_models=agent_models,
         providers=providers,
         environments=environments,
         harbor_stages=harbor_stages,

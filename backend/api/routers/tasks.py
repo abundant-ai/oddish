@@ -726,6 +726,9 @@ async def browse_tasks(
     experiment_ids: str | None = Query(None, description="Experiment id CSV"),
     agents: str | None = Query(None, description="Trial agent CSV"),
     models: str | None = Query(None, description="Trial model CSV"),
+    agent_models: str | None = Query(
+        None, description="Agent+model pair CSV, each 'agent:model'"
+    ),
     providers: str | None = Query(None, description="Trial provider CSV"),
     environments: str | None = Query(None, description="Trial environment CSV"),
     trial_statuses: str | None = Query(None, description="Trial status CSV"),
@@ -796,6 +799,7 @@ async def browse_tasks(
             experiment_ids=_split_tag_csv(experiment_ids),
             agents=_split_tag_csv(agents),
             models=_split_tag_csv(models),
+            agent_models=_split_tag_csv(agent_models),
             providers=_split_tag_csv(providers),
             environments=_split_tag_csv(environments),
             trial_statuses=_split_tag_csv(trial_statuses),
