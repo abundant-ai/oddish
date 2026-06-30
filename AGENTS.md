@@ -196,6 +196,16 @@ Behavior:
   and cancel any matching `worker_jobs` rows. They return an empty
   `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
   S3 data is preserved for restore.
+- `unlink_task_from_experiment_core` (same module) is the *scoped* sibling:
+  it tombstones only the `task_experiments` join row for one
+  `(task_id, experiment_id)` pair plus that experiment's trials for the
+  task, and **never** tombstones the task row. It exists so a *shared* task
+  can be pulled out of one experiment without disturbing the others (a
+  whole-task `delete_task_core` would hit every experiment). It also fires
+  the membership-removed tag hook so inherited EXPERIMENT tags drop. The
+  experiment-scoped trials are tombstoned alongside the link to keep the
+  experiment consistent — its task list is join-driven, but dashboard trial
+  counts key off `trials.experiment_id`.
 - The `task_experiments` join table also carries `deleted_at` so experiment
   membership is preserved for audit/restore. Because it is a SQLAlchemy
   `Table`, not a registered model, live membership queries and relationship
@@ -300,6 +310,7 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
+| DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Soft-delete just the task↔experiment association (the `task_experiments` join row) plus that experiment's trials for the task; the task itself and its data in other experiments are left intact. Use to pull a *shared* task out of one experiment. Hosted backend only |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
