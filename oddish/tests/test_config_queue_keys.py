@@ -7,7 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, Settings  # noqa: E402
+from oddish.config import (
+    NOP_ORACLE_QUEUE_KEY,
+    Settings,
+    normalize_model_id,
+)  # noqa: E402
 
 
 def _settings(monkeypatch, *, clear_openai_env: bool = True, **kwargs) -> Settings:
@@ -242,6 +246,41 @@ def test_fireworks_models_route_to_fireworks_not_direct_providers(monkeypatch):
         assert settings.normalize_trial_model("claude-code", raw) == canonical, raw
         assert settings.get_provider_for_trial("claude-code", raw) == "fireworks", raw
         assert settings.get_queue_key_for_trial("claude-code", raw) == canonical, raw
+
+
+def test_grok_build_xai_model_routes_to_xai(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+    model = "xai/v9m-rl-learnability-tp8"
+
+    assert normalize_model_id(" XAI / v9m rl learnability tp8 ") == model
+    assert settings.normalize_trial_model("grok-build", model) == model
+    assert settings.get_provider_for_trial("grok-build", model) == "xai"
+    assert settings.get_queue_key_for_trial("grok-build", model) == model
+    assert settings.normalize_queue_key(model) == model
+
+
+def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    assert (
+        settings.normalize_trial_model("grok-build", "grok/v9m-rl-learnability-tp8")
+        == "xai/v9m-rl-learnability-tp8"
+    )
+    assert (
+        settings.get_queue_key_for_trial("grok-build", "grok/v9m-rl-learnability-tp8")
+        == "xai/v9m-rl-learnability-tp8"
+    )
+    assert (
+        settings.get_provider_for_trial("grok-build", "grok/v9m-rl-learnability-tp8")
+        == "xai"
+    )
+
+
+def test_grok_build_without_model_uses_xai_provider_bucket(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    assert settings.get_provider_for_trial("grok-build", None) == "xai"
+    assert settings.get_queue_key_for_trial("grok-build", None) == "xai"
 
 
 def test_bare_glm_minimax_kimi_keep_direct_provider_routes(monkeypatch):
