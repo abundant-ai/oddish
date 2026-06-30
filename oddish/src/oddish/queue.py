@@ -1137,16 +1137,6 @@ async def append_trials_to_task(
 
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
-    # Gate the appended LLM trials on this scope's baselines (the just-added
-    # ones and any that already exist), blocking/releasing/cancelling under the
-    # task lock. An append with no baselines anywhere in scope is left QUEUED.
-    await apply_baseline_gate_to_new_llm_trials(
-        session,
-        task_id=task.id,
-        task_version_id=current_version_id,
-        experiment_id=trial_experiment_id,
-        llm_trial_ids=new_llm_trial_ids,
-    )
 
     # Re-read the inserted rows as ORM objects (in index order) so callers get
     # real ``TrialModel`` instances, matching the old per-row return.
@@ -1196,6 +1186,20 @@ async def append_trials_to_task(
             ),
             {"task_id": task.id},
         )
+
+    # Gate the appended LLM trials on this scope's baselines (the just-added
+    # ones and any that already exist), blocking/releasing/cancelling under the
+    # task lock. Runs AFTER the reset-to-RUNNING + verdict-reset above so that,
+    # when the gate cancels the appended trials, its maybe_start_qa_stage call
+    # advances the (now all-terminal) task instead of being clobbered back to
+    # RUNNING. An append with no baselines anywhere in scope is left QUEUED.
+    await apply_baseline_gate_to_new_llm_trials(
+        session,
+        task_id=task.id,
+        task_version_id=current_version_id,
+        experiment_id=trial_experiment_id,
+        llm_trial_ids=new_llm_trial_ids,
+    )
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
@@ -1290,9 +1294,12 @@ async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
     A no-op when there are no BLOCKED LLM trials in this scope (the gate was
     never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
     the task row so the "last baseline wins" decision is race-safe.
+
+    Deliberately NOT guarded by ``gate_llm_on_baselines``: arming is flag-gated,
+    but *releasing* must always run so that disabling the flag while trials are
+    armed can't strand them BLOCKED forever (the dispatcher never claims BLOCKED
+    jobs). The cheap "any BLOCKED?" pre-check below keeps it off the hot path.
     """
-    if not settings.gate_llm_on_baselines:
-        return False
     trial = await session.get(TrialModel, trial_id)
     if not trial or not is_nop_oracle_agent(trial.agent):
         return False
@@ -1321,6 +1328,27 @@ async def _resolve_baseline_gate_for_scope(
     evaluates them: VALID releases the BLOCKED LLM trials to QUEUED, FAULTY
     cancels them (mirrored to FAILED).
     """
+    # Cheap, lock-free skip: if the task has no BLOCKED trial jobs at all there
+    # is nothing to resolve, so don't take the task lock. This keeps the release
+    # path off the hot path (every baseline completion, every reconcile pass)
+    # while still running regardless of the feature flag.
+    has_blocked = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            and_(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                WorkerJobModel.subject_id.in_(
+                    select(TrialModel.id).where(TrialModel.task_id == task_id)
+                ),
+            )
+        )
+        .limit(1)
+    )
+    if has_blocked is None:
+        return False
+
     locked = await session.scalar(
         select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
     )
@@ -1551,6 +1579,12 @@ async def apply_baseline_gate_to_new_llm_trials(
         task_version_id=task_version_id,
         experiment_id=experiment_id,
     )
+    # A FAULTY gate cancels the just-added LLM trials, which can make the task
+    # "all trials done". Advance it (to QA or COMPLETED) in the same request so
+    # an append/retry that gets gate-cancelled doesn't leave the task stuck in
+    # RUNNING (with its verdict reset) until the next reconcile cycle. No-op
+    # when trials are still BLOCKED/QUEUED.
+    await maybe_start_qa_stage(session, llm_trial_ids[0])
 
 
 async def maybe_advance_legacy_analyzing_task(

@@ -88,6 +88,28 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
     return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
 
 
+def nop_oracle_kind(agent: str | None) -> str | None:
+    """Classify a baseline agent as ``'oracle'`` / ``'nop'`` (else ``None``).
+
+    The kind-resolving counterpart to :func:`is_nop_oracle_agent`, using the
+    same exact-name + prefix rules so the two can't drift -- callers that need
+    to tell oracle from nop (e.g. the baseline gate) should use this rather than
+    re-deriving the classification with looser substring matching.
+    """
+    normalized = (agent or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == AgentName.ORACLE.value or normalized.startswith(
+        ("oracle-", "agent-oracle")
+    ):
+        return AgentName.ORACLE.value
+    if normalized == AgentName.NOP.value or normalized.startswith(
+        ("nop-", "agent-nop")
+    ):
+        return AgentName.NOP.value
+    return None
+
+
 # --- Configurable Harbor source ----------------------------------------------
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).

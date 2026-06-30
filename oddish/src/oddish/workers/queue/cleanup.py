@@ -509,6 +509,16 @@ async def cleanup_orphaned_queue_state(
         #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
         #     entirely when the gate is off so it never touches the hot path.
         # -----------------------------------------------------------------
+        # Only run the heavy grouped scan when something is actually BLOCKED.
+        # Runs regardless of the feature flag so a flag rollback can't strand
+        # armed trials; this cheap pre-check keeps the common (nothing-blocked)
+        # case -- including flag-off prod -- off the hot reconcile path.
+        any_blocked_trial = await session.scalar(
+            text(
+                "SELECT 1 FROM worker_jobs "
+                "WHERE kind::text = 'TRIAL' AND status::text = 'BLOCKED' LIMIT 1"
+            )
+        )
         tasks_pending_gate = (
             (
                 await session.execute(
@@ -543,7 +553,7 @@ async def cleanup_orphaned_queue_state(
                     {"nop_oracle_queue_key": NOP_ORACLE_QUEUE_KEY},
                 )
             ).all()
-            if settings.gate_llm_on_baselines
+            if any_blocked_trial
             else []
         )
 

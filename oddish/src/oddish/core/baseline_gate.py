@@ -33,6 +33,8 @@ from enum import Enum
 
 from harbor.models.agent.name import AgentName
 
+from oddish.config import nop_oracle_kind
+
 # Prefix shared by every error_message we stamp on a gated (skipped) trial, so
 # they are greppable and distinguishable from user cancellations.
 GATE_SKIP_PREFIX = "Skipped by baseline gate"
@@ -49,22 +51,6 @@ class GateOutcome(str, Enum):
     FAULTY = "faulty"
 
 
-def _baseline_kind(agent: str | None) -> str | None:
-    """Classify a baseline agent as ``'oracle'`` or ``'nop'`` (else ``None``).
-
-    Mirrors ``is_nop_oracle_agent``: matches the canonical names plus the common
-    suffixed/prefixed variants (``oracle-v2``, ``agent-nop``).
-    """
-    normalized = (agent or "").strip().lower()
-    if not normalized:
-        return None
-    if AgentName.ORACLE.value in normalized:
-        return AgentName.ORACLE.value
-    if AgentName.NOP.value in normalized:
-        return AgentName.NOP.value
-    return None
-
-
 def evaluate_baseline_gate(
     results: Iterable[tuple[str | None, float | None]],
 ) -> tuple[GateOutcome, str]:
@@ -78,7 +64,7 @@ def evaluate_baseline_gate(
         AgentName.NOP.value: [],
     }
     for agent, reward in results:
-        kind = _baseline_kind(agent)
+        kind = nop_oracle_kind(agent)
         if kind is not None:
             rewards_by_kind[kind].append(reward)
 

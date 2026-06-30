@@ -26,6 +26,7 @@ from oddish.config import settings  # noqa: E402
 from oddish.core.baseline_gate import GATE_SKIP_PREFIX  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
+    TaskStatus,
     TrialModel,
     TrialStatus,
     WorkerJobKind,
@@ -509,6 +510,13 @@ async def test_retry_of_gated_llm_trial_reports_skipped(monkeypatch, cleanup_tas
         result = await retry_trial_core(session, trial_id=kimi_id, org_id=None)
     assert result["status"] == "skipped"
 
+    # ...and the task is advanced, not left stuck RUNNING after the cancel.
+    async with get_session() as session:
+        task = (
+            await session.execute(select(TaskModel).where(TaskModel.id == task_id))
+        ).scalar_one()
+    assert task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING)
+
 
 @pytest.mark.asyncio
 async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task_ids):
@@ -541,3 +549,49 @@ async def test_qa_classification_excludes_gate_skipped(monkeypatch, cleanup_task
     # the baselines (which produced verdicts) still are.
     assert kimi_id not in live_ids
     assert live_ids  # baselines remain
+
+
+# ---------------------------------------------------------------------------
+# Re-review fixes: flag-rollback release + advance-QA after a synchronous cancel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_release_still_works_after_flag_disabled(monkeypatch, cleanup_task_ids):
+    """Disabling the flag while trials are armed must NOT strand them: the
+    release path runs whenever something is BLOCKED, regardless of the flag."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"flag-rollback-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("rollback"), task_id=task_id)
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.BLOCKED
+
+    # Operator rolls the flag back off while the kimi trial is still BLOCKED.
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", False)
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=1.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        assert await maybe_gate_llm_trials(session, baseline_id) is True
+    assert (await _job_status_by_agent(task_id))[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_agent_only_append_faulty_advances_task(monkeypatch, cleanup_task_ids):
+    """A gate-cancel on the append/retry path advances the task in the same
+    request instead of leaving it stuck RUNNING/PENDING."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"pull-advance-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _baselines_only_submission(), task_id=task_id)
+    await _set_baseline_outcomes(task_id, oracle_reward=0.0, nop_reward=0.0)  # faulty
+
+    kimi = await _append_llm_only(task_id)  # gated -> cancelled, and task advanced
+    assert await _wj_status(kimi) == WorkerJobStatus.CANCELLED
+    async with get_session() as session:
+        task = (
+            await session.execute(select(TaskModel).where(TaskModel.id == task_id))
+        ).scalar_one()
+    assert task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING)
