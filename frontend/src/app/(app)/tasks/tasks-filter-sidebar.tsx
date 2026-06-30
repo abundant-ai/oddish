@@ -818,6 +818,18 @@ function isoToLocalDateInput(iso: string): string {
   return `${y}-${m}-${d}`;
 }
 
+// Right-align the native calendar icon. `ml-auto` doesn't work because
+// ::-webkit-datetime-edit fills the input's width, leaving no free space for an
+// auto margin — so absolutely position the indicator against the right edge.
+const DATE_INPUT_CLASS = cn(
+  "relative h-8 w-full text-xs",
+  "[&::-webkit-calendar-picker-indicator]:absolute",
+  "[&::-webkit-calendar-picker-indicator]:right-2",
+  "[&::-webkit-calendar-picker-indicator]:top-1/2",
+  "[&::-webkit-calendar-picker-indicator]:-translate-y-1/2",
+  "[&::-webkit-calendar-picker-indicator]:cursor-pointer"
+);
+
 function DateRange({
   values,
   set,
@@ -892,7 +904,7 @@ function DateRange({
             </label>
             <Input
               type="date"
-              className="h-8 w-full text-xs [&::-webkit-calendar-picker-indicator]:ml-auto"
+              className={DATE_INPUT_CLASS}
               value={
                 values.createdAfter
                   ? isoToLocalDateInput(values.createdAfter)
@@ -913,7 +925,7 @@ function DateRange({
             </label>
             <Input
               type="date"
-              className="h-8 w-full text-xs [&::-webkit-calendar-picker-indicator]:ml-auto"
+              className={DATE_INPUT_CLASS}
               value={
                 values.createdBefore
                   ? isoToLocalDateInput(values.createdBefore)
