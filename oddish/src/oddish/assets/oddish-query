@@ -157,16 +157,21 @@ function copyTree(srcRel, into, label) {
 }
 function cmdHarborSrc(a) { copyTree('harbor_src', a.into, 'harbor'); }
 
-function cmdVerify() {
-  requireStage();
-  const sh = stagePath('test.sh');
-  if (!fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
-  const r = spawnSync('bash', [sh], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
-  let reward = null, metrics = null;
-  try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
-  try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
-  const tail = ((r.stdout || '') + (r.stderr || '')).slice(-LOG_TAIL);
-  out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
+async function cmdVerify() {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-verify-'));
+  try {
+    const n = await materializeFiles('', work);
+    const sh = path.join(work, 'test.sh');
+    if (!n || !fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
+    const r = spawnSync('bash', [sh], { cwd: work, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    let reward = null, metrics = null;
+    try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
+    try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
+    const tail = ((r.stdout || '') + (r.stderr || '')).slice(-LOG_TAIL);
+    out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
 }
 
 async function cmdVerifierSource() {
@@ -208,7 +213,7 @@ async function main() {
   if (group === 'verifier' && cmd === 'source') return await cmdVerifierSource();
   if (group === 'solution' && cmd === 'fetch') return await cmdSolutionFetch({ into: opt.into });
   if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
-  if (group === 'verify' && cmd === 'run') return cmdVerify();
+  if (group === 'verify' && cmd === 'run') return await cmdVerify();
   die(`unknown command: ${group} ${cmd}`, 2);
 }
 main();
