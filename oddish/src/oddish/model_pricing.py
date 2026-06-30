@@ -38,6 +38,7 @@ class ModelPricing:
     input: float
     output: float
     cache_read: float | None = None
+    cache_write: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +58,10 @@ class ModelPricing:
 # ---------------------------------------------------------------------------
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     # Anthropic legacy / bare variants not in litellm.
-    ("claude-haiku-4", ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7)),
-    ("claude-3-7-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7)),
-    ("claude-3.5-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7)),
-    ("claude-3.5-haiku", ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8)),
+    ("claude-haiku-4", ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7, cache_write=1.25e-6)),
+    ("claude-3-7-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
+    ("claude-3.5-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
+    ("claude-3.5-haiku", ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8, cache_write=1e-6)),
     # Google — bare Gemini 3.x names.  Litellm only registers these under
     # the ``gemini-3-pro-preview`` / ``vertex_ai/*`` keys; harbor trajectory
     # data often records the short form.
@@ -185,11 +186,13 @@ def _pricing_from_litellm_info(info: dict[str, Any]) -> ModelPricing | None:
     output_cost = info.get("output_cost_per_token")
     if input_cost is None or output_cost is None:
         return None
-    cache_cost = info.get("cache_read_input_token_cost")
+    cache_read_cost = info.get("cache_read_input_token_cost")
+    cache_write_cost = info.get("cache_creation_input_token_cost")
     return ModelPricing(
         input=float(input_cost),
         output=float(output_cost),
-        cache_read=float(cache_cost) if cache_cost is not None else None,
+        cache_read=float(cache_read_cost) if cache_read_cost is not None else None,
+        cache_write=float(cache_write_cost) if cache_write_cost is not None else None,
     )
 
 
@@ -255,19 +258,23 @@ def estimate_cost_usd(
     input_tokens: int | None,
     output_tokens: int | None,
     cached_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
 ) -> float | None:
     """Estimate USD cost from token counts and a model name.
 
     ``cached_tokens`` is the subset of ``input_tokens`` that were served from
-    prompt cache; those tokens are billed at ``cache_read`` instead of the
-    full input rate.  Returns ``None`` when the model is not in either
-    pricing source or there are no tokens to price.
+    prompt cache; billed at ``cache_read`` instead of the full input rate.
+    ``cache_write_tokens`` are tokens written to prompt cache (cache creation);
+    billed at ``cache_write`` rate (defaults to 1.25× input when not set).
+    Returns ``None`` when the model is not in either pricing source or there
+    are no tokens to price.
     """
     if not model_name:
         return None
     input_total = int(input_tokens or 0)
     output_total = int(output_tokens or 0)
-    if input_total == 0 and output_total == 0:
+    cache_write = int(cache_write_tokens or 0)
+    if input_total == 0 and output_total == 0 and cache_write == 0:
         return None
     pricing = _find_pricing(model_name)
     if pricing is None:
@@ -275,10 +282,12 @@ def estimate_cost_usd(
 
     cached = int(cached_tokens or 0)
     uncached_input = max(0, input_total - cached)
-    cache_rate = pricing.cache_read if pricing.cache_read is not None else pricing.input
+    cache_read_rate = pricing.cache_read if pricing.cache_read is not None else pricing.input
+    cache_write_rate = pricing.cache_write if pricing.cache_write is not None else pricing.input * 1.25
 
     return (
         uncached_input * pricing.input
-        + cached * cache_rate
+        + cached * cache_read_rate
+        + cache_write * cache_write_rate
         + output_total * pricing.output
     )

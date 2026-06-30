@@ -80,6 +80,7 @@ def _resolve_trial_cost(
         trial.input_tokens,
         trial.output_tokens,
         trial.cache_tokens,
+        trial.cache_write_tokens,
     )
     if estimated is None:
         return None, None

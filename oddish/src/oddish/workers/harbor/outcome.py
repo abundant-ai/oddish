@@ -29,6 +29,7 @@ class HarborOutcome:
     # Token usage, steps & cost (from Harbor's AgentContext / ATIF final_metrics)
     input_tokens: int | None = None
     cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
     cost_usd: float | None = None
@@ -85,12 +86,57 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+_CACHE_WRITE_KEYS = (
+    "cache_creation_input_tokens",
+    "input_cache_creation",
+    "cacheWriteTokens",
+    "cache_write_tokens",
+)
+
+
+def _sum_cache_write_from_steps(steps: list) -> int | None:
+    """Sum cache-write tokens across trajectory steps from metrics.extra."""
+    total = 0
+    found = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        metrics = step.get("metrics") or {}
+        extra = metrics.get("extra") or {} if isinstance(metrics, dict) else {}
+        if not isinstance(extra, dict):
+            continue
+        for key in _CACHE_WRITE_KEYS:
+            val = extra.get(key)
+            if val is not None:
+                n = _as_int(val)
+                if n is not None:
+                    total += n
+                    found = True
+                break
+    return total if found else None
+
+
+def _cache_write_from_final_metrics(fm: dict) -> int | None:
+    """Read cache-write tokens from final_metrics.extra."""
+    extra = fm.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    for key in _CACHE_WRITE_KEYS:
+        val = extra.get(key)
+        if val is not None:
+            return _as_int(val)
+    return None
+
+
 def _extract_metrics_from_trajectory(
     job_dir: Path,
-) -> tuple[int | None, int | None, int | None, int | None, float | None]:
-    """Fallback: read token/step/cost metrics from ATIF trajectory data."""
+) -> tuple[int | None, int | None, int | None, int | None, float | None, int | None]:
+    """Fallback: read token/step/cost metrics from ATIF trajectory data.
+
+    Returns (input, output, cache_read, total_steps, cost_usd, cache_write).
+    """
     if not job_dir or not job_dir.exists():
-        return None, None, None, None, None
+        return None, None, None, None, None, None
     for traj_path in job_dir.rglob("trajectory.json"):
         try:
             data = json.loads(traj_path.read_text())
@@ -101,16 +147,22 @@ def _extract_metrics_from_trajectory(
             total_steps = _as_int(fm.get("total_steps")) if isinstance(fm, dict) else None
             if total_steps is None and isinstance(steps, list):
                 total_steps = len(steps)
+            cache_write: int | None = None
+            if isinstance(steps, list):
+                cache_write = _sum_cache_write_from_steps(steps)
+            if cache_write is None and isinstance(fm, dict):
+                cache_write = _cache_write_from_final_metrics(fm)
             return (
                 fm.get("total_prompt_tokens") if isinstance(fm, dict) else None,
                 fm.get("total_completion_tokens") if isinstance(fm, dict) else None,
                 fm.get("total_cached_tokens") if isinstance(fm, dict) else None,
                 total_steps,
                 fm.get("total_cost_usd") if isinstance(fm, dict) else None,
+                cache_write,
             )
         except Exception:
             continue
-    return None, None, None, None, None
+    return None, None, None, None, None, None
 
 
 def _extract_outcome_from_job_result(
@@ -135,6 +187,7 @@ def _extract_outcome_from_job_result(
 
     input_tokens: int | None = None
     cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
     cost_usd: float | None = None
@@ -150,15 +203,17 @@ def _extract_outcome_from_job_result(
             break
 
     if input_tokens is None and output_tokens is None:
-        t_in, t_out, t_cache, t_steps, t_cost = _extract_metrics_from_trajectory(job_dir)
+        t_in, t_out, t_cache, t_steps, t_cost, t_cache_write = _extract_metrics_from_trajectory(job_dir)
         input_tokens = t_in
         output_tokens = t_out
         cache_tokens = t_cache
+        cache_write_tokens = t_cache_write
         total_steps = t_steps
         if cost_usd is None:
             cost_usd = t_cost
     else:
-        _, _, _, total_steps, t_cost = _extract_metrics_from_trajectory(job_dir)
+        _, _, _, total_steps, t_cost, t_cache_write = _extract_metrics_from_trajectory(job_dir)
+        cache_write_tokens = t_cache_write
         if cost_usd is None:
             cost_usd = t_cost
 
@@ -179,6 +234,7 @@ def _extract_outcome_from_job_result(
             job_dir=job_dir,
             input_tokens=input_tokens,
             cache_tokens=cache_tokens,
+            cache_write_tokens=cache_write_tokens,
             output_tokens=output_tokens,
             total_steps=total_steps,
             cost_usd=cost_usd,
