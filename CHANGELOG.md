@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-06-30]
+
+### Added
+
+- `oddish-query` CLI gains five probe-only commands: `solution cat`, `solution fetch`, `verifier source`, `harbor src`, and `verify run`; probe-only assets are now staged to a root-owned hidden directory (`/opt/oddish-probe`, via `ODDISH_PROBE_STAGE_DIR`) off the agent's browsable tree so the agent can't passively stumble on verifier/solution content; every command output is wrapped in a `PROBE-ONLY` boundary banner (carried in a `note` field for `verify run`'s JSON) so the boundary travels with the data through subagents; both local and cloud runners updated for identical container layout (#504)
+- CI guard (`oddish/scripts/load_only_guard.py`) that statically diffs columns **read** on the compact `/tasks` response-builder path against columns declared in `load_only(...)` sets in `list_tasks_core`, failing the build on any gap; prevents the `MissingGreenlet` class of 500 from shipping silently; triggered on PRs touching `oddish/src/oddish/**` (#495)
+
+### Changed
+
+- Probe details now open in a sliding `ResizableDrawer` panel from both the experiment trials matrix and the task probe-history table instead of navigating to a full page; a new shared `ProbeDetailPanel` component handles self-fetching, SWR polling, on-demand artifact loading, prev/next navigation across a task's probes, and agent-process keyword filtering; the standalone `/tasks/[id]/probe/[trial_id]` URL continues to render a full page via `ProbeDetailPanel` in `contentOnly` mode so deep links are preserved (#505, #508)
+- Task Analysis card on the task page now shows the **latest run of each distinct probe type** as a separate labeled section (probe-type header with `agent · model` sub-line) instead of collapsing all probe runs for a version to a single newest trial; polling continues while any per-type latest run is still in-flight (#512)
+- Reverted experiment grid to use `GET /tasks?include_trials=true` instead of the short-lived `slim-tasks` endpoint; removes the dedicated `GET /experiments/{id}/slim-tasks` backend route, `GET /trials/{trial_id}` single-trial detail route, and associated Next.js proxies; also reverts the Usage page Cost tab, `CostingPanel` SSR component, cost CSV export, and the `series_top_n` admin costs parameter (#507)
+
+### Security
+
+- Probe trials are no longer returned by any public unauthenticated endpoint; `get_public_task` strips `is_probe` trials before returning the task, `list_public_experiment_tasks` excludes probes when scoping each task's trials (and now filters unconditionally regardless of experiment-id resolution), and `list_public_task_trials` always passes `probe=False` with the public `probe` query parameter removed — probe data never reaches the browser regardless of UI guards (#513)
+
+---
+
 ## [2026-06-29]
 
 ### Added
