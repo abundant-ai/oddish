@@ -639,9 +639,11 @@ async def run_probe_analyzer(
         "The solving agent's container is `/app`; it sees ONLY `/app` plus its "
         "prompt. ALL probe-only material — the verifier and its hidden tests, the "
         "reference solution, oracle fixtures, the raw build context, prior trial "
-        "logs, and harbor's own source — is staged separately under "
-        "`/probe-harness/` (older runs surfaced it at `/app/tests` or "
-        "`/app/solution`). A real run NEVER ships any of it. When forming "
+        "logs, and harbor's own source — is staged outside `/app`: under "
+        "`/probe-harness/` and the hidden stage `/opt/oddish-probe/` (older runs "
+        "surfaced it at `/app/tests` or `/app/solution`). The probe may also "
+        "snapshot the workspace to `/tmp/app-baseline/`. A real run NEVER ships "
+        "any of it. When forming "
         "`recommendations` and answering `result_focus_findings`:\n"
         "- Do NOT emit a fix premised on the agent reading, modifying, or "
         "extracting an answer from probe-only material. The real agent cannot "
@@ -811,6 +813,7 @@ def _normalize_probe_summary(parsed: dict, *, result_focus: str, model: str) -> 
         )
 
     allowed_priorities = {"must_fix", "should_fix", "optional"}
+    cheat_succeeded = parsed.get("cheating_succeeded") is True
     recommendations: list[dict] = []
     for entry in parsed.get("recommendations") or []:
         if not isinstance(entry, dict):
@@ -819,11 +822,18 @@ def _normalize_probe_summary(parsed: dict, *, result_focus: str, model: str) -> 
         if not action:
             continue
         priority = str(entry.get("priority", "")).strip().lower()
+        if priority not in allowed_priorities:
+            priority = "should_fix"
+        # Backstop: a must_fix asserts a hole that is exploitable NOW. Only a cheat
+        # that actually SUCCEEDED clears that bar; otherwise the analyzer is
+        # upgrading a blocked, hypothetical, or probe-only observation (e.g. a
+        # "cheat" built from material reachable only via the probe stage). Cap it at
+        # should_fix so a non-succeeding run can't surface a must-fix action item.
+        if priority == "must_fix" and not cheat_succeeded:
+            priority = "should_fix"
         recommendations.append(
             {
-                "priority": (
-                    priority if priority in allowed_priorities else "should_fix"
-                ),
+                "priority": priority,
                 "action": action,
                 "rationale": str(entry.get("rationale", "")).strip(),
             }
