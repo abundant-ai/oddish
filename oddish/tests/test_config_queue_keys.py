@@ -7,7 +7,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.config import NOP_ORACLE_QUEUE_KEY, Settings, normalize_model_id  # noqa: E402
+from oddish.config import (
+    NOP_ORACLE_QUEUE_KEY,
+    Settings,
+    normalize_model_id,
+)  # noqa: E402
 
 
 def _settings(monkeypatch, *, clear_openai_env: bool = True, **kwargs) -> Settings:
