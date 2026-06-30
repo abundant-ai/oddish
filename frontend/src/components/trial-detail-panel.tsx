@@ -274,7 +274,7 @@ function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
     </>
   );
   const className =
-    "border-border bg-muted/50 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
+    "border-border bg-muted/50 ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border px-1 py-0.5";
 
   if (backend.href) {
     return (
