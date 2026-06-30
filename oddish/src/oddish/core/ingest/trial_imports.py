@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import (
+    TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH,
     ExperimentModel,
     TaskModel,
     TaskStatus,
@@ -135,6 +136,32 @@ def _next_trial_index(existing_trial_ids: list[str], task_id: str) -> int:
         if suffix.isdigit():
             max_index = max(max_index, int(suffix))
     return max_index + 1 if max_index >= 0 else len(existing_trial_ids)
+
+
+def _import_idempotency_key(external_trial_id: str | None, experiment_id: str) -> str:
+    """Build the ``trials.idempotency_key`` for an imported trial.
+
+    When the client supplies a stable external ID, scope it by the target
+    experiment so an accidental re-import into the *same* experiment collides
+    on the unique index, while the same source trial can still be merged into a
+    *different* experiment as a separate row.
+
+    Falls back to a unique, non-idempotent ``import-{uuid}`` key when there's no
+    external ID -- or when the composed key would overflow the column. Long
+    Harbor task names make the derived
+    ``import:{source_trial_id}:{experiment_id}`` value long (the source trial id
+    alone can approach the widened trial-id length), and Postgres *rejects* an
+    over-length value rather than truncating it, which previously surfaced as an
+    opaque 500 on insert for any task whose name pushed the key past the column.
+    The widened column covers every realistic id, so this guard only trips for
+    pathologically long external ids -- trading idempotency for a successful
+    insert in that corner case.
+    """
+    if external_trial_id:
+        key = f"import:{external_trial_id}:{experiment_id}"
+        if len(key) <= TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH:
+            return key
+    return f"import-{uuid.uuid4()}"
 
 
 def _parse_datetime(value: datetime | None) -> datetime | None:
@@ -233,15 +260,9 @@ async def initialize_trial_import(
         started_at = _parse_datetime(trial_spec.started_at) or now
         finished_at = _parse_datetime(trial_spec.finished_at) or now
 
-        # When the client supplies a stable external ID, scope it by
-        # the target experiment so an accidental re-import into the
-        # *same* experiment collides on the unique index, but the same
-        # source trial can still be merged into a *different*
-        # experiment as a separate row.
-        if trial_spec.external_trial_id:
-            idempotency_key = f"import:{trial_spec.external_trial_id}:{experiment.id}"
-        else:
-            idempotency_key = f"import-{uuid.uuid4()}"
+        idempotency_key = _import_idempotency_key(
+            trial_spec.external_trial_id, experiment.id
+        )
 
         trial_row = TrialModel(
             id=trial_id,

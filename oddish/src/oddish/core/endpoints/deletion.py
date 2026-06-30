@@ -12,6 +12,7 @@ from oddish.core.endpoints._common import (
     _reset_task_verdict,
 )
 from oddish.db import (
+    TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH,
     AnalysisStatus,
     ExperimentModel,
     TaskModel,
@@ -689,7 +690,7 @@ async def combine_experiments_core(
             new_harbor_result_path = source.harbor_result_path
 
         idempotency_key = f"combine:{result.id}:{source.id}"
-        if len(idempotency_key) > 64:
+        if len(idempotency_key) > TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH:
             idempotency_key = None
 
         # The copy belongs to the result experiment, so it inherits that

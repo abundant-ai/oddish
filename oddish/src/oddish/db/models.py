@@ -71,6 +71,17 @@ def generate_id() -> str:
     return str(uuid4())[:8]
 
 
+# Width of ``trials.idempotency_key``. Several call sites build the key by
+# composing other ids (e.g. ``import:{source_trial_id}:{experiment_id}`` in
+# trial imports, ``combine:{experiment_id}:{source_trial_id}`` in combine), and
+# those ids were widened over time (see migration ``long_task_ids_001``). Keep
+# this comfortably larger than the longest composed key so a long Harbor task
+# name can't push the value past the column and 500 the insert. Producers that
+# could still exceed it must guard against overflow rather than rely on the DB
+# truncating (Postgres rejects, it doesn't truncate).
+TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH = 255
+
+
 # =============================================================================
 # Enums
 # =============================================================================
@@ -697,9 +708,11 @@ class TrialModel(TimestampedMixin, Base):
     # -------------------------------------------------------------------------
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
-    # Idempotency key for preventing duplicate processing of retried jobs
+    # Idempotency key for preventing duplicate processing of retried jobs.
+    # Sized via ``TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH`` because import/combine keys
+    # are composed from (long) task-derived ids; see that constant's comment.
     idempotency_key: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
+        String(TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH), unique=True, nullable=True, index=True
     )
 
     # Trial spec

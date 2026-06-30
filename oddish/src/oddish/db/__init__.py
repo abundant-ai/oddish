@@ -40,6 +40,8 @@ from oddish.db.models import (
     TrialModel,
     WorkerJobModel,
     task_experiments,
+    # Constants
+    TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH,
     # Helpers
     generate_id,
     utcnow,
@@ -117,6 +119,8 @@ __all__ = [
     "TrialModel",
     "WorkerJobModel",
     "task_experiments",
+    # Constants
+    "TRIAL_IDEMPOTENCY_KEY_MAX_LENGTH",
     # Helpers
     "generate_id",
     "utcnow",
