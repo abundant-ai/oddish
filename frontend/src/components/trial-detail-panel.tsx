@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import {
   ResizableDrawer,
@@ -190,17 +191,98 @@ function hasLiveQueueSnapshot(trial: Trial): boolean {
   return ["queued", "retrying", "running", "pending"].includes(trial.status);
 }
 
-function getDaytonaSandboxUrl(trial: Trial): string | null {
-  const sandboxJob = trial.jobs?.find(
-    (job) =>
-      job.provider?.toLowerCase() === "daytona" &&
-      typeof job.external_id === "string" &&
-      job.external_id.length > 0,
+type SandboxBackendId = "daytona" | "modal";
+
+type SandboxBackend = {
+  id: SandboxBackendId;
+  label: string;
+  logoSrc: string;
+  href?: string;
+};
+
+const SANDBOX_BACKENDS: Record<
+  SandboxBackendId,
+  Omit<SandboxBackend, "href">
+> = {
+  daytona: {
+    id: "daytona",
+    label: "Daytona",
+    logoSrc: "/daytona-glyph.svg",
+  },
+  modal: {
+    id: "modal",
+    label: "Modal",
+    logoSrc: "/modal-logo-icon.png",
+  },
+};
+
+function normalizeSandboxBackend(
+  provider: string | null | undefined,
+): SandboxBackendId | null {
+  const normalized = provider?.trim().toLowerCase();
+  if (normalized === "daytona" || normalized === "modal") {
+    return normalized;
+  }
+  return null;
+}
+
+function getSandboxBackend(trial: Trial): SandboxBackend | null {
+  const sandboxJob = trial.jobs?.find((job) =>
+    Boolean(normalizeSandboxBackend(job.provider)),
   );
-  if (!sandboxJob?.external_id) return null;
-  return `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
-    sandboxJob.external_id,
-  )}`;
+  const backendId = normalizeSandboxBackend(sandboxJob?.provider);
+  if (!backendId) return null;
+
+  const backend = SANDBOX_BACKENDS[backendId];
+  if (backendId === "daytona" && sandboxJob?.external_id) {
+    return {
+      ...backend,
+      href: `https://app.daytona.io/dashboard/sandboxes?sandboxId=${encodeURIComponent(
+        sandboxJob.external_id,
+      )}`,
+    };
+  }
+
+  return backend;
+}
+
+function SandboxBackendBadge({ backend }: { backend: SandboxBackend }) {
+  const content = (
+    <>
+      <span className="inline-flex size-4 items-center justify-center rounded-sm bg-white">
+        <Image
+          src={backend.logoSrc}
+          alt={`${backend.label} logo`}
+          width={13}
+          height={13}
+          className="size-3 object-contain"
+        />
+      </span>
+      <span>{backend.label}</span>
+    </>
+  );
+  const className =
+    "border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 font-sans text-[10px] font-semibold tracking-wide uppercase";
+
+  if (backend.href) {
+    return (
+      <a
+        href={backend.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className}
+        title={`Open ${backend.label} sandbox`}
+      >
+        {content}
+      </a>
+    );
+  }
+
+  return (
+    <span className={className} title={`${backend.label} sandbox`}>
+      {content}
+    </span>
+  );
 }
 
 /**
@@ -453,7 +535,9 @@ export function TrialDetailPanel({
   const TrialStatusIcon = trialStatusConfig.icon;
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
-  const daytonaSandboxUrl = getDaytonaSandboxUrl(trial);
+  const sandboxBackend = getSandboxBackend(trial);
+  const daytonaSandboxUrl =
+    sandboxBackend?.id === "daytona" ? (sandboxBackend.href ?? null) : null;
 
   const resolvedGroups =
     trialGroups && trialGroups.length > 0
@@ -489,6 +573,7 @@ export function TrialDetailPanel({
       <DrawerHeader className="border-border border-b px-4 py-3 sm:px-6 sm:py-4">
         <DrawerTitle className="flex min-w-0 items-center gap-2 pr-8 font-mono text-sm sm:text-base">
           <span className="min-w-0 truncate">{trial.name}</span>
+          {sandboxBackend && <SandboxBackendBadge backend={sandboxBackend} />}
           {showAnalysis && trial.task_version != null && (
             <span className="border-border bg-muted/50 text-muted-foreground inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] font-medium">
               v{trial.task_version}
