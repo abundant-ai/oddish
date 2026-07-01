@@ -56,6 +56,7 @@ async def maybe_enqueue_auto_probe(
     task: TaskModel,
     experiment: ExperimentModel | None,
     org_id: str | None,
+    billed_user_id: str | None = None,
 ) -> None:
     """Enqueue one probe trial for ``task``'s current version, if not already
     probed. Best-effort: any failure is logged and swallowed so a probe problem
@@ -107,6 +108,7 @@ async def maybe_enqueue_auto_probe(
             task=task,
             submission=expanded,
             experiment_id=submission.experiment_id,
+            billed_user_id=billed_user_id,
         )
 
         from oddish.config import settings

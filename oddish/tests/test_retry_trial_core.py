@@ -31,6 +31,7 @@ class _RecordingTrial:
         self.task_version_id = "task-1-v1"
         self.experiment_id = "exp-1"
         self.org_id = "org-1"
+        self.billed_user_id = None
         self.agent = "codex"
         self.provider = "openai"
         self.queue_key = "openai/gpt-5"

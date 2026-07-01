@@ -33,6 +33,7 @@ def _billable_trial(**overrides):
         task_version_id="task-1-v1",
         experiment_id="exp-1",
         org_id="org-1",
+        billed_user_id=None,
         agent="codex",
         model="gpt-5",
         provider="openai",
