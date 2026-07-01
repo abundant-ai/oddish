@@ -10,10 +10,13 @@ terminal rows, never re-runs a trial). Order per the design:
      bucket -- a legacy prefix there would 404). Artifacts stay in the Sauron
      bucket; rendering them is a follow-up (copy or legacy-bucket read path).
 
-  Name collisions: a same-name pre-existing task with run_analysis=TRUE is never
-  merged into (ledger rows marked status='conflict', skipped, for manual review --
-  importing into it would enqueue QA). A same-name task with run_analysis=FALSE
-  is safe and gets the legacy trials attached (merge).
+  Name collisions: legacy trials MERGE into any same-name pre-existing task,
+  exactly as the stock importer behaves. If that task has run_analysis=TRUE the
+  imported trials join its task-level analysis pass -- that is accepted and
+  intended (user ruling: only trial RE-EXECUTION is forbidden, and imported
+  rows are terminal/queue-skipping, so re-execution is impossible regardless).
+  Newly created legacy tasks use the schema default run_analysis=False (no one
+  has asked for analysis on them; flip the flag later to opt in).
 
 Everything lands in org 8ebde5d0 ("Abundant") with heavy provenance (source tag,
 legacy_s3_prefix anchor, run/pr/base) so cross-org duplicates can be reconciled
@@ -104,6 +107,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     import yaml
     from sqlalchemy import select, text
 
+    import oddish.queue as _oq
     from oddish.config import settings
     from oddish.core.ingest.trial_imports import initialize_trial_import
     from oddish.db import get_session
@@ -111,6 +115,35 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         ExperimentModel, TaskModel, TaskVersionModel, TrialModel,
     )
     from oddish.schemas import ImportedTrialSpec
+
+    # ------------------------------------------------------------------
+    # Suppress QA enqueue for THIS import process only (lead ruling: no
+    # analysis cost from the migration). The importer resolves
+    # maybe_start_qa_stage from oddish.queue at call time, so patching the
+    # module attribute here affects only this Modal process -- deployed prod
+    # code is untouched. We cannot simply no-op it: the same function is what
+    # transitions task status (RUNNING -> COMPLETED) once trials settle, so a
+    # no-op would strand merged tasks in RUNNING. Instead, run the REAL
+    # function with the task's run_analysis flag held False for the duration
+    # of the call (same session, restored before commit -> no visible flag
+    # change in the DB). Effect: correct status transitions, zero QA jobs,
+    # existing verdicts untouched. Migrated trials are additionally excluded
+    # from any future QA pass by the imported_at filter in qa_handler.
+    # ------------------------------------------------------------------
+    _orig_qa_stage = _oq.maybe_start_qa_stage
+
+    async def _qa_stage_without_enqueue(session, trial_id):
+        trial = await session.get(TrialModel, trial_id)
+        task = await session.get(TaskModel, trial.task_id) if trial else None
+        if task is not None and task.run_analysis:
+            task.run_analysis = False
+            try:
+                return await _orig_qa_stage(session, trial_id)
+            finally:
+                task.run_analysis = True
+        return await _orig_qa_stage(session, trial_id)
+
+    _oq.maybe_start_qa_stage = _qa_stage_without_enqueue
 
     now = lambda: datetime.now(timezone.utc)  # noqa: E731
     gen_id = lambda: str(uuid4())[:8]         # noqa: E731
@@ -244,7 +277,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 
         # ---- 3. per-task: create task + experiments, then import its trials --
         created = {"tasks": 0, "experiments": 0, "trials": 0, "skipped": 0,
-                   "errors": 0, "conflicts": 0}
+                   "errors": 0}
         rows.sort(key=lambda r: r["task_id"])
         for task_id, group in groupby(rows, key=lambda r: r["task_id"]):
             grp = list(group)
@@ -254,27 +287,6 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 task = (await sess.execute(
                     select(TaskModel).where(TaskModel.org_id == ORG_ID, TaskModel.name == task_id)
                 )).scalar_one_or_none()
-                if task is not None and task.run_analysis:
-                    # Name collides with a pre-existing task whose
-                    # run_analysis=TRUE: importing into it would enqueue QA jobs
-                    # (maybe_start_qa_stage), and the flag isn't ours to mutate.
-                    # Mark every ledger row for this task as a conflict and skip;
-                    # expected to be extremely rare -- review manually via
-                    # SELECT * FROM leg_trial_ledger WHERE status='conflict'.
-                    # A same-name task with run_analysis=FALSE is safe to merge
-                    # into (attaching trials to an analysis-off task enqueues
-                    # nothing), so it falls through to reuse below.
-                    for r in grp:
-                        await sess.execute(text(
-                            "UPDATE leg_trial_ledger SET status='conflict', "
-                            "error=:e WHERE s3_prefix=:p"),
-                            {"e": f"name collision with run_analysis=true task: tasks.id={task.id}",
-                             "p": r["s3_prefix"]})
-                    await sess.commit()
-                    created["conflicts"] += len(grp)
-                    print(f"  CONFLICT task={task_id!r} collides with run_analysis=true "
-                          f"tasks.id={task.id}; skipped {len(grp)} trials")
-                    continue
                 if task is None:
                     tid = gen_id()
                     legacy_task_path = f"s3://{DEFAULT_BUCKET}/{grp[0]['s3_prefix']}task"
@@ -388,9 +400,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     print("=" * 60)
     print(f"DONE  tasks+={created['tasks']} experiments+={created['experiments']} "
           f"trials+={created['trials']} skipped={created['skipped']} "
-          f"errors={created['errors']} conflicts={created['conflicts']}")
-    if created["conflicts"]:
-        print("review conflicts: SELECT * FROM leg_trial_ledger WHERE status='conflict';")
+          f"errors={created['errors']}")
 
 
 @app.local_entrypoint()

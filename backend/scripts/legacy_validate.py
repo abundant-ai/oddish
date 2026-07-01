@@ -195,18 +195,27 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
             check(f"{label} experiment renders (list_tasks_core 200)", False, f"exc={e!r}")
 
     # ---------------------------------------------------------------- Layer 5
-    print("\n== Layer 5: no side effects (analysis/QA never triggered) ==")
-    # worker_jobs references its subject via (subject_table, subject_id) --
-    # QA/verdict jobs are task-scoped, per-trial jobs are trial-scoped, so
-    # check both against everything this migration created.
-    jobs = await conn.fetchval(
+    print("\n== Layer 5: no re-execution (the ONE hard rule) ==")
+    # The only forbidden side effect is a trial EXECUTION job (kind='TRIAL')
+    # for an imported trial. Analysis/QA/verdict jobs are ALLOWED and expected
+    # when imports merge into run_analysis=true tasks (stock importer behavior).
+    # worker_jobs references its subject via (subject_table, subject_id).
+    exec_jobs = await conn.fetchval(
         f"""SELECT count(*) FROM worker_jobs w
-            WHERE (w.subject_table = 'trials' AND w.subject_id IN
-                     (SELECT id FROM trials WHERE {where}))
-               OR (w.subject_table = 'tasks' AND w.subject_id IN
-                     (SELECT id FROM tasks WHERE imported_at IS NOT NULL))""",
+            WHERE w.kind = 'TRIAL'
+              AND w.subject_table = 'trials'
+              AND w.subject_id IN (SELECT id FROM trials WHERE {where})""",
         *args)
-    check("no worker_jobs enqueued for imported trials/tasks", jobs == 0, f"jobs={jobs}")
+    check("no EXECUTION jobs for imported trials", exec_jobs == 0, f"exec_jobs={exec_jobs}")
+    qa_jobs = await conn.fetchval(
+        f"""SELECT count(*) FROM worker_jobs w
+            WHERE w.kind <> 'TRIAL'
+              AND ((w.subject_table = 'trials' AND w.subject_id IN
+                      (SELECT id FROM trials WHERE {where}))
+                OR (w.subject_table = 'tasks' AND w.subject_id IN
+                      (SELECT id FROM tasks WHERE imported_at IS NOT NULL)))""",
+        *args)
+    info("analysis/QA/verdict jobs touching imports (allowed)", f"count={qa_jobs}")
 
     await conn.close()
 

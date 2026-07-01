@@ -113,7 +113,15 @@ def _classifications_from_trials(trials) -> list:
 async def _load_live_trials_for_classification(
     task_id: str,
 ) -> list[tuple[str, AnalysisStatus | None]]:
-    """Return live trial IDs and QA states."""
+    """Return live trial IDs and QA states.
+
+    Trials created by the Sauron->Oddish bulk migration (``imported_at IS NOT
+    NULL``) are excluded: classifying ~1M historical trials was ruled out on
+    cost. This deliberately diverges from small ad-hoc ``oddish import`` rows
+    (``origin='imported'`` but ``imported_at IS NULL``), which keep the stock
+    join-the-QA-job behavior. Migrated trials can still be analyzed manually
+    via backfill_analysis.py.
+    """
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -123,6 +131,7 @@ async def _load_live_trials_for_classification(
                 ).where(
                     TrialModel.task_id == task_id,
                     TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.imported_at.is_(None),
                 )
             )
         ).all()
