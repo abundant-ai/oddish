@@ -71,6 +71,52 @@ def _get_cors_origins() -> list[str]:
 
 
 @asynccontextmanager
+async def _assert_quota_schema_or_force_off() -> None:
+    """When enforcement is on, verify ``trials.billed_user_id`` + its partial
+    index exist, or the usage SUM silently reads 0 for everyone (fail-open).
+
+    Best-effort to honour the no-startup-DB-handshake design: a transient DB
+    error is skipped, but a definitively-missing schema forces ``quota_mode=off``
+    (fail-safe) with a loud error rather than enforcing against a SUM that can't
+    see any spend.
+    """
+    from sqlalchemy import text
+
+    from oddish.config import QuotaMode
+    from oddish.db import get_session
+
+    if settings.quota_mode == QuotaMode.OFF:
+        return
+    try:
+        async with get_session() as session:
+            column_exists = await session.scalar(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = 'trials' AND column_name = 'billed_user_id'"
+                )
+            )
+            index_exists = await session.scalar(
+                text(
+                    "SELECT 1 FROM pg_indexes WHERE tablename = 'trials' "
+                    "AND indexname = 'idx_trials_org_billed_user_finished'"
+                )
+            )
+    except Exception:
+        logger.warning(
+            "quota schema check skipped (DB unavailable at startup); "
+            "quota_mode=%s left as-is",
+            settings.quota_mode,
+        )
+        return
+    if not (column_exists and index_exists):
+        logger.error(
+            "quota_mode=%s but trials.billed_user_id column/index is missing; "
+            "forcing quota_mode=off to avoid a silent fail-open of the usage SUM",
+            settings.quota_mode,
+        )
+        settings.quota_mode = QuotaMode.OFF
+
+
 async def lifespan(_api: FastAPI):
     """Prepare lightweight API container resources.
 
@@ -85,6 +131,7 @@ async def lifespan(_api: FastAPI):
     """
     with _otel_span("app.startup"):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
+        await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
         # cc_chat orchestrator (chat feature). Guarded: if Daytona/Anthropic
@@ -200,6 +247,18 @@ def create_app() -> FastAPI:
         if combined:
             response.headers["Server-Timing"] = combined
         return response
+
+    from fastapi.responses import JSONResponse
+
+    from oddish.core.quota_admission import QuotaExceeded, Unattributed
+
+    @api.exception_handler(QuotaExceeded)
+    async def _quota_exceeded_handler(request: Request, exc: QuotaExceeded):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+
+    @api.exception_handler(Unattributed)
+    async def _unattributed_handler(request: Request, exc: Unattributed):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
 
     from api.routers import (
         admin,
