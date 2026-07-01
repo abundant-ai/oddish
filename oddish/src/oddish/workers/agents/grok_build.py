@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import shlex
+import tempfile
 from typing import override
 
 from harbor.agents.installed.base import with_prompt_template
@@ -14,9 +16,46 @@ from .grok_build_trajectory import write_grok_build_trajectory_if_richer
 _OUTPUT_FILENAME = "grok-build.json"
 _STDERR_FILENAME = "grok-build.stderr.log"
 
+# The rendered instruction is staged inside the sandbox as a file and read back
+# via ``"$(cat ...)"`` instead of being inlined into the ``grok -p`` argv. Modal
+# rejects any ``exec`` whose CMD arguments exceed 65536 bytes (ARG_MAX), and a
+# large task instruction -- embedded up to three times across the CLI fallbacks
+# -- blows past that limit and fails the whole trial during image/agent start.
+# Uploading the prompt out-of-band keeps the exec command string tiny; the
+# ``$(cat ...)`` substitution is expanded by the sandbox shell (bound only by
+# the far larger in-sandbox Linux ARG_MAX), so grok still receives the full
+# instruction as its ``-p`` argument.
+_PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
+
 
 class OddishGrokBuild(GrokBuild):
     """Grok Build wrapper that preserves streaming events for ATIF conversion."""
+
+    async def _stage_prompt(
+        self, environment: BaseEnvironment, instruction: str
+    ) -> None:
+        """Upload the instruction into the sandbox as a readable file.
+
+        ``upload_file`` transfers the bytes out-of-band (not via the exec argv),
+        which is exactly what keeps us under Modal's ARG_MAX. It copies in as
+        root, so we chmod the file world-readable afterwards to guarantee the
+        (possibly non-root) agent user can read it back.
+        """
+        tmp = tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        )
+        try:
+            tmp.write(instruction)
+            tmp.flush()
+            tmp.close()
+            await environment.upload_file(tmp.name, _PROMPT_PATH)
+        finally:
+            os.unlink(tmp.name)
+
+        await self.exec_as_root(
+            environment,
+            command=f"chmod 0644 {shlex.quote(_PROMPT_PATH)}",
+        )
 
     @override
     @with_prompt_template
@@ -27,7 +66,12 @@ class OddishGrokBuild(GrokBuild):
         context: AgentContext,
     ) -> None:
         await self._write_config(environment)
-        escaped_instruction = shlex.quote(instruction)
+        await self._stage_prompt(environment, instruction)
+
+        # Read the prompt back inside the sandbox rather than inlining it: the
+        # command substitution is expanded by the sandbox shell, so the argv
+        # sent to the Modal SDK stays small regardless of instruction size.
+        prompt_arg = f'"$(cat {shlex.quote(_PROMPT_PATH)})"'
         stdout_path = f"/logs/agent/{_OUTPUT_FILENAME}"
         stderr_path = f"/logs/agent/{_STDERR_FILENAME}"
 
@@ -35,7 +79,7 @@ class OddishGrokBuild(GrokBuild):
             parts = [
                 "grok",
                 "-p",
-                escaped_instruction,
+                prompt_arg,
                 "--always-approve",
                 "--output-format",
                 output_format,
