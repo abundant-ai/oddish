@@ -26,6 +26,7 @@ from oddish.core.sharing.public import list_public_experiment_tasks
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     experiment_trials,
     generate_id,
@@ -52,18 +53,29 @@ def _experiment(name: str, *, org_id: str = "org1") -> ExperimentModel:
     return ExperimentModel(name=name, org_id=org_id)
 
 
+def _version(task: TaskModel, n: int) -> TaskVersionModel:
+    return TaskVersionModel(
+        id=f"{task.id}-v{n}",
+        task_id=task.id,
+        version=n,
+        task_path=task.task_path,
+    )
+
+
 def _trial(
     task: TaskModel,
     home_experiment: ExperimentModel,
     *,
     org_id: str = "org1",
     is_probe: bool = False,
+    task_version_id: str | None = None,
 ) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
         id=trial_id,
         name=trial_id,
         task_id=task.id,
+        task_version_id=task_version_id,
         experiment_id=home_experiment.id,
         org_id=org_id,
         agent="codex",
@@ -211,6 +223,81 @@ async def test_public_view_includes_gathered_non_probe():
         tasks = await list_public_experiment_tasks(public_token)
         ids = {tr.id for t in tasks for tr in t.trials}
         assert t1.id in ids
+    finally:
+        await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
+
+
+@pytest.mark.asyncio
+async def test_public_view_surfaces_gathered_old_version_trial():
+    """Site 2 REGRESSION: a trial gathered from an OLDER task version must
+    still appear in the public collection view, even after the task's
+    current_version_id has moved on to a newer version.
+
+    ``list_public_experiment_tasks`` already unions gathered trials into
+    ``task.trials`` (Task 7), but it re-derived the "effective version" via
+    ``build_task_status_response`` without telling it which trials were
+    gathered -- so the resolver fell back to the task's current version and
+    filtered the gathered v1 trial right back out (the same double-filter,
+    now on the public surface)."""
+    task_ids: list[str] = []
+    experiment_ids: list[str] = []
+    try:
+        async with get_session() as setup:
+            task = _task(_unique("public-oldver-task"))
+            setup.add(task)
+            await setup.flush()
+
+            v1 = _version(task, 1)
+            v2 = _version(task, 2)
+            setup.add_all([v1, v2])
+            await setup.flush()
+
+            # Task re-uploaded/bumped -- current version is now the NEWER v2.
+            task.current_version_id = v2.id
+            await setup.flush()
+
+            home = _experiment(_unique("public-oldver-home"))
+            setup.add(home)
+            await setup.flush()
+
+            # Trial ran on the OLDER v1, homed privately.
+            t1 = _trial(task, home, org_id="org1", task_version_id=v1.id)
+            probe = _trial(
+                task, home, org_id="org1", is_probe=True, task_version_id=v1.id
+            )
+            setup.add_all([t1, probe])
+            await setup.flush()
+
+            coll = await create_trial_collection_core(
+                setup,
+                name=_unique("coll"),
+                trial_ids=[t1.id, probe.id],
+                org_id="org1",
+            )
+            await setup.flush()
+
+            task_ids = [task.id]
+            experiment_ids = [home.id, coll.id]
+
+            coll_exp = (
+                await setup.execute(
+                    select(ExperimentModel).where(ExperimentModel.id == coll.id)
+                )
+            ).scalar_one()
+            await ensure_experiment_public(setup, coll_exp)
+            public_token = coll_exp.public_token
+            # get_session() commits on clean exit.
+
+        tasks = await list_public_experiment_tasks(public_token)
+        by_task = {t.id: t for t in tasks}
+        assert task.id in by_task
+        trial_ids = {tr.id for tr in by_task[task.id].trials}
+        assert t1.id in trial_ids, (
+            "gathered v1 trial was filtered out of the public view "
+            "(gathered-unaware effective-version double-filter)"
+        )
+        # Probe strip is independent of the version fix -- reconfirm it holds.
+        assert probe.id not in trial_ids
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
 

@@ -309,6 +309,7 @@ async def list_public_experiment_tasks(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 experiment_context_id=exp_id,
+                gathered_trial_ids=gathered_ids,
             )
             for task in tasks
         ]
