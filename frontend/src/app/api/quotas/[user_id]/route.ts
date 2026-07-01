@@ -19,8 +19,7 @@ export async function PUT(
 
     const { user_id } = await params;
     const body = await request.json();
-    const url = getBackendUrl("quotas", `/${encodeURIComponent(user_id)}`);
-    const res = await fetch(url, {
+    const res = await fetch(getBackendUrl("quotas", `/${encodeURIComponent(user_id)}`), {
       method: "PUT",
       cache: "no-store",
       headers: {
@@ -33,13 +32,11 @@ export async function PUT(
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
 
-    if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
-        status: res.status,
-      });
-    }
-
-    return NextResponse.json(data);
+    return res.ok
+      ? NextResponse.json(data)
+      : NextResponse.json(data ?? { error: "Upstream error" }, {
+          status: res.status,
+        });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

@@ -14,10 +14,7 @@ const formatDollars = (value: number) =>
   });
 
 export function QuotaUsageCard() {
-  const { data, error, isLoading } = useSWR<QuotaUsage>(
-    "/api/quotas/me",
-    fetcher
-  );
+  const { data, error, isLoading } = useSWR<QuotaUsage>("/api/quotas/me", fetcher);
 
   const used = data?.used_usd ?? 0;
   const limit = data?.limit_usd ?? 0;

@@ -163,14 +163,13 @@ def test_cursor_composer_versioned_ids_do_not_fall_back_to_bare() -> None:
 
 
 def test_estimate_cost_includes_cache_write_tokens() -> None:
-    # Sonnet 4.5: in=3e-6, out=15e-6, cache_read=3e-7
-    # cache_write defaults to 1.25 * input = 3.75e-6 when not set in litellm.
-    # 1000 uncached input, 500 output, 200 cache-read, 400 cache-write.
-    value = estimate_cost_usd("claude-sonnet-4-5", 1200, 500, 200, 400)
+    # Sonnet 4.5: in=3e-6, out=15e-6, cache_read=3e-7, cache_write=3.75e-6.
+    # input_tokens is the total prompt (1000 raw + 200 read + 400 write = 1600).
+    value = estimate_cost_usd("claude-sonnet-4-5", 1600, 500, 200, 400)
     expected = (
-        1000 * 3e-6       # uncached input (1200 - 200)
+        1000 * 3e-6       # uncached input
         + 200 * 3e-7      # cache read
-        + 400 * 3.75e-6   # cache write at 1.25x input
+        + 400 * 3.75e-6   # cache write
         + 500 * 15e-6     # output
     )
     assert value == pytest.approx(expected)

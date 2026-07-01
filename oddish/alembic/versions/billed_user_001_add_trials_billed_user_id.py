@@ -1,7 +1,7 @@
 """add trials.billed_user_id + per-user daily spend index
 
 Revision ID: billed_user_001
-Revises: a1b2c3d4e5f6
+Revises: cachewrite_001
 Create Date: 2026-07-01 00:00:00.000000
 
 Adds the per-user quota attribution column and the partial index the daily
@@ -19,7 +19,7 @@ spend SUM keys on.
   window), and missing quota rows enforce at the read-time default.
 
 NOTE: ``down_revision`` targets the most recent trials-column migration
-(``a1b2c3d4e5f6`` add_trial_cache_write_tokens). Confirm the single head at
+(``cachewrite_001`` add_trial_cache_write_tokens). Confirm the single head at
 merge time -- the repo's revision graph currently has multiple branches.
 """
 
@@ -29,7 +29,7 @@ from alembic import op
 
 
 revision: str = "billed_user_001"
-down_revision: Union[str, Sequence[str], None] = "a1b2c3d4e5f6"
+down_revision: Union[str, Sequence[str], None] = "cachewrite_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

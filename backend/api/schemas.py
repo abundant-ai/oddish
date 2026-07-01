@@ -39,8 +39,6 @@ class UserResponse(BaseModel):
 
 
 class QuotaUsageResponse(BaseModel):
-    """A single member's daily spend vs their effective limit."""
-
     user_id: str
     limit_usd: float
     used_usd: float
@@ -48,8 +46,6 @@ class QuotaUsageResponse(BaseModel):
 
 
 class QuotaMemberItem(BaseModel):
-    """One org member's quota row for the admin quotas table."""
-
     user_id: str
     email: str
     name: str | None
@@ -61,24 +57,12 @@ class QuotaMemberItem(BaseModel):
 
 
 class QuotaListResponse(BaseModel):
-    """All org members with their daily spend + effective limit."""
-
     members: list[QuotaMemberItem]
 
 
 class QuotaUpdateRequest(BaseModel):
-    """Set (non-null) or CLEAR (null -> revert to the read-time default) a
-    member's daily limit override. A non-null value must be positive and fit the
-    NUMERIC(12,4) column, so an out-of-range / negative / zero / excess-scale
-    input is a clean 422 rather than a DB overflow 500 or a silently-rounded
-    value that would make PUT and GET disagree."""
-
     limit_usd: Decimal | None = Field(
-        default=None,
-        gt=0,
-        le=Decimal("99999999.9999"),
-        max_digits=12,
-        decimal_places=4,
+        None, gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
     )
 
 

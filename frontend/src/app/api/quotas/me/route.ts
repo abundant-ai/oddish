@@ -14,8 +14,7 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const url = getBackendUrl("quotas", "/me");
-    const res = await fetch(url, {
+    const res = await fetch(getBackendUrl("quotas", "/me"), {
       cache: "no-store",
       headers: getAuthHeaders(token),
     });
@@ -23,13 +22,11 @@ export async function GET() {
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
 
-    if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
-        status: res.status,
-      });
-    }
-
-    return NextResponse.json(data);
+    return res.ok
+      ? NextResponse.json(data)
+      : NextResponse.json(data ?? { error: "Upstream error" }, {
+          status: res.status,
+        });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

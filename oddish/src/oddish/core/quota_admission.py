@@ -69,19 +69,19 @@ async def admit_trials(
     count: int,
 ) -> None:
     mode = settings.quota_mode
-    if mode == QuotaMode.OFF or org_id is None or count <= 0:
+    if mode == QuotaMode.OFF or count <= 0:
         return
 
     if billed_user_id is None:
+        if org_id is None:
+            return  # OSS single-tenant: no org and no payer -> never enforce
         if mode == QuotaMode.ENFORCE:
             raise Unattributed()
         _log_would_block(org_id, None, None, None, reason="unattributed")
         return
 
     effective_limit_usd = await get_effective_limit(session, org_id, billed_user_id)
-    used_usd = await sum_cost_usd(
-        session, org_id, billed_user_id, start_of_today_utc()
-    )
+    used_usd = await sum_cost_usd(session, org_id, billed_user_id, start_of_today_utc())
     reserved_usd = (
         await inflight_count(session, org_id, billed_user_id) + count
     ) * settings.pending_trial_reservation_usd
