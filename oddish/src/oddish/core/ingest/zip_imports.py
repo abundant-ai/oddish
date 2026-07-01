@@ -38,13 +38,16 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException
+from harbor.models.job.config import JobConfig
+from harbor.models.job.result import JobResult
+from harbor.models.trial.config import TrialConfig
+from harbor.models.trial.result import TrialResult
 from sqlalchemy import and_, select
 
 from oddish.cli.api import (
     _tar_trial_dir,
     archive_task_dir,
     compute_task_content_hash,
-    detect_trajectory_in_dir,
     discover_trial_entries,
     is_harbor_job_dir,
     is_harbor_jobs_dir,
@@ -52,6 +55,7 @@ from oddish.cli.api import (
     load_harbor_trial_result,
     trial_result_to_import_spec,
 )
+from oddish.core.harbor_artifacts import detect_trajectory
 from oddish.core.tasks import complete_task_upload, initialize_task_upload
 from .trial_imports import (
     complete_trial_import,
@@ -156,55 +160,93 @@ def _harbor_task_name_from_job_dir(job_dir_name: str) -> str | None:
     return parts[0] or None
 
 
-def _walk_for_task_name(obj: Any, depth: int = 0) -> str | None:
-    """Best-effort task-name extraction from a Harbor JSON blob.
+def _task_name_from_task_config(task_config: Any) -> str | None:
+    path = getattr(task_config, "path", None)
+    if path is not None:
+        name = Path(path).name
+        if name:
+            return name
+    package_name = getattr(task_config, "name", None)
+    if isinstance(package_name, str) and package_name:
+        return package_name.rsplit("/", 1)[-1]
+    return None
 
-    Harbor stamps ``task_path`` on every JobConfig (the path the user
-    pointed ``harbor run`` at); the basename of that path is the task
-    name. Other shapes (``task.name``, ``task_name``) appear in
-    different harbor versions, so we accept those too. Recurses through
-    nested dicts/lists with a small depth cap.
-    """
-    if depth > 6:
+
+def _task_name_from_harbor_model(data: Any) -> str | None:
+    """Extract a task name from known Harbor config/result model shapes."""
+    if not isinstance(data, dict):
         return None
-    if not isinstance(obj, dict):
+
+    for model_type in (JobConfig,):
+        try:
+            config = model_type.model_validate(data)
+        except Exception:
+            continue
+        for task_config in config.tasks:
+            name = _task_name_from_task_config(task_config)
+            if name:
+                return name
+
+    try:
+        trial_config = TrialConfig.model_validate(data)
+    except Exception:
+        pass
+    else:
+        name = _task_name_from_task_config(trial_config.task)
+        if name:
+            return name
+
+    try:
+        trial_result = TrialResult.model_validate(data)
+    except Exception:
+        pass
+    else:
+        if trial_result.task_name:
+            return trial_result.task_name
+        return _task_name_from_task_config(trial_result.config.task)
+
+    try:
+        job_result = JobResult.model_validate(data)
+    except Exception:
+        pass
+    else:
+        for trial_result in job_result.trial_results:
+            if trial_result.task_name:
+                return trial_result.task_name
+            name = _task_name_from_task_config(trial_result.config.task)
+            if name:
+                return name
+
+    return None
+
+
+def _task_name_from_legacy_json(data: Any) -> str | None:
+    """Handle older partial JSON blobs that predate Harbor model stability."""
+    if not isinstance(data, dict):
         return None
 
     for key in ("task_name", "taskName"):
-        value = obj.get(key)
+        value = data.get(key)
         if isinstance(value, str) and value:
             return value
 
-    path_value = obj.get("task_path")
+    path_value = data.get("task_path")
     if isinstance(path_value, str):
-        tail = Path(path_value).name
-        if tail:
-            return tail
+        name = Path(path_value).name
+        if name:
+            return name
 
-    task = obj.get("task")
+    task = data.get("task")
     if isinstance(task, dict):
-        for key in ("name", "task_name"):
-            value = task.get(key)
-            if isinstance(value, str) and value:
-                return value
-        for key in ("path", "task_path"):
-            value = task.get(key)
-            if isinstance(value, str):
-                tail = Path(value).name
-                if tail:
-                    return tail
+        name = task.get("name") or task.get("task_name")
+        if isinstance(name, str) and name:
+            return name.rsplit("/", 1)[-1]
+        path_value = task.get("path") or task.get("task_path")
+        if isinstance(path_value, str):
+            name = Path(path_value).name
+            if name:
+                return name
 
-    for child in obj.values():
-        if isinstance(child, dict):
-            found = _walk_for_task_name(child, depth + 1)
-            if found:
-                return found
-        elif isinstance(child, list):
-            for item in child:
-                if isinstance(item, dict):
-                    found = _walk_for_task_name(item, depth + 1)
-                    if found:
-                        return found
     return None
 
 
@@ -243,7 +285,7 @@ def _task_name_from_run_artifacts(run_root: Path) -> str | None:
 
     for path in candidates:
         data = _read_json_safely(path)
-        name = _walk_for_task_name(data)
+        name = _task_name_from_harbor_model(data) or _task_name_from_legacy_json(data)
         if name:
             return name
     return None
@@ -506,9 +548,10 @@ async def _import_one_trial(
             None,
         )
 
-    has_trajectory = detect_trajectory_in_dir(trial_dir)
     spec_payload = trial_result_to_import_spec(
-        trial_result, has_trajectory=has_trajectory
+        trial_result,
+        has_trajectory=detect_trajectory(trial_dir),
+        artifact_dir=trial_dir,
     )
     trial_spec = ImportedTrialSpec.model_validate(spec_payload)
 
