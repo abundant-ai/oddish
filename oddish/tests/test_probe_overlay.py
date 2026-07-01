@@ -25,7 +25,7 @@ def test_render_includes_all_sections():
     assert "ORIGINAL-TEXT" in out
     assert "## WHAT THE REAL AGENT SEES vs WHAT YOU SEE" in out
     assert "## RUNNING THE VERIFIER" in out
-    assert "## TRIAL DATA" in out
+    assert "ACCESSING TASK DATA" in out
 
 
 def test_render_does_not_label_spec_as_probes_own_task():
@@ -106,13 +106,24 @@ def test_subagents_section_mandates_snapshot_restore():
     # Sequential alone leaves residue: a mutating subagent that returns without
     # reverting dirties /app for the next one. Require snapshot-once + restore.
     out = _render()
-    assert "/tmp/app-baseline" in out
+    # Baseline lives under /probe-harness, NOT /tmp: the verifier's anti-cheat
+    # scans /tmp (and /app) for smuggled oracle copies, so a /tmp snapshot that
+    # captured a fetched oracle would be flagged and zero the score.
+    assert "/probe-harness/app-baseline" in out
+    assert "/tmp/app-baseline" not in out
     assert "rsync" in out
 
 
 def test_subagents_section_mandates_scratch_provenance_tag():
     out = _render()
     assert "probe-scratch-" in out
+
+
+def test_render_includes_final_summary_section():
+    # Operator prompts vary, so the shared overlay (not each prompt) asks for a
+    # closing summary shaped to the directive — what the analyzer extracts from.
+    out = _render()
+    assert "## FINISH WITH A SUMMARY" in out
 
 
 def test_subagents_section_present_even_without_solution():
@@ -123,3 +134,33 @@ def test_subagents_section_present_even_without_solution():
         probe_only_paths=[],
     )
     assert "## SUBAGENTS" in out
+
+
+def test_render_includes_cli_usage_block():
+    out = _render()
+    assert "ACCESSING TASK DATA" in out
+    # concrete, copyable invocations for each capability
+    assert "solution cat" in out
+    assert "solution fetch" in out
+    assert "verifier source" in out
+    assert "verify run" in out
+    assert "harbor src" in out
+    assert "experiments trials" in out
+    assert "trials logs" in out
+    # defers exhaustive detail to --help
+    assert "--help" in out
+
+
+def test_render_tells_agent_to_use_discretion():
+    out = _render()
+    low = out.lower()
+    assert "discretion" in low or "judgement" in low or "judgment" in low
+    # tied to the agent's own directive/prompt
+    assert "directive" in low or "your prompt" in low
+
+
+def test_overlay_has_no_stage_or_harbor_path_constants():
+    import oddish.worker.probe_overlay as ov
+    for name in ("STAGE_DIR", "STAGE_DIR_ENV", "BOUNDARY_MARKER_NAME",
+                 "BOUNDARY_MARKER_TEXT", "HARBOR_DIR_NAME", "HARBOR_CONTAINER_DIR"):
+        assert not hasattr(ov, name), f"{name} should be removed"
