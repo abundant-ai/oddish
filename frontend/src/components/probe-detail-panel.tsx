@@ -9,7 +9,6 @@ import { ProbeRunSummary } from "@/components/probe-run-summary";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { trialHasActiveAnalysis } from "@/lib/job-status";
 
 const ALLOW_ERROR = "exit 137";
 
@@ -97,7 +96,7 @@ export function ProbeDetailPanel({
           ? 0
           : 3000;
       },
-    }
+    },
   );
 
   // ~30s grace before treating a not-yet-registered trial as truly missing —
@@ -127,7 +126,7 @@ export function ProbeDetailPanel({
     (trial.status === "success" || trial.status === "failed");
   const { data: fetchedArtifacts } = useSWR<Artifacts>(
     needsArtifacts ? `/api/trials/${currentId}/probe-artifacts` : null,
-    fetcher
+    fetcher,
   );
 
   let body: React.ReactNode;
@@ -162,7 +161,7 @@ export function ProbeDetailPanel({
           !q ||
           kindLabel(m).toLowerCase().includes(q) ||
           (m.name ?? "").toLowerCase().includes(q) ||
-          m.text.toLowerCase().includes(q)
+          m.text.toLowerCase().includes(q),
       );
 
     body = (
@@ -211,8 +210,7 @@ export function ProbeDetailPanel({
             </Link>
           </p>
           <p className="mt-1 text-sm">
-            Trial:{" "}
-            <span className="font-mono font-medium">{trial.id}</span>
+            Trial: <span className="font-mono font-medium">{trial.id}</span>
           </p>
           <p className="mt-2 text-sm">
             Preset:{" "}
