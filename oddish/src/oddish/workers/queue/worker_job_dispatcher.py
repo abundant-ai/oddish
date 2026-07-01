@@ -255,6 +255,7 @@ def build_spawn_plan(
     running_by_queue: dict[tuple[str, str], int],
     concurrency_limits: dict[str, int],
     max_workers: int,
+    held_by_queue_key: dict[str, int] | None = None,
 ) -> list[tuple[str, str]]:
     """Decide which ``(queue_key, harbor_variant_id)`` workers to spawn.
 
@@ -270,11 +271,17 @@ def build_spawn_plan(
        at least one spawn per org-turn -- the "leeway" that prevents a
        small secondary unit from being completely starved.
 
-    Per-queue_key capacity is ``limit - running`` where ``running`` SUMS
-    across that queue_key's variants: for v1 the default and any variants
-    of a queue_key share one ``queue_slots`` concurrency pool (the variant
-    split is dispatch-only). Capacity is decremented across orgs and across
-    variants of the same queue_key, so the global cap continues to dominate.
+    Per-queue_key capacity is ``limit - in_flight`` where ``in_flight`` is
+    ``max(running, held)``. ``running`` SUMS across that queue_key's variants
+    (for v1 the default and any variants share one ``queue_slots`` concurrency
+    pool -- the variant split is dispatch-only); ``held_by_queue_key`` (when
+    supplied) is that queue_key's live ``queue_slots`` lease count. A lease is
+    taken at spawn/claim, *before* the job shows RUNNING, so on a fast dispatch
+    re-fire (before freshly-spawned workers register as RUNNING) held is the
+    authoritative in-flight number -- folding it in stops over-spawning past the
+    limit. Omitted (Modal ``poll_queue``) -> RUNNING-only, unchanged. Capacity is
+    decremented across orgs and across variants of the same queue_key, so the
+    global cap continues to dominate.
     """
     if max_workers <= 0 or not queued_by_org_queue:
         return []
@@ -296,14 +303,20 @@ def build_spawn_plan(
             running or 0
         )
 
+    # In-flight per queue_key is max(RUNNING, held queue_slots leases). A lease is
+    # acquired at spawn/claim, before the job shows RUNNING, so when the caller
+    # supplies held-lease counts (the off-Modal event-trigger cycle) they are the
+    # authoritative in-flight concurrency. Omitted -> RUNNING-only (Modal).
+    held = held_by_queue_key or {}
+
     global_capacity: dict[str, int] = {}
     all_queue_keys = set(concurrency_limits.keys()) | {
         qk for bucket in org_to_unit_queued.values() for (qk, _v) in bucket
     }
     for queue_key in all_queue_keys:
         limit = concurrency_limits.get(queue_key, 0)
-        running = running_by_queue_key.get(queue_key, 0)
-        global_capacity[queue_key] = max(limit - running, 0)
+        in_flight = max(running_by_queue_key.get(queue_key, 0), held.get(queue_key, 0))
+        global_capacity[queue_key] = max(limit - in_flight, 0)
 
     ordered_orgs = sorted(org_to_unit_queued.keys(), key=_org_sort_key)
     per_org_units: dict[str | None, list[tuple[str, str]]] = {
