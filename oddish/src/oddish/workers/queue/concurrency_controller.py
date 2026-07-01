@@ -3,10 +3,13 @@
 Each reconcile cycle the controller derives a per-``queue_key`` advisory
 concurrency limit and writes it to ``model_concurrency_advisory``; the dispatcher
 reads the advisory limit when it is fresh and otherwise falls back to the static
-``settings.get_model_concurrency`` value. The static config stays the hard
-ceiling and the fallback -- the controller only ever writes the advisory table
-(it never mutates the hard limit it must refresh), and a stale/missing/crashed
-controller decays to today's static behavior within ``STALE_TTL_SECONDS``.
+``settings.get_model_concurrency`` value. Both the dispatcher's spawn plan and
+the worker's ``queue_slots`` lease honor the same fresh advisory (via
+``_effective_model_concurrency``), so the advisory -- bounded by
+``compute_ceiling``'s provider-derived cap -- is the effective limit up or down,
+with the static config as the floor and fallback: the controller only writes the
+advisory table (never the static limit), and a stale/missing/crashed controller
+(or the flag off) decays to today's static behavior within ``STALE_TTL_SECONDS``.
 
 Two cooperating laws, both pure and unit-tested here:
 
@@ -33,6 +36,7 @@ from oddish.core.admin import get_queue_health_core
 from oddish.core.calibration import (
     DEFAULT_CALIBRATION_WINDOW_MINUTES,
     calibrate_model_concurrency,
+    fold_calibration_by_queue_key,
 )
 from oddish.workers.queue.runtime_status import record_queue_runtime_status
 from oddish.workers.queue.shared import console
@@ -185,7 +189,10 @@ def controller_step(
         error, reason = 0, "cooldown"
     elif fill_v > 1.0:
         error, reason = -1, "oversubscribed"
-    elif fill_v <= U_LOW:
+    elif fill_v <= U_LOW and queued <= 0:
+        # Idle only when nothing is waiting: a low-fill queue with a real backlog
+        # must not be shrunk (that would starve the queued work), so fall through
+        # to hold/bottleneck instead of cutting.
         error, reason = -1, "idle"
     elif queued > 0 and fill_v >= U_HIGH:
         error, reason = 1, "bottleneck"
@@ -310,18 +317,22 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
     """
     try:
         health = await get_queue_health_core(session)
-        ceiling_cal = {
-            c.queue_key: c
-            for c in await calibrate_model_concurrency(
+        # calibrate_model_concurrency groups by (queue_key, provider), so a
+        # queue_key spanning several providers -- notably the aggregate 'default'
+        # bucket -- returns one row per provider. Fold them back to a single
+        # calibration per queue_key here (at the consumer) so a multi-provider
+        # bucket is not collapsed to one arbitrary provider's row; the query keeps
+        # its per-(queue_key, provider) grouping intact for other callers.
+        ceiling_cal = fold_calibration_by_queue_key(
+            await calibrate_model_concurrency(
                 session, window_minutes=CEILING_WINDOW_MINUTES
             )
-        }
-        recent_cal = {
-            c.queue_key: c
-            for c in await calibrate_model_concurrency(
+        )
+        recent_cal = fold_calibration_by_queue_key(
+            await calibrate_model_concurrency(
                 session, window_minutes=THROTTLE_WINDOW_MINUTES
             )
-        }
+        )
         prior = await _read_advisory_state(session)
 
         updated: dict[str, int] = {}
@@ -394,6 +405,18 @@ async def recompute_advisory_limits(session) -> dict[str, int]:
         )
         return updated
     except Exception as exc:  # noqa: BLE001 - controller is best-effort, never fatal
+        # This session's transaction may hold partial upserts/deletes from the
+        # aborted pass; the caller commits on normal exit, so roll them back
+        # before returning to avoid persisting a half-applied advisory update
+        # while reporting zero changes. Guard the rollback itself so a rollback
+        # failure can't escape and break the reconcile loop we only advise.
+        try:
+            await session.rollback()
+        except Exception as rollback_exc:  # noqa: BLE001 - best-effort cleanup
+            console.print(
+                f"[yellow]Concurrency controller rollback failed: "
+                f"{rollback_exc}[/yellow]"
+            )
         console.print(f"[yellow]Concurrency controller skipped: {exc}[/yellow]")
         return {}
 

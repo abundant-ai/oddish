@@ -14,6 +14,7 @@ pure (no network, no thread pools) and tested in isolation here.
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -174,6 +175,45 @@ def test_advertised_max_cleared_restores_static_max():
     for _ in range(200):
         limiter.record_sample(0.1, in_flight=64)
     assert limiter.limit == 64
+
+
+def test_advertised_max_expires_after_ttl(monkeypatch):
+    # Drive a deterministic monotonic clock so the TTL elapses without sleeping.
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(
+        "oddish.cli._concurrency.time",
+        SimpleNamespace(monotonic=lambda: clock["now"]),
+    )
+    limiter = AdaptiveConcurrencyLimiter(
+        min_limit=4, max_limit=64, initial_limit=40, advertised_ttl_seconds=30.0
+    )
+    limiter.set_advertised_max(10)
+    assert limiter.limit == 10  # honored while fresh
+
+    # The server dropped the header (a load-snapshot outage), so no new advice
+    # arrives. Past the TTL the stale ceiling must expire and the limiter revert
+    # to its gradient max instead of staying clamped at the old low ceiling.
+    clock["now"] += 31.0
+    for _ in range(200):
+        limiter.record_sample(0.1, in_flight=64)
+    assert limiter.limit == 64
+
+
+def test_advertised_max_kept_within_ttl(monkeypatch):
+    # Anti-flap: a missing header keeps the last advice *within* the TTL.
+    clock = {"now": 1_000.0}
+    monkeypatch.setattr(
+        "oddish.cli._concurrency.time",
+        SimpleNamespace(monotonic=lambda: clock["now"]),
+    )
+    limiter = AdaptiveConcurrencyLimiter(
+        min_limit=4, max_limit=64, initial_limit=40, advertised_ttl_seconds=30.0
+    )
+    limiter.set_advertised_max(10)
+    clock["now"] += 29.0  # still inside the 30s TTL
+    for _ in range(200):
+        limiter.record_sample(0.1, in_flight=64)
+    assert limiter.limit == 10  # advice retained, not expired
 
 
 # ---------------------------------------------------------------------------

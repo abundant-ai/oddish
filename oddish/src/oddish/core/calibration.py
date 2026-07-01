@@ -110,6 +110,88 @@ def summarize_calibration(
     return out
 
 
+def _trial_weighted_mean(
+    values_and_trials: list[tuple[float, int]],
+) -> float | None:
+    """Trial-count-weighted mean of ``(value, trials)`` pairs.
+
+    Returns ``None`` when no pair carries positive weight (e.g. every provider
+    slice recorded ``None`` for the metric), matching the single-row semantics
+    where an unmeasured metric stays ``None``.
+    """
+    total_trials = sum(trials for _, trials in values_and_trials)
+    if total_trials <= 0:
+        return None
+    return sum(value * trials for value, trials in values_and_trials) / total_trials
+
+
+def fold_calibration_by_queue_key(
+    rows: list[QueueCalibration],
+) -> dict[str, QueueCalibration]:
+    """Fold per-``(queue_key, provider)`` calibrations into one row per queue_key.
+
+    ``calibrate_model_concurrency`` groups by ``(queue_key, provider)``, so a
+    queue_key spanning several providers -- notably the aggregate ``default``
+    bucket, into which ``normalize_queue_key`` maps bare
+    ``openai``/``anthropic``/``gemini``/``""`` -- returns one row per provider. A
+    naive ``{c.queue_key: c}`` would keep whichever provider row happened to come
+    last, making the consumer's ceiling/throttle inputs depend on row order. This
+    combines the rows sharing a queue_key into a single calibration so the
+    consumer sees the whole bucket:
+
+    * ``trials`` and ``throughput_per_min`` are summed (disjoint provider slices
+      of the same queue add up);
+    * ``avg_trial_seconds`` and ``r_tokens`` are trial-count-weighted means over
+      the slices that recorded the metric (a ``None`` slice contributes no
+      weight; an all-``None`` metric stays ``None``) -- trial count is the weight
+      the design specifies, and it is the only per-slice sample size this
+      dataclass carries;
+    * ``token_coverage`` and ``throttle_rate`` are recomputed as trial-weighted
+      means, i.e. total-covered/total-trials and total-throttles/total-trials;
+    * ``provider`` becomes the ``+``-joined sorted distinct providers.
+
+    A single-provider queue_key is returned unchanged (the same object), so this
+    is a no-op for every non-``default`` bucket.
+    """
+    grouped: dict[str, list[QueueCalibration]] = {}
+    for row in rows:
+        grouped.setdefault(row.queue_key, []).append(row)
+
+    folded: dict[str, QueueCalibration] = {}
+    for queue_key, group in grouped.items():
+        if len(group) == 1:
+            folded[queue_key] = group[0]
+            continue
+        total_trials = sum(c.trials for c in group)
+        folded[queue_key] = QueueCalibration(
+            queue_key=queue_key,
+            provider="+".join(sorted({c.provider for c in group})),
+            trials=total_trials,
+            token_coverage=(
+                sum(c.token_coverage * c.trials for c in group) / total_trials
+                if total_trials > 0
+                else 0.0
+            ),
+            avg_trial_seconds=_trial_weighted_mean(
+                [
+                    (c.avg_trial_seconds, c.trials)
+                    for c in group
+                    if c.avg_trial_seconds is not None
+                ]
+            ),
+            r_tokens=_trial_weighted_mean(
+                [(c.r_tokens, c.trials) for c in group if c.r_tokens is not None]
+            ),
+            throughput_per_min=sum(c.throughput_per_min for c in group),
+            throttle_rate=(
+                sum(c.throttle_rate * c.trials for c in group) / total_trials
+                if total_trials > 0
+                else 0.0
+            ),
+        )
+    return folded
+
+
 async def calibrate_model_concurrency(
     session: AsyncSession,
     *,
