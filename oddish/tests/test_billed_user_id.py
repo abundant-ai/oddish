@@ -202,6 +202,67 @@ async def _run_retry(monkeypatch, old_trial):
     return session.added[0]
 
 
+# --- S2 review: auto-probe forwards the payer to the probe trial insert --------
+
+
+class _PresetSession:
+    async def scalar(self, *args, **kwargs):
+        return SimpleNamespace(
+            id="preset-1",
+            agent="nop",
+            name="probe",
+            operator_prompt="probe the task",
+            result_focus="focus",
+            evaluation_metric="metric",
+        )
+
+
+@pytest.mark.asyncio
+async def test_auto_probe_forwards_billed_user_id_to_append(monkeypatch):
+    import oddish.core.probe.auto_probe as auto_probe_module
+
+    captured_append_kwargs = {}
+
+    async def fake_version_already_probed(session, version_id):
+        return False
+
+    async def fake_probed_version_count(session, org_id):
+        return 0
+
+    async def fake_append_trials_to_task(session, *, task, submission, experiment_id=None, billed_user_id=None):
+        captured_append_kwargs["billed_user_id"] = billed_user_id
+        return []
+
+    monkeypatch.setattr(auto_probe_module, "_version_already_probed", fake_version_already_probed)
+    monkeypatch.setattr(auto_probe_module, "_probed_version_count", fake_probed_version_count)
+    monkeypatch.setattr(auto_probe_module, "next_probe_model", lambda count: "gpt-5")
+    monkeypatch.setattr(auto_probe_module, "build_trial_specs_from_sweep", lambda submission: [])
+    monkeypatch.setattr(
+        auto_probe_module,
+        "build_task_submission_from_sweep",
+        lambda submission, task_path, trials: SimpleNamespace(),
+    )
+    monkeypatch.setattr(auto_probe_module, "append_trials_to_task", fake_append_trials_to_task)
+
+    probed_task = SimpleNamespace(
+        current_version_id="task-1-v1",
+        id="task-1",
+        name="task-1",
+        task_path="/tmp/task-1",
+        user=None,
+    )
+
+    await auto_probe_module.maybe_enqueue_auto_probe(
+        _PresetSession(),
+        task=probed_task,
+        experiment=None,
+        org_id="org-1",
+        billed_user_id="user-9",
+    )
+
+    assert captured_append_kwargs["billed_user_id"] == "user-9"
+
+
 @pytest.mark.asyncio
 async def test_retry_carries_billed_user_id_forward(monkeypatch):
     replacement_trial = await _run_retry(monkeypatch, _retryable_old_trial("user-42"))
