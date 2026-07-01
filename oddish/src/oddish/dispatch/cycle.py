@@ -221,14 +221,6 @@ async def _run_dispatch_cycle(
         running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
             running or 0
         )
-    # Fold held leases into the in-flight number the why-waiting math sees too, so
-    # a slot-capped queue (held == limit, running 0) reads as "waiting for slot"
-    # rather than "spawn cap reached" -- the same capacity the planner used above.
-    inflight_by_queue_key = dict(running_by_queue_key)
-    for queue_key, held in held_by_queue_key.items():
-        inflight_by_queue_key[queue_key] = max(
-            inflight_by_queue_key.get(queue_key, 0), held
-        )
 
     handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
@@ -240,6 +232,28 @@ async def _run_dispatch_cycle(
     # fields. Using the actual spawns keeps why_waiting and the spawned_at stamp
     # consistent; in the all-spawned case ``spawned_keys`` equals ``admitted``.
     spawned_keys = [h.queue_key for h in handles]
+
+    # In-flight concurrency the why-waiting math sees, built post-spawn from the
+    # same capacity the planner spent: max(running, held) PLUS the workers that
+    # actually got a slot this cycle. Folding held leases makes a slot-capped queue
+    # (held == limit, running 0) read as "waiting for slot" rather than "spawn cap
+    # reached"; folding this cycle's own spawns extends that to a queue driven to
+    # its cap by the spawns we just made -- the held snapshot was taken *before*
+    # the spawn, so those fresh leases are otherwise invisible and a queue served
+    # up to its limit is mislabeled "spawn cap reached" (max_workers) when its own
+    # concurrency limit is the real ceiling. Each spawn is a new lease layered on
+    # the pre-spawn snapshot, so add it (no double count); ``spawned_keys`` comes
+    # from the returned handles, keeping this consistent with the spawned_at stamp.
+    inflight_by_queue_key = dict(running_by_queue_key)
+    for queue_key, held in held_by_queue_key.items():
+        inflight_by_queue_key[queue_key] = max(
+            inflight_by_queue_key.get(queue_key, 0), held
+        )
+    for queue_key, spawned in Counter(spawned_keys).items():
+        inflight_by_queue_key[queue_key] = (
+            inflight_by_queue_key.get(queue_key, 0) + spawned
+        )
+
     why_waiting = compute_why_waiting(
         queued_by_queue=queued_by_queue,
         running_by_queue=inflight_by_queue_key,

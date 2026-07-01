@@ -215,3 +215,32 @@ def test_run_dispatch_cycle_held_slots_at_limit_spawns_nothing() -> None:
     assert result.spawn_plan == []
     assert dispatcher.spawned == []
     assert "slot" in result.why_waiting["busy"].lower()
+
+
+def test_run_dispatch_cycle_same_cycle_spawns_read_as_waiting_for_slot() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _go():
+        # 5 queued, limit 2, 0 RUNNING, 0 held -> the planner spawns 2 (fills both
+        # slots) this cycle. The 3 leftover rows are blocked by the queue's own
+        # concurrency cap, not the per-poll budget (max_workers 10). The
+        # held/running snapshot predates the spawn, so folding *this cycle's* fresh
+        # leases into the in-flight number is what makes the reason read "waiting
+        # for slot" instead of a false "spawn cap reached".
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=10,
+            concurrency_for=lambda qk: 2,
+            _discover=_fake_discover([("solo", "default")]),
+            _counts=_fake_counts(
+                {(None, "solo", "default"): 5}, {("solo", "default"): 0}
+            ),
+            _held=_fake_held({}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == ["solo", "solo"]
+    assert [h.queue_key for h in dispatcher.spawned] == ["solo", "solo"]
+    reason = result.why_waiting["solo"].lower()
+    assert "slot" in reason  # served up to its own cap, not the per-poll budget
+    assert "cap" not in reason
