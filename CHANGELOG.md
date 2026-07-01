@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-01]
+
+### Added
+
+- Grok Build trials are now converted into full ATIF trajectories: streamed `grok-build.json` events are parsed into reasoning/tool-call/tool-result/message steps with final metrics (tokens, cost) via a new agent wrapper, and the trajectory endpoint falls back to synthesizing ATIF from `agent/grok-build.json` for older trials that predate the conversion (#530)
+
+### Fixed
+
+- Completed Grok Build trials are now marked as having a fetchable trajectory even when the DB's `has_trajectory` flag is stale, so the dashboard no longer skips trajectory loading for them (#530)
+
+---
+
 ## [2026-06-30]
 
 ### Added
