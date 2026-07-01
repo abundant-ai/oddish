@@ -278,6 +278,59 @@ async def _lookup_users_by_github_username(
     return list(result.scalars().all())
 
 
+async def _lookup_user_by_github_id(
+    session: AsyncSession,
+    *,
+    github_id: str,
+    org_id: str,
+) -> UserModel | None:
+    """Exact-one, org-scoped, active-only lookup by immutable github_id.
+
+    github_id is org-unique (``uq_users_org_github_id``) so there is at most
+    one active match. No ``@``-strip / case-fold — github_id is an exact
+    immutable id string, not a handle — but a bare ``.strip()`` guards against
+    surrounding whitespace and treats empty/whitespace as no match.
+    """
+    normalized = (github_id or "").strip()
+    if not normalized:
+        return None
+    result = await session.execute(
+        select(UserModel).where(
+            UserModel.github_id == normalized,
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return result.scalars().first()
+
+
+async def _resolve_connected_user(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    github_id: str | None,
+    github_username: str | None,
+) -> UserModel | None:
+    """Shared connection predicate for owner resolution AND the linkage endpoint
+    (predicate parity, INV2). The immutable github_id wins over the mutable
+    handle: try the org-scoped exact-one github_id lookup first, and only fall
+    back to the exact-one github_username lookup when github_id is absent or
+    unmatched. Both call sites MUST route through here so 'resolvable owner'
+    (/tasks/sweep) and 'connected?' (endpoint) stay the identical predicate.
+    """
+    if github_id:
+        user = await _lookup_user_by_github_id(
+            session, github_id=github_id, org_id=org_id
+        )
+        if user is not None:
+            return user
+    if github_username:
+        return await _lookup_user_by_github_username(
+            session, github_username=github_username, org_id=org_id
+        )
+    return None
+
+
 async def _resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
@@ -291,11 +344,12 @@ async def _resolve_created_by_user_id(
         if api_key and api_key.created_by_user_id:
             return api_key.created_by_user_id
 
-    if submission.github_username:
-        user = await _lookup_user_by_github_username(
+    if submission.github_id or submission.github_username:
+        user = await _resolve_connected_user(
             session,
-            github_username=submission.github_username,
             org_id=auth.org_id,
+            github_id=submission.github_id,
+            github_username=submission.github_username,
         )
         if user:
             return user.id
@@ -312,15 +366,18 @@ async def _resolve_experiment_owner_user_id(
     auth: AuthContext,
 ) -> str | None:
     """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
-    if submission.github_username:
-        user = await _lookup_user_by_github_username(
+    if submission.github_id or submission.github_username:
+        # github_id (immutable) beats the mutable handle via the shared resolver
+        # (predicate parity with the linkage endpoint).
+        user = await _resolve_connected_user(
             session,
-            github_username=submission.github_username,
             org_id=auth.org_id,
+            github_id=submission.github_id,
+            github_username=submission.github_username,
         )
         if user:
             return user.id
-        # Explicit --github-user with no linked org member: leave owner unset so
+        # Explicit github identity with no linked org member: leave owner unset so
         # the legacy primary-task Mine filter can match the github tag.
         return None
 
