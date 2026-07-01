@@ -85,6 +85,17 @@ def _resolve_trial_cost(
     return estimated, True
 
 
+def _has_fetchable_trajectory(trial: TrialModel) -> bool:
+    if trial.has_trajectory:
+        return True
+    # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
+    # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
+    return (
+        (trial.agent or "").strip().lower() == "grok-build"
+        and trial.finished_at is not None
+    )
+
+
 _ANALYSIS_SUMMARY_UNSET = object()
 _VERSION_ID_UNSET: object = object()
 _QUEUE_PENDING_STATUSES = {TrialStatus.QUEUED, TrialStatus.RETRYING}
@@ -445,7 +456,7 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
@@ -517,7 +528,7 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
