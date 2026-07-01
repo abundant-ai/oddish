@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 
 import asyncpg
@@ -112,6 +112,37 @@ async def release_queue_slot(
         signal_dispatch()
     except Exception:
         pass
+
+
+async def count_held_queue_slots(queue_keys: Sequence[str]) -> dict[str, int]:
+    """Per-``queue_key`` count of currently HELD slot leases.
+
+    A slot is held when it carries a ``locked_by`` and its lease has not expired
+    (the same ``locked_until`` freshness test ``acquire_queue_slot`` uses). This
+    is the authoritative in-flight concurrency for a ``queue_key``: the lease is
+    taken at spawn/claim, *before* the job flips to RUNNING in ``worker_jobs``.
+
+    The off-Modal dispatch cycle folds this into its planning so a fast
+    event-trigger re-fire (before freshly-spawned workers register as RUNNING)
+    does not over-spawn workers that then lose the ``queue_slots`` race and exit.
+    Filtered to ``queue_keys`` (mirrors ``get_worker_job_org_queue_counts``); an
+    empty request short-circuits to ``{}`` without a round-trip.
+    """
+    if not queue_keys:
+        return {}
+    async with _slot_connection() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT queue_key, COUNT(*) AS held
+            FROM   queue_slots
+            WHERE  locked_by IS NOT NULL
+              AND  (locked_until IS NULL OR locked_until > NOW())
+              AND  queue_key = ANY($1)
+            GROUP BY queue_key
+            """,
+            list(queue_keys),
+        )
+    return {str(row["queue_key"]): int(row["held"] or 0) for row in rows}
 
 
 async def cleanup_stale_queue_slots() -> int:
