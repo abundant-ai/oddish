@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -198,7 +200,7 @@ async def retry_trial_core(
         ),
         {"new_trial_id": new_trial_id, "old_trial_id": old_trial.id},
     )
-    if cas.rowcount == 0:
+    if cast(Any, cas).rowcount == 0:
         raise HTTPException(
             status_code=409,
             detail=(
