@@ -857,6 +857,7 @@ class Settings(BaseSettings):
     auto_start_workers: bool = True
 
     pending_trial_reservation_usd: Decimal = Decimal("0.50")
+    default_daily_quota_usd: Decimal = Decimal("10.00")
 
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the

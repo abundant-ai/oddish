@@ -11,7 +11,7 @@ from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
 from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
-from auth.permissions import can_create_api_keys
+from auth.permissions import can_create_api_keys, can_manage_quotas
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
@@ -343,13 +343,37 @@ async def require_api_key_creator(
     )
 
 
+async def require_can_manage_quotas(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> AuthContext:
+    """Require a user (never an API key) with the org ADMIN role to manage quotas.
+
+    Unlike require_admin, a FULL-scope API key must NOT pass -- quota management
+    is user-auth-only. Unlike require_api_key_creator, it is self-service for
+    every org's admins (not @abundant-gated).
+    """
+    if auth.method == AuthMethod.API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User auth required to manage quotas",
+        )
+    if can_manage_quotas(auth):
+        return auth
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin role required to manage quotas",
+    )
+
+
 __all__ = [
     "APIKeyScope",
     "AuthContext",
     "AuthMethod",
     "can_create_api_keys",
+    "can_manage_quotas",
     "require_admin",
     "require_api_key_creator",
+    "require_can_manage_quotas",
     "require_auth",
     "get_auth_context",
 ]
