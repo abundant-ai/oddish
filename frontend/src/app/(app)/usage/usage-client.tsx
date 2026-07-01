@@ -1,20 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import type { DashboardResponse } from "@/lib/types";
 import { DASHBOARD_DEFAULT_USAGE_MINUTES } from "@/lib/dashboard-request";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   getMinutesFromTimeRange,
   UsageOverviewCard,
   useDashboardUsage,
   type TimeRangeKey,
 } from "@/components/usage-overview";
+import { CostBreakdownCard } from "@/components/cost-breakdown-card";
+
+type Tab = "queue-state" | "cost";
 
 type UsageClientProps = {
   initialUsageData?: DashboardResponse | null;
+  isAdmin?: boolean;
 };
 
-export function UsageClient({ initialUsageData = null }: UsageClientProps) {
+export function UsageClient({
+  initialUsageData = null,
+  isAdmin = false,
+}: UsageClientProps) {
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("24h");
   const usageMinutes = getMinutesFromTimeRange(timeRange);
   const usageFallbackData =
@@ -28,18 +37,108 @@ export function UsageClient({ initialUsageData = null }: UsageClientProps) {
     isRefreshing: usageIsRefreshing,
   } = useDashboardUsage(usageMinutes, usageFallbackData);
 
+  // The tab is reflected in ?tab= so it's deep-linkable and survives
+  // back/forward, but switching is purely client-side (like the admin tabs) —
+  // we update the URL via the History API so there's no server round-trip and
+  // the toggle responds instantly. Local state is the source of truth for the
+  // active tab; an effect re-syncs it from the URL on deep-link / back-forward.
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const urlTab: Tab =
+    isAdmin && searchParams.get("tab") === "cost" ? "cost" : "queue-state";
+  const [tab, setTab] = useState<Tab>(urlTab);
+
+  useEffect(() => {
+    setTab(urlTab);
+  }, [urlTab]);
+
+  const handleTabChange = (value: string) => {
+    const next = (value === "cost" ? "cost" : "queue-state") as Tab;
+    setTab(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === "cost") params.set("tab", "cost");
+    else params.delete("tab");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  };
+
+  // Mirror the Cost tab's search in ?q= so it's deep-linkable and survives
+  // reload / back-forward, updated client-side via the History API.
+  const urlSearch = searchParams.get("q") ?? "";
+  const [searchQuery, setSearchQuery] = useState(urlSearch);
+
+  useEffect(() => {
+    setSearchQuery(urlSearch);
+  }, [urlSearch]);
+
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    const params = new URLSearchParams(searchParams.toString());
+    if (value) params.set("q", value);
+    else params.delete("q");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  };
+
+  const urlDays = searchParams.get("days") ?? "7";
+  const [windowDays, setWindowDays] = useState(urlDays);
+
+  useEffect(() => {
+    setWindowDays(urlDays);
+  }, [urlDays]);
+
+  const handleWindowDaysChange = (value: string) => {
+    setWindowDays(value);
+    const params = new URLSearchParams(searchParams.toString());
+    if (value && value !== "7") params.set("days", value);
+    else params.delete("days");
+    const qs = params.toString();
+    window.history.replaceState(null, "", qs ? `${pathname}?${qs}` : pathname);
+  };
+
+  const queueState = (
+    <UsageOverviewCard
+      queues={queues}
+      modelUsage={modelUsage}
+      jobUsage={jobUsage}
+      error={usageError}
+      isLoading={usageIsLoading}
+      isRefreshing={usageIsRefreshing}
+      timeRange={timeRange}
+      onTimeRangeChange={setTimeRange}
+    />
+  );
+
+  // Cost is admin-only; for everyone else show queue state without a tab strip.
+  if (!isAdmin) {
+    return <div className="space-y-4">{queueState}</div>;
+  }
+
   return (
-    <div className="space-y-4">
-      <UsageOverviewCard
-        queues={queues}
-        modelUsage={modelUsage}
-        jobUsage={jobUsage}
-        error={usageError}
-        isLoading={usageIsLoading}
-        isRefreshing={usageIsRefreshing}
-        timeRange={timeRange}
-        onTimeRangeChange={setTimeRange}
-      />
-    </div>
+    <Tabs value={tab} onValueChange={handleTabChange} className="space-y-4">
+      <TabsList>
+        <TabsTrigger value="queue-state">Queue State</TabsTrigger>
+        <TabsTrigger value="cost">Cost</TabsTrigger>
+      </TabsList>
+      <TabsContent value="queue-state" className="space-y-4">
+        {queueState}
+      </TabsContent>
+      <TabsContent value="cost" className="space-y-4">
+        <CostBreakdownCard
+          showChart={false}
+          enableSearch
+          enableExport
+          enableSectionCharts
+          seriesTopN={0}
+          experimentLimit={500}
+          userLimit={500}
+          refreshIntervalMs={0}
+          searchValue={searchQuery}
+          onSearchChange={handleSearchChange}
+          windowDaysValue={windowDays}
+          onWindowDaysChange={handleWindowDaysChange}
+        />
+      </TabsContent>
+    </Tabs>
   );
 }
