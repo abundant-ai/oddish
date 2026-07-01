@@ -46,6 +46,7 @@ from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
     is_modal_image_build_failure,
 )
+from oddish.workers.queue import job_tokens
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
@@ -73,6 +74,66 @@ async def _delete_probe_key(api_key_id: str, trial_id: str) -> None:
     except Exception as exc:
         console.print(
             f"[yellow]Failed to revoke probe key for trial {trial_id} "
+            f"(will auto-expire): {exc}[/yellow]"
+        )
+
+
+async def _issue_job_credentials(
+    *, worker_job_id: str, agent: str, model: str | None, trial_id: str
+) -> job_tokens.JobCredentialBundle | None:
+    """Mint a job-scoped credential bundle and persist its token hash.
+
+    Returns the bundle (the worker injects its scoped model env into the agent);
+    best-effort -- on failure returns None so the caller dual-reads the blanket
+    secret instead (spec §6.6). Gated by the caller on job_scoped_tokens_enabled.
+    """
+    try:
+        from sqlalchemy import update
+
+        from oddish.db import get_session
+        from oddish.db.models import WorkerJobModel
+
+        bundle, token_hash = job_tokens.build_bundle(
+            agent=agent, model=model, trial_id=trial_id, settings=settings, now=utcnow()
+        )
+        async with get_session() as session:
+            await session.execute(
+                update(WorkerJobModel)
+                .where(WorkerJobModel.id == worker_job_id)
+                .values(
+                    job_token_hash=token_hash,
+                    job_token_expires_at=bundle.expires_at,
+                    job_token_revoked_at=None,
+                )
+            )
+            await session.commit()
+        return bundle
+    except Exception as exc:
+        console.print(
+            f"[yellow]Failed to issue job token for trial {trial_id} "
+            f"(falling back to blanket secret): {exc}[/yellow]"
+        )
+        return None
+
+
+async def _revoke_job_credentials(worker_job_id: str, trial_id: str) -> None:
+    """Best-effort revoke a job-scoped token on terminal status; never raises."""
+    try:
+        from sqlalchemy import update
+
+        from oddish.db import get_session
+        from oddish.db.models import WorkerJobModel
+
+        async with get_session() as session:
+            await session.execute(
+                update(WorkerJobModel)
+                .where(WorkerJobModel.id == worker_job_id)
+                .values(job_token_revoked_at=utcnow())
+            )
+            await session.commit()
+    except Exception as exc:
+        console.print(
+            f"[yellow]Failed to revoke job token for trial {trial_id} "
             f"(will auto-expire): {exc}[/yellow]"
         )
 
@@ -806,6 +867,7 @@ async def _handle_harbor_event(
                     .values(
                         provider=hook_event.environment_provider,
                         external_id=hook_event.environment_external_id,
+                        sandbox_creating_at=utcnow(),
                     )
                 )
 
@@ -1051,6 +1113,7 @@ async def run_trial_job(
     # deleted after the run.
     probe_agent_env: dict[str, str] | None = None
     probe_key_id: str | None = None
+    job_scoped_bundle: job_tokens.JobCredentialBundle | None = None
     if probe_extra_instructions:
         if temp_task_dir is None:
             probe_copy_root = Path(tempfile.mkdtemp(prefix=f"probe-{trial_id}-"))
@@ -1097,6 +1160,19 @@ async def run_trial_job(
     should_upload_to_s3 = bool(resolved_task_s3_key)
 
     try:
+        # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
+        # write prefix) and inject its scoped model env into the agent, replacing
+        # the blanket secret read. Off by default (dual-read: bundle if present,
+        # else the blanket secret). Inside the try so the finally always revokes
+        # it on terminal status (§6.6).
+        if settings.job_scoped_tokens_enabled and worker_job_id:
+            job_scoped_bundle = await _issue_job_credentials(
+                worker_job_id=worker_job_id,
+                agent=prepared_trial.trial_agent,
+                model=prepared_trial.trial_model,
+                trial_id=trial_id,
+            )
+
         execution = await _execute_trial(
             trial_id=trial_id,
             task_path_to_run=task_path_to_run,
@@ -1105,7 +1181,9 @@ async def run_trial_job(
             worker_id=worker_id,
             queue_slot=queue_slot,
             worker_job_id=worker_job_id,
-            extra_agent_env=probe_agent_env,
+            extra_agent_env=job_tokens.merge_agent_env(
+                job_scoped_bundle, probe_agent_env
+            ),
         )
 
         # Upload trial results to S3.
@@ -1115,7 +1193,13 @@ async def run_trial_job(
             try:
                 storage = get_storage_client()
                 trial_s3_key = await storage.upload_trial_results(
-                    trial_id, execution.outcome.job_dir
+                    trial_id,
+                    execution.outcome.job_dir,
+                    authorized_prefix=(
+                        job_scoped_bundle.s3_write_prefix
+                        if job_scoped_bundle is not None
+                        else None
+                    ),
                 )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
@@ -1126,7 +1210,11 @@ async def run_trial_job(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
                 )
 
-        # Mirror to sauron's AWS S3 (best-effort).
+        # Mirror to sauron's AWS S3 (best-effort). This targets sauron's own
+        # observability bucket (settings.sauron_s3_bucket) with its own prefix
+        # scheme -- a distinct scope from the trial-results prefix, so the
+        # job-scoped credential's authorized_prefix intentionally does NOT apply
+        # here (it would refuse every legitimate sauron write).
         if execution.outcome and execution.outcome.job_dir:
             try:
                 from oddish.integrations.sauron import get_sauron_uploader
@@ -1195,3 +1283,6 @@ async def run_trial_job(
         # is done; it also auto-expires via its TTL if this fails.
         if probe_key_id:
             await _delete_probe_key(probe_key_id, trial_id)
+        # Same for the job-scoped credential token (revoke on terminal status).
+        if job_scoped_bundle is not None and worker_job_id:
+            await _revoke_job_credentials(worker_job_id, trial_id)

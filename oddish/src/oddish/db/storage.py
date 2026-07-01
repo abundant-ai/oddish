@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from datetime import datetime, timezone
 import io
@@ -16,6 +17,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
 from oddish.config import settings
+
+logger = logging.getLogger(__name__)
 
 WORKER_TASK_MOUNT_PATH = Path("/mnt/oddish-tasks")
 WORKER_TASK_KEY_PREFIX = "tasks/"
@@ -430,13 +433,23 @@ class StorageClient:
             local_file.parent.mkdir(parents=True, exist_ok=True)
             await self.download_file(s3_key, local_file)
 
-    async def upload_trial_results(self, trial_id: str, harbor_job_dir: Path) -> str:
+    async def upload_trial_results(
+        self,
+        trial_id: str,
+        harbor_job_dir: Path,
+        *,
+        authorized_prefix: str | None = None,
+    ) -> str:
         """
         Upload Harbor trial results to S3.
 
         Args:
             trial_id: Trial identifier
             harbor_job_dir: Local path to Harbor job results
+            authorized_prefix: When a job-scoped credential bundle is active, the
+                S3 write prefix the worker is allowed to write under; any key that
+                would escape it (e.g. a path-traversal in the relative path) is
+                refused. ``None`` (default) uploads with no extra restriction.
 
         Returns:
             S3 key prefix for the uploaded trial
@@ -447,7 +460,9 @@ class StorageClient:
         if not harbor_job_dir.exists():
             raise ValueError(f"Harbor job directory does not exist: {harbor_job_dir}")
 
-        await self._upload_directory(harbor_job_dir, s3_prefix)
+        await self._upload_directory(
+            harbor_job_dir, s3_prefix, authorized_prefix=authorized_prefix
+        )
 
         return s3_prefix
 
@@ -523,21 +538,58 @@ class StorageClient:
 
         return extracted
 
-    async def _upload_directory(self, local_path: Path, s3_prefix: str) -> None:
-        """Upload a directory tree to S3 with bounded concurrency."""
+    async def _upload_directory(
+        self,
+        local_path: Path,
+        s3_prefix: str,
+        *,
+        authorized_prefix: str | None = None,
+    ) -> None:
+        """Upload a directory tree to S3 with bounded concurrency.
+
+        When ``authorized_prefix`` is set (a job-scoped credential is active),
+        any key that would fall outside it is refused rather than written, so
+        this oddish upload path cannot write outside the job's prefix
+        (defense in depth against a path-traversal escape; spec §6.6).
+        """
         file_paths = [path for path in local_path.rglob("*") if path.is_file()]
         if not file_paths:
             return
 
         semaphore = asyncio.Semaphore(self._MAX_CONCURRENT_UPLOADS)
 
-        async def upload_one(file_path: Path) -> None:
+        async def upload_one(file_path: Path) -> str | None:
             relative_path = file_path.relative_to(local_path)
             s3_key = f"{s3_prefix}{relative_path}"
+            if authorized_prefix is not None:
+                from oddish.workers.queue.job_tokens import authorize_s3_key
+
+                if not authorize_s3_key(s3_key, authorized_prefix):
+                    logger.warning(
+                        "Refusing S3 write outside the job's authorized prefix: "
+                        "%s not under %s",
+                        s3_key,
+                        authorized_prefix,
+                    )
+                    return s3_key
             async with semaphore:
                 await self.upload_file(file_path, s3_key)
+            return None
 
-        await asyncio.gather(*(upload_one(file_path) for file_path in file_paths))
+        results = await asyncio.gather(
+            *(upload_one(file_path) for file_path in file_paths)
+        )
+        refused = [key for key in results if key is not None]
+        if refused:
+            # A refused write must not read back as a complete upload: surface it
+            # so a mis-scoped job-token prefix (one that doesn't cover the trial's
+            # artifacts) fails loudly instead of silently dropping files.
+            raise RuntimeError(
+                f"Refused {len(refused)} S3 upload(s) outside the job's authorized "
+                f"prefix {authorized_prefix!r}; upload is incomplete "
+                f"(first: {refused[0]}). The job token's prefix likely does not "
+                "cover the trial's artifacts."
+            )
 
     async def download_trial_directory(self, s3_prefix: str, local_path: Path) -> None:
         """
