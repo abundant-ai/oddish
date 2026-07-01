@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { trialHasActiveAnalysis } from "@/lib/job-status";
 
+const ALLOW_ERROR = "exit 137";
+
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
   text: string;
@@ -219,7 +221,7 @@ export function ProbeDetailPanel({
           </p>
         </div>
 
-        {trial.error_message && !trial.error_message.includes("exit 137") ? (
+        {trial.error_message && !trial.error_message.includes(ALLOW_ERROR) ? (
           <section className="rounded border p-4">
             <p className="text-sm break-words whitespace-pre-wrap text-red-500">
               {trial.error_message}
