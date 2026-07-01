@@ -130,7 +130,7 @@ def _extract_reward(trial_result: Any) -> float | None:
         reward_value = next(iter(rewards.values()))
     if reward_value is None:
         return None
-    return float(reward_value)
+    return _as_float(reward_value)
 
 
 def _extract_error(trial_result: Any) -> tuple[str | None, str | None]:
