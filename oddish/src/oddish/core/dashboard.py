@@ -52,7 +52,6 @@ from oddish.db import (
     VerdictStatus,
     WorkerJobModel,
     WorkerJobStatus,
-    experiment_trials,
     get_session,
     task_experiments,
 )
@@ -391,76 +390,45 @@ def _build_aggregates_for_experiment_ids(
         task_agg_query = task_agg_query.where(TaskModel.org_id == org_id)
     task_agg = task_agg_query.group_by(task_experiments.c.experiment_id).subquery()
 
-    # Membership of a trial under an experiment id: either the trial's
-    # canonical home (``TrialModel.experiment_id``) or a "gathered" link via
-    # ``experiment_trials`` (read-only collection experiments -- see
-    # ``create_trial_collection_core``). For a normal experiment the second
-    # branch is empty, so this is exactly the identity (experiment_id, id)
-    # and grouping by it reproduces prior results byte-for-byte. A trial can
-    # appear under two different experiment ids (its home + a collection)
-    # but the UNION dedups any (experiment_id, trial_id) pair, so it can
-    # never double-count within a single experiment id.
-    member = (
-        select(
-            TrialModel.experiment_id.label("experiment_id"),
-            TrialModel.id.label("trial_id"),
-        )
-        .where(TrialModel.experiment_id.in_(experiment_ids))
-        .union(
-            select(
-                experiment_trials.c.experiment_id.label("experiment_id"),
-                experiment_trials.c.trial_id.label("trial_id"),
-            ).where(
-                experiment_trials.c.experiment_id.in_(experiment_ids),
-                experiment_trials.c.deleted_at.is_(None),
-            )
-        )
-        .subquery()
-    )
-
-    trial_agg_query = (
-        select(
-            member.c.experiment_id.label("experiment_id"),
-            func.max(TrialModel.created_at).label("last_trial_created_at"),
-            func.count(func.distinct(TrialModel.task_id)).label("trial_task_count"),
-            func.count(TrialModel.id).label("total_trials"),
-            func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
-                "completed_trials"
-            ),
-            func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
-                "failed_trials"
-            ),
-            func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
-                "retrying_trials"
-            ),
-            func.count(
-                case(
-                    (
-                        TrialModel.status.in_(
-                            [
-                                TrialStatus.PENDING,
-                                TrialStatus.QUEUED,
-                                TrialStatus.RUNNING,
-                                TrialStatus.RETRYING,
-                            ]
-                        ),
-                        1,
-                    )
+    trial_agg_query = select(
+        TrialModel.experiment_id.label("experiment_id"),
+        func.max(TrialModel.created_at).label("last_trial_created_at"),
+        func.count(func.distinct(TrialModel.task_id)).label("trial_task_count"),
+        func.count(TrialModel.id).label("total_trials"),
+        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+            "completed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+            "failed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
+            "retrying_trials"
+        ),
+        func.count(
+            case(
+                (
+                    TrialModel.status.in_(
+                        [
+                            TrialStatus.PENDING,
+                            TrialStatus.QUEUED,
+                            TrialStatus.RUNNING,
+                            TrialStatus.RETRYING,
+                        ]
+                    ),
+                    1,
                 )
-            ).label("active_trials"),
-            func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
-            func.sum(TrialModel.reward).label("reward_sum"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label(
-                "reward_total"
-            ),
-        )
-        .select_from(member)
-        .join(TrialModel, TrialModel.id == member.c.trial_id)
-        .where(TrialModel.superseded_by_trial_id.is_(None))
+            )
+        ).label("active_trials"),
+        func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
+        func.sum(TrialModel.reward).label("reward_sum"),
+        func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
+    ).where(
+        TrialModel.experiment_id.in_(experiment_ids),
+        TrialModel.superseded_by_trial_id.is_(None),
     )
     if org_id is not None:
         trial_agg_query = trial_agg_query.where(TrialModel.org_id == org_id)
-    trial_agg = trial_agg_query.group_by(member.c.experiment_id).subquery()
+    trial_agg = trial_agg_query.group_by(TrialModel.experiment_id).subquery()
 
     # avg score: per-task mean reward (over scored trials) averaged across
     # tasks, so tasks with many trials don't dominate the experiment score
@@ -468,17 +436,16 @@ def _build_aggregates_for_experiment_ids(
     # excluded.
     per_task_score_query = (
         select(
-            member.c.experiment_id.label("experiment_id"),
+            TrialModel.experiment_id.label("experiment_id"),
             func.avg(TrialModel.reward).label("task_avg_score"),
         )
-        .select_from(member)
-        .join(TrialModel, TrialModel.id == member.c.trial_id)
         .where(
+            TrialModel.experiment_id.in_(experiment_ids),
             TrialModel.superseded_by_trial_id.is_(None),
             TrialModel.reward.isnot(None),
             not_(_baseline_agent_clause()),
         )
-        .group_by(member.c.experiment_id, TrialModel.task_id)
+        .group_by(TrialModel.experiment_id, TrialModel.task_id)
     )
     if org_id is not None:
         per_task_score_query = per_task_score_query.where(TrialModel.org_id == org_id)
