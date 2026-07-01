@@ -19,10 +19,15 @@ import pytest
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
+    generate_public_token,
+    get_public_experiment,
     get_public_trial,
     list_experiment_trials_for_org,
 )
-from oddish.core.sharing.public import list_public_experiment_tasks
+from oddish.core.sharing.public import (
+    list_public_experiment_tasks,
+    list_public_experiments,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -38,6 +43,13 @@ from sqlalchemy import select
 
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def test_generate_public_token_uses_256_bit_urlsafe_secret():
+    token = generate_public_token()
+
+    assert len(token) == 43
+    assert token.replace("-", "").replace("_", "").isalnum()
 
 
 def _task(name: str, *, org_id: str = "org1") -> TaskModel:
@@ -138,6 +150,26 @@ async def test_export_lists_gathered_trials(session):
 
     trials = await list_experiment_trials_for_org(session, coll.id, org_id="org1")
     assert t1.id in {t.id for t in trials}
+
+
+@pytest.mark.asyncio
+async def test_public_experiments_list_does_not_enumerate_share_tokens(session):
+    exp = _experiment(_unique("private-link"), org_id=None)
+    session.add(exp)
+    await session.flush()
+
+    await ensure_experiment_public(session, exp)
+    await session.flush()
+    token = exp.public_token
+    assert token
+
+    listed = await list_public_experiments()
+    assert listed == []
+
+    resolved = await get_public_experiment(session, token)
+    assert resolved is not None
+    assert resolved.public_token == token
+    assert resolved.name == exp.name
 
 
 @pytest.mark.asyncio
