@@ -19,6 +19,7 @@ import pytest
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
+    get_public_trial,
     list_experiment_trials_for_org,
 )
 from oddish.core.sharing.public import list_public_experiment_tasks
@@ -212,3 +213,75 @@ async def test_public_view_includes_gathered_non_probe():
         assert t1.id in ids
     finally:
         await _cleanup(task_ids=task_ids, experiment_ids=experiment_ids)
+
+
+@pytest.mark.asyncio
+async def test_get_public_trial_resolves_gathered_non_probe(session):
+    """Fix 2: ``get_public_trial`` must admit a trial whose HOME experiment is
+    private but whose GATHERED (collection) experiment is public -- otherwise
+    the per-trial detail/logs/files/result endpoints 404 for trials that
+    render fine in the collection's public grid."""
+    task = _task(_unique("public-trial-task"))
+    session.add(task)
+    await session.flush()
+
+    home = _experiment(_unique("public-trial-home"))  # stays private
+    session.add(home)
+    await session.flush()
+
+    t1 = _trial(task, home, org_id="org1", is_probe=False)
+    session.add(t1)
+    await session.flush()
+
+    coll = await create_trial_collection_core(
+        session, name=_unique("coll"), trial_ids=[t1.id], org_id="org1"
+    )
+    await session.flush()
+
+    coll_exp = (
+        await session.execute(
+            select(ExperimentModel).where(ExperimentModel.id == coll.id)
+        )
+    ).scalar_one()
+    await ensure_experiment_public(session, coll_exp)
+    await session.flush()
+
+    assert home.is_public is False  # home experiment never published
+
+    resolved = await get_public_trial(session, t1.id)
+    assert resolved is not None
+    assert resolved.id == t1.id
+
+
+@pytest.mark.asyncio
+async def test_get_public_trial_excludes_gathered_probe(session):
+    """Anti-leak: even once gathered into a PUBLIC collection, a probe trial
+    must never resolve via ``get_public_trial``. Probes are internal-only and
+    must never appear on any public surface."""
+    task = _task(_unique("public-probe-trial-task"))
+    session.add(task)
+    await session.flush()
+
+    home = _experiment(_unique("public-probe-trial-home"))
+    session.add(home)
+    await session.flush()
+
+    probe = _trial(task, home, org_id="org1", is_probe=True)
+    session.add(probe)
+    await session.flush()
+
+    coll = await create_trial_collection_core(
+        session, name=_unique("coll"), trial_ids=[probe.id], org_id="org1"
+    )
+    await session.flush()
+
+    coll_exp = (
+        await session.execute(
+            select(ExperimentModel).where(ExperimentModel.id == coll.id)
+        )
+    ).scalar_one()
+    await ensure_experiment_public(session, coll_exp)
+    await session.flush()
+
+    resolved = await get_public_trial(session, probe.id)
+    assert resolved is None
