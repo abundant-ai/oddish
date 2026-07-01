@@ -376,7 +376,7 @@ class TaskSweepSubmission(BaseModel):
     )
     github_id: str | None = Field(
         None,
-        description="GitHub user id (Clerk provider_user_id) to attribute this task to; immutable across handle renames",
+        description="Immutable GitHub user id for attribution",
     )
     publish_experiment: bool | None = Field(
         None,

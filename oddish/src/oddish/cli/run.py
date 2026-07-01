@@ -302,7 +302,7 @@ def run(
         Optional[str],
         typer.Option(
             "--github-id",
-            help="GitHub user id (immutable) to attribute this task to. Survives handle renames.",
+            help="Immutable GitHub user id for attribution.",
         ),
     ] = None,
     github_meta: Annotated[
