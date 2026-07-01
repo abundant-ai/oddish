@@ -51,17 +51,23 @@ class BackfillSummary:
         }
 
 
-def _candidate_select(*, batch_size: int):
-    # Active users with a clerk id but no github_id yet. ORDER BY id keeps paging
-    # deterministic across batches; the null filter makes each pass idempotent.
-    return (
+def _candidate_select(*, batch_size: int, after_id: str | None = None):
+    # Active users with a clerk id but no github_id yet, in id order. The keyset
+    # cursor (id > after_id) advances the window past rows already visited THIS
+    # run — crucially the permanently-unfillable ones (Clerk has no github_id, an
+    # in-org collision, a transient Clerk error) that stay github_id IS NULL. A
+    # plain re-`select` of the null pool would re-fetch them forever (infinite
+    # loop in drain mode, starvation of later rows under a max_users cap). A fresh
+    # run restarts at after_id=None, so skipped rows are retried next cycle.
+    stmt = (
         select(UserModel)
         .where(UserModel.clerk_user_id.isnot(None))
         .where(UserModel.github_id.is_(None))
         .where(UserModel.is_active == True)  # noqa: E712
-        .order_by(UserModel.id.asc())
-        .limit(batch_size)
     )
+    if after_id is not None:
+        stmt = stmt.where(UserModel.id > after_id)
+    return stmt.order_by(UserModel.id.asc()).limit(batch_size)
 
 
 async def backfill_github_id(
@@ -84,6 +90,7 @@ async def backfill_github_id(
     """
     summary = BackfillSummary()
     semaphore = asyncio.Semaphore(max(1, concurrency))
+    after_id: str | None = None
 
     async def _fetch(user: UserModel):
         # Clerk GETs run concurrently (semaphore-capped); returns the identity or
@@ -106,12 +113,19 @@ async def backfill_github_id(
 
         async with get_session() as session:
             users = list(
-                (await session.execute(_candidate_select(batch_size=remaining)))
+                (
+                    await session.execute(
+                        _candidate_select(batch_size=remaining, after_id=after_id)
+                    )
+                )
                 .scalars()
                 .all()
             )
             if not users:
                 break
+            # Advance the cursor past this page up front, so a page of all-skips
+            # still moves forward (guarantees termination + reaches later rows).
+            after_id = users[-1].id
 
             fetched = await asyncio.gather(*(_fetch(u) for u in users))
             for user, identity, exc in fetched:

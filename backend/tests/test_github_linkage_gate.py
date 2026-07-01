@@ -396,14 +396,17 @@ async def test_case10_endpoint_refreshes_stale_handle(client, org_with_users, mo
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case17_fail_open_uses_stale_db_on_clerk_outage(client, org_with_users, monkeypatch):
-    """Case 17 (fail-open): when the Clerk refresh raises, the endpoint must answer
-    from the stale DB value, NOT report unlinked. A stored handle that already
-    matches the actor is the most fail-open answer — Clerk is never consulted —
-    so a Clerk outage cannot flip a real link to unlinked."""
+async def test_case17a_stored_match_short_circuits_clerk(client, org_with_users, monkeypatch):
+    """Case 17 (fail-open, part a): a stored handle that already matches the actor
+    resolves on the FIRST predicate pass, so the refresh never runs and Clerk is
+    never consulted — a Clerk outage therefore cannot flip a real link to unlinked.
+    Asserts the fetch seam is NOT called (the original test only implied this)."""
     import api.routers.github_linkage as gh
 
-    async def _clerk_down(_clerk_user_id: str):
+    calls: list[str] = []
+
+    async def _clerk_down(clerk_user_id: str):
+        calls.append(clerk_user_id)
         raise httpx.HTTPError("clerk unreachable")
 
     monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_down)
@@ -416,6 +419,41 @@ async def test_case17_fail_open_uses_stale_db_on_clerk_outage(client, org_with_u
         assert resp.status_code == 200
         body = resp.json()
         assert body["linked"] is True and body["user_id"] == alice.id  # stale, not unlinked
+        assert calls == []  # short-circuited: Clerk was never consulted
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_case17b_refresh_raise_is_fail_open_not_500(client, org_with_users, monkeypatch):
+    """Case 17 (fail-open, part b): on a MISS the refresh actually runs; if the
+    Clerk fetch raises a NON-httpx error (e.g. a malformed-200 JSONDecodeError —
+    the class the lessons doc warns escapes an httpx-only catch), the endpoint must
+    still answer 200 (linked:false), NOT 500. This is the coverage the handle-match
+    case can't provide: it forces the refresh path (called["n"] proves the raising
+    fetch ran). The ValueError is caught by the per-user `except Exception` inside
+    _refresh_org_github_identities; the endpoint's outer `except Exception` is a
+    second backstop. So this pins end-to-end fail-open (a non-httpx raise -> 200),
+    which breaks only if BOTH catches are narrowed off `except Exception`."""
+    import api.routers.github_linkage as gh
+
+    called = {"n": 0}
+
+    async def _clerk_boom(clerk_user_id: str):
+        called["n"] += 1
+        raise ValueError("malformed clerk 200")  # non-httpx: escapes a narrow catch
+
+    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_boom)
+
+    org_id, add = org_with_users
+    await add("alice")  # a stored member, so the refresh has someone to fetch
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, "ghost_actor")  # unstored -> first pass misses
+        assert resp.status_code == 200  # fail-open, not a 500
+        assert resp.json()["linked"] is False
+        assert called["n"] >= 1  # the refresh path really executed the raising fetch
     finally:
         await _purge(api_key_ids=[key_id])
 
