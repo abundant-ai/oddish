@@ -341,6 +341,35 @@ task_experiments = Table(
 )
 
 
+# Association table for read-only "collection" experiments: gathers existing
+# trials (from their home experiments) into a new experiment for dashboard
+# viewing, without moving the trials.
+experiment_trials = Table(
+    "experiment_trials",
+    Base.metadata,
+    Column(
+        "experiment_id",
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "trial_id",
+        String(160),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    ),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
+    Index("idx_experiment_trials_trial_id", "trial_id"),
+)
+
+
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -415,6 +444,12 @@ class ExperimentModel(TimestampedMixin, Base):
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Read-only "collection" experiment: gathers existing trials from other
+    # experiments for dashboard viewing (see ``experiment_trials``).
+    is_collection: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
