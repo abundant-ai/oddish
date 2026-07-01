@@ -27,6 +27,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import TrialResponse
+from oddish.trial_cost import apply_settled_cost
 
 
 async def get_trial_by_index_core(
@@ -154,6 +155,7 @@ async def retry_trial_core(
         old_trial.finished_at = old_trial.finished_at or utcnow()
         old_trial.current_worker_id = None
         old_trial.current_queue_slot = None
+        apply_settled_cost(old_trial)
 
     # Cancel every live worker_jobs row anchored to the OLD trial id
     # (TRIAL run + any in-flight ANALYSIS) so workers stop heart-beating

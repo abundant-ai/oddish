@@ -23,6 +23,7 @@ def _trial(**overrides):
         id="trial-1",
         task_id="task-1",
         agent="codex",
+        model="gpt-5",
         harbor_config=None,
         status=TrialStatus.RUNNING,
         error_message=None,

@@ -18,6 +18,7 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import update
 
 from oddish.config import settings
+from oddish.trial_cost import apply_settled_cost
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -559,6 +560,7 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
+            apply_settled_cost(trial, outcome)
             return
 
         if outcome:
@@ -585,13 +587,7 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
-            # Store token usage & cost from Harbor's AgentContext
-            trial.input_tokens = outcome.input_tokens
-            trial.cache_tokens = outcome.cache_tokens
-            trial.cache_write_tokens = outcome.cache_write_tokens
-            trial.output_tokens = outcome.output_tokens
-            trial.total_steps = outcome.total_steps
-            trial.cost_usd = outcome.cost_usd
+            apply_settled_cost(trial, outcome)
 
             # Store per-phase timing breakdown
             trial.phase_timing = outcome.phase_timing
@@ -649,6 +645,7 @@ async def _store_trial_results(
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
+            apply_settled_cost(trial)
             console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
         trial.current_worker_id = None
