@@ -563,6 +563,14 @@ class TrialCollectionRequest(BaseModel):
     name: str
     trial_ids: list[str]
 
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
 
 # =============================================================================
 # Response Schemas
