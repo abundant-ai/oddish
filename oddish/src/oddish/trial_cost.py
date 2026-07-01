@@ -21,13 +21,16 @@ def apply_settled_cost(trial, outcome=None) -> None:
 
 
 def _estimate_or_floor(trial) -> float:
-    estimated_cost_usd = estimate_cost_usd(
-        trial.model,
-        trial.input_tokens,
-        trial.output_tokens,
-        trial.cache_tokens,
-        trial.cache_write_tokens,
-    )
+    try:
+        estimated_cost_usd = estimate_cost_usd(
+            trial.model,
+            trial.input_tokens,
+            trial.output_tokens,
+            trial.cache_tokens,
+            trial.cache_write_tokens,
+        )
+    except Exception:
+        estimated_cost_usd = None
     if estimated_cost_usd is not None:
         return estimated_cost_usd
     return float(settings.pending_trial_reservation_usd)

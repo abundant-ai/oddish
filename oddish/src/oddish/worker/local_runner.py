@@ -50,6 +50,7 @@ from oddish.worker.probe_staging import apply_probe_overlay, stage_org_skills
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
+from oddish.trial_cost import apply_settled_cost
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,7 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             if trial is not None:
                 trial.status = TrialStatus.FAILED
                 trial.error_message = str(exc)
+                apply_settled_cost(trial)
                 trial.finished_at = datetime.now(timezone.utc)
         raise
 
@@ -337,6 +339,8 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
             )
         trial.status = TrialStatus.SUCCESS
+        if not dry_run:
+            apply_settled_cost(trial)
         trial.finished_at = datetime.now(timezone.utc)
         logger.info("local_runner: trial %s -> SUCCESS", trial_id)
 

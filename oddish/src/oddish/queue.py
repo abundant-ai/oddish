@@ -50,6 +50,11 @@ ACTIVE_TRIAL_STATUSES = (
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
 )
+BILLABLE_CANCEL_TRIAL_STATUSES = (
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.RETRYING,
+)
 ACTIVE_PIPELINE_STATUSES = (
     AnalysisStatus.PENDING,
     AnalysisStatus.QUEUED,
@@ -217,11 +222,7 @@ async def cancel_tasks_runs(
     for trial in trials:
         trial_updated = False
         if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
-            trial_consumed_billable_slot = trial.status in (
-                TrialStatus.QUEUED,
-                TrialStatus.RUNNING,
-                TrialStatus.RETRYING,
-            )
+            trial_consumed_billable_slot = trial.status in BILLABLE_CANCEL_TRIAL_STATUSES
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.

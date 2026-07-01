@@ -19,6 +19,8 @@ from oddish.workers.harbor.runner import HarborOutcome  # noqa: E402
 from oddish.workers.queue import cleanup  # noqa: E402
 from oddish.workers.queue import trial_handler as trial_handler_module  # noqa: E402
 from oddish.workers.queue.trial_handler import _store_trial_results  # noqa: E402
+import oddish.worker.local_runner as local_runner_module  # noqa: E402
+from oddish.worker.local_runner import run_trial_locally  # noqa: E402
 
 reservation_floor_usd = float(settings.pending_trial_reservation_usd)
 
@@ -43,6 +45,7 @@ def _billable_trial(**overrides):
         error_message=None,
         harbor_stage=None,
         finished_at=None,
+        started_at=None,
         max_attempts=6,
         attempts=1,
         reward=None,
@@ -416,3 +419,85 @@ async def test_retry_supersede_floors_old_trial_cost(monkeypatch):
     assert stuck_old_trial.superseded_by_trial_id == "task-1-1"
     assert stuck_old_trial.status == TrialStatus.FAILED
     assert stuck_old_trial.cost_usd == reservation_floor_usd
+
+
+# --- S1-review: the estimate path must never raise in a settlement path --------
+
+
+def test_non_int_token_never_raises_and_falls_back_to_floor():
+    trial_with_non_int_tokens = _billable_trial(cost_usd=None)
+
+    apply_settled_cost(
+        trial_with_non_int_tokens,
+        _outcome(reward=1.0, cost_usd=None, input_tokens="1000.0", output_tokens="200"),
+    )
+
+    assert trial_with_non_int_tokens.cost_usd == reservation_floor_usd
+
+
+# --- S1-review: the local-mode runner floors cost on its terminals -------------
+
+
+class _LocalRunnerSession:
+    def __init__(self, trial):
+        self._trial = trial
+
+    async def get(self, model, trial_id):
+        return self._trial
+
+
+def _patch_local_runner(monkeypatch, trial, harbor_run):
+    session = _LocalRunnerSession(trial)
+
+    @asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(local_runner_module, "get_session", fake_get_session)
+    monkeypatch.setattr(local_runner_module, "_run_harbor_trial", harbor_run)
+
+
+@pytest.mark.asyncio
+async def test_local_runner_success_without_cost_is_floored(monkeypatch):
+    local_trial = _billable_trial(cost_usd=None)
+
+    async def harbor_run_writes_no_cost(trial_id):
+        return None
+
+    _patch_local_runner(monkeypatch, local_trial, harbor_run_writes_no_cost)
+
+    await run_trial_locally("trial-1", dry_run=False)
+
+    assert local_trial.status == TrialStatus.SUCCESS
+    assert local_trial.cost_usd == reservation_floor_usd
+
+
+@pytest.mark.asyncio
+async def test_local_runner_failure_is_floored(monkeypatch):
+    local_trial = _billable_trial(cost_usd=None)
+
+    async def harbor_run_raises(trial_id):
+        raise RuntimeError("local harbor blew up")
+
+    _patch_local_runner(monkeypatch, local_trial, harbor_run_raises)
+
+    with pytest.raises(RuntimeError):
+        await run_trial_locally("trial-1", dry_run=False)
+
+    assert local_trial.status == TrialStatus.FAILED
+    assert local_trial.cost_usd == reservation_floor_usd
+
+
+@pytest.mark.asyncio
+async def test_local_runner_dry_run_is_not_charged(monkeypatch):
+    local_trial = _billable_trial(cost_usd=None)
+
+    async def harbor_run_must_not_be_called(trial_id):
+        raise AssertionError("dry_run must not run harbor")
+
+    _patch_local_runner(monkeypatch, local_trial, harbor_run_must_not_be_called)
+
+    await run_trial_locally("trial-1", dry_run=True)
+
+    assert local_trial.status == TrialStatus.SUCCESS
+    assert local_trial.cost_usd is None
