@@ -34,7 +34,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastapi import HTTPException
@@ -202,7 +202,7 @@ def _task_name_from_harbor_model(data: Any) -> str | None:
         pass
     else:
         if trial_result.task_name:
-            return trial_result.task_name
+            return str(trial_result.task_name)
         return _task_name_from_task_config(trial_result.config.task)
 
     try:
@@ -212,7 +212,7 @@ def _task_name_from_harbor_model(data: Any) -> str | None:
     else:
         for trial_result in job_result.trial_results:
             if trial_result.task_name:
-                return trial_result.task_name
+                return str(trial_result.task_name)
             name = _task_name_from_task_config(trial_result.config.task)
             if name:
                 return name
@@ -238,9 +238,9 @@ def _task_name_from_legacy_json(data: Any) -> str | None:
 
     task = data.get("task")
     if isinstance(task, dict):
-        name = task.get("name") or task.get("task_name")
-        if isinstance(name, str) and name:
-            return name.rsplit("/", 1)[-1]
+        legacy_name = cast(str | None, task.get("name") or task.get("task_name"))
+        if isinstance(legacy_name, str) and legacy_name:
+            return legacy_name.rsplit("/", 1)[-1]
         path_value = task.get("path") or task.get("task_path")
         if isinstance(path_value, str):
             name = Path(path_value).name
@@ -505,7 +505,7 @@ async def _resolve_task_id_or_name(identifier: str, org_id: str | None) -> str |
     async with get_session() as session:
         by_id = await session.get(TaskModel, identifier)
         if by_id is not None and (org_id is None or by_id.org_id == org_id):
-            return by_id.id
+            return str(by_id.id)
 
         if org_id is None:
             clause = and_(TaskModel.name == identifier, TaskModel.org_id.is_(None))
@@ -513,7 +513,7 @@ async def _resolve_task_id_or_name(identifier: str, org_id: str | None) -> str |
             clause = and_(TaskModel.name == identifier, TaskModel.org_id == org_id)
         by_name = await session.scalar(select(TaskModel).where(clause))
         if by_name is not None:
-            return by_name.id
+            return str(by_name.id)
 
     return None
 

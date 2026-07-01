@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 import aioboto3
-from botocore.config import Config
+from botocore.config import Config  # type: ignore[import-untyped]
 from harbor.viewer.scanner import JobScanner
 
 from oddish.config import settings
@@ -187,7 +187,7 @@ class SauronS3Uploader:
         if len(trial_names) == 1:
             trial_dir = harbor_job_dir / trial_names[0]
             if trial_dir.is_dir():
-                return trial_dir
+                return Path(trial_dir)
         return None
 
     # -- S3 upload -----------------------------------------------------------
