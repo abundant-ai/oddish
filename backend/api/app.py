@@ -92,6 +92,9 @@ async def _assert_quota_schema_or_force_off() -> None:
                         SELECT 1 FROM pg_indexes
                         WHERE tablename = 'trials'
                           AND indexname = 'idx_trials_org_billed_user_finished'
+                    ) AND EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'quotas'
                     )
                     """
                 )
@@ -105,8 +108,10 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
     if not schema_ready:
         logger.error(
-            "quota_mode=%s but trials.billed_user_id column/index is missing; "
-            "forcing quota_mode=off to avoid a silent fail-open of the usage SUM",
+            "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
+            "column/index or the backend quotas table is missing -- the oddish and "
+            "backend alembic trees migrate separately); forcing quota_mode=off to "
+            "avoid a fail-open SUM or a 500 on every admission",
             settings.quota_mode,
         )
         settings.quota_mode = QuotaMode.OFF
