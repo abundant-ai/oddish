@@ -238,7 +238,7 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"openai/gpt-5.4-mini": 128, '
-    '"xai/redacted-model": 128}',
+    '"xai/redacted-model": 108}',
 )
 
 ENV_VARS = {
@@ -338,6 +338,7 @@ api_volumes: dict[str, object] = {}
 worker_volumes: dict[str, object] = {}
 if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
+
 
 def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal.Image:
     """Build the worker image, optionally pinned to a blessed Harbor variant.
