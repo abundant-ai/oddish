@@ -98,9 +98,11 @@ def build_task_submission_from_sweep(
         harbor=submission.harbor,
         content_hash=submission.content_hash,
         extra_instructions=submission.extra_instructions,
+        skill_ids=submission.skill_ids,
         probe_name=submission.probe_name,
         result_focus=submission.result_focus,
         probe_scope=submission.probe_scope,
         evaluation_metric=submission.evaluation_metric,
         link=submission.link,
+        registry_auth=submission.registry_auth,
     )

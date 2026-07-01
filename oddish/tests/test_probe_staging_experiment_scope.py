@@ -5,13 +5,15 @@ from oddish.worker.probe_overlay import QUERY_CLI_CONTAINER_PATH
 
 
 @pytest.mark.asyncio
-async def test_apply_overlay_stages_query_cli(tmp_path, monkeypatch):
-    """apply_probe_overlay must stage the oddish-query CLI in the work dir."""
+async def test_apply_overlay_does_not_stage_query_cli_in_work_dir(tmp_path):
+    """apply_probe_overlay must NOT stage the oddish-query CLI in the work dir.
+
+    The work dir is uploaded to the hidden stage; the CLI is delivered
+    separately to /probe-harness via stage_cli_mount. Staging it here too would
+    leave a redundant, never-referenced copy in the hidden stage.
+    """
     # Minimal instruction.md so apply_probe_overlay can write the overlay.
     (tmp_path / "instruction.md").write_text("original task")
-
-    # Stub out harbor source staging (not under test here).
-    monkeypatch.setattr(probe_staging, "stage_harbor_source", lambda d: True)
 
     await probe_staging.apply_probe_overlay(
         tmp_path,
@@ -21,16 +23,15 @@ async def test_apply_overlay_stages_query_cli(tmp_path, monkeypatch):
         probe_scope="experiment",
     )
 
-    cli = tmp_path / "oddish-query"
-    assert cli.exists(), "oddish-query must be staged in the work dir"
-    assert cli.read_text().startswith("#!/usr/bin/env node")
+    assert not (tmp_path / "oddish-query").exists(), (
+        "oddish-query must NOT be staged in the work dir (delivered via stage_cli_mount)"
+    )
 
 
 @pytest.mark.asyncio
-async def test_apply_overlay_instruction_documents_cli(tmp_path, monkeypatch):
+async def test_apply_overlay_instruction_documents_cli(tmp_path):
     """The rendered instruction.md must document the CLI and not mention related trial logs."""
     (tmp_path / "instruction.md").write_text("original task")
-    monkeypatch.setattr(probe_staging, "stage_harbor_source", lambda d: True)
 
     await probe_staging.apply_probe_overlay(
         tmp_path,

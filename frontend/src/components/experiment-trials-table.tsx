@@ -28,7 +28,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import {
   Popover,
   PopoverContent,
@@ -53,12 +52,13 @@ import {
 import type { MouseEvent as ReactMouseEvent } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
+  PROBE_AGENT_KEY,
   type ExperimentAgentSummary,
 } from "@/lib/experiment-agent-grouping";
 import {
@@ -120,6 +120,7 @@ type ExperimentTrialsTableProps = {
   onTaskDelete?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
+  onProbeSelect?: (trial: Trial, task: Task) => void;
   readOnly?: boolean;
   showAnalysis?: boolean;
   onTrialSelect?: (
@@ -171,6 +172,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "partial",
   "fail",
   "harness-error",
+  "scoreless",
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
@@ -451,11 +453,13 @@ export function ExperimentTrialsTable({
   onTaskDelete,
   onRerun,
   allowRerun = true,
+  onProbeSelect,
   readOnly = false,
   showAnalysis = true,
   onTrialSelect,
   onTaskSelect,
 }: ExperimentTrialsTableProps) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const TASK_COLUMN_MIN = 140;
   const AGENT_COLUMN_MIN = 140;
@@ -550,6 +554,7 @@ export function ExperimentTrialsTable({
               value === "pass" ||
               value === "fail" ||
               value === "harness-error" ||
+              value === "scoreless" ||
               value === "queued" ||
               value === "running",
           ),
@@ -665,6 +670,7 @@ export function ExperimentTrialsTable({
 
   const sortedAgentSummaries = useMemo(() => {
     const getAgentSortKey = (agentName: string): number => {
+      if (agentName === PROBE_AGENT_KEY) return 9;
       const lower = agentName.toLowerCase();
       if (lower === "nop") return 0;
       if (lower === "oracle") return 1;
@@ -2122,48 +2128,50 @@ export function ExperimentTrialsTable({
                                 : agent.agent}
                             </TooltipContent>
                           </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              {agent.model ? (
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  onClick={() =>
-                                    handleCopyAgentModel(
-                                      agent.key,
-                                      agent.model!,
-                                    )
-                                  }
-                                  className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
-                                  aria-label={`Copy model id ${agent.model}`}
-                                  title="Copy model id"
-                                >
-                                  {copiedAgentModelKey === agent.key ? (
-                                    <Check className="h-3 w-3 shrink-0 text-emerald-500" />
-                                  ) : (
-                                    <QueueKeyIcon
-                                      queueKey={agent.queueKey}
-                                      model={agent.model}
-                                      size={10}
-                                      className="shrink-0"
-                                    />
-                                  )}
-                                  <span className="min-w-0 truncate">
-                                    {agent.model}
-                                  </span>
-                                </Button>
-                              ) : (
-                                <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
-                                  <span className="min-w-0 truncate">—</span>
-                                </div>
-                              )}
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom">
-                              {copiedAgentModelKey === agent.key
-                                ? "Copied model id"
-                                : (agent.model ?? "—")}
-                            </TooltipContent>
-                          </Tooltip>
+                          {!isBaselineAgentName(agent.agent) && (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                {agent.model ? (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={() =>
+                                      handleCopyAgentModel(
+                                        agent.key,
+                                        agent.model!,
+                                      )
+                                    }
+                                    className="text-muted-foreground hover:bg-background/70 hover:text-foreground h-auto w-full min-w-0 gap-1 rounded-sm bg-transparent px-1 py-0 font-mono text-[9px] font-normal transition sm:text-[10px]"
+                                    aria-label={`Copy model id ${agent.model}`}
+                                    title="Copy model id"
+                                  >
+                                    {copiedAgentModelKey === agent.key ? (
+                                      <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                                    ) : (
+                                      <QueueKeyIcon
+                                        queueKey={agent.queueKey}
+                                        model={agent.model}
+                                        size={10}
+                                        className="shrink-0"
+                                      />
+                                    )}
+                                    <span className="min-w-0 truncate">
+                                      {agent.model}
+                                    </span>
+                                  </Button>
+                                ) : (
+                                  <div className="text-muted-foreground flex w-full min-w-0 items-center justify-center gap-1 font-mono text-[9px] font-normal sm:text-[10px]">
+                                    <span className="min-w-0 truncate">—</span>
+                                  </div>
+                                )}
+                              </TooltipTrigger>
+                              <TooltipContent side="bottom">
+                                {copiedAgentModelKey === agent.key
+                                  ? "Copied model id"
+                                  : (agent.model ?? "—")}
+                              </TooltipContent>
+                            </Tooltip>
+                          )}
                         </div>
                       )}
                       {agentIndex < renderedAgents.length - 1 &&
@@ -2310,12 +2318,6 @@ export function ExperimentTrialsTable({
                                 v{task.current_version}
                               </span>
                             )}
-                            <ProbeLaunchButton
-                              taskId={task.id}
-                              taskName={task.name}
-                              variant="icon"
-                              className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
-                            />
                             {/* Jump from the experiment to this task's own
                                 page. Hidden on the read-only share view since
                                 /tasks/[id] is an authenticated route. */}
@@ -2405,6 +2407,16 @@ export function ExperimentTrialsTable({
                                         type="button"
                                         variant="unstyled"
                                         onClick={() => {
+                                          if (trial.is_probe) {
+                                            if (onProbeSelect) {
+                                              onProbeSelect(trial, task);
+                                            } else {
+                                              router.push(
+                                                `/tasks/${encodeURIComponent(task.id)}/probe/${trial.id}`,
+                                              );
+                                            }
+                                            return;
+                                          }
                                           const trialIndexInGroup =
                                             trialIndexById.get(trial.id) ?? 0;
                                           onTrialSelect?.(trial, task, {

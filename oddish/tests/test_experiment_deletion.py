@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import endpoints
 from oddish.core import dashboard
+from oddish.core.endpoints import deletion as _deletion
 
 
 class _FakeRowsResult:
@@ -87,9 +88,9 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
     async def _noop_cancel_trials(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(endpoints, "_cancel_worker_jobs_for_task", _noop_cancel_task)
+    monkeypatch.setattr(_deletion, "_cancel_worker_jobs_for_task", _noop_cancel_task)
     monkeypatch.setattr(
-        endpoints, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
+        _deletion, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
     )
 
     session = _FakeDeleteExperimentSession()

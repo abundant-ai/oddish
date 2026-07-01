@@ -173,13 +173,13 @@ WHERE  id = (
         WHERE  wj2.kind::text = 'TRIAL'
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
-          AND  wj2.harbor_variant_id = $5
+          AND  ($5::text IS NULL OR wj2.harbor_variant_id = $5)
           AND  tr2.deleted_at IS NULL
           AND  tk2.deleted_at IS NULL
         GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
-      AND  wj.harbor_variant_id = $5
+      AND  ($5::text IS NULL OR wj.harbor_variant_id = $5)
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
       -- Defense in depth: ``delete_*_core`` already cancels matching
@@ -241,6 +241,7 @@ async def _open_connection() -> asyncpg.Connection:
 async def heartbeat_worker_job(
     job_id: str,
     *,
+    current_worker_id: str | None = None,
     pending_failure_count: int = 0,
     pending_last_error: str | None = None,
 ) -> None:
@@ -263,10 +264,12 @@ async def heartbeat_worker_job(
                        last_heartbeat_error_at = NOW()
                 WHERE  id = $1
                   AND  status::text = 'RUNNING'
+                  AND  ($4::text IS NULL OR current_worker_id = $4)
                 """,
                 job_id,
                 pending_failure_count,
                 (pending_last_error or "")[:500] or None,
+                current_worker_id,
             )
         else:
             await connection.execute(
@@ -275,8 +278,10 @@ async def heartbeat_worker_job(
                 SET    heartbeat_at = NOW()
                 WHERE  id = $1
                   AND  status::text = 'RUNNING'
+                  AND  ($2::text IS NULL OR current_worker_id = $2)
                 """,
                 job_id,
+                current_worker_id,
             )
     finally:
         await connection.close()
@@ -288,14 +293,17 @@ async def claim_single_worker_job(
     worker_id: str,
     queue_slot: int,
     modal_function_call_id: str | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
     Returns ``None`` if no row was available. The claim is scoped to
     ``harbor_variant_id`` so a worker only picks up jobs of the Harbor variant
-    it was spawned for. The returned row is in ``RUNNING`` state with
-    ``attempts`` incremented and claim metadata stamped.
+    it was spawned for -- except ``harbor_variant_id=None``, which claims **any**
+    variant for the queue_key (used by the off-Modal / image-agnostic workers,
+    which serve every variant of a queue_key with one worker). The returned row
+    is in ``RUNNING`` state with ``attempts`` incremented and claim metadata
+    stamped.
     """
     connection = await _open_connection()
     try:
@@ -344,28 +352,24 @@ async def claim_single_worker_job(
 async def _record_outcome(
     *,
     job_id: str,
+    worker_id: str,
     outcome: JobOutcome,
     attempts: int,
     max_attempts: int,
     kind: WorkerJobKind | None = None,
     subject_table: str | None = None,
     subject_id: str | None = None,
-) -> None:
-    """Transition the claimed `worker_jobs` row to its terminal state.
+) -> bool:
+    def row_was_updated(command: str) -> bool:
+        return command.endswith(" 1")
 
-    Success → status=SUCCESS, merge ``result_summary``, stamp
-    ``finished_at``.
-    Retryable failure with attempts remaining → status=RETRYING,
-    stamp ``error_message``, clear claim metadata.
-    Non-retryable (or retries exhausted) → status=FAILED.
-    """
     connection = await _open_connection()
     try:
         if outcome.success is not None:
             import json
 
             summary = outcome.success.result_summary
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'SUCCESS',
@@ -373,13 +377,22 @@ async def _record_outcome(
                        finished_at = NOW(),
                        heartbeat_at = NOW(),
                        next_retry_at = NULL,
-                       error_message = NULL
+                       error_message = NULL,
+                       payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $3
                 """,
                 job_id,
                 json.dumps(summary) if summary is not None else None,
+                worker_id,
             )
-            return
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} outcome ignored; row is no longer RUNNING[/yellow]"
+                )
+                return False
+            return True
 
         assert outcome.failure is not None
         retry = outcome.failure.retryable and attempts < max_attempts
@@ -399,7 +412,7 @@ async def _record_outcome(
             # next attempt without special-casing; the duration query
             # already filters to SUCCESS/FAILED so it doesn't observe
             # RETRYING rows either way.
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'RETRYING',
@@ -410,11 +423,19 @@ async def _record_outcome(
                        current_queue_slot = NULL,
                        modal_function_call_id = NULL
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $4
                 """,
                 job_id,
                 outcome.failure.error_message,
                 retry_at,
+                worker_id,
             )
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} retry outcome ignored; row is no longer RUNNING[/yellow]"
+                )
+                return False
             if (
                 kind == WorkerJobKind.TRIAL
                 and subject_table == "trials"
@@ -432,6 +453,7 @@ async def _record_outcome(
                            heartbeat_at = NOW()
                     WHERE  id = $1
                       AND  deleted_at IS NULL
+                      AND  superseded_by_trial_id IS NULL
                     """,
                     subject_id,
                     outcome.failure.error_message,
@@ -443,19 +465,30 @@ async def _record_outcome(
                 f"retry_reason={retry_reason} "
                 f"retry_delay_seconds={delay_seconds or 0:.2f}"
             )
+            return True
         else:
-            await connection.execute(
+            command = await connection.execute(
                 """
                 UPDATE worker_jobs
                 SET    status = 'FAILED',
                        error_message = $2,
                        finished_at = NOW(),
-                       next_retry_at = NULL
+                       next_retry_at = NULL,
+                       payload = payload - 'registry_auth_enc'
                 WHERE  id = $1
+                  AND  status = 'RUNNING'::worker_job_status
+                  AND  current_worker_id = $3
                 """,
                 job_id,
                 outcome.failure.error_message,
+                worker_id,
             )
+            if not row_was_updated(command):
+                console.print(
+                    f"[yellow]worker_job {job_id} failure outcome ignored; row is no longer RUNNING[/yellow]"
+                )
+                return False
+            return True
     finally:
         await connection.close()
 
@@ -467,7 +500,7 @@ async def run_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
 
@@ -506,6 +539,7 @@ async def run_single_worker_job(
         # doesn't have to reap it via the stale-heartbeat sweep.
         await _record_outcome(
             job_id=job.id,
+            worker_id=worker_id,
             outcome=JobOutcome.fail(
                 f"No handler registered for kind={job.kind.value!r}: {exc}",
                 retryable=False,
@@ -543,8 +577,9 @@ async def run_single_worker_job(
         f"(kind={job.kind.value}, queue_key={queue_key})[/dim]"
     )
 
-    await _record_outcome(
+    outcome_recorded = await _record_outcome(
         job_id=job.id,
+        worker_id=worker_id,
         outcome=outcome,
         attempts=job.attempts,
         max_attempts=job.max_attempts,
@@ -553,7 +588,12 @@ async def run_single_worker_job(
         subject_id=job.subject_id,
     )
 
-    if outcome.success is not None and post_success_hooks and job.subject_id:
+    if (
+        outcome_recorded
+        and outcome.success is not None
+        and post_success_hooks
+        and job.subject_id
+    ):
         hook = post_success_hooks.get(job.kind)
         if hook is not None:
             try:
@@ -575,7 +615,7 @@ async def drain_worker_jobs(
     budget_seconds: float,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
 ) -> int:

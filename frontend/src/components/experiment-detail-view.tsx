@@ -14,7 +14,6 @@ import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
@@ -23,22 +22,13 @@ import {
   prBadge,
   prNumberFromUrl,
   taskPrUrl,
-  encodeExperimentRouteParam,
 } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
-import type { Task, Trial, ExperimentProbeRow, UserTagRef } from "@/lib/types";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { ProbeSubmitForm } from "@/components/probe-submit-form";
+import type { Task, Trial, UserTagRef } from "@/lib/types";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
@@ -54,6 +44,8 @@ import {
 } from "@/lib/experiment-agent-grouping";
 
 type DrawerMode = "task" | "trial";
+
+import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 
 const TrialDetailPanel = dynamic(
   () =>
@@ -120,6 +112,10 @@ interface ExperimentDetailViewProps {
   onTaskDelete?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
+  // Logged-in exp page sends slim trials, so set true to fetch a clicked
+  // trial's full detail on open. Public share page omits it (it passes full
+  // trials and can't use the authed /api/trials route).
+  loadFullTrialOnOpen?: boolean;
 }
 
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
@@ -175,7 +171,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let taskScoreCount = 0;
 
   for (const task of tasksForExperiment) {
-    const trials = task.trials ?? [];
+    const trials = (task.trials ?? []).filter((t) => !t.is_probe);
     if (trials.length > 0) {
       for (const trial of trials) accumulateTrial(acc, trial);
 
@@ -240,6 +236,7 @@ function ExperimentHeaderMeta({
 }) {
   return (
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {headerStatus}
       {prLink}
       {isLoading && (
         <div className="inline-flex items-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-1 text-xs text-[color:var(--paper-ink-3)]">
@@ -247,7 +244,6 @@ function ExperimentHeaderMeta({
           <span>{isInitialLoading ? "Loading tasks..." : "Refreshing..."}</span>
         </div>
       )}
-      {headerStatus}
       <Button
         type="button"
         variant="ghost"
@@ -322,9 +318,14 @@ function pickExperimentCreationMeta(tasks: Task[]): {
       earliest = task;
     }
   }
+  // Prefer the experiment's own owner (the creating run's submitter, stamped
+  // on the experiment). Fall back to the earliest task's author for
+  // experiments with no stamped owner.
+  const experimentOwner =
+    tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
   return {
     createdAt: experimentCreatedAt ?? earliest.created_at,
-    author: earliest.github_username || earliest.user || null,
+    author: experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
   };
 }
 
@@ -333,10 +334,18 @@ function pickExperimentPr(tasks: Task[]): {
   prTitle: string | null;
   prNumber: string | null;
 } {
-  // The URL can arrive two ways: structured `github_meta.pr_url`, or the
-  // canonical `task.link` column (set by `--link`, or auto-derived from
-  // github_meta on the backend). `link` is what the task page renders, so we
-  // treat it as a first-class source rather than relying on github_meta alone.
+  // Prefer the experiment's own PR link (stamped set-once from the creating
+  // run); it is immune to other experiments re-running a shared task. Fall back
+  // to the task-derived link for experiments with no stamped link.
+  const experimentLink =
+    tasks.find((t) => t.experiment_link)?.experiment_link ?? null;
+  if (experimentLink) {
+    return {
+      prUrl: experimentLink,
+      prTitle: null,
+      prNumber: prNumberFromUrl(experimentLink),
+    };
+  }
   const task = tasks.find((t) => taskPrUrl(t.link, t.github_meta));
   const meta = task?.github_meta;
   const prUrl = taskPrUrl(task?.link, meta);
@@ -663,14 +672,6 @@ function ExperimentSummaryBar({
   );
 }
 
-function statusLabel(status: string): string {
-  if (status === "queued" || status === "pending") return "queued";
-  if (status === "running") return "running";
-  if (status === "success" || status === "done") return "done";
-  if (status === "failed") return "failed";
-  return status;
-}
-
 // The experiment-level probe runs in the experiment's current/most-recent
 // task environment. Prefer the highest current_version, tie-break on most
 // recent created_at, fall back to the first task.
@@ -684,142 +685,20 @@ function resolveHostTaskId(tasks: Task[]): string | undefined {
   return sorted[0]?.id;
 }
 
-function ExperimentProbeTab({
+function ExperimentProbeLaunchButton({
   experimentId,
   hostTaskId,
 }: {
   experimentId?: string;
   hostTaskId?: string;
 }) {
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const encodedId = experimentId
-    ? encodeExperimentRouteParam(experimentId)
-    : null;
-  const url = encodedId ? `/api/experiments/${encodedId}/probes` : null;
-
-  const { data, error, isLoading, mutate } = useSWR<ExperimentProbeRow[]>(
-    url,
-    fetcher,
-    { refreshInterval: 15000 },
-  );
-
-  const newProbeButton = hostTaskId ? (
-    <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">New probe</Button>
-      </DialogTrigger>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>New experiment probe</DialogTitle>
-        </DialogHeader>
-        <ProbeSubmitForm
-          taskId={hostTaskId}
-          scope="experiment"
-          experimentId={experimentId}
-          onSubmitted={() => {
-            setDialogOpen(false);
-            mutate();
-          }}
-        />
-      </DialogContent>
-    </Dialog>
-  ) : null;
-
-  if (!experimentId) {
-    return (
-      <p className="text-sm text-[color:var(--paper-ink-3)]">
-        No experiment selected.
-      </p>
-    );
-  }
-
-  if (error) {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>Failed to load probes</AlertTitle>
-        <AlertDescription>
-          {error instanceof Error ? error.message : "Unknown error"}
-        </AlertDescription>
-      </Alert>
-    );
-  }
-
-  if (isLoading || !data) {
-    return (
-      <div className="flex items-center gap-2 text-sm text-[color:var(--paper-ink-3)]">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        <span>Loading probes…</span>
-      </div>
-    );
-  }
-
-  if (data.length === 0) {
-    return (
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-[color:var(--paper-ink-3)]">
-          No probes yet.
-        </p>
-        {newProbeButton}
-      </div>
-    );
-  }
-
+  if (!experimentId || !hostTaskId) return null;
+  // Probes run against the experiment's host task, so route to that task's
+  // probe page rather than opening an inline form.
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-end">{newProbeButton}</div>
-      <div className="overflow-hidden rounded-[10px] border border-[color:var(--paper-line)]">
-        <table className="w-full text-sm">
-          <thead className="border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
-            <tr>
-              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-                Task
-              </th>
-              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-                Version
-              </th>
-              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-                Model
-              </th>
-              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-                Status
-              </th>
-              <th className="px-4 py-2.5 text-left font-mono text-[10px] font-semibold tracking-[0.09em] text-[color:var(--paper-ink-3)] uppercase">
-                &nbsp;
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.map((row) => (
-              <tr
-                key={row.probe_trial_id}
-                className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] hover:bg-[color:var(--paper-surface-2)]"
-              >
-                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink)]">
-                  {row.task_name}
-                </td>
-                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                  {row.version != null ? `v${row.version}` : "—"}
-                </td>
-                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-3)]">
-                  {row.model ?? "—"}
-                </td>
-                <td className="px-4 py-2.5 font-mono text-xs text-[color:var(--paper-ink-2)]">
-                  {statusLabel(row.status)}
-                </td>
-                <td className="px-4 py-2.5 text-xs">
-                  <Link
-                    href={`/tasks/${encodeURIComponent(row.task_id)}/probe/${encodeURIComponent(row.probe_trial_id)}`}
-                    className="text-[color:var(--paper-ink-2)] underline hover:text-[color:var(--paper-ink)]"
-                  >
-                    View →
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+    <Button asChild size="sm">
+      <Link href={`/tasks/${hostTaskId}/probe`}>New probe</Link>
+    </Button>
   );
 }
 
@@ -843,6 +722,7 @@ export function ExperimentDetailView({
   onTaskDelete,
   onTrialDelete,
   onRerun,
+  loadFullTrialOnOpen = false,
 }: ExperimentDetailViewProps) {
   const searchParams = useSearchParams();
   // The experiment's own direct tags (the header editor chips); fetched
@@ -857,6 +737,44 @@ export function ExperimentDetailView({
     { revalidateOnFocus: false },
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
+  // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
+  // the clicked/navigated trial's full detail; the popup renders the slim trial
+  // until this resolves. No-op (and never fetches) on the public share page.
+  const [fullTrial, setFullTrial] = useState<Trial | null>(null);
+  const openTrialId =
+    drawerState?.mode === "trial" ? (drawerState.trial?.id ?? null) : null;
+  useEffect(() => {
+    if (!loadFullTrialOnOpen || !openTrialId) {
+      setFullTrial(null);
+      return;
+    }
+    let cancelled = false;
+    setFullTrial(null);
+    (async () => {
+      try {
+        const res = await fetch(
+          `${apiBaseUrl}/trials/${encodeURIComponent(openTrialId)}`,
+          { cache: "no-store" },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as Trial;
+        if (!cancelled) setFullTrial(data);
+      } catch {
+        // Keep the slim trial on failure -- the popup just shows less.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadFullTrialOnOpen, openTrialId, apiBaseUrl]);
+  // Probe cells open main's sliding ProbeDetailPanel (kept from origin/main).
+  // On the slim experiment path the grid has no probe trials to click, so this
+  // stays dormant until probes are fed to that path -- the code is retained so
+  // main's probe-drawer feature is preserved and the merge stays coherent.
+  const [probeDrawer, setProbeDrawer] = useState<{
+    taskId: string;
+    trialId: string;
+  } | null>(null);
   const [showPassAtK, setShowPassAtK] = useState(readOnly);
   const [showTask, setShowTask] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
@@ -1234,74 +1152,68 @@ export function ExperimentDetailView({
               <AlertDescription>{errorDescription}</AlertDescription>
             </Alert>
           ) : (
-            <Tabs defaultValue="tasks" className="space-y-3">
-              {/* Probing requires an authenticated session, so the public
-                  share view renders the tasks content without the toggle. */}
-              {!readOnly && (
-                <TabsList>
-                  <TabsTrigger value="tasks">Tasks</TabsTrigger>
-                  <TabsTrigger value="probe">Probe</TabsTrigger>
-                </TabsList>
-              )}
-              <TabsContent value="tasks" className="space-y-3">
-                {inlineAlert}
-                <ExperimentTrialsTable
-                  tasks={tasksForExperiment}
-                  agentSummaries={displayAgentSummaries}
-                  modelScopedAgents={displayModelScopedAgents}
-                  isLoading={isLoading}
-                  isLoadingTrials={isLoadingTrials}
-                  showPassAtK={showPassAtK}
-                  onTaskDelete={onTaskDelete}
-                  onRerun={onRerun}
-                  allowRerun={allowRetry}
-                  readOnly={readOnly}
-                  showAnalysis={showAnalysis}
-                  onTrialSelect={(trial, task, context) => {
-                    const taskIndex = tasksForExperiment.findIndex(
-                      (t) => t.id === task.id,
-                    );
-                    setDrawerState({
-                      isOpen: true,
-                      mode: "trial",
-                      task,
-                      taskIndex: taskIndex >= 0 ? taskIndex : 0,
-                      orderedTasks: tasksForExperiment,
-                      trial,
-                      trialIndex: context.trialIndex,
-                      orderedTrials: context.orderedTrials,
-                      trialGroups: context.trialGroups,
-                    });
-                  }}
-                  onTaskSelect={(task, context) => {
-                    const { trialGroups, orderedTrials } =
-                      buildTrialGroups(task);
-                    // If the task has trials, jump straight into the first one
-                    // so the user immediately sees results alongside the task
-                    // definition. They can navigate back to the task overview
-                    // with the in-drawer "View task" control.
-                    const firstTrial = orderedTrials[0] ?? null;
-                    setDrawerState({
-                      isOpen: true,
-                      mode: firstTrial ? "trial" : "task",
-                      task,
-                      taskIndex: context.taskIndex,
-                      orderedTasks: context.orderedTasks,
-                      trial: firstTrial,
-                      trialIndex: firstTrial ? 0 : null,
-                      orderedTrials,
-                      trialGroups,
-                    });
-                  }}
-                />
-              </TabsContent>
-              <TabsContent value="probe">
-                <ExperimentProbeTab
-                  experimentId={experimentId}
-                  hostTaskId={resolveHostTaskId(tasksForExperiment)}
-                />
-              </TabsContent>
-            </Tabs>
+            <div className="space-y-3">
+              {!readOnly ? (
+                <div className="flex items-center justify-end">
+                  <ExperimentProbeLaunchButton
+                    experimentId={experimentId}
+                    hostTaskId={resolveHostTaskId(tasksForExperiment)}
+                  />
+                </div>
+              ) : null}
+              {inlineAlert}
+              <ExperimentTrialsTable
+                tasks={tasksForExperiment}
+                agentSummaries={displayAgentSummaries}
+                modelScopedAgents={displayModelScopedAgents}
+                isLoading={isLoading}
+                isLoadingTrials={isLoadingTrials}
+                showPassAtK={showPassAtK}
+                onTaskDelete={onTaskDelete}
+                onRerun={onRerun}
+                allowRerun={allowRetry}
+                readOnly={readOnly}
+                showAnalysis={showAnalysis}
+                onTrialSelect={(trial, task, context) => {
+                  const taskIndex = tasksForExperiment.findIndex(
+                    (t) => t.id === task.id,
+                  );
+                  setDrawerState({
+                    isOpen: true,
+                    mode: "trial",
+                    task,
+                    taskIndex: taskIndex >= 0 ? taskIndex : 0,
+                    orderedTasks: tasksForExperiment,
+                    trial,
+                    trialIndex: context.trialIndex,
+                    orderedTrials: context.orderedTrials,
+                    trialGroups: context.trialGroups,
+                  });
+                }}
+                onProbeSelect={(trial, task) =>
+                  setProbeDrawer({ taskId: task.id, trialId: trial.id })
+                }
+                onTaskSelect={(task, context) => {
+                  const { trialGroups, orderedTrials } = buildTrialGroups(task);
+                  // If the task has trials, jump straight into the first one
+                  // so the user immediately sees results alongside the task
+                  // definition. They can navigate back with the in-drawer
+                  // "View task" control.
+                  const firstTrial = orderedTrials[0] ?? null;
+                  setDrawerState({
+                    isOpen: true,
+                    mode: firstTrial ? "trial" : "task",
+                    task,
+                    taskIndex: context.taskIndex,
+                    orderedTasks: context.orderedTasks,
+                    trial: firstTrial,
+                    trialIndex: firstTrial ? 0 : null,
+                    orderedTrials,
+                    trialGroups,
+                  });
+                }}
+              />
+            </div>
           )}
         </div>
       )}
@@ -1364,7 +1276,7 @@ export function ExperimentDetailView({
               <TrialDetailPanel
                 isOpen={true}
                 onClose={closeDrawer}
-                trial={drawerState.trial}
+                trial={fullTrial ?? drawerState.trial}
                 task={drawerState.task}
                 orderedTrials={drawerState.orderedTrials}
                 trialIndex={drawerState.trialIndex}
@@ -1382,6 +1294,14 @@ export function ExperimentDetailView({
               />
             )
           }
+        />
+      )}
+      {probeDrawer && (
+        <ProbeDetailPanel
+          taskId={probeDrawer.taskId}
+          trialId={probeDrawer.trialId}
+          isOpen
+          onClose={() => setProbeDrawer(null)}
         />
       )}
     </>

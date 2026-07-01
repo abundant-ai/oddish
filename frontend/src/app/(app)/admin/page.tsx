@@ -34,6 +34,7 @@ import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
 import { QuotaAdminForm } from "@/components/quota-admin-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
+import { CostBreakdownCard } from "@/components/cost-breakdown-card";
 import { RefreshCw, Server, Clock, AlertCircle } from "lucide-react";
 
 const formatAge = (dateStr: string | null) => {
@@ -661,6 +662,7 @@ export default function AdminPage() {
       <Tabs defaultValue="overview" className="space-y-4">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="costs">Costs</TabsTrigger>
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
@@ -669,6 +671,10 @@ export default function AdminPage() {
 
         <TabsContent value="overview" className="space-y-4">
           <QueueHealthOverviewCard />
+        </TabsContent>
+
+        <TabsContent value="costs" className="space-y-4">
+          <CostBreakdownCard />
         </TabsContent>
 
         <TabsContent value="worker-jobs" className="space-y-4">

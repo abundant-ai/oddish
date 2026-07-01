@@ -99,9 +99,11 @@ export function ExperimentClientPage({
     : "";
 
   // Phase 1: Fetch ALL tasks without trial data (lightweight).
-  // Populates the full task list immediately.
+  // Populates the full task list immediately. Uses the dedicated
+  // ``task-shells`` endpoint, which drops the per-task ``experiments``
+  // fan-out. (Phase 2 below still uses the regular ``tasks`` endpoint.)
   const allTasksUrl = experimentId
-    ? `/api/experiments/${encodedId}/tasks?limit=2000&offset=0&include_trials=false`
+    ? `/api/experiments/${encodedId}/task-shells?limit=2000&offset=0`
     : null;
 
   const {
@@ -124,7 +126,11 @@ export function ExperimentClientPage({
       if (previousPageData && previousPageData.length < TRIALS_BATCH_SIZE)
         return null;
       const offset = pageIndex * TRIALS_BATCH_SIZE;
-      return `/api/experiments/${encodedId}/tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}&include_trials=true`;
+      // Phase 2 uses the dedicated slim-tasks endpoint: tasks with trimmed
+      // per-trial payloads (grid fields + cost). Full per-trial detail is
+      // fetched on click via /api/trials/{id} (see ExperimentDetailView's
+      // loadFullTrialOnOpen). The old /tasks proxy is left untouched.
+      return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
     },
     [experimentId, encodedId],
   );
@@ -448,6 +454,8 @@ export function ExperimentClientPage({
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
+          loadFullTrialOnOpen
+
           headerLeft={
             isEditingName ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -533,7 +541,12 @@ export function ExperimentClientPage({
           headerRight={
             experimentId ? (
               <div className="flex items-center gap-2">
-                <ChatButton scopeKind="experiment" scopeId={experimentId} />
+                <ChatButton
+                  scopeKind="experiment"
+                  scopeId={experimentId}
+                  variant="ghost"
+                  className="h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+                />
                 <ExperimentShareButton
                   experimentId={experimentId}
                   canManageShare={canManageExperimentShare}

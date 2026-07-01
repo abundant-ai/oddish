@@ -16,6 +16,7 @@ from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 
 from oddish.config import BEDROCK_ENV_VARS, settings
+from oddish.runtime.registry import get_backend
 from oddish.schemas import HarborConfig
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.worker.probe_staging import stage_org_skills
@@ -46,6 +47,28 @@ from .storage import (
 )
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+
+def _read_query_cli_text() -> str:
+    """Thin wrapper so tests can monkeypatch without reaching into probe_staging."""
+    from oddish.worker.probe_staging import read_query_cli_text
+
+    return read_query_cli_text()
+
+
+def _probe_modal_kwargs(is_probe: bool, environment: EnvironmentType) -> dict[str, Any]:
+    """Return extra env_config.kwargs to inject when running a probe on Modal.
+
+    Passes the oddish-query CLI source to the Modal image so the harbor fork
+    can bake it in at instantiation. Returns empty dict for non-probe or
+    non-Modal trials so the caller can unconditionally merge.
+    """
+    if not is_probe or environment != EnvironmentType.MODAL:
+        return {}
+    return {
+        "probe_cli_content": _read_query_cli_text(),
+        "probe_cli_path": "/probe-harness/oddish-query",
+    }
 
 
 def _check_local_storage_preflight(
@@ -205,13 +228,12 @@ async def run_harbor_trial_async(
         env_config = hc.environment.model_copy()
         env_config.type = environment
 
-        if environment == EnvironmentType.DAYTONA:
-            env_config.kwargs = {
-                "auto_stop_interval_mins": settings.daytona_auto_stop_interval_mins,
-                "auto_delete_interval_mins": settings.daytona_auto_delete_interval_mins,
-                "ephemeral": settings.daytona_ephemeral,
-                **env_config.kwargs,
-            }
+        backend = get_backend(environment.value)
+        if backend is not None:
+            env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
+        probe_modal = _probe_modal_kwargs(is_probe, environment)
+        if probe_modal:
+            env_config.kwargs = {**probe_modal, **env_config.kwargs}
         uses_openai_provider = _trial_uses_openai_provider(
             agent=agent,
             model=model,
@@ -235,7 +257,10 @@ async def run_harbor_trial_async(
         # failure never blocks a trial run.
         if org_id is not None:
             skills_root = unique_parent / "agent_skills"
-            n_skills = await stage_org_skills(skills_root, org_id=org_id)
+            skill_ids = raw.get("skill_ids")
+            n_skills = await stage_org_skills(
+                skills_root, org_id=org_id, skill_ids=skill_ids
+            )
             if n_skills:
                 agent_config.skills = [*agent_config.skills, skills_root]
 

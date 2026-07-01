@@ -6,6 +6,132 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-01]
+
+### Added
+
+- Grok Build trials are now converted into full ATIF trajectories: streamed `grok-build.json` events are parsed into reasoning/tool-call/tool-result/message steps with final metrics (tokens, cost) via a new agent wrapper, and the trajectory endpoint falls back to synthesizing ATIF from `agent/grok-build.json` for older trials that predate the conversion (#530)
+
+### Fixed
+
+- Completed Grok Build trials are now marked as having a fetchable trajectory even when the DB's `has_trajectory` flag is stale, so the dashboard no longer skips trajectory loading for them (#530)
+
+---
+
+## [2026-06-30]
+
+### Added
+
+- `oddish-query` CLI gains five probe-only commands: `solution cat`, `solution fetch`, `verifier source`, `harbor src`, and `verify run`; probe-only assets are now staged to a root-owned hidden directory (`/opt/oddish-probe`, via `ODDISH_PROBE_STAGE_DIR`) off the agent's browsable tree so the agent can't passively stumble on verifier/solution content; every command output is wrapped in a `PROBE-ONLY` boundary banner (carried in a `note` field for `verify run`'s JSON) so the boundary travels with the data through subagents; both local and cloud runners updated for identical container layout (#504)
+- CI guard (`oddish/scripts/load_only_guard.py`) that statically diffs columns **read** on the compact `/tasks` response-builder path against columns declared in `load_only(...)` sets in `list_tasks_core`, failing the build on any gap; prevents the `MissingGreenlet` class of 500 from shipping silently; triggered on PRs touching `oddish/src/oddish/**` (#495)
+
+### Changed
+
+- Probe details now open in a sliding `ResizableDrawer` panel from both the experiment trials matrix and the task probe-history table instead of navigating to a full page; a new shared `ProbeDetailPanel` component handles self-fetching, SWR polling, on-demand artifact loading, prev/next navigation across a task's probes, and agent-process keyword filtering; the standalone `/tasks/[id]/probe/[trial_id]` URL continues to render a full page via `ProbeDetailPanel` in `contentOnly` mode so deep links are preserved (#505, #508)
+- Task Analysis card on the task page now shows the **latest run of each distinct probe type** as a separate labeled section (probe-type header with `agent · model` sub-line) instead of collapsing all probe runs for a version to a single newest trial; polling continues while any per-type latest run is still in-flight (#512)
+- Reverted experiment grid to use `GET /tasks?include_trials=true` instead of the short-lived `slim-tasks` endpoint; removes the dedicated `GET /experiments/{id}/slim-tasks` backend route, `GET /trials/{trial_id}` single-trial detail route, and associated Next.js proxies; also reverts the Usage page Cost tab, `CostingPanel` SSR component, cost CSV export, and the `series_top_n` admin costs parameter (#507)
+- Bake a per-model `ODDISH_MODEL_CONCURRENCY_OVERRIDES` default into the Modal deploy that raises the `xai/redacted-model` queue-key concurrency lease to 128 (up from the 48 default), giving Harbor's grok-build arm more throughput; operators can still override the whole JSON via the env var / `oddish-prod` secret
+
+### Security
+
+- Probe trials are no longer returned by any public unauthenticated endpoint; `get_public_task` strips `is_probe` trials before returning the task, `list_public_experiment_tasks` excludes probes when scoping each task's trials (and now filters unconditionally regardless of experiment-id resolution), and `list_public_task_trials` always passes `probe=False` with the public `probe` query parameter removed — probe data never reaches the browser regardless of UI guards (#513)
+
+---
+
+## [2026-06-29]
+
+### Added
+
+- Probe instructions now include a **REFERENCE SOLUTION** section when the golden/oracle solution is staged, telling the probe it may copy or adapt it into `/app` as a baseline before pursuing the operator directive; omitted when no `solution/` directory was staged (#500)
+- Probe instructions always include a **SUBAGENTS** section encouraging the probe to fan out parallel Task-tool subagents for independent investigation threads, noting the one-level nesting limit so all parallel work is dispatched directly (#500)
+- Probe run page now shows a **Preset** line (between the run header and Summary section) displaying `harbor_config.probe_name`, falling back to the agent name for older or preset-less runs (#502)
+
+### Changed
+
+- Probe launch form "Instructions" field now populated from the selected skill's **SKILL.md body** (frontmatter stripped) instead of the legacy `operator_prompt`; skills without a SKILL.md file fall back to `operator_prompt` (#501)
+- Probe launch form fields renamed: "Extra instructions" → **"Instructions"**, "Result focus (optional)" → **"Output JSON / Result Focus"** (#501)
+- `extractSkillMdBody` extracted from `skills-client.tsx` into a new shared `frontend/src/lib/skill-md.ts` module, reused by both the skills editor and the probe form (#501)
+- `CLAUDE_CODE_SUBAGENT_MODEL` is now pinned to the main agent's normalized model id for probe claude-code trials on both cloud (`agent_config.py`) and local (`local_runner.py`) paths, ensuring Task-tool subagents have an explicit model on the direct Anthropic API path where Harbor's `run()` does not set it; a pre-set value is never overridden (#500)
+
+### Fixed
+
+- Probe summaries using a `result_focus` JSON Schema with `oneOf` (e.g. from Pydantic v2 discriminated unions) no longer fail with `BadRequestError: Schema type 'oneOf' is not supported`; `normalize_findings_schema` now rewrites `oneOf` → `anyOf` at analysis time since the two are equivalent for constrained generation, transparently unblocking already-saved skills without operator action (#499)
+
+---
+
+## [2026-06-28]
+
+### Added
+
+- Batch probe-analysis backfill Modal script (`backend/scripts/backfill_analysis.py`) that accepts comma-separated task names, finds eligible probe trials with S3 artifacts whose analysis isn't `SUCCESS`, resets their analysis state, and re-runs the analyzer; dry-run by default, `--execute` to write; reports per-name match counts and trials skipped for having no S3 artifacts (#493)
+- LLM-powered `result_focus` repair (`core/result_focus_repair.py`): malformed-but-JSON-intended `result_focus` values (trailing commas, single quotes, code fences) are coerced into valid JSON via a cheap Haiku pass before driving probe analysis or being stored on a skill; falls back gracefully on any failure, leaving the original value unchanged (#492)
+
+### Changed
+
+- Experiment owner and PR link are now stamped set-once on the experiment itself (new `experiments.owner` / `experiments.link` columns, backfilled from each experiment's earliest linked task) from the creating run's submitter; re-runs of shared tasks no longer overwrite the original experiment's provenance; dashboard and experiment detail view prefer experiment-level fields with task-derived fallback for un-backfilled rows; `taskPrUrl` now prefers `link` over `github_meta.pr_url` (#358)
+- Probe directive fields (operator prompt, evaluation metric, result focus) removed from the skill upload/edit form as they duplicate configuration handled elsewhere; the form now only shows upload folder, name, description, SKILL.md body, and additional files (#497)
+
+### Fixed
+
+- Probe summaries using a structured-output `result_focus` schema no longer crash with `TypeError: unexpected keyword argument 'output_config'`; the field is now forwarded via the Anthropic SDK's `extra_body` escape hatch, compatible with the pinned `anthropic==0.76.0` (#493)
+
+---
+
+## [2026-06-27]
+
+### Fixed
+
+- Probe result cells in the experiment trials table now navigate to the probe's dedicated run page (`/tasks/{id}/probe/{trial_id}`) instead of opening the trial drawer; non-probe cells are unchanged (#490)
+
+---
+
+## [2026-06-26]
+
+### Added
+
+- Admin cost breakdown dashboard tab (`/admin` → Costs) with per-window totals (24h/7d/30d/all-time), cost-over-time chart stacked by model/user/agent dimensions, and ranked tables by user, model, and experiment; `GET /api/admin/costs` backend endpoint aggregates globally using native `cost_usd` when present and per-model token estimates otherwise; cost split between native and estimated spend is surfaced per entry (#452)
+- Run Probe tab in the QA tab bar (`/qa/run`) with a full-page task search that replaces the old "+ New probe run" dialog on the Probe Runs page; typing filters tasks, clicking one navigates to `/tasks/{id}/probe` to configure and launch; default landing on `/qa` still shows Probe Runs (#478)
+
+### Changed
+
+- Probe presets and skills unified into a single Skills feature: `SkillModel` gains optional `operator_prompt`, `result_focus`, and `evaluation_metric` directive columns; probe form now selects a Skill (not a preset); skills mount **only** when explicitly selected at launch via `skill_ids` rather than auto-mounting into every probe; `probe_presets` table, router, and schemas fully removed; `/qa/presets` redirects to `/qa/skills`; existing presets migrated into skills (ids preserved); 13 built-in directive and bundle seed skills seeded on fresh databases; auto-probe default repointed to the `cheat-detector` seed skill (#477)
+- Probe trials now render as a sorted-last "Probe" agent group inside the normal trials grid on both the task detail page and the experiment matrix, scoped to the task's effective version; the separate Probe tab is removed from the experiment view; backend batch-loads effective-version probe trials and merges them into each task's trials while keeping aggregate counts (total/completed/reward) probe-free (#471)
+- Probe launch buttons (task detail header, experiment trials table icon, and experiment "New probe") now navigate directly to `/tasks/{id}/probe` instead of opening an inline modal; the "Submit a probe run" CTA interstitial on the probe page is removed so the form renders immediately (#474)
+- Preview database schema bootstrap reverted to model-based creation (`Base.metadata.create_all` + `alembic stamp head`) instead of running the full Alembic migration chain on rebuild; migration fingerprint removed from schema trust marker (#469)
+
+### Fixed
+
+- Production incident: every `GET /tasks` (experiments page) 500-ing and all worker jobs failing with `InvalidRequestError: One or more mappers failed to initialize` — `OrganizationModel.api_keys` and `UserModel.api_keys` lost their join condition after #466 dropped DB-level FKs; fixed by adding explicit `primaryjoin` with `foreign()` annotation and `viewonly=True` on both relationships (#468)
+- Trials with verification disabled (`verifier.disable: true`) that complete with `reward=None` no longer consume all retry attempts before failing; the worker now terminates them as `SUCCESS` on the first attempt; the UI shows a new `scoreless` status (slate "SCORELESS" badge, minus-circle icon) instead of treating them as perpetually pending (#462)
+
+---
+
+## [2026-06-25]
+
+### Added
+
+- `oddish backfill-analysis` CLI command to (re)run trial analysis (LLM trajectory classification + task verdict) for an experiment, a task, or a single trial; `POST /tasks/{task_id}/qa/backfill` backend endpoint on both cloud and local server with `force`, `enable_analysis`, and `trial_ids` options; `rerun_task_qa_core` refactored to delegate to the new `backfill_task_analysis_core` primitive (#456)
+- "Open task page" link button in the experiment trials table for direct navigation from the experiment view to a task's dedicated page; hidden on read-only share view since `/tasks/[id]` requires authentication (#442)
+
+### Changed
+
+- Chat button across all scopes (global `/tasks` header, per-task detail, per-experiment header) switched from outline to solid blue fill (`bg-blue-600`) for improved visibility (#465)
+- Preview database schema rebuilt by running `alembic upgrade head` for both stacks in order instead of `Base.metadata.create_all` + `alembic stamp head`; eliminates missing DB objects (e.g. `queue_runtime_status`, `tag_projection_sweep_state`, partial unique indexes) that only exist as raw DDL in migrations and are invisible to the ORM graph; production DROP SCHEMA guard re-introduced (#460)
+- Preview schema trust marker now folds in a migration fingerprint (SHA256 of both stacks' Alembic head revisions) in addition to the model-graph fingerprint, so a cached schema is also invalidated when a migration is added without any ORM model change (#460, #440)
+- Core package layout reorganized into focused subpackages: `oddish.core.tags` (service, projection, enqueue, filter_ast, naming, permissions, policies, profanity, ownership_transfer, saved_filters), `oddish.core.sharing` (public, helpers, documents), `oddish.core.ingest` (trial_imports, zip_imports, extraction), `oddish.core.probe` (auto_probe, presets); workers reorganized into `oddish.workers.agents` (claude_code, codex) and `oddish.workers.harbor` (runner, ephemeral, agent_config, outcome, storage, patches, modal_debug) (#438)
+
+### Fixed
+
+- `api_keys` cross-stack foreign keys dropped from `org_id` and `created_by_user_id` columns; new migration `apk01dropfk` drops constraints `IF EXISTS` so production converges; fixes `NoReferencedTableError` that prevented the oddish Alembic chain from bootstrapping independently (e.g. in the schema-parity CI job) (#466)
+- Probe and offline trials now get `network_mode = "public"` (and `allowed_hosts` cleared) instead of the legacy `allow_internet = true` flag in `enable_local_internet`; fixes silent no-op on Harbor tasks that set `network_mode`/`allowed_hosts` explicitly, which caused claude-code installs to SYN-timeout (~127s, curl exit 28) and the oddish-query CLI to lose egress; applies to both local Docker and cloud Modal probe paths (#464)
+- Chat session provisioning (`POST /chat-sessions`) no longer fails with "could not start chat" when the harbor pip install errors; harbor install is now best-effort (logs a warning and continues) since chat reads trial data through the oddish-query CLI, not the harbor package; claude-code install remains fatal (#458)
+- `uq_worker_jobs_tag_project_active` partial unique index declared on `WorkerJobModel.__table_args__`; prevents silent omission from model-built schemas where `ON CONFLICT … DO NOTHING` index inference for TAG_PROJECT job coalescing had nothing to infer against; no new migration (index already exists in the DB via `aa00ta01core`) (#454)
+- Preview bootstrap `_rebuild_schema` now calls `_assert_preview_branch` before `DROP SCHEMA`, refusing to proceed when `ODDISH_DATABASE_URL` resolves to production (matched via `SUPABASE_PROJECT_REF` or `PREVIEW_SAMPLE_SOURCE_DB_URL`) (#450)
+- Cloud auth migrations `a1b2c3d4e5f6` and `r4s5t6u7v8w9` made replay-safe against schemas built from the current model graph: `supabase_user_id` index creation guarded on column existence; `userrole` enum rebuild guarded on `owner` still being an enum value; fixes `Supabase DB Migrations` workflow failing with `column "supabase_user_id" does not exist` (#443)
+- Daytona dependency floor raised from `>=0.165.0` to `>=0.185.0`; fixes Daytona trials failing with a misleading `MissingExtraError` caused by Harbor importing `GpuType` from the daytona SDK, which was only added in version 0.185.0 (#439)
+
+---
+
 ## [2026-06-24]
 
 ### Added
@@ -33,6 +159,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Per-run container-registry credentials: any way a run is triggered (the `oddish run` CLI's `--registry-login` flag / `ODDISH_DOCKERHUB_*` env, the experiments-repo and harbor-forge CI workflows, a direct `POST /tasks/sweep` `registry_auth` field, or a trial retry request) can now supply its own Docker login so the trial sandbox's inner Docker-in-Docker daemon authenticates compose image pulls — fixing multi-service tasks failing at setup with Docker Hub `toomanyrequests`. The credential is per-user (never a shared Modal/oddish secret), Fernet-encrypted as it crosses the queue on `worker_jobs.payload` (never written to `trials.harbor_config`), passed to `docker login` before `compose build`/`up` via the Harbor DinD shim, then logged out on teardown. The encrypted ciphertext stays on the transient `worker_jobs` row while automatic retries remain possible and is scrubbed from the payload once the row reaches a terminal state.
 - `GET /experiments/{id}/trials` read endpoint returns all non-superseded trials for an experiment, gated by READ scope with org-scoped access control; trial rows now include an `is_probe` flag (#414)
 - Probe agent receives short-lived read-only API credentials and the `oddish-query` CLI on launch, enabling it to pull trial trajectories and logs on demand; a credentials-mint failure now fails the trial with a stored error rather than silently proceeding without access (#414)
 
@@ -174,7 +301,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Copy button in the task file viewer header copies the raw file content to clipboard with a 2-second check-icon confirmation; resets on file switch and cleans up its timeout on unmount (#299)
-- Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
 
 ### Changed
 

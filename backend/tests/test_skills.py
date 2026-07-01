@@ -10,6 +10,7 @@ import pytest_asyncio
 from fastapi import HTTPException
 
 from oddish.core.skills import (
+    _rewrite_skill_name,
     create_skill_core,
     delete_skill_core,
     get_skill_core,
@@ -30,6 +31,23 @@ def _payload(name="my-skill"):
             SkillFile(relative_path="scripts/run.sh", content="echo hi"),
         ],
     )
+
+
+def test_rewrite_skill_name_updates_frontmatter_only():
+    files = [
+        SkillFile(
+            relative_path="SKILL.md",
+            content="---\nname: my-skill\ndescription: does a thing\n---\n\n# Body\nkeep me\n",
+        ),
+        SkillFile(relative_path="scripts/run.sh", content="echo hi"),
+    ]
+    out = _rewrite_skill_name(files, "my-skill-2")
+    skill_md = next(f for f in out if f.relative_path == "SKILL.md")
+    assert "name: my-skill-2" in skill_md.content
+    assert "description: does a thing" in skill_md.content  # untouched
+    assert "# Body\nkeep me" in skill_md.content  # body untouched
+    # other files pass through unchanged
+    assert next(f for f in out if f.relative_path == "scripts/run.sh").content == "echo hi"
 
 
 @pytest_asyncio.fixture
@@ -199,6 +217,66 @@ async def test_update_without_files_patches_fields(org_id):
         got = await get_skill_core(session, skill_id, org_id=org_id)
         assert got.description == "patched"
         assert {f.relative_path for f in got.files} == {"SKILL.md", "scripts/run.sh"}
+
+
+@pytest.mark.asyncio
+async def test_create_versions_on_collision(org_id):
+    async with get_session() as session:
+        first = await create_skill_core(session, data=_payload(), org_id=org_id)
+        await session.commit()
+        assert first.name == "my-skill"
+
+    async with get_session() as session:
+        second = await create_skill_core(session, data=_payload(), org_id=org_id)
+        await session.commit()
+        assert second.name == "my-skill-2"
+        skill_md = next(f for f in second.files if f.relative_path == "SKILL.md")
+        assert "name: my-skill-2" in skill_md.content  # frontmatter rewritten
+
+    async with get_session() as session:
+        third = await create_skill_core(session, data=_payload(), org_id=org_id)
+        await session.commit()
+        assert third.name == "my-skill-3"
+
+
+@pytest.mark.asyncio
+async def test_create_fills_version_gap(org_id):
+    # Seed names "my-skill" and "my-skill-3"; the next create should fill "-2".
+    async with get_session() as session:
+        await create_skill_core(session, data=_payload(), org_id=org_id)  # my-skill
+        await create_skill_core(session, data=_payload(), org_id=org_id)  # my-skill-2
+        await create_skill_core(session, data=_payload(), org_id=org_id)  # my-skill-3
+        await session.commit()
+    async with get_session() as session:
+        await session.execute(
+            SkillModel.__table__.delete().where(
+                SkillModel.org_id == org_id, SkillModel.name == "my-skill-2"
+            )
+        )
+        await session.commit()
+    async with get_session() as session:
+        filler = await create_skill_core(session, data=_payload(), org_id=org_id)
+        await session.commit()
+        assert filler.name == "my-skill-2"
+
+
+@pytest.mark.asyncio
+async def test_seed_name_does_not_block_org(org_id):
+    other_org = f"org_sk_{uuid.uuid4().hex[:8]}"
+    try:
+        async with get_session() as session:
+            await create_skill_core(session, data=_payload(), org_id=other_org)
+            await session.commit()
+        async with get_session() as session:
+            mine = await create_skill_core(session, data=_payload(), org_id=org_id)
+            await session.commit()
+            assert mine.name == "my-skill"  # different bucket, no bump
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                SkillModel.__table__.delete().where(SkillModel.org_id == other_org)
+            )
+            await session.commit()
 
 
 @pytest.mark.asyncio

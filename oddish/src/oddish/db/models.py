@@ -341,6 +341,35 @@ task_experiments = Table(
 )
 
 
+# Association table for read-only "collection" experiments: gathers existing
+# trials (from their home experiments) into a new experiment for dashboard
+# viewing, without moving the trials.
+experiment_trials = Table(
+    "experiment_trials",
+    Base.metadata,
+    Column(
+        "experiment_id",
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "trial_id",
+        String(160),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    ),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
+    Index("idx_experiment_trials_trial_id", "trial_id"),
+)
+
+
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -402,9 +431,25 @@ class ExperimentModel(TimestampedMixin, Base):
     # Primary owner for dashboard Mine filter (stamped from the first task submit).
     owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Per-experiment provenance, stamped set-once from the creating run's
+    # submitter. Unlike the shared, mutable ``task.link`` / ``task.tags`` (which
+    # any later run of a shared task overwrites), these belong to THIS
+    # experiment and never change once set, so the experiment always shows the
+    # PR/owner it was created for. ``owner`` is a display string (a GitHub
+    # handle or a plain username); distinct from ``owner_user_id`` (the internal
+    # user id used only by the Mine filter).
+    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+    link: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Read-only "collection" experiment: gathers existing trials from other
+    # experiments for dashboard viewing (see ``experiment_trials``).
+    is_collection: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
@@ -1136,9 +1181,48 @@ class WorkerJobModel(TimestampedMixin, Base):
             "status",
             postgresql_where=text("org_id IS NOT NULL"),
         ),
+        Index(
+            "uq_worker_jobs_tag_project_active",
+            "kind",
+            "subject_table",
+            "subject_id",
+            unique=True,
+            postgresql_where=text(
+                "kind = 'TAG_PROJECT' "
+                "AND status IN ('QUEUED', 'RETRYING') "
+                "AND subject_id IS NOT NULL"
+            ),
+        ),
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Per-stage timing for the pre-harbor preamble (design spec §12). The
+    # existing claimed_at/started_at cover claim+total-elapsed; these fill the
+    # submit -> spawn -> sandbox-create gap so the 180s-poll vs cold-start vs
+    # image-pull split is visible.
+    spawned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sandbox_creating_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why a still-waiting job has not been spawned -- the queryable why-waiting /
+    # admission-reason field (spec §12): "waiting for slot", "cold-starting",
+    # "capability-rejected: <table>", ...
+    admission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Job-scoped credential token lifecycle (spec §6.6). Only the SHA-256 hash is
+    # persisted; the raw token + scoped bundle (model keys, S3 prefix) are
+    # returned to the worker at claim and held in memory. Revoked on terminal
+    # status. Gated by settings.job_scoped_tokens_enabled (default off).
+    job_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_token_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class APIKeyModel(TimestampedMixin, Base):
@@ -1217,41 +1301,6 @@ class APIKeyModel(TimestampedMixin, Base):
 # themselves from ``backend/models.py`` so this module stays standalone.
 # ``APIKeyModel`` lives in this module, but its soft-delete registration
 # still happens from ``backend/models.py`` (alongside the other auth models).
-class ProbePresetModel(TimestampedMixin, Base):
-    """Operator-directive presets for probe trials.
-
-    Seed presets (``is_seed=True``, ``org_id`` NULL) are global built-ins
-    shared across all deployments. Custom presets are org-scoped. The
-    operator prompt is what gets prepended to a task's ``instruction.md``
-    when a probe trial is submitted from this preset.
-    """
-
-    __tablename__ = "probe_presets"
-    __table_args__ = (
-        # Reuse a preset name after soft-delete: partial unique index that
-        # matches the ``deleted_at IS NULL`` predicate the soft-delete
-        # listener appends to every read. COALESCE handles NULL org_id so
-        # the constraint works for both hosted (org set) and OSS (NULL).
-        Index(
-            "idx_probe_presets_unique_org_name",
-            text("COALESCE(org_id, '')"),
-            "name",
-            unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
-    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    agent: Mapped[str] = mapped_column(String(64), nullable=False)
-    model: Mapped[str] = mapped_column(String(128), nullable=False)
-    operator_prompt: Mapped[str] = mapped_column(Text, nullable=False)
-    result_focus: Mapped[str | None] = mapped_column(Text, nullable=True)
-    evaluation_metric: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-
 class TagModel(TimestampedMixin, Base):
     """Org-scoped custom tag definition (the 'vocabulary' row)."""
 
@@ -1678,6 +1727,9 @@ class SkillModel(TimestampedMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_seed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    operator_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    result_focus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evaluation_metric: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     files: Mapped[list["SkillFileModel"]] = relationship(  # type: ignore[assignment]
         "SkillFileModel",
@@ -1752,7 +1804,6 @@ register_soft_delete_models(
     ExperimentModel,
     TaskModel,
     TrialModel,
-    ProbePresetModel,
     TagModel,
     TagAssignmentModel,
     TagExclusionModel,

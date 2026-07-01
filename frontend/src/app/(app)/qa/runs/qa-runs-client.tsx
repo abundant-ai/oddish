@@ -1,20 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -34,8 +26,6 @@ type ProbeRow = {
   last_status: string;
 };
 
-type TaskOption = { id: string; name: string };
-
 const PAGE_SIZE = 25;
 
 function useDebouncedValue<T>(value: T, delayMs: number) {
@@ -52,88 +42,7 @@ function useDebouncedValue<T>(value: T, delayMs: number) {
   return debouncedValue;
 }
 
-function NewProbeRunDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (v: boolean) => void;
-}) {
-  const router = useRouter();
-  const [query, setQuery] = useState("");
-  const { data, error } = useSWR<TaskOption[]>(
-    open ? "/api/tasks" : null,
-    fetcher,
-  );
-
-  const filtered = useMemo(() => {
-    const list = data ?? [];
-    const q = query.trim().toLowerCase();
-    const matches = q
-      ? list.filter((t) => t.name.toLowerCase().includes(q))
-      : list;
-    return matches.slice(0, 50);
-  }, [data, query]);
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) setQuery("");
-        onOpenChange(v);
-      }}
-    >
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>New probe run</DialogTitle>
-          <DialogDescription className="text-muted-foreground text-xs">
-            Pick a task to probe. You&apos;ll land on its probe page to
-            configure and launch the run.
-          </DialogDescription>
-        </DialogHeader>
-        <Input
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search tasks…"
-          className="h-8 border-[#6f88b4]/20"
-        />
-        <div className="max-h-72 overflow-y-auto rounded-md border border-[#6f88b4]/20">
-          {error ? (
-            <div className="text-destructive p-3 text-xs">
-              Failed to load tasks.
-            </div>
-          ) : !data ? (
-            <div className="text-muted-foreground p-3 text-xs">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="text-muted-foreground p-3 text-xs">
-              No matching tasks.
-            </div>
-          ) : (
-            filtered.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => router.push(`/tasks/${t.id}/probe`)}
-                className="hover:bg-muted focus-visible:bg-muted block w-full px-3 py-2 text-left text-xs focus-visible:outline-none"
-              >
-                {t.name}
-              </button>
-            ))
-          )}
-        </div>
-        {filtered.length === 50 && (
-          <p className="text-muted-foreground text-[10px]">
-            Showing first 50 — type to filter.
-          </p>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function QaRunsClient() {
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(0);
   const debouncedQuery = useDebouncedValue(
@@ -178,14 +87,6 @@ export function QaRunsClient() {
               placeholder="Search tasks"
               className="h-8 w-full border-[#6f88b4]/20 sm:w-[220px]"
             />
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => setPickerOpen(true)}
-            >
-              + New probe run
-            </Button>
           </div>
         </CardHeader>
         <CardContent>
@@ -202,7 +103,7 @@ export function QaRunsClient() {
             </div>
           ) : !data || data.length === 0 ? (
             <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
-              No probe runs yet. Start one with &quot;+ New probe run&quot;.
+              No probe runs yet. Start one from the &quot;Run Probe&quot; tab.
             </div>
           ) : filtered.length === 0 ? (
             <div className="bg-card/60 text-muted-foreground rounded-lg border border-dashed border-[#6f88b4]/30 px-6 py-10 text-center text-sm">
@@ -285,8 +186,6 @@ export function QaRunsClient() {
           )}
         </CardContent>
       </Card>
-
-      <NewProbeRunDialog open={pickerOpen} onOpenChange={setPickerOpen} />
     </div>
   );
 }

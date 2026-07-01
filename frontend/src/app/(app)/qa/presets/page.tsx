@@ -1,5 +1,5 @@
-import { PresetsClient } from "./presets-client";
+import { redirect } from "next/navigation";
 
 export default function PresetsPage() {
-  return <PresetsClient />;
+  redirect("/qa/skills");
 }
