@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 # =============================================================================
@@ -68,9 +68,18 @@ class QuotaListResponse(BaseModel):
 
 class QuotaUpdateRequest(BaseModel):
     """Set (non-null) or CLEAR (null -> revert to the read-time default) a
-    member's daily limit override."""
+    member's daily limit override. A non-null value must be positive and fit the
+    NUMERIC(12,4) column, so an out-of-range / negative / zero / excess-scale
+    input is a clean 422 rather than a DB overflow 500 or a silently-rounded
+    value that would make PUT and GET disagree."""
 
-    limit_usd: Decimal | None
+    limit_usd: Decimal | None = Field(
+        default=None,
+        gt=0,
+        le=Decimal("99999999.9999"),
+        max_digits=12,
+        decimal_places=4,
+    )
 
 
 class InviteUserRequest(BaseModel):

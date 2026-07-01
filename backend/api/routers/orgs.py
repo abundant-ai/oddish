@@ -146,6 +146,19 @@ async def get_my_quota_usage(
     )
 
 
+def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem:
+    return QuotaMemberItem(
+        user_id=member.id,
+        email=member.email,
+        name=member.name,
+        github_username=member.github_username,
+        role=member.role.value,
+        limit_usd=float(effective_limit_usd),
+        used_usd=float(used_usd),
+        period="daily",
+    )
+
+
 @router.get("/quotas", response_model=QuotaListResponse)
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
@@ -196,17 +209,10 @@ async def list_member_quotas(
 
     return QuotaListResponse(
         members=[
-            QuotaMemberItem(
-                user_id=member.id,
-                email=member.email,
-                name=member.name,
-                github_username=member.github_username,
-                role=member.role.value,
-                limit_usd=float(
-                    override_limit_by_user_id.get(member.id, default_limit_usd)
-                ),
-                used_usd=float(used_usd_by_user_id.get(member.id, Decimal(0))),
-                period="daily",
+            _quota_member_item(
+                member,
+                override_limit_by_user_id.get(member.id, default_limit_usd),
+                used_usd_by_user_id.get(member.id, Decimal(0)),
             )
             for member in members
         ]
@@ -267,16 +273,7 @@ async def set_member_quota(
         if payload.limit_usd is not None
         else settings.default_daily_quota_usd
     )
-    return QuotaMemberItem(
-        user_id=member.id,
-        email=member.email,
-        name=member.name,
-        github_username=member.github_username,
-        role=member.role.value,
-        limit_usd=float(effective_limit_usd),
-        used_usd=float(used_today),
-        period="daily",
-    )
+    return _quota_member_item(member, effective_limit_usd, used_today)
 
 
 @router.post("/users", response_model=InviteUserResponse)
