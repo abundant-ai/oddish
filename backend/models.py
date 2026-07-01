@@ -28,7 +28,9 @@ from oddish.db.models import Base, TimestampedMixin, utcnow
 # existing ``from models import ...`` call sites keep resolving unchanged.
 from oddish.db.models import APIKeyModel, APIKeyScope  # noqa: F401
 from oddish.core.api_keys import (  # noqa: F401
-    create_api_key, generate_api_key, hash_api_key,
+    create_api_key,
+    generate_api_key,
+    hash_api_key,
 )
 
 
@@ -133,13 +135,6 @@ class UserModel(TimestampedMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
-    )
-    # When true, tasks this user creates default to run_probe=True (auto-probe
-    # on submit) without the caller passing --run-probe. Only ever turns the
-    # flag ON; an explicit run_probe=True on the submission still wins. Set per
-    # user by an operator; there is no UI yet.
-    run_probe_default: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False, server_default="false"
     )
 
     # Relationships
@@ -356,5 +351,3 @@ class SubmissionIdempotency(Base):
 from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
-
-
