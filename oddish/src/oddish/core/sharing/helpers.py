@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     build_trial_response,
@@ -163,7 +164,7 @@ async def list_experiment_trials_for_org(
 ) -> list[TrialResponse]:
     """List non-superseded trials for an experiment (org-scoped)."""
     conditions = [
-        TrialModel.experiment_id == experiment_id,
+        trial_in_experiment(experiment_id),
         TrialModel.superseded_by_trial_id.is_(None),
     ]
     if org_id is not None:
