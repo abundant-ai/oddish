@@ -777,6 +777,12 @@ async def browse_tasks(
     runtime_avg_max: float | None = Query(
         None, ge=0.0, description="Task avg run time per trial (seconds), max"
     ),
+    pass_rate_min: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task pass rate percent (0-100), min"
+    ),
+    pass_rate_max: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task pass rate percent (0-100), max"
+    ),
     sort: str | None = Query(
         None,
         description=(
@@ -792,16 +798,31 @@ async def browse_tasks(
     compare_a: str | None = Query(None, description="Subject A (agent/model name)"),
     compare_b: str | None = Query(None, description="Subject B (agent/model name)"),
     compare_metric: str | None = Query(
-        None, description="Compare metric: reward | runtime | tokens | steps"
+        None,
+        description="Compare metric: reward | runtime | tokens | steps | pass_rate",
     ),
     compare_agg: str | None = Query(
-        None, description="Reduce each subject's trials by: best | avg (default best)"
+        None,
+        description=(
+            "Reduce each subject's trials by: best | avg | median (default best; "
+            "ignored for pass_rate)"
+        ),
     ),
     compare_margin: float | None = Query(
         None, ge=0.0, description="A must beat B by more than this (0/absent = any)"
     ),
     compare_margin_unit: str | None = Query(
         None, description="Margin unit: 'pct' (percent of B, default) or 'abs'"
+    ),
+    top_by: str | None = Query(
+        None, description="Top performer subject column: 'agent' or 'model'"
+    ),
+    top_value: str | None = Query(
+        None, description="The subject that must be the task's top performer"
+    ),
+    top_metric: str | None = Query(
+        None,
+        description="Top performer metric: reward | runtime | tokens | steps | pass_rate",
     ),
     or_groups: str | None = Query(
         None,
@@ -906,6 +927,8 @@ async def browse_tasks(
             runtime_total_max=runtime_total_max,
             runtime_avg_min=runtime_avg_min,
             runtime_avg_max=runtime_avg_max,
+            pass_rate_min=pass_rate_min,
+            pass_rate_max=pass_rate_max,
             sort=sort,
             compare_by=compare_by,
             compare_a=compare_a,
@@ -914,6 +937,9 @@ async def browse_tasks(
             compare_agg=compare_agg,
             compare_margin=compare_margin,
             compare_margin_unit=compare_margin_unit,
+            top_by=top_by,
+            top_value=top_value,
+            top_metric=top_metric,
             or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
         )
