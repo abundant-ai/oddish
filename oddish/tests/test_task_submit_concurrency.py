@@ -35,7 +35,6 @@ from oddish.cli._concurrency import (
     SUBMIT_CONCURRENCY_ENV_VAR,
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
-    _LatencyMonitor,
     map_with_adaptive_concurrency,
     report_api_call,
     report_backpressure,
@@ -170,7 +169,7 @@ def test_explicit_value_pins_limit(monkeypatch):
     assert limiter.min_limit == limiter.max_limit == 7
     assert limiter.limit == 7
     # Pinned -> no adaptation.
-    limiter.record_success(in_flight=99)
+    limiter.record_sample(0.1, in_flight=99)
     limiter.record_backpressure()
     assert limiter.limit == 7
 
@@ -221,12 +220,19 @@ def test_s3_clamps_into_small_band(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_gate_grows_limit_on_clean_success():
+def test_gate_grows_limit_on_clean_low_latency_samples():
+    # A run of clean, fast API calls feeds the gradient and grows the limit
+    # (gradient ~1.0 when noload == actual), while in_flight pushes the ceiling.
     limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=16, initial_limit=2)
     gate = ConcurrencyGate(limiter)
-    assert gate.run(lambda: "ok") == "ok"
-    # in_flight == 1 at acquire, 1*2 >= 2 -> grow.
-    assert limiter.limit == 3
+
+    def worker():
+        report_api_call(0.01)
+        return "ok"
+
+    for _ in range(6):
+        assert gate.run(worker) == "ok"
+    assert limiter.limit > 2
 
 
 def test_gate_backs_off_on_timeout():
@@ -286,17 +292,17 @@ def test_gate_backs_off_on_reported_status_then_exit():
 
 
 def test_gate_observes_only_reported_api_latency():
-    # The latency signal is built from reported API time, never wall-clock time,
-    # so a slow S3 PUT inside the worker can't trip the API limiter.
-    monitor = _LatencyMonitor(warmup=1, slow_multiplier=2.0)
-    gate = ConcurrencyGate(resolve_submit_concurrency(8), latency_monitor=monitor)
+    # The RTT signal is built from reported API time, never wall-clock time, so a
+    # slow S3 PUT inside the worker can't feed the gradient.
+    limiter = resolve_submit_concurrency(8)
+    gate = ConcurrencyGate(limiter)
 
     def worker():
         report_api_call(0.05)  # API-only time; any S3-PUT time is never reported
         return "ok"
 
     gate.run(worker)
-    assert monitor.slow_threshold() == pytest.approx(0.10)  # 2 * 0.05
+    assert limiter.rtt_actual == pytest.approx(0.05)
 
 
 def test_report_helpers_are_noop_outside_gate():
@@ -424,17 +430,17 @@ def test_s3_put_acquires_separate_semaphore(monkeypatch, tmp_path):
 
 def test_s3_put_excluded_from_api_latency_signal(monkeypatch, tmp_path):
     # The S3 PUT must report no API call, so its (potentially slow) wall-time
-    # never feeds the API latency monitor.
+    # never feeds the gradient's RTT signal.
     monkeypatch.setattr(api, "_get_s3_put_semaphore", _RecordingSemaphore)
     monkeypatch.setattr(api.httpx, "Client", _FakeS3Client)
-    monitor = _LatencyMonitor(warmup=1)
-    gate = ConcurrencyGate(resolve_submit_concurrency(4), latency_monitor=monitor)
+    limiter = resolve_submit_concurrency(4)
+    gate = ConcurrencyGate(limiter)
     tarball = tmp_path / "task.tar.gz"
     tarball.write_bytes(b"payload")
 
     gate.run(lambda: api._upload_to_presigned_url("http://s3/put", tarball, {}))
 
-    assert monitor.slow_threshold() is None  # no API call observed -> still warming up
+    assert limiter.rtt_actual is None  # no API call observed -> no RTT sample
 
 
 # ---------------------------------------------------------------------------
@@ -473,3 +479,167 @@ def test_submit_sweep_reports_backpressure_status(monkeypatch):
     with pytest.raises(typer.Exit):
         gate.run(worker)
     assert limiter.limit < 8
+
+
+# ---------------------------------------------------------------------------
+# Server-advertised ceiling (Oddish-Submit-Concurrency) clamps the limiter
+# ---------------------------------------------------------------------------
+
+
+def test_retry_request_reads_advertised_ceiling_within_gate():
+    # init/complete go through _retry_request; the advertised ceiling on the
+    # response must clamp the limiter's effective max.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        send = _scripted_send(
+            [
+                httpx.Response(
+                    status_code=200,
+                    headers={
+                        "Oddish-Submit-Concurrency": "ceiling=9; pressure=0.8; ttl=5"
+                    },
+                )
+            ]
+        )
+        return api._retry_request(
+            send, budget=api._RetryBudget(), sleep=lambda _s: None
+        )
+
+    gate.run(worker)
+    assert limiter.limit == 9  # min(static 64, advertised 9)
+
+
+def test_post_sweep_payload_reads_advertised_ceiling(monkeypatch):
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    monkeypatch.setattr(api, "compute_sweep_idempotency_key", lambda payload: "k")
+
+    class _HeaderClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            return httpx.Response(
+                status_code=200,
+                json={"ok": True},
+                headers={
+                    "Oddish-Submit-Concurrency": "ceiling=11; pressure=0.5; ttl=5"
+                },
+            )
+
+    monkeypatch.setattr(api.httpx, "Client", _HeaderClient)
+
+    def worker():
+        return api.post_sweep_payload("http://api", {"task_id": "t1"})
+
+    gate.run(worker)
+    assert limiter.limit == 11
+
+
+def test_missing_advertised_header_leaves_max_unchanged():
+    # A response without the header is "no advice": the limiter keeps its max.
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    gate = ConcurrencyGate(limiter)
+
+    def worker():
+        send = _scripted_send([httpx.Response(status_code=200)])
+        return api._retry_request(
+            send, budget=api._RetryBudget(), sleep=lambda _s: None
+        )
+
+    gate.run(worker)
+    assert limiter.limit == 40
+
+
+# ---------------------------------------------------------------------------
+# submit_sweep_batch: chunks routed through the gate, sized by the header
+# ---------------------------------------------------------------------------
+
+
+def _install_batch_client(monkeypatch, post):
+    """Install a fake httpx.Client whose POST delegates to ``post(url, **kwargs)``."""
+    monkeypatch.setattr(api, "get_auth_headers", lambda: {})
+    monkeypatch.setenv("ODDISH_SWEEP_BATCH_MAX_TASKS", "10")
+
+    class _BatchClient:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def post(self, url, **kwargs):
+            return post(url, **kwargs)
+
+    monkeypatch.setattr(api.httpx, "Client", _BatchClient)
+
+
+def test_submit_sweep_batch_rebases_indices_and_reads_header(monkeypatch):
+    def post(url, **kwargs):
+        subs = kwargs["json"]["submissions"]
+        results = [
+            {"index": i, "success": True, "task": {"id": s["task_id"]}}
+            for i, s in enumerate(subs)
+        ]
+        return httpx.Response(
+            status_code=200,
+            json={"results": results},
+            headers={"Oddish-Submit-Concurrency": "ceiling=6; pressure=0.7; ttl=5"},
+        )
+
+    _install_batch_client(monkeypatch, post)
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": f"t{i}"} for i in range(25)]  # 3 chunks at cap 10
+
+    results = api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+
+    assert len(results) == 25
+    assert [r["index"] for r in results] == list(range(25))  # re-based 0..24
+    assert {r["task"]["id"] for r in results} == {f"t{i}" for i in range(25)}
+    assert limiter.limit == 6  # clamped to the advertised ceiling
+
+
+def test_submit_sweep_batch_first_chunk_404_returns_none(monkeypatch):
+    _install_batch_client(monkeypatch, lambda url, **k: httpx.Response(status_code=404))
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": "t0"}, {"task_id": "t1"}]
+    assert api.submit_sweep_batch("http://api", payloads, limiter=limiter) is None
+
+
+def test_submit_sweep_batch_later_chunk_route_vanish_raises(monkeypatch):
+    def post(url, **kwargs):
+        subs = kwargs["json"]["submissions"]
+        if subs and subs[0]["task_id"] == "t20":  # the 3rd chunk (offset 20)
+            return httpx.Response(status_code=404)
+        results = [{"index": i, "success": True, "task": {}} for i in range(len(subs))]
+        return httpx.Response(status_code=200, json={"results": results})
+
+    _install_batch_client(monkeypatch, post)
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=40)
+    payloads = [{"task_id": f"t{i}"} for i in range(25)]
+    with pytest.raises(typer.Exit):
+        api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+
+
+def test_submit_sweep_batch_chunk_backpressure_shrinks_limit(monkeypatch):
+    _install_batch_client(
+        monkeypatch,
+        lambda url, **k: httpx.Response(status_code=503, text="overloaded"),
+    )
+    limiter = AdaptiveConcurrencyLimiter(min_limit=2, max_limit=64, initial_limit=20)
+    payloads = [{"task_id": "t0"}]
+    with pytest.raises(typer.Exit):
+        api.submit_sweep_batch("http://api", payloads, limiter=limiter)
+    assert limiter.limit < 20  # the 503 chunk triggered the hard MD via the gate

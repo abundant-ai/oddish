@@ -29,11 +29,8 @@ def _schema_fake_client():
                     "headline": "h",
                     "summary": "s",
                     "key_actions": [],
-                    "cheating_attempted": None,
-                    "cheating_succeeded": None,
                     "evidence": "e",
                     "hypotheses": [],
-                    "recommendations": [],
                     "result_focus_findings": {"verdict": "bad", "defects": ["x"]},
                     "attempts": [],
                 }
@@ -132,8 +129,6 @@ def _fake_client() -> MagicMock:
                 '{"headline":"agent enumerated cheats",'
                 '"summary":"...",'
                 '"key_actions":["read tests"],'
-                '"cheating_attempted":false,'
-                '"cheating_succeeded":null,'
                 '"evidence":"transcript step 4",'
                 '"result_focus_findings":"found two ambiguities",'
                 '"attempts":[{"title":"hardcode results.json","rationale":"verifier reads it","outcome":"rejected","success":false,"step_indices":[1,2,3]}]'
@@ -162,8 +157,9 @@ async def test_probe_analyzer_parses_json_response():
 
     assert result["kind"] == "probe_summary"
     assert result["headline"] == "agent enumerated cheats"
-    assert result["cheating_attempted"] is False
-    assert result["cheating_succeeded"] is None
+    assert "cheating_attempted" not in result
+    assert "cheating_succeeded" not in result
+    assert "recommendations" not in result
     assert result["model"] == "claude-sonnet-4-6"
     assert isinstance(result["attempts"], list)
     assert result["attempts"][0]["title"] == "hardcode results.json"
@@ -203,7 +199,7 @@ async def test_probe_analyzer_routes_bedrock_model_through_direct_api():
 
 
 # ---------------------------------------------------------------------------
-# _normalize_probe_summary — recommendations field
+# _normalize_probe_summary — cheating / recommendations dropped
 # ---------------------------------------------------------------------------
 
 
@@ -211,56 +207,30 @@ def _normalize(parsed: dict) -> dict:
     return _normalize_probe_summary(parsed, result_focus="", model="m")
 
 
-def test_normalize_recommendations_passthrough():
+def test_normalize_omits_cheating_and_recommendations():
+    """The probe is adversarial by design, so the analyzer no longer emits a
+    cheat verdict or operator recommendations — both are dropped even when the
+    model returns them."""
     out = _normalize(
         {
+            "headline": "hi",
+            "cheating_attempted": True,
+            "cheating_succeeded": True,
             "recommendations": [
-                {
-                    "priority": "must_fix",
-                    "action": "Compute results from source",
-                    "rationale": "A pre-written results.json passes outright",
-                },
-                {"priority": "optional", "action": "Remove /opt/reference"},
-            ]
+                {"priority": "must_fix", "action": "Compute results from source"}
+            ],
         }
     )
-    assert out["recommendations"] == [
-        {
-            "priority": "must_fix",
-            "action": "Compute results from source",
-            "rationale": "A pre-written results.json passes outright",
-        },
-        {
-            "priority": "optional",
-            "action": "Remove /opt/reference",
-            "rationale": "",
-        },
-    ]
+    assert "cheating_attempted" not in out
+    assert "cheating_succeeded" not in out
+    assert "recommendations" not in out
 
 
-def test_normalize_recommendations_bad_priority_coerced():
-    out = _normalize({"recommendations": [{"priority": "nope", "action": "do thing"}]})
-    assert out["recommendations"][0]["priority"] == "should_fix"
-
-
-def test_normalize_recommendations_drops_entries_without_action():
-    out = _normalize(
-        {
-            "recommendations": [
-                {"priority": "must_fix", "action": "   "},
-                {"priority": "must_fix"},
-                {"priority": "should_fix", "action": "keep me"},
-            ]
-        }
-    )
-    assert out["recommendations"] == [
-        {"priority": "should_fix", "action": "keep me", "rationale": ""}
-    ]
-
-
-def test_normalize_recommendations_missing_field_defaults_empty():
-    out = _normalize({"headline": "hi"})
-    assert out["recommendations"] == []
+def test_build_envelope_omits_cheating_and_recommendations():
+    env = _build_envelope_schema(None)
+    assert "cheating_attempted" not in env["properties"]
+    assert "cheating_succeeded" not in env["properties"]
+    assert "recommendations" not in env["properties"]
 
 
 # ---------------------------------------------------------------------------
@@ -333,8 +303,10 @@ async def test_probe_analyzer_recovers_from_truncated_response():
 
 
 @pytest.mark.asyncio
-async def test_probe_analyzer_prompt_requests_recommendations():
-    """The analyzer prompt must instruct the model to emit `recommendations`."""
+async def test_probe_analyzer_prompt_frames_subject_as_probe_and_drops_cheat_recs():
+    """The prompt must tell the analyzer its subject is a privileged PROBE (so it
+    does not misread sanctioned probe actions as task holes) and must no longer
+    ask for a cheat verdict or operator recommendations."""
     fake_client = _fake_client()
 
     with patch("anthropic.AsyncAnthropic", return_value=fake_client):
@@ -347,7 +319,7 @@ async def test_probe_analyzer_prompt_requests_recommendations():
         )
 
     sent = fake_client.messages.create.await_args.kwargs["messages"][0]["content"]
-    assert "recommendations" in sent
-    assert "must_fix" in sent
-    assert "should_fix" in sent
-    assert "optional" in sent
+    assert "PROBE" in sent
+    assert "/probe-harness/app-baseline" in sent
+    assert '"recommendations"' not in sent
+    assert '"cheating_attempted"' not in sent

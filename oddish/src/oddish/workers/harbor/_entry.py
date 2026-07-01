@@ -19,7 +19,9 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if sys.path and os.path.abspath(sys.path[0] or "") == _THIS_DIR:
     sys.path.pop(0)
 
-ClaudeCode = importlib.import_module("harbor.agents.installed.claude_code").ClaudeCode
+ClaudeCode: Any = importlib.import_module(
+    "harbor.agents.installed.claude_code"
+).ClaudeCode
 
 logger = logging.getLogger("oddish.harbor_entry")
 
@@ -106,7 +108,7 @@ def _make_hook(probe_task_dir: str | None, probe_harness_dir: str | None):
     return _hook
 
 
-class _ProbeClaudeCode(ClaudeCode):
+class _ProbeClaudeCode(ClaudeCode):  # type: ignore[misc, valid-type]
     """Claude Code that installs override Harbor in the sandbox."""
 
     def __init__(
@@ -130,7 +132,6 @@ class _ProbeClaudeCode(ClaudeCode):
 
 
 def _build_job_config(payload: dict[str, Any]):
-    from harbor import JobConfig
     from harbor.models.environment_type import EnvironmentType
     from harbor.models.job.config import RetryConfig
     from harbor.models.trial.config import (
@@ -139,6 +140,8 @@ def _build_job_config(payload: dict[str, Any]):
         TaskConfig,
         VerifierConfig,
     )
+
+    JobConfig = getattr(importlib.import_module("harbor"), "JobConfig")
 
     env_config = EnvironmentConfig.model_validate(
         payload.get("environment_config") or {}
@@ -187,9 +190,8 @@ def _build_job_config(payload: dict[str, Any]):
 
 
 async def _run(payload: dict[str, Any]) -> dict[str, Any]:
-    from harbor import Job
-
     _apply_sibling_harbor_patches()
+    Job = getattr(importlib.import_module("harbor"), "Job")
     start = time.time()
     config = _build_job_config(payload)
     job = await Job.create(config)

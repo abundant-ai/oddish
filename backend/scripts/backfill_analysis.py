@@ -106,10 +106,7 @@ async def backfill(trial_id: str, execute: bool) -> None:
         analysis = trial.analysis or {}
         print(f"\nAFTER  analysis_status={trial.analysis_status}")
         print(f"AFTER  headline={analysis.get('headline')!r}")
-        print(
-            f"AFTER  cheating_attempted={analysis.get('cheating_attempted')} "
-            f"cheating_succeeded={analysis.get('cheating_succeeded')}"
-        )
+        print(f"AFTER  hypotheses={analysis.get('hypotheses')!r}")
 
 
 @app.function(image=image, secrets=[secret], timeout=3600)
