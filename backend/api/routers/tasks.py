@@ -697,11 +697,6 @@ async def list_experiment_task_shells(
         )
 
 
-# NOTE (temporary): no-op touch to force a backend diff on this push so the PR
-# preview redeploys the preview backend and Vercel targets it (a frontend-only
-# follow-up push otherwise re-points the preview to prod — see
-# claude-doc/worklogs/preview-vercel-backend-pointing.md). Safe to remove once the
-# Phase 1.2-lite aggregate filters are verified on the preview environment.
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)
 async def browse_tasks(
     request: Request,
@@ -789,6 +784,24 @@ async def browse_tasks(
             "keeps the default recency order."
         ),
     ),
+    # --- Phase 2.1 agent/model comparison (computed on the fly) ---
+    compare_by: str | None = Query(
+        None, description="Compare subject column: 'agent' or 'model'"
+    ),
+    compare_a: str | None = Query(None, description="Subject A (agent/model name)"),
+    compare_b: str | None = Query(None, description="Subject B (agent/model name)"),
+    compare_metric: str | None = Query(
+        None, description="Compare metric: reward | runtime | tokens | steps"
+    ),
+    compare_agg: str | None = Query(
+        None, description="Reduce each subject's trials by: best | avg (default best)"
+    ),
+    compare_margin: float | None = Query(
+        None, ge=0.0, description="A must beat B by more than this (0/absent = any)"
+    ),
+    compare_margin_unit: str | None = Query(
+        None, description="Margin unit: 'pct' (percent of B, default) or 'abs'"
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -874,6 +887,13 @@ async def browse_tasks(
             runtime_avg_min=runtime_avg_min,
             runtime_avg_max=runtime_avg_max,
             sort=sort,
+            compare_by=compare_by,
+            compare_a=compare_a,
+            compare_b=compare_b,
+            compare_metric=compare_metric,
+            compare_agg=compare_agg,
+            compare_margin=compare_margin,
+            compare_margin_unit=compare_margin_unit,
             record_timing=_make_timing_recorder(request),
         )
 

@@ -684,23 +684,11 @@ def _trial_bucket_label() -> Any:
     )
 
 
-def _task_metrics_subquery(org_id: str | None) -> Any:
-    """One GROUP BY over the scoped trials, aggregated per (task, version).
-
-    Grouped by ``(task_id, task_version_id)`` and joined later on the task's
-    ``current_version_id`` so the aggregates match the same trial set the direct
-    ``_trial_exists`` filters use (non-probe, non-superseded, current version).
-    Every column is an on-the-fly computation (see the module note above).
-    """
-    total_tokens = (
-        func.coalesce(TrialModel.input_tokens, 0)
-        + func.coalesce(TrialModel.output_tokens, 0)
-        + func.coalesce(TrialModel.cache_tokens, 0)
-    )
-    # Wall-clock seconds, only when both timestamps exist (NULL otherwise so
-    # SUM/AVG ignore unfinished / not-yet-started trials). The phase_timing
-    # JSONB breakdown is a later nicety per the worklog.
-    runtime_seconds = case(
+def _trial_runtime_seconds() -> Any:
+    """Wall-clock seconds for one trial (``finished_at − started_at``), NULL when
+    either timestamp is missing so SUM/AVG/MIN ignore unfinished trials. Shared by
+    the aggregate metrics and the Phase 2.1 agent/model comparison."""
+    return case(
         (
             and_(
                 TrialModel.finished_at.isnot(None),
@@ -710,6 +698,127 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
         ),
         else_=None,
     )
+
+
+def _trial_total_tokens(*, null_when_all_missing: bool = False) -> Any:
+    """Input+output+cache tokens for one trial. By default missing components
+    count as 0 (matches the aggregate sum). With ``null_when_all_missing`` the
+    whole expression is NULL when the trial reports no tokens at all, so MIN/AVG
+    comparisons ignore token-less trials instead of treating them as 0 tokens."""
+    total = (
+        func.coalesce(TrialModel.input_tokens, 0)
+        + func.coalesce(TrialModel.output_tokens, 0)
+        + func.coalesce(TrialModel.cache_tokens, 0)
+    )
+    if not null_when_all_missing:
+        return total
+    return case(
+        (
+            or_(
+                TrialModel.input_tokens.isnot(None),
+                TrialModel.output_tokens.isnot(None),
+                TrialModel.cache_tokens.isnot(None),
+            ),
+            total,
+        ),
+        else_=None,
+    )
+
+
+# --- Phase 2.1 agent/model comparison (no migration) -----------------------
+# "Beats" direction per metric: reward is higher-better; run time, tokens and
+# steps are lower-better. Everything is computed on the fly over the same scoped
+# trial set the aggregate filters use; denormalize in full Phase 2.
+_COMPARE_METRIC_HIGHER_BETTER: dict[str, bool] = {
+    "reward": True,
+    "runtime": False,
+    "tokens": False,
+    "steps": False,
+}
+
+
+def _compare_metric_expr(metric: str) -> Any | None:
+    """Per-trial value for a comparison metric, or ``None`` for an unknown key."""
+    if metric == "reward":
+        return TrialModel.reward
+    if metric == "runtime":
+        return _trial_runtime_seconds()
+    if metric == "tokens":
+        return _trial_total_tokens(null_when_all_missing=True)
+    if metric == "steps":
+        return TrialModel.total_steps
+    return None
+
+
+def _compare_subject_column(compare_by: str) -> Any | None:
+    """The trial column the comparison groups on — agent or model."""
+    if compare_by == "agent":
+        return TrialModel.agent
+    if compare_by == "model":
+        return TrialModel.model
+    return None
+
+
+def _compare_agg_value(
+    subject_col: Any, value: str, metric_expr: Any, agg: str, higher_better: bool
+) -> Any:
+    """Reduce ONE subject's trials to a single number. Scoped to that subject via
+    a ``CASE`` so a task missing the subject yields NULL (and drops out of the
+    comparison). ``best`` = MAX for higher-better metrics, MIN otherwise."""
+    scoped = case((subject_col == value, metric_expr), else_=None)
+    if agg == "avg":
+        return func.avg(scoped)
+    return func.max(scoped) if higher_better else func.min(scoped)
+
+
+def _agent_compare_subquery(
+    org_id: str | None,
+    *,
+    subject_col: Any,
+    value_a: str,
+    value_b: str,
+    metric_expr: Any,
+    agg: str,
+    higher_better: bool,
+) -> Any:
+    """Per-``(task, version)`` values for two subjects (agents or models) on one
+    metric, so the caller can filter "A beats B". Same scoped trial set as
+    ``_task_metrics_subquery`` (current version via the later join, non-probe,
+    non-superseded). On-the-fly; denormalize in full Phase 2."""
+    a_val = _compare_agg_value(
+        subject_col, value_a, metric_expr, agg, higher_better
+    ).label("a_val")
+    b_val = _compare_agg_value(
+        subject_col, value_b, metric_expr, agg, higher_better
+    ).label("b_val")
+    stmt = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        a_val,
+        b_val,
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.group_by(
+        TrialModel.task_id, TrialModel.task_version_id
+    ).subquery()
+
+
+def _task_metrics_subquery(org_id: str | None) -> Any:
+    """One GROUP BY over the scoped trials, aggregated per (task, version).
+
+    Grouped by ``(task_id, task_version_id)`` and joined later on the task's
+    ``current_version_id`` so the aggregates match the same trial set the direct
+    ``_trial_exists`` filters use (non-probe, non-superseded, current version).
+    Every column is an on-the-fly computation (see the module note above).
+    """
+    total_tokens = _trial_total_tokens()
+    # Wall-clock seconds, NULL when a timestamp is missing so SUM/AVG ignore
+    # unfinished / not-yet-started trials (shared with the Phase 2.1 comparison).
+    runtime_seconds = _trial_runtime_seconds()
     bucket = _trial_bucket_label()
     stmt = select(
         TrialModel.task_id.label("task_id"),
@@ -813,6 +922,14 @@ async def browse_tasks_core(
     runtime_avg_min: float | None = None,
     runtime_avg_max: float | None = None,
     sort: str | None = None,
+    # --- Phase 2.1 agent/model comparison (no migration) ---
+    compare_by: str | None = None,
+    compare_a: str | None = None,
+    compare_b: str | None = None,
+    compare_metric: str | None = None,
+    compare_agg: str | None = None,
+    compare_margin: float | None = None,
+    compare_margin_unit: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser.
@@ -1210,6 +1327,68 @@ async def browse_tasks_core(
             ranked_tasks = ranked_tasks.where(
                 task_metrics.c.runtime_avg <= runtime_avg_max
             )
+
+    # --- Phase 2.1 agent/model comparison (no migration) ------------------
+    # Keep only tasks where subject A beats subject B on one metric, computed on
+    # the fly. Missing-subject tasks drop out automatically: a task lacking A or B
+    # yields a NULL a_val/b_val, so the comparison is NULL -> not-true -> excluded
+    # (this is the "exclude if a task has only one of the two" behaviour). Only
+    # built when a valid, distinct pair + a known metric are requested.
+    compare_subject_col = (
+        _compare_subject_column(compare_by) if compare_by else None
+    )
+    compare_metric_expr = (
+        _compare_metric_expr(compare_metric) if compare_metric else None
+    )
+    if (
+        compare_subject_col is not None
+        and compare_metric_expr is not None
+        and compare_a
+        and compare_b
+        and compare_a != compare_b
+    ):
+        higher_better = _COMPARE_METRIC_HIGHER_BETTER[compare_metric]
+        agg = "avg" if compare_agg == "avg" else "best"
+        compare_metrics = _agent_compare_subquery(
+            org_id,
+            subject_col=compare_subject_col,
+            value_a=compare_a,
+            value_b=compare_b,
+            metric_expr=compare_metric_expr,
+            agg=agg,
+            higher_better=higher_better,
+        )
+        ranked_tasks = ranked_tasks.outerjoin(
+            compare_metrics,
+            and_(
+                compare_metrics.c.task_id == TaskModel.id,
+                compare_metrics.c.task_version_id
+                == TaskModel.current_version_id,
+            ),
+        )
+        a_val = compare_metrics.c.a_val
+        b_val = compare_metrics.c.b_val
+        # Optional margin: A must beat B by MORE than ``compare_margin`` — a
+        # percent of B (``pct``, default) or an absolute difference (``abs``).
+        if compare_margin is not None and compare_margin > 0:
+            if compare_margin_unit == "abs":
+                threshold = (
+                    b_val + compare_margin
+                    if higher_better
+                    else b_val - compare_margin
+                )
+            else:
+                factor = (
+                    1 + compare_margin / 100.0
+                    if higher_better
+                    else 1 - compare_margin / 100.0
+                )
+                threshold = b_val * factor
+        else:
+            threshold = b_val
+        ranked_tasks = ranked_tasks.where(
+            a_val > threshold if higher_better else a_val < threshold
+        )
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 
