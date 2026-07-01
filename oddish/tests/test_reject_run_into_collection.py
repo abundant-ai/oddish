@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -167,14 +168,15 @@ async def test_sweep_append_into_collection_rejected(session):
     )
     await session.flush()
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(HTTPException) as exc_info:
         await create_task_sweep_core(
             session,
             submission=_sweep_append(task.id, experiment_id=coll.id),
             org_id="org1",
         )
 
-    assert "collection" in str(exc_info.value).lower()
+    assert exc_info.value.status_code == 404
+    assert "collection" in str(exc_info.value.detail).lower()
 
 
 @pytest.mark.asyncio
