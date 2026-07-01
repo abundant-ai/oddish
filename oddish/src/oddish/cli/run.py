@@ -825,6 +825,12 @@ def run(
     # When ``--task`` is used the upload phase is skipped -- we
     # already have a task ID and only need to submit trials against
     # it.
+    # One adaptive limiter shared across both phases of the run: the upload pool
+    # (phase 1) and the trial-submission batch / per-task path (phase 2) feed and
+    # read the same learned state (advertised ceiling, gradient, no-load floor),
+    # so pressure discovered while uploading immediately shapes submission and
+    # vice versa. (Standalone callers of these helpers still self-create one.)
+    submit_limiter = resolve_submit_concurrency(submit_concurrency)
     submit_targets: list[tuple[str, bool, str | None, Path | None]] = []
     if task_paths:
         upload_results = upload_tasks_with_progress(
@@ -835,7 +841,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
-            concurrency=submit_concurrency,
+            limiter=submit_limiter,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
@@ -899,7 +905,13 @@ def run(
                 )
                 for target_id, append, content_hash, task_path in submit_targets
             ]
-            batch_results = submit_sweep_batch(api_url, payloads)
+            # Route the batch chunks through the run's shared adaptive limiter --
+            # the same instance the upload pool used -- so the advertised ceiling
+            # and backpressure learned while uploading carry straight into the
+            # (previously ungated) batch submission and keep backing it off.
+            batch_results = submit_sweep_batch(
+                api_url, payloads, limiter=submit_limiter
+            )
 
             if batch_results is not None:
                 # Best-effort: each item is independent. Surface failures by
@@ -916,11 +928,8 @@ def run(
                 # submit_sweep_batch only returns None for HTTP 404/405 -- an
                 # older server without the batch route, where nothing was
                 # created -- so it is safe to submit each task on its own.
-                # (Ambiguous failures raise instead of returning None.)
-                # Throttle this legacy path with the adaptive submit limiter,
-                # mirroring the upload pool, so a busy API still shapes
-                # submission concurrency.
-                submit_limiter = resolve_submit_concurrency(submit_concurrency)
+                # (Ambiguous failures raise instead of returning None.) Reuse the
+                # same adaptive limiter so a busy API still shapes this path.
 
                 def _submit_one(
                     target: tuple[str, bool, str | None, Path | None],
