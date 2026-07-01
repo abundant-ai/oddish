@@ -24,6 +24,7 @@ from typing import Awaitable, Callable, Collection, Sequence
 
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
 from oddish.observability import span
+from oddish.workers.queue.slots import count_held_queue_slots
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
@@ -131,6 +132,9 @@ CountsFn = Callable[
         tuple[dict[tuple[str | None, str, str], int], dict[tuple[str, str], int]]
     ],
 ]
+# Per-queue_key HELD ``queue_slots`` lease count (the authoritative in-flight
+# concurrency, ahead of the worker showing RUNNING). Injectable like ``_counts``.
+HeldFn = Callable[[Sequence[str]], Awaitable[dict[str, int]]]
 
 
 async def run_dispatch_cycle(
@@ -142,6 +146,7 @@ async def run_dispatch_cycle(
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
+    _held: HeldFn = count_held_queue_slots,
 ) -> DispatchCycleResult:
     """Run one dispatch tick: discover → plan → admit → spawn.
 
@@ -164,6 +169,7 @@ async def run_dispatch_cycle(
             on_stage=on_stage,
             _discover=_discover,
             _counts=_counts,
+            _held=_held,
         )
 
 
@@ -176,10 +182,18 @@ async def _run_dispatch_cycle(
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     _discover: DiscoverFn = discover_active_worker_job_queue_keys,
     _counts: CountsFn = get_worker_job_org_queue_counts,
+    _held: HeldFn = count_held_queue_slots,
 ) -> DispatchCycleResult:
     queue_units = tuple(await _discover())
     queue_keys = tuple({qk for qk, _variant in queue_units})
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
+    # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
+    # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
+    # On the fast event-trigger this cycle can re-fire before freshly-spawned
+    # workers register as RUNNING, so plan against max(running, held) per
+    # queue_key -- else it over-spawns workers that then lose the slot race and
+    # exit (wasteful container churn on Docker/k8s).
+    held_by_queue_key = await _held(queue_keys)
     concurrency_limits = {qk: concurrency_for(qk) for qk in queue_keys}
 
     # ``build_spawn_plan`` keys on the Harbor variant and emits
@@ -191,6 +205,7 @@ async def _run_dispatch_cycle(
         running_by_queue=running_by_queue,
         concurrency_limits=concurrency_limits,
         max_workers=max_workers,
+        held_by_queue_key=held_by_queue_key,
     )
     spawn_plan = [queue_key for queue_key, _variant in unit_plan]
 
@@ -206,6 +221,14 @@ async def _run_dispatch_cycle(
         running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
             running or 0
         )
+    # Fold held leases into the in-flight number the why-waiting math sees too, so
+    # a slot-capped queue (held == limit, running 0) reads as "waiting for slot"
+    # rather than "spawn cap reached" -- the same capacity the planner used above.
+    inflight_by_queue_key = dict(running_by_queue_key)
+    for queue_key, held in held_by_queue_key.items():
+        inflight_by_queue_key[queue_key] = max(
+            inflight_by_queue_key.get(queue_key, 0), held
+        )
 
     handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
@@ -219,7 +242,7 @@ async def _run_dispatch_cycle(
     spawned_keys = [h.queue_key for h in handles]
     why_waiting = compute_why_waiting(
         queued_by_queue=queued_by_queue,
-        running_by_queue=running_by_queue_key,
+        running_by_queue=inflight_by_queue_key,
         concurrency_limits=concurrency_limits,
         spawned_keys=spawned_keys,
         max_workers=max_workers,

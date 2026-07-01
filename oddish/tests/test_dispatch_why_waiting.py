@@ -94,6 +94,7 @@ def test_run_dispatch_cycle_still_computes_reasons_via_helper() -> None:
             _counts=lambda keys: _aval(
                 ({(None, "busy", "default"): 4}, {("busy", "default"): 2})
             ),
+            _held=lambda keys: _aval({}),
         )
 
     result = asyncio.run(_go())
@@ -119,6 +120,7 @@ def test_on_stage_failure_never_breaks_dispatch() -> None:
             _counts=lambda keys: _aval(
                 ({(None, "q", "default"): 1}, {("q", "default"): 0})
             ),
+            _held=lambda keys: _aval({}),
         )
 
     result = asyncio.run(_go())
