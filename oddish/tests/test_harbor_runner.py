@@ -1920,6 +1920,31 @@ def test_extract_outcome_from_job_result_uses_single_non_reward_metric():
     assert outcome.reward == 0.5
 
 
+def test_extract_outcome_from_job_result_ignores_non_numeric_reward():
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"reward": "not-a-number"}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.reward is None
+
+
 def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
     """A successful trial (no exception_info) must leave exception_type as
     None so we don't accidentally surface a placeholder string into retry
