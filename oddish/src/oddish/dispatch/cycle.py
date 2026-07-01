@@ -125,6 +125,27 @@ class DispatchCycleResult:
     running_total: int = 0
 
 
+@dataclass(frozen=True)
+class DispatchPlan:
+    """Shared discovery/count/planning result for every dispatcher host.
+
+    ``unit_plan`` preserves the effective dispatch unit
+    ``(queue_key, harbor_variant_id)`` so Modal can choose an image-bound
+    Function per variant. Image-agnostic dispatchers collapse it to
+    ``queue_key`` before spawning.
+    """
+
+    queue_units: tuple[tuple[str, str], ...]
+    queue_keys: tuple[str, ...]
+    queued_by_org_queue: dict[tuple[str | None, str, str], int]
+    running_by_queue: dict[tuple[str, str], int]
+    queued_by_queue: dict[str, int]
+    running_by_queue_key: dict[str, int]
+    held_by_queue_key: dict[str, int]
+    concurrency_limits: dict[str, int]
+    unit_plan: list[tuple[str, str]]
+
+
 DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str]]]]
 CountsFn = Callable[
     [tuple[str, ...]],
@@ -135,6 +156,99 @@ CountsFn = Callable[
 # Per-queue_key HELD ``queue_slots`` lease count (the authoritative in-flight
 # concurrency, ahead of the worker showing RUNNING). Injectable like ``_counts``.
 HeldFn = Callable[[Sequence[str]], Awaitable[dict[str, int]]]
+ConcurrencyLimitsFn = Callable[[tuple[str, ...]], Awaitable[dict[str, int]]]
+
+
+async def build_dispatch_plan(
+    *,
+    max_workers: int,
+    concurrency_for: Callable[[str], int] | None = None,
+    concurrency_limits_for: ConcurrencyLimitsFn | None = None,
+    _discover: DiscoverFn = discover_active_worker_job_queue_keys,
+    _counts: CountsFn = get_worker_job_org_queue_counts,
+    _held: HeldFn = count_held_queue_slots,
+) -> DispatchPlan:
+    """Discover queue work and compute the variant-preserving spawn plan.
+
+    This is the scheduling brain shared by the generic dispatch cycle and the
+    Modal cron. Callers choose how to fan out ``unit_plan``.
+    """
+    if concurrency_for is None and concurrency_limits_for is None:
+        raise ValueError("provide concurrency_for or concurrency_limits_for")
+
+    queue_units = tuple(await _discover())
+    queue_keys = tuple({qk for qk, _variant in queue_units})
+    queued_by_org_queue, running_by_queue = await _counts(queue_keys)
+    # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
+    # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
+    # On fast re-fires, plan against max(running, held) per queue_key -- else the
+    # dispatcher over-spawns workers that then lose the slot race and exit.
+    held_by_queue_key = await _held(queue_keys)
+    if concurrency_limits_for is not None:
+        concurrency_limits = await concurrency_limits_for(queue_keys)
+    else:
+        assert concurrency_for is not None
+        concurrency_limits = {qk: concurrency_for(qk) for qk in queue_keys}
+
+    unit_plan = build_spawn_plan(
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue=running_by_queue,
+        concurrency_limits=concurrency_limits,
+        max_workers=max_workers,
+        held_by_queue_key=held_by_queue_key,
+    )
+
+    queued_by_queue: dict[str, int] = {}
+    for (_org, queue_key, _variant), queued in queued_by_org_queue.items():
+        queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
+    running_by_queue_key: dict[str, int] = {}
+    for (queue_key, _variant), running in running_by_queue.items():
+        running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
+            running or 0
+        )
+
+    return DispatchPlan(
+        queue_units=queue_units,
+        queue_keys=queue_keys,
+        queued_by_org_queue=queued_by_org_queue,
+        running_by_queue=running_by_queue,
+        queued_by_queue=queued_by_queue,
+        running_by_queue_key=running_by_queue_key,
+        held_by_queue_key=held_by_queue_key,
+        concurrency_limits=concurrency_limits,
+        unit_plan=unit_plan,
+    )
+
+
+def compute_post_spawn_why_waiting(
+    plan: DispatchPlan,
+    *,
+    spawned_keys: Collection[str],
+    max_workers: int,
+    base_reasons: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Compute wait reasons after a host attempts to spawn workers.
+
+    Uses the same in-flight accounting as ``run_dispatch_cycle``: existing
+    RUNNING rows, held queue-slot leases, plus workers spawned by this cycle.
+    """
+    inflight_by_queue_key = dict(plan.running_by_queue_key)
+    for queue_key, held in plan.held_by_queue_key.items():
+        inflight_by_queue_key[queue_key] = max(
+            inflight_by_queue_key.get(queue_key, 0), held
+        )
+    for queue_key, spawned in Counter(spawned_keys).items():
+        inflight_by_queue_key[queue_key] = (
+            inflight_by_queue_key.get(queue_key, 0) + spawned
+        )
+    return compute_why_waiting(
+        queued_by_queue=plan.queued_by_queue,
+        running_by_queue=inflight_by_queue_key,
+        concurrency_limits=plan.concurrency_limits,
+        spawned_keys=spawned_keys,
+        max_workers=max_workers,
+        base_reasons=base_reasons,
+    )
 
 
 async def run_dispatch_cycle(
@@ -184,43 +298,18 @@ async def _run_dispatch_cycle(
     _counts: CountsFn = get_worker_job_org_queue_counts,
     _held: HeldFn = count_held_queue_slots,
 ) -> DispatchCycleResult:
-    queue_units = tuple(await _discover())
-    queue_keys = tuple({qk for qk, _variant in queue_units})
-    queued_by_org_queue, running_by_queue = await _counts(queue_keys)
-    # Held ``queue_slots`` leases are the authoritative in-flight concurrency: a
-    # lease is taken at spawn/claim, before the job shows RUNNING in worker_jobs.
-    # On the fast event-trigger this cycle can re-fire before freshly-spawned
-    # workers register as RUNNING, so plan against max(running, held) per
-    # queue_key -- else it over-spawns workers that then lose the slot race and
-    # exit (wasteful container churn on Docker/k8s).
-    held_by_queue_key = await _held(queue_keys)
-    concurrency_limits = {qk: concurrency_for(qk) for qk in queue_keys}
-
-    # ``build_spawn_plan`` keys on the Harbor variant and emits
-    # ``(queue_key, variant)`` units. Off-Modal backends are image-agnostic (no
-    # per-variant images), so collapse the units to their queue_keys -- keeping
-    # the per-queue_key worker count -- before admitting / fanning out.
-    unit_plan = build_spawn_plan(
-        queued_by_org_queue=queued_by_org_queue,
-        running_by_queue=running_by_queue,
-        concurrency_limits=concurrency_limits,
+    plan = await build_dispatch_plan(
         max_workers=max_workers,
-        held_by_queue_key=held_by_queue_key,
+        concurrency_for=concurrency_for,
+        _discover=_discover,
+        _counts=_counts,
+        _held=_held,
     )
-    spawn_plan = [queue_key for queue_key, _variant in unit_plan]
+    # Off-Modal backends are image-agnostic (no per-variant images), so collapse
+    # variant units to queue_keys before admitting / fanning out.
+    spawn_plan = [queue_key for queue_key, _variant in plan.unit_plan]
 
     admitted, rejected = admit_spawn_plan(spawn_plan, admit)
-
-    # Aggregate the variant-keyed counts to queue_key granularity for the
-    # why-waiting math (variants share a queue_key's concurrency pool).
-    queued_by_queue: dict[str, int] = {}
-    for (_org, queue_key, _variant), queued in queued_by_org_queue.items():
-        queued_by_queue[queue_key] = queued_by_queue.get(queue_key, 0) + queued
-    running_by_queue_key: dict[str, int] = {}
-    for (queue_key, _variant), running in running_by_queue.items():
-        running_by_queue_key[queue_key] = running_by_queue_key.get(queue_key, 0) + (
-            running or 0
-        )
 
     handles = list(await dispatcher.spawn(spawn_plan=admitted))
 
@@ -233,31 +322,8 @@ async def _run_dispatch_cycle(
     # consistent; in the all-spawned case ``spawned_keys`` equals ``admitted``.
     spawned_keys = [h.queue_key for h in handles]
 
-    # In-flight concurrency the why-waiting math sees, built post-spawn from the
-    # same capacity the planner spent: max(running, held) PLUS the workers that
-    # actually got a slot this cycle. Folding held leases makes a slot-capped queue
-    # (held == limit, running 0) read as "waiting for slot" rather than "spawn cap
-    # reached"; folding this cycle's own spawns extends that to a queue driven to
-    # its cap by the spawns we just made -- the held snapshot was taken *before*
-    # the spawn, so those fresh leases are otherwise invisible and a queue served
-    # up to its limit is mislabeled "spawn cap reached" (max_workers) when its own
-    # concurrency limit is the real ceiling. Each spawn is a new lease layered on
-    # the pre-spawn snapshot, so add it (no double count); ``spawned_keys`` comes
-    # from the returned handles, keeping this consistent with the spawned_at stamp.
-    inflight_by_queue_key = dict(running_by_queue_key)
-    for queue_key, held in held_by_queue_key.items():
-        inflight_by_queue_key[queue_key] = max(
-            inflight_by_queue_key.get(queue_key, 0), held
-        )
-    for queue_key, spawned in Counter(spawned_keys).items():
-        inflight_by_queue_key[queue_key] = (
-            inflight_by_queue_key.get(queue_key, 0) + spawned
-        )
-
-    why_waiting = compute_why_waiting(
-        queued_by_queue=queued_by_queue,
-        running_by_queue=inflight_by_queue_key,
-        concurrency_limits=concurrency_limits,
+    why_waiting = compute_post_spawn_why_waiting(
+        plan,
         spawned_keys=spawned_keys,
         max_workers=max_workers,
         base_reasons=rejected,
@@ -271,13 +337,13 @@ async def _run_dispatch_cycle(
             pass
 
     return DispatchCycleResult(
-        queue_keys=queue_keys,
+        queue_keys=plan.queue_keys,
         spawn_plan=spawn_plan,
         admitted=admitted,
         handles=handles,
         why_waiting=why_waiting,
-        queued_total=sum(queued_by_queue.values()),
-        running_total=sum(running_by_queue.values()),
+        queued_total=sum(plan.queued_by_queue.values()),
+        running_total=sum(plan.running_by_queue.values()),
     )
 
 
