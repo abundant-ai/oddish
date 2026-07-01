@@ -207,8 +207,9 @@ export function ProbeDetailPanel({
               {taskId}
             </Link>
           </p>
-          <p className="mt-1 font-mono text-xs text-muted-foreground">
-            {trial.id}
+          <p className="mt-1 text-sm">
+            Trial:{" "}
+            <span className="font-mono font-medium">{trial.id}</span>
           </p>
           <p className="mt-2 text-sm">
             Preset:{" "}
