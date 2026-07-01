@@ -21,6 +21,7 @@ import os
 from typing import Mapping
 
 from oddish.config import settings
+from oddish.observability import configure_observability
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.backends.inprocess import InProcessDispatcher
 from oddish.dispatch.backends.k8s import K8sJobDispatcher
@@ -112,6 +113,10 @@ async def run_forever(env: Mapping[str, str] = os.environ) -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    # Give the standalone off-Modal dispatcher process a tracer (no-op without
+    # logfire / LOGFIRE_TOKEN) -- otherwise this process is dark, missing even the
+    # auto-instrumented DB/HTTP spans the Modal worker container gets for free.
+    configure_observability("oddish-dispatcher")
     if os.environ.get("ODDISH_DISPATCH_ONCE"):
         result = asyncio.run(run_once())
         logger.info(
