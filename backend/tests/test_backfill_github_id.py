@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
@@ -247,5 +248,37 @@ async def test_collision_with_soft_deleted_holder_is_skipped(monkeypatch) -> Non
         summary = await job.backfill_github_id(delay_seconds=0.0)
         assert await _github_id_of(target.id) is None
         assert summary.skipped >= 1
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_full_batch_of_skips_terminates_and_reaches_later_users(monkeypatch) -> None:
+    """Regression (keyset cursor): a FULL batch of unfillable users (Clerk returns
+    no github_id, so they stay github_id IS NULL) must not re-select forever — an
+    infinite loop in drain mode / starvation under a max_users cap. A fillable user
+    ordered AFTER the skip prefix must still be reached."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    skips = [_user(org_id, id=f"user_bf_a{i}") for i in range(3)]
+    fillable = _user(org_id, id="user_bf_z")
+    mapping = {u.clerk_user_id: ClerkGithubIdentity(None, None, None) for u in skips}
+    mapping[fillable.clerk_user_id] = ClerkGithubIdentity("octocat", None, "42424242")
+    _mock_clerk(monkeypatch, mapping)
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            for u in [*skips, fillable]:
+                session.add(u)
+        # batch_size=3 => the first page is exactly the 3 skips (a full batch): the
+        # pre-fix trigger for the non-terminating re-select. wait_for turns a hang
+        # into a test failure instead of blocking the whole suite.
+        summary = await asyncio.wait_for(
+            job.backfill_github_id(batch_size=3, delay_seconds=0.0), timeout=15
+        )
+        assert await _github_id_of(fillable.id) == "42424242"  # reached, not starved
+        assert await _github_id_of(skips[0].id) is None
+        assert summary.set >= 1
+        assert summary.skipped >= 3
     finally:
         await _purge(org_id)
