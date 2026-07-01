@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import useSWR from "swr";
 
 import {
@@ -11,8 +12,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { fetcher } from "@/lib/api";
-import type { QuotaList, QuotaMember } from "@/lib/types";
+import type { QuotaList, QuotaMember, QuotaUpdate } from "@/lib/types";
 
 const formatDollars = (value: number) =>
   value.toLocaleString(undefined, {
@@ -25,11 +28,14 @@ const formatDollars = (value: number) =>
 const memberLabel = (member: QuotaMember) =>
   member.name || member.email || member.github_username || member.user_id;
 
-// Read-only admin view of per-member daily quota usage. S4 extends this same
-// file with editable `limit_usd` inputs + a Save flow (PUT /api/quotas/{id});
-// keep the table/form shape so that upgrade is additive.
+// Admin view of per-member daily quota usage. The effective `limit_usd` is
+// editable: an empty input clears the override (PUT {limit_usd: null}) so the
+// member reverts to the workspace default; a value sets an override.
 export function QuotaAdminForm() {
-  const { data, error } = useSWR<QuotaList>("/api/quotas", fetcher);
+  const { data, mutate, error } = useSWR<QuotaList>("/api/quotas", fetcher);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<Record<string, string>>({});
 
   if (error) {
     const status = (error as { status?: number }).status;
@@ -51,6 +57,66 @@ export function QuotaAdminForm() {
     return <p className="text-muted-foreground text-sm">No members to show.</p>;
   }
 
+  const draftValue = (member: QuotaMember) =>
+    drafts[member.user_id] ?? member.limit_usd.toFixed(2);
+
+  const isDirty = (member: QuotaMember) =>
+    member.user_id in drafts &&
+    drafts[member.user_id] !== member.limit_usd.toFixed(2);
+
+  const setDraft = (userId: string, value: string) => {
+    setRowError(({ [userId]: _drop, ...rest }) => rest);
+    setDrafts((d) => ({ ...d, [userId]: value }));
+  };
+
+  async function save(member: QuotaMember) {
+    const raw = draftValue(member).trim();
+    let payload: QuotaUpdate;
+    if (raw === "") {
+      payload = { limit_usd: null };
+    } else {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        setRowError((e) => ({
+          ...e,
+          [member.user_id]: "Enter a non-negative amount or leave empty.",
+        }));
+        return;
+      }
+      payload = { limit_usd: parsed.toFixed(2) };
+    }
+
+    setSavingId(member.user_id);
+    setRowError(({ [member.user_id]: _drop, ...rest }) => rest);
+    const res = await fetch(
+      `/api/quotas/${encodeURIComponent(member.user_id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    ).catch(() => null);
+    setSavingId(null);
+
+    if (!res || !res.ok) {
+      const body = (await res?.json().catch(() => null)) as {
+        detail?: string;
+        error?: string;
+      } | null;
+      const message =
+        res?.status === 403
+          ? "Admins only."
+          : res?.status === 404
+            ? "Member not found."
+            : (body?.detail ?? body?.error ?? "Could not save limit.");
+      setRowError((e) => ({ ...e, [member.user_id]: message }));
+      return;
+    }
+
+    setDrafts(({ [member.user_id]: _drop, ...rest }) => rest);
+    void mutate();
+  }
+
   return (
     <div className="space-y-3">
       <div className="border-border overflow-hidden rounded-lg border">
@@ -65,12 +131,15 @@ export function QuotaAdminForm() {
               <TableHead className="h-9 text-right text-xs">
                 Daily limit
               </TableHead>
+              <TableHead className="h-9 text-xs"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {members.map((member) => {
               const over =
                 member.limit_usd > 0 && member.used_usd >= member.limit_usd;
+              const saving = savingId === member.user_id;
+              const err = rowError[member.user_id];
               return (
                 <TableRow key={member.user_id} className="border-border/70">
                   <TableCell className="py-2.5">
@@ -93,8 +162,33 @@ export function QuotaAdminForm() {
                       {formatDollars(member.used_usd)}
                     </span>
                   </TableCell>
-                  <TableCell className="text-muted-foreground py-2.5 text-right font-mono text-xs">
-                    {formatDollars(member.limit_usd)}
+                  <TableCell className="py-2.5 text-right">
+                    <div className="flex flex-col items-end gap-1">
+                      <Input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        className="h-8 w-28 text-right font-mono text-xs"
+                        value={draftValue(member)}
+                        onChange={(e) =>
+                          setDraft(member.user_id, e.target.value)
+                        }
+                      />
+                      {err ? (
+                        <p className="text-destructive text-[11px]">{err}</p>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell className="py-2.5">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={saving || !isDirty(member)}
+                      onClick={() => save(member)}
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </Button>
                   </TableCell>
                 </TableRow>
               );
@@ -103,8 +197,8 @@ export function QuotaAdminForm() {
         </Table>
       </div>
       <p className="text-muted-foreground text-xs">
-        Effective daily limit per member. Members without an explicit override
-        show the workspace default.
+        Effective daily limit per member. Leave a limit empty and save to clear
+        the override — that member reverts to the workspace default.
       </p>
     </div>
   );

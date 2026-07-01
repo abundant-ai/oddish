@@ -390,6 +390,13 @@ export interface QuotaList {
   members: QuotaMember[];
 }
 
+// Body for the admin PUT /api/quotas/{user_id} override. A string value sets an
+// override (e.g. "5.00"); `null` CLEARS it so the member reverts to the
+// workspace default.
+export interface QuotaUpdate {
+  limit_usd: string | null;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
