@@ -118,6 +118,28 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
     assert spec["has_trajectory"] is True
 
 
+def test_trial_import_spec_treats_non_numeric_reward_as_missing():
+    trial_result = SimpleNamespace(
+        id="trial-id",
+        agent_info=SimpleNamespace(name="claude-code", model_info=None),
+        config=SimpleNamespace(agent=SimpleNamespace(model_name=None)),
+        verifier_result=SimpleNamespace(rewards={"score": "not-a-number"}),
+        exception_info=None,
+        agent_result=None,
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+        started_at=None,
+        finished_at=None,
+    )
+
+    spec = trial_result_to_import_spec(trial_result)
+
+    assert spec["status"] == "failed"
+    assert spec["reward"] is None
+
+
 def test_task_name_inference_prefers_harbor_config_models(tmp_path):
     job_config = JobConfig(tasks=[TaskConfig(path=tmp_path / "my-task")])
     trial_config = TrialConfig(task=TaskConfig(name="org/package-task"))

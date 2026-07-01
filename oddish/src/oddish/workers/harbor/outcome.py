@@ -161,10 +161,4 @@ def _extract_outcome_from_job_result(
                 except (TypeError, ValueError):
                     continue
 
-    for trial_result in job_result.trial_results:
-        if trial_result.verifier_result and trial_result.verifier_result.rewards:
-            reward_value = trial_result.verifier_result.rewards.get("reward")
-            if reward_value is not None:
-                return _outcome(float(reward_value))
-
     return _outcome(trial_reward)
