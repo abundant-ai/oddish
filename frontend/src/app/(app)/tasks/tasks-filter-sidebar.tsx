@@ -41,12 +41,14 @@ import type {
 } from "@/lib/types";
 import {
   activeFilterCount,
+  cleanOrGroups,
   COMPARE_AGG_OPTIONS,
   COMPARE_METRIC_OPTIONS,
   COMPARE_METRIC_UNIT,
   COMPARE_METRIC_WORD,
   COMPARE_MARGIN_UNIT_OPTIONS,
   COMPARE_SUBJECT_OPTIONS,
+  CONDITION_DEFS,
   FILTER_DEFS,
   FILTER_PARAM_KEYS,
   filterParams,
@@ -56,7 +58,9 @@ import {
   type CreatedPreset,
   type FilterDef,
   type FilterValues,
+  type GroupConditionDef,
   type Option,
+  type OrGroup,
 } from "@/lib/tasks-filters";
 
 const ARRAY_FIELD: Record<string, keyof FilterValues> = {
@@ -225,6 +229,9 @@ export function TasksFilterSidebar() {
         break;
       case "sort":
         set({ sort: null });
+        break;
+      case "matchAny":
+        set({ orGroups: null });
         break;
       case "agentCompare":
         set({
@@ -450,6 +457,8 @@ function FilterControl({
       return <SortControl values={values} set={set} />;
     case "compare":
       return <CompareControl values={values} set={set} facets={facets} />;
+    case "matchany":
+      return <MatchAnyControl values={values} set={set} facets={facets} />;
     case "num":
       return <NumControl fieldKey={def.key} values={values} set={set} />;
     case "tags":
@@ -1102,6 +1111,338 @@ function ApplyBar({
 }
 
 type NumRangeDraft = { min: number | null; max: number | null };
+
+// --- Phase 2.2 "Match any of…" OR block ------------------------------------
+
+const CONDITION_BY_ID: Record<string, GroupConditionDef> = Object.fromEntries(
+  CONDITION_DEFS.map((d) => [d.id, d])
+);
+
+// Which condition rows a group shows. Stored under the UI-meta key ``_c``
+// (stripped by cleanOrGroups); derived from present values on first load (e.g.
+// from a shared URL).
+function groupShownIds(group: OrGroup): string[] {
+  const meta = group._c;
+  if (Array.isArray(meta)) return meta as string[];
+  return CONDITION_DEFS.filter((d) =>
+    d.keys.some((k) => group[k] !== undefined)
+  ).map((d) => d.id);
+}
+
+function normalizeGroups(groups: OrGroup[] | null): OrGroup[] {
+  const list = groups && groups.length ? groups : [{}];
+  return list.map((g) => ({ ...g, _c: groupShownIds(g) }));
+}
+
+function summarizeCondition(def: GroupConditionDef, group: OrGroup): string {
+  if (def.control === "numrange") {
+    const [minK, maxK] = def.keys;
+    const min = group[minK] as number | undefined;
+    const max = group[maxK] as number | undefined;
+    if (min != null && max != null) return `${def.label} ${min}–${max}`;
+    if (min != null) return `${def.label} ≥ ${min}`;
+    if (max != null) return `${def.label} ≤ ${max}`;
+    return def.label;
+  }
+  if (def.control === "num") {
+    const v = group[def.keys[0]] as number | undefined;
+    return v != null ? `${def.label} ${v}` : def.label;
+  }
+  if (def.control === "boolean") {
+    const v = group[def.keys[0]] as boolean | undefined;
+    return v == null ? def.label : `${def.label}: ${v ? "yes" : "no"}`;
+  }
+  const arr = (group[def.keys[0]] as string[] | undefined) ?? [];
+  if (!arr.length) return def.label;
+  return `${def.label}: ${arr.slice(0, 2).join(", ")}${arr.length > 2 ? "…" : ""}`;
+}
+
+function groupSummary(group: OrGroup): string {
+  const cleaned = cleanOrGroups([group])[0];
+  if (!cleaned) return "";
+  const parts: string[] = [];
+  for (const def of CONDITION_DEFS) {
+    if (def.keys.some((k) => cleaned[k] !== undefined)) {
+      parts.push(summarizeCondition(def, cleaned));
+    }
+  }
+  return parts.join(" and ");
+}
+
+function GroupConditionControl({
+  def,
+  group,
+  facets,
+  onField,
+}: {
+  def: GroupConditionDef;
+  group: OrGroup;
+  facets: TaskBrowseFacets | null;
+  onField: (patch: Partial<FilterValues>) => void;
+}) {
+  const asValues = group as unknown as FilterValues;
+  if (def.control === "multiselect") {
+    const options =
+      def.options ??
+      (def.facet && facets
+        ? (facets[def.facet] as string[]).map((v) => ({ value: v, label: v }))
+        : []);
+    return (
+      <MultiSelect
+        options={options}
+        field={def.keys[0] as keyof FilterValues}
+        values={asValues}
+        set={onField}
+      />
+    );
+  }
+  if (def.control === "boolean") {
+    const key = def.keys[0];
+    const v = group[key] as boolean | undefined;
+    const cur = v === undefined ? "any" : v ? "yes" : "no";
+    return (
+      <Segmented
+        options={[
+          { value: "any", label: "Any" },
+          { value: "yes", label: "Yes" },
+          { value: "no", label: "No" },
+        ]}
+        value={cur}
+        onChange={(nv) =>
+          onField({
+            [key]: nv === "any" ? undefined : nv === "yes",
+          } as unknown as Partial<FilterValues>)
+        }
+      />
+    );
+  }
+  if (def.control === "num") {
+    const key = def.keys[0];
+    const v = group[key] as number | undefined;
+    return (
+      <Input
+        type="number"
+        min={1}
+        className="h-8 text-xs"
+        placeholder="2"
+        value={v ?? ""}
+        onChange={(e) =>
+          onField({
+            [key]: e.target.value === "" ? undefined : Number(e.target.value),
+          } as unknown as Partial<FilterValues>)
+        }
+      />
+    );
+  }
+  const [minK, maxK] = def.keys;
+  const min = group[minK] as number | undefined;
+  const max = group[maxK] as number | undefined;
+  const toNum = (s: string) => (s === "" ? undefined : Number(s));
+  return (
+    <div className="flex items-center gap-1">
+      <Input
+        type="number"
+        className="h-8 text-xs"
+        placeholder="min"
+        value={min ?? ""}
+        onChange={(e) =>
+          onField({
+            [minK]: toNum(e.target.value),
+          } as unknown as Partial<FilterValues>)
+        }
+      />
+      <span className="text-muted-foreground text-xs">–</span>
+      <Input
+        type="number"
+        className="h-8 text-xs"
+        placeholder="max"
+        value={max ?? ""}
+        onChange={(e) =>
+          onField({
+            [maxK]: toNum(e.target.value),
+          } as unknown as Partial<FilterValues>)
+        }
+      />
+    </div>
+  );
+}
+
+function GroupCard({
+  group,
+  index,
+  facets,
+  onField,
+  onAddCondition,
+  onRemoveCondition,
+  onRemoveGroup,
+}: {
+  group: OrGroup;
+  index: number;
+  facets: TaskBrowseFacets | null;
+  onField: (patch: Partial<FilterValues>) => void;
+  onAddCondition: (id: string) => void;
+  onRemoveCondition: (id: string) => void;
+  onRemoveGroup: () => void;
+}) {
+  const shown = groupShownIds(group);
+  const available = CONDITION_DEFS.filter((d) => !shown.includes(d.id));
+  return (
+    <div className="border-border/70 bg-card/60 rounded-md border p-2">
+      <div className="mb-1.5 flex items-center justify-between">
+        <span className="text-muted-foreground text-[10px] font-semibold tracking-wide uppercase">
+          Group {index + 1}
+        </span>
+        <button
+          type="button"
+          aria-label={`Remove group ${index + 1}`}
+          className="text-muted-foreground hover:text-foreground"
+          onClick={onRemoveGroup}
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="space-y-1.5">
+        {shown.map((id) => {
+          const def = CONDITION_BY_ID[id];
+          if (!def) return null;
+          return (
+            <div key={id}>
+              <div className="mb-0.5 flex items-center justify-between">
+                <span className="text-[11px]">{def.label}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${def.label}`}
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => onRemoveCondition(id)}
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </div>
+              <GroupConditionControl
+                def={def}
+                group={group}
+                facets={facets}
+                onField={onField}
+              />
+            </div>
+          );
+        })}
+      </div>
+      {available.length ? (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 h-7 w-full border-dashed text-[11px]"
+            >
+              <Plus className="mr-1 h-3 w-3" /> Add condition
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            className="z-30 max-h-72 overflow-auto"
+          >
+            {available.map((d) => (
+              <DropdownMenuItem
+                key={d.id}
+                onSelect={() => onAddCondition(d.id)}
+              >
+                {d.label}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : null}
+    </div>
+  );
+}
+
+function MatchAnyControl({
+  values,
+  set,
+  facets,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+  facets: TaskBrowseFacets | null;
+}) {
+  const applied = normalizeGroups(values.orGroups);
+  const commit = (groups: OrGroup[]) => {
+    const cleaned = cleanOrGroups(groups);
+    set({ orGroups: cleaned.length ? cleaned : null });
+  };
+  const { draft, setDraft, dirty, error, apply } = useDraft<OrGroup[]>(
+    applied,
+    commit
+  );
+
+  const replaceGroup = (i: number, next: OrGroup) =>
+    setDraft(draft.map((g, idx) => (idx === i ? next : g)));
+  const fieldSetter = (i: number) => (patch: Partial<FilterValues>) =>
+    replaceGroup(i, { ...draft[i], ...(patch as unknown as OrGroup) });
+  const addCondition = (i: number, id: string) =>
+    replaceGroup(i, { ...draft[i], _c: [...groupShownIds(draft[i]), id] });
+  const removeCondition = (i: number, id: string) => {
+    const next: OrGroup = { ...draft[i] };
+    const def = CONDITION_BY_ID[id];
+    if (def) for (const k of def.keys) delete next[k];
+    next._c = groupShownIds(draft[i]).filter((x) => x !== id);
+    replaceGroup(i, next);
+  };
+  const addGroup = () => setDraft([...draft, { _c: [] }]);
+  const removeGroup = (i: number) =>
+    setDraft(
+      draft.length > 1 ? draft.filter((_, idx) => idx !== i) : [{ _c: [] }]
+    );
+
+  const summaries = draft.map(groupSummary).filter(Boolean);
+
+  return (
+    <div className="space-y-2">
+      <p className="text-muted-foreground text-[11px] leading-snug">
+        Matches if a task fits any group. Conditions in a group are ANDed; your
+        other filters still apply on top.
+      </p>
+      {draft.map((group, i) => (
+        <div key={i}>
+          {i > 0 ? (
+            <div className="text-muted-foreground my-1 text-center text-[11px] font-medium">
+              OR
+            </div>
+          ) : null}
+          <GroupCard
+            group={group}
+            index={i}
+            facets={facets}
+            onField={fieldSetter(i)}
+            onAddCondition={(id) => addCondition(i, id)}
+            onRemoveCondition={(id) => removeCondition(i, id)}
+            onRemoveGroup={() => removeGroup(i)}
+          />
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="w-full border-dashed text-[11px]"
+        onClick={addGroup}
+      >
+        <Plus className="mr-1 h-3 w-3" /> Add OR group
+      </Button>
+      {summaries.length ? (
+        <p className="text-muted-foreground text-[11px] leading-snug">
+          Reads as:{" "}
+          <span className="text-foreground">
+            {summaries.map((s) => `(${s})`).join(" or ")}
+          </span>
+        </p>
+      ) : null}
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+    </div>
+  );
+}
 
 type CompareDraft = {
   by: string;
