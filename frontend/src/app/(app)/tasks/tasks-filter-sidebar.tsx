@@ -1229,7 +1229,7 @@ function CompareControl({
           <Input
             type="number"
             min={0}
-            className={cn("h-8 text-xs", showUnit && "pr-12")}
+            className={cn("h-8 text-xs", showUnit && "pr-16")}
             placeholder="margin"
             value={draft.margin ?? ""}
             onChange={(e) =>
