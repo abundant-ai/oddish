@@ -58,6 +58,7 @@ from modal_app import (
     runtime_secrets,
     worker_volumes,
 )
+from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
 from oddish.db import close_database_connections, get_session, WorkerJobKind
@@ -398,6 +399,19 @@ async def reconcile_queue_state():
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"owner_backfill: {e}")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
+
+        try:
+            # Bounded so the first-run backlog spreads across reconciles.
+            gid_counts = (await backfill_github_id(max_users=200)).as_dict()
+            summary.update({k: int(v) for k, v in gid_counts.items()})
+            if any(gid_counts.values()):
+                console.print(
+                    "metric=github_id_backfill "
+                    + " ".join(f"{key}={value}" for key, value in gid_counts.items())
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"github_id_backfill: {e}")
+            console.print(f"[yellow]github_id backfill skipped: {e}[/yellow]")
 
         # Recompute the self-tuning per-model concurrency advisory (default off).
         # A defensive phase like the others: a failure logs and is swallowed so

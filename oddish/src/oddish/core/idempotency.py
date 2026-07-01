@@ -112,6 +112,9 @@ def compute_request_hash(submission: Any) -> str:
         payload["registry_auth"] = _registry_auth_fingerprints(
             getattr(submission, "registry_auth", None)
         )
+    # Keep unset github_id stable across the deploy boundary.
+    if payload.get("github_id") is None:
+        payload.pop("github_id", None)
     return _canonical_digest(payload)
 
 

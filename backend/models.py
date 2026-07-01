@@ -104,9 +104,12 @@ class UserModel(TimestampedMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
     # Clerk Auth integration
-    # This is the Clerk user ID (e.g., "user_xxx")
+    # Clerk user ID (e.g., "user_xxx"). NOT globally unique: one human is one row
+    # per org (provisioning upserts on (clerk_user_id, org_id)), matching the
+    # migrated head which dropped the unique index. Declaring unique=True here
+    # would let create_all-built previews re-impose it.
     clerk_user_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True, index=True
+        String(64), nullable=True, index=True
     )
 
     # Organization membership
@@ -128,6 +131,7 @@ class UserModel(TimestampedMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    github_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
     attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -152,9 +156,11 @@ class UserModel(TimestampedMixin, Base):
     __table_args__ = (
         # A user can only be in one org with one email
         UniqueConstraint("org_id", "email", name="uq_users_org_email"),
+        UniqueConstraint("org_id", "github_id", name="uq_users_org_github_id"),
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
+        Index("idx_users_org_github_id", "org_id", "github_id"),
     )
 
 
