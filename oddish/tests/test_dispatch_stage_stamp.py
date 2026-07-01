@@ -36,11 +36,29 @@ def test_stamp_dispatch_stage_marks_spawned_and_reasons(monkeypatch) -> None:
     spawn_calls = [c for c in pool.calls if "spawned_at = NOW()" in c[0]]
     reason_calls = [c for c in pool.calls if "admission_reason = $2" in c[0]]
     assert len(spawn_calls) == 1
-    # de-duplicated queue_keys passed as a single ANY($1) array
-    assert sorted(spawn_calls[0][1][0]) == ["gpt-4o"]
+    # one LIMITed stamp per queue_key, carrying its per-key spawn count (2)
+    assert spawn_calls[0][1] == ("gpt-4o", 2)
     assert "spawned_at IS NULL" in spawn_calls[0][0]
+    assert "LIMIT" in spawn_calls[0][0]
     assert len(reason_calls) == 1
     assert reason_calls[0][1] == ("busy", "waiting for slot (limit 2, running 2)")
+
+
+def test_stamp_dispatch_stage_stamps_only_per_key_spawn_count(monkeypatch) -> None:
+    # Partial serve: 2 workers for "a", 1 for "b" -> one LIMITed stamp per key
+    # bounded by that key's spawn count, never every QUEUED/RETRYING row.
+    pool = _FakePool()
+
+    async def _get_pool():
+        return pool
+
+    monkeypatch.setattr(wjd, "get_pool", _get_pool)
+    asyncio.run(wjd.stamp_dispatch_stage(["a", "b", "a"], {}))
+
+    spawn_calls = [c for c in pool.calls if "spawned_at = NOW()" in c[0]]
+    by_key = {c[1][0]: c[1][1] for c in spawn_calls}
+    assert by_key == {"a": 2, "b": 1}
+    assert all("LIMIT" in c[0] and "spawned_at IS NULL" in c[0] for c in spawn_calls)
 
 
 def test_stamp_dispatch_stage_no_spawns_only_reasons(monkeypatch) -> None:

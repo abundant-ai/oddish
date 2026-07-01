@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Collection, Sequence
 
@@ -25,6 +26,7 @@ from oddish.dispatch.ports import Dispatcher, WorkerHandle
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
+    fetch_alive_worker_handle_ids,
     fetch_running_worker_handles,
     get_worker_job_org_queue_counts,
 )
@@ -78,17 +80,25 @@ def compute_why_waiting(
     max_workers: int,
     base_reasons: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Name a reason for every queue_key with queued work that got no spawn.
+    """Name a reason for every queue_key with queued work that got no worker.
 
     Starts from ``base_reasons`` (admission rejections) and adds a capacity
     reason for the rest — over-cap (no free slot) or per-poll budget exhausted.
-    The §12 why-waiting field; shared by ``run_dispatch_cycle`` and the Modal
+    ``spawned_keys`` carries the spawn plan's per-key multiplicity (a key can get
+    several workers in one cycle), so a key is only treated as fully served when
+    the number of workers spawned for it covers its queued rows; a *partially*
+    served key still names a reason for the rows that got no worker. The §12
+    why-waiting field; shared by ``run_dispatch_cycle`` and the Modal
     ``poll_queue`` so both hosts stamp the same reasons.
     """
     why_waiting: dict[str, str] = dict(base_reasons or {})
-    spawned = set(spawned_keys)
+    spawned_counts = Counter(spawned_keys)
     for queue_key, queued in queued_by_queue.items():
-        if queued <= 0 or queue_key in spawned or queue_key in why_waiting:
+        if (
+            queued <= 0
+            or spawned_counts.get(queue_key, 0) >= queued
+            or queue_key in why_waiting
+        ):
             continue
         limit = concurrency_limits.get(queue_key, 0)
         running = running_by_queue.get(queue_key, 0)
@@ -171,11 +181,14 @@ async def run_dispatch_cycle(
             running or 0
         )
 
+    # Pass ``admitted`` as a list (not a set): its per-key multiplicity lets
+    # ``compute_why_waiting`` keep a reason on the still-queued rows of a
+    # partially served queue_key instead of treating one spawn as fully served.
     why_waiting = compute_why_waiting(
         queued_by_queue=queued_by_queue,
         running_by_queue=running_by_queue_key,
         concurrency_limits=concurrency_limits,
-        spawned_keys=set(admitted),
+        spawned_keys=admitted,
         max_workers=max_workers,
         base_reasons=rejected,
     )
@@ -314,9 +327,17 @@ async def run_dispatch_loop(
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     fallback_interval: float = 20.0,
+    reclaim_every_cycles: int = 50,
     _stop: Callable[[], bool] = lambda: False,
+    _alive: Callable[[], Awaitable[Collection[str]]] = fetch_alive_worker_handle_ids,
 ) -> None:
-    """Drive ``run_dispatch_cycle`` forever, woken by the trigger or fallback."""
+    """Drive ``run_dispatch_cycle`` forever, woken by the trigger or fallback.
+
+    Every ``reclaim_every_cycles`` ticks it also runs ``reclaim_leaked_workers``
+    as a best-effort, low-frequency backstop for the leak case (a dispatcher-
+    managed worker with no live ``worker_jobs`` row, spec §6.5). Set
+    ``reclaim_every_cycles=0`` to disable it.
+    """
     trigger = get_dispatch_trigger(fallback_interval=fallback_interval)
 
     # Control-plane restart: reattach in-flight workers before the first tick so
@@ -330,6 +351,7 @@ async def run_dispatch_loop(
     except Exception as exc:  # noqa: BLE001 - reattach must not block startup
         logger.warning("startup reattach skipped: %r", exc)
 
+    cycles = 0
     while not _stop():
         await run_dispatch_cycle(
             dispatcher,
@@ -338,4 +360,23 @@ async def run_dispatch_loop(
             admit=admit,
             on_stage=on_stage,
         )
+
+        # Best-effort, low-frequency leaked-worker GC backstop (spec §6.5): cancel
+        # dispatcher-managed workers with no live ``worker_jobs`` row. Fully
+        # isolated -- a no-op for backends without ``list_managed`` (in-process /
+        # Modal), skipped when we have no positive liveness signal (an empty alive
+        # set, e.g. a backend whose durable handle isn't persisted yet) so it can
+        # never cancel a live worker, and every error swallowed so GC can never
+        # break dispatch.
+        cycles += 1
+        if reclaim_every_cycles > 0 and cycles % reclaim_every_cycles == 0:
+            try:
+                alive = await _alive()
+                if alive:
+                    reclaimed = await reclaim_leaked_workers(dispatcher, alive=alive)
+                    if reclaimed:
+                        logger.info("reclaimed %d leaked worker(s)", reclaimed)
+            except Exception as exc:  # noqa: BLE001 - GC must never break the loop
+                logger.warning("leaked-worker reclaim skipped: %r", exc)
+
         await trigger.wait()
