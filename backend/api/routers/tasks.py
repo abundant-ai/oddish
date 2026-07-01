@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime
 from typing import Annotated, cast
@@ -802,6 +803,15 @@ async def browse_tasks(
     compare_margin_unit: str | None = Query(
         None, description="Margin unit: 'pct' (percent of B, default) or 'abs'"
     ),
+    or_groups: str | None = Query(
+        None,
+        description=(
+            "Phase 2.2 'Match any of…' OR-groups: URL-encoded JSON list of "
+            "condition dicts (each dict uses the same field keys as the flat "
+            "params). A task matches if it satisfies ANY group; the block is "
+            "ANDed with the flat filters."
+        ),
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -830,6 +840,16 @@ async def browse_tasks(
             author_user_ids = ()
             author_github_usernames = ()
             author_emails = ()
+        # Parse the OR-groups JSON defensively: a bad/deep-linked value must not
+        # 500 the browse; keep only dict groups, drop the rest.
+        parsed_or_groups: list[dict] | None = None
+        if or_groups:
+            try:
+                loaded = json.loads(or_groups)
+            except (ValueError, TypeError):
+                loaded = None
+            if isinstance(loaded, list):
+                parsed_or_groups = [g for g in loaded if isinstance(g, dict)] or None
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -894,6 +914,7 @@ async def browse_tasks(
             compare_agg=compare_agg,
             compare_margin=compare_margin,
             compare_margin_unit=compare_margin_unit,
+            or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
         )
 

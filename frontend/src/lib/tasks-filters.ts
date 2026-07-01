@@ -11,6 +11,10 @@ export const PRESET_MS = {
 
 export type CreatedPreset = keyof typeof PRESET_MS;
 
+// A single OR-group condition set: backend field keys → value (same keys as the
+// flat browse params). Used by the "Match any of…" block.
+export type OrGroup = Record<string, string[] | number | boolean>;
+
 export interface FilterValues {
   statuses: string[];
   priorities: string[];
@@ -67,6 +71,8 @@ export interface FilterValues {
   compareAgg: string | null; // "best" | "avg"
   compareMargin: number | null;
   compareMarginUnit: string | null; // "pct" | "abs"
+  // Phase 2.2 "Match any of…" — OR of AND-groups, ANDed with everything above.
+  orGroups: OrGroup[] | null;
 }
 
 export const EMPTY_FILTERS: FilterValues = {
@@ -121,6 +127,7 @@ export const EMPTY_FILTERS: FilterValues = {
   compareAgg: null,
   compareMargin: null,
   compareMarginUnit: null,
+  orGroups: null,
 };
 
 export interface Option {
@@ -182,7 +189,19 @@ export type ControlKind =
   | "tags"
   | "agentmodel"
   | "sort"
-  | "compare";
+  | "compare"
+  | "matchany";
+
+// Conditions available inside an OR-group ("Match any of…"). Each maps to the
+// backend field key(s) it writes; the union of these is what a group can hold.
+export interface GroupConditionDef {
+  id: string;
+  label: string;
+  control: "multiselect" | "boolean" | "numrange" | "num";
+  options?: Option[];
+  facet?: keyof TaskBrowseFacets;
+  keys: string[]; // 1 key, or [minKey, maxKey] for numrange
+}
 
 // Phase 2.1 agent/model comparison option lists.
 export const COMPARE_SUBJECT_OPTIONS: Option[] = [
@@ -452,7 +471,160 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Trial",
     control: "compare",
   },
+  {
+    key: "matchAny",
+    label: "Match any of…",
+    group: "Task",
+    control: "matchany",
+  },
 ];
+
+// Conditions offered inside an OR-group. Keys match the backend flat params.
+export const CONDITION_DEFS: GroupConditionDef[] = [
+  {
+    id: "statuses",
+    label: "Status",
+    control: "multiselect",
+    options: STATUS_OPTIONS,
+    keys: ["statuses"],
+  },
+  {
+    id: "agents",
+    label: "Agent",
+    control: "multiselect",
+    facet: "agents",
+    keys: ["agents"],
+  },
+  {
+    id: "models",
+    label: "Model",
+    control: "multiselect",
+    facet: "models",
+    keys: ["models"],
+  },
+  {
+    id: "providers",
+    label: "Provider",
+    control: "multiselect",
+    facet: "providers",
+    keys: ["providers"],
+  },
+  {
+    id: "environments",
+    label: "Environment",
+    control: "multiselect",
+    facet: "environments",
+    keys: ["environments"],
+  },
+  {
+    id: "trialStatuses",
+    label: "Trial status",
+    control: "multiselect",
+    options: TRIAL_STATUS_OPTIONS,
+    keys: ["trial_statuses"],
+  },
+  {
+    id: "origins",
+    label: "Origin",
+    control: "multiselect",
+    options: ORIGIN_OPTIONS,
+    keys: ["origins"],
+  },
+  {
+    id: "analysisClassifications",
+    label: "Analysis result",
+    control: "multiselect",
+    facet: "analysis_classifications",
+    keys: ["analysis_classifications"],
+  },
+  {
+    id: "hasError",
+    label: "Has error",
+    control: "boolean",
+    keys: ["has_error"],
+  },
+  {
+    id: "reward",
+    label: "Reward (0–1)",
+    control: "numrange",
+    keys: ["reward_min", "reward_max"],
+  },
+  {
+    id: "tokens",
+    label: "Token size",
+    control: "numrange",
+    keys: ["min_tokens", "max_tokens"],
+  },
+  {
+    id: "steps",
+    label: "Trajectory length",
+    control: "numrange",
+    keys: ["min_steps", "max_steps"],
+  },
+  {
+    id: "avgScore",
+    label: "Avg score %",
+    control: "numrange",
+    keys: ["avg_score_min", "avg_score_max"],
+  },
+  {
+    id: "totalTokens",
+    label: "Total tokens",
+    control: "numrange",
+    keys: ["total_tokens_min", "total_tokens_max"],
+  },
+  {
+    id: "runtime",
+    label: "Run time (s)",
+    control: "numrange",
+    keys: ["runtime_total_min", "runtime_total_max"],
+  },
+  {
+    id: "passCount",
+    label: "Pass count ≥",
+    control: "num",
+    keys: ["pass_count_min"],
+  },
+  {
+    id: "failCount",
+    label: "Fail count ≥",
+    control: "num",
+    keys: ["fail_count_min"],
+  },
+  {
+    id: "harnessCount",
+    label: "Harness count ≥",
+    control: "num",
+    keys: ["harness_count_min"],
+  },
+  {
+    id: "totalTrials",
+    label: "Total trials ≥",
+    control: "num",
+    keys: ["total_trials_min"],
+  },
+];
+
+// Drop empty conditions (empty arrays / blank) and empty groups, so serialization
+// and the active check reflect only real conditions.
+export function cleanOrGroups(groups: OrGroup[]): OrGroup[] {
+  const out: OrGroup[] = [];
+  for (const group of groups) {
+    const cleaned: OrGroup = {};
+    for (const [key, value] of Object.entries(group)) {
+      if (key.startsWith("_")) continue; // UI meta (e.g. shown-condition ids)
+      if (Array.isArray(value)) {
+        if (value.length) cleaned[key] = value;
+      } else if (typeof value === "number") {
+        if (!Number.isNaN(value)) cleaned[key] = value;
+      } else if (typeof value === "boolean") {
+        cleaned[key] = value;
+      }
+    }
+    if (Object.keys(cleaned).length) out.push(cleaned);
+  }
+  return out;
+}
 
 // Whether a registry filter currently holds a value (drives the active count,
 // the chip summary, and which optional filters show as added).
@@ -532,6 +704,8 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.sort !== null;
     case "agentCompare":
       return f.compareA !== null && f.compareB !== null;
+    case "matchAny":
+      return f.orGroups !== null && cleanOrGroups(f.orGroups).length > 0;
     default:
       return false;
   }
@@ -611,6 +785,11 @@ export function filterParams(f: FilterValues): [string, string][] {
       out.push(["compare_margin_unit", f.compareMarginUnit || "pct"]);
     }
   }
+  // OR-groups — one compact JSON param; only serialize non-empty groups.
+  if (f.orGroups) {
+    const cleaned = cleanOrGroups(f.orGroups);
+    if (cleaned.length) out.push(["or_groups", JSON.stringify(cleaned)]);
+  }
   return out;
 }
 
@@ -672,6 +851,7 @@ export const FILTER_PARAM_KEYS = [
   "compare_agg",
   "compare_margin",
   "compare_margin_unit",
+  "or_groups",
 ] as const;
 
 // Backend filter params that have no sidebar control yet but are still valid on
@@ -763,5 +943,19 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     compareAgg: sp.get("compare_agg"),
     compareMargin: num("compare_margin"),
     compareMarginUnit: sp.get("compare_margin_unit"),
+    orGroups: ((): OrGroup[] | null => {
+      const raw = sp.get("or_groups");
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return null;
+        const groups = parsed.filter(
+          (g): g is OrGroup => typeof g === "object" && g !== null
+        );
+        return groups.length ? groups : null;
+      } catch {
+        return null;
+      }
+    })(),
   };
 }

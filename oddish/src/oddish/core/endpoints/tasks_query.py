@@ -862,6 +862,29 @@ _AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
     "runtime_avg_asc": ("runtime_avg", False),
 }
 
+# Phase 2.2: aggregate condition keys allowed inside an OR-group. If any group
+# uses one, the ``_task_metrics_subquery`` join is added so the group predicate
+# can reference its columns (same columns the global aggregate filters use).
+_AGGREGATE_GROUP_KEYS = frozenset(
+    {
+        "avg_score_min",
+        "avg_score_max",
+        "total_tokens_min",
+        "total_tokens_max",
+        "total_trials_min",
+        "completed_trials_min",
+        "failed_trials_min",
+        "pass_count_min",
+        "partial_count_min",
+        "fail_count_min",
+        "harness_count_min",
+        "runtime_total_min",
+        "runtime_total_max",
+        "runtime_avg_min",
+        "runtime_avg_max",
+    }
+)
+
 
 async def browse_tasks_core(
     session: AsyncSession,
@@ -930,6 +953,8 @@ async def browse_tasks_core(
     compare_agg: str | None = None,
     compare_margin: float | None = None,
     compare_margin_unit: str | None = None,
+    # --- Phase 2.2 OR-groups ("Match any of…"), no migration ---
+    or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser.
@@ -1242,7 +1267,17 @@ async def browse_tasks_core(
             runtime_avg_max,
         )
     )
-    if aggregate_filter_active or aggregate_sort_active:
+    # Phase 2.2 OR-groups ("Match any of…"): drop empty / non-mapping specs. If any
+    # group uses an aggregate condition, the metrics join must be present so the
+    # group predicate can reference its columns.
+    group_specs = [
+        spec for spec in (or_groups or []) if isinstance(spec, Mapping) and spec
+    ]
+    groups_use_aggregates = any(
+        any(key in _AGGREGATE_GROUP_KEYS for key in spec) for spec in group_specs
+    )
+    task_metrics = None
+    if aggregate_filter_active or aggregate_sort_active or groups_use_aggregates:
         task_metrics = _task_metrics_subquery(org_id)
         ranked_tasks = ranked_tasks.add_columns(
             task_metrics.c.avg_reward.label("avg_reward"),
@@ -1389,6 +1424,156 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             a_val > threshold if higher_better else a_val < threshold
         )
+
+    # --- Phase 2.2 OR-groups ("Match any of…"), no migration --------------
+    # DNF combinator scoped to one block: each group's conditions are ANDed, the
+    # groups are ORed, and the whole thing is intersected (ANDed) with the global
+    # filters above via a SINGLE extra ``.where(or_(...))``. Conditions reuse the
+    # same predicate primitives as the global filters (``_trial_exists`` for the
+    # trial-level ones; ``task_metrics`` columns for the aggregate ones), so a
+    # group is "a mini-sidebar". Compare A vs B is global-only in v1.
+    def _group_predicate(spec: Mapping[str, Any]) -> Any:
+        preds: list[Any] = []
+
+        def _list(key: str) -> list[Any] | None:
+            value = spec.get(key)
+            return list(value) if value else None
+
+        if (statuses_ := _list("statuses")) is not None:
+            preds.append(TaskModel.status.in_(statuses_))
+        if (priorities_ := _list("priorities")) is not None:
+            preds.append(TaskModel.priority.in_(priorities_))
+        if (verdicts_ := _list("verdict_statuses")) is not None:
+            preds.append(TaskModel.verdict_status.in_(verdicts_))
+        if spec.get("has_link") is not None:
+            preds.append(
+                TaskModel.link.isnot(None)
+                if spec["has_link"]
+                else TaskModel.link.is_(None)
+            )
+        if spec.get("run_analysis") is not None:
+            preds.append(TaskModel.run_analysis.is_(bool(spec["run_analysis"])))
+        if spec.get("run_probe") is not None:
+            preds.append(TaskModel.run_probe.is_(bool(spec["run_probe"])))
+
+        if (agents_ := _list("agents")) is not None:
+            preds.append(_trial_exists(TrialModel.agent.in_(agents_)))
+        if (models_ := _list("models")) is not None:
+            preds.append(_trial_exists(TrialModel.model.in_(models_)))
+        if (agent_models_ := _list("agent_models")) is not None:
+            pair_conds = []
+            for token in agent_models_:
+                agent_name, sep, model_name = str(token).partition(":")
+                if not agent_name:
+                    continue
+                if sep and model_name:
+                    pair_conds.append(
+                        and_(
+                            TrialModel.agent == agent_name,
+                            TrialModel.model == model_name,
+                        )
+                    )
+                else:
+                    pair_conds.append(
+                        and_(
+                            TrialModel.agent == agent_name,
+                            TrialModel.model.is_(None),
+                        )
+                    )
+            if pair_conds:
+                preds.append(_trial_exists(or_(*pair_conds)))
+        if (providers_ := _list("providers")) is not None:
+            preds.append(_trial_exists(TrialModel.provider.in_(providers_)))
+        if (environments_ := _list("environments")) is not None:
+            preds.append(_trial_exists(TrialModel.environment.in_(environments_)))
+        if (trial_statuses_ := _list("trial_statuses")) is not None:
+            preds.append(_trial_exists(TrialModel.status.in_(trial_statuses_)))
+        if (origins_ := _list("origins")) is not None:
+            preds.append(_trial_exists(TrialModel.origin.in_(origins_)))
+        if (classifications_ := _list("analysis_classifications")) is not None:
+            preds.append(
+                _trial_exists(
+                    TrialModel.analysis["classification"].astext.in_(
+                        classifications_
+                    )
+                )
+            )
+        if spec.get("trial_is_probe") is not None:
+            preds.append(
+                _trial_exists(
+                    TrialModel.is_probe.is_(bool(spec["trial_is_probe"])),
+                    include_probes=True,
+                )
+            )
+        if spec.get("has_error") is not None:
+            errored = _trial_exists(TrialModel.error_message.isnot(None))
+            preds.append(errored if spec["has_error"] else and_(_trial_exists(), ~errored))
+        if spec.get("has_trajectory") is not None:
+            traj = _trial_exists(TrialModel.has_trajectory.is_(True))
+            preds.append(traj if spec["has_trajectory"] else and_(_trial_exists(), ~traj))
+        if spec.get("min_attempts") is not None:
+            preds.append(_trial_exists(TrialModel.attempts >= spec["min_attempts"]))
+
+        min_tok, max_tok = spec.get("min_tokens"), spec.get("max_tokens")
+        if min_tok is not None or max_tok is not None:
+            tokens_expr = _trial_total_tokens()
+            tok_preds = []
+            if min_tok is not None:
+                tok_preds.append(tokens_expr >= min_tok)
+            if max_tok is not None:
+                tok_preds.append(tokens_expr <= max_tok)
+            preds.append(_trial_exists(*tok_preds))
+        min_st, max_st = spec.get("min_steps"), spec.get("max_steps")
+        if min_st is not None or max_st is not None:
+            step_preds = [TrialModel.total_steps.isnot(None)]
+            if min_st is not None:
+                step_preds.append(TrialModel.total_steps >= min_st)
+            if max_st is not None:
+                step_preds.append(TrialModel.total_steps <= max_st)
+            preds.append(_trial_exists(*step_preds))
+        r_min, r_max = spec.get("reward_min"), spec.get("reward_max")
+        if r_min is not None or r_max is not None:
+            r_preds = [TrialModel.reward.isnot(None)]
+            if r_min is not None:
+                r_preds.append(TrialModel.reward >= r_min)
+            if r_max is not None:
+                r_preds.append(TrialModel.reward <= r_max)
+            preds.append(_trial_exists(*r_preds))
+
+        # Aggregate conditions reference the metrics join (present because
+        # ``groups_use_aggregates`` forced it above).
+        if task_metrics is not None:
+            m = task_metrics.c
+            agg_preds = {
+                "avg_score_min": lambda v: m.avg_reward * 100 >= v,
+                "avg_score_max": lambda v: m.avg_reward * 100 <= v,
+                "total_tokens_min": lambda v: m.total_tokens >= v,
+                "total_tokens_max": lambda v: m.total_tokens <= v,
+                "total_trials_min": lambda v: m.total_trials >= v,
+                "completed_trials_min": lambda v: m.completed_trials >= v,
+                "failed_trials_min": lambda v: m.failed_trials >= v,
+                "pass_count_min": lambda v: m.pass_count >= v,
+                "partial_count_min": lambda v: m.partial_count >= v,
+                "fail_count_min": lambda v: m.fail_count >= v,
+                "harness_count_min": lambda v: m.harness_count >= v,
+                "runtime_total_min": lambda v: m.runtime_total >= v,
+                "runtime_total_max": lambda v: m.runtime_total <= v,
+                "runtime_avg_min": lambda v: m.runtime_avg >= v,
+                "runtime_avg_max": lambda v: m.runtime_avg <= v,
+            }
+            for key, make_pred in agg_preds.items():
+                if spec.get(key) is not None:
+                    preds.append(make_pred(spec[key]))
+
+        return and_(*preds) if preds else None
+
+    if group_specs:
+        group_predicates = [
+            pred for pred in (_group_predicate(spec) for spec in group_specs)
+            if pred is not None
+        ]
+        if group_predicates:
+            ranked_tasks = ranked_tasks.where(or_(*group_predicates))
 
     ranked_tasks_subquery = ranked_tasks.subquery()
 

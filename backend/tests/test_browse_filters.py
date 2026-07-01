@@ -410,6 +410,76 @@ async def test_browse_agent_compare():
         await engine.dispose()
 
 
+async def test_browse_or_groups():
+    """Phase 2.2 'Match any of…': OR of AND-groups, ANDed with the flat filters.
+
+    Base dataset (from ``_setup``): alpha = claude-code, link set, avg 100%;
+    beta = codex, errored, avg 0%; gamma = probe-only (gemini-cli).
+    """
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        async with maker() as session:
+            # A single group is just the equivalent AND filter.
+            assert await _names(session, or_groups=[{"agents": ["claude-code"]}]) == {
+                "alpha"
+            }
+            # Two groups ORed.
+            assert await _names(
+                session,
+                or_groups=[{"agents": ["claude-code"]}, {"agents": ["codex"]}],
+            ) == {"alpha", "beta"}
+            # AND inside a group.
+            assert await _names(
+                session, or_groups=[{"agents": ["codex"], "has_error": True}]
+            ) == {"beta"}
+            assert (
+                await _names(
+                    session,
+                    or_groups=[{"agents": ["claude-code"], "has_error": True}],
+                )
+                == set()
+            )
+            # Cross-field OR — the capability the block exists for:
+            # (claude-code AND has_link) OR (codex AND has_error).
+            assert await _names(
+                session,
+                or_groups=[
+                    {"agents": ["claude-code"], "has_link": True},
+                    {"agents": ["codex"], "has_error": True},
+                ],
+            ) == {"alpha", "beta"}
+            # Aggregate condition inside a group forces the metrics join.
+            assert await _names(session, or_groups=[{"avg_score_min": 90}]) == {
+                "alpha"
+            }
+            assert await _names(
+                session,
+                or_groups=[{"avg_score_min": 90}, {"avg_score_max": 10}],
+            ) == {"alpha", "beta"}
+            # Flat filters AND on top of the OR block: has_link=True narrows the
+            # (claude-code OR codex) union to just alpha.
+            assert await _names(
+                session,
+                has_link=True,
+                or_groups=[{"agents": ["claude-code"]}, {"agents": ["codex"]}],
+            ) == {"alpha"}
+            # Probe-only task stays excluded (same scope as the flat trial filters).
+            assert (
+                await _names(session, or_groups=[{"agents": ["gemini-cli"]}]) == set()
+            )
+            # Empty group / empty list are no-ops.
+            assert await _names(session, or_groups=[{}]) == {
+                "alpha",
+                "beta",
+                "gamma",
+            }
+            assert await _names(session, or_groups=[]) == {"alpha", "beta", "gamma"}
+    finally:
+        await engine.dispose()
+
+
 async def test_browse_boolean_no_is_complement():
     """``has_error`` / ``has_trajectory`` "No" is the complement of "Yes": the
     task ran a real trial and NONE is positive. A task with a mix of positive
