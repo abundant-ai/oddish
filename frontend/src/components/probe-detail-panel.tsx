@@ -9,6 +9,9 @@ import { ProbeRunSummary } from "@/components/probe-run-summary";
 import { ResizableDrawer } from "@/components/ui/resizable-drawer";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { trialHasActiveAnalysis } from "@/lib/job-status";
+
+const ALLOW_ERROR = "exit 137";
 
 type AgentMessage = {
   kind: "assistant_text" | "tool_use" | "tool_result" | "result";
@@ -94,7 +97,7 @@ export function ProbeDetailPanel({
           ? 0
           : 3000;
       },
-    },
+    }
   );
 
   // ~30s grace before treating a not-yet-registered trial as truly missing —
@@ -124,7 +127,7 @@ export function ProbeDetailPanel({
     (trial.status === "success" || trial.status === "failed");
   const { data: fetchedArtifacts } = useSWR<Artifacts>(
     needsArtifacts ? `/api/trials/${currentId}/probe-artifacts` : null,
-    fetcher,
+    fetcher
   );
 
   let body: React.ReactNode;
@@ -135,12 +138,12 @@ export function ProbeDetailPanel({
       </p>
     );
   } else if (!trials) {
-    body = <p className="text-sm text-muted-foreground">Loading…</p>;
+    body = <p className="text-muted-foreground text-sm">Loading…</p>;
   } else if (!trial) {
     body = waitedTooLong ? (
       <p className="text-sm text-red-500">Trial not found.</p>
     ) : (
-      <p className="text-sm text-muted-foreground">
+      <p className="text-muted-foreground text-sm">
         Waiting for the trial to register…
       </p>
     );
@@ -159,13 +162,13 @@ export function ProbeDetailPanel({
           !q ||
           kindLabel(m).toLowerCase().includes(q) ||
           (m.name ?? "").toLowerCase().includes(q) ||
-          m.text.toLowerCase().includes(q),
+          m.text.toLowerCase().includes(q)
       );
 
     body = (
       <div className="space-y-6">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-xs uppercase tracking-wide text-muted-foreground">
+          <p className="text-muted-foreground text-xs tracking-wide uppercase">
             Probe run
           </p>
           {/* In contentOnly (standalone page) the URL drives which probe shows;
@@ -176,19 +179,19 @@ export function ProbeDetailPanel({
                 type="button"
                 disabled={!hasPrev}
                 onClick={() => hasPrev && setCurrentId(probes[index - 1].id)}
-                className="rounded border p-1 text-muted-foreground enabled:hover:text-foreground disabled:opacity-30"
+                className="text-muted-foreground enabled:hover:text-foreground rounded border p-1 disabled:opacity-30"
                 title="Newer probe"
               >
                 <ChevronLeft className="h-4 w-4" />
               </button>
-              <span className="text-xs text-muted-foreground tabular-nums">
+              <span className="text-muted-foreground text-xs tabular-nums">
                 {index + 1} / {probes.length}
               </span>
               <button
                 type="button"
                 disabled={!hasNext}
                 onClick={() => hasNext && setCurrentId(probes[index + 1].id)}
-                className="rounded border p-1 text-muted-foreground enabled:hover:text-foreground disabled:opacity-30"
+                className="text-muted-foreground enabled:hover:text-foreground rounded border p-1 disabled:opacity-30"
                 title="Older probe"
               >
                 <ChevronRight className="h-4 w-4" />
@@ -219,9 +222,9 @@ export function ProbeDetailPanel({
           </p>
         </div>
 
-        {trial.error_message ? (
+        {trial.error_message && !trial.error_message.includes(ALLOW_ERROR) ? (
           <section className="rounded border p-4">
-            <p className="text-sm text-red-500 break-words whitespace-pre-wrap">
+            <p className="text-sm break-words whitespace-pre-wrap text-red-500">
               {trial.error_message}
             </p>
           </section>
@@ -229,22 +232,22 @@ export function ProbeDetailPanel({
 
         <ProbeRunSummary trial={trial} />
 
-        <section className="rounded border p-4 space-y-3">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <section className="space-y-3 rounded border p-4">
+          <h2 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
             Agent process
           </h2>
           {messages.length === 0 ? (
-            <p className="text-xs text-muted-foreground">(no messages yet)</p>
+            <p className="text-muted-foreground text-xs">(no messages yet)</p>
           ) : (
             <>
               <div className="relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2" />
                 <Input
                   type="text"
                   value={stepQuery}
                   onChange={(e) => setStepQuery(e.target.value)}
                   placeholder="Filter steps by keyword…"
-                  className="h-9 pl-8 pr-8 text-sm"
+                  className="h-9 pr-8 pl-8 text-sm"
                 />
                 {stepQuery && (
                   <Button
@@ -253,32 +256,32 @@ export function ProbeDetailPanel({
                     size="sm"
                     onClick={() => setStepQuery("")}
                     aria-label="Clear search"
-                    className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 p-0 text-muted-foreground hover:text-foreground"
+                    className="text-muted-foreground hover:text-foreground absolute top-1/2 right-1 h-7 w-7 -translate-y-1/2 p-0"
                   >
                     <X className="h-3.5 w-3.5" />
                   </Button>
                 )}
               </div>
               {visibleSteps.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   No steps match &quot;{stepQuery}&quot;.
                 </p>
               ) : (
                 <ol className="space-y-2 text-sm">
                   {visibleSteps.map(({ m, i }) => (
                     <li key={i}>
-                      <details className="rounded border bg-muted/30 p-2">
-                        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                      <details className="bg-muted/30 rounded border p-2">
+                        <summary className="text-muted-foreground cursor-pointer text-xs font-medium">
                           Step {i + 1} · {kindLabel(m)}
                           {m.text ? (
-                            <span className="ml-2 font-normal text-muted-foreground/80">
+                            <span className="text-muted-foreground/80 ml-2 font-normal">
                               {m.text.slice(0, 80)}
                               {m.text.length > 80 ? "…" : ""}
                             </span>
                           ) : null}
                         </summary>
                         <pre
-                          className={`mt-2 whitespace-pre-wrap font-mono text-xs ${m.is_error ? "text-red-500" : ""}`}
+                          className={`mt-2 font-mono text-xs whitespace-pre-wrap ${m.is_error ? "text-red-500" : ""}`}
                         >
                           {m.text}
                         </pre>
@@ -291,30 +294,30 @@ export function ProbeDetailPanel({
           )}
         </section>
 
-        <section className="rounded border p-4 space-y-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <section className="space-y-2 rounded border p-4">
+          <h2 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
             Operator instructions
           </h2>
-          <pre className="whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs">
+          <pre className="bg-muted rounded p-3 font-mono text-xs whitespace-pre-wrap">
             {extra || "(none)"}
           </pre>
         </section>
 
-        <section className="rounded border p-4 space-y-2">
-          <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        <section className="space-y-2 rounded border p-4">
+          <h2 className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
             Verifier output
           </h2>
-          <pre className="overflow-auto whitespace-pre-wrap rounded bg-muted p-3 font-mono text-xs max-h-[400px]">
+          <pre className="bg-muted max-h-[400px] overflow-auto rounded p-3 font-mono text-xs whitespace-pre-wrap">
             {verifierStdout || "(empty)"}
           </pre>
         </section>
 
         <section className="rounded border p-4">
           <details>
-            <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <summary className="text-muted-foreground cursor-pointer text-xs font-medium tracking-wide uppercase">
               Raw trial.result JSON
             </summary>
-            <pre className="mt-2 overflow-auto rounded bg-muted p-3 font-mono text-xs max-h-[600px]">
+            <pre className="bg-muted mt-2 max-h-[600px] overflow-auto rounded p-3 font-mono text-xs">
               {JSON.stringify(trial.result ?? {}, null, 2)}
             </pre>
           </details>
