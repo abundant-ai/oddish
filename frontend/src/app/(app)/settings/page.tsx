@@ -49,6 +49,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { QuotaUsageCard } from "@/components/quota-usage-card";
 import {
   Building2,
   Check,
@@ -732,7 +733,8 @@ function ProfilePanel() {
         title="Personal account"
         description="Managed by Clerk — update your name, email, password, and connected accounts."
       />
-      <div className="pt-4">
+      <div className="space-y-4 pt-4">
+        <QuotaUsageCard />
         <UserProfile routing="hash" appearance={clerkEmbeddedAppearance} />
       </div>
     </Panel>
