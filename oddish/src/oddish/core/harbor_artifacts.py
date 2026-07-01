@@ -44,6 +44,15 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
+def _as_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
     """Read token, step, and cost metrics from ATIF trajectory data."""
     if not path or not path.exists():
@@ -86,9 +95,8 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
             ),
             total_steps=total_steps,
             cost_usd=(
-                float(final_metrics["total_cost_usd"])
+                _as_float(final_metrics.get("total_cost_usd"))
                 if isinstance(final_metrics, dict)
-                and final_metrics.get("total_cost_usd") is not None
                 else None
             ),
         )

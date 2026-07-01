@@ -16,6 +16,7 @@ from oddish.core.harbor_artifacts import (  # noqa: E402
     extract_trajectory_metrics,
 )
 from oddish.core.ingest.zip_imports import _task_name_from_harbor_model  # noqa: E402
+from oddish.core.ingest.zip_imports import _task_name_from_legacy_json  # noqa: E402
 from oddish.integrations.sauron.s3_uploader import SauronS3Uploader  # noqa: E402
 
 
@@ -46,6 +47,27 @@ def test_shared_trajectory_helpers_read_atif_metrics(tmp_path):
     assert metrics.cache_tokens == 3
     assert metrics.total_steps == 5
     assert metrics.cost_usd == 0.42
+
+
+def test_shared_trajectory_helpers_ignore_bad_cost(tmp_path):
+    agent_dir = tmp_path / "trial" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "final_metrics": {
+                    "total_prompt_tokens": 11,
+                    "total_cost_usd": "not-a-number",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = extract_trajectory_metrics(tmp_path)
+
+    assert metrics.input_tokens == 11
+    assert metrics.cost_usd is None
 
 
 def test_trial_import_spec_reuses_shared_extraction(tmp_path):
@@ -107,6 +129,24 @@ def test_task_name_inference_prefers_harbor_config_models(tmp_path):
     )
 
 
+def test_task_name_inference_keeps_nested_legacy_json():
+    data = {
+        "outer": {
+            "inner": [
+                {
+                    "payload": {
+                        "task": {
+                            "task_path": "/tmp/harbor/tasks/nested-task",
+                        }
+                    }
+                }
+            ]
+        }
+    }
+
+    assert _task_name_from_legacy_json(data) == "nested-task"
+
+
 def test_sauron_trial_subdir_uses_job_scanner(tmp_path):
     job_dir = tmp_path / "jobs" / "my-job"
     scanner_trial = job_dir / "plain-trial-name"
@@ -116,3 +156,11 @@ def test_sauron_trial_subdir_uses_job_scanner(tmp_path):
     (scanner_trial / "result.json").write_text("{}", encoding="utf-8")
 
     assert SauronS3Uploader._find_trial_subdir(job_dir) == scanner_trial
+
+
+def test_sauron_trial_subdir_keeps_single_child_fallback(tmp_path):
+    job_dir = tmp_path / "jobs" / "my-job"
+    only_child = job_dir / "legacy-output"
+    only_child.mkdir(parents=True)
+
+    assert SauronS3Uploader._find_trial_subdir(job_dir) == only_child
