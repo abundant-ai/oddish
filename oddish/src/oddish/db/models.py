@@ -341,6 +341,35 @@ task_experiments = Table(
 )
 
 
+# Association table for read-only "collection" experiments: gathers existing
+# trials (from their home experiments) into a new experiment for dashboard
+# viewing, without moving the trials.
+experiment_trials = Table(
+    "experiment_trials",
+    Base.metadata,
+    Column(
+        "experiment_id",
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "trial_id",
+        String(160),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "created_at",
+        DateTime(timezone=True),
+        default=utcnow,
+        nullable=False,
+    ),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
+    Index("idx_experiment_trials_trial_id", "trial_id"),
+)
+
+
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -415,6 +444,12 @@ class ExperimentModel(TimestampedMixin, Base):
     # Public sharing (nullable until published)
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     public_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # Read-only "collection" experiment: gathers existing trials from other
+    # experiments for dashboard viewing (see ``experiment_trials``).
+    is_collection: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     # User-authored markdown description shown in the experiment header.
     # Nullable; ``None``/blank means "no description".
@@ -1145,6 +1180,33 @@ class WorkerJobModel(TimestampedMixin, Base):
     )
     provider: Mapped[str] = mapped_column(Text, nullable=True)
     external_id: Mapped[str] = mapped_column(Text, nullable=True)
+
+    # Per-stage timing for the pre-harbor preamble (design spec §12). The
+    # existing claimed_at/started_at cover claim+total-elapsed; these fill the
+    # submit -> spawn -> sandbox-create gap so the 180s-poll vs cold-start vs
+    # image-pull split is visible.
+    spawned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sandbox_creating_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why a still-waiting job has not been spawned -- the queryable why-waiting /
+    # admission-reason field (spec §12): "waiting for slot", "cold-starting",
+    # "capability-rejected: <table>", ...
+    admission_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Job-scoped credential token lifecycle (spec §6.6). Only the SHA-256 hash is
+    # persisted; the raw token + scoped bundle (model keys, S3 prefix) are
+    # returned to the worker at claim and held in memory. Revoked on terminal
+    # status. Gated by settings.job_scoped_tokens_enabled (default off).
+    job_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    job_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    job_token_revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class APIKeyModel(TimestampedMixin, Base):

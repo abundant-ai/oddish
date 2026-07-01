@@ -173,13 +173,13 @@ WHERE  id = (
         WHERE  wj2.kind::text = 'TRIAL'
           AND  wj2.status::text = 'RUNNING'
           AND  wj2.queue_key = $1
-          AND  wj2.harbor_variant_id = $5
+          AND  ($5::text IS NULL OR wj2.harbor_variant_id = $5)
           AND  tr2.deleted_at IS NULL
           AND  tk2.deleted_at IS NULL
         GROUP  BY COALESCE(tk2.created_by_user_id, tk2.user)
     ) rpg ON rpg.fairness_key = COALESCE(tk.created_by_user_id, tk.user)
     WHERE  wj.queue_key = $1
-      AND  wj.harbor_variant_id = $5
+      AND  ($5::text IS NULL OR wj.harbor_variant_id = $5)
       AND  wj.status::text IN ('QUEUED', 'RETRYING')
       AND  wj.available_after <= NOW()
       -- Defense in depth: ``delete_*_core`` already cancels matching
@@ -293,14 +293,17 @@ async def claim_single_worker_job(
     worker_id: str,
     queue_slot: int,
     modal_function_call_id: str | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
 ) -> ClaimedWorkerJob | None:
     """Atomically claim at most one runnable ``worker_jobs`` row.
 
     Returns ``None`` if no row was available. The claim is scoped to
     ``harbor_variant_id`` so a worker only picks up jobs of the Harbor variant
-    it was spawned for. The returned row is in ``RUNNING`` state with
-    ``attempts`` incremented and claim metadata stamped.
+    it was spawned for -- except ``harbor_variant_id=None``, which claims **any**
+    variant for the queue_key (used by the off-Modal / image-agnostic workers,
+    which serve every variant of a queue_key with one worker). The returned row
+    is in ``RUNNING`` state with ``attempts`` incremented and claim metadata
+    stamped.
     """
     connection = await _open_connection()
     try:
@@ -497,7 +500,7 @@ async def run_single_worker_job(
     queue_slot: int,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
 ) -> bool:
     """Claim and execute at most one `worker_jobs` row.
 
@@ -612,7 +615,7 @@ async def drain_worker_jobs(
     budget_seconds: float,
     modal_function_call_id: str | None = None,
     post_success_hooks: PostSuccessHooks | None = None,
-    harbor_variant_id: str = "default",
+    harbor_variant_id: str | None = "default",
     _run_job: Callable[..., Awaitable[bool]] | None = None,
     _now: Callable[[], float] = time.monotonic,
 ) -> int:

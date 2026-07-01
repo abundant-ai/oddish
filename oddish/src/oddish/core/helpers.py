@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,6 +83,17 @@ def _resolve_trial_cost(
     if estimated is None:
         return None, None
     return estimated, True
+
+
+def _has_fetchable_trajectory(trial: TrialModel) -> bool:
+    if trial.has_trajectory:
+        return True
+    # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
+    # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
+    return (
+        (trial.agent or "").strip().lower() == "grok-build"
+        and trial.finished_at is not None
+    )
 
 
 _ANALYSIS_SUMMARY_UNSET = object()
@@ -446,7 +456,7 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
@@ -518,7 +528,7 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
@@ -600,6 +610,7 @@ def resolve_effective_version_id(
     task: TaskModel,
     *,
     experiment_context_id: str | None = None,
+    gathered_trial_ids: set[str] | None = None,
 ) -> str | None:
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
@@ -611,6 +622,12 @@ def resolve_effective_version_id(
     even if the underlying task has since been re-uploaded and bumped to a
     newer version elsewhere.  Falls back to ``task.current_version_id`` when
     no scoped trial has a ``task_version_id``.
+
+    ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
+    via the ``experiment_trials`` join table -- these carry their home
+    experiment's scalar ``experiment_id`` (not this collection's), so they'd
+    otherwise be invisible to the scalar-column membership test.  Passing the
+    default ``None`` leaves the behavior byte-for-byte unchanged.
     """
     if experiment_context_id is None:
         return task.current_version_id
@@ -620,7 +637,11 @@ def resolve_effective_version_id(
         if not version_id:
             continue
         trial_exp_id = getattr(trial, "experiment_id", None)
-        if trial_exp_id == experiment_context_id or trial_exp_id is None:
+        if (
+            trial_exp_id == experiment_context_id
+            or trial_exp_id is None
+            or (gathered_trial_ids and trial.id in gathered_trial_ids)
+        ):
             candidates.append(version_id)
     if not candidates:
         return task.current_version_id
@@ -651,6 +672,7 @@ async def fetch_experiment_effective_version_ids(
     if not task_ids:
         return {}
 
+    from oddish.core.experiment_membership import gathered_trial_ids_select
     from oddish.db import TaskVersionModel  # local import: avoid cycle
 
     stmt = (
@@ -661,6 +683,11 @@ async def fetch_experiment_effective_version_ids(
             or_(
                 TrialModel.experiment_id == experiment_id,
                 TrialModel.experiment_id.is_(None),
+                # Collection experiments own trials additively via the
+                # ``experiment_trials`` join table without rewriting the
+                # scalar ``experiment_id``; fold those gathered trials in so
+                # the effective version reflects the versions they ran on.
+                TrialModel.id.in_(gathered_trial_ids_select(experiment_id)),
             ),
             TrialModel.task_version_id.is_not(None),
         )
@@ -851,6 +878,7 @@ def build_task_status_response(
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -860,10 +888,15 @@ def build_task_status_response(
     experiment by the caller).  This keeps experiment pages showing trials at
     whatever version actually ran in that experiment, even if the task has
     since been re-uploaded to a newer version elsewhere.
+
+    ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
+    collection-gathered trials on an older version aren't re-resolved away.
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     total = len(task_trials)
@@ -920,6 +953,7 @@ def build_task_status_response_compact(
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -927,7 +961,9 @@ def build_task_status_response_compact(
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     real_trials = [t for t in task_trials if not t.is_probe]
@@ -1045,6 +1081,7 @@ def build_slim_task_status_response(
     include_empty_rewards: bool = True,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """``build_task_status_response_compact`` with SLIM per-trial payloads.
 
@@ -1054,7 +1091,9 @@ def build_slim_task_status_response(
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     total = len(task_trials)
@@ -1254,10 +1293,11 @@ async def cancel_job_by_worker(
     """Best-effort terminate the remote sandbox backing a hanging job.
 
     Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
-    matching ``harbor``'s ``provider_name``) and tears down the sandbox
-    identified by ``external_id``. Cancellation paths call this for rows
-    they have already marked terminal in the DB, so it never raises into
-    the caller -- failures are logged and reported via the return value.
+    matching ``harbor``'s ``provider_name``) to the registered
+    ``ExecutionBackend`` and tears down the sandbox identified by
+    ``external_id``. Cancellation paths call this for rows they have already
+    marked terminal in the DB, so it never raises into the caller -- failures
+    are logged by the backend and reported via the return value.
 
     Returns ``True`` when a terminate/delete call was issued successfully,
     ``False`` when there was nothing to do or the teardown failed.
@@ -1265,53 +1305,18 @@ async def cancel_job_by_worker(
     if not provider or not external_id:
         return False
 
-    try:
-        env_type = EnvironmentType(provider.lower())
-    except ValueError:
+    from oddish.runtime.registry import get_backend
+
+    backend = get_backend(provider)
+    if backend is None:
         logger.warning(
-            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
             provider,
             external_id,
         )
         return False
 
-    try:
-        # import would crash every one of those processes; importing here
-        # keeps the teardown deps confined to the worker context that
-        # actually has them installed.
-        if env_type == EnvironmentType.MODAL:
-            import modal
-
-            sandbox = await modal.Sandbox.from_id.aio(external_id)
-            await sandbox.terminate.aio()
-        elif env_type == EnvironmentType.DAYTONA:
-            from daytona import AsyncDaytona
-
-            client = AsyncDaytona()
-            try:
-                sandbox = await client.get(external_id)
-                await client.delete(sandbox)
-            finally:
-                await client.close()
-        else:
-            logger.warning(
-                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
-                provider,
-                external_id,
-            )
-            return False
-    except Exception:
-        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
-        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
-        logger.exception(
-            "cancel_job_by_worker: failed to terminate %s sandbox %s",
-            provider,
-            external_id,
-        )
-        return False
-
-    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
-    return True
+    return await backend.teardown(external_id)
 
 
 def escape_like(needle: str) -> str:
