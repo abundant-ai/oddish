@@ -127,7 +127,7 @@ class DispatchCycleResult:
 
 DiscoverFn = Callable[[], Awaitable[Sequence[tuple[str, str]]]]
 CountsFn = Callable[
-    [Sequence[str]],
+    [tuple[str, ...]],
     Awaitable[
         tuple[dict[tuple[str | None, str, str], int], dict[tuple[str, str], int]]
     ],
@@ -356,9 +356,7 @@ class DispatchTrigger:
 
     async def wait(self) -> str:
         try:
-            await asyncio.wait_for(
-                self._event.wait(), timeout=self._fallback_interval
-            )
+            await asyncio.wait_for(self._event.wait(), timeout=self._fallback_interval)
             self._event.clear()
             return "signal"
         except asyncio.TimeoutError:
@@ -413,18 +411,22 @@ async def run_dispatch_loop(
     try:
         recovered = await reattach_in_flight_workers(dispatcher)
         if recovered:
-            logger.info(
-                "reattached %d in-flight worker(s) on startup", len(recovered)
-            )
+            logger.info("reattached %d in-flight worker(s) on startup", len(recovered))
     except Exception as exc:  # noqa: BLE001 - reattach must not block startup
         logger.warning("startup reattach skipped: %r", exc)
 
     while not _stop():
-        await run_dispatch_cycle(
-            dispatcher,
-            max_workers=max_workers,
-            concurrency_for=concurrency_for,
-            admit=admit,
-            on_stage=on_stage,
-        )
+        try:
+            await run_dispatch_cycle(
+                dispatcher,
+                max_workers=max_workers,
+                concurrency_for=concurrency_for,
+                admit=admit,
+                on_stage=on_stage,
+            )
+        except asyncio.CancelledError:
+            raise
+        # Poll loops must survive transient DB/network failures and retry.
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dispatch cycle failed; retrying after fallback: %r", exc)
         await trigger.wait()

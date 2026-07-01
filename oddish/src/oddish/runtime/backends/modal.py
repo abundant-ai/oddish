@@ -9,7 +9,7 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TextIO, cast
 
 from oddish.runtime.ports import Capabilities, ExecutionBackend, GpuSupport
 
@@ -103,10 +103,14 @@ class ModalBackend:
             log_file.flush()
 
             stack.enter_context(
-                contextlib.redirect_stdout(_TeeTextIO(sys.stdout, log_file))
+                contextlib.redirect_stdout(
+                    cast(TextIO, _TeeTextIO(sys.stdout, log_file))
+                )
             )
             stack.enter_context(
-                contextlib.redirect_stderr(_TeeTextIO(sys.stderr, log_file))
+                contextlib.redirect_stderr(
+                    cast(TextIO, _TeeTextIO(sys.stderr, log_file))
+                )
             )
 
             try:
