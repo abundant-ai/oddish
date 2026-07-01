@@ -190,11 +190,26 @@ export const COMPARE_SUBJECT_OPTIONS: Option[] = [
   { value: "model", label: "Model" },
 ];
 export const COMPARE_METRIC_OPTIONS: Option[] = [
-  { value: "reward", label: "Reward" },
-  { value: "runtime", label: "Run time" },
-  { value: "tokens", label: "Tokens" },
-  { value: "steps", label: "Steps" },
+  { value: "reward", label: "Reward (0–1)" },
+  { value: "runtime", label: "Run time (s)" },
+  { value: "tokens", label: "Tokens (#)" },
+  { value: "steps", label: "Steps (#)" },
 ];
+// Plain metric word for the "reads as" summary (keeps the unit out of the prose,
+// which already carries it in the margin text).
+export const COMPARE_METRIC_WORD: Record<string, string> = {
+  reward: "reward",
+  runtime: "run time",
+  tokens: "tokens",
+  steps: "steps",
+};
+// Unit shown on the margin field when the "abs" mode is selected.
+export const COMPARE_METRIC_UNIT: Record<string, string> = {
+  reward: "pts",
+  runtime: "s",
+  tokens: "tokens",
+  steps: "steps",
+};
 export const COMPARE_AGG_OPTIONS: Option[] = [
   { value: "best", label: "Best" },
   { value: "avg", label: "Average" },
