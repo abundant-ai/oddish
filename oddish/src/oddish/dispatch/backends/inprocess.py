@@ -36,7 +36,7 @@ async def _default_run_job(queue_key: str, **kwargs: Any) -> bool:
 
 
 async def _default_acquire_slot(
-    *, queue_key: str, limit: int, worker_id: str, lease_seconds: float
+    *, queue_key: str, limit: int, worker_id: str, lease_seconds: int
 ) -> int | None:
     from oddish.workers.queue.slots import acquire_queue_slot
 
