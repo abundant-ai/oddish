@@ -41,6 +41,10 @@ import type {
 } from "@/lib/types";
 import {
   activeFilterCount,
+  COMPARE_AGG_OPTIONS,
+  COMPARE_METRIC_OPTIONS,
+  COMPARE_MARGIN_UNIT_OPTIONS,
+  COMPARE_SUBJECT_OPTIONS,
   FILTER_DEFS,
   FILTER_PARAM_KEYS,
   filterParams,
@@ -219,6 +223,17 @@ export function TasksFilterSidebar() {
         break;
       case "sort":
         set({ sort: null });
+        break;
+      case "agentCompare":
+        set({
+          compareBy: null,
+          compareA: null,
+          compareB: null,
+          compareMetric: null,
+          compareAgg: null,
+          compareMargin: null,
+          compareMarginUnit: null,
+        });
         break;
       case "minAttempts":
       case "totalTrials":
@@ -431,6 +446,8 @@ function FilterControl({
       return <RewardThreshold values={values} set={set} />;
     case "sort":
       return <SortControl values={values} set={set} />;
+    case "compare":
+      return <CompareControl values={values} set={set} facets={facets} />;
     case "num":
       return <NumControl fieldKey={def.key} values={values} set={set} />;
     case "tags":
@@ -1083,6 +1100,160 @@ function ApplyBar({
 }
 
 type NumRangeDraft = { min: number | null; max: number | null };
+
+type CompareDraft = {
+  by: string;
+  a: string;
+  b: string;
+  metric: string;
+  agg: string;
+  margin: number | null;
+  unit: string;
+};
+
+const COMPARE_SELECT_CLASS =
+  "border-input bg-background h-8 w-full rounded-md border px-2 text-xs";
+
+// Phase 2.1 "A beats B" compare control. Holds the whole comparison as a local
+// draft and commits all seven params at once via Apply — no partial refetch
+// while the user is still choosing. Apply is blocked until both sides are set
+// and distinct (same guard style as the min≤max ranges).
+function CompareControl({
+  values,
+  set,
+  facets,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+  facets: TaskBrowseFacets | null;
+}) {
+  const applied: CompareDraft = {
+    by: values.compareBy ?? "agent",
+    a: values.compareA ?? "",
+    b: values.compareB ?? "",
+    metric: values.compareMetric ?? "reward",
+    agg: values.compareAgg ?? "best",
+    margin: values.compareMargin,
+    unit: values.compareMarginUnit ?? "pct",
+  };
+  const commit = (d: CompareDraft) =>
+    set({
+      compareBy: d.by,
+      compareA: d.a || null,
+      compareB: d.b || null,
+      compareMetric: d.metric,
+      compareAgg: d.agg,
+      compareMargin: d.margin,
+      compareMarginUnit: d.unit,
+    });
+  const validate = (d: CompareDraft) => {
+    if (!d.a || !d.b) return "Pick both sides";
+    if (d.a === d.b)
+      return `Pick two different ${d.by === "model" ? "models" : "agents"}`;
+    return null;
+  };
+  const { draft, setDraft, dirty, error, apply } = useDraft(
+    applied,
+    commit,
+    validate
+  );
+
+  const subjectLabel = draft.by === "model" ? "Model" : "Agent";
+  const subjectValues =
+    (draft.by === "model" ? facets?.models : facets?.agents) ?? [];
+  const metricLabel =
+    COMPARE_METRIC_OPTIONS.find((o) => o.value === draft.metric)?.label ??
+    draft.metric;
+  const marginText =
+    draft.margin != null && !Number.isNaN(draft.margin)
+      ? ` by >${draft.margin}${draft.unit === "abs" ? "" : "%"}`
+      : "";
+
+  return (
+    <div className="space-y-2">
+      <Segmented
+        options={COMPARE_SUBJECT_OPTIONS}
+        value={draft.by}
+        onChange={(v) => setDraft({ ...draft, by: v, a: "", b: "" })}
+      />
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={draft.a}
+        onChange={(e) => setDraft({ ...draft, a: e.target.value })}
+      >
+        <option value="">{subjectLabel} A…</option>
+        {subjectValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <div className="text-muted-foreground text-center text-[11px]">beats</div>
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={draft.b}
+        onChange={(e) => setDraft({ ...draft, b: e.target.value })}
+      >
+        <option value="">{subjectLabel} B…</option>
+        {subjectValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <div>
+        <label className="text-muted-foreground mb-0.5 block text-[11px]">
+          On metric
+        </label>
+        <select
+          className={COMPARE_SELECT_CLASS}
+          value={draft.metric}
+          onChange={(e) => setDraft({ ...draft, metric: e.target.value })}
+        >
+          {COMPARE_METRIC_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Segmented
+        options={COMPARE_AGG_OPTIONS}
+        value={draft.agg}
+        onChange={(v) => setDraft({ ...draft, agg: v })}
+      />
+      <div className="flex items-center gap-1">
+        <Input
+          type="number"
+          min={0}
+          className="h-8 text-xs"
+          placeholder="margin"
+          value={draft.margin ?? ""}
+          onChange={(e) =>
+            setDraft({
+              ...draft,
+              margin: e.target.value === "" ? null : Number(e.target.value),
+            })
+          }
+        />
+        <div className="w-24 shrink-0">
+          <Segmented
+            options={COMPARE_MARGIN_UNIT_OPTIONS}
+            value={draft.unit}
+            onChange={(v) => setDraft({ ...draft, unit: v })}
+          />
+        </div>
+      </div>
+      {draft.a && draft.b ? (
+        <p className="text-muted-foreground text-[11px] leading-snug">
+          {draft.a} beats {draft.b} on {metricLabel.toLowerCase()}
+          {marginText}
+        </p>
+      ) : null}
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+    </div>
+  );
+}
 
 function NumRange({
   fieldKey,

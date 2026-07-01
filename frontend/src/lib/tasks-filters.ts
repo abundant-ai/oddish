@@ -59,6 +59,14 @@ export interface FilterValues {
   failCountMin: number | null;
   harnessCountMin: number | null;
   sort: string | null; // aggregate sort token (e.g. "avg_score_desc")
+  // Phase 2.1 agent/model comparison ("A beats B" on a metric).
+  compareBy: string | null; // "agent" | "model"
+  compareA: string | null;
+  compareB: string | null;
+  compareMetric: string | null; // "reward" | "runtime" | "tokens" | "steps"
+  compareAgg: string | null; // "best" | "avg"
+  compareMargin: number | null;
+  compareMarginUnit: string | null; // "pct" | "abs"
 }
 
 export const EMPTY_FILTERS: FilterValues = {
@@ -106,6 +114,13 @@ export const EMPTY_FILTERS: FilterValues = {
   failCountMin: null,
   harnessCountMin: null,
   sort: null,
+  compareBy: null,
+  compareA: null,
+  compareB: null,
+  compareMetric: null,
+  compareAgg: null,
+  compareMargin: null,
+  compareMarginUnit: null,
 };
 
 export interface Option {
@@ -166,7 +181,28 @@ export type ControlKind =
   | "num"
   | "tags"
   | "agentmodel"
-  | "sort";
+  | "sort"
+  | "compare";
+
+// Phase 2.1 agent/model comparison option lists.
+export const COMPARE_SUBJECT_OPTIONS: Option[] = [
+  { value: "agent", label: "Agent" },
+  { value: "model", label: "Model" },
+];
+export const COMPARE_METRIC_OPTIONS: Option[] = [
+  { value: "reward", label: "Reward" },
+  { value: "runtime", label: "Run time" },
+  { value: "tokens", label: "Tokens" },
+  { value: "steps", label: "Steps" },
+];
+export const COMPARE_AGG_OPTIONS: Option[] = [
+  { value: "best", label: "Best" },
+  { value: "avg", label: "Average" },
+];
+export const COMPARE_MARGIN_UNIT_OPTIONS: Option[] = [
+  { value: "pct", label: "%" },
+  { value: "abs", label: "abs" },
+];
 
 // Aggregate sort tokens (kept in sync with backend ``_AGGREGATE_SORTS``).
 export const SORT_OPTIONS: Option[] = [
@@ -395,6 +431,12 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Task",
     control: "num",
   },
+  {
+    key: "agentCompare",
+    label: "Agent vs agent",
+    group: "Trial",
+    control: "compare",
+  },
 ];
 
 // Whether a registry filter currently holds a value (drives the active count,
@@ -473,6 +515,8 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.harnessCountMin !== null;
     case "sort":
       return f.sort !== null;
+    case "agentCompare":
+      return f.compareA !== null && f.compareB !== null;
     default:
       return false;
   }
@@ -540,6 +584,18 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("fail_count_min", f.failCountMin);
   num("harness_count_min", f.harnessCountMin);
   if (f.sort) out.push(["sort", f.sort]);
+  // Agent/model comparison — only serialize a complete, distinct pair.
+  if (f.compareA && f.compareB && f.compareA !== f.compareB) {
+    out.push(["compare_by", f.compareBy || "agent"]);
+    out.push(["compare_a", f.compareA]);
+    out.push(["compare_b", f.compareB]);
+    out.push(["compare_metric", f.compareMetric || "reward"]);
+    out.push(["compare_agg", f.compareAgg || "best"]);
+    if (f.compareMargin != null && !Number.isNaN(f.compareMargin)) {
+      out.push(["compare_margin", String(f.compareMargin)]);
+      out.push(["compare_margin_unit", f.compareMarginUnit || "pct"]);
+    }
+  }
   return out;
 }
 
@@ -594,6 +650,13 @@ export const FILTER_PARAM_KEYS = [
   "fail_count_min",
   "harness_count_min",
   "sort",
+  "compare_by",
+  "compare_a",
+  "compare_b",
+  "compare_metric",
+  "compare_agg",
+  "compare_margin",
+  "compare_margin_unit",
 ] as const;
 
 // Backend filter params that have no sidebar control yet but are still valid on
@@ -678,5 +741,12 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     failCountMin: num("fail_count_min"),
     harnessCountMin: num("harness_count_min"),
     sort: sp.get("sort"),
+    compareBy: sp.get("compare_by"),
+    compareA: sp.get("compare_a"),
+    compareB: sp.get("compare_b"),
+    compareMetric: sp.get("compare_metric"),
+    compareAgg: sp.get("compare_agg"),
+    compareMargin: num("compare_margin"),
+    compareMarginUnit: sp.get("compare_margin_unit"),
   };
 }

@@ -288,6 +288,128 @@ async def test_browse_aggregate_sort():
         await engine.dispose()
 
 
+async def _insert_compare_tasks(engine):
+    """Add tasks with two subjects (agents/models) per task for the Phase 2.1
+    'A beats B' comparison.
+
+    cmp-reward:  claude-code best reward 0.9 vs codex 0.4  (A beats B on reward).
+    cmp-runtime: claude-code 100s vs codex 20s             (codex beats on runtime).
+    cmp-onlyA:   ONLY claude-code (reward 0.9)             (excluded — needs both).
+    cmp-margin:  claude-code 0.55 vs codex 0.50            (A beats by exactly 10%).
+    cmp-avg:     claude-code [1.0, 0.0] vs codex [0.6,0.6] (best: A wins; avg: B wins).
+    cmp-model:   model m-a reward 0.9 vs model m-b 0.3     (model-vs-model).
+    """
+    stmts = """
+        insert into tasks (id,name,org_id,"user",priority,status,task_path,link,tags,run_analysis,run_probe,created_at,updated_at)
+        values ('t-cr','cmp-reward','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-cru','cmp-runtime','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-ca','cmp-onlyA','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-cm','cmp-margin','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-cavg','cmp-avg','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-cmodel','cmp-model','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now());
+        insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
+        values ('v-cr','t-cr',1,'p',now(),now()),
+               ('v-cru','t-cru',1,'p',now(),now()),
+               ('v-ca','t-ca',1,'p',now(),now()),
+               ('v-cm','t-cm',1,'p',now(),now()),
+               ('v-cavg','t-cavg',1,'p',now(),now()),
+               ('v-cmodel','t-cmodel',1,'p',now(),now());
+        update tasks set current_version_id='v-cr' where id='t-cr';
+        update tasks set current_version_id='v-cru' where id='t-cru';
+        update tasks set current_version_id='v-ca' where id='t-ca';
+        update tasks set current_version_id='v-cm' where id='t-cm';
+        update tasks set current_version_id='v-cavg' where id='t-cavg';
+        update tasks set current_version_id='v-cmodel' where id='t-cmodel';
+        insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,model,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,error_message,input_tokens,output_tokens,cache_tokens,total_steps,has_trajectory,started_at,finished_at,attempts,max_attempts,heartbeat_failure_count,created_at,updated_at)
+        values
+          ('cr1','cr1','t-cr','v-cr','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.9,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cr2','cr2','t-cr','v-cr','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.4,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cru1','cru1','t-cru','v-cru','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.5,null,100,50,0,10,true,now() - interval '100 second',now(),1,6,0,now(),now()),
+          ('cru2','cru2','t-cru','v-cru','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.5,null,100,50,0,10,true,now() - interval '20 second',now(),1,6,0,now(),now()),
+          ('ca1','ca1','t-ca','v-ca','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.9,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cm1','cm1','t-cm','v-cm','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.55,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cm2','cm2','t-cm','v-cm','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.50,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cavg1','cavg1','t-cavg','v-cavg','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cavg2','cavg2','t-cavg','v-cavg','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.0,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cavg3','cavg3','t-cavg','v-cavg','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.6,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cavg4','cavg4','t-cavg','v-cavg','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.6,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmod1','cmod1','t-cmodel','v-cmodel','exp-real','org1','claude-code','m-a','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.9,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmod2','cmod2','t-cmodel','v-cmodel','exp-real','org1','claude-code','m-b','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.3,null,100,50,0,10,true,null,null,1,6,0,now(),now());
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def _cmp(session, by, a, b, metric, agg, margin=None, unit=None):
+    return await _names(
+        session,
+        compare_by=by,
+        compare_a=a,
+        compare_b=b,
+        compare_metric=metric,
+        compare_agg=agg,
+        compare_margin=margin,
+        compare_margin_unit=unit,
+    )
+
+
+async def test_browse_agent_compare():
+    """Phase 2.1: 'A beats B' over the scoped trials — reward/runtime, best/avg,
+    margins (% and abs), model-vs-model, and missing-subject exclusion."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_compare_tasks(engine)
+        async with maker() as session:
+            # Reward, best. cmp-onlyA is excluded (only one of the two agents);
+            # cmp-runtime ties on reward; cmp-model has no codex trials.
+            assert await _cmp(
+                session, "agent", "claude-code", "codex", "reward", "best"
+            ) == {"cmp-reward", "cmp-margin", "cmp-avg"}
+
+            # Aggregation flips cmp-avg: A's best (1.0) beats B, but A's average
+            # (0.5) loses to B's average (0.6).
+            assert await _cmp(
+                session, "agent", "claude-code", "codex", "reward", "avg"
+            ) == {"cmp-reward", "cmp-margin"}
+
+            # Run time is lower-better: codex (20s) beats claude-code (100s);
+            # the reverse direction matches nothing.
+            assert await _cmp(
+                session, "agent", "codex", "claude-code", "runtime", "best"
+            ) == {"cmp-runtime"}
+            assert (
+                await _cmp(
+                    session, "agent", "claude-code", "codex", "runtime", "best"
+                )
+                == set()
+            )
+
+            # Margin (percent of B). cmp-margin is exactly 10% higher, so it
+            # passes >5% but not >10% (strictly greater).
+            assert await _cmp(
+                session, "agent", "claude-code", "codex", "reward", "best", 5, "pct"
+            ) == {"cmp-reward", "cmp-margin", "cmp-avg"}
+            assert await _cmp(
+                session, "agent", "claude-code", "codex", "reward", "best", 10, "pct"
+            ) == {"cmp-reward", "cmp-avg"}
+
+            # Margin (absolute): A must beat B by > 0.2 reward.
+            assert await _cmp(
+                session, "agent", "claude-code", "codex", "reward", "best", 0.2, "abs"
+            ) == {"cmp-reward", "cmp-avg"}
+
+            # Model-vs-model on the same control.
+            assert await _cmp(
+                session, "model", "m-a", "m-b", "reward", "best"
+            ) == {"cmp-model"}
+    finally:
+        await engine.dispose()
+
+
 async def test_browse_boolean_no_is_complement():
     """``has_error`` / ``has_trajectory`` "No" is the complement of "Yes": the
     task ran a real trial and NONE is positive. A task with a mix of positive
