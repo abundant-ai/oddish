@@ -102,6 +102,36 @@ def test_spawn_sanitizes_queue_key_into_dns_safe_job_name() -> None:
     assert len(handle.id) <= 63
 
 
+class FailSecondCreateApi(FakeBatchV1Api):
+    """BatchV1Api fake that raises on the *second* create (mid-loop failure)."""
+
+    def create_namespaced_job(self, *, namespace: str, body: dict):
+        if len(self.created) >= 1:
+            # Fail before the second Job is created, mimicking an API error on
+            # the Nth worker of a multi-worker spawn.
+            raise RuntimeError("boom: create_namespaced_job failed on worker 2")
+        return super().create_namespaced_job(namespace=namespace, body=body)
+
+
+def test_spawn_cleans_up_created_jobs_on_mid_loop_failure() -> None:
+    api = FailSecondCreateApi()
+    dispatcher = K8sJobDispatcher(
+        image="oddish-worker:test", namespace="oddish", batch_api=api
+    )
+
+    async def _go():
+        return await dispatcher.spawn(spawn_plan=["a", "b"])
+
+    # The original error propagates (not swallowed by cleanup).
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(_go())
+
+    # The first Job was created, then deleted via the dispatcher's own cancel
+    # path (``delete_namespaced_job``) so it is not orphaned; none remain.
+    assert len(api.created) == 1
+    assert api.jobs == {}
+
+
 def test_check_active_yields_only_running_jobs() -> None:
     dispatcher, api = _dispatcher()
 

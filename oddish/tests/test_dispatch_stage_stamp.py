@@ -100,3 +100,42 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
     )
     assert seen["spawned"] == ["gpt-4o", "gpt-4o"]
     assert seen["why_waiting"] == {}
+
+
+def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> None:
+    # A backend that returns FEWER handles than admitted (a partial spawn) must
+    # stamp spawned_at only for the queue_keys that actually got a worker, not
+    # the whole admitted plan -- otherwise rows whose worker never started get a
+    # spurious spawned_at.
+    class _PartialDispatcher(FakeDispatcher):
+        async def spawn(self, *, spawn_plan):
+            # Only the first admitted key actually gets a worker this cycle.
+            return list(await super().spawn(spawn_plan=list(spawn_plan)[:1]))
+
+    dispatcher = _PartialDispatcher()
+    seen: dict[str, object] = {}
+
+    async def _on_stage(spawned_keys, why_waiting) -> None:
+        seen["spawned"] = list(spawned_keys)
+
+    async def _discover():
+        return (("gpt-4o", "default"),)
+
+    async def _counts(_keys):
+        return {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
+
+    result = asyncio.run(
+        run_dispatch_cycle(
+            dispatcher,
+            max_workers=10,
+            concurrency_for=lambda qk: 5,
+            on_stage=_on_stage,
+            _discover=_discover,
+            _counts=_counts,
+        )
+    )
+    # admitted is 3 workers (3 queued, capacity 5), but only one handle came
+    # back -> on_stage sees the single spawned queue_key, not all three.
+    assert result.admitted == ["gpt-4o", "gpt-4o", "gpt-4o"]
+    assert [h.queue_key for h in result.handles] == ["gpt-4o"]
+    assert seen["spawned"] == ["gpt-4o"]

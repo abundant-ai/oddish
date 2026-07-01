@@ -7,6 +7,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import pytest
+
 from oddish.dispatch.backends.docker import DockerPoolDispatcher
 from oddish.dispatch.ports import WorkerHandle
 
@@ -76,6 +78,40 @@ def test_spawn_runs_one_detached_container_per_queue_key() -> None:
         assert any("oddish_managed=1" in part for part in cmd)
     assert any("gpt-4o" in part for part in run_cmds[0])
     assert any("claude" in part for part in run_cmds[1])
+
+
+class FailSecondRunDockerCLI(FakeDockerCLI):
+    """Docker CLI fake that raises on the *second* ``run`` (mid-loop failure)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._run_calls = 0
+
+    async def __call__(self, args: list[str]) -> str:
+        if args[0] == "run":
+            self._run_calls += 1
+            if self._run_calls == 2:
+                # Fail before the container is created, mimicking a docker run
+                # error on the Nth worker of a multi-worker spawn.
+                raise RuntimeError("boom: docker run failed on worker 2")
+        return await super().__call__(args)
+
+
+def test_spawn_cleans_up_started_containers_on_mid_loop_failure() -> None:
+    cli = FailSecondRunDockerCLI()
+    dispatcher = DockerPoolDispatcher(image="oddish-worker:test", run_command=cli)
+
+    async def _go():
+        return await dispatcher.spawn(spawn_plan=["a", "b"])
+
+    # The original error propagates (not swallowed by cleanup).
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(_go())
+
+    # The first worker was started, then torn down via the dispatcher's own
+    # cancel path (``rm -f``) so it is not orphaned; nothing is left running.
+    assert cli.containers == {}
+    assert any(c[0] == "rm" for c in cli.commands)
 
 
 def test_check_active_yields_only_running_containers() -> None:

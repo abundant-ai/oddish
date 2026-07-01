@@ -128,22 +128,35 @@ class K8sJobDispatcher:
             return []
         api = self._api()
         handles: list[WorkerHandle] = []
-        for queue_key in spawn_plan:
-            job_name = self._job_name(queue_key)
-            manifest = self._job_manifest(queue_key, job_name)
-            await asyncio.to_thread(
-                api.create_namespaced_job,
-                namespace=self._namespace,
-                body=manifest,
-            )
-            handles.append(
-                WorkerHandle(
-                    provider=self.name,
-                    queue_key=queue_key,
-                    id=job_name,
-                    provisional=False,
+        try:
+            for queue_key in spawn_plan:
+                job_name = self._job_name(queue_key)
+                manifest = self._job_manifest(queue_key, job_name)
+                await asyncio.to_thread(
+                    api.create_namespaced_job,
+                    namespace=self._namespace,
+                    body=manifest,
                 )
-            )
+                handles.append(
+                    WorkerHandle(
+                        provider=self.name,
+                        queue_key=queue_key,
+                        id=job_name,
+                        provisional=False,
+                    )
+                )
+        except Exception:
+            # A mid-loop failure would orphan the Jobs already created this
+            # call: they're absent from the returned handles, so the dispatch
+            # cycle never tracks (or GCs) them. Best-effort delete them via our
+            # own cancel path (delete_namespaced_job per handle), then re-raise
+            # the original error. The cleanup is itself guarded so a teardown
+            # failure can't mask the error that actually aborted the spawn.
+            try:
+                await self.cancel(handles)
+            except Exception:
+                pass
+            raise
         return handles
 
     async def list_managed(self) -> list[WorkerHandle]:
