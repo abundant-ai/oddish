@@ -88,26 +88,38 @@ def _extract_outcome_from_job_result(
     total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict[str, Any] | None = None
+    trial_reward: float | None = None
 
     for trial_result in job_result.trial_results:
-        fields = extract_trial_result_fields(trial_result, artifact_dir=job_dir)
+        fields = extract_trial_result_fields(trial_result)
         if error is None and fields.error is not None:
             error = fields.error
             exception_type = fields.exception_type
+        if trial_reward is None and fields.reward is not None:
+            trial_reward = fields.reward
         if input_tokens is None and output_tokens is None:
             input_tokens = fields.input_tokens
             cache_tokens = fields.cache_tokens
             output_tokens = fields.output_tokens
-            total_steps = fields.total_steps
             cost_usd = fields.cost_usd
         if phase_timing is None and fields.phase_timing is not None:
             phase_timing = fields.phase_timing
         if (
             (error is not None or exception_type is not None)
+            and trial_reward is not None
             and (input_tokens is not None or output_tokens is not None)
             and phase_timing is not None
         ):
             break
+
+    trajectory = extract_trajectory_metrics(job_dir)
+    if input_tokens is None and output_tokens is None:
+        input_tokens = trajectory.input_tokens
+        output_tokens = trajectory.output_tokens
+        cache_tokens = trajectory.cache_tokens
+    total_steps = trajectory.total_steps
+    if cost_usd is None:
+        cost_usd = trajectory.cost_usd
 
     has_trajectory = detect_trajectory(job_dir)
 
@@ -155,4 +167,4 @@ def _extract_outcome_from_job_result(
             if reward_value is not None:
                 return _outcome(float(reward_value))
 
-    return _outcome(None)
+    return _outcome(trial_reward)

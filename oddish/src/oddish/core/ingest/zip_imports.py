@@ -220,10 +220,16 @@ def _task_name_from_harbor_model(data: Any) -> str | None:
     return None
 
 
-def _task_name_from_legacy_json(data: Any) -> str | None:
+def _task_name_from_legacy_json(data: Any, depth: int = 0) -> str | None:
     """Handle older partial JSON blobs that predate Harbor model stability."""
+    if depth > 6:
+        return None
     if not isinstance(data, dict):
         return None
+
+    model_name = _task_name_from_harbor_model(data)
+    if model_name:
+        return model_name
 
     for key in ("task_name", "taskName"):
         value = data.get(key)
@@ -246,6 +252,18 @@ def _task_name_from_legacy_json(data: Any) -> str | None:
             name = Path(path_value).name
             if name:
                 return name
+
+    for child in data.values():
+        if isinstance(child, dict):
+            found = _task_name_from_legacy_json(child, depth + 1)
+            if found:
+                return found
+        elif isinstance(child, list):
+            for item in child:
+                if isinstance(item, dict):
+                    found = _task_name_from_legacy_json(item, depth + 1)
+                    if found:
+                        return found
 
     return None
 
