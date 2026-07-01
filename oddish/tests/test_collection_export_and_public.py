@@ -153,23 +153,34 @@ async def test_export_lists_gathered_trials(session):
 
 
 @pytest.mark.asyncio
-async def test_public_experiments_list_does_not_enumerate_share_tokens(session):
-    exp = _experiment(_unique("private-link"), org_id=None)
-    session.add(exp)
-    await session.flush()
+async def test_public_experiments_list_does_not_enumerate_share_tokens():
+    exp_id: str | None = None
+    exp_name: str | None = None
+    token: str | None = None
+    try:
+        async with get_session() as setup:
+            exp = _experiment(_unique("private-link"), org_id=None)
+            setup.add(exp)
+            await setup.flush()
 
-    await ensure_experiment_public(session, exp)
-    await session.flush()
-    token = exp.public_token
-    assert token
+            await ensure_experiment_public(setup, exp)
+            await setup.flush()
+            exp_id = exp.id
+            exp_name = exp.name
+            token = exp.public_token
+            assert token
 
-    listed = await list_public_experiments()
-    assert listed == []
+        listed = await list_public_experiments()
+        assert listed == []
 
-    resolved = await get_public_experiment(session, token)
-    assert resolved is not None
-    assert resolved.public_token == token
-    assert resolved.name == exp.name
+        async with get_session() as verify:
+            resolved = await get_public_experiment(verify, token)
+            assert resolved is not None
+            assert resolved.public_token == token
+            assert resolved.name == exp_name
+    finally:
+        if exp_id:
+            await _cleanup(experiment_ids=[exp_id])
 
 
 @pytest.mark.asyncio
