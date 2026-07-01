@@ -29,6 +29,7 @@ from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
 from api.routers.tasks import (
+    _lookup_user_by_github_id,
     _lookup_user_by_github_username,
     _resolve_experiment_owner_user_id,
 )
@@ -51,7 +52,9 @@ def _auth(org_id: str, *, user_id: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(org_id=org_id, user_id=user_id, api_key_id=None, api_key=None)
 
 
-def _submission(github_username: str | None) -> TaskSweepSubmission:
+def _submission(
+    github_username: str | None, *, github_id: str | None = None
+) -> TaskSweepSubmission:
     return TaskSweepSubmission(
         task_id="task_lg",
         configs=[
@@ -61,7 +64,17 @@ def _submission(github_username: str | None) -> TaskSweepSubmission:
         ],
         user=None,
         github_username=github_username,
+        github_id=github_id,
     )
+
+
+async def _set_github_id(user: UserModel, github_id: str) -> None:
+    """Persist a github_id on an already-created fixture user (the shared fixture
+    leaves github_id None). Re-selects the row in a fresh session and mutates."""
+    async with get_session() as session:
+        row = await session.get(UserModel, user.id)
+        row.github_id = github_id
+    user.github_id = github_id
 
 
 def _new_user(org_id: str, handle: str, *, active: bool = True) -> UserModel:
@@ -165,17 +178,26 @@ def _load_bootstrap():
     return mod
 
 
-async def _resolve(org_id: str, handle: str | None) -> str | None:
+async def _resolve(
+    org_id: str, handle: str | None, *, github_id: str | None = None
+) -> str | None:
     async with get_session() as session:
         return await _resolve_experiment_owner_user_id(
-            session, _submission(handle), _auth(org_id)
+            session, _submission(handle, github_id=github_id), _auth(org_id)
         )
 
 
-async def _linkage(client, raw_key: str, handle: str):
+async def _linkage(
+    client, raw_key: str, handle: str | None = None, *, actor_id: str | None = None
+):
+    params: dict[str, str] = {}
+    if handle is not None:
+        params["handle"] = handle
+    if actor_id is not None:
+        params["actor_id"] = actor_id
     return await client.get(
         "/github/linkage",
-        params={"handle": handle},
+        params=params,
         headers={"Authorization": f"Bearer {raw_key}"},
     )
 
@@ -355,11 +377,12 @@ async def test_case10_endpoint_refreshes_stale_handle(client, org_with_users, mo
     refresh from Clerk (its OWN path, not the early-returning
     ensure_user_github_identity / M2) and then match."""
     import api.routers.github_linkage as gh
+    from auth.provisioning import ClerkGithubIdentity
 
-    async def _clerk_returns_new_handle(_clerk_user_id: str) -> str:
-        return "new_handle"
+    async def _clerk_returns_new_handle(_clerk_user_id: str) -> ClerkGithubIdentity:
+        return ClerkGithubIdentity(username="new_handle", email=None, github_id=None)
 
-    monkeypatch.setattr(gh, "_fetch_clerk_github_username", _clerk_returns_new_handle)
+    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_returns_new_handle)
 
     org_id, add = org_with_users
     user = await add("old_handle")
@@ -380,10 +403,10 @@ async def test_case17_fail_open_uses_stale_db_on_clerk_outage(client, org_with_u
     so a Clerk outage cannot flip a real link to unlinked."""
     import api.routers.github_linkage as gh
 
-    async def _clerk_down(_clerk_user_id: str) -> str:
+    async def _clerk_down(_clerk_user_id: str):
         raise httpx.HTTPError("clerk unreachable")
 
-    monkeypatch.setattr(gh, "_fetch_clerk_github_username", _clerk_down)
+    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_down)
 
     org_id, add = org_with_users
     alice = await add("alice")
@@ -497,6 +520,226 @@ def test_submission_github_id_round_trips_through_serialization():
 def test_submission_github_id_defaults_to_none():
     """Back-compat: github_id is optional; omitting it leaves it None."""
     assert _submission("octocat").github_id is None
+
+
+# ===========================================================================
+# 5b. G4 — github_id lookup precedence + endpoint actor_id
+# ===========================================================================
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_lookup_by_github_id_exact_one(org_with_users):
+    """G4: an active user carrying github_id resolves by that immutable id."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_alice")
+    async with get_session() as session:
+        found = await _lookup_user_by_github_id(
+            session, github_id="gid_alice", org_id=org_id
+        )
+        assert found is not None and found.id == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_lookup_by_github_id_org_scoped(org_with_users):
+    """G4: a github_id set only in another org must not resolve here (org-unique
+    constraint is per-org; lookups always filter org_id)."""
+    org_id, add = org_with_users
+    other = f"org_other_{uuid.uuid4().hex[:8]}"
+    bob = await add("bob", in_org=other)
+    await _set_github_id(bob, "gid_bob")
+    async with get_session() as session:
+        assert (
+            await _lookup_user_by_github_id(session, github_id="gid_bob", org_id=org_id)
+            is None
+        )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_lookup_by_github_id_active_only(org_with_users):
+    """G4: an inactive user holding the github_id is not a match (active-only)."""
+    org_id, add = org_with_users
+    ghost = await add("ghost", active=False)
+    await _set_github_id(ghost, "gid_ghost")
+    async with get_session() as session:
+        assert (
+            await _lookup_user_by_github_id(
+                session, github_id="gid_ghost", org_id=org_id
+            )
+            is None
+        )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_lookup_by_github_id_empty_is_none(org_with_users):
+    """G4: empty / whitespace github_id treated as no match (never a bare query)."""
+    org_id, _add = org_with_users
+    async with get_session() as session:
+        assert (
+            await _lookup_user_by_github_id(session, github_id="   ", org_id=org_id)
+            is None
+        )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_precedence_github_id_beats_stale_handle(org_with_users):
+    """G4 precedence: a user with github_id=X and a STALE stored handle; a
+    submission carrying github_id=X and a DIFFERENT new handle resolves to that
+    user BY ID (immutable id beats the mutable handle)."""
+    org_id, add = org_with_users
+    renamed = await add("old_handle")
+    await _set_github_id(renamed, "gid_renamed")
+    # Submission carries the new handle (not stored anywhere) + the immutable id.
+    assert (
+        await _resolve(org_id, "brand_new_handle", github_id="gid_renamed")
+        == renamed.id
+    )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_precedence_falls_back_to_handle_when_id_unmatched(org_with_users):
+    """G4: when github_id has no match, resolution falls back to the exact-one
+    handle lookup (back-compat for id set on nobody)."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    assert await _resolve(org_id, "alice", github_id="gid_nobody") == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_parity_endpoint_and_sweep_resolve_same_user(client, org_with_users):
+    """INV2 parity: for the SAME input (github_id=X), the endpoint (?actor_id=X)
+    and _resolve_experiment_owner_user_id (submission github_id=X) resolve to the
+    SAME user via the shared _resolve_connected_user predicate."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_parity")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        sweep_owner = await _resolve(org_id, None, github_id="gid_parity")
+        resp = await _linkage(client, raw, actor_id="gid_parity")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["linked"] is True
+        assert body["user_id"] == sweep_owner == alice.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_endpoint_actor_id_linked(client, org_with_users):
+    """G4 endpoint: ?actor_id=<github_id> with an exact id match → linked."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_actor")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, actor_id="gid_actor")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["linked"] is True and body["user_id"] == alice.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_endpoint_actor_id_unlinked(client, org_with_users):
+    """G4 endpoint: ?actor_id with no id match and no handle → unlinked."""
+    org_id, add = org_with_users
+    await add("alice")  # has no github_id
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, actor_id="gid_missing")
+        assert resp.status_code == 200 and resp.json()["linked"] is False
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_endpoint_actor_id_beats_stale_handle(client, org_with_users):
+    """G4 endpoint precedence: ?actor_id matches by id even when the caller also
+    passes a stale/wrong handle (id wins)."""
+    org_id, add = org_with_users
+    renamed = await add("old_handle")
+    await _set_github_id(renamed, "gid_ep")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await client.get(
+            "/github/linkage",
+            params={"handle": "wrong_handle", "actor_id": "gid_ep"},
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["linked"] is True and body["user_id"] == renamed.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_back_compat_handle_only_submission_unchanged(org_with_users):
+    """Back-compat: a handle-only submission (no github_id) resolves exactly as
+    before (owner = the exact-one active handle match)."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    assert await _resolve(org_id, "alice") == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_back_compat_handle_only_endpoint_unchanged(client, org_with_users):
+    """Back-compat: a handle-only ?handle= request (no actor_id) resolves exactly
+    as before."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, "alice")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["linked"] is True and body["user_id"] == alice.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_endpoint_actor_id_refresh_backfills_github_id(
+    client, org_with_users, monkeypatch
+):
+    """G4 refresh-on-miss: an active user whose github_id is un-backfilled (None
+    in DB) but whose Clerk identity carries it must link by ?actor_id after the
+    endpoint's dedicated refresh backfills github_id from Clerk and re-matches by
+    id. Refresh stays fail-open + dedicated (M2)."""
+    import api.routers.github_linkage as gh
+    from auth.provisioning import ClerkGithubIdentity
+
+    org_id, add = org_with_users
+    user = await add("carol")  # github_id stays None in DB
+
+    async def _clerk_id(_clerk_user_id: str) -> ClerkGithubIdentity:
+        return ClerkGithubIdentity(username=None, email=None, github_id="gid_backfilled")
+
+    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_id)
+
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, actor_id="gid_backfilled")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["linked"] is True and body["user_id"] == user.id
+    finally:
+        await _purge(api_key_ids=[key_id])
 
 
 # ===========================================================================
