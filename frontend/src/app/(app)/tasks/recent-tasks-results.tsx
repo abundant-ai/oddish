@@ -69,6 +69,20 @@ async function fetchBrowse(
       if (value) query[key] = value;
     }
 
+    // `tag:` tokens typed in the search box are parsed out of `q` above, so they
+    // must be forwarded too (unioned with the structured Tags-filter params).
+    // Without this they were stripped from the free text AND dropped, so shared
+    // URLs / saved searches with tag tokens filtered nothing. Mirrors the
+    // dashboard page, which forwards the same parsed tag buckets.
+    const mergeTags = (param: string, extra: string[]) => {
+      if (!extra.length) return;
+      const existing = query[param] ? query[param].split(",") : [];
+      query[param] = Array.from(new Set([...existing, ...extra])).join(",");
+    };
+    mergeTags("tags", parsed.all);
+    mergeTags("tags_any", parsed.any);
+    mergeTags("tags_none", parsed.none);
+
     const res = await fetch(getBackendUrl("tasks/browse", "", query), {
       cache: "no-store",
       headers: getAuthHeaders(token),

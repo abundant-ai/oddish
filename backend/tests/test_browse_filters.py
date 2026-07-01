@@ -16,6 +16,8 @@ Dataset (org1):
          trials must be invisible to every default trial filter.
 """
 
+# Task-browser filters (Phase 1.1.1 → 2.3, no migration).
+
 import os
 from datetime import datetime, timedelta, timezone
 
