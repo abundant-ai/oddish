@@ -282,6 +282,17 @@ export interface TaskBrowseResponse {
   has_more: boolean;
 }
 
+export interface TaskBrowseFacets {
+  agents: string[];
+  models: string[];
+  agent_models: { agent: string; model: string | null }[];
+  providers: string[];
+  environments: string[];
+  harbor_stages: string[];
+  analysis_classifications: string[];
+  experiments: { id: string; name: string }[];
+}
+
 export interface TaskVersionSummary {
   id: string;
   version: number;
