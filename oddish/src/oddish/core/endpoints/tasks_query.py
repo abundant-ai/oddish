@@ -21,6 +21,10 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
 
+from oddish.core.experiment_membership import (
+    gathered_trial_ids_select,
+    trial_in_experiment,
+)
 from oddish.core.helpers import (
     escape_like,
     parse_search_query,
@@ -28,6 +32,7 @@ from oddish.core.helpers import (
     build_task_status_response_compact,
     build_task_status_response,
     build_task_status_responses_from_counts,
+    build_slim_task_status_response,
     fetch_experiment_effective_version_ids,
     fetch_trial_queue_info,
     fetch_visible_worker_jobs,
@@ -149,7 +154,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                TrialModel.experiment_id == experiment_id,
+                trial_in_experiment(experiment_id),
                 TrialModel.is_probe.is_(False),
             )
         else:
@@ -306,6 +311,22 @@ async def list_tasks_core(
     # is the latest version that has trials in that experiment — not the task's
     # global ``current_version_id`` — so an experiment still shows its own
     # trials after the underlying task is re-uploaded elsewhere.
+    # Collection experiments gather trials additively via ``experiment_trials``
+    # without rewriting each trial's scalar ``experiment_id``. Compute that
+    # gathered set once so effective-version resolution recognizes those trials
+    # (otherwise a gathered trial on an older version is loaded, then
+    # double-filtered away by the effective-version drop). Empty for a normal
+    # experiment -> every path stays identical to before.
+    gathered_trial_ids: set[str] = set()
+    if experiment_id:
+        gathered_trial_ids = set(
+            (
+                await session.execute(gathered_trial_ids_select(experiment_id))
+            )
+            .scalars()
+            .all()
+        )
+
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
@@ -321,7 +342,9 @@ async def list_tasks_core(
                 # superseded / off-version trials -- identical result to before,
                 # without re-filtering in Python.
                 effective = resolve_effective_version_id(
-                    task, experiment_context_id=experiment_id
+                    task,
+                    experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 effective_by_task[task.id] = effective
                 set_committed_value(
@@ -407,6 +430,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 for task in tasks
             ]
@@ -425,6 +449,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
+                gathered_trial_ids=gathered_trial_ids,
             )
             for task in tasks
         ]
@@ -542,6 +567,89 @@ async def list_experiment_task_shells_core(
     if record_timing is not None:
         record_timing(
             "tasks_build", elapsed_ms(build_started_at), "Build task shells"
+        )
+    return response
+
+
+async def list_experiment_slim_tasks(
+    session: AsyncSession,
+    *,
+    experiment_id: str,
+    org_id: str | None = None,
+    limit: int = 2000,
+    offset: int = 0,
+    include_empty_rewards: bool = True,
+    record_timing: TimingRecorder | None = None,
+) -> list[TaskStatusResponse]:
+    """Slim per-trial grid data for the experiment page (Phase 2).
+
+    Loads each task's experiment-scoped, non-probe trials (same scoping as
+    ``list_tasks_core``'s compact-trials path), but builds SLIM trial objects
+    via ``build_slim_task_status_response``: only the fields the grid renders
+    (+ cost, kept for the header total). The heavy per-trial fields
+    (harbor_config, phase_timing, tokens, full analysis, ...) are omitted from
+    the payload and fetched on demand via ``GET /trials/{id}`` when a cell is
+    clicked.
+
+    The per-task ``experiments`` fan-out is skipped (only the context
+    experiment is attached, as in ``list_experiment_task_shells_core``). Kept
+    separate so ``list_tasks_core`` / ``/tasks`` stays unchanged.
+
+    First cut loads full trial columns for safety (no ``load_only`` -> no
+    MissingGreenlet risk); a slim ``load_only`` is a verified follow-up.
+    """
+    from sqlalchemy.orm.attributes import set_committed_value
+
+    trials_relationship = TaskModel.trials.and_(
+        trial_in_experiment(experiment_id),
+        TrialModel.is_probe.is_(False),
+    )
+    query = (
+        select(TaskModel)
+        .order_by(TaskModel.created_at.desc())
+        .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
+        .options(selectinload(trials_relationship))
+    )
+    if org_id is not None:
+        query = query.where(TaskModel.org_id == org_id)
+    query = query.limit(limit).offset(offset)
+
+    query_started_at = now()
+    result = await session.execute(query)
+    if record_timing is not None:
+        record_timing(
+            "tasks_query", elapsed_ms(query_started_at), "Slim tasks query"
+        )
+    tasks = result.scalars().all()
+
+    if tasks:
+        context_experiment = await session.get(ExperimentModel, experiment_id)
+        scoped_experiments = [context_experiment] if context_experiment else []
+        for task in tasks:
+            set_committed_value(task, "experiments", scoped_experiments)
+
+    # Trials gathered into a collection carry their home experiment's scalar
+    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
+    # at their own (possibly older) version instead of dropping them.
+    gathered_trial_ids = set(
+        (await session.execute(gathered_trial_ids_select(experiment_id)))
+        .scalars()
+        .all()
+    )
+
+    build_started_at = now()
+    response = [
+        build_slim_task_status_response(
+            task,
+            include_empty_rewards=include_empty_rewards,
+            experiment_context_id=experiment_id,
+            gathered_trial_ids=gathered_trial_ids,
+        )
+        for task in tasks
+    ]
+    if record_timing is not None:
+        record_timing(
+            "tasks_build", elapsed_ms(build_started_at), "Build slim tasks"
         )
     return response
 

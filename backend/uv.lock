@@ -933,7 +933,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.15.0"
-source = { git = "https://github.com/rishidesai/harbor?branch=main#f546c56a76c8e6d4c2f4819472e636c404e5c5da" }
+source = { git = "https://github.com/rishidesai/harbor?branch=main#aeadaf4b10d71b149a4f4d5c6794d63781d0e66a" }
 dependencies = [
     { name = "datasets" },
     { name = "dirhash" },

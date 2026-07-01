@@ -1,7 +1,8 @@
+import asyncio
 from pathlib import Path
 
-from oddish.worker.probe_staging import stage_query_cli, stage_cli_mount, write_boundary_markers
-from oddish.worker.probe_overlay import render_probe_instruction, PROBE_SYSTEM_FRAMING, BOUNDARY_MARKER_NAME
+from oddish.worker.probe_staging import apply_probe_overlay, read_query_cli_text, stage_query_cli, stage_cli_mount
+from oddish.worker.probe_overlay import render_probe_instruction, PROBE_SYSTEM_FRAMING
 
 
 def test_stage_query_cli_copies_executable(tmp_path):
@@ -30,18 +31,20 @@ def test_stage_cli_mount_writes_only_the_cli(tmp_path):
     assert cli.stat().st_mode & 0o111
 
 
-def test_write_boundary_markers_plants_root_and_answer_key_dirs(tmp_path):
-    (tmp_path / "solution").mkdir()
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "harbor_src").mkdir()
-    write_boundary_markers(tmp_path)
-    # Planted at root and in the answer-key subdirs...
-    assert (tmp_path / BOUNDARY_MARKER_NAME).exists()
-    assert (tmp_path / "solution" / BOUNDARY_MARKER_NAME).exists()
-    assert (tmp_path / "tests" / BOUNDARY_MARKER_NAME).exists()
-    # ...but NOT inside harbor_src (kept byte-for-byte exact).
-    assert not (tmp_path / "harbor_src" / BOUNDARY_MARKER_NAME).exists()
-    # The marker self-describes the boundary.
-    body = (tmp_path / BOUNDARY_MARKER_NAME).read_text()
-    assert "PROBE-ONLY" in body
-    assert "oddish-query" in body
+def test_apply_overlay_stages_no_probe_only_dirs(tmp_path: Path):
+    task = tmp_path / "task"
+    task.mkdir()
+    (task / "instruction.md").write_text("ORIGINAL")
+    asyncio.run(apply_probe_overlay(
+        task, task_id="t1", trial_id="tr1", extra_instructions="DO THE PROBE"))
+    # No probe-only material staged into the task dir.
+    assert not (task / "harbor_src").exists()
+    assert not (task / "000-READ-ME-PROBE-ONLY.txt").exists()
+    # Brief saved + instruction rewritten.
+    assert (task / "AGENT_BRIEF.md").read_text() == "ORIGINAL"
+    assert "DO THE PROBE" in (task / "instruction.md").read_text()
+
+
+def test_read_query_cli_text_returns_node_shebang():
+    text = read_query_cli_text()
+    assert text.startswith("#!/usr/bin/env node")
