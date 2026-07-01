@@ -28,7 +28,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ProbeLaunchButton } from "@/components/probe-launch-button";
 import {
   Popover,
   PopoverContent,
@@ -2319,12 +2318,6 @@ export function ExperimentTrialsTable({
                                 v{task.current_version}
                               </span>
                             )}
-                            <ProbeLaunchButton
-                              taskId={task.id}
-                              taskName={task.name}
-                              variant="icon"
-                              className="h-5 w-5 shrink-0 rounded-sm bg-transparent text-[color:var(--paper-ink-3)] transition hover:bg-[color:var(--paper-bg-2)] hover:text-[color:var(--paper-ink)]"
-                            />
                             {/* Jump from the experiment to this task's own
                                 page. Hidden on the read-only share view since
                                 /tasks/[id] is an authenticated route. */}
