@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -158,6 +160,42 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
         Index("idx_users_org_github_id", "org_id", "github_id"),
+    )
+
+
+class QuotaModel(TimestampedMixin, Base):
+    """Per-user daily dollar limit OVERRIDE.
+
+    Rows exist only to override the read-time default (DEFAULT_DAILY_QUOTA_USD);
+    a missing row means the member is enforced at that default. Keyed per
+    (org_id, user_id) membership -- the same human carries independent budgets
+    in different orgs. ``period_kind`` is a CHECK-constrained varchar (mirrors
+    the trials.origin pattern), not a native PG enum.
+    """
+
+    __tablename__ = "quotas"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    limit_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    period_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="daily"
+    )
+
+    __table_args__ = (
+        CheckConstraint("period_kind IN ('daily')", name="ck_quotas_period_kind"),
+        UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),
     )
 
 

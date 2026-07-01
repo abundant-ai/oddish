@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import BaseModel
 
 
@@ -62,6 +64,13 @@ class QuotaListResponse(BaseModel):
     """All org members with their daily spend + effective limit."""
 
     members: list[QuotaMemberItem]
+
+
+class QuotaUpdateRequest(BaseModel):
+    """Set (non-null) or CLEAR (null -> revert to the read-time default) a
+    member's daily limit override."""
+
+    limit_usd: Decimal | None
 
 
 class InviteUserRequest(BaseModel):

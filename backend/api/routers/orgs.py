@@ -7,6 +7,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.schemas import (
     InviteUserRequest,
@@ -14,6 +15,7 @@ from api.schemas import (
     OrganizationResponse,
     QuotaListResponse,
     QuotaMemberItem,
+    QuotaUpdateRequest,
     QuotaUsageResponse,
     UserResponse,
 )
@@ -24,7 +26,7 @@ from auth import (
     require_can_manage_quotas,
 )
 from oddish.config import settings
-from models import UserModel, UserRole
+from models import QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import start_of_today_utc, sum_cost_usd, to_money_decimal
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import TrialModel, get_session, utcnow
@@ -150,7 +152,7 @@ async def list_member_quotas(
 ) -> QuotaListResponse:
     """Every org member's daily spend + effective limit (admin, user-auth only)."""
     period_start = start_of_today_utc()
-    effective_limit_usd = float(settings.default_daily_quota_usd)
+    default_limit_usd = settings.default_daily_quota_usd
 
     async with get_session() as session:
         members = (
@@ -183,6 +185,15 @@ async def list_member_quotas(
             for billed_user_id, settled_total in grouped_usage.all()
         }
 
+        override_rows = await session.execute(
+            select(QuotaModel.user_id, QuotaModel.limit_usd).where(
+                QuotaModel.org_id == auth.org_id
+            )
+        )
+        override_limit_by_user_id = {
+            row_user_id: row_limit for row_user_id, row_limit in override_rows.all()
+        }
+
     return QuotaListResponse(
         members=[
             QuotaMemberItem(
@@ -191,12 +202,80 @@ async def list_member_quotas(
                 name=member.name,
                 github_username=member.github_username,
                 role=member.role.value,
-                limit_usd=effective_limit_usd,
+                limit_usd=float(
+                    override_limit_by_user_id.get(member.id, default_limit_usd)
+                ),
                 used_usd=float(used_usd_by_user_id.get(member.id, Decimal(0))),
                 period="daily",
             )
             for member in members
         ]
+    )
+
+
+@router.put("/quotas/{user_id}", response_model=QuotaMemberItem)
+async def set_member_quota(
+    user_id: str,
+    payload: QuotaUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> QuotaMemberItem:
+    """Set (non-null limit_usd) or CLEAR (null -> revert to the read-time default)
+    a member's daily quota override. Admin-user-only, tenant-scoped to the
+    caller's org; admins may edit their own quota."""
+    async with get_session() as session:
+        member = (
+            await session.execute(
+                select(UserModel).where(
+                    UserModel.id == user_id, UserModel.org_id == auth.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise HTTPException(
+                status_code=404, detail=f"User {user_id} not found in this org"
+            )
+
+        if payload.limit_usd is None:
+            await session.execute(
+                QuotaModel.__table__.delete().where(
+                    QuotaModel.org_id == auth.org_id,
+                    QuotaModel.user_id == user_id,
+                )
+            )
+        else:
+            await session.execute(
+                pg_insert(QuotaModel)
+                .values(
+                    id=generate_id(),
+                    org_id=auth.org_id,
+                    user_id=user_id,
+                    limit_usd=payload.limit_usd,
+                    period_kind="daily",
+                )
+                .on_conflict_do_update(
+                    index_elements=["org_id", "user_id"],
+                    set_={"limit_usd": payload.limit_usd, "updated_at": utcnow()},
+                )
+            )
+
+        used_today = await sum_cost_usd(
+            session, auth.org_id, user_id, start_of_today_utc()
+        )
+
+    effective_limit_usd = (
+        payload.limit_usd
+        if payload.limit_usd is not None
+        else settings.default_daily_quota_usd
+    )
+    return QuotaMemberItem(
+        user_id=member.id,
+        email=member.email,
+        name=member.name,
+        github_username=member.github_username,
+        role=member.role.value,
+        limit_usd=float(effective_limit_usd),
+        used_usd=float(used_today),
+        period="daily",
     )
 
 
