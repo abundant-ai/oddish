@@ -23,11 +23,9 @@ and records, per phase and in aggregate:
 
 Probe-off invariant
 -------------------
-The sweep pins ``run_probe=false``. The hosted backend can still flip a user's
-default ON (``backend/api/routers/tasks.py`` -> ``_apply_user_run_probe_default``),
-which auto-enqueues a probe append and skews timings. The harness GETs each
-task afterwards and asserts ``run_probe is False`` with zero ``is_probe``
-trials, failing loudly if the default flipped.
+The sweep pins ``run_probe=false``. Probe agents must stay opt-in, so the
+harness GETs each task afterwards and asserts ``run_probe is False`` with zero
+``is_probe`` trials.
 
 Configuration (env)
 -------------------
@@ -346,14 +344,12 @@ def test_submit_timing_harness(
 
     # Probe-off invariant: the backend must not have flipped run_probe on.
     flipped = [o.task_id for o in submitted if o.run_probe]
-    assert not flipped, (
-        f"run_probe flipped ON server-side for {len(flipped)} task(s): {flipped[:5]}. "
-        "The user's run_probe_default likely defaulted ON; use an API key whose "
-        "run_probe_default=false so the harness measures the no-probe path."
-    )
+    assert (
+        not flipped
+    ), f"run_probe flipped ON server-side for {len(flipped)} task(s): {flipped[:5]}."
     with_probe_trials = [
         (o.task_id, o.probe_trials) for o in submitted if (o.probe_trials or 0) > 0
     ]
-    assert not with_probe_trials, (
-        f"unexpected probe trials despite run_probe=false: {with_probe_trials[:5]}"
-    )
+    assert (
+        not with_probe_trials
+    ), f"unexpected probe trials despite run_probe=false: {with_probe_trials[:5]}"

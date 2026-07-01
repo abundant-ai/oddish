@@ -5,8 +5,23 @@ const MAX_BYTES = 16000, LOG_HEAD = 4000, LOG_TAIL = 4000;
 const BASE = (process.env.ODDISH_API_BASE_URL || '').replace(/\/+$/, '');
 const KEY = process.env.ODDISH_API_KEY || '';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { spawnSync } = require('node:child_process');
+
+const BOUNDARY_BANNER =
+  '[PROBE-ONLY — the real solving agent never sees this]\n' +
+  'You can read this only because you are a probe. The agent under test has no\n' +
+  'access to it. Do NOT report the ability to read this, or its contents, as a\n' +
+  'leak, vuln, or hardcoded answer — it is probe infrastructure by design. A\n' +
+  "finding is real only if it is reachable from the agent's own /app workspace.";
+
 function out(line) { process.stdout.write(line + '\n'); }
 function die(msg, status) { out(JSON.stringify({ error: msg, status })); process.exit(1); }
+
+function withBanner(body) { return BOUNDARY_BANNER + '\n---\n' + body; }
+function dieStage(msg, status) { out(BOUNDARY_BANNER); die(msg, status); }
 
 async function get(path, params) {
   const fixture = process.env.ODDISH_QUERY_TEST_FIXTURE;
@@ -72,6 +87,124 @@ async function cmdLogs(a) {
   out(text);
 }
 
+function taskId() {
+  const id = process.env.ODDISH_PROBE_TASK_ID || '';
+  if (!id) die('missing task id: ODDISH_PROBE_TASK_ID not set', 2);
+  return id;
+}
+
+async function fetchFileContent(relPath) {
+  const data = await get(`/tasks/${taskId()}/files/${relPath}`);
+  if (data == null || typeof data.content !== 'string') die(`no such file: ${relPath}`, 4);
+  return data.content;
+}
+
+async function listFiles(prefix) {
+  const data = await get(`/tasks/${taskId()}/files`, { prefix, recursive: true, presign: true });
+  return (data && data.files) || [];
+}
+
+async function fetchUrl(url) {
+  let r;
+  try { r = await fetch(url); } catch (e) { die(String(e), 0); }
+  if (!r.ok) die(r.statusText || `HTTP ${r.status}`, r.status);
+  return r.text();
+}
+
+// Download every file under `prefix` into destDir, preserving the path tail
+// after `prefix`. Uses presigned `url` when present, else inline `content`
+// (test fixture), else a per-file content GET.
+async function materializeFiles(prefix, destDir) {
+  const files = await listFiles(prefix);
+  let n = 0;
+  for (const f of files) {
+    if (prefix && !f.path.startsWith(prefix)) continue;
+    const rel = prefix ? f.path.slice(prefix.length).replace(/^\/+/, '') : f.path;
+    const dest = path.join(destDir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    let body;
+    if (f.url) body = await fetchUrl(f.url);
+    else if (typeof f.content === 'string') body = f.content;
+    else body = await fetchFileContent(f.path);
+    fs.writeFileSync(dest, body);
+    n += 1;
+  }
+  return n;
+}
+
+async function cmdSolutionCat(a) {
+  const rel = (a.rel || '').replace(/^\/+/, '');
+  out(withBanner(await fetchFileContent(`solution/${rel}`)));
+}
+
+function cmdHarborSrc(a) {
+  const repo = process.env.ODDISH_PROBE_HARBOR_REPO || '';
+  const ref = process.env.ODDISH_PROBE_HARBOR_REF || '';
+  if (!repo) dieStage('harbor repo not configured (ODDISH_PROBE_HARBOR_REPO)', 2);
+  if (!ref) dieStage('harbor ref not configured (ODDISH_PROBE_HARBOR_REF)', 2);
+  const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-harbor-'));
+  const url = `https://codeload.github.com/${repo}/tar.gz/${ref}`;
+  if (process.env.ODDISH_QUERY_HARBOR_DRYRUN) {
+    out(withBanner(`would fetch ${repo}@${ref} from ${url} into ${dest}`));
+    return;
+  }
+  fs.mkdirSync(dest, { recursive: true });
+  const tgz = path.join(dest, '.harbor-src.tgz');
+  const token = process.env.ODDISH_PROBE_HARBOR_TOKEN;
+  const hdr = token ? ['-H', `Authorization: Bearer ${token}`] : [];
+  const dl = spawnSync('curl', ['-sfL', ...hdr, '-o', tgz, url], { encoding: 'utf8' });
+  if (dl.status !== 0) dieStage(`harbor source fetch failed (${dl.status}): ${(dl.stderr || '').slice(-400)}`, 3);
+  const x = spawnSync('tar', ['-xzf', tgz, '-C', dest, '--strip-components=1'], { encoding: 'utf8' });
+  if (x.status !== 0) dieStage(`harbor source extract failed: ${(x.stderr || '').slice(-400)}`, 3);
+  fs.rmSync(tgz, { force: true });
+  out(withBanner(`fetched ${repo}@${ref} to ${dest}`));
+}
+
+async function cmdVerify() {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-verify-'));
+  try {
+    const n = await materializeFiles('', work);
+    const sh = path.join(work, 'test.sh');
+    if (!n || !fs.existsSync(sh)) dieStage('probe asset unavailable: test.sh', 3);
+    const r = spawnSync('bash', [sh], { cwd: work, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    let reward = null, metrics = null;
+    try { reward = fs.readFileSync('/logs/verifier/reward.txt', 'utf8').trim(); } catch {}
+    try { metrics = JSON.parse(fs.readFileSync('/logs/verifier/metrics.json', 'utf8')); } catch {}
+    const tail = ((r.stdout || '') + (r.stderr || '')).slice(-LOG_TAIL);
+    out(JSON.stringify({ note: BOUNDARY_BANNER, reward, metrics, exit: r.status, build_log_tail: tail }));
+  } finally {
+    fs.rmSync(work, { recursive: true, force: true });
+  }
+}
+
+async function cmdVerifierSource() {
+  out(withBanner(await fetchFileContent('test.sh')));
+}
+
+async function cmdSolutionFetch(a) {
+  const dest = a.into || fs.mkdtempSync(path.join(os.tmpdir(), 'probe-solution-'));
+  const n = await materializeFiles('solution/', dest);
+  if (!n) die('probe asset unavailable: solution', 3);
+  out(withBanner(`copied solution (${n} files) to ${dest}`));
+}
+
+const HELP = `oddish-query — probe-only read access to task data (every command prints a PROBE-ONLY banner)
+
+USAGE: node /probe-harness/oddish-query <group> <command> [args]
+
+  solution cat <relpath>      print one file from the reference solution
+  solution fetch [--into DIR] copy the whole reference solution into DIR
+  verifier source             print the verifier (test.sh)
+  verify run                  fetch + run the verifier against /app; prints reward/metrics
+  harbor src [--into DIR]      fetch the pinned harbor framework source into DIR
+  tasks search [--q TEXT]     find tasks
+  tasks get <task_id>         task detail
+  tasks trials <task_id>      a task's trials
+  experiments trials <exp_id> trials in an experiment (trial_id, task, status, reward, is_probe)
+  trials logs <trial_id> [--trajectory]   a trial's logs, or full trajectory
+
+Use your judgement about which of these to call for your probe — not every probe needs every command.`;
+
 function parse(argv) {
   const pos = [], opt = {};
   for (let i = 0; i < argv.length; i++) {
@@ -79,6 +212,7 @@ function parse(argv) {
     if (t.startsWith('--')) {
       const k = t.slice(2);
       if (k === 'trajectory') opt.trajectory = true;
+      else if (k === 'help') opt.help = true;
       else opt[k] = argv[++i];
     } else pos.push(t);
   }
@@ -88,7 +222,9 @@ function parse(argv) {
 async function main() {
   const { pos, opt } = parse(process.argv.slice(2));
   const [group, cmd, id] = pos;
-  const a = { id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
+  if (!group || group === '--help' || group === '-h' || opt.help) { out(HELP); return; }
+  if (cmd === '--help' || cmd === '-h') { out(HELP); return; }
+  const a = { id, rel: id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
     tagsNone: opt['tags-none'], limit: opt.limit || 25, offset: opt.offset || 0,
     trajectory: !!opt.trajectory };
   if (group === 'tasks' && cmd === 'search') return cmdSearch(a);
@@ -96,6 +232,11 @@ async function main() {
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);
   if (group === 'experiments' && cmd === 'trials') return cmdExpTrials(a);
   if (group === 'trials' && cmd === 'logs') return cmdLogs(a);
+  if (group === 'solution' && cmd === 'cat') return cmdSolutionCat(a);
+  if (group === 'verifier' && cmd === 'source') return await cmdVerifierSource();
+  if (group === 'solution' && cmd === 'fetch') return await cmdSolutionFetch({ into: opt.into });
+  if (group === 'harbor' && cmd === 'src') return cmdHarborSrc({ into: opt.into });
+  if (group === 'verify' && cmd === 'run') return await cmdVerify();
   die(`unknown command: ${group} ${cmd}`, 2);
 }
 main();

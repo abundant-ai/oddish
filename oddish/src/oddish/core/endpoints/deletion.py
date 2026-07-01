@@ -260,6 +260,151 @@ async def delete_task_core(
     }
 
 
+async def unlink_task_from_experiment_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    experiment_id: str,
+    org_id: str | None = None,
+) -> dict:
+    """Remove a task's membership in one experiment, keeping the task.
+
+    Drops *just* the ``(task_id, experiment_id)`` association: it tombstones
+    the ``task_experiments`` join row and the trials scoped to that
+    experiment, leaving the task row -- and its trials/links in every
+    *other* experiment -- untouched. This is the tool for pulling a
+    **shared** task out of one experiment, where a whole-task
+    :func:`delete_task_core` would wrongly remove it from the others.
+
+    Like the other delete cores this is tombstone-based: rows keep
+    ``deleted_at = NOW()`` (the session-level filter in
+    :mod:`oddish.db.soft_delete` then hides them), S3 artifacts are
+    preserved, and the response carries an empty ``s3_prefixes`` list so the
+    API layer's best-effort S3 cleanup is a no-op.
+
+    The experiment-scoped trials are tombstoned alongside the link so the
+    experiment stays internally consistent: the experiment task list is
+    driven by the join row (so dropping it removes the empty task row), but
+    the dashboard trial counts are keyed off ``trials.experiment_id``, so
+    leaving those trials behind would show "no task but N trials". When the
+    trials were already removed separately this step is a no-op and only the
+    association is dropped.
+
+    The task row is **never** tombstoned here, even if removing this
+    membership leaves it with no experiments -- that is the whole point of
+    the operation. Callers who want the entire task gone use
+    :func:`delete_task_core`.
+    """
+    from oddish.db import task_experiments
+
+    task_query = select(TaskModel.id, TaskModel.org_id).where(TaskModel.id == task_id)
+    if org_id is not None:
+        task_query = task_query.where(TaskModel.org_id == org_id)
+    task_row = (await session.execute(task_query)).one_or_none()
+    if not task_row:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+    resolved_task_id, task_org_id = task_row
+
+    # Only an active membership can be unlinked. A missing or
+    # already-tombstoned join row reads as "not a member".
+    link_exists = await session.scalar(
+        select(func.count())
+        .select_from(task_experiments)
+        .where(
+            task_experiments.c.task_id == resolved_task_id,
+            task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
+        )
+    )
+    if not link_exists:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Task {task_id} is not a member of experiment {experiment_id}"
+            ),
+        )
+
+    # Tombstone this experiment's trials for the task (cancel their live
+    # worker_jobs first so workers stop heart-beating and release slots).
+    scoped_trial_ids = [
+        row[0]
+        for row in (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == resolved_task_id,
+                    TrialModel.experiment_id == experiment_id,
+                )
+            )
+        ).all()
+    ]
+    if scoped_trial_ids:
+        await _cancel_worker_jobs_for_trials(
+            session,
+            trial_ids=scoped_trial_ids,
+            reason="Task removed from experiment by user",
+        )
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id.in_(scoped_trial_ids))
+            .values(deleted_at=utcnow())
+            .execution_options(synchronize_session=False)
+        )
+
+    # Tombstone the association so live views stop listing this membership
+    # without losing restore/audit history.
+    await session.execute(
+        update(task_experiments)
+        .where(
+            task_experiments.c.task_id == resolved_task_id,
+            task_experiments.c.experiment_id == experiment_id,
+            task_experiments.c.deleted_at.is_(None),
+        )
+        .values(deleted_at=utcnow())
+    )
+
+    # If trials were tombstoned the task's live trial set shrank, so any
+    # cached verdict may reference now-hidden trials. Clear it and lift the
+    # task out of pipeline-only states if it no longer has work in flight.
+    # Loaded with trials eager so ``_clear_stale_task_pipeline_status`` never
+    # lazy-loads (MissingGreenlet). When no trials were scoped to this
+    # experiment the task's trial set is unchanged -- leave its verdict be.
+    if scoped_trial_ids:
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.trials))
+                .where(TaskModel.id == resolved_task_id)
+            )
+        ).scalar_one_or_none()
+        if task is not None:
+            _reset_task_verdict(task)
+            _clear_stale_task_pipeline_status(task)
+
+    # A task leaving an experiment loses any EXPERIMENT tags it inherited
+    # from that membership; recompute its tag projection (mirrors the
+    # re-link hook fired by ``_link_task_to_experiment``).
+    from oddish.queue import _recompute_tag_projection_on_membership_removed
+
+    await _recompute_tag_projection_on_membership_removed(
+        session,
+        task_id=resolved_task_id,
+        experiment_id=experiment_id,
+        org_id=task_org_id,
+    )
+
+    return {
+        "s3_prefixes": [],
+        "deleted": {
+            "task_id": task_id,
+            "experiment_id": experiment_id,
+            "trials_deleted": len(scoped_trial_ids),
+            "task_removed": False,
+        },
+        "unlinked": True,
+    }
+
+
 async def _cancel_worker_jobs_for_trials(
     session: AsyncSession,
     *,
@@ -285,7 +430,8 @@ async def _cancel_worker_jobs_for_trials(
                    error_message = :reason,
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
-                   modal_function_call_id = NULL
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
             WHERE  subject_table = 'trials'
               AND  subject_id = ANY(:trial_ids)
               AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')

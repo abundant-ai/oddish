@@ -18,6 +18,10 @@ Python `3.12+` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` 
 - If you change API contracts, queue behavior, or storage layout, update this file.
 - If you change `backend/` auth, deployment, or worker orchestration, update this file.
 - If you change `frontend/` routing, API proxy structure, or auth behavior, update this file.
+- Preserve the package boundary: `oddish/` must remain self-hostable for the
+  CLI and standalone server; hosted product concerns (auth, org membership,
+  Modal app wiring, managed worker spawning, GitHub/webhook integrations, and
+  cloud-only policy) belong in `backend/`.
 
 ## Repository Layout
 
@@ -138,6 +142,14 @@ High-level flow:
  a session-level filter (`oddish.db.soft_delete`); every ORM read on a
  registered model gets `WHERE deleted_at IS NULL` automatically
 
+`oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
+`cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
+Keep optional provider/runtime SDK imports lazy behind core abstractions so a
+CLI/self-host install can run without hosted deployment dependencies. If shared
+behavior is needed by both products, put the host-agnostic primitive under
+`oddish/src/oddish/core`, `oddish/src/oddish/workers`, or another neutral
+`oddish` module, then wrap it from `backend/`.
+
 `backend` wraps `oddish` with the hosted-only layer:
 
 - Clerk/API key auth and org-scoped APIs
@@ -150,6 +162,15 @@ High-level flow:
 - authenticated dashboard, task browser, experiment views
 - Clerk-based auth and org management
 - Next.js route handlers that proxy requests to the backend
+
+### Task Identity
+
+`tasks.name` is the human-readable lookup key within an org. Live task names
+must stay unique and indexed (`idx_tasks_unique_org_name`) so an upload of the
+same task name resolves to the existing task and creates a new `task_versions`
+row instead of creating a different task. Renaming a task is allowed, but any
+rename path must preserve the live `(org_id, name)` uniqueness invariant and
+must not split the task's version history.
 
 ---
 
@@ -196,6 +217,16 @@ Behavior:
   and cancel any matching `worker_jobs` rows. They return an empty
   `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
   S3 data is preserved for restore.
+- `unlink_task_from_experiment_core` (same module) is the *scoped* sibling:
+  it tombstones only the `task_experiments` join row for one
+  `(task_id, experiment_id)` pair plus that experiment's trials for the
+  task, and **never** tombstones the task row. It exists so a *shared* task
+  can be pulled out of one experiment without disturbing the others (a
+  whole-task `delete_task_core` would hit every experiment). It also fires
+  the membership-removed tag hook so inherited EXPERIMENT tags drop. The
+  experiment-scoped trials are tombstoned alongside the link to keep the
+  experiment consistent — its task list is join-driven, but dashboard trial
+  counts key off `trials.experiment_id`.
 - The `task_experiments` join table also carries `deleted_at` so experiment
   membership is preserved for audit/restore. Because it is a SQLAlchemy
   `Table`, not a registered model, live membership queries and relationship
@@ -300,9 +331,11 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
 | DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
+| DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Soft-delete just the task↔experiment association (the `task_experiments` join row) plus that experiment's trials for the task; the task itself and its data in other experiments are left intact. Use to pull a *shared* task out of one experiment. Hosted backend only |
 | PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
 | GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
 | DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
+| POST | `/trials/{trial_id}/retry` | Retry a trial by creating a fresh replacement row. Optional body: `registry_auth` to supply fresh per-run registry credentials for the replacement trial |
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
@@ -586,6 +619,25 @@ Run GLM 5.2 / MiniMax M3 / Kimi K2.7 via Fireworks: `oddish run -p <task>
 --agent claude-code --model fireworks/glm-5.2`, `… --model fireworks/minimax-m3`,
 `… --model fireworks/kimi-k2.7-code`.
 
+### Grok Build / xAI routing (Harbor installed agent)
+
+Harbor's `grok-build` agent runs directly against xAI, not through Claude Code
+or Codex compatibility wrappers.
+
+- **Canonical id / queue key.** `xai/<id>` is the canonical model form; an
+  explicit `grok/<id>` prefix is normalized to `xai/<id>`. The trial provider
+  resolves to `xai`, and the queue key for
+  `xai/v9m-rl-learnability-tp8` stays exactly that string. If a `grok-build`
+  trial omits a model, it falls back to the `xai` provider bucket rather than
+  `default`.
+- **Secret.** Provide `XAI_API_KEY` in the runtime Modal secret (`oddish-prod`)
+  or the local worker environment. Oddish does not persist the key; Harbor's
+  Grok config references the env var name (`env_key = "XAI_API_KEY"`) and reads
+  the value at runtime.
+
+Run Grok Build on a task: `oddish run -p <task> --agent grok-build --model
+xai/v9m-rl-learnability-tp8`.
+
 Storage defaults:
 
 - S3-compatible storage is **required**. Clients PUT task bundles directly
@@ -725,8 +777,8 @@ silently breaks throughput or correctness — read before touching
    (→ 429s, split dashboards, starvation). Canonicalize at enqueue in
    `oddish.config` (`normalize_trial_model` / `get_queue_key_for_trial` /
    `normalize_queue_key`): nop/oracle + variants collapse to the single
-   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot map to
-   `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
+   `nop_oracle` id (`is_nop_oracle_agent`); z.ai / MiniMax / Moonshot / xAI map
+   to `<provider>/<id>`. ⚠️ Known gap: Gemini isn't canonicalized — a bare
    `gemini-…` becomes `google/…` while `gemini/…` stays `gemini/…`, splitting one
    model across two buckets.
 

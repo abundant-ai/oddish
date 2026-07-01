@@ -2,6 +2,8 @@ import type { Task, Trial } from "@/lib/types";
 
 const DEFAULT_EXPERIMENT_MODEL_KEY = "default";
 
+export const PROBE_AGENT_KEY = "probe";
+
 export type ExperimentAgentSummary = {
   key: string;
   label: string;
@@ -11,18 +13,29 @@ export type ExperimentAgentSummary = {
   isModelScoped: boolean;
 };
 
+// The "nop" baseline (no-op) makes no changes; the "oracle" baseline runs the
+// known-good gold solution. Each may appear bare or with a suffix/prefix
+// (`nop-foo`, `agent-oracle`), so match the family rather than the exact name.
+export function isNopAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "nop" || lower.startsWith("nop-") || lower.startsWith("agent-nop")
+  );
+}
+
+export function isOracleAgentName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower === "oracle" ||
+    lower.startsWith("oracle-") ||
+    lower.startsWith("agent-oracle")
+  );
+}
+
 // Baseline agents (nop / oracle) are deterministic validation runs, so they
 // are excluded from score aggregation and row-filter evaluation.
 export function isBaselineAgentName(name: string): boolean {
-  const lower = name.toLowerCase();
-  return (
-    lower === "nop" ||
-    lower === "oracle" ||
-    lower.startsWith("nop-") ||
-    lower.startsWith("oracle-") ||
-    lower.startsWith("agent-nop") ||
-    lower.startsWith("agent-oracle")
-  );
+  return isNopAgentName(name) || isOracleAgentName(name);
 }
 
 function getModelKey(model: string | null | undefined): string {
@@ -35,6 +48,7 @@ function getModelScopedAgents(tasks: Task[]): Set<string> {
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
+      if (trial.is_probe) continue;
       const existing = modelsByAgent.get(trial.agent) ?? new Set<string>();
       existing.add(getModelKey(trial.model));
       modelsByAgent.set(trial.agent, existing);
@@ -49,9 +63,12 @@ function getModelScopedAgents(tasks: Task[]): Set<string> {
 }
 
 export function getExperimentAgentKey(
-  trial: Pick<Trial, "agent" | "model">,
+  trial: Pick<Trial, "agent" | "model" | "is_probe">,
   modelScopedAgents: ReadonlySet<string>,
 ): string {
+  if (trial.is_probe) {
+    return PROBE_AGENT_KEY;
+  }
   if (!modelScopedAgents.has(trial.agent)) {
     return trial.agent;
   }
@@ -67,9 +84,20 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
 
   for (const task of tasks) {
     for (const trial of task.trials ?? []) {
-      const isModelScoped = modelScopedAgents.has(trial.agent);
       const key = getExperimentAgentKey(trial, modelScopedAgents);
       if (summaries.has(key)) continue;
+
+      if (trial.is_probe) {
+        summaries.set(key, {
+          key: PROBE_AGENT_KEY,
+          label: "probe",
+          agent: PROBE_AGENT_KEY,
+          model: null,
+          queueKey: null,
+          isModelScoped: false,
+        });
+        continue;
+      }
 
       summaries.set(key, {
         key,
@@ -77,13 +105,16 @@ export function buildExperimentAgentSummaries(tasks: Task[]): {
         agent: trial.agent,
         model: trial.model,
         queueKey: trial.provider ?? null,
-        isModelScoped,
+        isModelScoped: modelScopedAgents.has(trial.agent),
       });
     }
   }
 
-  return {
-    agentSummaries: Array.from(summaries.values()),
-    modelScopedAgents,
-  };
+  const ordered = Array.from(summaries.values());
+  const probeIndex = ordered.findIndex((s) => s.key === PROBE_AGENT_KEY);
+  if (probeIndex >= 0) {
+    ordered.push(ordered.splice(probeIndex, 1)[0]);
+  }
+
+  return { agentSummaries: ordered, modelScopedAgents };
 }

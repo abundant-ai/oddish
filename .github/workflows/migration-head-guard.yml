@@ -1,0 +1,77 @@
+name: Migration Head Guard
+
+# Fails a PR whose migrations would leave an alembic tree with >1 head once
+# merged into main. A migration parented on a down_revision that is no longer
+# main's head forks the chain; `alembic upgrade head` then aborts with "Multiple
+# head revisions", the whole migration pipeline stalls, and any code reading the
+# unapplied schema 500s in prod (see the experiments.is_collection incident,
+# where PR #536 forked off a stale base and shipped code for a column its blocked
+# migration never created).
+#
+# Why this catches what a branch-local check can't: `pull_request` checks out the
+# MERGE ref (the branch already merged into main), so main's newest migration
+# sits alongside the PR's and the fork is visible. `alembic heads` run on the
+# bare branch would report a single (false) head. The command is offline — it
+# reads the migration scripts only, so no database or secrets are needed.
+
+on:
+  pull_request:
+    paths:
+      - "oddish/alembic/versions/**"
+      - "backend/alembic/versions/**"
+      - ".github/workflows/migration-head-guard.yml"
+
+concurrency:
+  group: migration-head-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: Single alembic head (${{ matrix.tree }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
+    # Python 3.13, uv, a warm uv cache, and pre-built venvs live in the base
+    # image — refreshed weekly by .github/workflows/ci-base-image.yml.
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tree: oddish
+            venv: /opt/venvs/oddish
+            sync: uv sync --frozen --extra server
+          - tree: backend
+            venv: /opt/venvs/backend
+            sync: uv sync --frozen
+    env:
+      UV_PROJECT_ENVIRONMENT: ${{ matrix.venv }}
+    defaults:
+      run:
+        working-directory: ${{ matrix.tree }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Sync dependencies
+        run: ${{ matrix.sync }}
+
+      - name: Assert exactly one alembic head
+        run: |
+          heads="$(uv run alembic heads)"
+          count="$(printf '%s\n' "$heads" | grep -c '(head)' || true)"
+          echo "Heads in ${{ matrix.tree }} tree:"
+          echo "$heads"
+          if [ "$count" -ne 1 ]; then
+            echo "::error::${{ matrix.tree }} alembic tree has $count heads after merging with main (expected 1)."
+            echo "Your migration is parented on a down_revision that is no longer the head."
+            echo "Fix: re-point down_revision to the current head, or run:"
+            echo "  cd ${{ matrix.tree }} && uv run alembic merge -m 'merge heads' <head1> <head2>"
+            exit 1
+          fi

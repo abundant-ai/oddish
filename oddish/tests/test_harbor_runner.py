@@ -16,7 +16,13 @@ import pytest  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
+from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
+from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
+    convert_grok_build_json_text_to_trajectory,
+)
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
+from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
+from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
 from oddish.workers.queue import trial_handler  # noqa: E402
 
 _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -24,15 +30,15 @@ _DISK_USAGE = namedtuple("DiskUsage", ["total", "used", "free"])
 
 def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=9, free=1),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
@@ -51,15 +57,15 @@ def test_check_local_storage_preflight_reports_low_bytes(monkeypatch, tmp_path):
 
 def test_check_local_storage_preflight_reports_low_inodes(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=12, f_ffree=12),
     )
@@ -81,15 +87,15 @@ def test_check_local_storage_preflight_skips_inode_check_when_no_table(
 ):
     """Modal's ephemeral /tmp reports f_files == 0; that is unlimited, not 0 free."""
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=0, f_favail=0, f_ffree=0),
     )
@@ -106,15 +112,15 @@ def test_check_local_storage_preflight_skips_inode_check_when_no_table(
 
 def test_check_local_storage_preflight_reports_probe_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        harbor_runner.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
+        harbor_storage.tempfile, "gettempdir", lambda: str(tmp_path / "tmp")
     )
     monkeypatch.setattr(
-        harbor_runner.shutil,
+        harbor_storage.shutil,
         "disk_usage",
         lambda path: _DISK_USAGE(total=10, used=1, free=6 * 1024**3),
     )
     monkeypatch.setattr(
-        harbor_runner.os,
+        harbor_storage.os,
         "statvfs",
         lambda path: SimpleNamespace(f_files=100_000, f_favail=10_000, f_ffree=10_000),
     )
@@ -151,7 +157,7 @@ def test_check_local_storage_preflight_skips_temp_root_when_not_requested(
         seen_paths.append(path)
         return None
 
-    monkeypatch.setattr(harbor_runner.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(harbor_storage.tempfile, "gettempdir", lambda: str(temp_root))
     monkeypatch.setattr(harbor_runner, "_probe_storage_root", _record_probe)
 
     error = harbor_runner._check_local_storage_preflight(
@@ -198,6 +204,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
@@ -205,7 +212,9 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -270,13 +279,16 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
         pass
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -346,6 +358,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
         current_worker_id="worker-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
     )
 
     class _Session:
@@ -353,7 +366,9 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -418,6 +433,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         current_queue_slot=None,
         heartbeat_at=None,
         finished_at=object(),
+        superseded_by_trial_id=None,
     )
     original_finished_at = trial.finished_at
 
@@ -426,7 +442,9 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
@@ -575,7 +593,9 @@ def test_run_harbor_trial_async_probe_skips_timeout_validation(monkeypatch, tmp_
 
     assert outcome.error is None
     agent_config = captured["config"]["agents"][0]
-    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+    assert (
+        agent_config.override_timeout_sec == harbor_agent_config.PROBE_AGENT_TIMEOUT_SEC
+    )
 
 
 def test_run_harbor_trial_async_non_probe_still_validates(tmp_path):
@@ -605,7 +625,9 @@ def test_build_agent_config_injects_probe_timeout_default(monkeypatch):
         is_probe=True,
     )
 
-    assert agent_config.override_timeout_sec == harbor_runner.PROBE_AGENT_TIMEOUT_SEC
+    assert (
+        agent_config.override_timeout_sec == harbor_agent_config.PROBE_AGENT_TIMEOUT_SEC
+    )
 
 
 def test_build_agent_config_probe_respects_explicit_override(monkeypatch):
@@ -693,6 +715,58 @@ def test_build_agent_config_probe_claude_code_forces_direct_api(monkeypatch):
     assert agent_config.model_name == "claude-sonnet-4-6"
 
 
+def test_build_agent_config_probe_sets_subagent_model(monkeypatch):
+    """A probe claude-code agent pins CLAUDE_CODE_SUBAGENT_MODEL to the same
+    normalized model id so Task-tool subagents have a model on the direct-API
+    path (Harbor's run() only sets it on the custom-base-url branch)."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.delenv("CLAUDE_CODE_USE_BEDROCK", raising=False)
+    monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="global.anthropic.claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=True,
+    )
+
+    assert (agent_config.env or {}).get("CLAUDE_CODE_SUBAGENT_MODEL") == (
+        agent_config.model_name
+    )
+    assert agent_config.model_name == "claude-sonnet-4-6"
+
+
+def test_build_agent_config_non_probe_omits_subagent_model(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={},
+        is_probe=False,
+    )
+
+    assert "CLAUDE_CODE_SUBAGENT_MODEL" not in (agent_config.env or {})
+
+
+def test_build_agent_config_probe_respects_existing_subagent_model(monkeypatch):
+    """A pre-set subagent model (e.g. from a provider env shaper) is never clobbered."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-sonnet-4-6",
+        raw_harbor_config={
+            "agent_config": {"env": {"CLAUDE_CODE_SUBAGENT_MODEL": "preset-model"}}
+        },
+        is_probe=True,
+    )
+
+    assert (agent_config.env or {})["CLAUDE_CODE_SUBAGENT_MODEL"] == "preset-model"
+
+
 def test_build_agent_config_non_probe_claude_code_keeps_bedrock_id(monkeypatch):
     """With the global force-direct flag OFF, routing is probe-scoped: a normal
     (non-probe) claude-code trial with Bedrock env keeps the Bedrock id even when
@@ -778,7 +852,7 @@ def test_agent_uses_bedrock_unchanged_by_probe_scoping(monkeypatch):
     trials, with or without a bearer token."""
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
     monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
-    assert harbor_runner._agent_uses_bedrock() is True
+    assert harbor_agent_config._agent_uses_bedrock() is True
 
 
 def test_build_agent_config_uses_azure_deployment_without_secret_env(monkeypatch):
@@ -860,6 +934,156 @@ def test_build_agent_config_does_not_wrap_non_codex_agents(monkeypatch):
 
     assert agent_config.name == "nop"
     assert agent_config.import_path is None
+
+
+def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.setenv("XAI_API_KEY", "xai-test-secret")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="xai/v9m-rl-learnability-tp8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
+    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+    assert "XAI_API_KEY" not in (agent_config.env or {})
+    assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
+    assert "OPENAI_API_KEY" not in (agent_config.env or {})
+
+
+def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="grok/v9m-rl-learnability-tp8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+    )
+    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+
+
+def test_convert_grok_build_stream_to_multi_step_trajectory():
+    raw = "\n".join(
+        [
+            json.dumps({"type": "thought", "data": "First reasoning sentence. "}),
+            json.dumps({"type": "thought", "data": "Second reasoning sentence. "}),
+            json.dumps({"type": "thought", "data": "x" * 3000}),
+            json.dumps({"type": "text", "data": "Implemented the fix. "}),
+            json.dumps({"type": "text", "data": "All checks passed."}),
+            json.dumps({"type": "end", "sessionId": "session-1"}),
+        ]
+    )
+
+    trajectory = convert_grok_build_json_text_to_trajectory(
+        raw,
+        agent_version="grok 0.2.73",
+        model_name="xai/v9m-rl-learnability-tp8",
+    )
+
+    assert trajectory is not None
+    assert trajectory.session_id == "session-1"
+    assert trajectory.agent.name == "grok-build"
+    assert len(trajectory.steps) >= 3
+    assert trajectory.steps[0].reasoning_content
+    assert trajectory.steps[-1].message == "Implemented the fix. All checks passed."
+    assert trajectory.final_metrics is not None
+    assert trajectory.final_metrics.total_steps == len(trajectory.steps)
+
+
+def test_oddish_grok_build_requests_streaming_json(tmp_path):
+    seen: list[str] = []
+
+    uploads: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, source_path, target_path):
+            uploads.append(target_path)
+
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8")
+
+    asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
+
+    run_command = seen[-1]
+    assert "--output-format streaming-json" in run_command
+    assert "--output-format json" in run_command
+    assert "streaming-json|output-format|no-auto-update" in run_command
+    assert ">/logs/agent/grok-build.json" in run_command
+    # The instruction is staged out-of-band and read back inside the sandbox,
+    # never inlined into the exec argv (Modal ARG_MAX guard).
+    assert uploads == ["/tmp/oddish-grok-build-prompt.txt"]
+    assert 'grok -p "$(cat /tmp/oddish-grok-build-prompt.txt)"' in run_command
+    assert "fix it" not in run_command
+
+
+def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
+    (tmp_path / "grok-build.json").write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "reasoning", "text": "Need to inspect files."}),
+                json.dumps(
+                    {
+                        "type": "tool_call",
+                        "id": "call_1",
+                        "name": "shell",
+                        "arguments": {"command": "ls"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_1",
+                        "output": "README.md\n",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": "Done.",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    context = SimpleNamespace(
+        cost_usd=None,
+        n_input_tokens=0,
+        n_cache_tokens=0,
+        n_output_tokens=0,
+    )
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8")
+
+    agent.populate_context_post_run(context)
+
+    trajectory = json.loads((tmp_path / "trajectory.json").read_text(encoding="utf-8"))
+    assert trajectory["schema_version"] == "ATIF-v1.7"
+    assert trajectory["agent"]["name"] == "grok-build"
+    assert len(trajectory["steps"]) == 3
+    assert trajectory["steps"][0]["reasoning_content"] == "Need to inspect files."
+    assert trajectory["steps"][0]["tool_calls"][0]["function_name"] == "shell"
+    assert trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    assert trajectory["steps"][2]["message"] == "Done."
+    assert trajectory["final_metrics"]["total_steps"] == 3
 
 
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
@@ -1350,6 +1574,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
         current_queue_slot=0,
         heartbeat_at=None,
         finished_at=None,
+        superseded_by_trial_id=None,
     )
 
 
@@ -1359,7 +1584,9 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
             return None
 
     @asynccontextmanager
-    async def _fake_trial_session(trial_id: str, *, allow_missing: bool = False):
+    async def _fake_trial_session(
+        trial_id: str, *, allow_missing: bool = False, with_for_update: bool = False
+    ):
         yield _Session(), trial
 
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
@@ -1570,7 +1797,9 @@ def test_extract_outcome_from_job_result_reads_trajectory_steps(tmp_path):
     assert outcome.has_trajectory is True
 
 
-def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(tmp_path):
+def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(
+    tmp_path,
+):
     traj_dir = tmp_path / "trial" / "agent"
     traj_dir.mkdir(parents=True)
     (traj_dir / "trajectory.json").write_text(
@@ -1638,3 +1867,39 @@ def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
 
     assert outcome.exception_type is None
     assert outcome.reward == 1.0
+
+
+def test_probe_modal_kwargs_injects_cli_content(monkeypatch):
+    """Modal + probe: env_config.kwargs gets probe_cli_content + probe_cli_path."""
+    monkeypatch.setattr(
+        harbor_runner,
+        "_read_query_cli_text",
+        lambda: "#!/usr/bin/env node\nconsole.log('hello');",
+    )
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=True, environment=EnvironmentType.MODAL
+    )
+    assert kwargs["probe_cli_content"].startswith("#!/usr/bin/env node")
+    assert kwargs["probe_cli_path"] == "/probe-harness/oddish-query"
+
+
+def test_probe_modal_kwargs_returns_empty_for_non_probe(monkeypatch):
+    """Non-probe: no CLI content injected even on Modal."""
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=False, environment=EnvironmentType.MODAL
+    )
+    assert kwargs == {}
+
+
+def test_probe_modal_kwargs_returns_empty_for_non_modal_probe(monkeypatch):
+    """Probe on Daytona (non-Modal): no CLI content injected."""
+    from harbor.models.environment_type import EnvironmentType
+
+    kwargs = harbor_runner._probe_modal_kwargs(
+        is_probe=True, environment=EnvironmentType.DAYTONA
+    )
+    assert kwargs == {}

@@ -122,6 +122,7 @@ Common flags:
 - `-t, --task-name`, `-x, --exclude-task-name`, and `-l, --n-tasks` filter datasets
 - `-e, --env` selects the execution environment
 - `-P, --priority`, `-E, --experiment`, `-u, --user`, `-G, --github-user`, and `--github-meta` attach scheduling and attribution metadata
+- `--registry-login` passes per-run Docker registry credentials as `username=USER,token=TOKEN[,registry=docker.io]`
 - `-w, --watch / --no-watch` watches single-task submissions until completion
 - `--background` submits and returns immediately
 - `--json` emits machine-readable output and implies `--background`
@@ -295,9 +296,8 @@ Notes:
   state until their first trials run (or are imported).
 - `oddish run --task <task_id> ...` attaches fresh trials to a
   previously-uploaded task.
-- The target task for a trial import must have been created *without*
-  `run_analysis` enabled. Imports skip the worker queue and cannot
-  feed the analysis pipeline.
+- Imported terminal trials are included when task-level QA runs on a
+  `run_analysis` task.
 - Experiments can be heterogeneous — one experiment can mix trials
   that ran on Oddish with trials that were imported.
 
@@ -408,9 +408,6 @@ machine-readable output.
 Examples:
 
 ```bash
-# Delete a task and its trials
-oddish delete <task_id>
-
 # Delete an entire experiment
 oddish delete --experiment <experiment_id>
 

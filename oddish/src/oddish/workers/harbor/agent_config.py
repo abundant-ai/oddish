@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import warnings
+from collections.abc import Mapping
 from typing import Any, Iterator
 
 from harbor.models.trial.config import AgentConfig
@@ -19,6 +20,7 @@ from oddish.config import (
     is_fireworks_model,
     is_minimax_model,
     is_moonshot_model,
+    is_xai_model,
     is_zai_model,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -29,6 +31,7 @@ from oddish.config import (
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
+    to_xai_model_id,
     to_zai_model_id,
     zai_bare_model_id,
 )
@@ -37,6 +40,51 @@ from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
+_ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
+_ANTHROPIC_MODEL_ALIAS_KEYS = (
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+)
+_AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "AWS_BEARER_TOKEN_BEDROCK",
+)
+
+
+def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
+    return "claude-code" in (agent_config.name or "").strip().lower()
+
+
+def _apply_anthropic_compat_env(
+    agent_config: AgentConfig,
+    *,
+    base_url: str,
+    auth_token: str,
+    model: str | None = None,
+    recommended_env: Mapping[str, str] | None = None,
+) -> None:
+    """Apply the shared Claude Code env shape for Anthropic-compatible APIs."""
+    env = dict(agent_config.env or {})
+    env.setdefault("ANTHROPIC_BASE_URL", base_url)
+    env.setdefault("ANTHROPIC_AUTH_TOKEN", auth_token)
+
+    if model:
+        env["ANTHROPIC_MODEL"] = model
+        for alias in _ANTHROPIC_MODEL_ALIAS_KEYS:
+            env.setdefault(alias, model)
+
+    for key, value in (recommended_env or {}).items():
+        env.setdefault(key, value)
+
+    # Claude Code prioritizes ambient credentials in the Modal image. Blank
+    # them so the explicit Anthropic-compatible route wins.
+    for key in _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS:
+        env[key] = ""
+
+    agent_config.env = env
 
 
 def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
@@ -46,20 +94,12 @@ def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
     if agent_name != "claude-code" or not model_name.startswith("openrouter/"):
         return
 
-    env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api",
+        auth_token="${OPENROUTER_API_KEY}",
+        recommended_env={"ENABLE_TOOL_SEARCH": "false"},
     )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${OPENROUTER_API_KEY}")
-    env.setdefault("ENABLE_TOOL_SEARCH", "false")
-
-    # Claude Code prioritizes these ambient credentials when present in the
-    # Modal image. Blank them so the OpenRouter auth/base-url route wins.
-    env["ANTHROPIC_API_KEY"] = ""
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
-    agent_config.env = env
 
 
 # Fireworks env is kept deliberately minimal: the default claude-code agent
@@ -72,8 +112,7 @@ _FIREWORKS_RECOMMENDED_ENV: dict[str, str] = {
 
 def _apply_claude_code_fireworks_env(agent_config: AgentConfig) -> None:
     """Apply the env Claude Code needs to talk to Fireworks' endpoint."""
-    agent_name = (agent_config.name or "").strip().lower()
-    if "claude-code" not in agent_name:
+    if not _is_claude_code_agent(agent_config):
         return
     if not is_fireworks_model(agent_config.model_name):
         return
@@ -81,30 +120,13 @@ def _apply_claude_code_fireworks_env(agent_config: AgentConfig) -> None:
     api_model = fireworks_api_model_id(
         fireworks_bare_model_id(agent_config.model_name or "")
     )
-    env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("FIREWORKS_BASE_URL") or FIREWORKS_DEFAULT_BASE_URL,
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=os.environ.get("FIREWORKS_BASE_URL") or FIREWORKS_DEFAULT_BASE_URL,
+        auth_token="${FIREWORKS_API_KEY}",
+        model=api_model,
+        recommended_env=_FIREWORKS_RECOMMENDED_ENV,
     )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${FIREWORKS_API_KEY}")
-
-    if api_model:
-        env["ANTHROPIC_MODEL"] = api_model
-        for alias in (
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ):
-            env.setdefault(alias, api_model)
-
-    for key, value in _FIREWORKS_RECOMMENDED_ENV.items():
-        env.setdefault(key, value)
-
-    env["ANTHROPIC_API_KEY"] = ""
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
-    agent_config.env = env
 
 
 _ZAI_RECOMMENDED_ENV: dict[str, str] = {
@@ -118,38 +140,19 @@ _ZAI_RECOMMENDED_ENV: dict[str, str] = {
 
 def _apply_claude_code_zai_env(agent_config: AgentConfig) -> None:
     """Apply the env Claude Code needs to talk to z.ai's GLM endpoint."""
-    agent_name = (agent_config.name or "").strip().lower()
-    if "claude-code" not in agent_name:
+    if not _is_claude_code_agent(agent_config):
         return
     if not is_zai_model(agent_config.model_name):
         return
 
     bare_model = zai_bare_model_id(agent_config.model_name or "")
-    env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=os.environ.get("ZAI_BASE_URL") or ZAI_DEFAULT_BASE_URL,
+        auth_token="${ZAI_API_KEY}",
+        model=bare_model,
+        recommended_env={"ENABLE_TOOL_SEARCH": "false", **_ZAI_RECOMMENDED_ENV},
     )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${ZAI_API_KEY}")
-    env.setdefault("ENABLE_TOOL_SEARCH", "false")
-
-    if bare_model:
-        env["ANTHROPIC_MODEL"] = bare_model
-        for alias in (
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ):
-            env.setdefault(alias, bare_model)
-
-    for key, value in _ZAI_RECOMMENDED_ENV.items():
-        env.setdefault(key, value)
-
-    env["ANTHROPIC_API_KEY"] = ""
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
-    agent_config.env = env
 
     kwargs = dict(agent_config.kwargs or {})
     kwargs.setdefault("thinking", "adaptive")
@@ -172,8 +175,7 @@ _MOONSHOT_RECOMMENDED_ENV: dict[str, str] = {
 
 def _apply_claude_code_minimax_env(agent_config: AgentConfig) -> None:
     """Apply the env Claude Code needs to talk to MiniMax's direct endpoint."""
-    agent_name = (agent_config.name or "").strip().lower()
-    if "claude-code" not in agent_name:
+    if not _is_claude_code_agent(agent_config):
         return
     if not is_minimax_model(agent_config.model_name):
         return
@@ -181,65 +183,30 @@ def _apply_claude_code_minimax_env(agent_config: AgentConfig) -> None:
     bare_model = minimax_api_model_id(
         minimax_bare_model_id(agent_config.model_name or "")
     )
-    env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("MINIMAX_BASE_URL") or MINIMAX_DEFAULT_BASE_URL,
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=os.environ.get("MINIMAX_BASE_URL") or MINIMAX_DEFAULT_BASE_URL,
+        auth_token="${MINIMAX_API_KEY}",
+        model=bare_model,
+        recommended_env=_MINIMAX_RECOMMENDED_ENV,
     )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MINIMAX_API_KEY}")
-
-    if bare_model:
-        env["ANTHROPIC_MODEL"] = bare_model
-        for alias in (
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ):
-            env.setdefault(alias, bare_model)
-
-    for key, value in _MINIMAX_RECOMMENDED_ENV.items():
-        env.setdefault(key, value)
-
-    env["ANTHROPIC_API_KEY"] = ""
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
-    agent_config.env = env
 
 
 def _apply_claude_code_moonshot_env(agent_config: AgentConfig) -> None:
     """Apply the env Claude Code needs to talk to Moonshot's Kimi endpoint."""
-    agent_name = (agent_config.name or "").strip().lower()
-    if "claude-code" not in agent_name:
+    if not _is_claude_code_agent(agent_config):
         return
     if not is_moonshot_model(agent_config.model_name):
         return
 
     bare_model = moonshot_bare_model_id(agent_config.model_name or "")
-    env = dict(agent_config.env or {})
-    env.setdefault(
-        "ANTHROPIC_BASE_URL",
-        os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
+    _apply_anthropic_compat_env(
+        agent_config,
+        base_url=os.environ.get("MOONSHOT_BASE_URL") or MOONSHOT_DEFAULT_BASE_URL,
+        auth_token="${MOONSHOT_API_KEY}",
+        model=bare_model,
+        recommended_env=_MOONSHOT_RECOMMENDED_ENV,
     )
-    env.setdefault("ANTHROPIC_AUTH_TOKEN", "${MOONSHOT_API_KEY}")
-
-    if bare_model:
-        env["ANTHROPIC_MODEL"] = bare_model
-        for alias in (
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-            "ANTHROPIC_DEFAULT_SONNET_MODEL",
-            "ANTHROPIC_DEFAULT_OPUS_MODEL",
-            "CLAUDE_CODE_SUBAGENT_MODEL",
-        ):
-            env.setdefault(alias, bare_model)
-
-    for key, value in _MOONSHOT_RECOMMENDED_ENV.items():
-        env.setdefault(key, value)
-
-    env["ANTHROPIC_API_KEY"] = ""
-    env["CLAUDE_CODE_USE_BEDROCK"] = ""
-    env["AWS_BEARER_TOKEN_BEDROCK"] = ""
-    agent_config.env = env
 
 
 def _apply_codex_azure_compat(agent_config: AgentConfig) -> None:
@@ -268,6 +235,18 @@ def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
 
 
+def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Grok Build trials through Oddish's streaming trajectory wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "grok-build":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_GROK_BUILD_IMPORT_PATH
+
+
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
@@ -278,6 +257,30 @@ def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -
 
     agent_config.name = None
     agent_config.import_path = _ODDISH_CLAUDE_CODE_IMPORT_PATH
+
+
+def _apply_claude_code_probe_subagent_model(
+    agent_config: AgentConfig, is_probe: bool
+) -> None:
+    """Pin a probe claude-code agent's subagent model.
+
+    The per-provider env shapers (fireworks/z.ai/...) set
+    ``CLAUDE_CODE_SUBAGENT_MODEL``, but Harbor's claude-code ``run`` only forwards
+    it on the custom-base-url branch. On the direct Anthropic API / Bedrock path a
+    probe uses, nothing sets it, so a subagent the probe spawns has no explicit
+    model. Set it to the same (already provider-normalized) model id as the main
+    agent so Task-tool subagents work. Call while ``name`` is still
+    ``"claude-code"`` (before the probe-harbor wrapper nulls it); never overrides
+    an existing value.
+    """
+    if not is_probe or not agent_config.model_name:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "claude-code":
+        return
+    env = dict(agent_config.env or {})
+    env.setdefault("CLAUDE_CODE_SUBAGENT_MODEL", agent_config.model_name)
+    agent_config.env = env
 
 
 def _agent_uses_bedrock() -> bool:
@@ -374,6 +377,8 @@ def _build_agent_config(
 
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
+    elif is_xai_model(agent_config.model_name):
+        agent_config.model_name = to_xai_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
         agent_config.model_name = to_zai_model_id(agent_config.model_name)
     elif is_minimax_model(agent_config.model_name):
@@ -392,6 +397,7 @@ def _build_agent_config(
     _apply_claude_code_zai_env(agent_config)
     _apply_claude_code_minimax_env(agent_config)
     _apply_claude_code_moonshot_env(agent_config)
+    _apply_claude_code_probe_subagent_model(agent_config, is_probe)
 
     if _agent_uses_openai_provider(agent_config):
         if settings.get_openai_provider() == OPENAI_PROVIDER_OPENAI:
@@ -403,6 +409,7 @@ def _build_agent_config(
             _apply_codex_azure_compat(agent_config)
 
     _apply_codex_oddish_wrapper(agent_config)
+    _apply_grok_build_oddish_wrapper(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 

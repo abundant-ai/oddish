@@ -31,6 +31,7 @@ from oddish.db import (
 )
 from oddish.db.storage import extract_s3_key_from_path, get_storage_client
 from oddish.experiment import generate_experiment_name
+from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
 from oddish.trial_cost import apply_settled_cost
@@ -143,54 +144,59 @@ async def cancel_tasks_runs(
     # tasks. One UPDATE, every kind. Returning the canceled rows gives
     # us the Modal function-call ids to terminate remotely and the kind
     # breakdown for the domain-mirror pass below.
-    canceled_rows = (
-        (
-            await session.execute(
-                text(
-                    """
-                WITH to_cancel AS (
-                    SELECT id,
-                           kind::text AS kind,
-                           subject_id,
-                           modal_function_call_id,
-                           provider,
-                           external_id
-                    FROM   worker_jobs
-                    WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
-                      AND  (
-                          (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
-                          OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))
-                      )
-                    ORDER BY id
-                    FOR UPDATE
-                )
-                UPDATE worker_jobs AS w
-                SET    status = 'CANCELLED',
-                       finished_at = NOW(),
-                       error_message = :cancel_msg,
-                       current_worker_id = NULL,
-                       current_queue_slot = NULL,
-                       modal_function_call_id = NULL
-                FROM   to_cancel
-                WHERE  w.id = to_cancel.id
-                RETURNING w.id,
-                          to_cancel.kind,
-                          to_cancel.subject_id,
-                          to_cancel.modal_function_call_id,
-                          to_cancel.provider,
-                          to_cancel.external_id
-                """
-                ),
-                {
-                    "cancel_msg": USER_CANCELLED_MESSAGE,
-                    "task_ids": found_task_ids,
-                    "trial_ids": trial_ids or [""],
-                },
-            )
-        )
-        .mappings()
-        .all()
+    #
+    # When the task has no trials yet the trial_ids list is empty; omit the
+    # trials branch entirely so we don't pass an empty array to ANY() (asyncpg
+    # cannot infer the element type of an empty list) and avoid a spurious
+    # FALSE predicate that PostgreSQL still has to plan.
+    trial_branch = (
+        "OR (subject_table = 'trials' AND subject_id = ANY(:trial_ids))"
+        if trial_ids
+        else ""
     )
+    cancel_sql = text(
+        f"""
+        WITH to_cancel AS (
+            SELECT id,
+                   kind::text AS kind,
+                   subject_id,
+                   modal_function_call_id,
+                   provider,
+                   external_id
+            FROM   worker_jobs
+            WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+              AND  (
+                  (subject_table = 'tasks' AND subject_id = ANY(:task_ids))
+                  {trial_branch}
+              )
+            ORDER BY id
+            FOR UPDATE
+        )
+        UPDATE worker_jobs AS w
+        SET    status = 'CANCELLED',
+               finished_at = NOW(),
+               error_message = :cancel_msg,
+               current_worker_id = NULL,
+               current_queue_slot = NULL,
+               modal_function_call_id = NULL,
+               payload = w.payload - 'registry_auth_enc'
+        FROM   to_cancel
+        WHERE  w.id = to_cancel.id
+        RETURNING w.id,
+                  to_cancel.kind,
+                  to_cancel.subject_id,
+                  to_cancel.modal_function_call_id,
+                  to_cancel.provider,
+                  to_cancel.external_id
+        """
+    )
+    cancel_params: dict[str, Any] = {
+        "cancel_msg": USER_CANCELLED_MESSAGE,
+        "task_ids": found_task_ids,
+    }
+    if trial_ids:
+        cancel_params["trial_ids"] = trial_ids
+    canceled_rows = (await session.execute(cancel_sql, cancel_params)).mappings().all()
 
     modal_fc_ids: list[str] = []
     worker_targets: set[tuple[str, str]] = set()
@@ -391,6 +397,28 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # legacy ANALYSIS rows across a deploy.
 
 
+def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
+    models = getattr(submission, "registry_auth", None)
+    if not models:
+        return None
+    creds = [
+        RegistryCredential(
+            username=m.username,
+            token=m.token.get_secret_value(),
+            registry=m.registry,
+        )
+        for m in models
+    ]
+    return encrypt_credentials(creds)
+
+
+def _trial_job_payload(trial_id: str, registry_auth_enc: str | None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"trial_id": trial_id}
+    if registry_auth_enc:
+        payload["registry_auth_enc"] = registry_auth_enc
+    return payload
+
+
 async def enqueue_trial_worker_job(
     session: AsyncSession,
     *,
@@ -400,13 +428,14 @@ async def enqueue_trial_worker_job(
     max_attempts: int,
     parent_job_id: str | None = None,
     harbor_variant_id: str = "default",
+    registry_auth_enc: str | None = None,
 ) -> WorkerJobModel:
     return await enqueue_worker_job(
         session,
         EnqueueRequest(
             kind=WorkerJobKind.TRIAL,
             queue_key=queue_key,
-            payload={"trial_id": trial_id},
+            payload=_trial_job_payload(trial_id, registry_auth_enc),
             subject_table="trials",
             subject_id=trial_id,
             org_id=org_id,
@@ -540,6 +569,9 @@ def _build_harbor_config_for_trial(
 
     if submission.result_focus:
         base["result_focus"] = submission.result_focus
+
+    if submission.skill_ids:
+        base["skill_ids"] = list(submission.skill_ids)
 
     return base or None
 
@@ -676,6 +708,14 @@ async def _bulk_insert_trials(
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
 
 
+def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
+    """Reject runs targeting a read-only collection experiment."""
+    if experiment is not None and experiment.is_collection:
+        raise ValueError(
+            "Cannot run trials into a collection experiment (read-only)."
+        )
+
+
 async def create_task(
     session: AsyncSession,
     submission: TaskSubmission,
@@ -709,6 +749,7 @@ async def create_task(
         experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
+        _ensure_not_collection_target(experiment)
         if not experiment:
             experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id
@@ -795,6 +836,7 @@ async def create_task(
     # Now safe to set the back-pointer and create trials.
     task.current_version_id = version_id
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
@@ -817,7 +859,9 @@ async def create_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment,
+                "environment": spec.environment or (
+                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
+                ),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -828,7 +872,7 @@ async def create_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=org_id,
@@ -1035,6 +1079,7 @@ async def append_trials_to_task(
             session, task_id=task.id, experiment_id=experiment_id
         )
 
+    registry_auth_enc = _encrypt_submission_registry_auth(submission)
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
@@ -1058,7 +1103,9 @@ async def append_trials_to_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment,
+                "environment": spec.environment or (
+                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
+                ),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1069,7 +1116,7 @@ async def append_trials_to_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
-                payload={"trial_id": trial_id},
+                payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
                 org_id=task.org_id,
@@ -1283,104 +1330,66 @@ async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel
     return result.scalar_one_or_none()
 
 
-async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
-    stats: dict[str, dict[str, int]] = {}
-    valid_statuses = {"pending", "queued", "running", "success", "failed", "retrying"}
-    analysis_queue_key = settings.get_analysis_queue_key()
-    verdict_queue_key = settings.get_qa_queue_key()
-
-    def _ensure_queue(queue_key: str) -> None:
-        if queue_key not in stats:
-            stats[queue_key] = {
-                "pending": 0,
-                "queued": 0,
-                "running": 0,
-                "success": 0,
-                "failed": 0,
-                "retrying": 0,
-            }
-
-    def _add(queue_key: str, status_name: str, count: int) -> None:
-        resolved_key = settings.normalize_queue_key(queue_key)
-        status_key = status_name.lower()
-        if status_key not in valid_statuses:
-            return
-        _ensure_queue(resolved_key)
-        stats[resolved_key][status_key] += int(count)
-
-    if org_id:
-        result = await session.execute(
-            text(
-                """
-                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
-                FROM trials
-                WHERE org_id = :org_id
-                  AND deleted_at IS NULL
-                GROUP BY COALESCE(queue_key, provider), status
-                """
-            ),
-            {"org_id": org_id},
-        )
-    else:
-        result = await session.execute(
-            text(
-                """
-                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
-                FROM trials
-                WHERE deleted_at IS NULL
-                GROUP BY COALESCE(queue_key, provider), status
-                """
-            )
-        )
-
-    for queue_key, status, count in result.all():
-        _add(str(queue_key), str(status), int(count))
-
-    analysis_query = (
-        select(TrialModel.analysis_status, func.count(TrialModel.id))
-        .where(TrialModel.analysis_status.isnot(None))
-        .group_by(TrialModel.analysis_status)
-    )
-    if org_id:
-        analysis_query = analysis_query.where(TrialModel.org_id == org_id)
-    analysis_result = await session.execute(analysis_query)
-    for analysis_status, count in analysis_result.all():
-        _add(analysis_queue_key, analysis_status.value, int(count))
-
-    verdict_query = (
-        select(TaskModel.verdict_status, func.count(TaskModel.id))
-        .where(TaskModel.verdict_status.isnot(None))
-        .group_by(TaskModel.verdict_status)
-    )
-    if org_id:
-        verdict_query = verdict_query.where(TaskModel.org_id == org_id)
-    verdict_result = await session.execute(verdict_query)
-    for verdict_status, count in verdict_result.all():
-        _add(verdict_queue_key, verdict_status.value, int(count))
-
-    return stats
+# Valid per-queue status buckets. Shared by the per-org and grouped-by-org
+# aggregators so both emit byte-identical queue-stat shapes.
+_VALID_QUEUE_STATUSES = {
+    "pending",
+    "queued",
+    "running",
+    "success",
+    "failed",
+    "retrying",
+}
 
 
-async def get_queue_and_pipeline_stats_with_concurrency(
-    session: AsyncSession, org_id: str | None = None
+def _empty_queue_counts() -> dict[str, int]:
+    """Fresh zeroed status-count bucket for one queue key."""
+    return {
+        "pending": 0,
+        "queued": 0,
+        "running": 0,
+        "success": 0,
+        "failed": 0,
+        "retrying": 0,
+    }
+
+
+def _accumulate_queue_stat(
+    stats: dict[str, dict[str, int]],
+    queue_key: str,
+    status_name: str,
+    count: int,
+) -> None:
+    """Add ``count`` into ``stats[normalize(queue_key)][status]``.
+
+    Status is lower-cased and unknown statuses are ignored, matching the
+    original ``get_queue_stats`` behavior. Factored out so the per-org and
+    grouped-by-org aggregators share one normalization path and can't drift.
+    """
+    resolved_key = settings.normalize_queue_key(queue_key)
+    status_key = status_name.lower()
+    if status_key not in _VALID_QUEUE_STATUSES:
+        return
+    bucket = stats.setdefault(resolved_key, _empty_queue_counts())
+    bucket[status_key] += int(count)
+
+
+def _assemble_queue_and_pipeline(
+    stats: dict[str, dict[str, int]],
 ) -> tuple[dict[str, dict], dict[str, dict[str, int]]]:
-    """Collect queue and pipeline stats without duplicating status scans."""
-    stats = await get_queue_stats(session, org_id)
+    """Shape raw per-queue-key counts into the dashboard ``(queue_stats,
+    pipeline)`` payload.
+
+    Zero-fills known queue keys, attaches ``recommended_concurrency``, and
+    buckets counts into trial / analysis / verdict pipelines. Shared by the
+    on-demand (``get_queue_and_pipeline_stats_with_concurrency``) and the
+    precompute (``get_queue_and_pipeline_stats_by_org``) paths so a cached,
+    precomputed value is identical to one computed live.
+    """
     queue_stats: dict[str, dict] = {}
     queue_keys = set(stats.keys()) | settings.get_known_queue_keys()
     for queue_key in sorted(queue_keys):
-        provider_stats = stats.get(
-            queue_key,
-            {
-                "pending": 0,
-                "queued": 0,
-                "running": 0,
-                "success": 0,
-                "failed": 0,
-                "retrying": 0,
-            },
-        )
+        provider_stats = stats.get(queue_key, _empty_queue_counts())
         queue_stats[queue_key] = {
             **provider_stats,
             "recommended_concurrency": settings.get_model_concurrency(queue_key),
@@ -1412,6 +1421,154 @@ async def get_queue_and_pipeline_stats_with_concurrency(
         "analyses": analysis_pipeline,
         "verdicts": verdict_pipeline,
     }
+
+
+async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> dict:
+    """Get queue statistics by queue_key across trial/analysis/verdict jobs."""
+    stats: dict[str, dict[str, int]] = {}
+    analysis_queue_key = settings.get_analysis_queue_key()
+    verdict_queue_key = settings.get_qa_queue_key()
+
+    if org_id:
+        result = await session.execute(
+            text(
+                """
+                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
+                FROM trials
+                WHERE org_id = :org_id
+                  AND deleted_at IS NULL
+                GROUP BY COALESCE(queue_key, provider), status
+                """
+            ),
+            {"org_id": org_id},
+        )
+    else:
+        result = await session.execute(
+            text(
+                """
+                SELECT COALESCE(queue_key, provider) AS queue_key, status::text AS status, COUNT(*) AS count
+                FROM trials
+                WHERE deleted_at IS NULL
+                GROUP BY COALESCE(queue_key, provider), status
+                """
+            )
+        )
+
+    for queue_key, status, count in result.all():
+        _accumulate_queue_stat(stats, str(queue_key), str(status), int(count))
+
+    analysis_query = (
+        select(TrialModel.analysis_status, func.count(TrialModel.id))
+        .where(TrialModel.analysis_status.isnot(None))
+        .group_by(TrialModel.analysis_status)
+    )
+    if org_id:
+        analysis_query = analysis_query.where(TrialModel.org_id == org_id)
+    analysis_result = await session.execute(analysis_query)
+    for analysis_status, count in analysis_result.all():
+        _accumulate_queue_stat(stats, analysis_queue_key, analysis_status.value, int(count))
+
+    verdict_query = (
+        select(TaskModel.verdict_status, func.count(TaskModel.id))
+        .where(TaskModel.verdict_status.isnot(None))
+        .group_by(TaskModel.verdict_status)
+    )
+    if org_id:
+        verdict_query = verdict_query.where(TaskModel.org_id == org_id)
+    verdict_result = await session.execute(verdict_query)
+    for verdict_status, count in verdict_result.all():
+        _accumulate_queue_stat(stats, verdict_queue_key, verdict_status.value, int(count))
+
+    return stats
+
+
+async def get_queue_stats_by_org(
+    session: AsyncSession,
+) -> dict[str, dict[str, dict[str, int]]]:
+    """Per-org queue stats from a single grouped pass over the tables.
+
+    Returns ``{org_id: stats}`` where each ``stats`` has the exact shape
+    ``get_queue_stats`` produces for one org. Used by the dashboard precompute
+    to refresh every org's queue/pipeline slice in one scan instead of one
+    scan per org. Rows with a NULL ``org_id`` are skipped (no org reads them).
+    """
+    analysis_queue_key = settings.get_analysis_queue_key()
+    verdict_queue_key = settings.get_qa_queue_key()
+    stats_by_org: dict[str, dict[str, dict[str, int]]] = {}
+
+    def _org_bucket(org_id: str) -> dict[str, dict[str, int]]:
+        return stats_by_org.setdefault(org_id, {})
+
+    trial_result = await session.execute(
+        text(
+            """
+            SELECT org_id, COALESCE(queue_key, provider) AS queue_key,
+                   status::text AS status, COUNT(*) AS count
+            FROM trials
+            WHERE deleted_at IS NULL
+              AND org_id IS NOT NULL
+            GROUP BY org_id, COALESCE(queue_key, provider), status
+            """
+        )
+    )
+    for org_id, queue_key, status, count in trial_result.all():
+        _accumulate_queue_stat(
+            _org_bucket(str(org_id)), str(queue_key), str(status), int(count)
+        )
+
+    analysis_result = await session.execute(
+        select(
+            TrialModel.org_id,
+            TrialModel.analysis_status,
+            func.count(TrialModel.id),
+        )
+        .where(TrialModel.analysis_status.isnot(None), TrialModel.org_id.isnot(None))
+        .group_by(TrialModel.org_id, TrialModel.analysis_status)
+    )
+    for org_id, analysis_status, count in analysis_result.all():
+        _accumulate_queue_stat(
+            _org_bucket(str(org_id)), analysis_queue_key, analysis_status.value, int(count)
+        )
+
+    verdict_result = await session.execute(
+        select(
+            TaskModel.org_id,
+            TaskModel.verdict_status,
+            func.count(TaskModel.id),
+        )
+        .where(TaskModel.verdict_status.isnot(None), TaskModel.org_id.isnot(None))
+        .group_by(TaskModel.org_id, TaskModel.verdict_status)
+    )
+    for org_id, verdict_status, count in verdict_result.all():
+        _accumulate_queue_stat(
+            _org_bucket(str(org_id)), verdict_queue_key, verdict_status.value, int(count)
+        )
+
+    return stats_by_org
+
+
+async def get_queue_and_pipeline_stats_by_org(
+    session: AsyncSession,
+) -> dict[str, tuple[dict[str, dict], dict[str, dict[str, int]]]]:
+    """Per-org ``(queue_stats, pipeline)`` payloads from one grouped scan.
+
+    The precompute counterpart to ``get_queue_and_pipeline_stats_with_concurrency``:
+    same per-org output shape, but computed for every org in a single pass so a
+    scheduled job can warm the whole fleet's cache without scanning per org.
+    """
+    stats_by_org = await get_queue_stats_by_org(session)
+    return {
+        org_id: _assemble_queue_and_pipeline(stats)
+        for org_id, stats in stats_by_org.items()
+    }
+
+
+async def get_queue_and_pipeline_stats_with_concurrency(
+    session: AsyncSession, org_id: str | None = None
+) -> tuple[dict[str, dict], dict[str, dict[str, int]]]:
+    """Collect queue and pipeline stats without duplicating status scans."""
+    stats = await get_queue_stats(session, org_id)
+    return _assemble_queue_and_pipeline(stats)
 
 
 async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -> dict:

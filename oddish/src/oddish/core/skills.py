@@ -6,13 +6,20 @@ CRUD follows the repo's router->core layering: functions receive an AsyncSession
 
 from __future__ import annotations
 
+import re
 import yaml
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import SkillFileModel, SkillModel, utcnow
 from oddish.schemas import SkillCreate, SkillFile, SkillUpdate
+from oddish.core.result_focus_repair import repair_result_focus_if_needed
+from oddish.core.result_focus_schema import (
+    UnsupportedSchemaError,
+    normalize_findings_schema,
+    parse_result_focus,
+)
 
 _FRONTMATTER_DELIM = "---"
 
@@ -63,6 +70,38 @@ def parse_skill(files: list[SkillFile]) -> tuple[str, str]:
     return name, description
 
 
+def _rewrite_skill_name(files: list[SkillFile], new_name: str) -> list[SkillFile]:
+    """Return ``files`` with the root SKILL.md frontmatter ``name:`` set to
+    ``new_name`` (used when a collision forces a version-suffixed name).
+
+    Targeted line edit, not a YAML re-dump, so the rest of the file's
+    formatting is preserved. Assumes ``files`` already passed ``parse_skill``.
+    """
+    out: list[SkillFile] = []
+    for f in files:
+        if f.relative_path != "SKILL.md":
+            out.append(f)
+            continue
+        stripped = f.content.lstrip()
+        prefix = f.content[: len(f.content) - len(stripped)]
+        _, frontmatter, body = stripped.split(_FRONTMATTER_DELIM, 2)
+        frontmatter = re.sub(
+            r"(?m)^(\s*name:).*$",
+            lambda m: f"{m.group(1)} {new_name}",
+            frontmatter,
+            count=1,
+        )
+        rebuilt = (
+            prefix
+            + _FRONTMATTER_DELIM
+            + frontmatter
+            + _FRONTMATTER_DELIM
+            + body
+        )
+        out.append(SkillFile(relative_path=f.relative_path, content=rebuilt))
+    return out
+
+
 async def list_skills_core(
     session: AsyncSession,
     *,
@@ -92,6 +131,37 @@ async def get_skill_core(
     return skill
 
 
+def _validate_result_focus(result_focus: str | None) -> None:
+    """Raise HTTPException(422) if a JSON-schema result_focus is malformed."""
+    spec = parse_result_focus(result_focus)
+    if spec is not None:
+        try:
+            normalize_findings_schema(spec)
+        except UnsupportedSchemaError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _resolve_skill_name(
+    session: AsyncSession, base_name: str, *, org_id: str | None
+) -> str:
+    """Smallest free name in ``base``, ``base-2``, ``base-3``, … within the
+    org's uniqueness bucket (matching ``idx_skills_unique_org_name``). The
+    soft-delete auto-filter excludes tombstoned rows, so reused names are free.
+    """
+    result = await session.execute(
+        select(SkillModel.name).where(
+            func.coalesce(SkillModel.org_id, "") == (org_id or "")
+        )
+    )
+    existing = {row[0] for row in result.all()}
+    if base_name not in existing:
+        return base_name
+    n = 2
+    while f"{base_name}-{n}" in existing:
+        n += 1
+    return f"{base_name}-{n}"
+
+
 async def create_skill_core(
     session: AsyncSession,
     *,
@@ -99,17 +169,31 @@ async def create_skill_core(
     org_id: str | None = None,
     user_id: str | None = None,
 ) -> SkillModel:
-    """Create a custom skill owned by ``org_id``, validating its SKILL.md."""
-    name, description = parse_skill(data.files)
+    """Create a custom skill owned by ``org_id``, validating its SKILL.md.
+
+    On a name collision within the org, the skill is stored under a
+    version-suffixed name (``my-skill`` → ``my-skill-2`` → …) and its SKILL.md
+    frontmatter ``name:`` is rewritten to match.
+    """
+    base_name, description = parse_skill(data.files)
+    # Repair a malformed-but-JSON-ish result_focus before validating/storing, so a
+    # stray comma is fixed into the operator's intended schema rather than 422'd.
+    result_focus = await repair_result_focus_if_needed(data.result_focus, kind="schema")
+    _validate_result_focus(result_focus)
+    name = await _resolve_skill_name(session, base_name, org_id=org_id)
+    files = data.files if name == base_name else _rewrite_skill_name(data.files, name)
     skill = SkillModel(
         org_id=org_id,
         created_by_user_id=user_id,
         name=name,
         description=description,
         is_seed=False,
+        operator_prompt=data.operator_prompt,
+        result_focus=result_focus,
+        evaluation_metric=data.evaluation_metric,
         files=[
             SkillFileModel(relative_path=f.relative_path, content=f.content)
-            for f in data.files
+            for f in files
         ],
     )
     session.add(skill)
@@ -158,6 +242,16 @@ async def update_skill_core(
             skill.name = data.name
         if data.description is not None:
             skill.description = data.description
+    if "result_focus" in payload:
+        result_focus = await repair_result_focus_if_needed(
+            data.result_focus, kind="schema"
+        )
+        _validate_result_focus(result_focus)
+        skill.result_focus = result_focus
+    if "operator_prompt" in payload:
+        skill.operator_prompt = data.operator_prompt
+    if "evaluation_metric" in payload:
+        skill.evaluation_metric = data.evaluation_metric
     await session.flush()
     return skill
 

@@ -29,6 +29,7 @@ from oddish.core.endpoints.deletion import (
     delete_experiment_core,
     delete_task_core,
     delete_trial_core,
+    unlink_task_from_experiment_core,
 )
 from oddish.core.endpoints.qa import (
     backfill_task_analysis_core,
@@ -49,14 +50,18 @@ from oddish.core.endpoints.task_detail import (
 from oddish.core.endpoints.tasks_query import (
     _build_browse_author_filter,
     _task_freetext_match,
+    browse_task_facets_core,
     browse_tasks_core,
     get_task_status_core,
+    list_experiment_slim_tasks,
+    list_experiment_task_shells_core,
     list_tasks_core,
 )
 from oddish.core.endpoints.trials import (
     get_trial_by_index_core,
     get_trial_logs_core,
     get_trial_logs_structured_core,
+    get_trial_response_for_org_core,
     get_trial_result_core,
     get_trial_trajectory_core,
     retry_trial_core,
@@ -71,6 +76,7 @@ __all__ = [
     "_reset_task_verdict",
     "_task_freetext_match",
     "backfill_task_analysis_core",
+    "browse_task_facets_core",
     "browse_tasks_core",
     "build_task_sweep_response",
     "cancel_task_qa_core",
@@ -88,10 +94,14 @@ __all__ = [
     "get_trial_for_org_core",
     "get_trial_logs_core",
     "get_trial_logs_structured_core",
+    "get_trial_response_for_org_core",
     "get_trial_result_core",
     "get_trial_trajectory_core",
+    "list_experiment_slim_tasks",
+    "list_experiment_task_shells_core",
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_task_qa_core",
     "retry_trial_core",
+    "unlink_task_from_experiment_core",
 ]

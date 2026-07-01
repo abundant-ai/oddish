@@ -134,6 +134,17 @@ async def lifespan(_api: FastAPI):
         await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
+        # Route the dashboard's whole-``trials``-table queue/pipeline slice
+        # through a shared Modal Dict so a cold container reads a warm entry
+        # instead of re-running the multi-second scan. Best-effort: falls back
+        # to the process-local cache if the Modal Dict can't be reached.
+        try:
+            from dashboard_cache import install_modal_dashboard_cache
+
+            install_modal_dashboard_cache()
+        except Exception:
+            logger.warning("dashboard shared cache setup skipped", exc_info=True)
+
         # cc_chat orchestrator (chat feature). Guarded: if Daytona/Anthropic
         # secrets are absent (some envs), skip construction — the chat routes
         # return 503 via their _orch() guard.
@@ -226,7 +237,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Server-Timing"],
+        expose_headers=[
+            "Server-Timing",
+            "Oddish-Submit-Concurrency",
+            "RateLimit",
+            "RateLimit-Policy",
+        ],
     )
 
     @api.middleware("http")
@@ -259,6 +275,10 @@ def create_app() -> FastAPI:
     ):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
 
+    from api.capacity_headers import capacity_header_middleware
+
+    api.middleware("http")(capacity_header_middleware)
+
     from api.routers import (
         admin,
         api_keys,
@@ -269,8 +289,8 @@ def create_app() -> FastAPI:
         github_linkage,
         github_webhooks,
         imports,
+        load,
         orgs,
-        probe_presets,
         skills,
         public,
         tags,
@@ -288,7 +308,7 @@ def create_app() -> FastAPI:
     api.include_router(tasks.router)
     api.include_router(trials.router)
     api.include_router(imports.router)
-    api.include_router(probe_presets.router)
+    api.include_router(load.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
     api.include_router(public.router)

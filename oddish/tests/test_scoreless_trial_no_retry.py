@@ -23,7 +23,6 @@ def _trial(**overrides):
         id="trial-1",
         task_id="task-1",
         agent="codex",
-        model="gpt-5",
         harbor_config=None,
         status=TrialStatus.RUNNING,
         error_message=None,
@@ -67,7 +66,7 @@ def _outcome(reward=None, error=None):
 
 def _patch_session(monkeypatch, trial):
     @asynccontextmanager
-    async def _fake_trial_session(trial_id, *, allow_missing=False):
+    async def _fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
         yield object(), trial
 
     monkeypatch.setattr(th, "_trial_session", _fake_trial_session)

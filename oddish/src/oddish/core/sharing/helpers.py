@@ -3,10 +3,12 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import exists, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
+from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     build_trial_response,
@@ -16,6 +18,7 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TrialModel,
+    experiment_trials,
     get_storage_client,
     task_experiments,
 )
@@ -104,16 +107,35 @@ async def get_public_task(
         .where(TaskModel.id == task_id)
         .where(public_link_exists)
     )
-    return result.scalar_one_or_none()
+    task = result.scalar_one_or_none()
+    if task is not None:
+        # Probes are an experimental, internal-only feature; never expose them
+        # through the public share/datasets views.
+        set_committed_value(
+            task, "trials", [t for t in task.trials if not t.is_probe]
+        )
+    return task
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial whose experiment is public."""
+    """Get a trial that is publicly visible (home experiment public, or gathered
+    into a public collection). Probes are never exposed publicly."""
+    public_home = select(ExperimentModel.id).where(ExperimentModel.is_public == True)  # noqa: E712
+    gathered_public = (
+        select(experiment_trials.c.trial_id)
+        .join(ExperimentModel, ExperimentModel.id == experiment_trials.c.experiment_id)
+        .where(ExperimentModel.is_public == True, experiment_trials.c.deleted_at.is_(None))  # noqa: E712
+    )
     result = await session.execute(
         select(TrialModel)
-        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .where(TrialModel.id == trial_id)
-        .where(ExperimentModel.is_public == True)  # noqa: E712
+        .where(TrialModel.is_probe.is_(False))
+        .where(
+            or_(
+                TrialModel.experiment_id.in_(public_home),
+                TrialModel.id.in_(gathered_public),
+            )
+        )
     )
     return result.scalar_one_or_none()
 
@@ -155,7 +177,7 @@ async def list_experiment_trials_for_org(
 ) -> list[TrialResponse]:
     """List non-superseded trials for an experiment (org-scoped)."""
     conditions = [
-        TrialModel.experiment_id == experiment_id,
+        trial_in_experiment(experiment_id),
         TrialModel.superseded_by_trial_id.is_(None),
     ]
     if org_id is not None:

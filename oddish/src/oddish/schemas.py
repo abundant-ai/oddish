@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.job.config import RetryConfig as HarborRetryConfig
@@ -24,6 +32,7 @@ from oddish.db import (
     TrialStatus,
     VerdictStatus,
 )
+from oddish.registry_auth import normalize_registry_host
 
 
 # =============================================================================
@@ -171,6 +180,70 @@ class AgentModelPair(TrialSpec):
     )
 
 
+class RegistryAuth(BaseModel):
+    model_config = ConfigDict(hide_input_in_errors=True)
+
+    registry: str = Field(
+        "docker.io", description="Registry host. Defaults to Docker Hub (docker.io)."
+    )
+    username: str = Field(..., description="Registry username.")
+    token: SecretStr = Field(..., description="Registry password or access token.")
+
+    @model_validator(mode="before")
+    @classmethod
+    def redact_registry_userinfo(cls, data):
+        if not isinstance(data, dict) or "registry" not in data:
+            return data
+        raw = str(data.get("registry") or "")
+        try:
+            parsed = urlsplit(raw if "://" in raw else f"//{raw}")
+        except ValueError:
+            parsed = None
+        if parsed and (parsed.username or parsed.password):
+            data = dict(data)
+            data["registry"] = "https://redacted:redacted@redacted.invalid"
+            return data
+        try:
+            normalize_registry_host(raw)
+        except ValueError as exc:
+            message = str(exc)
+            data = dict(data)
+            if message == "registry port must be a valid numeric port":
+                data["registry"] = "redacted.invalid:badport"
+            elif message == "registry must be a host name without whitespace":
+                data["registry"] = "redacted invalid"
+            elif message == "registry must be a host name":
+                data["registry"] = "https://[::1"
+            else:
+                data["registry"] = "redacted.invalid/path"
+            return data
+        return data
+
+    @field_validator("registry")
+    @classmethod
+    def validate_registry(cls, value: str) -> str:
+        return normalize_registry_host(value)
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("registry_auth requires a non-empty username")
+        return value
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("registry_auth requires a non-empty token")
+        return value
+
+
+class TrialRetryRequest(BaseModel):
+    registry_auth: list[RegistryAuth] | None = Field(None)
+
+
 class TaskSubmission(BaseModel):
     """Task submission request (API input)."""
 
@@ -222,6 +295,7 @@ class TaskSubmission(BaseModel):
             "for every trial in this submission. Used for probe / adversarial probes."
         ),
     )
+    skill_ids: list[str] | None = None
     probe_name: str | None = Field(
         default=None,
         description=(
@@ -254,6 +328,7 @@ class TaskSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):
@@ -308,6 +383,14 @@ class TaskSweepSubmission(BaseModel):
         description=(
             "Operator-supplied prompt content to prepend to the task's instruction "
             "for every trial in this submission. Used for probe / adversarial probes."
+        ),
+    )
+    skill_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "IDs of skills to mount into the probe agent's workspace for every "
+            "trial in this submission. Only these skills are mounted (not all "
+            "org skills)."
         ),
     )
     probe_name: str | None = Field(
@@ -394,6 +477,7 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
+    registry_auth: list[RegistryAuth] | None = Field(None)
 
     @model_validator(mode="after")
     def require_models(self):
@@ -475,6 +559,21 @@ class ExperimentCombineRequest(BaseModel):
         if self.name is not None:
             self.name = self.name.strip() or None
         return self
+
+
+class TrialCollectionRequest(BaseModel):
+    """Request to gather existing trials into a new read-only collection."""
+
+    name: str
+    trial_ids: list[str]
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
 
 
 # =============================================================================
@@ -678,6 +777,10 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    environment: str | None = Field(
+        None,
+        description="Execution sandbox environment recorded on the trial row.",
+    )
     status: TrialStatus = Field(
         ...,
         description="Execution status: 'success'=completed (regardless of test result), 'failed'=execution error",
@@ -943,6 +1046,15 @@ class ExperimentCombineResponse(BaseModel):
     )
 
 
+class TrialCollectionResponse(BaseModel):
+    """Result of gathering trials into a new read-only collection."""
+
+    id: str
+    name: str
+    trials_linked: int
+    tasks_linked: int
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
@@ -987,6 +1099,32 @@ class TaskBrowseResponse(BaseModel):
     has_more: bool
 
 
+class AgentModelFacet(BaseModel):
+    """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
+    rows with no recorded model."""
+
+    agent: str
+    model: str | None = None
+
+
+class TaskBrowseFacets(BaseModel):
+    """Distinct values for populating the task-browser filter controls.
+
+    Trial-derived facets are scoped to the org's non-probe, non-superseded
+    trials. Enum-valued filters (task status, priority, trial status, origin)
+    are static and supplied client-side, so they are not returned here.
+    """
+
+    agents: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    agent_models: list[AgentModelFacet] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    environments: list[str] = Field(default_factory=list)
+    harbor_stages: list[str] = Field(default_factory=list)
+    analysis_classifications: list[str] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+
+
 class TaskStatusResponse(BaseModel):
     id: str
     name: str
@@ -1001,6 +1139,8 @@ class TaskStatusResponse(BaseModel):
     experiment_name: str
     experiment_is_public: bool = False
     experiment_created_at: datetime | None = None
+    experiment_owner: str | None = None
+    experiment_link: str | None = None
     experiments: list[TaskBrowseExperiment] = Field(
         default_factory=list,
         description=(
@@ -1210,50 +1350,6 @@ class PublicExperimentListItem(BaseModel):
     created_at: str
 
 
-# ---------------------------------------------------------------------------
-# Probe presets — operator-directive templates for probe trials.
-# ---------------------------------------------------------------------------
-class ProbePresetCreate(BaseModel):
-    """Request body to create a custom probe preset."""
-
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetUpdate(BaseModel):
-    """Request body to update a custom probe preset. All fields optional;
-    only provided fields are applied."""
-
-    name: str | None = None
-    agent: str | None = None
-    model: str | None = None
-    operator_prompt: str | None = None
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-
-
-class ProbePresetResponse(BaseModel):
-    """A probe preset as returned to the client."""
-
-    id: str
-    org_id: str | None = None
-    name: str
-    agent: str
-    model: str
-    operator_prompt: str
-    result_focus: str | None = None
-    evaluation_metric: str | None = None
-    is_seed: bool
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class TagCreateRequest(BaseModel):
     key: str
     value: str | None = None
@@ -1293,6 +1389,16 @@ class TagListItem(BaseModel):
     usage_count: int = 0
     row_version: int = 1
     owner_user_id: str | None = None
+    # Per-scope assignment breakdown (active assignments only). Summed across
+    # all scopes these equal ``usage_count``. Populated by the tags list
+    # endpoint; other endpoints that build a TagListItem leave them at 0.
+    task_count: int = 0
+    version_count: int = 0
+    experiment_count: int = 0
+    # Resolved display label / avatar for ``owner_user_id`` (creator). Populated
+    # by the tags list endpoint via a join against the ``users`` table.
+    owner_label: str | None = None
+    owner_avatar_url: str | None = None
 
 
 class TagListResponse(BaseModel):
@@ -1484,6 +1590,9 @@ class SkillCreate(BaseModel):
     name: str
     description: str
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillUpdate(BaseModel):
@@ -1493,6 +1602,9 @@ class SkillUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     files: list[SkillFile] | None = None
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
 
 
 class SkillResponse(BaseModel):
@@ -1505,6 +1617,9 @@ class SkillResponse(BaseModel):
     description: str
     is_seed: bool
     files: list[SkillFile]
+    operator_prompt: str | None = None
+    result_focus: str | None = None
+    evaluation_metric: str | None = None
     created_at: datetime
     updated_at: datetime
 

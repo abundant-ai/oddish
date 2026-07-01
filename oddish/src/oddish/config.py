@@ -15,9 +15,10 @@ from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
 
 
 _FIXED_AGENT_PROVIDERS: dict[str, str] = {
-    AgentName.CLAUDE_CODE.value: "bedrock",
-    AgentName.GEMINI_CLI.value: "gemini",
-    AgentName.CODEX.value: "openai",
+    "claude-code": "bedrock",
+    "gemini-cli": "gemini",
+    "codex": "openai",
+    "grok-build": "xai",
 }
 
 _MODEL_ABSENT_ALIASES: set[str] = {
@@ -93,7 +94,7 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).
 HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "beabbb7a909931850582370e46074f3d8c8b892a"
+HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -454,6 +455,41 @@ def to_fireworks_model_id(model: str | None) -> str | None:
     return f"{FIREWORKS_PROVIDER}/{canonical}"
 
 
+# xAI / Grok Build routing. Grok Build is a first-party Harbor installed agent,
+# not a Claude Code or Codex compatibility route. Keep xAI models in their own
+# provider/queue bucket and hand the canonical ``xai/<id>`` model to Harbor.
+XAI_PROVIDER = "xai"
+_XAI_PROVIDER_PREFIXES: frozenset[str] = frozenset({"xai", "grok"})
+
+
+def is_xai_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects the xAI/Grok provider."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(provider_prefix and provider_prefix in _XAI_PROVIDER_PREFIXES)
+
+
+def xai_bare_model_id(model: str) -> str:
+    """Strip an ``xai/`` or ``grok/`` prefix, returning the bare model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _XAI_PROVIDER_PREFIXES:
+        return bare.strip()
+    return raw
+
+
+def to_xai_model_id(model: str | None) -> str | None:
+    """Canonicalize an xAI/Grok model reference to ``xai/<bare-id>``."""
+    if not is_xai_model(model):
+        return model
+    assert model is not None
+    return f"{XAI_PROVIDER}/{xai_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -707,10 +743,12 @@ def _build_agent_provider_map() -> dict[str, str]:
     Built from Harbor's AgentName enum so new agents are picked up
     automatically.
     """
-    return {
+    providers = {
         name.value: _FIXED_AGENT_PROVIDERS.get(name.value, "default")
         for name in AgentName
     }
+    providers.update(_FIXED_AGENT_PROVIDERS)
+    return providers
 
 
 # Keep a compact provider map for usage/cost attribution and compatibility.
@@ -742,6 +780,10 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     # ``fireworks`` provider bucket, distinct from the per-vendor direct routes.
     "fireworks": FIREWORKS_PROVIDER,
     "fw": FIREWORKS_PROVIDER,
+    # xAI / Grok Build. Keep xAI off OpenAI-compatible fallback routing so Grok
+    # Build gets a stable first-party provider bucket.
+    "xai": XAI_PROVIDER,
+    "grok": XAI_PROVIDER,
 }
 
 
@@ -802,6 +844,8 @@ def _infer_provider_prefix(model_name: str) -> str | None:
         return MINIMAX_PROVIDER
     if lowered.startswith("kimi-"):
         return MOONSHOT_PROVIDER
+    if lowered.startswith("grok-"):
+        return XAI_PROVIDER
 
     return None
 
@@ -867,6 +911,13 @@ class Settings(BaseSettings):
     default_daily_quota_usd: Decimal = Decimal("10.00")
     quota_mode: QuotaMode = QuotaMode.OFF
 
+    # Issue a short-lived, least-privilege job-scoped credential bundle at claim
+    # (model key for the job's provider only + an S3 write prefix), replacing the
+    # blanket oddish-prod secret read for that worker; revoked on terminal status
+    # (spec §6.6). Off by default: the worker dual-reads the blanket secret until
+    # this is enabled.
+    job_scoped_tokens_enabled: bool = False
+
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the
     # SigV4 keys are rejected -- so every Bedrock claude-code call fails. While
@@ -886,6 +937,13 @@ class Settings(BaseSettings):
 
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
+
+    harbor_source_repo: str = "rishidesai/harbor"
+    # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
+    # the harbor dependency pin in pyproject.
+    harbor_source_ref: str = "main"
+
+    registry_auth_key: str | None = None
 
     # --- Configurable Harbor source (override which Harbor runs a trial) ---
     # Single CLI spec mirror (env ODDISH_HARBOR). Parsed via parse_harbor_spec.
@@ -940,6 +998,19 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+
+    # Dynamic per-model concurrency controller (default OFF; see
+    # workers.queue.concurrency_controller). When enabled, the reconciler
+    # recomputes a per-queue advisory limit each cycle and the dispatcher reads
+    # it (decaying to the static limit when stale). Off => today's behavior.
+    dynamic_model_concurrency: bool = False
+    # Feed-forward provider rate-limit config: a quota-BUCKET table keyed by
+    # bucket_id (rpm / tpm / headroom — the published provider limits) plus a
+    # MANY-to-one queue_key -> bucket_id map. Operator-owned JSON via
+    # ODDISH_PROVIDER_RATE_LIMITS / ODDISH_QUEUE_KEY_BUCKETS; the controller
+    # joins queue_key -> bucket to derive each queue's provider-limit ceiling.
+    provider_rate_limits: dict[str, dict] = Field(default_factory=dict)
+    queue_key_buckets: dict[str, str] = Field(default_factory=dict)
     analysis_model: str = ANALYSIS_MODEL
     probe_analyzer_model: str = PROBE_ANALYZER_MODEL
     verdict_model: str = VERDICT_MODEL
@@ -1086,6 +1157,34 @@ class Settings(BaseSettings):
                 normalized[queue_key] = int(value)
             self.model_concurrency_overrides = normalized
 
+        raw_buckets = os.getenv("ODDISH_PROVIDER_RATE_LIMITS")
+        if raw_buckets:
+            try:
+                parsed_buckets = json.loads(raw_buckets)
+            except Exception as exc:
+                raise ValueError(
+                    "ODDISH_PROVIDER_RATE_LIMITS must be valid JSON"
+                ) from exc
+            if not isinstance(parsed_buckets, dict):
+                raise ValueError("ODDISH_PROVIDER_RATE_LIMITS must be a JSON object")
+            self.provider_rate_limits = {
+                str(bucket_id): dict(limits)
+                for bucket_id, limits in parsed_buckets.items()
+            }
+
+        raw_map = os.getenv("ODDISH_QUEUE_KEY_BUCKETS")
+        if raw_map:
+            try:
+                parsed_map = json.loads(raw_map)
+            except Exception as exc:
+                raise ValueError("ODDISH_QUEUE_KEY_BUCKETS must be valid JSON") from exc
+            if not isinstance(parsed_map, dict):
+                raise ValueError("ODDISH_QUEUE_KEY_BUCKETS must be a JSON object")
+            self.queue_key_buckets = {
+                self.normalize_queue_key(str(key)): str(bucket_id)
+                for key, bucket_id in parsed_map.items()
+            }
+
         self.azure_openai_deployments = self._normalize_azure_openai_deployments(
             self.azure_openai_deployments
         )
@@ -1152,6 +1251,8 @@ class Settings(BaseSettings):
         # bare-id direct-provider routes below.
         if is_fireworks_model(cleaned):
             return to_fireworks_model_id(cleaned)
+        if is_xai_model(cleaned):
+            return to_xai_model_id(cleaned)
         if is_zai_model(cleaned):
             return to_zai_model_id(cleaned)
         if is_minimax_model(cleaned):
@@ -1197,6 +1298,8 @@ class Settings(BaseSettings):
         normalized_model = self.normalize_trial_model(agent, model)
         if normalized_model:
             return self.normalize_queue_key(normalized_model)
+        if self.get_provider_for_agent(agent) == XAI_PROVIDER:
+            return XAI_PROVIDER
         return "default"
 
     def get_analysis_queue_key(self) -> str:
@@ -1227,6 +1330,19 @@ class Settings(BaseSettings):
         if normalized == NOP_ORACLE_QUEUE_KEY:
             return max(int(self.nop_oracle_concurrency), 0)
         return max(int(self.default_model_concurrency), 0)
+
+    def get_provider_rate_limit(self, queue_key: str) -> dict | None:
+        """Return the provider rate-limit bucket for ``queue_key``, or ``None``.
+
+        Joins the many-to-one ``queue_key -> bucket_id`` map against the
+        ``provider_rate_limits`` bucket table; ``None`` when the queue is not
+        mapped (the controller then falls back to a static-derived ceiling).
+        """
+        normalized = self.normalize_queue_key(queue_key)
+        bucket_id = self.queue_key_buckets.get(normalized)
+        if bucket_id is None:
+            return None
+        return self.provider_rate_limits.get(bucket_id)
 
     def get_known_queue_keys(self) -> set[str]:
         keys = {

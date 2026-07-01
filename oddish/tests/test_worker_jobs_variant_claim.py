@@ -93,3 +93,46 @@ async def test_claim_is_scoped_to_harbor_variant():
                 WorkerJobModel.__table__.delete().where(WorkerJobModel.id.in_(ids))
             )
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_none_variant_claims_any_variant():
+    """An off-Modal / image-agnostic worker (harbor_variant_id=None) drains EVERY
+    variant of its queue_key -- one queue_key worker serves all variants, so
+    non-default-variant jobs don't strand on Docker/K8s/in-process dispatchers."""
+    queue_key = f"variant-any-{_RUN}"
+    async with get_session() as session:
+        ids = await bulk_enqueue_worker_jobs(
+            session,
+            [
+                EnqueueRequest(
+                    kind=WorkerJobKind.TRIAL,
+                    queue_key=queue_key,
+                    harbor_variant_id="ephemeral",  # non-default
+                    payload={"trial_id": "e1"},
+                ),
+            ],
+            validate=False,
+        )
+        await session.commit()
+
+    try:
+        # A "default"-scoped worker skips the non-default job...
+        skipped = await claim_single_worker_job(
+            queue_key, worker_id="w-def", queue_slot=0, harbor_variant_id="default"
+        )
+        assert skipped is None
+
+        # ...but a None (any-variant) worker claims it.
+        claimed = await claim_single_worker_job(
+            queue_key, worker_id="w-any", queue_slot=1, harbor_variant_id=None
+        )
+        assert claimed is not None
+        assert claimed.harbor_variant_id == "ephemeral"
+        assert claimed.payload["trial_id"] == "e1"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                WorkerJobModel.__table__.delete().where(WorkerJobModel.id.in_(ids))
+            )
+            await session.commit()

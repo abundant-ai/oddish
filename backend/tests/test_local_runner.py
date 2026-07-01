@@ -125,6 +125,7 @@ async def seeded_probe_trial_with_task_dir(tmp_path):
     task_dir.mkdir()
     (task_dir / "instruction.md").write_text("solve the task")
     (task_dir / "task.toml").write_text('version = "1.0"\n')
+    (task_dir / "solution").mkdir()
 
     async with get_session() as session:
         session.add(
@@ -225,6 +226,11 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
 
     monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
 
+    async def fake_mint_probe_creds(*, org_id, trial_id):
+        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+
+    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+
     await _run_harbor_trial(trial_id)
 
     # Harbor must see a temp copy, never the original task dir on disk.
@@ -246,3 +252,119 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
 
     # Temp work dir is cleaned up after Harbor exits.
     assert not Path(captured["task_path"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_probe_uploads_cli_to_harness(
+    monkeypatch, seeded_probe_trial_with_task_dir
+):
+    """Only the CLI is uploaded to /probe-harness; no first upload to /opt/oddish-probe."""
+    trial_id, _ = seeded_probe_trial_with_task_dir
+    uploads: list[tuple[str, str]] = []
+    captured: dict[str, object] = {"env": None, "exec_cmds": []}
+
+    class FakeEnv:
+        async def upload_dir(self, *, source_dir, target_dir):
+            names = sorted(p.name for p in Path(source_dir).iterdir())
+            uploads.append((target_dir, ",".join(names)))
+
+        async def exec(self, command, **_kwargs):
+            captured["exec_cmds"].append(command)
+            from types import SimpleNamespace
+            return SimpleNamespace(return_code=0)
+
+    class FakeTrial:
+        def __init__(self, cfg, **_):
+            captured["env"] = dict(cfg.agent.env or {})
+            self.result = MagicMock()
+            self.result.verifier_result = MagicMock(rewards={"reward": 0.0})
+            self.result.model_dump = lambda mode=None: {}
+            self._hooks = []
+
+        @classmethod
+        async def create(cls, cfg):
+            return cls(cfg)
+
+        def add_hook(self, event, hook):
+            self._hooks.append(hook)
+
+        async def run(self):
+            event = MagicMock()
+            event.environment = FakeEnv()
+            for h in self._hooks:
+                await h(event)
+            return self.result
+
+    monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
+
+    async def fake_mint_probe_creds(*, org_id, trial_id):
+        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+
+    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+    await _run_harbor_trial(trial_id)
+
+    targets = {t for t, _ in uploads}
+    # No longer uploads to the hidden stage — task assets removed from first upload.
+    assert "/opt/oddish-probe" not in targets
+    assert "/probe-harness" in targets
+    # The /probe-harness mount carries ONLY the CLI.
+    harness = next(names for t, names in uploads if t == "/probe-harness")
+    assert harness == "oddish-query"
+    # STAGE_DIR is gone; three new env vars take its place.
+    assert "ODDISH_PROBE_STAGE_DIR" not in captured["env"]
+    assert captured["env"]["ODDISH_PROBE_TASK_ID"]
+    assert captured["env"]["ODDISH_PROBE_HARBOR_REPO"]
+    assert captured["env"]["ODDISH_PROBE_HARBOR_REF"]
+    # CLI executable check was attempted.
+    assert any("/probe-harness/oddish-query" in cmd for cmd in captured["exec_cmds"])
+
+
+@pytest.mark.asyncio
+async def test_local_probe_env_contract(monkeypatch, seeded_probe_trial_with_task_dir):
+    """Probe agent env: 3 new vars present, ODDISH_PROBE_STAGE_DIR absent."""
+    trial_id, _ = seeded_probe_trial_with_task_dir
+    captured: dict[str, object] = {"env": None}
+
+    class FakeEnv:
+        async def upload_dir(self, *, source_dir, target_dir):
+            pass
+
+        async def exec(self, command, **_kwargs):
+            from types import SimpleNamespace
+            return SimpleNamespace(return_code=0)
+
+    class FakeTrial:
+        def __init__(self, cfg, **_):
+            captured["env"] = dict(cfg.agent.env or {})
+            self.result = MagicMock()
+            self.result.verifier_result = MagicMock(rewards={"reward": 0.0})
+            self.result.model_dump = lambda mode=None: {}
+            self._hooks = []
+
+        @classmethod
+        async def create(cls, cfg):
+            return cls(cfg)
+
+        def add_hook(self, event, hook):
+            self._hooks.append(hook)
+
+        async def run(self):
+            event = MagicMock()
+            event.environment = FakeEnv()
+            for h in self._hooks:
+                await h(event)
+            return self.result
+
+    monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
+
+    async def fake_mint_probe_creds(*, org_id, trial_id):
+        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+
+    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+    await _run_harbor_trial(trial_id)
+
+    env = captured["env"]
+    assert env["ODDISH_PROBE_TASK_ID"]
+    assert env["ODDISH_PROBE_HARBOR_REPO"]
+    assert env["ODDISH_PROBE_HARBOR_REF"]
+    assert "ODDISH_PROBE_STAGE_DIR" not in env

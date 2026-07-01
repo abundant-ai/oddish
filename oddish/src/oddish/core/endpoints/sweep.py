@@ -67,6 +67,28 @@ def build_task_sweep_response(
     )
 
 
+def _stamp_experiment_provenance(
+    experiment: ExperimentModel | None,
+    submission: TaskSweepSubmission,
+) -> None:
+    """Record the creating run's owner + PR link on the experiment (set-once).
+
+    ``submission.github_username`` / ``submission.user`` identify whoever
+    launched the run (resolved to the authenticated actor upstream), and
+    ``submission.link`` is the PR/run URL. We only set each field when it is
+    still empty, so the experiment reflects the run that *created* it and a
+    later run of a shared task never overwrites it. Tasks keep their own
+    (mutable) ``link``; this is the durable per-experiment copy.
+    """
+    if experiment is None:
+        return
+    owner = submission.github_username or submission.user
+    if not experiment.owner and owner:
+        experiment.owner = owner
+    if not experiment.link and submission.link:
+        experiment.link = submission.link
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -104,6 +126,7 @@ async def create_task_sweep_core(
         build_task_submission_from_sweep,
     )
     from oddish.queue import (
+        _ensure_not_collection_target,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
@@ -203,6 +226,10 @@ async def create_task_sweep_core(
             experiment = await get_experiment_by_id_or_name(
                 session, submission.experiment_id, org_id
             )
+            try:
+                _ensure_not_collection_target(experiment)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
             if not experiment:
                 experiment = await get_or_create_experiment(
                     session, submission.experiment_id, org_id
@@ -224,6 +251,9 @@ async def create_task_sweep_core(
                 session, generate_experiment_name(), org_id
             )
             new_experiment_id = experiment.id
+
+        # Stamp the run's owner + PR link onto the experiment (set-once).
+        _stamp_experiment_provenance(experiment, submission)
 
         # Determine default environment from existing trial, if present.
         existing_env_result = await session.execute(
@@ -312,6 +342,7 @@ async def create_task_sweep_core(
                 experiment=experiment,
                 org_id=org_id,
                 billed_user_id=billed_user_id,
+                registry_auth=submission.registry_auth,
             )
         if (
             reservation is not None
@@ -372,6 +403,9 @@ async def create_task_sweep_core(
 
     experiment = await _primary_experiment_for_task_model(task)
 
+    # Stamp the run's owner + PR link onto the experiment (set-once).
+    _stamp_experiment_provenance(experiment, submission)
+
     new_trials = list(task.trials)
 
     # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
@@ -392,6 +426,7 @@ async def create_task_sweep_core(
             experiment=experiment,
             org_id=org_id,
             billed_user_id=billed_user_id,
+            registry_auth=submission.registry_auth,
         )
     if reservation is not None and idempotency_store is not None and org_id is not None:
         # Flush so trial ids / timestamps are populated, then store the
