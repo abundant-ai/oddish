@@ -231,3 +231,25 @@ async def test_create_collection_requires_auth(client):
         json={"name": "x", "trial_ids": ["a"]},
     )
     assert resp.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_create_collection_rejects_wrong_scope(client, seed_org_with_trials):
+    org_id, t1, t2, _tasks_key, created_experiment_ids = seed_org_with_trials
+
+    suffix = uuid.uuid4().hex[:8]
+    async with get_session() as session:
+        read_key_model, raw_read_key = create_api_key(
+            org_id=org_id, name=f"test-read-key-{suffix}", scope=APIKeyScope.READ
+        )
+        session.add(read_key_model)
+
+    try:
+        resp = await client.post(
+            "/experiments/collections",
+            json={"name": "my collection", "trial_ids": [t1, t2]},
+            headers={"Authorization": f"Bearer {raw_read_key}"},
+        )
+        assert resp.status_code == 403
+    finally:
+        await _cleanup(api_key_ids=[read_key_model.id])
