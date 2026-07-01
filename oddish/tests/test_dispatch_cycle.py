@@ -90,6 +90,15 @@ def _fake_counts(queued_by_org_queue, running_by_queue):
     return _counts
 
 
+def _fake_held(held_by_queue_key):
+    # Held ``queue_slots`` lease counts per queue_key -- the injectable seam that
+    # stands in for the real DB query in unit tests (mirrors ``_counts``).
+    async def _held(queue_keys):
+        return dict(held_by_queue_key)
+
+    return _held
+
+
 def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
     dispatcher = FakeDispatcher()
 
@@ -102,6 +111,7 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
             _counts=_fake_counts(
                 {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
             ),
+            _held=_fake_held({}),
         )
 
     result = asyncio.run(_go())
@@ -124,6 +134,7 @@ def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:
             _counts=_fake_counts(
                 {(None, "busy", "default"): 4}, {("busy", "default"): 2}
             ),
+            _held=_fake_held({}),
         )
 
     result = asyncio.run(_go())
@@ -149,8 +160,87 @@ def test_run_dispatch_cycle_records_admission_rejection_reason() -> None:
             _counts=_fake_counts(
                 {(None, "gpu-task", "default"): 1}, {("gpu-task", "default"): 0}
             ),
+            _held=_fake_held({}),
         )
 
     result = asyncio.run(_go())
     assert dispatcher.spawned == []
     assert result.why_waiting["gpu-task"] == "image-ref unresolvable"
+
+
+# --------------------------------------------------------------------------
+# Held queue_slots leases fold into the in-flight number (fast-trigger churn)
+# --------------------------------------------------------------------------
+def test_run_dispatch_cycle_held_slots_reduce_available_spawn() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _go():
+        # limit 5, 0 RUNNING, but 3 slot leases already held (freshly spawned
+        # workers not yet RUNNING) -> only 5 - max(0, 3) = 2 free to spawn.
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=10,
+            concurrency_for=lambda qk: 5,
+            _discover=_fake_discover([("gpt-4o", "default")]),
+            _counts=_fake_counts(
+                {(None, "gpt-4o", "default"): 10}, {("gpt-4o", "default"): 0}
+            ),
+            _held=_fake_held({"gpt-4o": 3}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == ["gpt-4o", "gpt-4o"]
+    assert [h.queue_key for h in dispatcher.spawned] == ["gpt-4o", "gpt-4o"]
+
+
+def test_run_dispatch_cycle_held_slots_at_limit_spawns_nothing() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _go():
+        # 4 queued, limit 2, 0 RUNNING, but 2 held leases -> at capacity via the
+        # held count alone; spawn nothing and name "waiting for slot" (not a
+        # false "spawn cap reached", which the RUNNING-only view would give).
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=10,
+            concurrency_for=lambda qk: 2,
+            _discover=_fake_discover([("busy", "default")]),
+            _counts=_fake_counts(
+                {(None, "busy", "default"): 4}, {("busy", "default"): 0}
+            ),
+            _held=_fake_held({"busy": 2}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == []
+    assert dispatcher.spawned == []
+    assert "slot" in result.why_waiting["busy"].lower()
+
+
+def test_run_dispatch_cycle_same_cycle_spawns_read_as_waiting_for_slot() -> None:
+    dispatcher = FakeDispatcher()
+
+    async def _go():
+        # 5 queued, limit 2, 0 RUNNING, 0 held -> the planner spawns 2 (fills both
+        # slots) this cycle. The 3 leftover rows are blocked by the queue's own
+        # concurrency cap, not the per-poll budget (max_workers 10). The
+        # held/running snapshot predates the spawn, so folding *this cycle's* fresh
+        # leases into the in-flight number is what makes the reason read "waiting
+        # for slot" instead of a false "spawn cap reached".
+        return await run_dispatch_cycle(
+            dispatcher,
+            max_workers=10,
+            concurrency_for=lambda qk: 2,
+            _discover=_fake_discover([("solo", "default")]),
+            _counts=_fake_counts(
+                {(None, "solo", "default"): 5}, {("solo", "default"): 0}
+            ),
+            _held=_fake_held({}),
+        )
+
+    result = asyncio.run(_go())
+    assert result.spawn_plan == ["solo", "solo"]
+    assert [h.queue_key for h in dispatcher.spawned] == ["solo", "solo"]
+    reason = result.why_waiting["solo"].lower()
+    assert "slot" in reason  # served up to its own cap, not the per-poll budget
+    assert "cap" not in reason

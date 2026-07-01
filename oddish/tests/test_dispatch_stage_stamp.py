@@ -88,6 +88,9 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
     async def _counts(_keys):
         return {(None, "gpt-4o", "default"): 2}, {("gpt-4o", "default"): 0}
 
+    async def _held(_keys):
+        return {}
+
     asyncio.run(
         run_dispatch_cycle(
             dispatcher,
@@ -96,6 +99,7 @@ def test_run_dispatch_cycle_invokes_on_stage_with_admitted_and_reasons() -> None
             on_stage=_on_stage,
             _discover=_discover,
             _counts=_counts,
+            _held=_held,
         )
     )
     assert seen["spawned"] == ["gpt-4o", "gpt-4o"]
@@ -124,6 +128,9 @@ def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> No
     async def _counts(_keys):
         return {(None, "gpt-4o", "default"): 3}, {("gpt-4o", "default"): 0}
 
+    async def _held(_keys):
+        return {}
+
     result = asyncio.run(
         run_dispatch_cycle(
             dispatcher,
@@ -132,6 +139,7 @@ def test_run_dispatch_cycle_on_stage_stamps_spawned_handles_not_admitted() -> No
             on_stage=_on_stage,
             _discover=_discover,
             _counts=_counts,
+            _held=_held,
         )
     )
     # admitted is 3 workers (3 queued, capacity 5), but only one handle came
