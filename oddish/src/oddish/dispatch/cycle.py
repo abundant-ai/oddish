@@ -207,30 +207,29 @@ async def _run_dispatch_cycle(
             running or 0
         )
 
-    # Pass ``admitted`` as a list (not a set): its per-key multiplicity lets
-    # ``compute_why_waiting`` keep a reason on the still-queued rows of a
-    # partially served queue_key instead of treating one spawn as fully served.
+    handles = list(await dispatcher.spawn(spawn_plan=admitted))
+
+    # Derive both §12 fields from the queue_keys that ACTUALLY got a worker this
+    # cycle (the returned handles, preserving per-key multiplicity), NOT the
+    # admitted plan. A backend that spawns fewer workers than admitted would
+    # otherwise leave the un-spawned rows with neither a wait reason (why_waiting
+    # would treat them served) nor a spawned_at stamp -- dropping them from both
+    # fields. Using the actual spawns keeps why_waiting and the spawned_at stamp
+    # consistent; in the all-spawned case ``spawned_keys`` equals ``admitted``.
+    spawned_keys = [h.queue_key for h in handles]
     why_waiting = compute_why_waiting(
         queued_by_queue=queued_by_queue,
         running_by_queue=running_by_queue_key,
         concurrency_limits=concurrency_limits,
-        spawned_keys=admitted,
+        spawned_keys=spawned_keys,
         max_workers=max_workers,
         base_reasons=rejected,
     )
 
-    handles = list(await dispatcher.spawn(spawn_plan=admitted))
-
     if on_stage is not None:
         # Telemetry is best-effort: a stamping failure must never break dispatch.
-        # Stamp spawned_at from the queue_keys that actually got a worker this
-        # cycle (the returned handles, preserving per-key multiplicity), not the
-        # admitted plan: a backend that spawns fewer workers than admitted would
-        # otherwise stamp spawned_at on rows whose worker never started. In the
-        # all-spawned case handles' queue_keys equal ``admitted``, so this is
-        # identical; only a partial spawn is corrected.
         try:
-            await on_stage([h.queue_key for h in handles], why_waiting)
+            await on_stage(spawned_keys, why_waiting)
         except Exception:
             pass
 
