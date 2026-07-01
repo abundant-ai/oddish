@@ -5,6 +5,7 @@ from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.combine import combine
 from oddish.cli.delete import delete
+from oddish.cli.experiment import experiment_app
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
@@ -27,6 +28,7 @@ app.command()(status)
 app.command()(cancel)
 app.command()(combine)
 app.command()(delete)
+app.add_typer(experiment_app, name="experiment")
 app.command()(pull)
 app.command()(publish)
 app.command()(unpublish)

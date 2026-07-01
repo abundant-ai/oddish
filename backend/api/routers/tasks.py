@@ -80,6 +80,7 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 from oddish.queue import (
     cancel_tasks_runs,
 )
+from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.schemas import (
     BackfillQARequest,
     ExperimentCombineRequest,
@@ -98,6 +99,8 @@ from oddish.schemas import (
     TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TrialCollectionRequest,
+    TrialCollectionResponse,
     UploadResponse,
 )
 
@@ -806,6 +809,31 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.post("/experiments/collections", response_model=TrialCollectionResponse)
+async def create_trial_collection(
+    payload: TrialCollectionRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TrialCollectionResponse:
+    """Gather existing trials into a new read-only collection experiment.
+
+    Trials keep their home experiment; membership is additive via
+    ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await create_trial_collection_core(
+            session,
+            name=payload.name,
+            trial_ids=payload.trial_ids,
+            org_id=auth.org_id,
         )
         await session.commit()
 
