@@ -190,7 +190,12 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        expose_headers=["Server-Timing"],
+        expose_headers=[
+            "Server-Timing",
+            "Oddish-Submit-Concurrency",
+            "RateLimit",
+            "RateLimit-Policy",
+        ],
     )
 
     @api.middleware("http")
@@ -212,6 +217,10 @@ def create_app() -> FastAPI:
             response.headers["Server-Timing"] = combined
         return response
 
+    from api.capacity_headers import capacity_header_middleware
+
+    api.middleware("http")(capacity_header_middleware)
+
     from api.routers import (
         admin,
         api_keys,
@@ -221,6 +230,7 @@ def create_app() -> FastAPI:
         documents,
         github_webhooks,
         imports,
+        load,
         orgs,
         skills,
         public,
@@ -238,6 +248,7 @@ def create_app() -> FastAPI:
     api.include_router(tasks.router)
     api.include_router(trials.router)
     api.include_router(imports.router)
+    api.include_router(load.router)
     api.include_router(skills.router)
     api.include_router(documents.router)
     api.include_router(public.router)
