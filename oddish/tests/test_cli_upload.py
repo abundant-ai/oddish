@@ -13,6 +13,40 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.cli import api as cli_api
 
 
+def _write_minimal_task(task_path: Path, *, task_toml: str | None = None) -> None:
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        task_toml
+        or """\
+version = "1.0"
+
+[metadata]
+difficulty = "easy"
+description = "first description"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+""",
+        encoding="utf-8",
+    )
+    (task_path / "instruction.md").write_text("Solve the task.\n", encoding="utf-8")
+    (task_path / "environment").mkdir()
+    (task_path / "environment" / "Dockerfile").write_text(
+        "FROM alpine:3.20\n", encoding="utf-8"
+    )
+    (task_path / "tests").mkdir()
+    (task_path / "tests" / "test.sh").write_text(
+        "#!/bin/sh\nexit 0\n", encoding="utf-8"
+    )
+
+
 class _RetryingUploadClient:
     def __init__(self):
         self.payloads: list[bytes] = []
@@ -86,6 +120,85 @@ def test_local_task_discovery_fallback_uses_task_model(
     task_paths = cli_api.get_task_paths_from_local(tmp_path)
 
     assert task_paths == [tmp_path / "valid-task"]
+
+
+def test_task_content_hash_ignores_task_metadata_changes(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path)
+
+    before = cli_api.compute_task_content_hash(task_path)
+    (task_path / "task.toml").write_text(
+        """\
+version = "1.0"
+
+[metadata]
+difficulty = "hard"
+description = "rewritten grading notes"
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+""",
+        encoding="utf-8",
+    )
+
+    assert cli_api.compute_task_content_hash(task_path) == before
+
+
+def test_task_content_hash_changes_for_runtime_inputs(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path)
+
+    before = cli_api.compute_task_content_hash(task_path)
+    (task_path / "instruction.md").write_text("Solve a different task.\n")
+    assert cli_api.compute_task_content_hash(task_path) != before
+
+
+def test_task_content_hash_changes_for_runtime_task_config(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path)
+
+    before = cli_api.compute_task_content_hash(task_path)
+    (task_path / "task.toml").write_text(
+        """\
+version = "1.0"
+
+[metadata]
+difficulty = "easy"
+description = "first description"
+
+[verifier]
+timeout_sec = 240.0
+
+[agent]
+timeout_sec = 300.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+""",
+        encoding="utf-8",
+    )
+
+    assert cli_api.compute_task_content_hash(task_path) != before
+
+
+def test_task_content_hash_uses_harbor_default_ignores(tmp_path: Path) -> None:
+    task_path = tmp_path / "task"
+    _write_minimal_task(task_path)
+
+    before = cli_api.compute_task_content_hash(task_path)
+    cache_dir = task_path / "environment" / "__pycache__"
+    cache_dir.mkdir()
+    (cache_dir / "junk.pyc").write_bytes(b"compiled")
+
+    assert cli_api.compute_task_content_hash(task_path) == before
 
 
 def test_git_lfs_pointer_detection_finds_unresolved_pointer(tmp_path: Path) -> None:
