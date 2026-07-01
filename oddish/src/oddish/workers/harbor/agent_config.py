@@ -19,6 +19,7 @@ from oddish.config import (
     is_fireworks_model,
     is_minimax_model,
     is_moonshot_model,
+    is_xai_model,
     is_zai_model,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -29,6 +30,7 @@ from oddish.config import (
     to_fireworks_model_id,
     to_minimax_model_id,
     to_moonshot_model_id,
+    to_xai_model_id,
     to_zai_model_id,
     zai_bare_model_id,
 )
@@ -37,6 +39,7 @@ from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
 _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
+_ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
 
 
 def _apply_claude_code_openrouter_env(agent_config: AgentConfig) -> None:
@@ -268,6 +271,18 @@ def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.import_path = _ODDISH_CODEX_IMPORT_PATH
 
 
+def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route Grok Build trials through Oddish's streaming trajectory wrapper."""
+    if agent_config.import_path is not None:
+        return
+    agent_name = (agent_config.name or "").strip().lower()
+    if agent_name != "grok-build":
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_GROK_BUILD_IMPORT_PATH
+
+
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
@@ -398,6 +413,8 @@ def _build_agent_config(
 
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
+    elif is_xai_model(agent_config.model_name):
+        agent_config.model_name = to_xai_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
         agent_config.model_name = to_zai_model_id(agent_config.model_name)
     elif is_minimax_model(agent_config.model_name):
@@ -428,6 +445,7 @@ def _build_agent_config(
             _apply_codex_azure_compat(agent_config)
 
     _apply_codex_oddish_wrapper(agent_config)
+    _apply_grok_build_oddish_wrapper(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 

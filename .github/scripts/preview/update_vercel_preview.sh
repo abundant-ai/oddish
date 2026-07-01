@@ -17,21 +17,26 @@ database_label="${PREVIEW_DATABASE_LABEL:-}"
 if [ -z "$backend_label" ]; then
   if [ -n "${MODAL_API_URL:-}" ]; then
     backend_label="${MODAL_APP_NAME:-preview Modal backend}"
-  elif [ -n "$backend_api_url" ]; then
-    backend_label="production"
   else
-    backend_label="Vercel project default"
+    backend_label="production"
   fi
 fi
 
 if [ -z "$database_label" ]; then
   if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
-    database_label="Supabase ${SUPABASE_BRANCH_REF}"
+    database_label="project ${SUPABASE_BRANCH_REF}"
   elif [ -n "${MODAL_API_URL:-}" ]; then
     database_label="preview Supabase"
   else
     database_label="production"
   fi
+fi
+
+# branch_ref is the preview branch's own Supabase project ref, so link it to
+# that project's dashboard. Prod DB stays plain text (no per-PR dashboard).
+database_url=""
+if [ -n "${SUPABASE_BRANCH_REF:-}" ]; then
+  database_url="https://supabase.com/dashboard/project/${SUPABASE_BRANCH_REF}"
 fi
 
 is_configured_vercel() {
@@ -110,8 +115,11 @@ fi
   fi
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW true
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_LABEL "$backend_label"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_BACKEND_URL "$backend_api_url"
   set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_LABEL "$database_label"
-  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_COMMIT_SHA "${VERCEL_GIT_COMMIT_SHA:-}"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_DATABASE_URL "$database_url"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_URL "${PR_URL:-}"
+  set_vercel_env NEXT_PUBLIC_ODDISH_PREVIEW_PR_TITLE "${PR_TITLE:-}"
 )
 
 vercel_output="$(mktemp)"

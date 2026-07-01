@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -867,6 +869,149 @@ async def get_queue_health_core(session: AsyncSession) -> QueueHealthResponse:
         reconciler=_component(RECONCILER_COMPONENT),
         timestamp=now.isoformat(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Live submission-load snapshot (advertised header + GET /load)
+#
+# A slim, ~5s-cached, single-flighted view derived from get_queue_health_core.
+# Inert until the client/runtime consume it.
+# ---------------------------------------------------------------------------
+
+LOAD_CACHE_TTL_SECONDS = 5.0
+CLIENT_FLOOR = 4
+CLIENT_CEILING_MAX = 64
+PRESSURE_WAIT_TARGET_S = 120.0
+PRESSURE_SOFT_QUEUE_CAP = 500.0
+PRESSURE_RTT_BUDGET_S = 2.0
+SUBMIT_CONCURRENCY_HEADER = "Oddish-Submit-Concurrency"
+SUBMIT_LATENCY_COMPONENT = "submit_latency"
+
+# Indirection so tests can advance the clock deterministically.
+_monotonic = time.monotonic
+
+
+def compute_pressure(
+    *,
+    wait_p95_max: float | None,
+    totals_queued: int,
+    sweep_rtt_p95_ewma: float | None,
+) -> float:
+    """Saturation score in [0, 1] = max of the normalized signal terms."""
+    wait_term = (wait_p95_max or 0.0) / PRESSURE_WAIT_TARGET_S
+    queue_term = float(totals_queued) / PRESSURE_SOFT_QUEUE_CAP
+    rtt_term = (sweep_rtt_p95_ewma or 0.0) / PRESSURE_RTT_BUDGET_S
+    return max(0.0, min(1.0, max(wait_term, queue_term, rtt_term)))
+
+
+def compute_submit_ceiling(pressure: float) -> int:
+    """Recommended client in-flight submission ceiling: full when idle, floor when saturated."""
+    raw = round(CLIENT_CEILING_MAX * (1.0 - pressure))
+    return int(max(CLIENT_FLOOR, min(CLIENT_CEILING_MAX, raw)))
+
+
+class LoadTotals(BaseModel):
+    queued: int
+    running: int
+
+
+class LoadQueue(BaseModel):
+    queue_key: str
+    queued: int
+    running: int
+    limit: int
+    fill: float | None
+    wait_p95_seconds: float | None
+    advisory_limit: int  # == limit until a dynamic advisory limit lands
+    limit_source: str  # "static" until a dynamic advisory limit lands
+
+
+class LoadSnapshot(BaseModel):
+    submit_ceiling: int
+    pressure: float
+    ttl_seconds: int
+    totals: LoadTotals
+    queues: list[LoadQueue]
+    timestamp: str
+
+
+async def build_load_snapshot(session: AsyncSession) -> LoadSnapshot:
+    """Derive the slim load snapshot from the existing queue-health aggregate."""
+    health = await get_queue_health_core(session)
+
+    # Lazy import keeps the worker-only chain out of the server-only install
+    # (mirrors get_queue_health_core).
+    from oddish.workers.queue.runtime_status import get_queue_runtime_statuses
+
+    statuses = await get_queue_runtime_statuses(session)
+    # `sweep_rtt_p95_ewma` is a contract-mandated key name: the value is actually a
+    # smoothed MEAN of submission-handler latency (an EWMA, not a true p95) and pools
+    # /tasks/sweep with /tasks/upload/*. Kept verbatim so the read/write keys match.
+    submit_row = statuses.get(SUBMIT_LATENCY_COMPONENT) or {}
+    sweep_rtt = (submit_row.get("payload") or {}).get("sweep_rtt_p95_ewma")
+
+    wait_values = [
+        c.wait_p95_seconds for c in health.capacity if c.wait_p95_seconds is not None
+    ]
+    wait_p95_max = max(wait_values) if wait_values else None
+
+    pressure = compute_pressure(
+        wait_p95_max=wait_p95_max,
+        totals_queued=health.totals_queued,
+        sweep_rtt_p95_ewma=float(sweep_rtt) if sweep_rtt is not None else None,
+    )
+    queues = [
+        LoadQueue(
+            queue_key=c.queue_key,
+            queued=c.queued,
+            running=c.running,
+            limit=c.limit,
+            fill=c.fill,
+            wait_p95_seconds=c.wait_p95_seconds,
+            advisory_limit=c.limit,
+            limit_source="static",
+        )
+        for c in health.capacity
+    ]
+    return LoadSnapshot(
+        submit_ceiling=compute_submit_ceiling(pressure),
+        pressure=pressure,
+        ttl_seconds=int(LOAD_CACHE_TTL_SECONDS),
+        totals=LoadTotals(queued=health.totals_queued, running=health.totals_running),
+        queues=queues,
+        timestamp=health.timestamp,
+    )
+
+
+_load_cache: LoadSnapshot | None = None
+_load_cache_at: float = 0.0
+_load_cache_lock = asyncio.Lock()
+
+
+async def _refresh_load_snapshot() -> LoadSnapshot:
+    """Open a session and rebuild the snapshot (the only DB-touching seam)."""
+    from oddish.db import get_session
+
+    async with get_session() as session:
+        return await build_load_snapshot(session)
+
+
+async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadSnapshot:
+    """Return the slim load snapshot, refreshing at most once per ``ttl`` seconds.
+
+    Single-flighted: under a burst, exactly one coroutine refreshes while the
+    rest wait on the lock and then read the just-refreshed value, so the
+    underlying queue-health query runs at most once per ttl per container.
+    """
+    global _load_cache, _load_cache_at
+    if _load_cache is not None and _monotonic() - _load_cache_at < ttl:
+        return _load_cache
+    async with _load_cache_lock:
+        if _load_cache is not None and _monotonic() - _load_cache_at < ttl:
+            return _load_cache
+        _load_cache = await _refresh_load_snapshot()
+        _load_cache_at = _monotonic()
+        return _load_cache
 
 
 # ---------------------------------------------------------------------------

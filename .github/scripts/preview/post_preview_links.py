@@ -50,17 +50,15 @@ def build_body() -> str:
     modal_api_url = env("MODAL_API_URL")
     backend_label = env("PREVIEW_BACKEND_LABEL", "unknown")
     database_label = env("PREVIEW_DATABASE_LABEL", "unknown")
-    supabase_project_ref = env("SUPABASE_PROJECT_REF")
     supabase_branch_ref = env("SUPABASE_BRANCH_REF")
     deploy_backend = env("DEPLOY_BACKEND", "false")
     run_migrations = env("RUN_MIGRATIONS", "false")
     deploy_frontend = env("DEPLOY_FRONTEND", "false")
 
     supabase_url = ""
-    if supabase_project_ref and supabase_branch_ref:
-        supabase_url = (
-            f"https://supabase.com/dashboard/project/{supabase_project_ref}/branches"
-        )
+    if supabase_branch_ref:
+        # branch_ref is the preview branch's own Supabase project ref.
+        supabase_url = f"https://supabase.com/dashboard/project/{supabase_branch_ref}"
 
     rows = [
         f"| Frontend | {link_or_text(vercel_url or 'not deployed', vercel_url)} | Vercel preview for `{short_sha}` |",
