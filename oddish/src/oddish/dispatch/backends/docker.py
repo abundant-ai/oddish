@@ -70,34 +70,47 @@ class DockerPoolDispatcher:
 
     async def spawn(self, *, spawn_plan: Sequence[str]) -> Sequence[WorkerHandle]:
         handles: list[WorkerHandle] = []
-        for queue_key in spawn_plan:
-            args = [
-                "run",
-                "-d",
-                "--rm",
-                "--label",
-                MANAGED_LABEL,
-                "--label",
-                f"{QUEUE_KEY_LABEL}={queue_key}",
-            ]
-            if self._network:
-                args += ["--network", self._network]
-            for key, value in self._env.items():
-                args += ["-e", f"{key}={value}"]
-            # The worker drains its assigned queue_key only.
-            args += ["-e", f"ODDISH_WORKER_QUEUE_KEY={queue_key}"]
-            args += list(self._extra_run_args)
-            args.append(self._image)
-            args += self._command
-            container_id = (await self._run(args)).strip()
-            handles.append(
-                WorkerHandle(
-                    provider=self.name,
-                    queue_key=queue_key,
-                    id=container_id,
-                    provisional=False,
+        try:
+            for queue_key in spawn_plan:
+                args = [
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--label",
+                    MANAGED_LABEL,
+                    "--label",
+                    f"{QUEUE_KEY_LABEL}={queue_key}",
+                ]
+                if self._network:
+                    args += ["--network", self._network]
+                for key, value in self._env.items():
+                    args += ["-e", f"{key}={value}"]
+                # The worker drains its assigned queue_key only.
+                args += ["-e", f"ODDISH_WORKER_QUEUE_KEY={queue_key}"]
+                args += list(self._extra_run_args)
+                args.append(self._image)
+                args += self._command
+                container_id = (await self._run(args)).strip()
+                handles.append(
+                    WorkerHandle(
+                        provider=self.name,
+                        queue_key=queue_key,
+                        id=container_id,
+                        provisional=False,
+                    )
                 )
-            )
+        except Exception:
+            # A mid-loop failure would orphan the containers already started
+            # this call: they're absent from the returned handles, so the
+            # dispatch cycle never tracks (or GCs) them. Best-effort tear them
+            # down via our own cancel path, then re-raise the original error.
+            # The cleanup is itself guarded so a teardown failure can't mask the
+            # error that actually aborted the spawn.
+            try:
+                await self.cancel(handles)
+            except Exception:
+                pass
+            raise
         return handles
 
     async def list_managed(self) -> list[WorkerHandle]:

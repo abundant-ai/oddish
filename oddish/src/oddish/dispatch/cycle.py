@@ -223,8 +223,14 @@ async def _run_dispatch_cycle(
 
     if on_stage is not None:
         # Telemetry is best-effort: a stamping failure must never break dispatch.
+        # Stamp spawned_at from the queue_keys that actually got a worker this
+        # cycle (the returned handles, preserving per-key multiplicity), not the
+        # admitted plan: a backend that spawns fewer workers than admitted would
+        # otherwise stamp spawned_at on rows whose worker never started. In the
+        # all-spawned case handles' queue_keys equal ``admitted``, so this is
+        # identical; only a partial spawn is corrected.
         try:
-            await on_stage(admitted, why_waiting)
+            await on_stage([h.queue_key for h in handles], why_waiting)
         except Exception:
             pass
 
