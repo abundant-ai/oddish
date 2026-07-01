@@ -17,6 +17,9 @@ import pytest  # noqa: E402
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
 from oddish.workers.agents.grok_build import OddishGrokBuild  # noqa: E402
+from oddish.workers.agents.grok_build_trajectory import (  # noqa: E402
+    convert_grok_build_json_text_to_trajectory,
+)
 from oddish.workers.harbor import runner as harbor_runner  # noqa: E402
 from oddish.workers.harbor import agent_config as harbor_agent_config  # noqa: E402
 from oddish.workers.harbor import storage as harbor_storage  # noqa: E402
@@ -967,6 +970,34 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
         == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/redacted-model"
+
+
+def test_convert_grok_build_stream_to_multi_step_trajectory():
+    raw = "\n".join(
+        [
+            json.dumps({"type": "thought", "data": "First reasoning sentence. "}),
+            json.dumps({"type": "thought", "data": "Second reasoning sentence. "}),
+            json.dumps({"type": "thought", "data": "x" * 3000}),
+            json.dumps({"type": "text", "data": "Implemented the fix. "}),
+            json.dumps({"type": "text", "data": "All checks passed."}),
+            json.dumps({"type": "end", "sessionId": "session-1"}),
+        ]
+    )
+
+    trajectory = convert_grok_build_json_text_to_trajectory(
+        raw,
+        agent_version="grok 0.2.73",
+        model_name="xai/redacted-model",
+    )
+
+    assert trajectory is not None
+    assert trajectory.session_id == "session-1"
+    assert trajectory.agent.name == "grok-build"
+    assert len(trajectory.steps) >= 3
+    assert trajectory.steps[0].reasoning_content
+    assert trajectory.steps[-1].message == "Implemented the fix. All checks passed."
+    assert trajectory.final_metrics is not None
+    assert trajectory.final_metrics.total_steps == len(trajectory.steps)
 
 
 def test_oddish_grok_build_requests_streaming_json(tmp_path):

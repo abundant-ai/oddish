@@ -20,6 +20,9 @@ from oddish.db.storage import (
     _cleanup_temp_directory,
     resolve_trial_directory,
 )
+from oddish.workers.agents.grok_build_trajectory import (
+    convert_grok_build_json_text_to_trajectory,
+)
 
 
 _CACHE_TTL_SECONDS = 120.0
@@ -167,6 +170,29 @@ def _trajectory_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
     # Common Harbor fallback naming convention.
     candidates.append(f"{s3_prefix}trial-0/agent/trajectory.json")
     return list(dict.fromkeys(candidates))
+
+
+def _grok_build_candidate_keys(trial: TrialModel, s3_prefix: str) -> list[str]:
+    candidates: list[str] = [f"{s3_prefix}agent/grok-build.json"]
+    if trial.name:
+        candidates.append(f"{s3_prefix}{trial.name}/agent/grok-build.json")
+    candidates.append(f"{s3_prefix}trial-0/agent/grok-build.json")
+    return list(dict.fromkeys(candidates))
+
+
+def _convert_grok_build_text_to_trajectory(
+    text: str,
+    *,
+    model_name: str | None,
+) -> dict | None:
+    trajectory = convert_grok_build_json_text_to_trajectory(
+        text,
+        agent_version="unknown",
+        model_name=model_name,
+    )
+    if trajectory is None:
+        return None
+    return trajectory.to_json_dict()
 
 
 async def read_trial_logs(trial: TrialModel) -> dict:
@@ -537,13 +563,38 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
         except Exception:
             continue
 
+    for grok_key in _grok_build_candidate_keys(trial, s3_prefix):
+        try:
+            content = await storage.download_text(grok_key)
+            if content:
+                parsed = _convert_grok_build_text_to_trajectory(
+                    content,
+                    model_name=trial.model,
+                )
+                if parsed:
+                    return parsed
+        except Exception:
+            continue
+
     try:
         files = await storage.list_keys(s3_prefix)
+        grok_build_keys: list[str] = []
         for f in files:
             if f.endswith("/agent/trajectory.json"):
                 content = await storage.download_text(f)
                 if content:
                     parsed = _json.loads(content)
+                    return parsed
+            if f.endswith("/agent/grok-build.json"):
+                grok_build_keys.append(f)
+        for f in grok_build_keys:
+            content = await storage.download_text(f)
+            if content:
+                parsed = _convert_grok_build_text_to_trajectory(
+                    content,
+                    model_name=trial.model,
+                )
+                if parsed:
                     return parsed
     except Exception as e:
         logging.getLogger(__name__).debug(
@@ -565,7 +616,23 @@ async def _read_trial_trajectory_uncached(trial: TrialModel) -> dict | None:
         return None
 
     if not trajectory_path_resolved.exists() or not trajectory_path_resolved.is_file():
-        return None
+        grok_build_path = trial_paths.agent_dir / "grok-build.json"
+        try:
+            grok_build_path_resolved = grok_build_path.resolve()
+        except Exception:
+            return None
+        if (
+            not grok_build_path_resolved.exists()
+            or not grok_build_path_resolved.is_file()
+        ):
+            return None
+        try:
+            return _convert_grok_build_text_to_trajectory(
+                grok_build_path_resolved.read_text(errors="replace"),
+                model_name=trial.model,
+            )
+        except Exception:
+            return None
 
     try:
         local_parsed: dict = _json.loads(
