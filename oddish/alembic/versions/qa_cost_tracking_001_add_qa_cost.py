@@ -11,7 +11,7 @@ Both are nullable with no backfill: rows analyzed before this migration keep a
 NULL cost (treated as 0 in the aggregation), and new QA runs populate them.
 
 Revision ID: qa_cost_tracking_001
-Revises: exp_owner_link_001
+Revises: merge_mca01_wjtoken_heads
 Create Date: 2026-06-30 00:00:00.000000
 """
 
@@ -21,7 +21,7 @@ from alembic import op
 
 
 revision: str = "qa_cost_tracking_001"
-down_revision: Union[str, Sequence[str], None] = "exp_owner_link_001"
+down_revision: Union[str, Sequence[str], None] = "merge_mca01_wjtoken_heads"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
