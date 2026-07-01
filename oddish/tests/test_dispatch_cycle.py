@@ -12,6 +12,7 @@ from oddish.dispatch.cycle import (
     DispatchTrigger,
     admit_all,
     admit_spawn_plan,
+    build_dispatch_plan,
     get_dispatch_trigger,
     run_dispatch_cycle,
     signal_dispatch,
@@ -119,6 +120,31 @@ def test_run_dispatch_cycle_spawns_admitted_plan() -> None:
     assert result.admitted == ["gpt-4o", "gpt-4o", "gpt-4o"]
     assert [h.queue_key for h in result.handles] == result.admitted
     assert [h.queue_key for h in dispatcher.spawned] == result.admitted
+
+
+def test_build_dispatch_plan_preserves_variant_units_and_counts_held_slots() -> None:
+    async def _go():
+        return await build_dispatch_plan(
+            max_workers=10,
+            concurrency_for=lambda qk: 4,
+            _discover=_fake_discover([("gpt-4o", "default"), ("gpt-4o", "blessed")]),
+            _counts=_fake_counts(
+                {
+                    ("org-a", "gpt-4o", "default"): 3,
+                    ("org-a", "gpt-4o", "blessed"): 3,
+                },
+                {("gpt-4o", "default"): 0, ("gpt-4o", "blessed"): 0},
+            ),
+            _held=_fake_held({"gpt-4o": 2}),
+        )
+
+    plan = asyncio.run(_go())
+    assert plan.queue_keys == ("gpt-4o",)
+    assert plan.queued_by_queue == {"gpt-4o": 6}
+    assert plan.running_by_queue_key == {"gpt-4o": 0}
+    assert plan.held_by_queue_key == {"gpt-4o": 2}
+    assert len(plan.unit_plan) == 2
+    assert set(plan.unit_plan).issubset({("gpt-4o", "default"), ("gpt-4o", "blessed")})
 
 
 def test_run_dispatch_cycle_records_why_waiting_for_over_cap_queue() -> None:

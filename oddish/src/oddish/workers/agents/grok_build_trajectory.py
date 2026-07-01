@@ -133,7 +133,7 @@ def convert_grok_build_payloads_to_trajectory(
         chunks = _split_text_chunks(text)
         total_chunks = len(chunks)
         for index, chunk in enumerate(chunks, start=1):
-            extra = {
+            extra: dict[str, object] = {
                 "source": "grok_build_json",
                 "type": current_type,
             }
@@ -184,7 +184,9 @@ def convert_grok_build_payloads_to_trajectory(
             current_parts.append(_event_text(payload))
             continue
         if event_type == "end":
-            session_id = session_id or _first_string([payload], "sessionId", "session_id")
+            session_id = session_id or _first_string(
+                [payload], "sessionId", "session_id"
+            )
             continue
 
         flush()
