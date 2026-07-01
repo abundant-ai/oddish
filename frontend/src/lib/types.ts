@@ -363,6 +363,33 @@ export interface OrgUser {
   created_at: string;
 }
 
+// =============================================================================
+// User Quotas
+// =============================================================================
+
+// Caller-scoped usage-vs-limit, as returned by GET /api/quotas/me. `limit_usd`
+// is the effective daily limit (COALESCE of the override row and the default);
+// `used_usd` is today's settled spend billed to the caller.
+export interface QuotaUsage {
+  user_id: string;
+  limit_usd: number;
+  used_usd: number;
+  period: string;
+}
+
+// A single member row in the admin GET /api/quotas list. Extends QuotaUsage
+// with the member's identity/role.
+export interface QuotaMember extends QuotaUsage {
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+}
+
+export interface QuotaList {
+  members: QuotaMember[];
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
