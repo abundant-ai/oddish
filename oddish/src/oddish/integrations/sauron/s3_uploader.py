@@ -188,6 +188,13 @@ class SauronS3Uploader:
             trial_dir = harbor_job_dir / trial_names[0]
             if trial_dir.is_dir():
                 return Path(trial_dir)
+
+        subdirs = [d for d in harbor_job_dir.iterdir() if d.is_dir()]
+        trial_dirs = [d for d in subdirs if "__" in d.name]
+        if len(trial_dirs) == 1:
+            return trial_dirs[0]
+        if len(subdirs) == 1:
+            return subdirs[0]
         return None
 
     # -- S3 upload -----------------------------------------------------------
