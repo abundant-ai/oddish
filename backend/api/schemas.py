@@ -36,6 +36,34 @@ class UserResponse(BaseModel):
     created_at: str
 
 
+class QuotaUsageResponse(BaseModel):
+    """A single member's daily spend vs their effective limit."""
+
+    user_id: str
+    limit_usd: float
+    used_usd: float
+    period: str
+
+
+class QuotaMemberItem(BaseModel):
+    """One org member's quota row for the admin quotas table."""
+
+    user_id: str
+    email: str
+    name: str | None
+    github_username: str | None
+    role: str
+    limit_usd: float
+    used_usd: float
+    period: str
+
+
+class QuotaListResponse(BaseModel):
+    """All org members with their daily spend + effective limit."""
+
+    members: list[QuotaMemberItem]
+
+
 class InviteUserRequest(BaseModel):
     """Request to invite a user to the organization."""
 

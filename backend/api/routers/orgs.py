@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    QuotaListResponse,
+    QuotaMemberItem,
+    QuotaUsageResponse,
     UserResponse,
 )
-from auth import AuthContext, require_admin, require_auth
+from auth import (
+    AuthContext,
+    require_admin,
+    require_auth,
+    require_can_manage_quotas,
+)
+from oddish.config import settings
 from models import UserModel, UserRole
+from oddish.core.quotas import start_of_today_utc, sum_cost_usd
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
-from oddish.db import get_session, utcnow
+from oddish.db import TrialModel, get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
@@ -112,6 +123,81 @@ async def list_users(
             )
             for u in users
         ]
+
+
+@router.get("/quotas/me", response_model=QuotaUsageResponse)
+async def get_my_quota_usage(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> QuotaUsageResponse:
+    """The caller's own daily spend vs their effective limit."""
+    used_today = Decimal(0)
+    if auth.user_id:
+        async with get_session() as session:
+            used_today = await sum_cost_usd(
+                session, auth.org_id, auth.user_id, start_of_today_utc()
+            )
+    return QuotaUsageResponse(
+        user_id=auth.user_id or "",
+        limit_usd=float(settings.default_daily_quota_usd),
+        used_usd=float(used_today),
+        period="daily",
+    )
+
+
+@router.get("/quotas", response_model=QuotaListResponse)
+async def list_member_quotas(
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> QuotaListResponse:
+    """Every org member's daily spend + effective limit (admin, user-auth only)."""
+    period_start = start_of_today_utc()
+    effective_limit_usd = float(settings.default_daily_quota_usd)
+
+    async with get_session() as session:
+        members = (
+            (
+                await session.execute(
+                    select(UserModel)
+                    .where(UserModel.org_id == auth.org_id)
+                    .order_by(UserModel.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        grouped_usage = await session.execute(
+            select(
+                TrialModel.billed_user_id,
+                func.coalesce(func.sum(TrialModel.cost_usd), 0),
+            )
+            .where(
+                TrialModel.org_id == auth.org_id,
+                TrialModel.billed_user_id.is_not(None),
+                TrialModel.finished_at >= period_start,
+                TrialModel.deleted_at.is_(None),
+            )
+            .group_by(TrialModel.billed_user_id)
+        )
+        used_usd_by_user_id = {
+            billed_user_id: Decimal(str(settled_total)).quantize(Decimal("0.0001"))
+            for billed_user_id, settled_total in grouped_usage.all()
+        }
+
+    return QuotaListResponse(
+        members=[
+            QuotaMemberItem(
+                user_id=member.id,
+                email=member.email,
+                name=member.name,
+                github_username=member.github_username,
+                role=member.role.value,
+                limit_usd=effective_limit_usd,
+                used_usd=float(used_usd_by_user_id.get(member.id, Decimal(0))),
+                period="daily",
+            )
+            for member in members
+        ]
+    )
 
 
 @router.post("/users", response_model=InviteUserResponse)
