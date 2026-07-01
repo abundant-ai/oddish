@@ -480,6 +480,96 @@ async def test_browse_or_groups():
         await engine.dispose()
 
 
+async def _insert_median_task(engine):
+    """Add 'cmp-median' where mean and median diverge: claude-code reward
+    [1.0, 1.0, 0.0] (avg 0.667, median 1.0) vs codex [0.8, 0.8] (0.8). So
+    claude-code beats codex on best & median but not on average."""
+    stmts = """
+        insert into tasks (id,name,org_id,"user",priority,status,task_path,link,tags,run_analysis,run_probe,created_at,updated_at)
+        values ('t-cmed','cmp-median','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now());
+        insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
+        values ('v-cmed','t-cmed',1,'p',now(),now());
+        update tasks set current_version_id='v-cmed' where id='t-cmed';
+        insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,model,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,error_message,input_tokens,output_tokens,cache_tokens,total_steps,has_trajectory,started_at,finished_at,attempts,max_attempts,heartbeat_failure_count,created_at,updated_at)
+        values
+          ('cmd1','cmd1','t-cmed','v-cmed','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmd2','cmd2','t-cmed','v-cmed','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmd3','cmd3','t-cmed','v-cmed','exp-real','org1','claude-code',null,'anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.0,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmd4','cmd4','t-cmed','v-cmed','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.8,null,100,50,0,10,true,null,null,1,6,0,now(),now()),
+          ('cmd5','cmd5','t-cmed','v-cmed','exp-real','org1','codex',null,'openai','q',30,'docker','{}'::jsonb,'SUCCESS','oddish',false,0.8,null,100,50,0,10,true,null,null,1,6,0,now(),now());
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_browse_comparison_extras():
+    """Phase 2.3: top performer, compare-in-groups, pass-rate filter, median."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_compare_tasks(engine)
+        await _insert_median_task(engine)
+        async with maker() as session:
+            # --- Top performer (argmax / argmin across all subjects) ---
+            # codex is the reward top only where it's the sole agent (beta) or
+            # ties for best (cmp-runtime: 0.5 vs 0.5).
+            assert await _names(
+                session, top_by="agent", top_value="codex", top_metric="reward"
+            ) == {"beta", "cmp-runtime"}
+            # On run time (lower-better) codex wins cmp-runtime (20s vs 100s).
+            assert await _names(
+                session, top_by="agent", top_value="codex", top_metric="runtime"
+            ) == {"cmp-runtime"}
+            # Model-vs-field: m-a is the top model on reward only in cmp-model.
+            assert await _names(
+                session, top_by="model", top_value="m-a", top_metric="reward"
+            ) == {"cmp-model"}
+
+            # --- Median vs best vs avg (global compare) ---
+            cc_beats_codex = dict(
+                compare_by="agent",
+                compare_a="claude-code",
+                compare_b="codex",
+                compare_metric="reward",
+            )
+            assert await _names(session, **cc_beats_codex, compare_agg="best") == {
+                "cmp-reward",
+                "cmp-margin",
+                "cmp-avg",
+                "cmp-median",
+            }
+            assert await _names(session, **cc_beats_codex, compare_agg="avg") == {
+                "cmp-reward",
+                "cmp-margin",
+            }
+            assert await _names(session, **cc_beats_codex, compare_agg="median") == {
+                "cmp-reward",
+                "cmp-margin",
+                "cmp-median",
+            }
+
+            # --- Compare A vs B inside an OR-group ---
+            assert await _names(
+                session, or_groups=[{"compare": cc_beats_codex}]
+            ) == {"cmp-reward", "cmp-margin", "cmp-avg", "cmp-median"}
+            assert await _names(
+                session,
+                or_groups=[{"compare": {**cc_beats_codex, "compare_agg": "median"}}],
+            ) == {"cmp-reward", "cmp-margin", "cmp-median"}
+
+            # --- Pass rate range filter (percent 0-100) ---
+            # alpha = 1 pass / 1 trial = 100%; cmp-avg = 1 pass / 2 = 50%.
+            assert await _names(session, pass_rate_min=90) == {"alpha"}
+            assert await _names(
+                session, pass_rate_min=45, pass_rate_max=55
+            ) == {"cmp-avg"}
+    finally:
+        await engine.dispose()
+
+
 async def test_browse_boolean_no_is_complement():
     """``has_error`` / ``has_trajectory`` "No" is the complement of "Yes": the
     task ran a real trial and NONE is positive. A task with a mix of positive

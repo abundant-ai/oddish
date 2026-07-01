@@ -11,9 +11,21 @@ export const PRESET_MS = {
 
 export type CreatedPreset = keyof typeof PRESET_MS;
 
+// A "Compare A vs B" condition object (mirrors the global compare params); can
+// appear inside an OR-group under the reserved ``compare`` key.
+export type CompareCond = {
+  compare_by?: string;
+  compare_a?: string;
+  compare_b?: string;
+  compare_metric?: string;
+  compare_agg?: string;
+  compare_margin?: number;
+  compare_margin_unit?: string;
+};
+
 // A single OR-group condition set: backend field keys → value (same keys as the
-// flat browse params). Used by the "Match any of…" block.
-export type OrGroup = Record<string, string[] | number | boolean>;
+// flat browse params), plus an optional nested ``compare`` condition.
+export type OrGroup = Record<string, string[] | number | boolean | CompareCond>;
 
 export interface FilterValues {
   statuses: string[];
@@ -71,6 +83,12 @@ export interface FilterValues {
   compareAgg: string | null; // "best" | "avg"
   compareMargin: number | null;
   compareMarginUnit: string | null; // "pct" | "abs"
+  // Phase 2.3 pass-rate range filter + top performer (best agent/model per task).
+  passRateMin: number | null; // percent 0-100
+  passRateMax: number | null; // percent 0-100
+  topBy: string | null; // "agent" | "model"
+  topValue: string | null;
+  topMetric: string | null;
   // Phase 2.2 "Match any of…" — OR of AND-groups, ANDed with everything above.
   orGroups: OrGroup[] | null;
 }
@@ -127,6 +145,11 @@ export const EMPTY_FILTERS: FilterValues = {
   compareAgg: null,
   compareMargin: null,
   compareMarginUnit: null,
+  passRateMin: null,
+  passRateMax: null,
+  topBy: null,
+  topValue: null,
+  topMetric: null,
   orGroups: null,
 };
 
@@ -190,6 +213,7 @@ export type ControlKind =
   | "agentmodel"
   | "sort"
   | "compare"
+  | "top"
   | "matchany";
 
 // Conditions available inside an OR-group ("Match any of…"). Each maps to the
@@ -197,10 +221,10 @@ export type ControlKind =
 export interface GroupConditionDef {
   id: string;
   label: string;
-  control: "multiselect" | "boolean" | "numrange" | "num";
+  control: "multiselect" | "boolean" | "numrange" | "num" | "compare";
   options?: Option[];
   facet?: keyof TaskBrowseFacets;
-  keys: string[]; // 1 key, or [minKey, maxKey] for numrange
+  keys: string[]; // 1 key, or [minKey, maxKey] for numrange, or ["compare"]
 }
 
 // Phase 2.1 agent/model comparison option lists.
@@ -213,6 +237,7 @@ export const COMPARE_METRIC_OPTIONS: Option[] = [
   { value: "runtime", label: "Run time (seconds)" },
   { value: "tokens", label: "Tokens" },
   { value: "steps", label: "Steps" },
+  { value: "pass_rate", label: "Pass rate (%)" },
 ];
 // Plain metric word for the "reads as" summary (keeps the unit out of the prose,
 // which already carries it in the margin text).
@@ -221,6 +246,7 @@ export const COMPARE_METRIC_WORD: Record<string, string> = {
   runtime: "run time",
   tokens: "tokens",
   steps: "steps",
+  pass_rate: "pass rate",
 };
 // Unit shown on the margin field when the "abs" mode is selected.
 export const COMPARE_METRIC_UNIT: Record<string, string> = {
@@ -228,10 +254,12 @@ export const COMPARE_METRIC_UNIT: Record<string, string> = {
   runtime: "seconds",
   tokens: "tokens",
   steps: "steps",
+  pass_rate: "%",
 };
 export const COMPARE_AGG_OPTIONS: Option[] = [
   { value: "best", label: "Best" },
   { value: "avg", label: "Average" },
+  { value: "median", label: "Median" },
 ];
 export const COMPARE_MARGIN_UNIT_OPTIONS: Option[] = [
   { value: "pct", label: "%" },
@@ -472,6 +500,18 @@ export const FILTER_DEFS: FilterDef[] = [
     control: "compare",
   },
   {
+    key: "topPerformer",
+    label: "Top performer",
+    group: "Trial",
+    control: "top",
+  },
+  {
+    key: "passRate",
+    label: "Pass rate %",
+    group: "Task",
+    control: "numrange",
+  },
+  {
     key: "matchAny",
     label: "Match any of…",
     group: "Task",
@@ -580,6 +620,12 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
     keys: ["runtime_total_min", "runtime_total_max"],
   },
   {
+    id: "passRate",
+    label: "Pass rate %",
+    control: "numrange",
+    keys: ["pass_rate_min", "pass_rate_max"],
+  },
+  {
     id: "passCount",
     label: "Pass count ≥",
     control: "num",
@@ -603,6 +649,12 @@ export const CONDITION_DEFS: GroupConditionDef[] = [
     control: "num",
     keys: ["total_trials_min"],
   },
+  {
+    id: "compare",
+    label: "Compare A vs B",
+    control: "compare",
+    keys: ["compare"],
+  },
 ];
 
 // Drop empty conditions (empty arrays / blank) and empty groups, so serialization
@@ -619,6 +671,12 @@ export function cleanOrGroups(groups: OrGroup[]): OrGroup[] {
         if (!Number.isNaN(value)) cleaned[key] = value;
       } else if (typeof value === "boolean") {
         cleaned[key] = value;
+      } else if (value && typeof value === "object") {
+        // The nested "compare" condition — keep only a complete, distinct pair.
+        const c = value as CompareCond;
+        if (c.compare_a && c.compare_b && c.compare_a !== c.compare_b) {
+          cleaned[key] = value;
+        }
       }
     }
     if (Object.keys(cleaned).length) out.push(cleaned);
@@ -704,6 +762,10 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.sort !== null;
     case "agentCompare":
       return f.compareA !== null && f.compareB !== null;
+    case "passRate":
+      return f.passRateMin !== null || f.passRateMax !== null;
+    case "topPerformer":
+      return f.topValue !== null;
     case "matchAny":
       return f.orGroups !== null && cleanOrGroups(f.orGroups).length > 0;
     default:
@@ -785,6 +847,14 @@ export function filterParams(f: FilterValues): [string, string][] {
       out.push(["compare_margin_unit", f.compareMarginUnit || "pct"]);
     }
   }
+  num("pass_rate_min", f.passRateMin);
+  num("pass_rate_max", f.passRateMax);
+  // Top performer — needs a subject value; metric defaults to reward.
+  if (f.topValue) {
+    out.push(["top_by", f.topBy || "agent"]);
+    out.push(["top_value", f.topValue]);
+    out.push(["top_metric", f.topMetric || "reward"]);
+  }
   // OR-groups — one compact JSON param; only serialize non-empty groups.
   if (f.orGroups) {
     const cleaned = cleanOrGroups(f.orGroups);
@@ -851,6 +921,11 @@ export const FILTER_PARAM_KEYS = [
   "compare_agg",
   "compare_margin",
   "compare_margin_unit",
+  "pass_rate_min",
+  "pass_rate_max",
+  "top_by",
+  "top_value",
+  "top_metric",
   "or_groups",
 ] as const;
 
@@ -943,6 +1018,11 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     compareAgg: sp.get("compare_agg"),
     compareMargin: num("compare_margin"),
     compareMarginUnit: sp.get("compare_margin_unit"),
+    passRateMin: num("pass_rate_min"),
+    passRateMax: num("pass_rate_max"),
+    topBy: sp.get("top_by"),
+    topValue: sp.get("top_value"),
+    topMetric: sp.get("top_metric"),
     orGroups: ((): OrGroup[] | null => {
       const raw = sp.get("or_groups");
       if (!raw) return null;

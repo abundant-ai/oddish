@@ -55,6 +55,7 @@ import {
   isFilterActive,
   searchParamsToFilters,
   SORT_OPTIONS,
+  type CompareCond,
   type CreatedPreset,
   type FilterDef,
   type FilterValues,
@@ -85,6 +86,7 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
     totalTokens: ["totalTokensMin", "totalTokensMax"],
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
     runtimeAvg: ["runtimeAvgMin", "runtimeAvgMax"],
+    passRate: ["passRateMin", "passRateMax"],
   };
 
 // "num" (≥ N) filter key -> the single min field it writes.
@@ -220,6 +222,12 @@ export function TasksFilterSidebar() {
         break;
       case "runtimeAvg":
         set({ runtimeAvgMin: null, runtimeAvgMax: null });
+        break;
+      case "passRate":
+        set({ passRateMin: null, passRateMax: null });
+        break;
+      case "topPerformer":
+        set({ topBy: null, topValue: null, topMetric: null });
         break;
       case "hasLink":
       case "hasError":
@@ -457,6 +465,8 @@ function FilterControl({
       return <SortControl values={values} set={set} />;
     case "compare":
       return <CompareControl values={values} set={set} facets={facets} />;
+    case "top":
+      return <TopPerformerControl values={values} set={set} facets={facets} />;
     case "matchany":
       return <MatchAnyControl values={values} set={set} facets={facets} />;
     case "num":
@@ -1135,6 +1145,11 @@ function normalizeGroups(groups: OrGroup[] | null): OrGroup[] {
 }
 
 function summarizeCondition(def: GroupConditionDef, group: OrGroup): string {
+  if (def.control === "compare") {
+    const c = group.compare as CompareCond | undefined;
+    if (!c || !c.compare_a || !c.compare_b) return def.label;
+    return `${c.compare_a} beats ${c.compare_b}`;
+  }
   if (def.control === "numrange") {
     const [minK, maxK] = def.keys;
     const min = group[minK] as number | undefined;
@@ -1181,6 +1196,11 @@ function GroupConditionControl({
   onField: (patch: Partial<FilterValues>) => void;
 }) {
   const asValues = group as unknown as FilterValues;
+  if (def.control === "compare") {
+    return (
+      <GroupCompareControl group={group} facets={facets} onField={onField} />
+    );
+  }
   if (def.control === "multiselect") {
     const options =
       def.options ??
@@ -1456,6 +1476,155 @@ type CompareDraft = {
 
 const COMPARE_SELECT_CLASS =
   "border-input bg-background h-8 w-full rounded-md border px-2 text-xs";
+
+type TopDraft = { by: string; value: string; metric: string };
+
+// Phase 2.3 "Top performer": tasks where one subject beats every other on a
+// metric. Draft-then-Apply; blocked until a subject is picked.
+function TopPerformerControl({
+  values,
+  set,
+  facets,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+  facets: TaskBrowseFacets | null;
+}) {
+  const applied: TopDraft = {
+    by: values.topBy ?? "agent",
+    value: values.topValue ?? "",
+    metric: values.topMetric ?? "reward",
+  };
+  const commit = (d: TopDraft) =>
+    set({ topBy: d.by, topValue: d.value || null, topMetric: d.metric });
+  const validate = (d: TopDraft) => (d.value ? null : "Pick a subject");
+  const { draft, setDraft, dirty, error, apply } = useDraft(
+    applied,
+    commit,
+    validate
+  );
+  const subjectLabel = draft.by === "model" ? "Model" : "Agent";
+  const subjectValues =
+    (draft.by === "model" ? facets?.models : facets?.agents) ?? [];
+  const metricWord = COMPARE_METRIC_WORD[draft.metric] ?? draft.metric;
+  return (
+    <div className="space-y-2">
+      <Segmented
+        options={COMPARE_SUBJECT_OPTIONS}
+        value={draft.by}
+        onChange={(v) => setDraft({ ...draft, by: v, value: "" })}
+      />
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={draft.value}
+        onChange={(e) => setDraft({ ...draft, value: e.target.value })}
+      >
+        <option value="">Winner {subjectLabel}…</option>
+        {subjectValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <div>
+        <label className="text-muted-foreground mb-0.5 block text-[11px]">
+          On metric
+        </label>
+        <select
+          className={COMPARE_SELECT_CLASS}
+          value={draft.metric}
+          onChange={(e) => setDraft({ ...draft, metric: e.target.value })}
+        >
+          {COMPARE_METRIC_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      {draft.value ? (
+        <p className="text-muted-foreground text-[11px] leading-snug">
+          {draft.value} is the top {subjectLabel.toLowerCase()} on {metricWord}
+        </p>
+      ) : null}
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+    </div>
+  );
+}
+
+// Phase 2.3 compare-in-groups: a compact "A beats B" editor that writes a nested
+// ``compare`` object into an OR-group (the group's own Apply commits it).
+function GroupCompareControl({
+  group,
+  facets,
+  onField,
+}: {
+  group: OrGroup;
+  facets: TaskBrowseFacets | null;
+  onField: (patch: Partial<FilterValues>) => void;
+}) {
+  const c = (group.compare as CompareCond | undefined) ?? {};
+  const by = c.compare_by ?? "agent";
+  const subjectLabel = by === "model" ? "Model" : "Agent";
+  const subjectValues =
+    (by === "model" ? facets?.models : facets?.agents) ?? [];
+  const update = (patch: Partial<CompareCond>) =>
+    onField({
+      compare: { ...c, ...patch },
+    } as unknown as Partial<FilterValues>);
+  return (
+    <div className="space-y-1.5">
+      <Segmented
+        options={COMPARE_SUBJECT_OPTIONS}
+        value={by}
+        onChange={(v) =>
+          update({ compare_by: v, compare_a: undefined, compare_b: undefined })
+        }
+      />
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={c.compare_a ?? ""}
+        onChange={(e) => update({ compare_a: e.target.value || undefined })}
+      >
+        <option value="">{subjectLabel} A…</option>
+        {subjectValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <div className="text-muted-foreground text-center text-[11px]">beats</div>
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={c.compare_b ?? ""}
+        onChange={(e) => update({ compare_b: e.target.value || undefined })}
+      >
+        <option value="">{subjectLabel} B…</option>
+        {subjectValues.map((v) => (
+          <option key={v} value={v}>
+            {v}
+          </option>
+        ))}
+      </select>
+      <select
+        className={COMPARE_SELECT_CLASS}
+        value={c.compare_metric ?? "reward"}
+        onChange={(e) => update({ compare_metric: e.target.value })}
+      >
+        {COMPARE_METRIC_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      <Segmented
+        options={COMPARE_AGG_OPTIONS}
+        value={c.compare_agg ?? "best"}
+        onChange={(v) => update({ compare_agg: v })}
+      />
+    </div>
+  );
+}
 
 // Phase 2.1 "A beats B" compare control. Holds the whole comparison as a local
 // draft and commits all seven params at once via Apply — no partial refetch
