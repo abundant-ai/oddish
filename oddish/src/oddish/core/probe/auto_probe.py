@@ -103,12 +103,10 @@ async def maybe_enqueue_auto_probe(
         expanded = build_task_submission_from_sweep(
             submission, task_path=task.task_path, trials=trials
         )
-        from oddish.core.quota_admission import QuotaExceeded, admit_trials
+        from oddish.core.quota_admission import QuotaExceeded, admit_submission_trials
 
         try:
-            await admit_trials(
-                session, org_id, billed_user_id, count=len(expanded.trials)
-            )
+            await admit_submission_trials(session, org_id, billed_user_id, expanded)
         except QuotaExceeded:
             logger.info(
                 "auto-probe skipped: over quota (org_id=%s billed_user_id=%s)",
