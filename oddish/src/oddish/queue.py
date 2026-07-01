@@ -724,6 +724,14 @@ def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
     return WorkerJobStatus.QUEUED
 
 
+def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
+    """Reject runs targeting a read-only collection experiment."""
+    if experiment is not None and experiment.is_collection:
+        raise ValueError(
+            "Cannot run trials into a collection experiment (read-only)."
+        )
+
+
 async def create_task(
     session: AsyncSession,
     submission: TaskSubmission,
@@ -756,6 +764,7 @@ async def create_task(
         experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
+        _ensure_not_collection_target(experiment)
         if not experiment:
             experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id

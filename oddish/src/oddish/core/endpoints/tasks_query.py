@@ -22,6 +22,10 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
 
+from oddish.core.experiment_membership import (
+    gathered_trial_ids_select,
+    trial_in_experiment,
+)
 from oddish.core.helpers import (
     escape_like,
     parse_search_query,
@@ -151,7 +155,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                TrialModel.experiment_id == experiment_id,
+                trial_in_experiment(experiment_id),
                 TrialModel.is_probe.is_(False),
             )
         else:
@@ -308,6 +312,20 @@ async def list_tasks_core(
     # is the latest version that has trials in that experiment — not the task's
     # global ``current_version_id`` — so an experiment still shows its own
     # trials after the underlying task is re-uploaded elsewhere.
+    # Collection experiments gather trials additively via ``experiment_trials``
+    # without rewriting each trial's scalar ``experiment_id``. Compute that
+    # gathered set once so effective-version resolution recognizes those trials
+    # (otherwise a gathered trial on an older version is loaded, then
+    # double-filtered away by the effective-version drop). Empty for a normal
+    # experiment -> every path stays identical to before.
+    gathered_trial_ids: set[str] = set()
+    if experiment_id:
+        gathered_trial_ids = set(
+            (await session.execute(gathered_trial_ids_select(experiment_id)))
+            .scalars()
+            .all()
+        )
+
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
@@ -323,7 +341,9 @@ async def list_tasks_core(
                 # superseded / off-version trials -- identical result to before,
                 # without re-filtering in Python.
                 effective = resolve_effective_version_id(
-                    task, experiment_context_id=experiment_id
+                    task,
+                    experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 effective_by_task[task.id] = effective
                 set_committed_value(
@@ -409,6 +429,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 for task in tasks
             ]
@@ -427,6 +448,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
+                gathered_trial_ids=gathered_trial_ids,
             )
             for task in tasks
         ]
@@ -516,9 +538,7 @@ async def list_experiment_task_shells_core(
     query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
-        record_timing(
-            "tasks_query", elapsed_ms(query_started_at), "Task shells query"
-        )
+        record_timing("tasks_query", elapsed_ms(query_started_at), "Task shells query")
     tasks = result.scalars().all()
 
     # Attach only the context experiment -- no fan-out. ``set_committed_value``
@@ -542,9 +562,7 @@ async def list_experiment_task_shells_core(
         jobs_by_subject={},
     )
     if record_timing is not None:
-        record_timing(
-            "tasks_build", elapsed_ms(build_started_at), "Build task shells"
-        )
+        record_timing("tasks_build", elapsed_ms(build_started_at), "Build task shells")
     return response
 
 
@@ -578,7 +596,7 @@ async def list_experiment_slim_tasks(
     from sqlalchemy.orm.attributes import set_committed_value
 
     trials_relationship = TaskModel.trials.and_(
-        TrialModel.experiment_id == experiment_id,
+        trial_in_experiment(experiment_id),
         TrialModel.is_probe.is_(False),
     )
     query = (
@@ -594,9 +612,7 @@ async def list_experiment_slim_tasks(
     query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
-        record_timing(
-            "tasks_query", elapsed_ms(query_started_at), "Slim tasks query"
-        )
+        record_timing("tasks_query", elapsed_ms(query_started_at), "Slim tasks query")
     tasks = result.scalars().all()
 
     if tasks:
@@ -605,19 +621,27 @@ async def list_experiment_slim_tasks(
         for task in tasks:
             set_committed_value(task, "experiments", scoped_experiments)
 
+    # Trials gathered into a collection carry their home experiment's scalar
+    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
+    # at their own (possibly older) version instead of dropping them.
+    gathered_trial_ids = set(
+        (await session.execute(gathered_trial_ids_select(experiment_id)))
+        .scalars()
+        .all()
+    )
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
         for task in tasks
     ]
     if record_timing is not None:
-        record_timing(
-            "tasks_build", elapsed_ms(build_started_at), "Build slim tasks"
-        )
+        record_timing("tasks_build", elapsed_ms(build_started_at), "Build slim tasks")
     return response
 
 
@@ -730,7 +754,7 @@ def _trial_bucket_label() -> Any:
         or_(*(TrialModel.error_message.like(p) for p in _AGENT_TIMEOUT_LIKE)),
     )
     has_reward = TrialModel.reward.isnot(None)
-    reward_bucket = case(
+    reward_bucket: Any = case(
         (TrialModel.reward == 1, "pass"),
         (TrialModel.reward == 0, "fail"),
         else_="partial",
@@ -837,9 +861,7 @@ def _compare_subject_column(compare_by: str) -> Any | None:
     return None
 
 
-def _subject_metric_value(
-    subject_col: Any, value: str, metric: str, agg: str
-) -> Any:
+def _subject_metric_value(subject_col: Any, value: str, metric: str, agg: str) -> Any:
     """Reduce ONE subject's (agent/model) trials to a single number for a metric.
 
     Scoped to that subject via ``CASE`` so a task missing the subject yields NULL
@@ -852,12 +874,10 @@ def _subject_metric_value(
     """
     matches = subject_col == value
     if metric == "pass_rate":
-        pass_ct = func.count(
-            case((and_(matches, _trial_bucket_label() == "pass"), 1))
-        )
+        pass_ct = func.count(case((and_(matches, _trial_bucket_label() == "pass"), 1)))
         total_ct = func.count(case((matches, 1)))
         return pass_ct * 100.0 / func.nullif(total_ct, 0)
-    scoped = case((matches, _compare_metric_expr(metric)), else_=None)
+    scoped: Any = case((matches, _compare_metric_expr(metric)), else_=None)
     if agg == "median":
         return func.percentile_cont(0.5).within_group(scoped)
     if agg == "avg":
@@ -869,7 +889,9 @@ def _subject_metric_value(
     )
 
 
-def _compare_threshold(b_val: Any, margin: float | None, unit: str | None, higher: bool) -> Any:
+def _compare_threshold(
+    b_val: Any, margin: float | None, unit: str | None, higher: bool
+) -> Any:
     """B's value adjusted by an optional margin (percent of B or absolute)."""
     if margin is None or margin <= 0:
         return b_val
@@ -905,9 +927,7 @@ def _agent_compare_subquery(
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
-    return stmt.group_by(
-        TrialModel.task_id, TrialModel.task_version_id
-    ).subquery()
+    return stmt.group_by(TrialModel.task_id, TrialModel.task_version_id).subquery()
 
 
 def _subject_value_scalar(
@@ -940,7 +960,7 @@ def _compare_predicate_correlated(
     margin: float | None,
     margin_unit: str | None,
 ) -> Any:
-    """"A beats B" as a boolean predicate over correlated subqueries (for groups)."""
+    """ "A beats B" as a boolean predicate over correlated subqueries (for groups)."""
     higher = _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
     a_val = _subject_value_scalar(org_id, subject_col, value_a, metric, agg)
     b_val = _subject_value_scalar(org_id, subject_col, value_b, metric, agg)
@@ -951,7 +971,7 @@ def _compare_predicate_correlated(
 def _top_performer_predicate(
     org_id: str | None, *, subject_col: Any, value: str, metric: str
 ) -> Any:
-    """"``value`` is the top subject on ``metric`` for the task" — argmax
+    """ "``value`` is the top subject on ``metric`` for the task" — argmax
     (higher-better) / argmin (lower-better) across ALL subjects. Built from a
     per-``(task, version, subject)`` best-value subquery plus a window extreme
     over the task; ties all count. Returns an EXISTS predicate over ``TaskModel``.
@@ -966,10 +986,8 @@ def _top_performer_predicate(
         )
     else:
         metric_expr = _compare_metric_expr(metric)
-        best_val = (
-            func.max(metric_expr) if higher else func.min(metric_expr)
-        )
-    per_subject = select(
+        best_val = func.max(metric_expr) if higher else func.min(metric_expr)
+    per_subject_stmt = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.task_version_id.label("task_version_id"),
         subject_col.label("subject"),
@@ -980,8 +998,8 @@ def _top_performer_predicate(
         subject_col.isnot(None),
     )
     if org_id is not None:
-        per_subject = per_subject.where(TrialModel.org_id == org_id)
-    per_subject = per_subject.group_by(
+        per_subject_stmt = per_subject_stmt.where(TrialModel.org_id == org_id)
+    per_subject = per_subject_stmt.group_by(
         TrialModel.task_id, TrialModel.task_version_id, subject_col
     ).subquery()
 
@@ -1054,9 +1072,7 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
-    return stmt.group_by(
-        TrialModel.task_id, TrialModel.task_version_id
-    ).subquery()
+    return stmt.group_by(TrialModel.task_id, TrialModel.task_version_id).subquery()
 
 
 # Aggregate sort tokens -> (metrics column label added to ranked_tasks, descending).
@@ -1380,9 +1396,7 @@ async def browse_tasks_core(
         )
     if trial_is_probe is not None:
         ranked_tasks = ranked_tasks.where(
-            _trial_exists(
-                TrialModel.is_probe.is_(trial_is_probe), include_probes=True
-            )
+            _trial_exists(TrialModel.is_probe.is_(trial_is_probe), include_probes=True)
         )
     if harbor_shas:
         ranked_tasks = ranked_tasks.where(
@@ -1408,9 +1422,7 @@ async def browse_tasks_core(
             # "No" is the complement of "Yes": the task ran at least one real
             # trial and none of them errored (so a task with a mix of errored
             # and clean trials counts as "Yes", not "No").
-            ranked_tasks = ranked_tasks.where(
-                and_(_trial_exists(), ~has_errored_trial)
-            )
+            ranked_tasks = ranked_tasks.where(and_(_trial_exists(), ~has_errored_trial))
     if has_trajectory is not None:
         has_trajectory_trial = _trial_exists(TrialModel.has_trajectory.is_(True))
         if has_trajectory:
@@ -1584,13 +1596,9 @@ async def browse_tasks_core(
                 task_metrics.c.runtime_avg <= runtime_avg_max
             )
         if pass_rate_min is not None:
-            ranked_tasks = ranked_tasks.where(
-                task_metrics.c.pass_rate >= pass_rate_min
-            )
+            ranked_tasks = ranked_tasks.where(task_metrics.c.pass_rate >= pass_rate_min)
         if pass_rate_max is not None:
-            ranked_tasks = ranked_tasks.where(
-                task_metrics.c.pass_rate <= pass_rate_max
-            )
+            ranked_tasks = ranked_tasks.where(task_metrics.c.pass_rate <= pass_rate_max)
 
     # --- Phase 2.3 top performer (best agent/model per task) --------------
     top_subject_col = _compare_subject_column(top_by) if top_by else None
@@ -1614,13 +1622,9 @@ async def browse_tasks_core(
     # yields a NULL a_val/b_val, so the comparison is NULL -> not-true -> excluded
     # (this is the "exclude if a task has only one of the two" behaviour). Only
     # built when a valid, distinct pair + a known metric are requested.
-    compare_subject_col = (
-        _compare_subject_column(compare_by) if compare_by else None
-    )
+    compare_subject_col = _compare_subject_column(compare_by) if compare_by else None
     compare_metric_known = (
-        compare_metric in _COMPARE_METRIC_HIGHER_BETTER
-        if compare_metric
-        else False
+        compare_metric in _COMPARE_METRIC_HIGHER_BETTER if compare_metric else False
     )
     if (
         compare_subject_col is not None
@@ -1643,8 +1647,7 @@ async def browse_tasks_core(
             compare_metrics,
             and_(
                 compare_metrics.c.task_id == TaskModel.id,
-                compare_metrics.c.task_version_id
-                == TaskModel.current_version_id,
+                compare_metrics.c.task_version_id == TaskModel.current_version_id,
             ),
         )
         a_val = compare_metrics.c.a_val
@@ -1654,9 +1657,7 @@ async def browse_tasks_core(
         if compare_margin is not None and compare_margin > 0:
             if compare_margin_unit == "abs":
                 threshold = (
-                    b_val + compare_margin
-                    if higher_better
-                    else b_val - compare_margin
+                    b_val + compare_margin if higher_better else b_val - compare_margin
                 )
             else:
                 factor = (
@@ -1739,9 +1740,7 @@ async def browse_tasks_core(
         if (classifications_ := _list("analysis_classifications")) is not None:
             preds.append(
                 _trial_exists(
-                    TrialModel.analysis["classification"].astext.in_(
-                        classifications_
-                    )
+                    TrialModel.analysis["classification"].astext.in_(classifications_)
                 )
             )
         if spec.get("trial_is_probe") is not None:
@@ -1753,10 +1752,14 @@ async def browse_tasks_core(
             )
         if spec.get("has_error") is not None:
             errored = _trial_exists(TrialModel.error_message.isnot(None))
-            preds.append(errored if spec["has_error"] else and_(_trial_exists(), ~errored))
+            preds.append(
+                errored if spec["has_error"] else and_(_trial_exists(), ~errored)
+            )
         if spec.get("has_trajectory") is not None:
             traj = _trial_exists(TrialModel.has_trajectory.is_(True))
-            preds.append(traj if spec["has_trajectory"] else and_(_trial_exists(), ~traj))
+            preds.append(
+                traj if spec["has_trajectory"] else and_(_trial_exists(), ~traj)
+            )
         if spec.get("min_attempts") is not None:
             preds.append(_trial_exists(TrialModel.attempts >= spec["min_attempts"]))
 
@@ -1846,7 +1849,8 @@ async def browse_tasks_core(
 
     if group_specs:
         group_predicates = [
-            pred for pred in (_group_predicate(spec) for spec in group_specs)
+            pred
+            for pred in (_group_predicate(spec) for spec in group_specs)
             if pred is not None
         ]
         if group_predicates:
@@ -1928,19 +1932,23 @@ async def browse_tasks_core(
             nulls_last(metric_column.desc() if descending else metric_column.asc())
         )
 
-    paged_rows = paged_rows.order_by(
-        *aggregate_order,
-        # Fresh "never run" tasks should appear near the top of the
-        # browser (ordered by upload time), not buried below every
-        # real experiment. Fall back to the task's created_at when
-        # no trials have finished yet.
-        func.coalesce(
-            trial_aggregates.c.last_run_at,
-            ranked_tasks_subquery.c.created_at,
-        ).desc(),
-        nulls_last(ranked_tasks_subquery.c.current_version.desc()),
-        ranked_tasks_subquery.c.name.asc(),
-    ).limit(limit + 1).offset(offset)
+    paged_rows = (
+        paged_rows.order_by(
+            *aggregate_order,
+            # Fresh "never run" tasks should appear near the top of the
+            # browser (ordered by upload time), not buried below every
+            # real experiment. Fall back to the task's created_at when
+            # no trials have finished yet.
+            func.coalesce(
+                trial_aggregates.c.last_run_at,
+                ranked_tasks_subquery.c.created_at,
+            ).desc(),
+            nulls_last(ranked_tasks_subquery.c.current_version.desc()),
+            ranked_tasks_subquery.c.name.asc(),
+        )
+        .limit(limit + 1)
+        .offset(offset)
+    )
 
     page_started_at = now()
     result = await session.execute(paged_rows)
@@ -1960,7 +1968,7 @@ async def browse_tasks_core(
     # Per-task cost rollup (token-estimated for CLI agents that report tokens
     # but no native cost_usd). Folded into the trials loop below to avoid an
     # extra query. Mirrors the task-detail TaskCostTotals fields.
-    cost_by_task: dict[str, dict] = {}
+    cost_by_task: dict[str, dict[str, Any]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -2101,7 +2109,7 @@ async def browse_tasks_core(
             )
             resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
             if resolved_cost is not None:
-                agg = cost_by_task.setdefault(
+                cost_agg: dict[str, Any] = cost_by_task.setdefault(
                     task_key,
                     {
                         "cost_usd": 0.0,
@@ -2110,12 +2118,12 @@ async def browse_tasks_core(
                         "cost_has_native": False,
                     },
                 )
-                agg["cost_usd"] += resolved_cost
-                agg["cost_trial_count"] += 1
+                cost_agg["cost_usd"] += resolved_cost
+                cost_agg["cost_trial_count"] += 1
                 if cost_estimated:
-                    agg["cost_has_estimated"] = True
+                    cost_agg["cost_has_estimated"] = True
                 else:
-                    agg["cost_has_native"] = True
+                    cost_agg["cost_has_native"] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -2281,9 +2289,7 @@ async def browse_task_facets_core(
         )
         if org_id is not None:
             pairs_stmt = pairs_stmt.where(TrialModel.org_id == org_id)
-        pairs_stmt = pairs_stmt.distinct().order_by(
-            TrialModel.agent, TrialModel.model
-        )
+        pairs_stmt = pairs_stmt.distinct().order_by(TrialModel.agent, TrialModel.model)
         pair_rows = (await session.execute(pairs_stmt)).all()
         agent_models = [
             AgentModelFacet(agent=row[0], model=row[1]) for row in pair_rows
@@ -2299,9 +2305,7 @@ async def browse_task_facets_core(
     try:
         experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
         if org_id is not None:
-            experiments_stmt = experiments_stmt.where(
-                ExperimentModel.org_id == org_id
-            )
+            experiments_stmt = experiments_stmt.where(ExperimentModel.org_id == org_id)
         experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
         experiment_rows = (await session.execute(experiments_stmt)).all()
         experiments = [
