@@ -12,6 +12,7 @@ from sqlalchemy import (
     and_,
     case,
     exists,
+    extract,
     func,
     nulls_last,
     or_,
@@ -621,6 +622,138 @@ def _build_browse_author_filter(
     return or_(*clauses)
 
 
+# --- Phase 1.2-lite aggregate metrics (no migration) -----------------------
+# Everything below is computed ON THE FLY over the scoped trial set (current
+# version, non-probe, non-superseded) with NO supporting index or denormalized
+# roll-up. This is the deliberately-slow "works now" path; full Phase 1.2
+# denormalizes these into task columns + a backfill + indexes so the same filter
+# surface becomes cheap. Do not assume any of these predicates is free.
+
+# Substrings that mark an agent timeout in ``error_message`` — kept in lockstep
+# with the frontend ``getMatrixStatus`` (see status-config.ts): a timeout that
+# still produced a reward is NOT a harness error, it scores normally.
+_AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
+
+
+def _trial_bucket_label() -> Any:
+    """SQL bucket (``pass``/``partial``/``fail``/``harness``/``scoreless``/``other``)
+    for one trial, mirroring the frontend ``getMatrixStatus``
+    (oddish/frontend/src/lib/status-config.ts) EXACTLY so the browser's
+    Pass/Partial/Fail/Harness count filters agree with the card chips:
+
+      * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
+        that still produced a reward (then it scores normally);
+      * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
+      * ``SUCCESS`` status is the reward bucket (``pass`` reward==1 / ``fail``
+        reward==0 / ``partial`` otherwise) when a reward exists, else ``scoreless``;
+      * anything else (pending/queued/running) is ``other`` and stays uncounted.
+
+    Keep this in lockstep with ``getMatrixStatus``; the AgentTimeout agreement
+    test in ``test_browse_filters.py`` guards the carve-out.
+    """
+    is_agent_timeout = and_(
+        TrialModel.error_message.isnot(None),
+        or_(*(TrialModel.error_message.like(p) for p in _AGENT_TIMEOUT_LIKE)),
+    )
+    has_reward = TrialModel.reward.isnot(None)
+    reward_bucket = case(
+        (TrialModel.reward == 1, "pass"),
+        (TrialModel.reward == 0, "fail"),
+        else_="partial",
+    )
+    return case(
+        (
+            and_(
+                TrialModel.error_message.isnot(None),
+                ~and_(is_agent_timeout, has_reward),
+            ),
+            "harness",
+        ),
+        (
+            TrialModel.status == TrialStatus.FAILED,
+            case(
+                (and_(is_agent_timeout, has_reward), reward_bucket),
+                else_="harness",
+            ),
+        ),
+        (
+            TrialModel.status == TrialStatus.SUCCESS,
+            case((has_reward, reward_bucket), else_="scoreless"),
+        ),
+        else_="other",
+    )
+
+
+def _task_metrics_subquery(org_id: str | None) -> Any:
+    """One GROUP BY over the scoped trials, aggregated per (task, version).
+
+    Grouped by ``(task_id, task_version_id)`` and joined later on the task's
+    ``current_version_id`` so the aggregates match the same trial set the direct
+    ``_trial_exists`` filters use (non-probe, non-superseded, current version).
+    Every column is an on-the-fly computation (see the module note above).
+    """
+    total_tokens = (
+        func.coalesce(TrialModel.input_tokens, 0)
+        + func.coalesce(TrialModel.output_tokens, 0)
+        + func.coalesce(TrialModel.cache_tokens, 0)
+    )
+    # Wall-clock seconds, only when both timestamps exist (NULL otherwise so
+    # SUM/AVG ignore unfinished / not-yet-started trials). The phase_timing
+    # JSONB breakdown is a later nicety per the worklog.
+    runtime_seconds = case(
+        (
+            and_(
+                TrialModel.finished_at.isnot(None),
+                TrialModel.started_at.isnot(None),
+            ),
+            extract("epoch", TrialModel.finished_at - TrialModel.started_at),
+        ),
+        else_=None,
+    )
+    bucket = _trial_bucket_label()
+    stmt = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        func.avg(TrialModel.reward).label("avg_reward"),
+        func.sum(total_tokens).label("total_tokens"),
+        func.count(TrialModel.id).label("total_trials"),
+        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+            "completed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+            "failed_trials"
+        ),
+        func.count(case((bucket == "pass", 1))).label("pass_count"),
+        func.count(case((bucket == "partial", 1))).label("partial_count"),
+        func.count(case((bucket == "fail", 1))).label("fail_count"),
+        func.count(case((bucket == "harness", 1))).label("harness_count"),
+        func.sum(runtime_seconds).label("runtime_total"),
+        func.avg(runtime_seconds).label("runtime_avg"),
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.group_by(
+        TrialModel.task_id, TrialModel.task_version_id
+    ).subquery()
+
+
+# Aggregate sort tokens -> (metrics column label added to ranked_tasks, descending).
+# The column labels must match the ``add_columns`` labels in browse_tasks_core.
+_AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
+    "avg_score_desc": ("avg_reward", True),
+    "avg_score_asc": ("avg_reward", False),
+    "total_tokens_desc": ("total_tokens", True),
+    "total_tokens_asc": ("total_tokens", False),
+    "runtime_total_desc": ("runtime_total", True),
+    "runtime_total_asc": ("runtime_total", False),
+    "runtime_avg_desc": ("runtime_avg", True),
+    "runtime_avg_asc": ("runtime_avg", False),
+}
+
+
 async def browse_tasks_core(
     session: AsyncSession,
     *,
@@ -663,6 +796,23 @@ async def browse_tasks_core(
     max_steps: int | None = None,
     reward_min: float | None = None,
     reward_max: float | None = None,
+    # --- Phase 1.2-lite aggregate filters / sort (no migration) ---
+    avg_score_min: float | None = None,
+    avg_score_max: float | None = None,
+    total_tokens_min: int | None = None,
+    total_tokens_max: int | None = None,
+    total_trials_min: int | None = None,
+    completed_trials_min: int | None = None,
+    failed_trials_min: int | None = None,
+    pass_count_min: int | None = None,
+    partial_count_min: int | None = None,
+    fail_count_min: int | None = None,
+    harness_count_min: int | None = None,
+    runtime_total_min: float | None = None,
+    runtime_total_max: float | None = None,
+    runtime_avg_min: float | None = None,
+    runtime_avg_max: float | None = None,
+    sort: str | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
     """List latest-version task summaries for the task browser.
@@ -682,8 +832,15 @@ async def browse_tasks_core(
       correlated ``EXISTS`` over ``trials`` (non-superseded, current version,
       non-probe unless ``trial_is_probe`` is set). They filter the task set; they
       are NOT aggregates, so e.g. a token range matches a single trial's value,
-      not the task average. Aggregate filters (avg score, total cost) need the
-      denormalised roll-ups planned for Phase 1.2.
+      not the task average.
+    * "Phase 1.2-lite" AGGREGATE filters/sort (``avg_score_*``, ``total_tokens_*``,
+      ``*_trials_min``, ``pass/partial/fail/harness_count_min``, ``runtime_*``,
+      ``sort``) are computed on the fly by ``_task_metrics_subquery`` — a single
+      GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
+      predicates before pagination. There is NO supporting index or roll-up; this
+      is the deliberately-slow path that full Phase 1.2 will denormalize. Cost-based
+      aggregates stay deferred (cost is partly Python-estimated, so a pure-SQL sum
+      would silently miss the estimated trials).
     """
 
     current_version = aliased(TaskVersionModel)
@@ -937,6 +1094,123 @@ async def browse_tasks_core(
             reward_preds.append(TrialModel.reward <= reward_max)
         ranked_tasks = ranked_tasks.where(_trial_exists(*reward_preds))
 
+    # --- Phase 1.2-lite aggregate filters / sort (no migration) -----------
+    # Unlike the ``_trial_exists`` filters above (which match a SINGLE trial),
+    # these are TASK aggregates over the scoped trial set and must be computed
+    # in SQL BEFORE pagination. We build one GROUP BY subquery and LEFT JOIN it
+    # on the task's current version, then apply the range predicates as WHERE on
+    # the aggregated columns (HAVING semantics) so tasks are filtered out of the
+    # ranked set before ``name_rank`` / LIMIT. The join + columns are added ONLY
+    # when an aggregate filter or aggregate sort is requested, so the default
+    # browse query is byte-for-byte unchanged. Each aggregate is an on-the-fly
+    # computation to be denormalized in full Phase 1.2 (see module note above).
+    aggregate_sort_active = sort in _AGGREGATE_SORTS
+    aggregate_filter_active = any(
+        value is not None
+        for value in (
+            avg_score_min,
+            avg_score_max,
+            total_tokens_min,
+            total_tokens_max,
+            total_trials_min,
+            completed_trials_min,
+            failed_trials_min,
+            pass_count_min,
+            partial_count_min,
+            fail_count_min,
+            harness_count_min,
+            runtime_total_min,
+            runtime_total_max,
+            runtime_avg_min,
+            runtime_avg_max,
+        )
+    )
+    if aggregate_filter_active or aggregate_sort_active:
+        task_metrics = _task_metrics_subquery(org_id)
+        ranked_tasks = ranked_tasks.add_columns(
+            task_metrics.c.avg_reward.label("avg_reward"),
+            task_metrics.c.total_tokens.label("total_tokens"),
+            task_metrics.c.total_trials.label("agg_total_trials"),
+            task_metrics.c.completed_trials.label("agg_completed_trials"),
+            task_metrics.c.failed_trials.label("agg_failed_trials"),
+            task_metrics.c.pass_count.label("pass_count"),
+            task_metrics.c.partial_count.label("partial_count"),
+            task_metrics.c.fail_count.label("fail_count"),
+            task_metrics.c.harness_count.label("harness_count"),
+            task_metrics.c.runtime_total.label("runtime_total"),
+            task_metrics.c.runtime_avg.label("runtime_avg"),
+        ).outerjoin(
+            task_metrics,
+            and_(
+                task_metrics.c.task_id == TaskModel.id,
+                task_metrics.c.task_version_id == TaskModel.current_version_id,
+            ),
+        )
+        # ``avg_score`` is a PERCENT (0-100) at this boundary; ``reward`` is 0-1.
+        # A task with no scored trials has a NULL avg and drops out of both the
+        # min and the max bound (NULL comparisons are not-true) — undefined score
+        # is neither "high" nor "low".
+        if avg_score_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.avg_reward * 100 >= avg_score_min
+            )
+        if avg_score_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.avg_reward * 100 <= avg_score_max
+            )
+        if total_tokens_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_tokens >= total_tokens_min
+            )
+        if total_tokens_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_tokens <= total_tokens_max
+            )
+        if total_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_trials >= total_trials_min
+            )
+        if completed_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.completed_trials >= completed_trials_min
+            )
+        if failed_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.failed_trials >= failed_trials_min
+            )
+        if pass_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.pass_count >= pass_count_min
+            )
+        if partial_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.partial_count >= partial_count_min
+            )
+        if fail_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.fail_count >= fail_count_min
+            )
+        if harness_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.harness_count >= harness_count_min
+            )
+        if runtime_total_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_total >= runtime_total_min
+            )
+        if runtime_total_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_total <= runtime_total_max
+            )
+        if runtime_avg_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_avg >= runtime_avg_min
+            )
+        if runtime_avg_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_avg <= runtime_avg_max
+            )
+
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -998,21 +1272,34 @@ async def browse_tasks_core(
             ),
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
-        .order_by(
-            # Fresh "never run" tasks should appear near the top of the
-            # browser (ordered by upload time), not buried below every
-            # real experiment. Fall back to the task's created_at when
-            # no trials have finished yet.
-            func.coalesce(
-                trial_aggregates.c.last_run_at,
-                ranked_tasks_subquery.c.created_at,
-            ).desc(),
-            nulls_last(ranked_tasks_subquery.c.current_version.desc()),
-            ranked_tasks_subquery.c.name.asc(),
-        )
-        .limit(limit + 1)
-        .offset(offset)
     )
+
+    # Aggregate sort (Phase 1.2-lite): when requested, order by the aggregate
+    # column FIRST (nulls last), keeping the existing recency order as the
+    # tiebreak so tasks with an equal / NULL metric still fall back to the
+    # familiar ordering. The metric columns exist on the subquery only when the
+    # aggregate join was added above, hence the ``aggregate_sort_active`` guard.
+    aggregate_order = []
+    if aggregate_sort_active:
+        column_label, descending = _AGGREGATE_SORTS[sort]  # type: ignore[index]
+        metric_column = ranked_tasks_subquery.c[column_label]
+        aggregate_order.append(
+            nulls_last(metric_column.desc() if descending else metric_column.asc())
+        )
+
+    paged_rows = paged_rows.order_by(
+        *aggregate_order,
+        # Fresh "never run" tasks should appear near the top of the
+        # browser (ordered by upload time), not buried below every
+        # real experiment. Fall back to the task's created_at when
+        # no trials have finished yet.
+        func.coalesce(
+            trial_aggregates.c.last_run_at,
+            ranked_tasks_subquery.c.created_at,
+        ).desc(),
+        nulls_last(ranked_tasks_subquery.c.current_version.desc()),
+        ranked_tasks_subquery.c.name.asc(),
+    ).limit(limit + 1).offset(offset)
 
     page_started_at = now()
     result = await session.execute(paged_rows)

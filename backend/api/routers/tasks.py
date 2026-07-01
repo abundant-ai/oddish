@@ -748,6 +748,42 @@ async def browse_tasks(
     max_steps: int | None = Query(None, ge=0),
     reward_min: float | None = Query(None, ge=0.0, le=1.0),
     reward_max: float | None = Query(None, ge=0.0, le=1.0),
+    # --- Phase 1.2-lite aggregate filters / sort (computed on the fly) ---
+    avg_score_min: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task avg score percent (0-100), min"
+    ),
+    avg_score_max: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task avg score percent (0-100), max"
+    ),
+    total_tokens_min: int | None = Query(None, ge=0),
+    total_tokens_max: int | None = Query(None, ge=0),
+    total_trials_min: int | None = Query(None, ge=1),
+    completed_trials_min: int | None = Query(None, ge=1),
+    failed_trials_min: int | None = Query(None, ge=1),
+    pass_count_min: int | None = Query(None, ge=1),
+    partial_count_min: int | None = Query(None, ge=1),
+    fail_count_min: int | None = Query(None, ge=1),
+    harness_count_min: int | None = Query(None, ge=1),
+    runtime_total_min: float | None = Query(
+        None, ge=0.0, description="Task total run time (seconds), min"
+    ),
+    runtime_total_max: float | None = Query(
+        None, ge=0.0, description="Task total run time (seconds), max"
+    ),
+    runtime_avg_min: float | None = Query(
+        None, ge=0.0, description="Task avg run time per trial (seconds), min"
+    ),
+    runtime_avg_max: float | None = Query(
+        None, ge=0.0, description="Task avg run time per trial (seconds), max"
+    ),
+    sort: str | None = Query(
+        None,
+        description=(
+            "Aggregate sort: one of avg_score_(asc|desc), total_tokens_(asc|desc), "
+            "runtime_total_(asc|desc), runtime_avg_(asc|desc). Unknown/absent "
+            "keeps the default recency order."
+        ),
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -817,6 +853,22 @@ async def browse_tasks(
             max_steps=max_steps,
             reward_min=reward_min,
             reward_max=reward_max,
+            avg_score_min=avg_score_min,
+            avg_score_max=avg_score_max,
+            total_tokens_min=total_tokens_min,
+            total_tokens_max=total_tokens_max,
+            total_trials_min=total_trials_min,
+            completed_trials_min=completed_trials_min,
+            failed_trials_min=failed_trials_min,
+            pass_count_min=pass_count_min,
+            partial_count_min=partial_count_min,
+            fail_count_min=fail_count_min,
+            harness_count_min=harness_count_min,
+            runtime_total_min=runtime_total_min,
+            runtime_total_max=runtime_total_max,
+            runtime_avg_min=runtime_avg_min,
+            runtime_avg_max=runtime_avg_max,
+            sort=sort,
             record_timing=_make_timing_recorder(request),
         )
 
