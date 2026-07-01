@@ -254,6 +254,32 @@ async def test_get_public_trial_resolves_gathered_non_probe(session):
 
 
 @pytest.mark.asyncio
+async def test_get_public_trial_resolves_home_public(session):
+    """Fix B: a trial homed directly in a public experiment (never gathered
+    into any collection) must still resolve via ``get_public_trial``."""
+    task = _task(_unique("public-trial-home-task"))
+    session.add(task)
+    await session.flush()
+
+    home = _experiment(_unique("public-trial-home-only"))
+    session.add(home)
+    await session.flush()
+
+    t1 = _trial(task, home, org_id="org1", is_probe=False)
+    session.add(t1)
+    await session.flush()
+
+    await ensure_experiment_public(session, home)
+    await session.flush()
+
+    assert home.is_public is True
+
+    resolved = await get_public_trial(session, t1.id)
+    assert resolved is not None
+    assert resolved.id == t1.id
+
+
+@pytest.mark.asyncio
 async def test_get_public_trial_excludes_gathered_probe(session):
     """Anti-leak: even once gathered into a PUBLIC collection, a probe trial
     must never resolve via ``get_public_trial``. Probes are internal-only and

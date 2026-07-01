@@ -224,7 +224,10 @@ async def create_task_sweep_core(
             experiment = await get_experiment_by_id_or_name(
                 session, submission.experiment_id, org_id
             )
-            _ensure_not_collection_target(experiment)
+            try:
+                _ensure_not_collection_target(experiment)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
             if not experiment:
                 experiment = await get_or_create_experiment(
                     session, submission.experiment_id, org_id
