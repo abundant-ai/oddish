@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.dispatch.backends.inprocess import InProcessDispatcher
+from oddish.dispatch import cycle
 from oddish.workers.queue import queue_manager
 
 
@@ -34,11 +34,12 @@ def test_run_polling_worker_delegates_to_shared_dispatch_loop(monkeypatch) -> No
     monkeypatch.setattr(
         type(queue_manager.settings), "get_model_concurrency", fake_concurrency
     )
-    monkeypatch.setattr(queue_manager, "run_dispatch_loop", fake_dispatch_loop)
+    monkeypatch.setattr(cycle, "run_dispatch_loop", fake_dispatch_loop)
 
     asyncio.run(queue_manager.run_polling_worker(poll_interval=3.5, max_workers=11))
 
-    assert isinstance(seen["dispatcher"], InProcessDispatcher)
+    assert seen["dispatcher"].__class__.__name__ == "InProcessDispatcher"
+    assert seen["dispatcher"].name == "inprocess"
     assert seen["max_workers"] == 11
     assert seen["fallback_interval"] == 3.5
     assert seen["on_stage"] is queue_manager.stamp_dispatch_stage

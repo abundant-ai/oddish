@@ -59,9 +59,7 @@ def test_reattach_builds_handles_with_dispatcher_provider() -> None:
     async def _fetch():
         return [("q", "h1")]
 
-    asyncio.run(
-        cycle.reattach_in_flight_workers(_RecordingDispatcher(), _fetch=_fetch)
-    )
+    asyncio.run(cycle.reattach_in_flight_workers(_RecordingDispatcher(), _fetch=_fetch))
     assert seen[0].provider == "fake"
     assert seen[0].queue_key == "q"
     assert seen[0].id == "h1"
@@ -88,3 +86,39 @@ def test_run_dispatch_loop_reattaches_on_startup(monkeypatch) -> None:
 
     asyncio.run(_go())
     assert called["provider"] == "fake"
+
+
+def test_run_dispatch_loop_survives_cycle_failure(monkeypatch) -> None:
+    calls = 0
+    waits = 0
+
+    async def _fake_reattach(dispatcher, **_kwargs):
+        return []
+
+    async def _fake_cycle(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("transient database error")
+
+    class _Trigger:
+        async def wait(self):
+            nonlocal waits
+            waits += 1
+            return "fallback"
+
+    monkeypatch.setattr(cycle, "reattach_in_flight_workers", _fake_reattach)
+    monkeypatch.setattr(cycle, "run_dispatch_cycle", _fake_cycle)
+    monkeypatch.setattr(cycle, "get_dispatch_trigger", lambda **_kwargs: _Trigger())
+
+    async def _go():
+        await cycle.run_dispatch_loop(
+            FakeDispatcher(),
+            max_workers=1,
+            concurrency_for=lambda qk: 1,
+            _stop=lambda: calls >= 2,
+        )
+
+    asyncio.run(_go())
+    assert calls == 2
+    assert waits == 2
