@@ -24,6 +24,7 @@ beyond ``limit - running`` for that queue_key.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from oddish.config import settings
@@ -33,9 +34,101 @@ from oddish.db import get_pool
 __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
+    "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
     "select_job_function",
+    "stamp_dispatch_stage",
 ]
+
+
+async def fetch_running_worker_handles() -> list[tuple[str, str]]:
+    """``(queue_key, durable handle id)`` for RUNNING jobs with a persisted handle.
+
+    Source for control-plane-restart reattach (``Dispatcher.recover``). Today the
+    only persisted worker-container handle is ``modal_function_call_id`` (the
+    Modal worker self-reports it at claim); backends whose handles are not durable
+    leave it NULL and are skipped here, falling back to lease expiry + re-claim
+    (design spec §14.3).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT queue_key, modal_function_call_id
+        FROM   worker_jobs
+        WHERE  status::text = 'RUNNING'
+          AND  modal_function_call_id IS NOT NULL
+        """
+    )
+    return [
+        (str(row["queue_key"]), str(row["modal_function_call_id"]))
+        for row in rows
+        if row["modal_function_call_id"]
+    ]
+
+
+async def stamp_dispatch_stage(
+    spawned_keys: list[str],
+    why_waiting: dict[str, str],
+) -> None:
+    """Record per-queue dispatch observability on waiting ``worker_jobs`` rows.
+
+    * ``admission_reason`` for queue_keys still waiting (the §12 why-waiting
+      field), so every Stage 2-5 wait has a named, queryable reason -- including
+      the rows of a *partially* served key that got no worker this cycle.
+    * ``spawned_at = NOW()`` for the rows we just dispatched a worker for. The
+      spawn plan can schedule *several* workers for one ``queue_key`` in a
+      cycle, so ``spawned_keys`` carries that per-key multiplicity: stamp only
+      the oldest N still-unstamped rows per queue_key (N = workers spawned for
+      it), oldest-first (``priority DESC, created_at ASC``) to match claim order,
+      and clear any stale waiting-reason on just those rows.
+
+    Reasons are written first and the spawned rows are stamped (and their reason
+    cleared) second, so a partially served key ends with each row in exactly one
+    state -- ``spawned_at`` set for the served rows, an ``admission_reason`` for
+    the rest -- instead of the two writes fighting over the same rows.
+
+    Best-effort telemetry: callers run it after ``Dispatcher.spawn`` and do not
+    depend on its result.
+    """
+    pool = await get_pool()
+
+    for queue_key, reason in why_waiting.items():
+        await pool.execute(
+            """
+            UPDATE worker_jobs
+            SET    admission_reason = $2
+            WHERE  queue_key = $1
+              AND  status::text IN ('QUEUED', 'RETRYING')
+            """,
+            queue_key,
+            reason,
+        )
+
+    # Count workers spawned per queue_key (the spawn plan's multiplicity) so we
+    # stamp exactly that many rows -- stamping every QUEUED/RETRYING row would
+    # mark rows no worker was dispatched for and erase their waiting reason.
+    for queue_key, spawned in Counter(spawned_keys).items():
+        if spawned <= 0:
+            continue
+        await pool.execute(
+            """
+            WITH to_stamp AS (
+                SELECT id
+                FROM   worker_jobs
+                WHERE  queue_key = $1
+                  AND  status::text IN ('QUEUED', 'RETRYING')
+                  AND  spawned_at IS NULL
+                ORDER  BY priority DESC, created_at ASC
+                LIMIT  $2
+            )
+            UPDATE worker_jobs
+            SET    spawned_at = NOW(),
+                   admission_reason = NULL
+            WHERE  id IN (SELECT id FROM to_stamp)
+            """,
+            queue_key,
+            spawned,
+        )
 
 
 async def discover_active_worker_job_queue_keys() -> tuple[tuple[str, str], ...]:
