@@ -493,14 +493,12 @@ async def _match_authors_for_token(
     because the ``author:`` / ``user:`` aliases let people type a teammate's
     email or display name, also on ``email`` / ``name`` -- all
     case-insensitively. The github match reuses the plural lookup so handle
-    collisions (two members, same handle) union rather than raise. The
-    ``api.routers.tasks`` import is local to avoid a module-load cycle
-    (that router imports this module at top level).
+    collisions (two members, same handle) union rather than raise.
     """
-    from api.routers.tasks import _lookup_users_by_github_username
+    from api.routers.task_submission import lookup_users_by_github_username
 
     matched: dict[str, UserModel] = {}
-    for user in await _lookup_users_by_github_username(
+    for user in await lookup_users_by_github_username(
         session, github_username=token, org_id=org_id
     ):
         matched[user.id] = user
@@ -585,9 +583,7 @@ async def resolve_search_authors(
         else:
             _add_handle(token)
 
-        for user in await _match_authors_for_token(
-            session, org_id=org_id, token=token
-        ):
+        for user in await _match_authors_for_token(session, org_id=org_id, token=token):
             _add_uid(user.id)
             profile = await _load_attribution_profile(session, user, org_id=org_id)
             for handle in profile.github_handles:

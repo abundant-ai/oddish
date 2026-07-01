@@ -5,15 +5,18 @@ without changing each trial's canonical ``trials.experiment_id``. Read paths
 that scope trials to an experiment union both sources through these helpers so
 the predicate lives in exactly one place.
 """
+
 from __future__ import annotations
 
-from sqlalchemy import Select, or_, select
+from typing import Any
+
+from sqlalchemy import or_, select
 
 from oddish.db import experiment_trials
 from oddish.db.models import TrialModel
 
 
-def gathered_trial_ids_select(experiment_id: str) -> Select:
+def gathered_trial_ids_select(experiment_id: str) -> Any:
     return (
         select(experiment_trials.c.trial_id)
         .where(experiment_trials.c.experiment_id == experiment_id)
