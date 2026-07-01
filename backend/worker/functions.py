@@ -113,6 +113,30 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
+async def _effective_model_concurrency(queue_key: str) -> int:
+    """The concurrency limit to enforce for one ``queue_key``: the static limit,
+    overlaid with the fresh advisory when dynamic concurrency is on.
+
+    This is the SAME number ``poll_queue`` uses to size the spawn plan, so the
+    worker's ``queue_slots`` lease can't cap the advisory below what the dispatcher
+    planned (nor let the dispatcher over-spawn above the slot pool). Best-effort:
+    a stale/missing/errored advisory decays to the static value, and with the flag
+    off it IS the static value -- so default behavior is unchanged.
+    """
+    static = settings.get_model_concurrency(queue_key)
+    if static <= 0 or not settings.dynamic_model_concurrency:
+        return static
+    try:
+        async with get_session() as session:
+            advisory_limits = await get_advisory_limits(session)
+        return merge_advisory_over_static({queue_key: static}, advisory_limits).get(
+            queue_key, static
+        )
+    except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+        console.print(f"[yellow]Advisory limit unavailable ({queue_key}): {e}[/yellow]")
+        return static
+
+
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
@@ -150,7 +174,7 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
 
-        queue_limit = settings.get_model_concurrency(queue_key)
+        queue_limit = await _effective_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
                 f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"

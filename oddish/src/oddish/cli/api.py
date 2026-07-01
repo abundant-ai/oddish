@@ -41,6 +41,7 @@ from harbor.viewer.scanner import JobScanner
 from oddish.cli._concurrency import (
     AdaptiveConcurrencyLimiter,
     ConcurrencyGate,
+    classify_backpressure,
     map_with_adaptive_concurrency,
     report_advertised_ceiling_from_response,
     report_api_call,
@@ -699,6 +700,7 @@ def upload_tasks_with_progress(
     progress_label: str = "Uploading",
     force_new_version: bool = False,
     concurrency: int | None = None,
+    limiter: AdaptiveConcurrencyLimiter | None = None,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
@@ -710,6 +712,13 @@ def upload_tasks_with_progress(
     is adaptive (env ``ODDISH_TASK_UPLOAD_CONCURRENCY``, else an AIMD limiter that
     grows on success and backs off under load). The S3 presigned-PUT step is
     bounded separately and more tightly inside ``_upload_to_presigned_url``.
+
+    ``limiter`` lets a caller share one adaptive limiter across a whole run so
+    the upload and trial-submission phases feed the same learned state
+    (advertised ceiling, gradient, no-load floor); when ``None`` this
+    self-creates one from ``concurrency`` (the standalone ``oddish upload``
+    path). When a ``limiter`` is supplied, ``concurrency`` is ignored -- the
+    caller already baked it into the shared limiter.
 
     Returns the upload response dicts in the same order as ``task_paths``.
     """
@@ -738,7 +747,10 @@ def upload_tasks_with_progress(
     )
 
     results: list[dict] = []
-    limiter = resolve_submit_concurrency(concurrency)
+    # Share the run's limiter when the caller threads one in; otherwise
+    # self-create one from ``concurrency`` (the standalone ``oddish upload`` path).
+    if limiter is None:
+        limiter = resolve_submit_concurrency(concurrency)
     with progress:
         progress_task = progress.add_task(
             f"{progress_label} {len(task_paths)} tasks...", total=len(task_paths)
@@ -1129,8 +1141,12 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
         # The request may have reached the server and committed before the error
         # surfaced (e.g. a read timeout). Do not fall back -- that risks
         # duplicate trials -- surface it so the operator can check and retry.
-        # A transport failure under load is backpressure: shrink the limiter.
-        report_backpressure()
+        # Only a load-driven transport failure (timeout / pool checkout) is
+        # backpressure; a bare ConnectError and other non-load transport errors
+        # are neutral, so honor classify_backpressure rather than shrinking the
+        # limiter for any HTTPError.
+        if classify_backpressure(exception=exc):
+            report_backpressure()
         error_console.print(
             f"[red]Batch task submission failed:[/red] {exc}\n"
             "[yellow]The batch may already have been committed; not retrying "

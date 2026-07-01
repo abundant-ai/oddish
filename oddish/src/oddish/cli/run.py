@@ -825,6 +825,12 @@ def run(
     # When ``--task`` is used the upload phase is skipped -- we
     # already have a task ID and only need to submit trials against
     # it.
+    # One adaptive limiter shared across both phases of the run: the upload pool
+    # (phase 1) and the trial-submission batch / per-task path (phase 2) feed and
+    # read the same learned state (advertised ceiling, gradient, no-load floor),
+    # so pressure discovered while uploading immediately shapes submission and
+    # vice versa. (Standalone callers of these helpers still self-create one.)
+    submit_limiter = resolve_submit_concurrency(submit_concurrency)
     submit_targets: list[tuple[str, bool, str | None, Path | None]] = []
     if task_paths:
         upload_results = upload_tasks_with_progress(
@@ -835,7 +841,7 @@ def run(
             json_output=json_output,
             progress_label="Uploading",
             force_new_version=force_new_version,
-            concurrency=submit_concurrency,
+            limiter=submit_limiter,
         )
         for task_path, result in zip(task_paths, upload_results):
             is_existing = bool(result.get("existing_task", False))
@@ -899,10 +905,10 @@ def run(
                 )
                 for target_id, append, content_hash, task_path in submit_targets
             ]
-            # Route the batch chunks through the same adaptive limiter as the
-            # upload pool, so the (previously ungated) batch path honors the
-            # server-advertised ceiling and backs off under load.
-            submit_limiter = resolve_submit_concurrency(submit_concurrency)
+            # Route the batch chunks through the run's shared adaptive limiter --
+            # the same instance the upload pool used -- so the advertised ceiling
+            # and backpressure learned while uploading carry straight into the
+            # (previously ungated) batch submission and keep backing it off.
             batch_results = submit_sweep_batch(
                 api_url, payloads, limiter=submit_limiter
             )

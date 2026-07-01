@@ -81,6 +81,104 @@ def test_summarize_zero_window_is_safe():
 
 
 # ---------------------------------------------------------------------------
+# fold_calibration_by_queue_key (combine multi-provider rows per queue_key)
+# ---------------------------------------------------------------------------
+
+
+def _cal(queue_key, provider, **kw):
+    base = dict(
+        trials=100,
+        token_coverage=1.0,
+        avg_trial_seconds=120.0,
+        r_tokens=5000.0,
+        throughput_per_min=1.0,
+        throttle_rate=0.0,
+    )
+    base.update(kw)
+    return QueueCalibration(queue_key=queue_key, provider=provider, **base)
+
+
+def test_fold_single_provider_row_is_unchanged():
+    # A queue_key with one provider row must be returned untouched (same object).
+    row = _cal("openai/gpt-5.2", "openai")
+    folded = calibration.fold_calibration_by_queue_key([row])
+    assert folded == {"openai/gpt-5.2": row}
+    assert folded["openai/gpt-5.2"] is row
+
+
+def test_fold_combines_multi_provider_default_bucket():
+    # The aggregate 'default' bucket spans providers: GROUP BY (queue_key,
+    # provider) yields one row each, which must be combined -- not collapsed to
+    # one arbitrary provider's row.
+    rows = [
+        _cal(
+            "default",
+            "openai",
+            trials=100,
+            avg_trial_seconds=100.0,
+            r_tokens=1000.0,
+            token_coverage=1.0,
+            throttle_rate=0.10,
+            throughput_per_min=2.0,
+        ),
+        _cal(
+            "default",
+            "anthropic",
+            trials=300,
+            avg_trial_seconds=200.0,
+            r_tokens=5000.0,
+            token_coverage=0.5,
+            throttle_rate=0.02,
+            throughput_per_min=6.0,
+        ),
+    ]
+    folded = calibration.fold_calibration_by_queue_key(rows)
+    assert set(folded) == {"default"}
+    c = folded["default"]
+    assert c.trials == 400  # summed
+    # trial-count-weighted mean: (100*100 + 300*200) / 400 = 175
+    assert c.avg_trial_seconds == pytest.approx(175.0)
+    # trial-count-weighted mean: (100*1000 + 300*5000) / 400 = 4000
+    assert c.r_tokens == pytest.approx(4000.0)
+    # recomputed coverage: (100*1.0 + 300*0.5) / 400 = 0.625
+    assert c.token_coverage == pytest.approx(0.625)
+    # trial-weighted throttle: (100*0.10 + 300*0.02) / 400 = 0.04
+    assert c.throttle_rate == pytest.approx(0.04)
+    assert c.throughput_per_min == pytest.approx(8.0)  # summed
+    assert c.provider == "anthropic+openai"  # joined, sorted, distinct
+
+
+def test_fold_weighted_mean_skips_none_metric_slices():
+    # A provider slice with no finished trials (avg_trial_seconds/r_tokens None)
+    # contributes no weight to those means but still counts toward trials.
+    rows = [
+        _cal("default", "openai", trials=100, avg_trial_seconds=None, r_tokens=None),
+        _cal(
+            "default",
+            "anthropic",
+            trials=300,
+            avg_trial_seconds=200.0,
+            r_tokens=5000.0,
+        ),
+    ]
+    c = calibration.fold_calibration_by_queue_key(rows)["default"]
+    assert c.trials == 400
+    assert c.avg_trial_seconds == pytest.approx(200.0)  # only the non-None slice
+    assert c.r_tokens == pytest.approx(5000.0)
+
+
+def test_fold_all_none_metric_stays_none():
+    # If every slice is missing a metric, the combined metric stays None.
+    rows = [
+        _cal("default", "openai", trials=100, avg_trial_seconds=None, r_tokens=None),
+        _cal("default", "anthropic", trials=300, avg_trial_seconds=None, r_tokens=None),
+    ]
+    c = calibration.fold_calibration_by_queue_key(rows)["default"]
+    assert c.avg_trial_seconds is None
+    assert c.r_tokens is None
+
+
+# ---------------------------------------------------------------------------
 # count_rate_limit_by_queue (reuses classify_retry_reason)
 # ---------------------------------------------------------------------------
 

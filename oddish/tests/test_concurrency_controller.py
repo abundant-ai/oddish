@@ -150,6 +150,16 @@ def test_idle_queue_shrinks():
     assert d.new_limit == 7  # floor(10 * 0.70)
 
 
+def test_low_fill_with_backlog_does_not_shrink():
+    # A low-fill queue with a real backlog waiting is NOT idle: shrinking here
+    # would starve the queued work. It must hold (not cut), falling through the
+    # idle branch to hold/bottleneck.
+    d = _step(fill=0.1, queued=5, prev_limit=10)
+    assert d.reason != "idle"
+    assert d.error >= 0  # never a shrink vote
+    assert d.new_limit == 10  # held, not floor(10 * 0.70) = 7
+
+
 def test_dead_band_holds_no_flap():
     d = _step(fill=0.7, queued=5, prev_limit=10)  # between U_LOW and U_HIGH
     assert d.error == 0
@@ -247,6 +257,7 @@ class _FakeSession:
         self.state_rows = state_rows or []
         self.fail = fail
         self.upserts: list[dict] = []
+        self.rolled_back = False
 
     async def execute(self, stmt, params=None):
         sql = str(stmt)
@@ -258,6 +269,9 @@ class _FakeSession:
         if "model_concurrency_advisory" in sql:  # a SELECT
             return _Result(self.state_rows)
         return _Result([])
+
+    async def rollback(self):
+        self.rolled_back = True
 
 
 def _health(capacity):
@@ -427,6 +441,9 @@ async def test_recompute_is_best_effort_on_error(monkeypatch):
     monkeypatch.setattr(cc, "calibrate_model_concurrency", _make_async([_cal("q")]))
     session = _FakeSession(fail=True)  # every execute raises
     assert await cc.recompute_advisory_limits(session) == {}  # swallowed, no raise
+    # A mid-loop failure must roll back this session's partial pass (the caller
+    # commits on normal exit), not silently persist a half-applied advisory.
+    assert session.rolled_back is True
 
 
 @pytest.mark.asyncio

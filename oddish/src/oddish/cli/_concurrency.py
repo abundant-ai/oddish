@@ -30,6 +30,7 @@ import contextvars
 import math
 import os
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -65,6 +66,19 @@ GRADIENT_MIN = 0.5
 GRADIENT_MAX = 1.0
 GRADIENT_SMOOTHING = 0.2
 NOLOAD_WINDOW = 100
+
+# TTL for a server-advertised ceiling (the ``Oddish-Submit-Concurrency`` header).
+# The server re-advertises it on every capacity-path response from a ~5s-cached
+# load snapshot (``core.admin.LOAD_CACHE_TTL_SECONDS``) and DROPS the header
+# whenever that snapshot is unavailable. A missing header is deliberately read as
+# "no new advice" (``report_advertised_ceiling`` is a no-op for ``None``) so a
+# single gap can't flap the ceiling -- but without an expiry a client would stay
+# clamped at the last (possibly low) ceiling for the rest of the run during a
+# snapshot outage. So an advertised ceiling older than this TTL is ignored and
+# the effective maximum reverts to the gradient ``max_limit``. 30s is ~6 server
+# snapshot intervals: long enough to ride out a brief outage (anti-flap), short
+# enough to recover promptly from a sustained one.
+ADVERTISED_CEILING_TTL_SECONDS = 30.0
 
 # Transient statuses that signal server backpressure. Identical to the retry set
 # used for the idempotent upload calls (api._RETRY_STATUS_CODES). Deterministic
@@ -134,9 +148,13 @@ class AdaptiveConcurrencyLimiter:
     The effective maximum is ``min(max_limit, advertised_max)`` where
     ``advertised_max`` is the server-advertised ceiling (the
     ``Oddish-Submit-Concurrency`` header) -- ``None`` until one is seen, after
-    which a busy backend can clamp the client below ``max_limit``. The floor
-    always stays ``>= min_limit``. Setting ``min_limit == max_limit`` pins the
-    limit (no adaptation) -- used when a caller supplies an explicit value.
+    which a busy backend can clamp the client below ``max_limit``. That clamp
+    expires after ``advertised_ttl_seconds``: the server drops the header during
+    a load-snapshot outage, and treating a missing header as "keep the last
+    advice" forever would pin a client at an old low ceiling, so a stale
+    advertised ceiling is ignored and the maximum reverts to ``max_limit``. The
+    floor always stays ``>= min_limit``. Setting ``min_limit == max_limit`` pins
+    the limit (no adaptation) -- used when a caller supplies an explicit value.
     """
 
     def __init__(
@@ -148,6 +166,7 @@ class AdaptiveConcurrencyLimiter:
         backoff_factor: float = DEFAULT_BACKOFF_FACTOR,
         rtt_tolerance: float = RTT_TOLERANCE,
         smoothing: float = GRADIENT_SMOOTHING,
+        advertised_ttl_seconds: float = ADVERTISED_CEILING_TTL_SECONDS,
         latency_monitor: _LatencyMonitor | None = None,
     ) -> None:
         if min_limit < 1:
@@ -164,11 +183,15 @@ class AdaptiveConcurrencyLimiter:
         self.backoff_factor = _clamp(float(backoff_factor), MIN_BACKOFF_FACTOR, 0.999)
         self.rtt_tolerance = float(rtt_tolerance)
         self.smoothing = float(smoothing)
+        self._advertised_ttl = float(advertised_ttl_seconds)
         start = self.min_limit if initial_limit is None else int(initial_limit)
         self._limit = float(_clamp(float(start), self.min_limit, self.max_limit))
         # Server-advertised upper clamp (from the response header); None until
         # one is seen.
         self._advertised_max: float | None = None
+        # Monotonic time the advertised ceiling was last set, for the TTL expiry
+        # in _effective_max; None whenever there is no advertised ceiling.
+        self._advertised_at: float | None = None
         self._monitor = (
             latency_monitor if latency_monitor is not None else _LatencyMonitor()
         )
@@ -176,8 +199,21 @@ class AdaptiveConcurrencyLimiter:
         # keeps the float state consistent (it guards arithmetic, not any I/O).
         self._lock = threading.Lock()
 
+    def _advertised_expired(self) -> bool:
+        """True once the advertised ceiling is older than its TTL.
+
+        Preserves the anti-flap "a missing header keeps the last advice"
+        behavior *within* the TTL; past it a stale ceiling (e.g. the server
+        dropped the header during a load-snapshot outage) is ignored so the
+        limiter reverts to its gradient ``max_limit`` instead of staying clamped
+        at an old low ceiling for the rest of the run. Callers hold ``_lock``.
+        """
+        if self._advertised_at is None:
+            return False
+        return (time.monotonic() - self._advertised_at) > self._advertised_ttl
+
     def _effective_max(self) -> float:
-        if self._advertised_max is None:
+        if self._advertised_max is None or self._advertised_expired():
             return float(self.max_limit)
         return min(float(self.max_limit), self._advertised_max)
 
@@ -205,13 +241,17 @@ class AdaptiveConcurrencyLimiter:
 
         ``None`` clears the advice (revert to the static ``max_limit``). A value
         re-clamps the current limit down immediately so a freshly-lowered server
-        ceiling takes effect without waiting for the next sample. Returns the new
-        effective limit.
+        ceiling takes effect without waiting for the next sample, and stamps the
+        advice with the current time so it expires after ``advertised_ttl_seconds``
+        (see :meth:`_advertised_expired`). Returns the new effective limit.
         """
         with self._lock:
-            self._advertised_max = (
-                None if advertised is None else max(1.0, float(advertised))
-            )
+            if advertised is None:
+                self._advertised_max = None
+                self._advertised_at = None
+            else:
+                self._advertised_max = max(1.0, float(advertised))
+                self._advertised_at = time.monotonic()
             self._limit = _clamp(
                 self._limit, float(self.min_limit), self._effective_max()
             )
