@@ -557,6 +557,13 @@ class ExperimentCombineRequest(BaseModel):
         return self
 
 
+class TrialCollectionRequest(BaseModel):
+    """Request to gather existing trials into a new read-only collection."""
+
+    name: str
+    trial_ids: list[str]
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -1021,6 +1028,15 @@ class ExperimentCombineResponse(BaseModel):
     artifacts_copied: int = Field(
         0, description="S3 objects duplicated for the copied trials"
     )
+
+
+class TrialCollectionResponse(BaseModel):
+    """Result of gathering trials into a new read-only collection."""
+
+    id: str
+    name: str
+    trials_linked: int
+    tasks_linked: int
 
 
 class TaskBrowseExperiment(BaseModel):
