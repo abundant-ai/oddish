@@ -3,8 +3,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 from oddish.config import settings
-from oddish.dispatch.backends.inprocess import InProcessDispatcher
-from oddish.dispatch.cycle import run_dispatch_loop
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.slots import acquire_queue_slot, release_queue_slot
 from oddish.workers.queue.worker_job_dispatcher import stamp_dispatch_stage
@@ -35,6 +33,11 @@ async def run_polling_worker(
     selects the in-process fan-out backend and preserves the old polling interval
     as the dispatch loop's fallback wake.
     """
+    # Lazy imports avoid a cycle during ``oddish.dispatch.cycle`` import:
+    # cycle -> slots -> workers package -> queue_manager.
+    from oddish.dispatch.backends.inprocess import InProcessDispatcher
+    from oddish.dispatch.cycle import run_dispatch_loop
+
     await run_dispatch_loop(
         InProcessDispatcher(worker_id_prefix="oss"),
         max_workers=max_workers,

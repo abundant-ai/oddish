@@ -416,11 +416,17 @@ async def run_dispatch_loop(
         logger.warning("startup reattach skipped: %r", exc)
 
     while not _stop():
-        await run_dispatch_cycle(
-            dispatcher,
-            max_workers=max_workers,
-            concurrency_for=concurrency_for,
-            admit=admit,
-            on_stage=on_stage,
-        )
+        try:
+            await run_dispatch_cycle(
+                dispatcher,
+                max_workers=max_workers,
+                concurrency_for=concurrency_for,
+                admit=admit,
+                on_stage=on_stage,
+            )
+        except asyncio.CancelledError:
+            raise
+        # Poll loops must survive transient DB/network failures and retry.
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dispatch cycle failed; retrying after fallback: %r", exc)
         await trigger.wait()
