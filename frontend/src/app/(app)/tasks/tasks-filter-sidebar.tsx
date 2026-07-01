@@ -1,6 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
@@ -425,23 +431,8 @@ function FilterControl({
       return <RewardThreshold values={values} set={set} />;
     case "sort":
       return <SortControl values={values} set={set} />;
-    case "num": {
-      const field = NUM_FIELD[def.key] ?? "minAttempts";
-      return (
-        <Input
-          type="number"
-          min={1}
-          className="h-8 text-xs"
-          value={(values[field] as number | null) ?? ""}
-          onChange={(e) =>
-            set({
-              [field]: e.target.value === "" ? null : Number(e.target.value),
-            } as Partial<FilterValues>)
-          }
-          placeholder="2"
-        />
-      );
-    }
+    case "num":
+      return <NumControl fieldKey={def.key} values={values} set={set} />;
     case "tags":
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
@@ -925,6 +916,32 @@ function DateRange({
         : "text-muted-foreground hover:bg-muted/60"
     );
 
+  // Custom From/To follow the same draft-then-apply rule as the number ranges:
+  // dates are held locally (as the picker's "YYYY-MM-DD") and only committed —
+  // converted to UTC day bounds — on Apply/Enter. Presets stay instant.
+  const appliedDates = {
+    from: values.createdAfter ? isoToLocalDateInput(values.createdAfter) : "",
+    to: values.createdBefore ? isoToLocalDateInput(values.createdBefore) : "",
+  };
+  const commitDates = (d: { from: string; to: string }) =>
+    set({
+      createdAfter: d.from ? localDayStartIso(d.from) : null,
+      createdBefore: d.to ? localDayEndIso(d.to) : null,
+      createdWithin: null,
+    });
+  const validateDates = (d: { from: string; to: string }) =>
+    d.from && d.to && d.from > d.to ? "From can't be after To" : null;
+  const {
+    draft: dateDraft,
+    setDraft: setDateDraft,
+    dirty: datesDirty,
+    error: dateError,
+    apply: applyDates,
+  } = useDraft(appliedDates, commitDates, validateDates);
+  const onDateKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key === "Enter") applyDates();
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex overflow-hidden rounded-md border border-[#6f88b4]/20">
@@ -955,18 +972,11 @@ function DateRange({
             <Input
               type="date"
               className={DATE_INPUT_CLASS}
-              value={
-                values.createdAfter
-                  ? isoToLocalDateInput(values.createdAfter)
-                  : ""
-              }
+              value={dateDraft.from}
               onChange={(e) =>
-                set({
-                  createdAfter: e.target.value
-                    ? localDayStartIso(e.target.value)
-                    : null,
-                })
+                setDateDraft({ ...dateDraft, from: e.target.value })
               }
+              onKeyDown={onDateKeyDown}
             />
           </div>
           <div>
@@ -976,20 +986,14 @@ function DateRange({
             <Input
               type="date"
               className={DATE_INPUT_CLASS}
-              value={
-                values.createdBefore
-                  ? isoToLocalDateInput(values.createdBefore)
-                  : ""
-              }
+              value={dateDraft.to}
               onChange={(e) =>
-                set({
-                  createdBefore: e.target.value
-                    ? localDayEndIso(e.target.value)
-                    : null,
-                })
+                setDateDraft({ ...dateDraft, to: e.target.value })
               }
+              onKeyDown={onDateKeyDown}
             />
           </div>
+          <ApplyBar dirty={datesDirty} error={dateError} onApply={applyDates} />
         </div>
       ) : null}
     </div>
@@ -1023,6 +1027,63 @@ function SortControl({
   );
 }
 
+// Draft-then-apply for the free-typing filters (number ranges, count ≥ N,
+// custom dates). The user's keystrokes update a LOCAL draft; nothing is written
+// to the URL (and so nothing refetches) until Apply is clicked or Enter is
+// pressed. `validate` blocks Apply for an invalid draft (e.g. an inverted
+// min–max range) and surfaces a hint instead. Seeded from the applied value and
+// re-seeded whenever that value changes externally (URL nav, Clear all, or this
+// field's own Apply) — keyed on the value, not identity, so editing a different
+// filter never wipes an in-progress draft here.
+function useDraft<T>(
+  applied: T,
+  commit: (draft: T) => void,
+  validate?: (draft: T) => string | null
+) {
+  const appliedKey = JSON.stringify(applied);
+  const [draft, setDraft] = useState<T>(applied);
+  useEffect(() => {
+    setDraft(JSON.parse(appliedKey) as T);
+  }, [appliedKey]);
+  const dirty = JSON.stringify(draft) !== appliedKey;
+  const error = validate ? validate(draft) : null;
+  const apply = () => {
+    if (!error) commit(draft);
+  };
+  return { draft, setDraft, dirty, error, apply };
+}
+
+// Shown only while a field has an unapplied change: the Apply button when the
+// draft is valid, or an inline hint when it isn't (so an invalid range can never
+// be applied).
+function ApplyBar({
+  dirty,
+  error,
+  onApply,
+}: {
+  dirty: boolean;
+  error: string | null;
+  onApply: () => void;
+}) {
+  if (!dirty) return null;
+  if (error) {
+    return <p className="mt-1.5 text-[11px] text-rose-500">{error}</p>;
+  }
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant="outline"
+      className="mt-1.5 h-7 w-full text-xs"
+      onClick={onApply}
+    >
+      Apply
+    </Button>
+  );
+}
+
+type NumRangeDraft = { min: number | null; max: number | null };
+
 function NumRange({
   fieldKey,
   values,
@@ -1036,30 +1097,83 @@ function NumRange({
     "minTokens",
     "maxTokens",
   ];
+  const applied: NumRangeDraft = {
+    min: (values[minField] as number | null) ?? null,
+    max: (values[maxField] as number | null) ?? null,
+  };
+  const commit = (d: NumRangeDraft) =>
+    set({ [minField]: d.min, [maxField]: d.max } as Partial<FilterValues>);
+  const validate = (d: NumRangeDraft) =>
+    d.min !== null && d.max !== null && d.min > d.max
+      ? "Min can't exceed max"
+      : null;
+  const { draft, setDraft, dirty, error, apply } = useDraft(
+    applied,
+    commit,
+    validate
+  );
   const toNum = (s: string) => (s === "" ? null : Number(s));
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key === "Enter") apply();
+  };
   return (
-    <div className="flex items-center gap-1">
+    <div>
+      <div className="flex items-center gap-1">
+        <Input
+          type="number"
+          min={0}
+          className="h-8 text-xs"
+          placeholder="min"
+          value={draft.min ?? ""}
+          onChange={(e) => setDraft({ ...draft, min: toNum(e.target.value) })}
+          onKeyDown={onKeyDown}
+        />
+        <span className="text-muted-foreground text-xs">–</span>
+        <Input
+          type="number"
+          min={0}
+          className="h-8 text-xs"
+          placeholder="max"
+          value={draft.max ?? ""}
+          onChange={(e) => setDraft({ ...draft, max: toNum(e.target.value) })}
+          onKeyDown={onKeyDown}
+        />
+      </div>
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
+    </div>
+  );
+}
+
+function NumControl({
+  fieldKey,
+  values,
+  set,
+}: {
+  fieldKey: string;
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  const field = NUM_FIELD[fieldKey] ?? "minAttempts";
+  const applied = { v: (values[field] as number | null) ?? null };
+  const commit = (d: { v: number | null }) =>
+    set({ [field]: d.v } as Partial<FilterValues>);
+  const { draft, setDraft, dirty, error, apply } = useDraft(applied, commit);
+  return (
+    <div>
       <Input
         type="number"
-        min={0}
+        min={1}
         className="h-8 text-xs"
-        placeholder="min"
-        value={(values[minField] as number | null) ?? ""}
+        placeholder="2"
+        value={draft.v ?? ""}
         onChange={(e) =>
-          set({ [minField]: toNum(e.target.value) } as Partial<FilterValues>)
+          setDraft({ v: e.target.value === "" ? null : Number(e.target.value) })
         }
+        onKeyDown={(e) => {
+          if (e.key === "Enter") apply();
+        }}
       />
-      <span className="text-muted-foreground text-xs">–</span>
-      <Input
-        type="number"
-        min={0}
-        className="h-8 text-xs"
-        placeholder="max"
-        value={(values[maxField] as number | null) ?? ""}
-        onChange={(e) =>
-          set({ [maxField]: toNum(e.target.value) } as Partial<FilterValues>)
-        }
-      />
+      <ApplyBar dirty={dirty} error={error} onApply={apply} />
     </div>
   );
 }
