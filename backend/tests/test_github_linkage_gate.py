@@ -15,6 +15,7 @@ Markers:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import uuid
@@ -746,6 +747,43 @@ async def test_back_compat_handle_only_endpoint_unchanged(client, org_with_users
         assert resp.status_code == 200
         body = resp.json()
         assert body["linked"] is True and body["user_id"] == alice.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_endpoint_refresh_fetches_clerk_concurrently(
+    client, org_with_users, monkeypatch
+):
+    """PERF (round-2 finding): on a miss the per-member Clerk fan-out must run
+    CONCURRENTLY (semaphore-bounded), not one sequential GET at a time — and it
+    runs OUTSIDE the DB transaction. Patch the fetch seam to record max in-flight;
+    a sequential loop would cap it at 1."""
+    import api.routers.github_linkage as gh
+    from auth.provisioning import ClerkGithubIdentity
+
+    inflight = {"cur": 0, "max": 0}
+
+    async def _slow_fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
+        inflight["cur"] += 1
+        inflight["max"] = max(inflight["max"], inflight["cur"])
+        try:
+            await asyncio.sleep(0.05)
+            return ClerkGithubIdentity(username=None, email=None, github_id=None)
+        finally:
+            inflight["cur"] -= 1
+
+    monkeypatch.setattr(gh, "_fetch_clerk_identity", _slow_fetch)
+
+    org_id, add = org_with_users
+    for i in range(5):
+        await add(f"member{i}")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        resp = await _linkage(client, raw, "ghost")  # miss -> refresh scans all 5
+        assert resp.status_code == 200 and resp.json()["linked"] is False
+        assert inflight["max"] >= 2  # concurrent, not sequential
     finally:
         await _purge(api_key_ids=[key_id])
 
