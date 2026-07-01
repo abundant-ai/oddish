@@ -10,6 +10,26 @@ a PR for review. This applies to every change, no matter how small — even a
 one-line fix. If you find yourself on `main` with staged or unstaged changes,
 create a branch and move the work onto it before committing.
 
+## Rule — preserve package boundaries
+
+`oddish/` is the self-hostable core package for the CLI, standalone FastAPI
+server, DB models/migrations, queue/runtime primitives, and worker handlers.
+`backend/` is the hosted cloud layer for Clerk/API-key auth, org membership,
+Modal app/deployment wiring, managed worker spawning, GitHub/webhooks, and
+cloud-only policy. Do not import `backend/`, `backend.auth`, `backend.models`,
+`cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules from
+`oddish/`. Shared logic should live in host-agnostic `oddish` modules and be
+wrapped by `backend/`.
+
+## Rule — task names stay unique and indexed
+
+`tasks.name` is the human-readable lookup key within an org. Live task names
+must stay unique and indexed (`idx_tasks_unique_org_name`) so re-uploading the
+same task name updates the existing task by creating a new `task_versions` row
+instead of creating a different task. Renaming a task is allowed, but it must
+preserve the live `(org_id, name)` uniqueness invariant and the task's version
+history.
+
 ## Rule — never expose probes in public/share views
 
 Probes are an **experimental, internal-only** feature. They must never appear in
