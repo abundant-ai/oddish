@@ -114,6 +114,11 @@ async def retry_trial_core(
     # ``oddish.queue`` -> ``oddish.workers.jobs.enqueue``.
     from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
 
+    if old_trial.billed_user_id is not None:
+        from oddish.core.quota_admission import admit_trials
+
+        await admit_trials(session, org_id, old_trial.billed_user_id, count=1)
+
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     new_trial_id = f"{task.id}-{next_index}"
     new_trial_name = f"{task.name}-{next_index}"

@@ -27,7 +27,12 @@ from auth import (
 )
 from oddish.config import settings
 from models import QuotaModel, UserModel, UserRole, generate_id
-from oddish.core.quotas import start_of_today_utc, sum_cost_usd, to_money_decimal
+from oddish.core.quotas import (
+    get_effective_limit,
+    start_of_today_utc,
+    sum_cost_usd,
+    to_money_decimal,
+)
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import TrialModel, get_session, utcnow
 
@@ -133,14 +138,18 @@ async def get_my_quota_usage(
 ) -> QuotaUsageResponse:
     """The caller's own daily spend vs their effective limit."""
     used_today = Decimal(0)
+    effective_limit_usd = settings.default_daily_quota_usd
     if auth.user_id:
         async with get_session() as session:
             used_today = await sum_cost_usd(
                 session, auth.org_id, auth.user_id, start_of_today_utc()
             )
+            effective_limit_usd = await get_effective_limit(
+                session, auth.org_id, auth.user_id
+            )
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
-        limit_usd=float(settings.default_daily_quota_usd),
+        limit_usd=float(effective_limit_usd),
         used_usd=float(used_today),
         period="daily",
     )

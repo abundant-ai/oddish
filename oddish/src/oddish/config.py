@@ -2,6 +2,7 @@ import json
 import os
 import re
 from decimal import Decimal
+from enum import Enum
 from typing import ClassVar
 
 from pydantic import Field, model_validator
@@ -836,6 +837,12 @@ def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     return DEFAULT_API_URL
 
 
+class QuotaMode(str, Enum):
+    OFF = "off"
+    SHADOW = "shadow"
+    ENFORCE = "enforce"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Load .env first, then layer .env.local over it (later file wins on
@@ -858,6 +865,7 @@ class Settings(BaseSettings):
 
     pending_trial_reservation_usd: Decimal = Decimal("0.50")
     default_daily_quota_usd: Decimal = Decimal("10.00")
+    quota_mode: QuotaMode = QuotaMode.OFF
 
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the

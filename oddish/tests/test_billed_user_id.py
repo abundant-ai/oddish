@@ -240,7 +240,7 @@ async def test_auto_probe_forwards_billed_user_id_to_append(monkeypatch):
     monkeypatch.setattr(
         auto_probe_module,
         "build_task_submission_from_sweep",
-        lambda submission, task_path, trials: SimpleNamespace(),
+        lambda submission, task_path, trials: SimpleNamespace(trials=trials),
     )
     monkeypatch.setattr(auto_probe_module, "append_trials_to_task", fake_append_trials_to_task)
 
