@@ -95,7 +95,7 @@ export function TagFilterDropdown({
   });
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
-    [data],
+    [data]
   );
   const CountIcon = countField === "task_count" ? FileText : FlaskConical;
 
@@ -124,7 +124,7 @@ export function TagFilterDropdown({
   function clear() {
     const p = parseTaskSearch(query);
     onQueryChange(
-      serializeTaskSearch({ ...p, all: [], any: [], none: [] }).trim(),
+      serializeTaskSearch({ ...p, all: [], any: [], none: [] }).trim()
     );
   }
 
@@ -138,7 +138,7 @@ export function TagFilterDropdown({
           size="sm"
           className={cn(
             "h-8 justify-between gap-1.5 border-[#6f88b4]/20",
-            className,
+            className
           )}
         >
           <span className="flex items-center gap-1.5">
@@ -148,7 +148,7 @@ export function TagFilterDropdown({
           <ChevronDown className="h-4 w-4 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-0" align="end">
+      <PopoverContent className="z-30 w-64 p-0" align="end">
         <TooltipProvider>
           <Command>
             <CommandInput placeholder="Filter tags…" />
@@ -170,7 +170,7 @@ export function TagFilterDropdown({
                           "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border",
                           isSelected
                             ? "border-primary bg-primary text-primary-foreground"
-                            : "border-input",
+                            : "border-input"
                         )}
                       >
                         {isSelected ? <Check className="h-3 w-3" /> : null}
