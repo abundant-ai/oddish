@@ -32,12 +32,39 @@ def test_why_waiting_cap_reached_reason() -> None:
     assert "cap" in why["q"].lower()
 
 
-def test_why_waiting_skips_spawned_and_empty() -> None:
+def test_why_waiting_skips_fully_served_and_empty() -> None:
+    # "served" got a worker for each of its 2 queued rows; "empty" has none.
     why = compute_why_waiting(
-        queued_by_queue={"spawned": 2, "empty": 0},
+        queued_by_queue={"served": 2, "empty": 0},
         running_by_queue={},
-        concurrency_limits={"spawned": 5, "empty": 5},
-        spawned_keys={"spawned"},
+        concurrency_limits={"served": 5, "empty": 5},
+        spawned_keys=["served", "served"],
+        max_workers=10,
+    )
+    assert why == {}
+
+
+def test_why_waiting_partial_serve_still_names_remaining() -> None:
+    # 5 queued but only 2 workers spawned this cycle -> the 3 unserved rows must
+    # still get a reason (multiplicity-aware, not just "spawned at all -> skip").
+    why = compute_why_waiting(
+        queued_by_queue={"m": 5},
+        running_by_queue={"m": 0},
+        concurrency_limits={"m": 5},
+        spawned_keys=["m", "m"],
+        max_workers=2,
+    )
+    assert "m" in why
+    assert "cap" in why["m"].lower()  # per-poll spawn budget exhausted
+
+
+def test_why_waiting_fully_served_by_multiplicity_is_skipped() -> None:
+    # 3 queued, 3 workers spawned -> fully served, no waiting reason.
+    why = compute_why_waiting(
+        queued_by_queue={"m": 3},
+        running_by_queue={},
+        concurrency_limits={"m": 5},
+        spawned_keys=["m", "m", "m"],
         max_workers=10,
     )
     assert why == {}

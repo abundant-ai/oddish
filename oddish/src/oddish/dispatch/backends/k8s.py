@@ -50,7 +50,15 @@ class K8sJobDispatcher:
         namespace: str = "default",
         batch_api: Any | None = None,
         env: Mapping[str, str] | None = None,
-        command: Sequence[str] = ("python", "-m", "oddish.workers.queue.worker"),
+        # Deps live in /app/.venv (backend/Dockerfile), not on PATH; run via uv
+        # so the worker module resolves (matches deploy/ manifests).
+        command: Sequence[str] = (
+            "uv",
+            "run",
+            "python",
+            "-m",
+            "oddish.workers.queue.worker",
+        ),
         backoff_limit: int = 0,
         ttl_seconds_after_finished: int = 300,
         service_account: str | None = None,

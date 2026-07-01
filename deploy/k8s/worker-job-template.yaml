@@ -22,7 +22,9 @@ spec:
       containers:
         - name: worker
           image: oddish-worker:latest
-          command: ["python", "-m", "oddish.workers.queue.worker"]
+          # Deps live in /app/.venv (backend/Dockerfile), not on PATH; run via
+          # uv so the module resolves (matches docker-compose.yml).
+          command: ["uv", "run", "python", "-m", "oddish.workers.queue.worker"]
           env:
             - name: ODDISH_WORKER_QUEUE_KEY
               value: "<queue_key>" # set per Job by the dispatcher

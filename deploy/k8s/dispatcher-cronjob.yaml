@@ -29,7 +29,9 @@ spec:
           containers:
             - name: dispatcher
               image: oddish-worker:latest # the oddish image (worker + dispatcher)
-              command: ["python", "-m", "oddish.dispatch.runner"]
+              # Deps live in /app/.venv (backend/Dockerfile), not on PATH; run
+              # via uv so the module resolves (matches docker-compose.yml).
+              command: ["uv", "run", "python", "-m", "oddish.dispatch.runner"]
               env:
                 - name: ODDISH_DISPATCH_ONCE
                   value: "1"

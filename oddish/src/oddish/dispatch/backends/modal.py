@@ -28,26 +28,30 @@ logger = logging.getLogger(__name__)
 # Matches the legacy backend batch size so cancel behavior is byte-identical.
 MODAL_CANCEL_BATCH_SIZE = 32
 
-CancelFn = Callable[[list[str]], Awaitable[int]]
+# The cancel helper returns the function-call ids it *actually* cancelled, so the
+# dispatcher records only real terminations and leaves failed ones retryable.
+CancelFn = Callable[[list[str]], Awaitable[list[str]]]
 
 
-async def _default_cancel_function_calls(fc_ids: list[str]) -> int:
+async def _default_cancel_function_calls(fc_ids: list[str]) -> list[str]:
     """Terminate Modal worker containers by function-call id.
 
-    Lifted verbatim from ``backend/api/routers/tasks.py:_cancel_modal_function_calls``
-    so the cancel path's behavior is unchanged when it flows through the
-    dispatcher instead of the hard-wired reach-in.
+    Returns the (deduped) function-call ids that were **actually** cancelled — a
+    failed ``cancel.aio`` is swallowed and its id omitted, so the caller records
+    only real terminations and leaves the rest to be retried. The set of
+    containers terminated is otherwise unchanged from the hard-wired reach-in in
+    ``backend/api/routers/tasks.py:_cancel_modal_function_calls``.
     """
     if not fc_ids:
-        return 0
+        return []
 
     try:
         import modal
     except ImportError:
-        return 0
+        return []
 
     unique_fc_ids = list(dict.fromkeys(fc_ids))
-    cancelled = 0
+    cancelled: list[str] = []
 
     async def cancel_one(fc_id: str) -> bool:
         try:
@@ -60,7 +64,7 @@ async def _default_cancel_function_calls(fc_ids: list[str]) -> int:
     for start in range(0, len(unique_fc_ids), MODAL_CANCEL_BATCH_SIZE):
         batch = unique_fc_ids[start : start + MODAL_CANCEL_BATCH_SIZE]
         results = await asyncio.gather(*(cancel_one(fc_id) for fc_id in batch))
-        cancelled += sum(1 for result in results if result)
+        cancelled.extend(fc_id for fc_id, ok in zip(batch, results) if ok)
 
     return cancelled
 
@@ -115,9 +119,13 @@ class ModalDispatcher:
         ]
         if not fc_ids:
             return 0
-        count = await self._cancel_fn(list(dict.fromkeys(fc_ids)))
-        self._cancelled.update(fc_ids)
-        return count
+        cancelled = await self._cancel_fn(list(dict.fromkeys(fc_ids)))
+        # Record only ids whose termination actually succeeded. A swallowed
+        # Modal failure leaves its id out of ``cancelled`` (and thus out of
+        # ``self._cancelled``), so check_active still surfaces it and a later
+        # cancel retries it, instead of the failed id reading as inactive.
+        self._cancelled.update(cancelled)
+        return len(cancelled)
 
     async def recover(self, serialized: Mapping[str, Any]) -> WorkerHandle | None:
         # Modal function-call ids are durable; reattach via FunctionCall.from_id.

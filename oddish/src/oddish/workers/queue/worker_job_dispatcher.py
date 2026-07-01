@@ -24,6 +24,7 @@ beyond ``limit - running`` for that queue_key.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 from oddish.config import settings
@@ -33,6 +34,7 @@ from oddish.db import get_pool
 __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
+    "fetch_alive_worker_handle_ids",
     "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
     "select_job_function",
@@ -65,36 +67,58 @@ async def fetch_running_worker_handles() -> list[tuple[str, str]]:
     ]
 
 
+async def fetch_alive_worker_handle_ids() -> set[str]:
+    """Durable worker-handle ids that still back a live (RUNNING) ``worker_jobs`` row.
+
+    The ``alive`` set for tag-based leaked-worker GC (``reclaim_leaked_workers``):
+    a dispatcher-managed worker whose handle id is absent here has no live row and
+    is a leak. Only handles a worker actually self-reports are durable today -- the
+    Modal ``modal_function_call_id`` -- so a backend whose handle (a Docker
+    container id, a Kubernetes Job name) is not persisted into the row contributes
+    nothing here, and its reclaim stays dormant (the dispatch loop skips an empty
+    alive set so it can never cancel a live worker it simply cannot see).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT modal_function_call_id
+        FROM   worker_jobs
+        WHERE  status::text = 'RUNNING'
+          AND  modal_function_call_id IS NOT NULL
+        """
+    )
+    return {
+        str(row["modal_function_call_id"])
+        for row in rows
+        if row["modal_function_call_id"]
+    }
+
+
 async def stamp_dispatch_stage(
     spawned_keys: list[str],
     why_waiting: dict[str, str],
 ) -> None:
     """Record per-queue dispatch observability on waiting ``worker_jobs`` rows.
 
-    * ``spawned_at = NOW()`` for queue_keys we just dispatched a worker for
-      (only where still unset, so a re-spawn never overwrites the first), and
-      clears any stale waiting-reason.
     * ``admission_reason`` for queue_keys still waiting (the §12 why-waiting
-      field), so every Stage 2-5 wait has a named, queryable reason.
+      field), so every Stage 2-5 wait has a named, queryable reason -- including
+      the rows of a *partially* served key that got no worker this cycle.
+    * ``spawned_at = NOW()`` for the rows we just dispatched a worker for. The
+      spawn plan can schedule *several* workers for one ``queue_key`` in a
+      cycle, so ``spawned_keys`` carries that per-key multiplicity: stamp only
+      the oldest N still-unstamped rows per queue_key (N = workers spawned for
+      it), oldest-first (``priority DESC, created_at ASC``) to match claim order,
+      and clear any stale waiting-reason on just those rows.
+
+    Reasons are written first and the spawned rows are stamped (and their reason
+    cleared) second, so a partially served key ends with each row in exactly one
+    state -- ``spawned_at`` set for the served rows, an ``admission_reason`` for
+    the rest -- instead of the two writes fighting over the same rows.
 
     Best-effort telemetry: callers run it after ``Dispatcher.spawn`` and do not
     depend on its result.
     """
     pool = await get_pool()
-
-    deduped = sorted(set(spawned_keys))
-    if deduped:
-        await pool.execute(
-            """
-            UPDATE worker_jobs
-            SET    spawned_at = NOW(),
-                   admission_reason = NULL
-            WHERE  queue_key = ANY($1)
-              AND  status::text IN ('QUEUED', 'RETRYING')
-              AND  spawned_at IS NULL
-            """,
-            deduped,
-        )
 
     for queue_key, reason in why_waiting.items():
         await pool.execute(
@@ -106,6 +130,32 @@ async def stamp_dispatch_stage(
             """,
             queue_key,
             reason,
+        )
+
+    # Count workers spawned per queue_key (the spawn plan's multiplicity) so we
+    # stamp exactly that many rows -- stamping every QUEUED/RETRYING row would
+    # mark rows no worker was dispatched for and erase their waiting reason.
+    for queue_key, spawned in Counter(spawned_keys).items():
+        if spawned <= 0:
+            continue
+        await pool.execute(
+            """
+            WITH to_stamp AS (
+                SELECT id
+                FROM   worker_jobs
+                WHERE  queue_key = $1
+                  AND  status::text IN ('QUEUED', 'RETRYING')
+                  AND  spawned_at IS NULL
+                ORDER  BY priority DESC, created_at ASC
+                LIMIT  $2
+            )
+            UPDATE worker_jobs
+            SET    spawned_at = NOW(),
+                   admission_reason = NULL
+            WHERE  id IN (SELECT id FROM to_stamp)
+            """,
+            queue_key,
+            spawned,
         )
 
 

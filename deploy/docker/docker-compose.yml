@@ -63,8 +63,17 @@ services:
     ports:
       - "8000:8000"
 
-  # The off-Modal worker pool: each replica long-polls every active queue_key.
-  # Scale with ``--scale worker=N``.
+  # The off-Modal worker pool: a single replica long-polls every active
+  # queue_key. Keep replicas at 1 -- do NOT scale this service horizontally.
+  # Without ODDISH_WORKER_QUEUE_KEY the worker runs run_polling_worker, which
+  # enforces each queue_key's concurrency limit via in-process asyncio counts
+  # only: it dispatches run_single_worker_job with queue_slot=0 and never leases
+  # a DB queue_slots row. Replicas don't share that in-process count, so N
+  # replicas each run up to the full per-queue_key limit -> N x the intended
+  # concurrency. To scale off Modal, use the slot-leasing path instead: the
+  # oddish.dispatch.runner dispatcher spawning one-queue_key-per-container
+  # workers (ODDISH_WORKER_QUEUE_KEY -> run_assigned_queue_worker), which share
+  # the queue_slots lease across containers.
   worker:
     <<: *image
     command: ["uv", "run", "python", "-m", "oddish.workers.queue.worker"]
@@ -74,7 +83,7 @@ services:
       migrate:
         condition: service_completed_successfully
     deploy:
-      replicas: 2
+      replicas: 1
 
   # Portability proof (run on demand via ``compose run``, not part of ``up``).
   # Self-sufficient: creates its own schema, so it does not depend on migrate.
