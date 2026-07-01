@@ -166,6 +166,128 @@ async def _insert_mixed_trial_task(engine):
                 await c.execute(text(stmt))
 
 
+async def _insert_aggregate_tasks(engine):
+    """Add tasks with KNOWN aggregate metrics for the Phase 1.2-lite filters.
+
+    epsilon: 3 SUCCESS trials reward 1.0/0.5/0.0 -> avg 50%, tokens 6000,
+             pass/partial/fail = 1/1/1, runtime 60+120+30 = 210s (avg 70s).
+    zeta:    FAILED+error (harness, NULL reward) + SUCCESS reward 1.0 (pass) ->
+             avg 100% (NULL reward ignored by AVG), harness/pass = 1/1, tokens
+             2000, runtime 10+20 = 30s.
+    eta:     two FAILED AgentTimeout trials — one WITH reward 0.5 (scores as
+             'partial' per the carve-out) and one WITHOUT reward ('harness'),
+             tokens 200, runtime 5s. Guards that the SQL buckets mirror
+             getMatrixStatus EXACTLY (a FAILED-but-rewarded timeout is partial,
+             not harness).
+    """
+    stmts = """
+        insert into tasks (id,name,org_id,"user",priority,status,task_path,link,tags,run_analysis,run_probe,created_at,updated_at)
+        values ('t-e','epsilon','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-z','zeta','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now()),
+               ('t-h','eta','org1','u','LOW','COMPLETED','p',null,'{}'::jsonb,false,false,now(),now());
+        insert into task_versions (id,task_id,version,task_path,created_at,updated_at)
+        values ('v-e','t-e',1,'p',now(),now()),
+               ('v-z','t-z',1,'p',now(),now()),
+               ('v-h','t-h',1,'p',now(),now());
+        update tasks set current_version_id='v-e' where id='t-e';
+        update tasks set current_version_id='v-z' where id='t-z';
+        update tasks set current_version_id='v-h' where id='t-h';
+        insert into trials (id,name,task_id,task_version_id,experiment_id,org_id,agent,provider,queue_key,timeout_minutes,environment,harbor_config,status,origin,is_probe,reward,error_message,input_tokens,output_tokens,cache_tokens,total_steps,has_trajectory,started_at,finished_at,attempts,max_attempts,heartbeat_failure_count,created_at,updated_at)
+        values
+          ('te1','te1','t-e','v-e','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,1000,0,0,10,true,now() - interval '60 second',now(),1,6,0,now(),now()),
+          ('te2','te2','t-e','v-e','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.5,null,2000,0,0,10,true,now() - interval '120 second',now(),1,6,0,now(),now()),
+          ('te3','te3','t-e','v-e','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,0.0,null,3000,0,0,10,true,now() - interval '30 second',now(),1,6,0,now(),now()),
+          ('tz1','tz1','t-z','v-z','exp-real','org1','codex','openai','q',30,'docker','{}'::jsonb,'FAILED','oddish',false,null,'boom',500,0,0,5,false,now() - interval '10 second',now(),1,6,0,now(),now()),
+          ('tz2','tz2','t-z','v-z','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'SUCCESS','oddish',false,1.0,null,1500,0,0,10,true,now() - interval '20 second',now(),1,6,0,now(),now()),
+          ('th1','th1','t-h','v-h','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'FAILED','oddish',false,0.5,'AgentTimeoutError: timed out',100,0,0,5,false,now() - interval '5 second',now(),1,6,0,now(),now()),
+          ('th2','th2','t-h','v-h','exp-real','org1','claude-code','anthropic','q',30,'modal','{}'::jsonb,'FAILED','oddish',false,null,'AgentTimeoutError: timed out',100,0,0,5,false,null,null,1,6,0,now(),now());
+    """
+    async with engine.begin() as c:
+        for stmt in stmts.split(";"):
+            if stmt.strip():
+                await c.execute(text(stmt))
+
+
+async def test_browse_aggregate_filters():
+    """Phase 1.2-lite: HAVING-equivalent aggregate filters over the scoped
+    (current-version, non-probe, non-superseded) trial set."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        async with maker() as session:
+            # Avg score is a PERCENT (0-100). alpha & zeta = 100%, epsilon &
+            # eta = 50%, beta = 0%, gamma = NULL (probe-only -> excluded).
+            assert await _names(session, avg_score_min=90) == {"alpha", "zeta"}
+            assert await _names(session, avg_score_max=10) == {"beta"}
+            assert await _names(session, avg_score_min=40, avg_score_max=60) == {
+                "epsilon",
+                "eta",
+            }
+
+            # Total tokens (input+output+cache summed across the task).
+            assert await _names(session, total_tokens_min=250_000) == {"beta"}
+            assert await _names(session, total_tokens_max=250) == {"eta"}
+
+            # Trial counts.
+            assert await _names(session, total_trials_min=3) == {"epsilon"}
+            assert await _names(session, completed_trials_min=3) == {"epsilon"}
+            assert await _names(session, failed_trials_min=1) == {
+                "beta",
+                "zeta",
+                "eta",
+            }
+
+            # Bucket counts — mirror getMatrixStatus.
+            assert await _names(session, pass_count_min=1) == {
+                "alpha",
+                "zeta",
+                "epsilon",
+            }
+            assert await _names(session, fail_count_min=1) == {"epsilon"}
+            assert await _names(session, harness_count_min=1) == {
+                "beta",
+                "zeta",
+                "eta",
+            }
+            # AgentTimeout carve-out: eta's FAILED-but-rewarded timeout trial
+            # scores as 'partial' (NOT harness), exactly like the card chip.
+            assert await _names(session, partial_count_min=1) == {
+                "epsilon",
+                "eta",
+            }
+
+            # Runtime (wall-clock seconds; only trials with both timestamps).
+            # alpha/beta have NULL started_at -> NULL runtime -> excluded.
+            assert await _names(session, runtime_total_min=200) == {"epsilon"}
+            assert await _names(session, runtime_avg_min=60) == {"epsilon"}
+            assert await _names(session, runtime_total_max=10) == {"eta"}
+    finally:
+        await engine.dispose()
+
+
+async def test_browse_aggregate_sort():
+    """Phase 1.2-lite: aggregate ORDER BY (avg score desc), NULL metric last."""
+    engine = create_async_engine(URL)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        await _setup(engine)
+        await _insert_aggregate_tasks(engine)
+        async with maker() as session:
+            resp = await browse_tasks_core(
+                session, org_id=ORG, limit=50, offset=0, sort="avg_score_desc"
+            )
+            names = [item.name for item in resp.items]
+        # 100% (alpha/zeta) before 50% (epsilon/eta) before 0% (beta); the
+        # probe-only NULL-metric task (gamma) sorts last (nulls_last).
+        assert names[-1] == "gamma"
+        assert names.index("alpha") < names.index("epsilon")
+        assert names.index("epsilon") < names.index("beta")
+    finally:
+        await engine.dispose()
+
+
 async def test_browse_boolean_no_is_complement():
     """``has_error`` / ``has_trajectory`` "No" is the complement of "Yes": the
     task ran a real trial and NONE is positive. A task with a mix of positive

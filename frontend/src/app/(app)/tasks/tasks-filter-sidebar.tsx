@@ -40,6 +40,7 @@ import {
   filterParams,
   isFilterActive,
   searchParamsToFilters,
+  SORT_OPTIONS,
   type CreatedPreset,
   type FilterDef,
   type FilterValues,
@@ -57,6 +58,26 @@ const ARRAY_FIELD: Record<string, keyof FilterValues> = {
   trialStatuses: "trialStatuses",
   origins: "origins",
   analysisClassifications: "analysisClassifications",
+};
+
+// numrange filter key -> [min field, max field] on FilterValues.
+const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
+  {
+    tokens: ["minTokens", "maxTokens"],
+    steps: ["minSteps", "maxSteps"],
+    avgScore: ["avgScoreMin", "avgScoreMax"],
+    totalTokens: ["totalTokensMin", "totalTokensMax"],
+    runtime: ["runtimeTotalMin", "runtimeTotalMax"],
+  };
+
+// "num" (≥ N) filter key -> the single min field it writes.
+const NUM_FIELD: Record<string, keyof FilterValues> = {
+  minAttempts: "minAttempts",
+  totalTrials: "totalTrialsMin",
+  passCount: "passCountMin",
+  partialCount: "partialCountMin",
+  failCount: "failCountMin",
+  harnessCount: "harnessCountMin",
 };
 
 function optionsFor(def: FilterDef, facets: TaskBrowseFacets | null): Option[] {
@@ -169,14 +190,31 @@ export function TasksFilterSidebar() {
       case "reward":
         set({ rewardMin: null, rewardMax: null });
         break;
+      case "avgScore":
+        set({ avgScoreMin: null, avgScoreMax: null });
+        break;
+      case "totalTokens":
+        set({ totalTokensMin: null, totalTokensMax: null });
+        break;
+      case "runtime":
+        set({ runtimeTotalMin: null, runtimeTotalMax: null });
+        break;
       case "hasLink":
       case "hasError":
       case "hasTrajectory":
       case "trialIsProbe":
         set({ [key]: null } as Partial<FilterValues>);
         break;
+      case "sort":
+        set({ sort: null });
+        break;
       case "minAttempts":
-        set({ minAttempts: null });
+      case "totalTrials":
+      case "passCount":
+      case "partialCount":
+      case "failCount":
+      case "harnessCount":
+        set({ [NUM_FIELD[key]]: null } as Partial<FilterValues>);
         break;
       default:
         if (ARRAY_FIELD[key])
@@ -377,22 +415,25 @@ function FilterControl({
       return <NumRange fieldKey={def.key} values={values} set={set} />;
     case "rewardthreshold":
       return <RewardThreshold values={values} set={set} />;
-    case "num":
+    case "sort":
+      return <SortControl values={values} set={set} />;
+    case "num": {
+      const field = NUM_FIELD[def.key] ?? "minAttempts";
       return (
         <Input
           type="number"
           min={1}
           className="h-8 text-xs"
-          value={values.minAttempts ?? ""}
+          value={(values[field] as number | null) ?? ""}
           onChange={(e) =>
             set({
-              minAttempts:
-                e.target.value === "" ? null : Number(e.target.value),
-            })
+              [field]: e.target.value === "" ? null : Number(e.target.value),
+            } as Partial<FilterValues>)
           }
           placeholder="2"
         />
       );
+    }
     case "tags":
       return <TagsControl values={values} set={set} />;
     case "agentmodel":
@@ -947,6 +988,33 @@ function DateRange({
   );
 }
 
+// Aggregate sort: a plain <select> keeps this compact even with several
+// options. Empty value clears the sort and restores the default recency order.
+function SortControl({
+  values,
+  set,
+}: {
+  values: FilterValues;
+  set: (patch: Partial<FilterValues>) => void;
+}) {
+  return (
+    <select
+      className="border-input bg-background h-8 w-full rounded-md border px-2 text-xs"
+      value={values.sort ?? ""}
+      onChange={(e) =>
+        set({ sort: e.target.value === "" ? null : e.target.value })
+      }
+    >
+      <option value="">Default (recent)</option>
+      {SORT_OPTIONS.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function NumRange({
   fieldKey,
   values,
@@ -956,8 +1024,10 @@ function NumRange({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
-  const minField = fieldKey === "tokens" ? "minTokens" : "minSteps";
-  const maxField = fieldKey === "tokens" ? "maxTokens" : "maxSteps";
+  const [minField, maxField] = NUMRANGE_FIELD[fieldKey] ?? [
+    "minTokens",
+    "maxTokens",
+  ];
   const toNum = (s: string) => (s === "" ? null : Number(s));
   return (
     <div className="flex items-center gap-1">

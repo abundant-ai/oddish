@@ -40,6 +40,21 @@ export interface FilterValues {
   maxSteps: number | null;
   rewardMin: number | null;
   rewardMax: number | null;
+  // Phase 1.2-lite task AGGREGATES (computed on the fly, no migration). Distinct
+  // from the per-trial ranges above: these match a task's aggregate over its
+  // scoped current-version trials, not a single trial's value.
+  avgScoreMin: number | null; // percent 0-100
+  avgScoreMax: number | null; // percent 0-100
+  totalTokensMin: number | null;
+  totalTokensMax: number | null;
+  runtimeTotalMin: number | null; // seconds
+  runtimeTotalMax: number | null; // seconds
+  totalTrialsMin: number | null;
+  passCountMin: number | null;
+  partialCountMin: number | null;
+  failCountMin: number | null;
+  harnessCountMin: number | null;
+  sort: string | null; // aggregate sort token (e.g. "avg_score_desc")
 }
 
 export const EMPTY_FILTERS: FilterValues = {
@@ -71,6 +86,18 @@ export const EMPTY_FILTERS: FilterValues = {
   maxSteps: null,
   rewardMin: null,
   rewardMax: null,
+  avgScoreMin: null,
+  avgScoreMax: null,
+  totalTokensMin: null,
+  totalTokensMax: null,
+  runtimeTotalMin: null,
+  runtimeTotalMax: null,
+  totalTrialsMin: null,
+  passCountMin: null,
+  partialCountMin: null,
+  failCountMin: null,
+  harnessCountMin: null,
+  sort: null,
 };
 
 export interface Option {
@@ -130,7 +157,18 @@ export type ControlKind =
   | "rewardthreshold"
   | "num"
   | "tags"
-  | "agentmodel";
+  | "agentmodel"
+  | "sort";
+
+// Aggregate sort tokens (kept in sync with backend ``_AGGREGATE_SORTS``).
+export const SORT_OPTIONS: Option[] = [
+  { value: "avg_score_desc", label: "Avg score (high → low)" },
+  { value: "avg_score_asc", label: "Avg score (low → high)" },
+  { value: "total_tokens_desc", label: "Total tokens (high → low)" },
+  { value: "total_tokens_asc", label: "Total tokens (low → high)" },
+  { value: "runtime_total_desc", label: "Run time (long → short)" },
+  { value: "runtime_total_asc", label: "Run time (short → long)" },
+];
 
 export interface FilterDef {
   key: string;
@@ -274,6 +312,63 @@ export const FILTER_DEFS: FilterDef[] = [
     control: "boolean",
     hidden: true,
   },
+  // Phase 1.2-lite aggregate filters/sort (task-level rollups over the scoped
+  // current-version trials). Sort is pinned so it's always reachable.
+  {
+    key: "sort",
+    label: "Sort by",
+    group: "Task",
+    control: "sort",
+    pinned: true,
+  },
+  {
+    key: "avgScore",
+    label: "Avg score %",
+    group: "Task",
+    control: "numrange",
+  },
+  {
+    key: "totalTokens",
+    label: "Total tokens (task)",
+    group: "Task",
+    control: "numrange",
+  },
+  {
+    key: "runtime",
+    label: "Run time (s, task)",
+    group: "Task",
+    control: "numrange",
+  },
+  {
+    key: "totalTrials",
+    label: "Total trials ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "passCount",
+    label: "Pass count ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "partialCount",
+    label: "Partial count ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "failCount",
+    label: "Fail count ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "harnessCount",
+    label: "Harness count ≥",
+    group: "Task",
+    control: "num",
+  },
 ];
 
 // Whether a registry filter currently holds a value (drives the active count,
@@ -328,6 +423,24 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.minSteps !== null || f.maxSteps !== null;
     case "reward":
       return f.rewardMin !== null || f.rewardMax !== null;
+    case "avgScore":
+      return f.avgScoreMin !== null || f.avgScoreMax !== null;
+    case "totalTokens":
+      return f.totalTokensMin !== null || f.totalTokensMax !== null;
+    case "runtime":
+      return f.runtimeTotalMin !== null || f.runtimeTotalMax !== null;
+    case "totalTrials":
+      return f.totalTrialsMin !== null;
+    case "passCount":
+      return f.passCountMin !== null;
+    case "partialCount":
+      return f.partialCountMin !== null;
+    case "failCount":
+      return f.failCountMin !== null;
+    case "harnessCount":
+      return f.harnessCountMin !== null;
+    case "sort":
+      return f.sort !== null;
     default:
       return false;
   }
@@ -379,6 +492,18 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("max_steps", f.maxSteps);
   num("reward_min", f.rewardMin);
   num("reward_max", f.rewardMax);
+  num("avg_score_min", f.avgScoreMin);
+  num("avg_score_max", f.avgScoreMax);
+  num("total_tokens_min", f.totalTokensMin);
+  num("total_tokens_max", f.totalTokensMax);
+  num("runtime_total_min", f.runtimeTotalMin);
+  num("runtime_total_max", f.runtimeTotalMax);
+  num("total_trials_min", f.totalTrialsMin);
+  num("pass_count_min", f.passCountMin);
+  num("partial_count_min", f.partialCountMin);
+  num("fail_count_min", f.failCountMin);
+  num("harness_count_min", f.harnessCountMin);
+  if (f.sort) out.push(["sort", f.sort]);
   return out;
 }
 
@@ -417,6 +542,18 @@ export const FILTER_PARAM_KEYS = [
   "max_steps",
   "reward_min",
   "reward_max",
+  "avg_score_min",
+  "avg_score_max",
+  "total_tokens_min",
+  "total_tokens_max",
+  "runtime_total_min",
+  "runtime_total_max",
+  "total_trials_min",
+  "pass_count_min",
+  "partial_count_min",
+  "fail_count_min",
+  "harness_count_min",
+  "sort",
 ] as const;
 
 // Backend filter params that have no sidebar control yet but are still valid on
@@ -430,6 +567,11 @@ export const EXTRA_BROWSE_PARAM_KEYS = [
   "run_probe",
   "harbor_shas",
   "harbor_stages",
+  // Phase 1.2-lite aggregate params with no sidebar control yet (deep-linkable).
+  "completed_trials_min",
+  "failed_trials_min",
+  "runtime_avg_min",
+  "runtime_avg_max",
 ] as const;
 
 // Everything the browse fetch should forward / saved filters should capture.
@@ -485,5 +627,17 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     maxSteps: num("max_steps"),
     rewardMin: num("reward_min"),
     rewardMax: num("reward_max"),
+    avgScoreMin: num("avg_score_min"),
+    avgScoreMax: num("avg_score_max"),
+    totalTokensMin: num("total_tokens_min"),
+    totalTokensMax: num("total_tokens_max"),
+    runtimeTotalMin: num("runtime_total_min"),
+    runtimeTotalMax: num("runtime_total_max"),
+    totalTrialsMin: num("total_trials_min"),
+    passCountMin: num("pass_count_min"),
+    partialCountMin: num("partial_count_min"),
+    failCountMin: num("fail_count_min"),
+    harnessCountMin: num("harness_count_min"),
+    sort: sp.get("sort"),
   };
 }
