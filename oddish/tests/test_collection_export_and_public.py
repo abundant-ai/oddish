@@ -21,7 +21,10 @@ from oddish.core.sharing.helpers import (
     ensure_experiment_public,
     generate_public_token,
     get_public_experiment,
+    get_public_task_for_experiment,
     get_public_trial,
+    get_public_trial_for_experiment,
+    list_task_trials_for_public_experiment,
     list_experiment_trials_for_org,
 )
 from oddish.core.sharing.public import (
@@ -181,6 +184,73 @@ async def test_public_experiments_list_does_not_enumerate_share_tokens():
     finally:
         if exp_id:
             await _cleanup(experiment_ids=[exp_id])
+
+
+@pytest.mark.asyncio
+async def test_republish_after_unpublish_generates_fresh_public_token(session):
+    exp = _experiment(_unique("rotating-link"), org_id=None)
+    session.add(exp)
+    await session.flush()
+
+    await ensure_experiment_public(session, exp)
+    old_token = exp.public_token
+    assert old_token
+
+    exp.is_public = False
+    exp.public_token = None
+    await session.flush()
+    assert await get_public_experiment(session, old_token) is None
+
+    await ensure_experiment_public(session, exp)
+    new_token = exp.public_token
+
+    assert new_token
+    assert new_token != old_token
+    assert await get_public_experiment(session, old_token) is None
+    assert await get_public_experiment(session, new_token) is not None
+
+
+@pytest.mark.asyncio
+async def test_public_trial_access_is_scoped_to_share_token(session):
+    task = _task(_unique("scoped-public-task"), org_id=None)
+    session.add(task)
+    await session.flush()
+
+    exp_a = _experiment(_unique("scoped-public-a"), org_id=None)
+    exp_b = _experiment(_unique("scoped-public-b"), org_id=None)
+    session.add_all([exp_a, exp_b])
+    await session.flush()
+    await session.execute(
+        task_experiments.insert(),
+        [
+            {"task_id": task.id, "experiment_id": exp_a.id},
+            {"task_id": task.id, "experiment_id": exp_b.id},
+        ],
+    )
+
+    trial = _trial(task, exp_a, org_id=None, is_probe=False)
+    session.add(trial)
+    await session.flush()
+
+    await ensure_experiment_public(session, exp_a)
+    await ensure_experiment_public(session, exp_b)
+    await session.flush()
+    token_a = exp_a.public_token
+    token_b = exp_b.public_token
+    assert token_a and token_b
+
+    assert await get_public_task_for_experiment(session, token_a, task.id) is not None
+    assert await get_public_task_for_experiment(session, token_b, task.id) is not None
+
+    visible = await get_public_trial_for_experiment(session, token_a, trial.id)
+    assert visible is not None
+    assert visible.id == trial.id
+    assert await get_public_trial_for_experiment(session, token_b, trial.id) is None
+
+    trials_a = await list_task_trials_for_public_experiment(session, token_a, task.id)
+    trials_b = await list_task_trials_for_public_experiment(session, token_b, task.id)
+    assert trials_a is not None and [row.id for row in trials_a] == [trial.id]
+    assert trials_b == []
 
 
 @pytest.mark.asyncio

@@ -339,6 +339,14 @@ uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/
 | GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
 | GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
 
+Public share links use 256-bit `public_token` values and are access-by-link, not
+enumerable. The unauthenticated `/public/experiments` list intentionally returns
+no share tokens. Public task/trial/file routes must stay scoped under
+`/public/experiments/{public_token}/...` and verify membership in that shared
+experiment; do not reintroduce `/public/tasks/{task_id}` or
+`/public/trials/{trial_id}` ID-only access. Unpublishing an experiment clears
+`public_token`, so republishing mints a fresh link and old URLs stay revoked.
+
 ### Configuration (oddish)
 
 Settings are loaded from `oddish/.env`. Most package settings use the `ODDISH_` prefix.
@@ -918,8 +926,8 @@ uv run alembic upgrade head
     are shown as legacy and only drain in-flight rows), stale-RUNNING samples, recent
     failures/cancels, duration percentiles, plus `OrphanedStateCard`
   - **Concurrency**: `queue_slots` leases and per-queue-key health
-- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, which hides all QA UI (matrix classification dots, the "Trial analysis" legend section, the trial classification card, and the task QA verdict badge) from public viewers.
-- `/datasets` and `/datasets/[token]` — public dataset listing and detail
+- `/share/[token]` — read-only public experiment view. Passes `showAnalysis={false}` to `ExperimentDetailView`, hides all QA UI, and routes task/trial/file requests through `/api/public/experiments/[token]/...`.
+- `/datasets` and `/datasets/[token]` — public dataset pages; known-token detail works, while the public listing must not enumerate share tokens.
 
 ### Request Flow
 

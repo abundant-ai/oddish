@@ -3,29 +3,27 @@ import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ task_id: string; path: string[] }> },
+  { params }: { params: Promise<{ token: string; task_id: string }> },
 ) {
   try {
-    const { task_id, path } = await params;
-    const filePath = path.join("/");
-    const search = request.nextUrl.search;
-
-    const url = getBackendUrl(
-      "public/tasks",
-      `/${task_id}/files/${filePath}${search}`,
+    const { token, task_id } = await params;
+    const queryString = request.nextUrl.searchParams.toString();
+    const baseUrl = getBackendUrl(
+      "public/experiments",
+      `/${token}/tasks/${task_id}/files`,
     );
-    const res = await fetch(url, { cache: "no-store" });
+    const url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
 
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: res.statusText }));
       return NextResponse.json(error, { status: res.status });
     }
 
     const data = await res.json();
-
     return NextResponse.json(data, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=60",
+        "Cache-Control": "public, max-age=600, stale-while-revalidate=60",
       },
     });
   } catch (error) {
