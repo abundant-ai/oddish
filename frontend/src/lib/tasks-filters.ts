@@ -274,6 +274,8 @@ export const SORT_OPTIONS: Option[] = [
   { value: "total_tokens_asc", label: "Total tokens (low → high)" },
   { value: "runtime_total_desc", label: "Run time (long → short)" },
   { value: "runtime_total_asc", label: "Run time (short → long)" },
+  { value: "runtime_avg_desc", label: "Avg run time (long → short)" },
+  { value: "runtime_avg_asc", label: "Avg run time (short → long)" },
 ];
 
 export interface FilterDef {
