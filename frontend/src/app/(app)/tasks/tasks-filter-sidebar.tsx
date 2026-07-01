@@ -43,6 +43,8 @@ import {
   activeFilterCount,
   COMPARE_AGG_OPTIONS,
   COMPARE_METRIC_OPTIONS,
+  COMPARE_METRIC_UNIT,
+  COMPARE_METRIC_WORD,
   COMPARE_MARGIN_UNIT_OPTIONS,
   COMPARE_SUBJECT_OPTIONS,
   FILTER_DEFS,
@@ -1161,12 +1163,12 @@ function CompareControl({
   const subjectLabel = draft.by === "model" ? "Model" : "Agent";
   const subjectValues =
     (draft.by === "model" ? facets?.models : facets?.agents) ?? [];
-  const metricLabel =
-    COMPARE_METRIC_OPTIONS.find((o) => o.value === draft.metric)?.label ??
-    draft.metric;
+  const metricWord = COMPARE_METRIC_WORD[draft.metric] ?? draft.metric;
+  const metricUnit = COMPARE_METRIC_UNIT[draft.metric] ?? "";
+  const showUnit = draft.unit === "abs";
   const marginText =
     draft.margin != null && !Number.isNaN(draft.margin)
-      ? ` by >${draft.margin}${draft.unit === "abs" ? "" : "%"}`
+      ? ` by >${draft.margin}${showUnit ? ` ${metricUnit}` : "%"}`
       : "";
 
   return (
@@ -1223,19 +1225,26 @@ function CompareControl({
         onChange={(v) => setDraft({ ...draft, agg: v })}
       />
       <div className="flex items-center gap-1">
-        <Input
-          type="number"
-          min={0}
-          className="h-8 text-xs"
-          placeholder="margin"
-          value={draft.margin ?? ""}
-          onChange={(e) =>
-            setDraft({
-              ...draft,
-              margin: e.target.value === "" ? null : Number(e.target.value),
-            })
-          }
-        />
+        <div className="relative flex-1">
+          <Input
+            type="number"
+            min={0}
+            className={cn("h-8 text-xs", showUnit && "pr-12")}
+            placeholder="margin"
+            value={draft.margin ?? ""}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                margin: e.target.value === "" ? null : Number(e.target.value),
+              })
+            }
+          />
+          {showUnit ? (
+            <span className="text-muted-foreground pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-[10px]">
+              {metricUnit}
+            </span>
+          ) : null}
+        </div>
         <div className="w-24 shrink-0">
           <Segmented
             options={COMPARE_MARGIN_UNIT_OPTIONS}
@@ -1246,7 +1255,7 @@ function CompareControl({
       </div>
       {draft.a && draft.b ? (
         <p className="text-muted-foreground text-[11px] leading-snug">
-          {draft.a} beats {draft.b} on {metricLabel.toLowerCase()}
+          {draft.a} beats {draft.b} on {metricWord}
           {marginText}
         </p>
       ) : null}
