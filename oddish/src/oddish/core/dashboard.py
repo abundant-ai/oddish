@@ -133,11 +133,25 @@ _PRIMARY_CACHE_TTL_SECONDS = 60
 # scan re-run on every pagination / usage-window variation. Caching them in
 # their own org-keyed slice means the trials scan runs at most once per org per
 # TTL no matter how the rest of the dashboard request varies.
-_QUEUE_PIPELINE_CACHE_TTL_SECONDS = 30
+# Read-side freshness window for the queue/pipeline slice. A scheduled job
+# (``precompute_dashboard_queue_pipeline`` in the backend) refreshes this slice
+# for every org on a timer, so the TTL must be >= that interval or precomputed
+# entries would expire between runs and force on-demand recomputes. Kept at 2x
+# the 60s precompute interval so one skipped/slow run still serves a warm entry;
+# a genuinely dead precompute falls back to on-demand recompute after the TTL.
+_QUEUE_PIPELINE_CACHE_TTL_SECONDS = 120
 
 _dashboard_experiments_cache: dict[str, tuple[Any, float]] = {}
 _dashboard_primary_cache: dict[str, tuple[Any, float]] = {}
-_dashboard_queue_pipeline_cache: dict[str, tuple[Any, float]] = {}
+# The queue/pipeline slice no longer lives in a module-level dict: it is the one
+# slice shared cross-container via ``_shared_cache_backend`` (a Modal Dict in the
+# hosted backend) so a cold container reads a warm entry instead of re-running
+# the whole-``trials``-table scan. The process-local default backend below keeps
+# the original behavior for local dev / tests.
+
+# Prefix of the queue/pipeline cache key (``dashboard.queue_pipeline:{org}:``).
+# Shared by the cache-key builder and the org-scoped invalidation below.
+_QUEUE_PIPELINE_KEY_PREFIX = "dashboard.queue_pipeline:"
 
 
 def _slice_get_cached(
@@ -162,23 +176,98 @@ def _slice_set_cached(
     bucket[cache_key] = (data, time.time())
 
 
+class DashboardSharedCacheBackend:
+    """Cross-container cache for the expensive, org-keyed dashboard slices.
+
+    Only the queue/pipeline slice routes through here: it is a full aggregate
+    over the whole ``trials`` table (the dashboard's slowest query) and depends
+    only on ``org_id``, so it caches cleanly as one entry per org. The default
+    implementation is process-local (the prior behavior); the hosted backend
+    installs a Modal Dict-backed subclass via
+    ``set_dashboard_shared_cache_backend`` so the slice survives container cold
+    starts and is shared across every API container.
+
+    Values are ``(data, stored_at_epoch)`` tuples and ``get`` enforces the TTL,
+    so a store without native expiry (Modal Dict) still behaves like a TTL
+    cache.
+    """
+
+    def get(self, cache_key: str, ttl_seconds: int) -> Any | None:
+        raise NotImplementedError
+
+    def set(self, cache_key: str, data: Any) -> None:
+        raise NotImplementedError
+
+    def invalidate_org(self, org_id: str | None) -> None:
+        raise NotImplementedError
+
+
+class _InProcessSharedCache(DashboardSharedCacheBackend):
+    """Default process-local backend (identical to the original module dict)."""
+
+    def __init__(self) -> None:
+        self._bucket: dict[str, tuple[Any, float]] = {}
+
+    def get(self, cache_key: str, ttl_seconds: int) -> Any | None:
+        return _slice_get_cached(self._bucket, cache_key, ttl_seconds)
+
+    def set(self, cache_key: str, data: Any) -> None:
+        _slice_set_cached(self._bucket, cache_key, data)
+
+    def invalidate_org(self, org_id: str | None) -> None:
+        if org_id is None:
+            self._bucket.clear()
+            return
+        prefix = f"{_QUEUE_PIPELINE_KEY_PREFIX}{org_id}:"
+        for key in [k for k in self._bucket if k.startswith(prefix)]:
+            del self._bucket[key]
+
+
+_shared_cache_backend: DashboardSharedCacheBackend = _InProcessSharedCache()
+
+
+def set_dashboard_shared_cache_backend(
+    backend: DashboardSharedCacheBackend | None,
+) -> None:
+    """Install a cross-container cache backend (or reset to process-local).
+
+    The hosted backend calls this once at startup to route the queue/pipeline
+    slice through a Modal Dict. Passing ``None`` restores the process-local
+    default (used by tests for isolation).
+    """
+    global _shared_cache_backend
+    _shared_cache_backend = backend or _InProcessSharedCache()
+
+
+def store_queue_pipeline_slice(org_id: str, payload: Any) -> None:
+    """Write a precomputed ``(queue_stats, pipeline)`` payload into the shared
+    cache under the same key the dashboard reads.
+
+    The background precompute job calls this once per org so a cold API
+    container reads a warm entry instead of re-running the whole-``trials``
+    scan. Mirrors the on-demand ``set`` path in ``get_dashboard_core``.
+    """
+    _shared_cache_backend.set(f"{_QUEUE_PIPELINE_KEY_PREFIX}{org_id}:", payload)
+
+
 def invalidate_dashboard_cache(*, org_id: str | None = None) -> None:
     """Clear cached dashboard slices after writes that change visible rows."""
+    # The queue/pipeline slice may be cross-container (Modal Dict), so route its
+    # invalidation through the installed backend rather than a local dict.
+    _shared_cache_backend.invalidate_org(org_id)
+
     if org_id is None:
         _dashboard_primary_cache.clear()
         _dashboard_experiments_cache.clear()
-        _dashboard_queue_pipeline_cache.clear()
         return
 
     prefixes = (
         f"dashboard.primary:{org_id}:",
         f"dashboard.experiments:{org_id}:",
-        f"dashboard.queue_pipeline:{org_id}:",
     )
     for bucket in (
         _dashboard_primary_cache,
         _dashboard_experiments_cache,
-        _dashboard_queue_pipeline_cache,
     ):
         for key in list(bucket):
             if key.startswith(prefixes):
@@ -1604,9 +1693,12 @@ async def get_dashboard_core(
             # Queue/pipeline stats scan the whole trials table; cache them
             # separately keyed by org_id so the scan doesn't re-run on every
             # task-pagination / usage-window variation of the primary slice.
-            queue_cache_key = f"dashboard.queue_pipeline:{org_id}:"
-            cached_qp = _slice_get_cached(
-                _dashboard_queue_pipeline_cache,
+            # This slice rides ``_shared_cache_backend`` (a Modal Dict in the
+            # hosted backend) so the scan runs at most once per org per TTL
+            # across the whole fleet -- a cold container reads a warm entry
+            # instead of re-scanning.
+            queue_cache_key = f"{_QUEUE_PIPELINE_KEY_PREFIX}{org_id}:"
+            cached_qp = _shared_cache_backend.get(
                 queue_cache_key,
                 _QUEUE_PIPELINE_CACHE_TTL_SECONDS,
             )
@@ -1619,9 +1711,7 @@ async def get_dashboard_core(
                 qs, ps = await get_queue_and_pipeline_stats_with_concurrency(
                     session, org_id
                 )
-                _slice_set_cached(
-                    _dashboard_queue_pipeline_cache, queue_cache_key, (qs, ps)
-                )
+                _shared_cache_backend.set(queue_cache_key, (qs, ps))
                 if record_timing is not None:
                     record_timing(
                         "dashboard_queue_pipeline",

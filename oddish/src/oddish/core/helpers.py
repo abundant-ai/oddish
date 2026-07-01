@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,6 +83,17 @@ def _resolve_trial_cost(
     if estimated is None:
         return None, None
     return estimated, True
+
+
+def _has_fetchable_trajectory(trial: TrialModel) -> bool:
+    if trial.has_trajectory:
+        return True
+    # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
+    # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
+    return (
+        (trial.agent or "").strip().lower() == "grok-build"
+        and trial.finished_at is not None
+    )
 
 
 _ANALYSIS_SUMMARY_UNSET = object()
@@ -446,7 +456,7 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
@@ -518,7 +528,7 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
@@ -981,6 +991,106 @@ def build_task_status_response_compact(
     )
 
 
+def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
+    """Minimal TrialResponse for the experiment grid (slim Phase-2 path).
+
+    Populates only what the grid renders (status / reward / error / agent /
+    model / analysis classification) plus the schema-required fields and
+    ``cost_usd`` (kept so the exp-page header cost total still works). The
+    heavy fields the grid never shows -- ``harbor_config`` / ``phase_timing``
+    (large JSONB), ``harbor_sha`` / ``harbor_source``, ``total_steps``,
+    ``has_trajectory``, ``origin``, ``result`` -- are left at their defaults
+    and fetched on demand via ``GET /trials/{id}`` when a cell is clicked.
+
+    Unlike ``build_compact_trial_response`` this only surfaces the analysis
+    classification/subtype/evidence triplet the grid marker needs; the full
+    analysis (root_cause, recommendation, etc.) arrives with the on-click
+    full-trial fetch.
+    """
+    resolved_analysis_summary: dict[str, str | None] | None = None
+    if isinstance(trial.analysis, dict):
+        resolved_analysis_summary = {
+            "classification": trial.analysis.get("classification"),
+            "subtype": trial.analysis.get("subtype"),
+            "evidence": trial.analysis.get("evidence"),
+        }
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    task_version, task_version_id = _resolve_trial_version_fields(trial)
+    cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
+
+    return TrialResponse(
+        id=trial.id,
+        name=trial.name,
+        task_id=trial.task_id,
+        task_path=task_path,
+        task_version=task_version,
+        task_version_id=task_version_id,
+        experiment_id=trial.experiment_id,
+        agent=trial.agent,
+        provider=trial.provider,
+        queue_key=settings.normalize_queue_key(trial.queue_key),
+        model=normalized_model,
+        status=trial.status,
+        attempts=trial.attempts,
+        max_attempts=trial.max_attempts,
+        harbor_stage=None,
+        reward=trial.reward,
+        error_message=trial.error_message,
+        result=None,
+        is_probe=trial.is_probe,
+        cost_usd=cost_usd,
+        cost_is_estimated=cost_is_estimated,
+        analysis_status=trial.analysis_status,
+        analysis=resolved_analysis_summary,
+        superseded_by_trial_id=trial.superseded_by_trial_id,
+        created_at=trial.created_at,
+        started_at=trial.started_at,
+        finished_at=trial.finished_at,
+    )
+
+
+def build_slim_task_status_response(
+    task: TaskModel,
+    *,
+    include_empty_rewards: bool = True,
+    experiment_context_id: str | None = None,
+    effective_version_id: str | None | object = _VERSION_ID_UNSET,
+) -> TaskStatusResponse:
+    """``build_task_status_response_compact`` with SLIM per-trial payloads.
+
+    Same aggregate counts and version scoping, but each trial is built with
+    :func:`build_slim_trial_response` instead of the full compact builder.
+    Used only by the experiment-grid slim path.
+    """
+    if effective_version_id is _VERSION_ID_UNSET:
+        effective_version_id = resolve_effective_version_id(
+            task, experiment_context_id=experiment_context_id
+        )
+    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+    total = len(task_trials)
+    completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
+    failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    reward_success = sum(1 for t in task_trials if t.reward == 1)
+    reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
+    reward_total = sum(1 for t in task_trials if t.reward is not None)
+    trials = [build_slim_trial_response(t, task.task_path) for t in task_trials]
+
+    return _build_task_status_response(
+        task,
+        total=total,
+        completed=completed,
+        failed=failed,
+        reward_success=reward_success,
+        reward_sum=reward_sum,
+        reward_total=reward_total,
+        include_empty_rewards=include_empty_rewards,
+        trials=trials,
+        jobs=[],
+        experiment_context_id=experiment_context_id,
+        effective_version_id=effective_version_id,
+    )
+
+
 async def fetch_trial_analysis_summaries(
     session: AsyncSession,
     *,
@@ -1154,10 +1264,11 @@ async def cancel_job_by_worker(
     """Best-effort terminate the remote sandbox backing a hanging job.
 
     Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
-    matching ``harbor``'s ``provider_name``) and tears down the sandbox
-    identified by ``external_id``. Cancellation paths call this for rows
-    they have already marked terminal in the DB, so it never raises into
-    the caller -- failures are logged and reported via the return value.
+    matching ``harbor``'s ``provider_name``) to the registered
+    ``ExecutionBackend`` and tears down the sandbox identified by
+    ``external_id``. Cancellation paths call this for rows they have already
+    marked terminal in the DB, so it never raises into the caller -- failures
+    are logged by the backend and reported via the return value.
 
     Returns ``True`` when a terminate/delete call was issued successfully,
     ``False`` when there was nothing to do or the teardown failed.
@@ -1165,53 +1276,18 @@ async def cancel_job_by_worker(
     if not provider or not external_id:
         return False
 
-    try:
-        env_type = EnvironmentType(provider.lower())
-    except ValueError:
+    from oddish.runtime.registry import get_backend
+
+    backend = get_backend(provider)
+    if backend is None:
         logger.warning(
-            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
             provider,
             external_id,
         )
         return False
 
-    try:
-        # import would crash every one of those processes; importing here
-        # keeps the teardown deps confined to the worker context that
-        # actually has them installed.
-        if env_type == EnvironmentType.MODAL:
-            import modal
-
-            sandbox = await modal.Sandbox.from_id.aio(external_id)
-            await sandbox.terminate.aio()
-        elif env_type == EnvironmentType.DAYTONA:
-            from daytona import AsyncDaytona
-
-            client = AsyncDaytona()
-            try:
-                sandbox = await client.get(external_id)
-                await client.delete(sandbox)
-            finally:
-                await client.close()
-        else:
-            logger.warning(
-                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
-                provider,
-                external_id,
-            )
-            return False
-    except Exception:
-        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
-        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
-        logger.exception(
-            "cancel_job_by_worker: failed to terminate %s sandbox %s",
-            provider,
-            external_id,
-        )
-        return False
-
-    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
-    return True
+    return await backend.teardown(external_id)
 
 
 def escape_like(needle: str) -> str:

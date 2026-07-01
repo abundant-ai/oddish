@@ -130,14 +130,14 @@ export function TaskProbeRunCard({
     fetcher,
     {
       refreshInterval: (rows) => {
-        // Poll while the newest probe run for this version is still in flight.
-        const latest = pickLatest(rows ?? [], versionId);
-        return latest && !isTerminalProbeStatus(latest.status) ? 5000 : 0;
+        // Poll while any per-type latest run for this version is still in flight.
+        const latest = pickLatestByType(rows ?? [], versionId);
+        return latest.some((t) => !isTerminalProbeStatus(t.status)) ? 5000 : 0;
       },
     },
   );
 
-  const latest = pickLatest(data, versionId);
+  const latest = pickLatestByType(data, versionId);
 
   return (
     <div className="space-y-3">
@@ -155,14 +155,41 @@ export function TaskProbeRunCard({
 
       {headerSlot}
 
-      {!latest ? (
+      {latest.length === 0 ? (
         <div className="rounded-[10px] border border-dashed border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-4 py-6 text-center text-[12px] text-[color:var(--paper-ink-3)]">
           No probe run for this version yet.
         </div>
       ) : (
-        <ProbeRow taskId={taskId} trial={latest} />
+        latest.map((trial) => (
+          <ProbeSection key={trial.id} taskId={taskId} trial={trial} />
+        ))
       )}
     </div>
+  );
+}
+
+// One delineated section per probe type. The header labels the probe type and
+// the agent that produced it; the existing ProbeRow body renders inside.
+function ProbeSection({ taskId, trial }: { taskId: string; trial: ProbeTrial }) {
+  const title = probeLabel(trial);
+  const agentLabel = [trial.agent, trial.model].filter(Boolean).join(" · ");
+  // probeLabel() falls back to the agent name, so for preset-less runs the
+  // title already IS the agent — skip the redundant sub-line then.
+  const showAgent = agentLabel && agentLabel !== title;
+  return (
+    <section className="space-y-2 rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="font-mono text-[12px] font-semibold tracking-[0.04em] text-[color:var(--paper-ink)]">
+          {title}
+        </h3>
+        {showAgent ? (
+          <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
+            agent: {agentLabel}
+          </span>
+        ) : null}
+      </div>
+      <ProbeRow taskId={taskId} trial={trial} />
+    </section>
   );
 }
 
@@ -255,15 +282,24 @@ function ProbeRow({ taskId, trial }: { taskId: string; trial: ProbeTrial }) {
   );
 }
 
-// Backend returns probe trials created_at ASC; pick the newest one whose
-// task_version_id matches the selected version tab.
-function pickLatest(
+function probeTypeKey(t: ProbeTrial): string {
+  // Same key as probeLabel(): prefer the preset name, fall back to the agent.
+  return t.harbor_config?.probe_name?.trim() || t.agent;
+}
+
+// Backend returns probe trials created_at ASC. For the selected version, keep
+// the newest run of each distinct probe type, freshest type first.
+function pickLatestByType(
   rows: ProbeTrial[] | undefined,
   versionId: string | null,
-): ProbeTrial | null {
-  if (!rows || rows.length === 0) return null;
+): ProbeTrial[] {
+  if (!rows || rows.length === 0) return [];
   const scoped = versionId
     ? rows.filter((t) => t.task_version_id === versionId)
     : rows;
-  return scoped.length > 0 ? scoped[scoped.length - 1] : null;
+  const latestByType = new Map<string, ProbeTrial>();
+  for (const t of scoped) latestByType.set(probeTypeKey(t), t); // ASC → last wins
+  return [...latestByType.values()].sort(
+    (a, b) => Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""),
+  );
 }

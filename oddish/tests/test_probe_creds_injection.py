@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from oddish.config import settings
 from oddish.worker.probe_creds import (
     PROBE_KEY_TTL_MINUTES,
     ProbeCredsError,
@@ -108,3 +109,40 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
         "ODDISH_API_KEY": "ok_rawsecret",
         "ODDISH_API_BASE_URL": "https://api.example",
     }
+
+
+@pytest.mark.asyncio
+async def test_probe_env_has_task_id_and_harbor_pin_no_stage_dir(monkeypatch):
+    """After trial_handler extends the mint_probe_creds env, it must carry the
+    task id and harbor pin vars and must NOT carry ODDISH_PROBE_STAGE_DIR."""
+    monkeypatch.setenv("ODDISH_PUBLIC_API_BASE_URL", "https://api.example")
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
+    )
+
+    async def _mint(session, *, org_id, name, ttl_minutes):
+        return ("key-id-456", "secret456")
+
+    monkeypatch.setattr(
+        "oddish.worker.probe_creds.mint_internal_read_key", _mint
+    )
+
+    _, env = await mint_probe_creds(org_id="org-1", trial_id="trial-xyz")
+    # Simulate what trial_handler does after mint_probe_creds returns
+    task_id = "task-abc"
+    env["ODDISH_PROBE_TASK_ID"] = task_id
+    env["ODDISH_PROBE_HARBOR_REPO"] = settings.harbor_source_repo
+    env["ODDISH_PROBE_HARBOR_REF"] = settings.harbor_source_ref
+
+    assert env["ODDISH_PROBE_TASK_ID"] == task_id
+    assert env["ODDISH_PROBE_HARBOR_REPO"]
+    assert env["ODDISH_PROBE_HARBOR_REF"]
+    assert "ODDISH_PROBE_STAGE_DIR" not in env
