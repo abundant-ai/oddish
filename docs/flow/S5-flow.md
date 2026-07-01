@@ -55,8 +55,8 @@ short-circuits on `org_id is None`).
 
 ## The four billable seams
 
-Every path that mints a *new* billable trial calls admit **before** the insert.
-These are exactly the S2 attribution seams:
+Every path that mints a *new* billable trial is an S2 attribution seam. Three
+call admit **before** the insert; auto-probe (#4) is the deliberate exception:
 
 1. **Sweep create** (`sweep.py`, create mode) — `admit_submission_trials(...)`
    right before `create_task(...)`.
@@ -66,11 +66,12 @@ These are exactly the S2 attribution seams:
    `if old_trial.billed_user_id is not None`**. A NULL-billed trial (imported /
    combined) retries without a gate, mirroring S2: it was never billable, so it
    never enforces.
-4. **Auto-probe** (`probe/auto_probe.py`) — calls `admit_submission_trials`, but
-   because the probe is *best-effort* it catches `QuotaExceeded` and
-   **skips-with-log** ("auto-probe skipped: over quota") instead of failing the
-   real sweep that triggered it. The user's actual trials still went through
-   their own admit check; only the free extra probe is dropped over budget.
+4. **Auto-probe** (`probe/auto_probe.py`) — the one seam that does **not** admit.
+   An auto-probe always enqueues so every task version gets its diagnostic probe,
+   never gated on budget. Its cost still counts toward the payer's budget
+   (`sum_cost_usd` has no `is_probe` filter), so a later sweep/retry is admitted
+   against the higher total. **User-initiated** probes ride the normal sweep path
+   (#1/#2) and *are* gated like any other trial.
 
 ### Why a 402 rolls back cleanly
 
@@ -120,7 +121,8 @@ and any hard failure never propagates. It fails *safe* (off), never *crashes*.
 
 ```mermaid
 flowchart TD
-  SUB["sweep create / append<br/>retry / auto-probe"] --> ADMIT["admit_trials(org_id, billed_user_id, count)"]
+  SUB["sweep create / append<br/>retry"] --> ADMIT["admit_trials(org_id, billed_user_id, count)"]
+  AP["auto-probe"] -->|no admit; cost still counts| WRITE
   ADMIT --> G{decision}
   G -->|off / OSS org_id=None / count<=0| PASS["admit"]
   G -->|billed_user_id is None| U["403 Unattributed<br/>(enforce; shadow logs + admits)"]

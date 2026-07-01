@@ -486,12 +486,18 @@ async def create_task_sweep_batch_core(
                     await finalize(session, submission, task, is_append, experiment)
         except HTTPException as exc:
             # Expected validation/lookup failures (e.g. missing task -> 404).
+            detail = exc.detail
+            error = (
+                detail["message"]
+                if isinstance(detail, dict) and "message" in detail
+                else str(detail)
+            )
             results.append(
                 TaskSweepBatchItemResult(
                     index=index,
                     success=False,
                     status_code=exc.status_code,
-                    error=str(exc.detail),
+                    error=error,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract

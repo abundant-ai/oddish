@@ -136,7 +136,6 @@ async def list_users(
 async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
-    """The caller's own daily spend vs their effective limit."""
     used_today = Decimal(0)
     effective_limit_usd = settings.default_daily_quota_usd
     if auth.user_id:
@@ -172,7 +171,6 @@ def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaListResponse:
-    """Every org member's daily spend + effective limit (admin, user-auth only)."""
     period_start = start_of_today_utc()
     default_limit_usd = settings.default_daily_quota_usd
 
@@ -212,9 +210,7 @@ async def list_member_quotas(
                 QuotaModel.org_id == auth.org_id
             )
         )
-        override_limit_by_user_id = {
-            row_user_id: row_limit for row_user_id, row_limit in override_rows.all()
-        }
+        override_limit_by_user_id = dict(override_rows.all())
 
     return QuotaListResponse(
         members=[
@@ -234,9 +230,6 @@ async def set_member_quota(
     payload: QuotaUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaMemberItem:
-    """Set (non-null limit_usd) or CLEAR (null -> revert to the read-time default)
-    a member's daily quota override. Admin-user-only, tenant-scoped to the
-    caller's org; admins may edit their own quota."""
     async with get_session() as session:
         member = (
             await session.execute(
@@ -277,12 +270,13 @@ async def set_member_quota(
             session, auth.org_id, user_id, start_of_today_utc()
         )
 
-    effective_limit_usd = (
+    return _quota_member_item(
+        member,
         payload.limit_usd
         if payload.limit_usd is not None
-        else settings.default_daily_quota_usd
+        else settings.default_daily_quota_usd,
+        used_today,
     )
-    return _quota_member_item(member, effective_limit_usd, used_today)
 
 
 @router.post("/users", response_model=InviteUserResponse)

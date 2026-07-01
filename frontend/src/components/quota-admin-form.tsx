@@ -28,9 +28,27 @@ const formatDollars = (value: number) =>
 const memberLabel = (member: QuotaMember) =>
   member.name || member.email || member.github_username || member.user_id;
 
-// Admin view of per-member daily quota usage. The effective `limit_usd` is
-// editable: an empty input clears the override (PUT {limit_usd: null}) so the
-// member reverts to the workspace default; a value sets an override.
+const MAX_LIMIT_USD = 99999999.9999;
+
+// Collapse backend error shapes (string detail, FastAPI detail array, error) into one string.
+function errorMessage(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as { detail?: unknown; error?: unknown };
+  if (typeof b.detail === "string") return b.detail;
+  if (Array.isArray(b.detail)) {
+    const parts = b.detail
+      .map((d) =>
+        d && typeof d === "object" && "msg" in d
+          ? String((d as { msg: unknown }).msg)
+          : String(d)
+      )
+      .filter(Boolean);
+    if (parts.length) return parts.join("; ");
+  }
+  if (typeof b.error === "string") return b.error;
+  return undefined;
+}
+
 export function QuotaAdminForm() {
   const { data, mutate, error } = useSWR<QuotaList>("/api/quotas", fetcher);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -59,7 +77,6 @@ export function QuotaAdminForm() {
 
   const draftValue = (member: QuotaMember) =>
     drafts[member.user_id] ?? member.limit_usd.toFixed(2);
-
   const isDirty = (member: QuotaMember) =>
     member.user_id in drafts &&
     drafts[member.user_id] !== member.limit_usd.toFixed(2);
@@ -71,49 +88,45 @@ export function QuotaAdminForm() {
 
   async function save(member: QuotaMember) {
     const raw = draftValue(member).trim();
+    const id = member.user_id;
     let payload: QuotaUpdate;
+
     if (raw === "") {
       payload = { limit_usd: null };
     } else {
       const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed < 0) {
+      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_LIMIT_USD) {
         setRowError((e) => ({
           ...e,
-          [member.user_id]: "Enter a non-negative amount or leave empty.",
+          [id]: "Enter an amount greater than 0, or leave empty to reset.",
         }));
         return;
       }
       payload = { limit_usd: parsed.toFixed(2) };
     }
 
-    setSavingId(member.user_id);
-    setRowError(({ [member.user_id]: _drop, ...rest }) => rest);
-    const res = await fetch(
-      `/api/quotas/${encodeURIComponent(member.user_id)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }
-    ).catch(() => null);
+    setSavingId(id);
+    setRowError(({ [id]: _drop, ...rest }) => rest);
+    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
     setSavingId(null);
 
     if (!res || !res.ok) {
-      const body = (await res?.json().catch(() => null)) as {
-        detail?: string;
-        error?: string;
-      } | null;
+      const body: unknown = await res?.json().catch(() => null);
       const message =
         res?.status === 403
           ? "Admins only."
           : res?.status === 404
             ? "Member not found."
-            : (body?.detail ?? body?.error ?? "Could not save limit.");
-      setRowError((e) => ({ ...e, [member.user_id]: message }));
+            : (errorMessage(body) ?? "Could not save limit.");
+      setRowError((e) => ({ ...e, [id]: message }));
       return;
     }
 
-    setDrafts(({ [member.user_id]: _drop, ...rest }) => rest);
+    setDrafts(({ [id]: _drop, ...rest }) => rest);
     void mutate();
   }
 
@@ -136,12 +149,12 @@ export function QuotaAdminForm() {
           </TableHeader>
           <TableBody>
             {members.map((member) => {
-              const over =
-                member.limit_usd > 0 && member.used_usd >= member.limit_usd;
-              const saving = savingId === member.user_id;
-              const err = rowError[member.user_id];
+              const id = member.user_id;
+              const over = member.limit_usd > 0 && member.used_usd >= member.limit_usd;
+              const saving = savingId === id;
+              const err = rowError[id];
               return (
-                <TableRow key={member.user_id} className="border-border/70">
+                <TableRow key={id} className="border-border/70">
                   <TableCell className="py-2.5">
                     <div className="min-w-0">
                       <p className="text-foreground truncate text-sm font-medium">
@@ -171,9 +184,7 @@ export function QuotaAdminForm() {
                         inputMode="decimal"
                         className="h-8 w-28 text-right font-mono text-xs"
                         value={draftValue(member)}
-                        onChange={(e) =>
-                          setDraft(member.user_id, e.target.value)
-                        }
+                        onChange={(e) => setDraft(id, e.target.value)}
                       />
                       {err ? (
                         <p className="text-destructive text-[11px]">{err}</p>

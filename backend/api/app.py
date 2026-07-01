@@ -71,7 +71,6 @@ def _get_cors_origins() -> list[str]:
 
 
 async def _assert_quota_schema_or_force_off() -> None:
-    """Disable enforcement if the quota usage schema is definitively missing."""
     from sqlalchemy import text
 
     from oddish.config import QuotaMode
@@ -81,7 +80,7 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
     try:
         async with get_session() as session:
-            schema_ready = await session.scalar(
+            if await session.scalar(
                 text(
                     """
                     SELECT EXISTS (
@@ -98,7 +97,8 @@ async def _assert_quota_schema_or_force_off() -> None:
                     )
                     """
                 )
-            )
+            ):
+                return
     except Exception:
         logger.warning(
             "quota schema check skipped (DB unavailable at startup); "
@@ -106,15 +106,14 @@ async def _assert_quota_schema_or_force_off() -> None:
             settings.quota_mode,
         )
         return
-    if not schema_ready:
-        logger.error(
-            "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
-            "column/index or the backend quotas table is missing -- the oddish and "
-            "backend alembic trees migrate separately); forcing quota_mode=off to "
-            "avoid a fail-open SUM or a 500 on every admission",
-            settings.quota_mode,
-        )
-        settings.quota_mode = QuotaMode.OFF
+    logger.error(
+        "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
+        "column/index or the backend quotas table is missing -- the oddish and "
+        "backend alembic trees migrate separately); forcing quota_mode=off to "
+        "avoid a fail-open SUM or a 500 on every admission",
+        settings.quota_mode,
+    )
+    settings.quota_mode = QuotaMode.OFF
 
 
 @asynccontextmanager
