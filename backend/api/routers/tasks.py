@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime
 from typing import Annotated, cast
 
 from fastapi import (
@@ -26,6 +28,7 @@ from oddish.dispatch.backends.modal import ModalDispatcher
 from oddish.dispatch.ports import WorkerHandle
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
+    browse_task_facets_core,
     browse_tasks_core,
     build_task_sweep_response,
     cancel_task_qa_core,
@@ -86,6 +89,7 @@ from oddish.schemas import (
     ExperimentCombineResponse,
     ExperimentProbeRow,
     OrgProbeRow,
+    TaskBrowseFacets,
     TaskBrowseResponse,
     TaskBatchCancelRequest,
     TaskDetailResponse,
@@ -417,26 +421,6 @@ async def finalize_task_upload(
     )
 
 
-async def _apply_user_run_probe_default(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-) -> None:
-    """Opt the creating user's NEW tasks into auto-probe per their default.
-
-    Only turns ``run_probe`` ON (an explicit ``run_probe=True`` already wins, so
-    we skip the lookup then) and only matters for task creation — append mode in
-    ``create_task_sweep_core`` preserves the existing task's flag, so a flipped
-    submission flag is a no-op there. Resolved in the backend because the
-    ``users`` table is a backend concept the oddish core must not import.
-    """
-    if submission.run_probe:
-        return
-    actor = await _resolve_actor_user(session, auth)
-    if actor is not None and actor.run_probe_default:
-        submission.run_probe = True
-
-
 @router.post("/tasks/sweep", response_model=TaskResponse)
 async def create_task_sweep(
     submission: TaskSweepSubmission,
@@ -455,15 +439,14 @@ async def create_task_sweep(
     validate_sweep_submission(submission)
 
     # Fingerprint the raw client submission BEFORE the backend mutates it
-    # (identity / GitHub attribution / per-user probe default). Those defaults
-    # can resolve differently between attempts, so hashing post-mutation would
-    # spuriously 409 an honest retry; hashing the raw body keeps retries faithful.
+    # (identity / GitHub attribution). Those defaults can resolve differently
+    # between attempts, so hashing post-mutation would spuriously 409 an honest
+    # retry; hashing the raw body keeps retries faithful.
     request_hash = compute_request_hash(submission)
 
     async with get_session() as session:
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
-        await _apply_user_run_probe_default(session, submission, auth)
 
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
@@ -534,7 +517,6 @@ async def create_task_sweep_batch(
         # failure here rolls back only this item (mirrors the single-sweep route).
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
-        await _apply_user_run_probe_default(session, submission, auth)
         return get_default_cloud_environment(submission)
 
     async def _finalize(
@@ -741,6 +723,123 @@ async def browse_tasks(
             "ANDed with the free-text and tag filters."
         ),
     ),
+    statuses: str | None = Query(None, description="Task status CSV"),
+    priorities: str | None = Query(None, description="Task priority CSV"),
+    verdict_statuses: str | None = Query(None, description="Task verdict status CSV"),
+    has_link: bool | None = Query(None),
+    run_analysis: bool | None = Query(None),
+    run_probe: bool | None = Query(None),
+    created_after: datetime | None = Query(None),
+    created_before: datetime | None = Query(None),
+    experiment_ids: str | None = Query(None, description="Experiment id CSV"),
+    agents: str | None = Query(None, description="Trial agent CSV"),
+    models: str | None = Query(None, description="Trial model CSV"),
+    agent_models: str | None = Query(
+        None, description="Agent+model pair CSV, each 'agent:model'"
+    ),
+    providers: str | None = Query(None, description="Trial provider CSV"),
+    environments: str | None = Query(None, description="Trial environment CSV"),
+    trial_statuses: str | None = Query(None, description="Trial status CSV"),
+    origins: str | None = Query(None, description="Trial origin CSV"),
+    trial_is_probe: bool | None = Query(None),
+    harbor_shas: str | None = Query(None, description="Harbor SHA CSV"),
+    harbor_stages: str | None = Query(None, description="Harbor stage CSV"),
+    analysis_classifications: str | None = Query(
+        None, description="Trial analysis classification CSV"
+    ),
+    has_error: bool | None = Query(None),
+    has_trajectory: bool | None = Query(None),
+    min_attempts: int | None = Query(None, ge=1),
+    min_tokens: int | None = Query(None, ge=0),
+    max_tokens: int | None = Query(None, ge=0),
+    min_steps: int | None = Query(None, ge=0),
+    max_steps: int | None = Query(None, ge=0),
+    reward_min: float | None = Query(None, ge=0.0, le=1.0),
+    reward_max: float | None = Query(None, ge=0.0, le=1.0),
+    # --- Phase 1.2-lite aggregate filters / sort (computed on the fly) ---
+    avg_score_min: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task avg score percent (0-100), min"
+    ),
+    avg_score_max: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task avg score percent (0-100), max"
+    ),
+    total_tokens_min: int | None = Query(None, ge=0),
+    total_tokens_max: int | None = Query(None, ge=0),
+    total_trials_min: int | None = Query(None, ge=1),
+    completed_trials_min: int | None = Query(None, ge=1),
+    failed_trials_min: int | None = Query(None, ge=1),
+    pass_count_min: int | None = Query(None, ge=1),
+    partial_count_min: int | None = Query(None, ge=1),
+    fail_count_min: int | None = Query(None, ge=1),
+    harness_count_min: int | None = Query(None, ge=1),
+    runtime_total_min: float | None = Query(
+        None, ge=0.0, description="Task total run time (seconds), min"
+    ),
+    runtime_total_max: float | None = Query(
+        None, ge=0.0, description="Task total run time (seconds), max"
+    ),
+    runtime_avg_min: float | None = Query(
+        None, ge=0.0, description="Task avg run time per trial (seconds), min"
+    ),
+    runtime_avg_max: float | None = Query(
+        None, ge=0.0, description="Task avg run time per trial (seconds), max"
+    ),
+    pass_rate_min: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task pass rate percent (0-100), min"
+    ),
+    pass_rate_max: float | None = Query(
+        None, ge=0.0, le=100.0, description="Task pass rate percent (0-100), max"
+    ),
+    sort: str | None = Query(
+        None,
+        description=(
+            "Aggregate sort: one of avg_score_(asc|desc), total_tokens_(asc|desc), "
+            "runtime_total_(asc|desc), runtime_avg_(asc|desc). Unknown/absent "
+            "keeps the default recency order."
+        ),
+    ),
+    # --- Phase 2.1 agent/model comparison (computed on the fly) ---
+    compare_by: str | None = Query(
+        None, description="Compare subject column: 'agent' or 'model'"
+    ),
+    compare_a: str | None = Query(None, description="Subject A (agent/model name)"),
+    compare_b: str | None = Query(None, description="Subject B (agent/model name)"),
+    compare_metric: str | None = Query(
+        None,
+        description="Compare metric: reward | runtime | tokens | steps | pass_rate",
+    ),
+    compare_agg: str | None = Query(
+        None,
+        description=(
+            "Reduce each subject's trials by: best | avg | median (default best; "
+            "ignored for pass_rate)"
+        ),
+    ),
+    compare_margin: float | None = Query(
+        None, ge=0.0, description="A must beat B by more than this (0/absent = any)"
+    ),
+    compare_margin_unit: str | None = Query(
+        None, description="Margin unit: 'pct' (percent of B, default) or 'abs'"
+    ),
+    top_by: str | None = Query(
+        None, description="Top performer subject column: 'agent' or 'model'"
+    ),
+    top_value: str | None = Query(
+        None, description="The subject that must be the task's top performer"
+    ),
+    top_metric: str | None = Query(
+        None,
+        description="Top performer metric: reward | runtime | tokens | steps | pass_rate",
+    ),
+    or_groups: str | None = Query(
+        None,
+        description=(
+            "Phase 2.2 'Match any of…' OR-groups: URL-encoded JSON list of "
+            "condition dicts (each dict uses the same field keys as the flat "
+            "params). A task matches if it satisfies ANY group; the block is "
+            "ANDed with the flat filters."
+        ),
+    ),
 ) -> TaskBrowseResponse:
     """Browse latest task versions for the authenticated organization."""
     auth.require_scope(APIKeyScope.READ)
@@ -769,6 +868,16 @@ async def browse_tasks(
             author_user_ids = ()
             author_github_usernames = ()
             author_emails = ()
+        # Parse the OR-groups JSON defensively: a bad/deep-linked value must not
+        # 500 the browse; keep only dict groups, drop the rest.
+        parsed_or_groups: list[dict] | None = None
+        if or_groups:
+            try:
+                loaded = json.loads(or_groups)
+            except (ValueError, TypeError):
+                loaded = None
+            if isinstance(loaded, list):
+                parsed_or_groups = [g for g in loaded if isinstance(g, dict)] or None
         return await browse_tasks_core(
             session,
             org_id=auth.org_id,
@@ -781,8 +890,78 @@ async def browse_tasks(
             author_user_ids=author_user_ids,
             author_github_usernames=author_github_usernames,
             author_emails=author_emails,
+            statuses=_split_tag_csv(statuses),
+            priorities=_split_tag_csv(priorities),
+            verdict_statuses=_split_tag_csv(verdict_statuses),
+            has_link=has_link,
+            run_analysis=run_analysis,
+            run_probe=run_probe,
+            created_after=created_after,
+            created_before=created_before,
+            experiment_ids=_split_tag_csv(experiment_ids),
+            agents=_split_tag_csv(agents),
+            models=_split_tag_csv(models),
+            agent_models=_split_tag_csv(agent_models),
+            providers=_split_tag_csv(providers),
+            environments=_split_tag_csv(environments),
+            trial_statuses=_split_tag_csv(trial_statuses),
+            origins=_split_tag_csv(origins),
+            trial_is_probe=trial_is_probe,
+            harbor_shas=_split_tag_csv(harbor_shas),
+            harbor_stages=_split_tag_csv(harbor_stages),
+            analysis_classifications=_split_tag_csv(analysis_classifications),
+            has_error=has_error,
+            has_trajectory=has_trajectory,
+            min_attempts=min_attempts,
+            min_tokens=min_tokens,
+            max_tokens=max_tokens,
+            min_steps=min_steps,
+            max_steps=max_steps,
+            reward_min=reward_min,
+            reward_max=reward_max,
+            avg_score_min=avg_score_min,
+            avg_score_max=avg_score_max,
+            total_tokens_min=total_tokens_min,
+            total_tokens_max=total_tokens_max,
+            total_trials_min=total_trials_min,
+            completed_trials_min=completed_trials_min,
+            failed_trials_min=failed_trials_min,
+            pass_count_min=pass_count_min,
+            partial_count_min=partial_count_min,
+            fail_count_min=fail_count_min,
+            harness_count_min=harness_count_min,
+            runtime_total_min=runtime_total_min,
+            runtime_total_max=runtime_total_max,
+            runtime_avg_min=runtime_avg_min,
+            runtime_avg_max=runtime_avg_max,
+            pass_rate_min=pass_rate_min,
+            pass_rate_max=pass_rate_max,
+            sort=sort,
+            compare_by=compare_by,
+            compare_a=compare_a,
+            compare_b=compare_b,
+            compare_metric=compare_metric,
+            compare_agg=compare_agg,
+            compare_margin=compare_margin,
+            compare_margin_unit=compare_margin_unit,
+            top_by=top_by,
+            top_value=top_value,
+            top_metric=top_metric,
+            or_groups=parsed_or_groups,
             record_timing=_make_timing_recorder(request),
         )
+
+
+@router.get("/tasks/browse/facets", response_model=TaskBrowseFacets)
+async def browse_task_facets(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskBrowseFacets:
+    """Distinct filter-option values for the task browser sidebar."""
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        await session.connection()
+        return await browse_task_facets_core(session, org_id=auth.org_id)
 
 
 @router.post("/experiments/combine", response_model=ExperimentCombineResponse)

@@ -1067,6 +1067,32 @@ class TaskBrowseResponse(BaseModel):
     has_more: bool
 
 
+class AgentModelFacet(BaseModel):
+    """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
+    rows with no recorded model."""
+
+    agent: str
+    model: str | None = None
+
+
+class TaskBrowseFacets(BaseModel):
+    """Distinct values for populating the task-browser filter controls.
+
+    Trial-derived facets are scoped to the org's non-probe, non-superseded
+    trials. Enum-valued filters (task status, priority, trial status, origin)
+    are static and supplied client-side, so they are not returned here.
+    """
+
+    agents: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    agent_models: list[AgentModelFacet] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    environments: list[str] = Field(default_factory=list)
+    harbor_stages: list[str] = Field(default_factory=list)
+    analysis_classifications: list[str] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
+
+
 class TaskStatusResponse(BaseModel):
     id: str
     name: str

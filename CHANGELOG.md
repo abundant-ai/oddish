@@ -301,7 +301,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Copy button in the task file viewer header copies the raw file content to clipboard with a 2-second check-icon confirmation; resets on file switch and cleans up its timeout on unmount (#299)
-- Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
 
 ### Changed
 
