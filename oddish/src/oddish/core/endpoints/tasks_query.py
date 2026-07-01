@@ -734,7 +734,11 @@ _COMPARE_METRIC_HIGHER_BETTER: dict[str, bool] = {
     "runtime": False,
     "tokens": False,
     "steps": False,
+    "pass_rate": True,
 }
+# Per-trial metrics (reduced via best/avg/median). ``pass_rate`` is NOT here: it
+# is already a per-subject ratio, so the agg toggle doesn't apply to it.
+_PER_TRIAL_METRICS = frozenset({"reward", "runtime", "tokens", "steps"})
 
 
 def _compare_metric_expr(metric: str) -> Any | None:
@@ -759,16 +763,46 @@ def _compare_subject_column(compare_by: str) -> Any | None:
     return None
 
 
-def _compare_agg_value(
-    subject_col: Any, value: str, metric_expr: Any, agg: str, higher_better: bool
+def _subject_metric_value(
+    subject_col: Any, value: str, metric: str, agg: str
 ) -> Any:
-    """Reduce ONE subject's trials to a single number. Scoped to that subject via
-    a ``CASE`` so a task missing the subject yields NULL (and drops out of the
-    comparison). ``best`` = MAX for higher-better metrics, MIN otherwise."""
-    scoped = case((subject_col == value, metric_expr), else_=None)
+    """Reduce ONE subject's (agent/model) trials to a single number for a metric.
+
+    Scoped to that subject via ``CASE`` so a task missing the subject yields NULL
+    (and drops out of the comparison). Handles:
+
+    * ``pass_rate`` — pass-bucket count ÷ the subject's trials, as a percent
+      (0-100); the ``agg`` toggle does not apply.
+    * per-trial metrics (reward/runtime/tokens/steps) reduced by ``best`` (MAX for
+      higher-better, MIN otherwise), ``avg``, or ``median`` (``percentile_cont``).
+    """
+    matches = subject_col == value
+    if metric == "pass_rate":
+        pass_ct = func.count(
+            case((and_(matches, _trial_bucket_label() == "pass"), 1))
+        )
+        total_ct = func.count(case((matches, 1)))
+        return pass_ct * 100.0 / func.nullif(total_ct, 0)
+    scoped = case((matches, _compare_metric_expr(metric)), else_=None)
+    if agg == "median":
+        return func.percentile_cont(0.5).within_group(scoped)
     if agg == "avg":
         return func.avg(scoped)
-    return func.max(scoped) if higher_better else func.min(scoped)
+    return (
+        func.max(scoped)
+        if _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+        else func.min(scoped)
+    )
+
+
+def _compare_threshold(b_val: Any, margin: float | None, unit: str | None, higher: bool) -> Any:
+    """B's value adjusted by an optional margin (percent of B or absolute)."""
+    if margin is None or margin <= 0:
+        return b_val
+    if unit == "abs":
+        return b_val + margin if higher else b_val - margin
+    factor = 1 + margin / 100.0 if higher else 1 - margin / 100.0
+    return b_val * factor
 
 
 def _agent_compare_subquery(
@@ -777,20 +811,15 @@ def _agent_compare_subquery(
     subject_col: Any,
     value_a: str,
     value_b: str,
-    metric_expr: Any,
+    metric: str,
     agg: str,
-    higher_better: bool,
 ) -> Any:
     """Per-``(task, version)`` values for two subjects (agents or models) on one
-    metric, so the caller can filter "A beats B". Same scoped trial set as
-    ``_task_metrics_subquery`` (current version via the later join, non-probe,
-    non-superseded). On-the-fly; denormalize in full Phase 2."""
-    a_val = _compare_agg_value(
-        subject_col, value_a, metric_expr, agg, higher_better
-    ).label("a_val")
-    b_val = _compare_agg_value(
-        subject_col, value_b, metric_expr, agg, higher_better
-    ).label("b_val")
+    metric, so the GLOBAL "A beats B" filter can join + compare. Same scoped
+    trial set as ``_task_metrics_subquery`` (current version via the later join,
+    non-probe, non-superseded). On-the-fly; denormalize in full Phase 2."""
+    a_val = _subject_metric_value(subject_col, value_a, metric, agg).label("a_val")
+    b_val = _subject_metric_value(subject_col, value_b, metric, agg).label("b_val")
     stmt = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.task_version_id.label("task_version_id"),
@@ -805,6 +834,107 @@ def _agent_compare_subquery(
     return stmt.group_by(
         TrialModel.task_id, TrialModel.task_version_id
     ).subquery()
+
+
+def _subject_value_scalar(
+    org_id: str | None, subject_col: Any, value: str, metric: str, agg: str
+) -> Any:
+    """A CORRELATED scalar subquery for one subject's metric value on the current
+    task (``TaskModel``). Used to express "A beats B" as a self-contained boolean
+    predicate that composes inside an OR-group (Phase 2.3). Two of these compared
+    is slower than the global join, but needs no named join — the price of being
+    composable."""
+    stmt = select(_subject_metric_value(subject_col, value, metric, agg)).where(
+        TrialModel.task_id == TaskModel.id,
+        TrialModel.task_version_id == TaskModel.current_version_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.correlate(TaskModel).scalar_subquery()
+
+
+def _compare_predicate_correlated(
+    org_id: str | None,
+    *,
+    subject_col: Any,
+    value_a: str,
+    value_b: str,
+    metric: str,
+    agg: str,
+    margin: float | None,
+    margin_unit: str | None,
+) -> Any:
+    """"A beats B" as a boolean predicate over correlated subqueries (for groups)."""
+    higher = _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+    a_val = _subject_value_scalar(org_id, subject_col, value_a, metric, agg)
+    b_val = _subject_value_scalar(org_id, subject_col, value_b, metric, agg)
+    threshold = _compare_threshold(b_val, margin, margin_unit, higher)
+    return a_val > threshold if higher else a_val < threshold
+
+
+def _top_performer_predicate(
+    org_id: str | None, *, subject_col: Any, value: str, metric: str
+) -> Any:
+    """"``value`` is the top subject on ``metric`` for the task" — argmax
+    (higher-better) / argmin (lower-better) across ALL subjects. Built from a
+    per-``(task, version, subject)`` best-value subquery plus a window extreme
+    over the task; ties all count. Returns an EXISTS predicate over ``TaskModel``.
+    On-the-fly; no migration."""
+    higher = _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+    # Per-subject best value (no CASE needed — we group by the subject column).
+    if metric == "pass_rate":
+        best_val = (
+            func.count(case((_trial_bucket_label() == "pass", 1)))
+            * 100.0
+            / func.nullif(func.count(TrialModel.id), 0)
+        )
+    else:
+        metric_expr = _compare_metric_expr(metric)
+        best_val = (
+            func.max(metric_expr) if higher else func.min(metric_expr)
+        )
+    per_subject = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        subject_col.label("subject"),
+        best_val.label("val"),
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+        subject_col.isnot(None),
+    )
+    if org_id is not None:
+        per_subject = per_subject.where(TrialModel.org_id == org_id)
+    per_subject = per_subject.group_by(
+        TrialModel.task_id, TrialModel.task_version_id, subject_col
+    ).subquery()
+
+    extreme = (func.max if higher else func.min)(per_subject.c.val).over(
+        partition_by=[per_subject.c.task_id, per_subject.c.task_version_id]
+    )
+    ranked = select(
+        per_subject.c.task_id,
+        per_subject.c.task_version_id,
+        per_subject.c.subject,
+        per_subject.c.val,
+        extreme.label("task_extreme"),
+    ).subquery()
+    winners = (
+        select(ranked.c.task_id, ranked.c.task_version_id)
+        .where(
+            ranked.c.subject == value,
+            ranked.c.val == ranked.c.task_extreme,
+        )
+        .subquery()
+    )
+    return exists(
+        select(winners.c.task_id).where(
+            winners.c.task_id == TaskModel.id,
+            winners.c.task_version_id == TaskModel.current_version_id,
+        )
+    )
 
 
 def _task_metrics_subquery(org_id: str | None) -> Any:
@@ -836,6 +966,12 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
         func.count(case((bucket == "partial", 1))).label("partial_count"),
         func.count(case((bucket == "fail", 1))).label("fail_count"),
         func.count(case((bucket == "harness", 1))).label("harness_count"),
+        # Pass rate = pass-bucket count ÷ scoped trials, as a percent (0-100).
+        (
+            func.count(case((bucket == "pass", 1)))
+            * 100.0
+            / func.nullif(func.count(TrialModel.id), 0)
+        ).label("pass_rate"),
         func.sum(runtime_seconds).label("runtime_total"),
         func.avg(runtime_seconds).label("runtime_avg"),
     ).where(
@@ -882,6 +1018,8 @@ _AGGREGATE_GROUP_KEYS = frozenset(
         "runtime_total_max",
         "runtime_avg_min",
         "runtime_avg_max",
+        "pass_rate_min",
+        "pass_rate_max",
     }
 )
 
@@ -944,6 +1082,8 @@ async def browse_tasks_core(
     runtime_total_max: float | None = None,
     runtime_avg_min: float | None = None,
     runtime_avg_max: float | None = None,
+    pass_rate_min: float | None = None,
+    pass_rate_max: float | None = None,
     sort: str | None = None,
     # --- Phase 2.1 agent/model comparison (no migration) ---
     compare_by: str | None = None,
@@ -953,6 +1093,10 @@ async def browse_tasks_core(
     compare_agg: str | None = None,
     compare_margin: float | None = None,
     compare_margin_unit: str | None = None,
+    # --- Phase 2.3 top performer (best agent/model per task), no migration ---
+    top_by: str | None = None,
+    top_value: str | None = None,
+    top_metric: str | None = None,
     # --- Phase 2.2 OR-groups ("Match any of…"), no migration ---
     or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
@@ -1265,6 +1409,8 @@ async def browse_tasks_core(
             runtime_total_max,
             runtime_avg_min,
             runtime_avg_max,
+            pass_rate_min,
+            pass_rate_max,
         )
     )
     # Phase 2.2 OR-groups ("Match any of…"): drop empty / non-mapping specs. If any
@@ -1289,6 +1435,7 @@ async def browse_tasks_core(
             task_metrics.c.partial_count.label("partial_count"),
             task_metrics.c.fail_count.label("fail_count"),
             task_metrics.c.harness_count.label("harness_count"),
+            task_metrics.c.pass_rate.label("pass_rate"),
             task_metrics.c.runtime_total.label("runtime_total"),
             task_metrics.c.runtime_avg.label("runtime_avg"),
         ).outerjoin(
@@ -1362,6 +1509,30 @@ async def browse_tasks_core(
             ranked_tasks = ranked_tasks.where(
                 task_metrics.c.runtime_avg <= runtime_avg_max
             )
+        if pass_rate_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.pass_rate >= pass_rate_min
+            )
+        if pass_rate_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.pass_rate <= pass_rate_max
+            )
+
+    # --- Phase 2.3 top performer (best agent/model per task) --------------
+    top_subject_col = _compare_subject_column(top_by) if top_by else None
+    if (
+        top_subject_col is not None
+        and top_value
+        and top_metric in _COMPARE_METRIC_HIGHER_BETTER
+    ):
+        ranked_tasks = ranked_tasks.where(
+            _top_performer_predicate(
+                org_id,
+                subject_col=top_subject_col,
+                value=top_value,
+                metric=top_metric,
+            )
+        )
 
     # --- Phase 2.1 agent/model comparison (no migration) ------------------
     # Keep only tasks where subject A beats subject B on one metric, computed on
@@ -1372,26 +1543,27 @@ async def browse_tasks_core(
     compare_subject_col = (
         _compare_subject_column(compare_by) if compare_by else None
     )
-    compare_metric_expr = (
-        _compare_metric_expr(compare_metric) if compare_metric else None
+    compare_metric_known = (
+        compare_metric in _COMPARE_METRIC_HIGHER_BETTER
+        if compare_metric
+        else False
     )
     if (
         compare_subject_col is not None
-        and compare_metric_expr is not None
+        and compare_metric_known
         and compare_a
         and compare_b
         and compare_a != compare_b
     ):
         higher_better = _COMPARE_METRIC_HIGHER_BETTER[compare_metric]
-        agg = "avg" if compare_agg == "avg" else "best"
+        agg = compare_agg if compare_agg in ("avg", "median") else "best"
         compare_metrics = _agent_compare_subquery(
             org_id,
             subject_col=compare_subject_col,
             value_a=compare_a,
             value_b=compare_b,
-            metric_expr=compare_metric_expr,
+            metric=compare_metric,
             agg=agg,
-            higher_better=higher_better,
         )
         ranked_tasks = ranked_tasks.outerjoin(
             compare_metrics,
@@ -1560,10 +1732,41 @@ async def browse_tasks_core(
                 "runtime_total_max": lambda v: m.runtime_total <= v,
                 "runtime_avg_min": lambda v: m.runtime_avg >= v,
                 "runtime_avg_max": lambda v: m.runtime_avg <= v,
+                "pass_rate_min": lambda v: m.pass_rate >= v,
+                "pass_rate_max": lambda v: m.pass_rate <= v,
             }
             for key, make_pred in agg_preds.items():
                 if spec.get(key) is not None:
                     preds.append(make_pred(spec[key]))
+
+        # Phase 2.3: a "Compare A vs B" condition inside the group, built from
+        # correlated subqueries so it composes here (unlike the global joined
+        # form). ``spec["compare"]`` mirrors the global compare params.
+        cmp = spec.get("compare")
+        if isinstance(cmp, Mapping):
+            cmp_subject = _compare_subject_column(cmp.get("compare_by") or "agent")
+            cmp_metric = cmp.get("compare_metric")
+            cmp_a, cmp_b = cmp.get("compare_a"), cmp.get("compare_b")
+            if (
+                cmp_subject is not None
+                and cmp_metric in _COMPARE_METRIC_HIGHER_BETTER
+                and cmp_a
+                and cmp_b
+                and cmp_a != cmp_b
+            ):
+                cmp_agg = cmp.get("compare_agg")
+                preds.append(
+                    _compare_predicate_correlated(
+                        org_id,
+                        subject_col=cmp_subject,
+                        value_a=cmp_a,
+                        value_b=cmp_b,
+                        metric=cmp_metric,
+                        agg=cmp_agg if cmp_agg in ("avg", "median") else "best",
+                        margin=cmp.get("compare_margin"),
+                        margin_unit=cmp.get("compare_margin_unit"),
+                    )
+                )
 
         return and_(*preds) if preds else None
 
