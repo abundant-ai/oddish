@@ -13,7 +13,7 @@ live table. Partial indexes on ``imported_at`` keep audit/rollback scans cheap
 without indexing the (overwhelmingly NULL) native rows.
 
 Revision ID: legacy_imported_at_001
-Revises: merge_mca01_wjtoken_heads
+Revises: exp_trials_join_001
 Create Date: 2026-07-01 00:00:00.000000
 """
 
@@ -23,7 +23,7 @@ from alembic import op
 
 
 revision: str = "legacy_imported_at_001"
-down_revision: Union[str, Sequence[str], None] = "merge_mca01_wjtoken_heads"
+down_revision: Union[str, Sequence[str], None] = "exp_trials_join_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

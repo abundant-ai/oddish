@@ -279,6 +279,10 @@ async def initialize_trial_import(
             trial_s3_key=StorageClient._trial_prefix(trial_id),
             started_at=started_at,
             finished_at=finished_at,
+            # Written in the SAME transaction as the insert so the QA
+            # pipeline's imported_at-based exclusion can never race a
+            # follow-up UPDATE (NULL for ad-hoc imports).
+            imported_at=_parse_datetime(trial_spec.imported_at),
         )
         session.add(trial_row)
 

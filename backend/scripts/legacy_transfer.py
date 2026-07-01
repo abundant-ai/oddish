@@ -262,6 +262,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                 started_at=lm,
                 finished_at=lm,
                 external_trial_id=_ext_id(prefix),  # short hash -> key fits VARCHAR(64)
+                imported_at=now(),  # set IN the import transaction (no QA race)
                 # source tag distinguishes THIS migration from prior test imports;
                 # the immutable path anchor lives in the trials.orig_s3_src column.
                 # legacy_* structured fields kept for cheap querying/scoping.

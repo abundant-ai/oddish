@@ -183,6 +183,25 @@ async def run_task_qa_job(
     classifications: list[TrialClassification] = []
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
+        if not live_trials:
+            # Every live trial is excluded from QA (bulk-migrated imports,
+            # filtered by imported_at). Nothing to classify and no inputs for
+            # a verdict -- complete the task cleanly instead of raising
+            # "No successful classifications" (which would record a FAILED
+            # verdict for what is not an error).
+            async with get_session() as session:
+                task = await session.get(TaskModel, task_id, with_for_update=True)
+                if task and await _worker_job_is_running(session, worker_job_id):
+                    task.verdict_status = None
+                    task.verdict_error = None
+                    task.verdict_finished_at = utcnow()
+                    task.status = TaskStatus.COMPLETED
+                    task.finished_at = utcnow()
+            console.print(
+                f"[yellow]QA {task_id} skipped: no QA-eligible trials "
+                "(all bulk-imported)[/yellow]"
+            )
+            return
         to_classify = [
             trial_id
             for trial_id, analysis_status in live_trials
