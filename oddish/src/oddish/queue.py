@@ -729,6 +729,10 @@ async def create_task(
         experiment = await get_experiment_by_id_or_name(
             session, submission.experiment_id, org_id
         )
+        if experiment is not None and experiment.is_collection:
+            raise ValueError(
+                "Cannot run trials into a collection experiment (read-only)."
+            )
         if not experiment:
             experiment = await get_or_create_experiment(
                 session, submission.experiment_id, org_id
