@@ -104,6 +104,14 @@ async def release_queue_slot(
             slot,
             worker_id,
         )
+    # A freed slot may unblock a waiting job: wake the in-process dispatcher
+    # (best-effort, no-op when no loop runs here; the fallback poll backstops).
+    try:
+        from oddish.dispatch.cycle import signal_dispatch
+
+        signal_dispatch()
+    except Exception:
+        pass
 
 
 async def cleanup_stale_queue_slots() -> int:
