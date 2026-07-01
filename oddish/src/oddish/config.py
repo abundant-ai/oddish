@@ -92,7 +92,7 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).
 HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "aeadaf4b10d71b149a4f4d5c6794d63781d0e66a"
+HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
