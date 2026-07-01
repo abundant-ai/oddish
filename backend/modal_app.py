@@ -105,6 +105,19 @@ DISPATCHER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS",
 # to run as often as dispatch.
 CLEANUP_INTERVAL_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS", 240)
 CLEANUP_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS", 600)
+# Dashboard queue/pipeline precompute. A scheduled grouped scan warms every
+# org's cached queue/pipeline slice so the dashboard request path never runs the
+# whole-``trials`` aggregate. The interval MUST stay <= the read-side TTL
+# (``_QUEUE_PIPELINE_CACHE_TTL_SECONDS`` in ``oddish.core.dashboard``, currently
+# 120s) or precomputed entries would expire between runs and force on-demand
+# recomputes. The timeout bounds one grouped scan; with max_containers=1 it also
+# guards against overlapping runs.
+DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS = _env_int(
+    "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS", 60
+)
+DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS = _env_int(
+    "ODDISH_MODAL_DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS", 120
+)
 # Allow ~12 hour trials.
 WORKER_TIMEOUT_SECONDS = _env_int("ODDISH_MODAL_WORKER_TIMEOUT_SECONDS", 43200)
 WORKER_MIN_CONTAINERS = _env_int(
@@ -225,7 +238,7 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"openai/gpt-5.4-mini": 128, '
-    '"xai/v9m-rl-learnability-tp8": 128}',
+    '"xai/v9m-rl-learnability-tp8": 108}',
 )
 
 ENV_VARS = {
@@ -325,6 +338,7 @@ api_volumes: dict[str, object] = {}
 worker_volumes: dict[str, object] = {}
 if worker_task_bucket_mount is not None:
     worker_volumes[WORKER_TASK_MOUNT_PATH] = worker_task_bucket_mount
+
 
 def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal.Image:
     """Build the worker image, optionally pinned to a blessed Harbor variant.

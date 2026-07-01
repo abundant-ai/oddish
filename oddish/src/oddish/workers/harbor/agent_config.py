@@ -272,7 +272,7 @@ def _apply_codex_oddish_wrapper(agent_config: AgentConfig) -> None:
 
 
 def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
-    """Route Grok Build trials through Oddish's trajectory wrapper."""
+    """Route Grok Build trials through Oddish's streaming trajectory wrapper."""
     if agent_config.import_path is not None:
         return
     agent_name = (agent_config.name or "").strip().lower()
