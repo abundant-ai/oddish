@@ -119,6 +119,58 @@ def test_respects_global_queue_capacity_across_orgs():
     assert len(plan) == 2
 
 
+def test_held_slots_count_against_queue_capacity():
+    # Nothing RUNNING yet, but 8 queue_slots leases are held (freshly-spawned
+    # workers that have not registered as RUNNING). Held is the authoritative
+    # in-flight count, so only 10 - 8 = 2 more may spawn -- without it the planner
+    # would over-spawn against a stale RUNNING=0 view.
+    plan = build_spawn_plan(
+        queued_by_org_queue={("org-a", "m1", _D): 100},
+        running_by_queue={},
+        concurrency_limits={"m1": 10},
+        max_workers=24,
+        held_by_queue_key={"m1": 8},
+    )
+    assert plan.count(("m1", _D)) == 2
+    assert len(plan) == 2
+
+
+def test_capacity_uses_max_of_running_and_held_not_their_sum():
+    # In-flight is max(RUNNING, held), never RUNNING + held: the lease and the
+    # RUNNING row are two views of the SAME worker, so 3 running + 8 held is 8
+    # in-flight (capacity 2), not 11 (which would wrongly spawn 0).
+    plan = build_spawn_plan(
+        queued_by_org_queue={("org-a", "m1", _D): 100},
+        running_by_queue={("m1", _D): 3},
+        concurrency_limits={"m1": 10},
+        max_workers=24,
+        held_by_queue_key={"m1": 8},
+    )
+    assert plan.count(("m1", _D)) == 2
+
+    # And when RUNNING already exceeds held, RUNNING dominates (held is stale).
+    plan_running_dominates = build_spawn_plan(
+        queued_by_org_queue={("org-a", "m1", _D): 100},
+        running_by_queue={("m1", _D): 8},
+        concurrency_limits={"m1": 10},
+        max_workers=24,
+        held_by_queue_key={"m1": 3},
+    )
+    assert plan_running_dominates.count(("m1", _D)) == 2
+
+
+def test_held_by_queue_key_defaults_to_running_only():
+    # Omitting held_by_queue_key (the Modal poll_queue call) is unchanged: a
+    # RUNNING-only capacity of 10 - 2 = 8.
+    plan = build_spawn_plan(
+        queued_by_org_queue={("org-a", "m1", _D): 100},
+        running_by_queue={("m1", _D): 2},
+        concurrency_limits={"m1": 10},
+        max_workers=24,
+    )
+    assert plan.count(("m1", _D)) == 8
+
+
 def test_plan_never_exceeds_max_workers():
     queued_by_org_queue = {
         ("org-a", "m1", _D): 500,

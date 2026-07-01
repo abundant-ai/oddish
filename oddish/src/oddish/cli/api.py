@@ -4,6 +4,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import os
 import random
 import shutil
 import tarfile
@@ -38,8 +39,13 @@ from harbor.models.trial.result import TrialResult
 from harbor.viewer.scanner import JobScanner
 
 from oddish.cli._concurrency import (
+    AdaptiveConcurrencyLimiter,
+    ConcurrencyGate,
+    classify_backpressure,
     map_with_adaptive_concurrency,
+    report_advertised_ceiling_from_response,
     report_api_call,
+    report_backpressure,
     resolve_s3_put_concurrency,
     resolve_submit_concurrency,
 )
@@ -488,6 +494,7 @@ def _retry_request(
         # backpressure even when a later retry succeeds.
         transient = response.status_code in _RETRY_STATUS_CODES
         report_api_call(time.monotonic() - call_start, backpressure=transient)
+        report_advertised_ceiling_from_response(response)
 
         if not transient:
             budget.record_success()
@@ -693,6 +700,7 @@ def upload_tasks_with_progress(
     progress_label: str = "Uploading",
     force_new_version: bool = False,
     concurrency: int | None = None,
+    limiter: AdaptiveConcurrencyLimiter | None = None,
 ) -> list[dict]:
     """Upload a batch of task directories with a shared progress bar.
 
@@ -704,6 +712,13 @@ def upload_tasks_with_progress(
     is adaptive (env ``ODDISH_TASK_UPLOAD_CONCURRENCY``, else an AIMD limiter that
     grows on success and backs off under load). The S3 presigned-PUT step is
     bounded separately and more tightly inside ``_upload_to_presigned_url``.
+
+    ``limiter`` lets a caller share one adaptive limiter across a whole run so
+    the upload and trial-submission phases feed the same learned state
+    (advertised ceiling, gradient, no-load floor); when ``None`` this
+    self-creates one from ``concurrency`` (the standalone ``oddish upload``
+    path). When a ``limiter`` is supplied, ``concurrency`` is ignored -- the
+    caller already baked it into the shared limiter.
 
     Returns the upload response dicts in the same order as ``task_paths``.
     """
@@ -732,7 +747,10 @@ def upload_tasks_with_progress(
     )
 
     results: list[dict] = []
-    limiter = resolve_submit_concurrency(concurrency)
+    # Share the run's limiter when the caller threads one in; otherwise
+    # self-create one from ``concurrency`` (the standalone ``oddish upload`` path).
+    if limiter is None:
+        limiter = resolve_submit_concurrency(concurrency)
     with progress:
         progress_task = progress.add_task(
             f"{progress_label} {len(task_paths)} tasks...", total=len(task_paths)
@@ -1011,6 +1029,7 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
         time.monotonic() - sweep_start,
         backpressure=response.status_code in _RETRY_STATUS_CODES,
     )
+    report_advertised_ceiling_from_response(response)
 
     if response.status_code != 200:
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
@@ -1112,6 +1131,7 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
     the operator decide rather than fall back.
     """
     body = {"submissions": payloads}
+    call_start = time.monotonic()
     try:
         with httpx.Client(
             timeout=TASK_SWEEP_TIMEOUT_SECONDS, headers=get_auth_headers()
@@ -1121,6 +1141,12 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
         # The request may have reached the server and committed before the error
         # surfaced (e.g. a read timeout). Do not fall back -- that risks
         # duplicate trials -- surface it so the operator can check and retry.
+        # Only a load-driven transport failure (timeout / pool checkout) is
+        # backpressure; a bare ConnectError and other non-load transport errors
+        # are neutral, so honor classify_backpressure rather than shrinking the
+        # limiter for any HTTPError.
+        if classify_backpressure(exception=exc):
+            report_backpressure()
         error_console.print(
             f"[red]Batch task submission failed:[/red] {exc}\n"
             "[yellow]The batch may already have been committed; not retrying "
@@ -1128,6 +1154,15 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
             "resubmitting.[/yellow]"
         )
         raise typer.Exit(1) from exc
+
+    # Feed the chunk's latency + transient status + advertised ceiling to any
+    # active gate slot, so a busy backend shrinks the limiter and shapes the
+    # parallelism / ceiling of the remaining chunks.
+    report_api_call(
+        time.monotonic() - call_start,
+        backpressure=response.status_code in _RETRY_STATUS_CODES,
+    )
+    report_advertised_ceiling_from_response(response)
 
     # Older servers have no batch route; nothing was processed -> safe to fall
     # back to per-task submission.
@@ -1162,21 +1197,33 @@ def _post_sweep_batch_chunk(api_url: str, payloads: list[dict]) -> list[dict] | 
     return results
 
 
-def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
-    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked.
+def submit_sweep_batch(
+    api_url: str,
+    payloads: list[dict],
+    *,
+    limiter: AdaptiveConcurrencyLimiter | None = None,
+) -> list[dict] | None:
+    """Submit task sweeps via ``POST /tasks/sweep/batch``, chunked + gated.
 
     The server runs each batch synchronously, so a single unbounded request is
     rejected (HTTP 303, nothing committed) once it exceeds Modal's per-request
     ceiling. We split ``payloads`` into chunks of at most
     ``ODDISH_SWEEP_BATCH_MAX_TASKS`` (default ``_DEFAULT_SWEEP_BATCH_MAX_TASKS``)
-    and POST each in order, re-basing the per-item ``index`` back onto the
-    original payload order.
+    and POST each in order through a :class:`ConcurrencyGate`, so each chunk is
+    limiter-governed -- it reports its latency / transient status and honors the
+    server-advertised ceiling, feeding the shared adaptive limiter -- instead of
+    bypassing the limiter as the batch path used to. Chunks are posted
+    sequentially so the duplicate-safety semantics are preserved exactly: on any
+    ambiguous failure we stop immediately rather than firing the remaining
+    chunks at an already-struggling server. Each chunk-local ``index`` is
+    re-based back onto the original payload order.
 
     Returns the combined per-item results list aligned to ``payloads``, or
     ``None`` when the batch route is absent (HTTP 404/405 on the *first* chunk,
     before anything is committed) so the caller may fall back to per-task.
     """
-    import os
+    if not payloads:
+        return []
 
     try:
         cap = int(
@@ -1187,10 +1234,16 @@ def submit_sweep_batch(api_url: str, payloads: list[dict]) -> list[dict] | None:
         cap = _DEFAULT_SWEEP_BATCH_MAX_TASKS
     cap = max(1, cap)
 
+    limiter = limiter if limiter is not None else resolve_submit_concurrency()
+    gate = ConcurrencyGate(limiter)
+
     aggregated: list[dict] = []
     for offset in range(0, len(payloads), cap):
         chunk = payloads[offset : offset + cap]
-        chunk_results = _post_sweep_batch_chunk(api_url, chunk)
+        # Route the chunk through the gate so it reports latency / backpressure
+        # and reads the advertised ceiling into the limiter (which then shapes
+        # the pacing of the chunks that follow).
+        chunk_results = gate.run(_post_sweep_batch_chunk, api_url, chunk)
         if chunk_results is None:
             if offset == 0:
                 # No batch route, nothing committed -> caller falls back per-task.

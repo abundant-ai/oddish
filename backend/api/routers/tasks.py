@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Annotated, cast
 
@@ -23,6 +22,8 @@ from cloud_policy import (
     ALLOWED_CLOUD_ENVIRONMENTS,
     get_default_cloud_environment,
 )
+from oddish.dispatch.backends.modal import ModalDispatcher
+from oddish.dispatch.ports import WorkerHandle
 from oddish.core.endpoints import (
     backfill_task_analysis_core,
     browse_tasks_core,
@@ -79,6 +80,7 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 from oddish.queue import (
     cancel_tasks_runs,
 )
+from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.schemas import (
     BackfillQARequest,
     ExperimentCombineRequest,
@@ -97,6 +99,8 @@ from oddish.schemas import (
     TaskSweepBatchResponse,
     TaskSweepSubmission,
     TaskVersionResponse,
+    TrialCollectionRequest,
+    TrialCollectionResponse,
     UploadResponse,
 )
 
@@ -115,35 +119,20 @@ def _split_tag_csv(csv: str | None) -> list[str]:
     return [s.strip() for s in (csv or "").split(",") if s.strip()]
 
 
-MODAL_CANCEL_BATCH_SIZE = 32
-
-
 async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
-    if not modal_fc_ids:
-        return 0
+    """Terminate in-flight Modal worker containers by function-call id.
 
-    try:
-        import modal
-    except ImportError:
-        return 0
-
-    unique_fc_ids = list(dict.fromkeys(modal_fc_ids))
-    cancelled = 0
-
-    async def cancel_one(fc_id: str) -> bool:
-        try:
-            fc = modal.FunctionCall.from_id(fc_id)
-            await fc.cancel.aio(terminate_containers=True)
-            return True
-        except Exception:
-            return False
-
-    for start in range(0, len(unique_fc_ids), MODAL_CANCEL_BATCH_SIZE):
-        batch = unique_fc_ids[start : start + MODAL_CANCEL_BATCH_SIZE]
-        results = await asyncio.gather(*(cancel_one(fc_id) for fc_id in batch))
-        cancelled += sum(1 for result in results if result)
-
-    return cancelled
+    Resolves the persisted handles to the registered ``ModalDispatcher`` rather
+    than reaching into ``modal.FunctionCall`` here, so the control-plane cancel
+    is host-agnostic (design spec §6.4). Behavior is unchanged — the dispatcher
+    runs the same batched ``cancel.aio(terminate_containers=True)``.
+    """
+    handles = [
+        WorkerHandle(provider=ModalDispatcher.name, queue_key="", id=fc_id)
+        for fc_id in modal_fc_ids
+        if fc_id
+    ]
+    return await ModalDispatcher().cancel(handles)
 
 
 def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
@@ -820,6 +809,31 @@ async def combine_experiments(
             name=payload.name,
             org_id=auth.org_id,
             copy_artifacts=payload.copy_artifacts,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return result
+
+
+@router.post("/experiments/collections", response_model=TrialCollectionResponse)
+async def create_trial_collection(
+    payload: TrialCollectionRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TrialCollectionResponse:
+    """Gather existing trials into a new read-only collection experiment.
+
+    Trials keep their home experiment; membership is additive via
+    ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        result = await create_trial_collection_core(
+            session,
+            name=payload.name,
+            trial_ids=payload.trial_ids,
+            org_id=auth.org_id,
         )
         await session.commit()
 

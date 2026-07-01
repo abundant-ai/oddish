@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
+from oddish.core.experiment_membership import gathered_trial_ids_select
 from oddish.core.helpers import build_task_status_response, fetch_trial_queue_info
 from oddish.core.tags.projection import list_effective_user_tags_for_task_versions
 from oddish.core.trial_io import (
@@ -272,13 +273,27 @@ async def list_public_experiment_tasks(
         exp_id = exp_id_result.scalar_one_or_none()
         from sqlalchemy.orm.attributes import set_committed_value
 
+        gathered_ids: set[str] = set()
+        if exp_id:
+            gathered_ids = set(
+                (await session.execute(gathered_trial_ids_select(exp_id)))
+                .scalars()
+                .all()
+            )
+
         for task in tasks:
-            # Scope to this experiment's trials and never expose probes —
-            # probes are experimental and stay out of the public share view.
+            # Scope to this experiment's trials (home or gathered) and never
+            # expose probes — probes are experimental and stay out of the
+            # public share view, gathered or not.
             filtered = [
                 t
                 for t in task.trials
-                if not t.is_probe and (not exp_id or t.experiment_id == exp_id)
+                if not t.is_probe
+                and (
+                    not exp_id
+                    or t.experiment_id == exp_id
+                    or t.id in gathered_ids
+                )
             ]
             set_committed_value(task, "trials", filtered)
 
@@ -294,6 +309,7 @@ async def list_public_experiment_tasks(
                 task,
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 experiment_context_id=exp_id,
+                gathered_trial_ids=gathered_ids,
             )
             for task in tasks
         ]
