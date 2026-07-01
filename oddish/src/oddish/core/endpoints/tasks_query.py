@@ -16,6 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
 
+from oddish.core.experiment_membership import trial_in_experiment
 from oddish.core.helpers import (
     escape_like,
     parse_search_query,
@@ -143,7 +144,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                TrialModel.experiment_id == experiment_id,
+                trial_in_experiment(experiment_id),
                 TrialModel.is_probe.is_(False),
             )
         else:
@@ -570,7 +571,7 @@ async def list_experiment_slim_tasks(
     from sqlalchemy.orm.attributes import set_committed_value
 
     trials_relationship = TaskModel.trials.and_(
-        TrialModel.experiment_id == experiment_id,
+        trial_in_experiment(experiment_id),
         TrialModel.is_probe.is_(False),
     )
     query = (
