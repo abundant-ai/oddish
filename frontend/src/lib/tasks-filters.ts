@@ -49,7 +49,11 @@ export interface FilterValues {
   totalTokensMax: number | null;
   runtimeTotalMin: number | null; // seconds
   runtimeTotalMax: number | null; // seconds
+  runtimeAvgMin: number | null; // seconds, per trial
+  runtimeAvgMax: number | null; // seconds, per trial
   totalTrialsMin: number | null;
+  completedTrialsMin: number | null;
+  failedTrialsMin: number | null;
   passCountMin: number | null;
   partialCountMin: number | null;
   failCountMin: number | null;
@@ -92,7 +96,11 @@ export const EMPTY_FILTERS: FilterValues = {
   totalTokensMax: null,
   runtimeTotalMin: null,
   runtimeTotalMax: null,
+  runtimeAvgMin: null,
+  runtimeAvgMax: null,
   totalTrialsMin: null,
+  completedTrialsMin: null,
+  failedTrialsMin: null,
   passCountMin: null,
   partialCountMin: null,
   failCountMin: null,
@@ -340,8 +348,26 @@ export const FILTER_DEFS: FilterDef[] = [
     control: "numrange",
   },
   {
+    key: "runtimeAvg",
+    label: "Run time (s, avg/trial)",
+    group: "Task",
+    control: "numrange",
+  },
+  {
     key: "totalTrials",
     label: "Total trials ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "completedTrials",
+    label: "Completed trials ≥",
+    group: "Task",
+    control: "num",
+  },
+  {
+    key: "failedTrials",
+    label: "Failed trials ≥",
     group: "Task",
     control: "num",
   },
@@ -429,8 +455,14 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
       return f.totalTokensMin !== null || f.totalTokensMax !== null;
     case "runtime":
       return f.runtimeTotalMin !== null || f.runtimeTotalMax !== null;
+    case "runtimeAvg":
+      return f.runtimeAvgMin !== null || f.runtimeAvgMax !== null;
     case "totalTrials":
       return f.totalTrialsMin !== null;
+    case "completedTrials":
+      return f.completedTrialsMin !== null;
+    case "failedTrials":
+      return f.failedTrialsMin !== null;
     case "passCount":
       return f.passCountMin !== null;
     case "partialCount":
@@ -498,7 +530,11 @@ export function filterParams(f: FilterValues): [string, string][] {
   num("total_tokens_max", f.totalTokensMax);
   num("runtime_total_min", f.runtimeTotalMin);
   num("runtime_total_max", f.runtimeTotalMax);
+  num("runtime_avg_min", f.runtimeAvgMin);
+  num("runtime_avg_max", f.runtimeAvgMax);
   num("total_trials_min", f.totalTrialsMin);
+  num("completed_trials_min", f.completedTrialsMin);
+  num("failed_trials_min", f.failedTrialsMin);
   num("pass_count_min", f.passCountMin);
   num("partial_count_min", f.partialCountMin);
   num("fail_count_min", f.failCountMin);
@@ -548,7 +584,11 @@ export const FILTER_PARAM_KEYS = [
   "total_tokens_max",
   "runtime_total_min",
   "runtime_total_max",
+  "runtime_avg_min",
+  "runtime_avg_max",
   "total_trials_min",
+  "completed_trials_min",
+  "failed_trials_min",
   "pass_count_min",
   "partial_count_min",
   "fail_count_min",
@@ -567,11 +607,6 @@ export const EXTRA_BROWSE_PARAM_KEYS = [
   "run_probe",
   "harbor_shas",
   "harbor_stages",
-  // Phase 1.2-lite aggregate params with no sidebar control yet (deep-linkable).
-  "completed_trials_min",
-  "failed_trials_min",
-  "runtime_avg_min",
-  "runtime_avg_max",
 ] as const;
 
 // Everything the browse fetch should forward / saved filters should capture.
@@ -633,7 +668,11 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     totalTokensMax: num("total_tokens_max"),
     runtimeTotalMin: num("runtime_total_min"),
     runtimeTotalMax: num("runtime_total_max"),
+    runtimeAvgMin: num("runtime_avg_min"),
+    runtimeAvgMax: num("runtime_avg_max"),
     totalTrialsMin: num("total_trials_min"),
+    completedTrialsMin: num("completed_trials_min"),
+    failedTrialsMin: num("failed_trials_min"),
     passCountMin: num("pass_count_min"),
     partialCountMin: num("partial_count_min"),
     failCountMin: num("fail_count_min"),
