@@ -972,10 +972,15 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
 def test_oddish_grok_build_requests_streaming_json(tmp_path):
     seen: list[str] = []
 
+    uploads: list[str] = []
+
     class _FakeEnvironment:
         async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
             seen.append(command)
             return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+        async def upload_file(self, source_path, target_path):
+            uploads.append(target_path)
 
     agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/redacted-model")
 
@@ -986,6 +991,11 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
     assert "--output-format json" in run_command
     assert "streaming-json|output-format|no-auto-update" in run_command
     assert ">/logs/agent/grok-build.json" in run_command
+    # The instruction is staged out-of-band and read back inside the sandbox,
+    # never inlined into the exec argv (Modal ARG_MAX guard).
+    assert uploads == ["/tmp/oddish-grok-build-prompt.txt"]
+    assert 'grok -p "$(cat /tmp/oddish-grok-build-prompt.txt)"' in run_command
+    assert "fix it" not in run_command
 
 
 def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
