@@ -16,7 +16,10 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
 
-from oddish.core.experiment_membership import trial_in_experiment
+from oddish.core.experiment_membership import (
+    gathered_trial_ids_select,
+    trial_in_experiment,
+)
 from oddish.core.helpers import (
     escape_like,
     parse_search_query,
@@ -301,6 +304,22 @@ async def list_tasks_core(
     # is the latest version that has trials in that experiment — not the task's
     # global ``current_version_id`` — so an experiment still shows its own
     # trials after the underlying task is re-uploaded elsewhere.
+    # Collection experiments gather trials additively via ``experiment_trials``
+    # without rewriting each trial's scalar ``experiment_id``. Compute that
+    # gathered set once so effective-version resolution recognizes those trials
+    # (otherwise a gathered trial on an older version is loaded, then
+    # double-filtered away by the effective-version drop). Empty for a normal
+    # experiment -> every path stays identical to before.
+    gathered_trial_ids: set[str] = set()
+    if experiment_id:
+        gathered_trial_ids = set(
+            (
+                await session.execute(gathered_trial_ids_select(experiment_id))
+            )
+            .scalars()
+            .all()
+        )
+
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
@@ -316,7 +335,9 @@ async def list_tasks_core(
                 # superseded / off-version trials -- identical result to before,
                 # without re-filtering in Python.
                 effective = resolve_effective_version_id(
-                    task, experiment_context_id=experiment_id
+                    task,
+                    experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 effective_by_task[task.id] = effective
                 set_committed_value(
@@ -402,6 +423,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 for task in tasks
             ]
@@ -420,6 +442,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
+                gathered_trial_ids=gathered_trial_ids,
             )
             for task in tasks
         ]
@@ -598,12 +621,22 @@ async def list_experiment_slim_tasks(
         for task in tasks:
             set_committed_value(task, "experiments", scoped_experiments)
 
+    # Trials gathered into a collection carry their home experiment's scalar
+    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
+    # at their own (possibly older) version instead of dropping them.
+    gathered_trial_ids = set(
+        (await session.execute(gathered_trial_ids_select(experiment_id)))
+        .scalars()
+        .all()
+    )
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
         for task in tasks
     ]
