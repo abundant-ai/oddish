@@ -34,7 +34,6 @@ from oddish.db import get_pool
 __all__ = [
     "build_spawn_plan",
     "discover_active_worker_job_queue_keys",
-    "fetch_alive_worker_handle_ids",
     "fetch_running_worker_handles",
     "get_worker_job_org_queue_counts",
     "select_job_function",
@@ -65,33 +64,6 @@ async def fetch_running_worker_handles() -> list[tuple[str, str]]:
         for row in rows
         if row["modal_function_call_id"]
     ]
-
-
-async def fetch_alive_worker_handle_ids() -> set[str]:
-    """Durable worker-handle ids that still back a live (RUNNING) ``worker_jobs`` row.
-
-    The ``alive`` set for tag-based leaked-worker GC (``reclaim_leaked_workers``):
-    a dispatcher-managed worker whose handle id is absent here has no live row and
-    is a leak. Only handles a worker actually self-reports are durable today -- the
-    Modal ``modal_function_call_id`` -- so a backend whose handle (a Docker
-    container id, a Kubernetes Job name) is not persisted into the row contributes
-    nothing here, and its reclaim stays dormant (the dispatch loop skips an empty
-    alive set so it can never cancel a live worker it simply cannot see).
-    """
-    pool = await get_pool()
-    rows = await pool.fetch(
-        """
-        SELECT modal_function_call_id
-        FROM   worker_jobs
-        WHERE  status::text = 'RUNNING'
-          AND  modal_function_call_id IS NOT NULL
-        """
-    )
-    return {
-        str(row["modal_function_call_id"])
-        for row in rows
-        if row["modal_function_call_id"]
-    }
 
 
 async def stamp_dispatch_stage(

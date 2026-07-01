@@ -56,7 +56,9 @@ class DockerPoolDispatcher:
         run_command: RunCommand | None = None,
         env: Mapping[str, str] | None = None,
         network: str | None = None,
-        command: Sequence[str] = ("python", "-m", "oddish.workers.queue.worker"),
+        # Run through the venv: the backend image installs oddish into
+        # /app/.venv (not on PATH), so bare ``python`` lacks the package.
+        command: Sequence[str] = ("uv", "run", "python", "-m", "oddish.workers.queue.worker"),
         extra_run_args: Sequence[str] = (),
     ) -> None:
         self._image = image

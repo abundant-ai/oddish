@@ -23,10 +23,10 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Collection, Sequence
 
 from oddish.dispatch.ports import Dispatcher, WorkerHandle
+from oddish.observability import span
 from oddish.workers.queue.worker_job_dispatcher import (
     build_spawn_plan,
     discover_active_worker_job_queue_keys,
-    fetch_alive_worker_handle_ids,
     fetch_running_worker_handles,
     get_worker_job_org_queue_counts,
 )
@@ -150,7 +150,33 @@ async def run_dispatch_cycle(
     ``on_stage(admitted, why_waiting)`` is an optional hook (the host wires it to
     ``stamp_dispatch_stage``) that records the §12 per-stage observability;
     omitted in pure/unit contexts so the cycle stays DB-free.
+
+    Wrapped in a ``dispatch.cycle`` span (a no-op without logfire) -- the otel
+    analog of the Modal worker's ``worker.poll_queue_cycle`` -- so the off-Modal
+    cycle's auto-instrumented DB/HTTP children nest under a named parent.
     """
+    with span("dispatch.cycle", max_workers=max_workers):
+        return await _run_dispatch_cycle(
+            dispatcher,
+            max_workers=max_workers,
+            concurrency_for=concurrency_for,
+            admit=admit,
+            on_stage=on_stage,
+            _discover=_discover,
+            _counts=_counts,
+        )
+
+
+async def _run_dispatch_cycle(
+    dispatcher: Dispatcher,
+    *,
+    max_workers: int,
+    concurrency_for: Callable[[str], int],
+    admit: AdmissionCheck = admit_all,
+    on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
+    _discover: DiscoverFn = discover_active_worker_job_queue_keys,
+    _counts: CountsFn = get_worker_job_org_queue_counts,
+) -> DispatchCycleResult:
     queue_units = tuple(await _discover())
     queue_keys = tuple({qk for qk, _variant in queue_units})
     queued_by_org_queue, running_by_queue = await _counts(queue_keys)
@@ -327,16 +353,16 @@ async def run_dispatch_loop(
     admit: AdmissionCheck = admit_all,
     on_stage: Callable[[list[str], dict[str, str]], Awaitable[None]] | None = None,
     fallback_interval: float = 20.0,
-    reclaim_every_cycles: int = 50,
     _stop: Callable[[], bool] = lambda: False,
-    _alive: Callable[[], Awaitable[Collection[str]]] = fetch_alive_worker_handle_ids,
 ) -> None:
     """Drive ``run_dispatch_cycle`` forever, woken by the trigger or fallback.
 
-    Every ``reclaim_every_cycles`` ticks it also runs ``reclaim_leaked_workers``
-    as a best-effort, low-frequency backstop for the leak case (a dispatcher-
-    managed worker with no live ``worker_jobs`` row, spec §6.5). Set
-    ``reclaim_every_cycles=0`` to disable it.
+    Leaked-worker GC (``reclaim_leaked_workers``) is intentionally **not** wired
+    into this loop yet: it needs the off-Modal backends to persist their durable
+    handle (Docker container id / Kubernetes Job name) into ``worker_jobs`` so
+    the alive-set shares ``list_managed``'s id-space. Until then the container /
+    Job runtimes self-reclaim (``--rm`` / ``ttlSecondsAfterFinished``) as the
+    backstop (spec §6.5).
     """
     trigger = get_dispatch_trigger(fallback_interval=fallback_interval)
 
@@ -351,7 +377,6 @@ async def run_dispatch_loop(
     except Exception as exc:  # noqa: BLE001 - reattach must not block startup
         logger.warning("startup reattach skipped: %r", exc)
 
-    cycles = 0
     while not _stop():
         await run_dispatch_cycle(
             dispatcher,
@@ -360,23 +385,4 @@ async def run_dispatch_loop(
             admit=admit,
             on_stage=on_stage,
         )
-
-        # Best-effort, low-frequency leaked-worker GC backstop (spec §6.5): cancel
-        # dispatcher-managed workers with no live ``worker_jobs`` row. Fully
-        # isolated -- a no-op for backends without ``list_managed`` (in-process /
-        # Modal), skipped when we have no positive liveness signal (an empty alive
-        # set, e.g. a backend whose durable handle isn't persisted yet) so it can
-        # never cancel a live worker, and every error swallowed so GC can never
-        # break dispatch.
-        cycles += 1
-        if reclaim_every_cycles > 0 and cycles % reclaim_every_cycles == 0:
-            try:
-                alive = await _alive()
-                if alive:
-                    reclaimed = await reclaim_leaked_workers(dispatcher, alive=alive)
-                    if reclaimed:
-                        logger.info("reclaimed %d leaked worker(s)", reclaimed)
-            except Exception as exc:  # noqa: BLE001 - GC must never break the loop
-                logger.warning("leaked-worker reclaim skipped: %r", exc)
-
         await trigger.wait()
