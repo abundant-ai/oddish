@@ -270,12 +270,17 @@ async def list_public_experiment_tasks(
             )
         )
         exp_id = exp_id_result.scalar_one_or_none()
-        if exp_id:
-            from sqlalchemy.orm.attributes import set_committed_value
+        from sqlalchemy.orm.attributes import set_committed_value
 
-            for task in tasks:
-                filtered = [t for t in task.trials if t.experiment_id == exp_id]
-                set_committed_value(task, "trials", filtered)
+        for task in tasks:
+            # Scope to this experiment's trials and never expose probes —
+            # probes are experimental and stay out of the public share view.
+            filtered = [
+                t
+                for t in task.trials
+                if not t.is_probe and (not exp_id or t.experiment_id == exp_id)
+            ]
+            set_committed_value(task, "trials", filtered)
 
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
@@ -344,20 +349,18 @@ async def get_public_task_status(
 
 
 @router.get("/public/tasks/{task_id}/trials", response_model=list[TrialResponse])
-async def list_public_task_trials(
-    task_id: str,
-    probe: bool | None = Query(
-        None,
-        description="Filter by trial kind: true -> only probes, false -> only real attempts, omit -> all.",
-    ),
-) -> list[TrialResponse]:
-    """List all trials for a public task."""
+async def list_public_task_trials(task_id: str) -> list[TrialResponse]:
+    """List real-attempt trials for a public task.
+
+    Probes are experimental and never exposed publicly, so this always
+    filters to real attempts (``probe=False``) regardless of caller input.
+    """
     async with get_session() as session:
         task = await get_public_task(session, task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        return await list_task_trials_for_task(session, task_id, probe=probe)
+        return await list_task_trials_for_task(session, task_id, probe=False)
 
 
 @router.get("/public/trials/{trial_id}/logs")

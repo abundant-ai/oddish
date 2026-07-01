@@ -33,6 +33,8 @@ from observability import span as _otel_span
 from modal_app import (
     CLEANUP_INTERVAL_SECONDS,
     CLEANUP_TIMEOUT_SECONDS,
+    DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS,
+    DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
     DISPATCHER_CPU,
     DISPATCHER_MEMORY_MB,
     DISPATCHER_NONPREEMPTIBLE,
@@ -58,9 +60,14 @@ from modal_app import (
 )
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
-from oddish.db import close_database_connections, WorkerJobKind
+from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
+from oddish.workers.queue.concurrency_controller import (
+    get_advisory_limits,
+    merge_advisory_over_static,
+    recompute_advisory_limits,
+)
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
@@ -76,7 +83,9 @@ from oddish.workers.queue.worker_job_dispatcher import (
     discover_active_worker_job_queue_keys,
     get_worker_job_org_queue_counts,
     select_job_function,
+    stamp_dispatch_stage,
 )
+from oddish.dispatch.cycle import compute_why_waiting
 from oddish.workers.queue.worker_job_single_job import (
     PostSuccessHooks,
     drain_worker_jobs,
@@ -104,6 +113,30 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
     WorkerJobKind.QA: notify_github_qa,
     WorkerJobKind.ANALYSIS: notify_github_analysis,
 }
+
+
+async def _effective_model_concurrency(queue_key: str) -> int:
+    """The concurrency limit to enforce for one ``queue_key``: the static limit,
+    overlaid with the fresh advisory when dynamic concurrency is on.
+
+    This is the SAME number ``poll_queue`` uses to size the spawn plan, so the
+    worker's ``queue_slots`` lease can't cap the advisory below what the dispatcher
+    planned (nor let the dispatcher over-spawn above the slot pool). Best-effort:
+    a stale/missing/errored advisory decays to the static value, and with the flag
+    off it IS the static value -- so default behavior is unchanged.
+    """
+    static = settings.get_model_concurrency(queue_key)
+    if static <= 0 or not settings.dynamic_model_concurrency:
+        return static
+    try:
+        async with get_session() as session:
+            advisory_limits = await get_advisory_limits(session)
+        return merge_advisory_over_static({queue_key: static}, advisory_limits).get(
+            queue_key, static
+        )
+    except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+        console.print(f"[yellow]Advisory limit unavailable ({queue_key}): {e}[/yellow]")
+        return static
 
 
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
@@ -143,7 +176,7 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
 
-        queue_limit = settings.get_model_concurrency(queue_key)
+        queue_limit = await _effective_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
                 f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
@@ -366,6 +399,19 @@ async def reconcile_queue_state():
             phase_errors.append(f"owner_backfill: {e}")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
 
+        # Recompute the self-tuning per-model concurrency advisory (default off).
+        # A defensive phase like the others: a failure logs and is swallowed so
+        # the rest of the reconcile sweep still runs, and the static limits stay
+        # the fallback.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory = await recompute_advisory_limits(session)
+                summary["advisory_limits_updated"] = len(advisory)
+            except Exception as e:  # noqa: BLE001 - best-effort phase
+                phase_errors.append(f"concurrency_controller: {e}")
+                console.print(f"[yellow]Concurrency controller skipped: {e}[/yellow]")
+
         # Persist a heartbeat the admin dashboard reads back. Keep only
         # non-zero counters so the payload stays legible.
         await record_queue_runtime_status(
@@ -394,6 +440,56 @@ async def reconcile_queue_state():
         except Exception:
             pass
         console.print("[green]Reconciler complete[/green]")
+
+
+@app.function(
+    image=image,
+    volumes=worker_volumes,
+    secrets=runtime_secrets,
+    timeout=DASHBOARD_PRECOMPUTE_TIMEOUT_SECONDS,
+    cpu=RECONCILER_CPU,
+    memory=RECONCILER_MEMORY_MB,
+    min_containers=0,  # Background refresh; tolerate a cold start each run.
+    max_containers=1,  # Singleton: never run two grouped scans at once.
+    schedule=modal.Period(seconds=DASHBOARD_PRECOMPUTE_INTERVAL_SECONDS),
+    nonpreemptible=DISPATCHER_NONPREEMPTIBLE,
+)
+async def precompute_dashboard_stats():
+    """Warm the dashboard's shared queue/pipeline cache for every org.
+
+    Runs the expensive whole-``trials`` aggregate once per interval as a single
+    grouped-by-org scan and writes each org's slice into the shared Modal Dict
+    the API reads, so the dashboard request path never runs that scan itself.
+
+    Best-effort: any failure is logged and swallowed (not re-raised) so a
+    transient DB hiccup doesn't trip Modal failure alerts -- the dashboard just
+    falls back to on-demand computation until the next run.
+    """
+    cycle_span = _otel_span("worker.precompute_dashboard_stats")
+    cycle_span.__enter__()
+    started = time.monotonic()
+    try:
+        from dashboard_cache import precompute_dashboard_queue_pipeline
+
+        org_count = await precompute_dashboard_queue_pipeline()
+        console.print(
+            f"metric=dashboard_precompute orgs={org_count} "
+            f"duration_seconds={round(time.monotonic() - started, 2)}"
+        )
+    except OSError as e:
+        console.print(
+            f"[yellow]Dashboard precompute skipped (transient network error): {e}[/yellow]"
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort background refresh
+        console.print(f"[yellow]Dashboard precompute skipped: {e}[/yellow]")
+    finally:
+        await close_database_connections()
+        import sys as _sys
+
+        try:
+            cycle_span.__exit__(*_sys.exc_info())
+        except Exception:
+            pass
 
 
 # Blessed Harbor variants get their own image-bound single-job Function so the
@@ -449,6 +545,19 @@ async def poll_queue():
             queue_key: settings.get_model_concurrency(queue_key)
             for queue_key in queue_keys
         }
+        # Single injection point for the self-tuning controller: when enabled,
+        # overlay the fresh per-queue advisory limit on the static one (a stale,
+        # missing, or errored advisory decays to the static value). Best-effort:
+        # a read failure must never block dispatch.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory_limits = await get_advisory_limits(session)
+                concurrency_limits = merge_advisory_over_static(
+                    concurrency_limits, advisory_limits
+                )
+            except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+                console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
 
         # Per-queue_key summary (aggregated across orgs + variants) is still the
         # useful operator-facing view; running sums across variants (the shared
@@ -517,7 +626,27 @@ async def poll_queue():
             },
         )
 
+        # Per-stage observability: admission_reason (why-waiting) for queues that
+        # didn't get a worker this poll, and spawned_at for those that did. The
+        # variant split is dispatch-only, so this is stamped at queue_key
+        # granularity -- variants share a queue_key's ``worker_jobs`` rows and
+        # concurrency pool. Additive + best-effort. spawned_at is stamped *after*
+        # the spawn below so a failed spawn doesn't falsely read as 'spawned'.
+        spawned_queue_keys = [queue_key for queue_key, _variant in spawn_plan]
+        why_waiting = compute_why_waiting(
+            queued_by_queue=queued_by_queue,
+            running_by_queue=running_by_queue_key,
+            concurrency_limits=concurrency_limits,
+            spawned_keys=spawned_queue_keys,
+            max_workers=MAX_WORKERS_PER_POLL,
+        )
+
         if not spawn_plan:
+            # Nothing to spawn: still record why the waiting queues are waiting.
+            try:
+                await stamp_dispatch_stage([], why_waiting)
+            except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
+                console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
             console.print("[dim]No queue capacity available, exiting[/dim]")
             return
 
@@ -543,6 +672,14 @@ async def poll_queue():
             )
 
         console.print(f"[green]Dispatched {len(spawn_plan)} workers[/green]")
+
+        # Stamp spawned_at only AFTER the spawn actually happened, so a worker
+        # that fails to spawn (the gather above raises -> caught below) leaves
+        # its row un-stamped instead of falsely reading as 'spawned'.
+        try:
+            await stamp_dispatch_stage(spawned_queue_keys, why_waiting)
+        except Exception as stamp_err:  # noqa: BLE001 - telemetry is best-effort
+            console.print(f"[yellow]stage stamp skipped: {stamp_err}[/yellow]")
 
     except OSError as e:
         # Transient network/DNS errors (e.g. socket.gaierror) should not
