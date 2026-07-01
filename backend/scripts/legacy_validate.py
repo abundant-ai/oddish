@@ -196,13 +196,17 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
 
     # ---------------------------------------------------------------- Layer 5
     print("\n== Layer 5: no side effects (analysis/QA never triggered) ==")
-    try:
-        jobs = await conn.fetchval(
-            f"SELECT count(*) FROM worker_jobs WHERE trial_id IN "
-            f"(SELECT id FROM trials WHERE {where})", *args)
-        check("no worker_jobs enqueued for imported trials", jobs == 0, f"jobs={jobs}")
-    except Exception as e:
-        info("worker_jobs check skipped", f"(adjust column? {e!r})")
+    # worker_jobs references its subject via (subject_table, subject_id) --
+    # QA/verdict jobs are task-scoped, per-trial jobs are trial-scoped, so
+    # check both against everything this migration created.
+    jobs = await conn.fetchval(
+        f"""SELECT count(*) FROM worker_jobs w
+            WHERE (w.subject_table = 'trials' AND w.subject_id IN
+                     (SELECT id FROM trials WHERE {where}))
+               OR (w.subject_table = 'tasks' AND w.subject_id IN
+                     (SELECT id FROM tasks WHERE imported_at IS NOT NULL))""",
+        *args)
+    check("no worker_jobs enqueued for imported trials/tasks", jobs == 0, f"jobs={jobs}")
 
     await conn.close()
 

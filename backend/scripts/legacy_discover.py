@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS leg_trial_ledger (
     object_count    integer NOT NULL DEFAULT 0,
     total_bytes     bigint  NOT NULL DEFAULT 0,
     last_modified   timestamptz,
-    status          text NOT NULL DEFAULT 'discovered',  -- discovered|transferring|transferred|failed|skipped
+    status          text NOT NULL DEFAULT 'discovered',  -- discovered|transferring|transferred|failed|skipped|conflict
     oddish_trial_id text,
     error           text,
     discovered_at   timestamptz NOT NULL DEFAULT now(),
