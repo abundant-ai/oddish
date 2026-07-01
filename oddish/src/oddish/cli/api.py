@@ -53,6 +53,10 @@ from oddish.cli._concurrency import (
 )
 from oddish.cli.config import get_auth_headers, error_console
 from oddish.core.idempotency import compute_sweep_idempotency_key
+from oddish.core.harbor_artifacts import (
+    detect_trajectory,
+    extract_trial_result_fields,
+)
 from oddish.task_timeouts import (
     TaskTimeoutValidationError,
     validate_task_timeout_config,
@@ -1389,52 +1393,22 @@ def load_harbor_trial_result(trial_dir: Path) -> TrialResult | None:
     return scanner.get_trial_result(trial_dir.parent.name, trial_dir.name)
 
 
-def detect_trajectory_in_dir(trial_dir: Path) -> bool:
-    """Mirror ``oddish.workers.harbor.runner._detect_trajectory``."""
-    if not trial_dir.exists():
-        return False
-    if any(trial_dir.rglob("trajectory.json")):
-        return True
-    if any(trial_dir.rglob("trajectory.jsonl")):
-        return True
-    return False
-
-
-def extract_total_steps_from_dir(trial_dir: Path) -> int | None:
-    """Read ATIF total step count from an imported Harbor trial directory."""
-    if not trial_dir.exists():
-        return None
-    for traj_path in trial_dir.rglob("trajectory.json"):
-        try:
-            data = json.loads(traj_path.read_text(encoding="utf-8"))
-            final_metrics = data.get("final_metrics")
-            if isinstance(final_metrics, dict):
-                raw_steps = final_metrics.get("total_steps")
-                if raw_steps is not None:
-                    return int(raw_steps)
-            steps = data.get("steps")
-            if isinstance(steps, list):
-                return len(steps)
-        except Exception:
-            continue
-    return None
-
-
 def trial_result_to_import_spec(
     trial_result: TrialResult,
     *,
-    has_trajectory: bool,
+    has_trajectory: bool | None = None,
     total_steps: int | None = None,
+    artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Convert a Harbor ``TrialResult`` to an ``ImportedTrialSpec`` payload.
 
-    Per-trial equivalent of
-    ``oddish.workers.harbor.runner._extract_outcome_from_job_result``.
+    Per-trial equivalent of the live worker's Harbor outcome extraction.
     Multi-trial Harbor jobs (``-k > 1`` or multi-agent) become separate
     oddish trial rows.
     """
     agent_info = trial_result.agent_info
     model_info = agent_info.model_info
+    fields = extract_trial_result_fields(trial_result, artifact_dir=artifact_dir)
 
     # Prefer the fully-qualified ``provider/model`` string from the
     # trial's harbor config so imported rows land in the same model
@@ -1457,47 +1431,15 @@ def trial_result_to_import_spec(
     else:
         model_id = None
 
-    reward: float | None = None
-    if trial_result.verifier_result and trial_result.verifier_result.rewards:
-        raw = trial_result.verifier_result.rewards.get("reward")
-        if raw is not None:
-            reward = float(raw)
-
-    error_message: str | None = None
-    if trial_result.exception_info is not None:
-        exc = trial_result.exception_info
-        error_message = (
-            exc.exception_message or exc.exception_type or "Harbor execution error"
-        )
-
-    input_tokens: int | None = None
-    cache_tokens: int | None = None
-    output_tokens: int | None = None
-    cost_usd: float | None = None
-    ctx = trial_result.agent_result
-    if ctx is not None and not ctx.is_empty():
-        input_tokens = ctx.n_input_tokens
-        cache_tokens = ctx.n_cache_tokens
-        output_tokens = ctx.n_output_tokens
-        cost_usd = ctx.cost_usd
-
-    phase_timing: dict[str, dict[str, Any]] = {}
-    for phase in ("environment_setup", "agent_setup", "agent_execution", "verifier"):
-        info = getattr(trial_result, phase, None)
-        if info is None or info.started_at is None or info.finished_at is None:
-            continue
-        phase_timing[phase] = {
-            "started_at": info.started_at.isoformat(),
-            "finished_at": info.finished_at.isoformat(),
-            "duration_sec": round(
-                (info.finished_at - info.started_at).total_seconds(), 2
-            ),
-        }
+    if total_steps is None:
+        total_steps = fields.total_steps
+    if has_trajectory is None:
+        has_trajectory = detect_trajectory(artifact_dir) if artifact_dir else False
 
     # SUCCESS iff the verifier produced a reward (partial counts as
     # SUCCESS in oddish -- matches the live semantics). Otherwise the
     # execution hit an error and the row is FAILED.
-    status = "success" if reward is not None else "failed"
+    status = "success" if fields.reward is not None else "failed"
 
     def _iso(value: datetime | None) -> str | None:
         if value is None:
@@ -1508,15 +1450,15 @@ def trial_result_to_import_spec(
         "agent": agent_info.name,
         "model": model_id,
         "status": status,
-        "reward": reward,
-        "error_message": error_message,
+        "reward": fields.reward,
+        "error_message": fields.error,
         "harbor_stage": "completed",
-        "input_tokens": input_tokens,
-        "cache_tokens": cache_tokens,
-        "output_tokens": output_tokens,
+        "input_tokens": fields.input_tokens,
+        "cache_tokens": fields.cache_tokens,
+        "output_tokens": fields.output_tokens,
         "total_steps": total_steps,
-        "cost_usd": cost_usd,
-        "phase_timing": phase_timing or None,
+        "cost_usd": fields.cost_usd,
+        "phase_timing": fields.phase_timing,
         "has_trajectory": has_trajectory,
         "started_at": _iso(trial_result.started_at),
         "finished_at": _iso(trial_result.finished_at),
@@ -1624,11 +1566,10 @@ def import_trial(
     if trial_result is None:
         raise typer.Exit(code=2)
 
-    has_trajectory = detect_trajectory_in_dir(trial_dir)
     spec_payload = trial_result_to_import_spec(
         trial_result,
-        has_trajectory=has_trajectory,
-        total_steps=extract_total_steps_from_dir(trial_dir),
+        has_trajectory=detect_trajectory(trial_dir),
+        artifact_dir=trial_dir,
     )
 
     init = _call_trial_import_init(
