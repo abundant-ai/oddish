@@ -195,6 +195,7 @@ async def test_retry_preserves_is_probe(monkeypatch):
             self.task_version_id = "task-probe-v1"
             self.experiment_id = "exp-probe"
             self.org_id = None
+            self.billed_user_id = None
             self.agent = "nop"
             self.provider = "local"
             self.queue_key = "nop"

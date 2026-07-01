@@ -125,6 +125,7 @@ async def retry_trial_core(
         task_version_id=old_trial.task_version_id,
         experiment_id=old_trial.experiment_id,
         org_id=old_trial.org_id,
+        billed_user_id=old_trial.billed_user_id,
         agent=old_trial.agent,
         provider=old_trial.provider,
         queue_key=old_trial.queue_key,

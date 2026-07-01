@@ -537,11 +537,16 @@ async def create_task_sweep(
         _apply_github_attribution(submission)
         await _apply_user_run_probe_default(session, submission, auth)
 
+        billed_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
                 session,
                 submission=submission,
                 org_id=auth.org_id,
+                billed_user_id=billed_user_id,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -553,10 +558,7 @@ async def create_task_sweep(
             # skip the owner-stamping / publish side effects below.
             return TaskResponse.model_validate(replay.response_json)
 
-        owner_user_id = await _resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
+        _stamp_experiment_owner(experiment, billed_user_id, claim_unowned=not is_append)
 
         if not is_append:
             created_by_user_id = await _resolve_created_by_user_id(
@@ -631,6 +633,11 @@ async def create_task_sweep_batch(
         elif experiment and submission.publish_experiment:
             await ensure_experiment_public(session, experiment)
 
+    async def _resolve_billed(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> str | None:
+        return await _resolve_experiment_owner_user_id(session, submission, auth)
+
     async with get_session() as session:
         results = await create_task_sweep_batch_core(
             session,
@@ -639,6 +646,7 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
+            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 

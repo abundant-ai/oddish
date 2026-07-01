@@ -72,6 +72,7 @@ async def create_task_sweep_core(
     *,
     submission: TaskSweepSubmission,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -288,6 +289,7 @@ async def create_task_sweep_core(
             task=task,
             submission=expanded,
             experiment_id=new_experiment_id,
+            billed_user_id=billed_user_id,
         )
 
         # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
@@ -303,7 +305,11 @@ async def create_task_sweep_core(
 
         if task.run_probe:
             await maybe_enqueue_auto_probe(
-                session, task=task, experiment=experiment, org_id=org_id
+                session,
+                task=task,
+                experiment=experiment,
+                org_id=org_id,
+                billed_user_id=billed_user_id,
             )
         if (
             reservation is not None
@@ -346,7 +352,11 @@ async def create_task_sweep_core(
 
     try:
         task = await create_task(
-            session, expanded, task_id=submission.task_id, org_id=org_id
+            session,
+            expanded,
+            task_id=submission.task_id,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
         )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -414,6 +424,9 @@ async def create_task_sweep_batch_core(
         ]
         | None
     ) = None,
+    resolve_billed_user_id: (
+        Callable[[AsyncSession, TaskSweepSubmission], Awaitable[str | None]] | None
+    ) = None,
 ) -> list[TaskSweepBatchItemResult]:
     """Create several task sweeps in one transaction, best-effort.
 
@@ -450,10 +463,14 @@ async def create_task_sweep_batch_core(
                 item_default_env = default_environment
                 if prepare is not None:
                     item_default_env = await prepare(session, submission)
+                item_billed_user_id = None
+                if resolve_billed_user_id is not None:
+                    item_billed_user_id = await resolve_billed_user_id(session, submission)
                 task, new_trials, is_append, experiment = await create_task_sweep_core(
                     session,
                     submission=submission,
                     org_id=org_id,
+                    billed_user_id=item_billed_user_id,
                     default_environment=item_default_env,
                     allowed_environments=allowed_environments,
                 )

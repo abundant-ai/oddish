@@ -687,6 +687,12 @@ class TrialModel(TimestampedMixin, Base):
     # -------------------------------------------------------------------------
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    # Denormalized payer for per-user daily quota accounting. String, NOT a
+    # ForeignKey -- users live in the backend package, so a cross-package FK
+    # would break OSS installs. NULL means this trial's cost draws down nobody's
+    # quota (imported/combined rows). Stamped at creation in the billable paths.
+    billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     # Idempotency key for preventing duplicate processing of retried jobs
     idempotency_key: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True, index=True
@@ -864,6 +870,15 @@ class TrialModel(TimestampedMixin, Base):
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
+        # Per-user daily spend SUM: WHERE org_id, billed_user_id, finished_at >=
+        # start_of_today AND deleted_at IS NULL. Partial to match that predicate.
+        Index(
+            "idx_trials_org_billed_user_finished",
+            "org_id",
+            "billed_user_id",
+            "finished_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index(
             "idx_trials_org_experiment_created_at",
             "org_id",
