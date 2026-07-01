@@ -25,7 +25,7 @@ from auth import (
 )
 from oddish.config import settings
 from models import UserModel, UserRole
-from oddish.core.quotas import start_of_today_utc, sum_cost_usd
+from oddish.core.quotas import start_of_today_utc, sum_cost_usd, to_money_decimal
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import TrialModel, get_session, utcnow
 
@@ -179,7 +179,7 @@ async def list_member_quotas(
             .group_by(TrialModel.billed_user_id)
         )
         used_usd_by_user_id = {
-            billed_user_id: Decimal(str(settled_total)).quantize(Decimal("0.0001"))
+            billed_user_id: to_money_decimal(settled_total)
             for billed_user_id, settled_total in grouped_usage.all()
         }
 

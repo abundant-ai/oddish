@@ -8,6 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import TrialModel
 
+MONEY_QUANTUM = Decimal("0.0001")
+
+
+def to_money_decimal(raw_amount) -> Decimal:
+    return Decimal(str(raw_amount or 0)).quantize(MONEY_QUANTUM)
+
 
 def start_of_today_utc(now: datetime | None = None) -> datetime:
     current_instant = now or datetime.now(timezone.utc)
@@ -28,4 +34,4 @@ async def sum_cost_usd(
             TrialModel.deleted_at.is_(None),
         )
     )
-    return Decimal(str(settled_cost_total or 0)).quantize(Decimal("0.0001"))
+    return to_money_decimal(settled_cost_total)
