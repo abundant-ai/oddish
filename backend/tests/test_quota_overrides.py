@@ -159,6 +159,22 @@ async def test_put_null_clears_override_back_to_default(org_with_member):
 
 @requires_db
 @pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_limit", ["100000000", "-5.00", "0", "3.123456"])
+async def test_put_rejects_out_of_range_or_negative_limit(org_with_member, invalid_limit):
+    org_id, admin_user, member_a = org_with_member
+    app = create_app()
+    try:
+        async with _admin_client(app, org_id, admin_user) as client:
+            response = await client.put(
+                f"/quotas/{member_a.id}", json={"limit_usd": invalid_limit}
+            )
+            assert response.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_put_cross_org_user_is_404(org_with_member):
     org_id, admin_user, _member_a = org_with_member
     other_org_id = f"org_other_{uuid.uuid4().hex[:8]}"
