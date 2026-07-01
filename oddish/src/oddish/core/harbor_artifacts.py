@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -143,7 +143,10 @@ def _extract_token_cost_totals(
 ) -> tuple[int | None, int | None, int | None, float | None]:
     compute_totals = getattr(trial_result, "compute_token_cost_totals", None)
     if callable(compute_totals):
-        return compute_totals()
+        return cast(
+            tuple[int | None, int | None, int | None, float | None],
+            compute_totals(),
+        )
 
     context = getattr(trial_result, "agent_result", None)
     is_empty = getattr(context, "is_empty", None)
