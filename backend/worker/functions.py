@@ -60,9 +60,14 @@ from modal_app import (
 )
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
-from oddish.db import close_database_connections, WorkerJobKind
+from oddish.db import close_database_connections, get_session, WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.queue.cleanup import cleanup_orphaned_queue_state
+from oddish.workers.queue.concurrency_controller import (
+    get_advisory_limits,
+    merge_advisory_over_static,
+    recompute_advisory_limits,
+)
 from oddish.workers.queue.slots import (
     acquire_queue_slot,
     cleanup_stale_queue_slots,
@@ -108,6 +113,30 @@ _POST_SUCCESS_HOOKS: PostSuccessHooks = {
 }
 
 
+async def _effective_model_concurrency(queue_key: str) -> int:
+    """The concurrency limit to enforce for one ``queue_key``: the static limit,
+    overlaid with the fresh advisory when dynamic concurrency is on.
+
+    This is the SAME number ``poll_queue`` uses to size the spawn plan, so the
+    worker's ``queue_slots`` lease can't cap the advisory below what the dispatcher
+    planned (nor let the dispatcher over-spawn above the slot pool). Best-effort:
+    a stale/missing/errored advisory decays to the static value, and with the flag
+    off it IS the static value -- so default behavior is unchanged.
+    """
+    static = settings.get_model_concurrency(queue_key)
+    if static <= 0 or not settings.dynamic_model_concurrency:
+        return static
+    try:
+        async with get_session() as session:
+            advisory_limits = await get_advisory_limits(session)
+        return merge_advisory_over_static({queue_key: static}, advisory_limits).get(
+            queue_key, static
+        )
+    except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+        console.print(f"[yellow]Advisory limit unavailable ({queue_key}): {e}[/yellow]")
+        return static
+
+
 async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> None:
     """Acquire a slot, claim + run ONE ``worker_jobs`` row of this variant.
 
@@ -145,7 +174,7 @@ async def _run_one_job(queue_key: str, harbor_variant_id: str = "default") -> No
             console.print(f"[dim]Modal function call: {fc_id}[/dim]")
         await configure_storage_paths()
 
-        queue_limit = settings.get_model_concurrency(queue_key)
+        queue_limit = await _effective_model_concurrency(queue_key)
         if queue_limit <= 0:
             console.print(
                 f"[dim]Queue limit is {queue_limit} (queue_key={queue_key}), exiting[/dim]"
@@ -368,6 +397,19 @@ async def reconcile_queue_state():
             phase_errors.append(f"owner_backfill: {e}")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
 
+        # Recompute the self-tuning per-model concurrency advisory (default off).
+        # A defensive phase like the others: a failure logs and is swallowed so
+        # the rest of the reconcile sweep still runs, and the static limits stay
+        # the fallback.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory = await recompute_advisory_limits(session)
+                summary["advisory_limits_updated"] = len(advisory)
+            except Exception as e:  # noqa: BLE001 - best-effort phase
+                phase_errors.append(f"concurrency_controller: {e}")
+                console.print(f"[yellow]Concurrency controller skipped: {e}[/yellow]")
+
         # Persist a heartbeat the admin dashboard reads back. Keep only
         # non-zero counters so the payload stays legible.
         await record_queue_runtime_status(
@@ -501,6 +543,19 @@ async def poll_queue():
             queue_key: settings.get_model_concurrency(queue_key)
             for queue_key in queue_keys
         }
+        # Single injection point for the self-tuning controller: when enabled,
+        # overlay the fresh per-queue advisory limit on the static one (a stale,
+        # missing, or errored advisory decays to the static value). Best-effort:
+        # a read failure must never block dispatch.
+        if settings.dynamic_model_concurrency:
+            try:
+                async with get_session() as session:
+                    advisory_limits = await get_advisory_limits(session)
+                concurrency_limits = merge_advisory_over_static(
+                    concurrency_limits, advisory_limits
+                )
+            except Exception as e:  # noqa: BLE001 - advisory read is best-effort
+                console.print(f"[yellow]Advisory limits unavailable: {e}[/yellow]")
 
         # Per-queue_key summary (aggregated across orgs + variants) is still the
         # useful operator-facing view; running sums across variants (the shared
