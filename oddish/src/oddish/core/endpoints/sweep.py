@@ -112,7 +112,7 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
-    from oddish.core.quota_admission import admit_trials
+    from oddish.core.quota_admission import admit_submission_trials
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
     # from the caller's raw pre-mutation snapshot when supplied (the backend
@@ -285,9 +285,7 @@ async def create_task_sweep_core(
         expanded = build_task_submission_from_sweep(
             append_submission, task_path=task.task_path, trials=trials
         )
-        await admit_trials(
-            session, org_id, billed_user_id, count=len(expanded.trials)
-        )
+        await admit_submission_trials(session, org_id, billed_user_id, expanded)
         new_trials = await append_trials_to_task(
             session,
             task=task,
@@ -354,7 +352,7 @@ async def create_task_sweep_core(
         submission, task_path=task_path, trials=trials
     )
 
-    await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+    await admit_submission_trials(session, org_id, billed_user_id, expanded)
 
     try:
         task = await create_task(

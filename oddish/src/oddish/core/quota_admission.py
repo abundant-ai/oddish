@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +13,9 @@ from oddish.core.quotas import (
     start_of_today_utc,
     sum_cost_usd,
 )
+
+if TYPE_CHECKING:
+    from oddish.schemas import TaskSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +69,7 @@ async def admit_trials(
     count: int,
 ) -> None:
     mode = settings.quota_mode
-    if mode == QuotaMode.OFF:
-        return
-    if org_id is None:
-        return
-    if count <= 0:
+    if mode == QuotaMode.OFF or org_id is None or count <= 0:
         return
 
     if billed_user_id is None:
@@ -92,3 +92,12 @@ async def admit_trials(
         _log_would_block(
             org_id, billed_user_id, used_usd, effective_limit_usd, reason="over_budget"
         )
+
+
+async def admit_submission_trials(
+    session: AsyncSession,
+    org_id: str | None,
+    billed_user_id: str | None,
+    submission: "TaskSubmission",
+) -> None:
+    await admit_trials(session, org_id, billed_user_id, count=len(submission.trials))
