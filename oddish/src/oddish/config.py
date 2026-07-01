@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from decimal import Decimal
 from typing import ClassVar
 
 from pydantic import Field, model_validator
@@ -854,6 +855,8 @@ class Settings(BaseSettings):
 
     # Worker behavior
     auto_start_workers: bool = True
+
+    pending_trial_reservation_usd: Decimal = Decimal("0.50")
 
     # Incident mitigation (2026-06): the workers' Bedrock credentials cannot run
     # inference -- the bearer token returns 400 "Operation not allowed" and the
