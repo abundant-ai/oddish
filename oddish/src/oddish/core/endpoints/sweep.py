@@ -125,6 +125,7 @@ async def create_task_sweep_core(
         build_task_submission_from_sweep,
     )
     from oddish.queue import (
+        _ensure_not_collection_target,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
@@ -223,6 +224,7 @@ async def create_task_sweep_core(
             experiment = await get_experiment_by_id_or_name(
                 session, submission.experiment_id, org_id
             )
+            _ensure_not_collection_target(experiment)
             if not experiment:
                 experiment = await get_or_create_experiment(
                     session, submission.experiment_id, org_id

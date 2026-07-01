@@ -14,10 +14,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.core.endpoints import create_task_sweep_core
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, generate_id
 from oddish.queue import create_task
-from oddish.schemas import TaskSubmission, TrialSpec
+from oddish.schemas import AgentModelPair, TaskSubmission, TaskSweepSubmission, TrialSpec
 
 
 def _task(name: str, *, org_id: str = "org1") -> TaskModel:
@@ -131,3 +132,76 @@ async def test_run_into_normal_experiment_still_succeeds(session):
     await session.flush()
 
     assert task.id is not None
+
+
+def _sweep_append(task_id: str, *, experiment_id: str) -> TaskSweepSubmission:
+    return TaskSweepSubmission(
+        task_id=task_id,
+        append_to_task=True,
+        experiment_id=experiment_id,
+        configs=[AgentModelPair(agent="nop", model=None, n_trials=1)],
+        user="test",
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_append_into_collection_rejected(session):
+    """Regression for Fix 1: ``oddish run <task> --experiment <collection_id>``
+    goes through ``/tasks/sweep`` (append branch), not ``create_task`` directly.
+    Gathering into a collection leaves the trial's parent task intact, so the
+    append branch's auto-detect fires and must be guarded too."""
+    task = _task("reject-collection-sweep-task-1")
+    session.add(task)
+    await session.flush()
+
+    home = _experiment("reject-collection-sweep-home-1")
+    session.add(home)
+    await session.flush()
+
+    t1 = _trial(task, home, org_id="org1")
+    session.add(t1)
+    await session.flush()
+
+    coll = await create_trial_collection_core(
+        session, name="reject-collection-sweep-1", trial_ids=[t1.id], org_id="org1"
+    )
+    await session.flush()
+
+    with pytest.raises(ValueError) as exc_info:
+        await create_task_sweep_core(
+            session,
+            submission=_sweep_append(task.id, experiment_id=coll.id),
+            org_id="org1",
+        )
+
+    assert "collection" in str(exc_info.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_sweep_append_into_normal_experiment_still_succeeds(session):
+    """Control: a normal (non-collection) sweep-append still works."""
+    task = _task("reject-collection-sweep-task-2")
+    session.add(task)
+    await session.flush()
+
+    home = _experiment("reject-collection-sweep-home-2")
+    session.add(home)
+    await session.flush()
+
+    t1 = _trial(task, home, org_id="org1")
+    session.add(t1)
+    await session.flush()
+
+    target = _experiment("reject-collection-sweep-target-2")
+    session.add(target)
+    await session.flush()
+
+    _, new_trials, is_append, experiment = await create_task_sweep_core(
+        session,
+        submission=_sweep_append(task.id, experiment_id=target.id),
+        org_id="org1",
+    )
+
+    assert is_append is True
+    assert len(new_trials) == 1
+    assert experiment is not None and experiment.id == target.id
