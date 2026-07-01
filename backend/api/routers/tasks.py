@@ -697,6 +697,11 @@ async def list_experiment_task_shells(
         )
 
 
+# NOTE (temporary): no-op touch to force a backend diff on this push so the PR
+# preview redeploys the preview backend and Vercel targets it (a frontend-only
+# follow-up push otherwise re-points the preview to prod — see
+# claude-doc/worklogs/preview-vercel-backend-pointing.md). Safe to remove once the
+# Phase 1.2-lite aggregate filters are verified on the preview environment.
 @router.get("/tasks/browse", response_model=TaskBrowseResponse)
 async def browse_tasks(
     request: Request,
