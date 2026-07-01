@@ -68,12 +68,15 @@ const NUMRANGE_FIELD: Record<string, [keyof FilterValues, keyof FilterValues]> =
     avgScore: ["avgScoreMin", "avgScoreMax"],
     totalTokens: ["totalTokensMin", "totalTokensMax"],
     runtime: ["runtimeTotalMin", "runtimeTotalMax"],
+    runtimeAvg: ["runtimeAvgMin", "runtimeAvgMax"],
   };
 
 // "num" (≥ N) filter key -> the single min field it writes.
 const NUM_FIELD: Record<string, keyof FilterValues> = {
   minAttempts: "minAttempts",
   totalTrials: "totalTrialsMin",
+  completedTrials: "completedTrialsMin",
+  failedTrials: "failedTrialsMin",
   passCount: "passCountMin",
   partialCount: "partialCountMin",
   failCount: "failCountMin",
@@ -199,6 +202,9 @@ export function TasksFilterSidebar() {
       case "runtime":
         set({ runtimeTotalMin: null, runtimeTotalMax: null });
         break;
+      case "runtimeAvg":
+        set({ runtimeAvgMin: null, runtimeAvgMax: null });
+        break;
       case "hasLink":
       case "hasError":
       case "hasTrajectory":
@@ -210,6 +216,8 @@ export function TasksFilterSidebar() {
         break;
       case "minAttempts":
       case "totalTrials":
+      case "completedTrials":
+      case "failedTrials":
       case "passCount":
       case "partialCount":
       case "failCount":
