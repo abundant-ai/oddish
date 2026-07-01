@@ -1,14 +1,4 @@
-"""add users.github_id
-
-Adds the immutable Clerk ``provider_user_id`` (TEXT) so owner resolution can
-survive ``github_username`` renames/recycles. Org-scoped unique + index for the
-lookup; NULLs are distinct in Postgres, so existing all-NULL rows never collide
-(no global unique). Idempotent so a create_all-built preview replays cleanly.
-
-Revision ID: g1h2i3j4k5l6
-Revises: s5t6u7v8w9x0
-Create Date: 2026-06-30 00:00:00.000000
-"""
+"""add users.github_id"""
 
 from typing import Sequence, Union
 
@@ -42,8 +32,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_org_github_id"
-    )
+    op.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_org_github_id")
     op.execute("DROP INDEX IF EXISTS idx_users_org_github_id")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS github_id")

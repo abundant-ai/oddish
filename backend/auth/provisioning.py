@@ -26,8 +26,6 @@ _DEFAULT_JIT_ROLE = (
 
 @dataclass(frozen=True)
 class ClerkGithubIdentity:
-    # github_id = Clerk provider_user_id (immutable numeric id as a STRING);
-    # survives github_username renames/recycles.
     username: str | None
     email: str | None
     github_id: str | None
@@ -38,21 +36,21 @@ def _github_account_from_clerk_payload(data: dict) -> ClerkGithubIdentity:
     for account in external_accounts:
         if account.get("provider") != "oauth_github":
             continue
-        username = account.get("username") or None
-        email = (
-            account.get("email_address")
-            or account.get("email")
-            or account.get("primary_email_address")
+        return ClerkGithubIdentity(
+            username=account.get("username") or None,
+            email=(
+                account.get("email_address")
+                or account.get("email")
+                or account.get("primary_email_address")
+            ),
+            github_id=account.get("provider_user_id") or None,
         )
-        github_id = account.get("provider_user_id") or None
-        return ClerkGithubIdentity(username=username, email=email, github_id=github_id)
     return ClerkGithubIdentity(None, None, None)
 
 
 async def fetch_github_identity_from_clerk(
     clerk_user_id: str,
 ) -> ClerkGithubIdentity:
-    """Return the GitHub identity (username, email, github_id) from Clerk."""
     if not CLERK_SECRET_KEY:
         return ClerkGithubIdentity(None, None, None)
 
@@ -78,21 +76,10 @@ async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
 async def _set_github_id_if_absent(
     session: AsyncSession | None, user: UserModel, github_id: str | None
 ) -> None:
-    """Set user.github_id from Clerk only when currently None. Never overwrite a
-    differing existing id. Collision-safe: github_id is org-unique
-    (uq_users_org_github_id); a value already claimed by another org member is
-    skipped (fail-open), never crashes provisioning."""
     if not github_id or user.github_id:
         return
     if session is not None:
-        # Match the constraint scope exactly: uq_users_org_github_id spans EVERY
-        # row in the org — active or not, AND soft-deleted. UserModel is
-        # soft-delete-registered, so an ordinary ORM query auto-filters
-        # `deleted_at IS NULL`; include_deleted=True lifts that so a tombstoned
-        # holder is still detected (else it IntegrityErrors at commit). Residual:
-        # a concurrent provisioning of the same github_id can still race past this
-        # pre-check — accepted (near-impossible: needs one GitHub account on two
-        # Clerk users in one org; robust reject is deferred to plan Q19).
+        # Match uq_users_org_github_id scope, including soft-deleted rows.
         clash = await session.execute(
             select(UserModel.id)
             .where(UserModel.org_id == user.org_id)
@@ -174,11 +161,7 @@ async def _refresh_user_github_identity(
     if not user.clerk_user_id:
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    # Skip the Clerk call whenever the handle is already known — do NOT add a
-    # hot-path Clerk GET just to backfill github_id (that would storm Clerk on
-    # every login of an un-backfilled user). github_id is captured opportunistically
-    # below only when we already fetch (new / handle-less users); G5 is the durable
-    # batch backfill for existing handle-having users.
+    # Avoid a hot-path Clerk GET just to backfill github_id.
     if user.github_username and isinstance(raw.get("refreshed_at"), str):
         return
     if user.github_username:
@@ -204,7 +187,6 @@ async def ensure_user_github_identity(
     session: AsyncSession,
     user: UserModel,
 ) -> None:
-    """Refresh ``github_username`` from Clerk when missing (one API call)."""
     if not user.clerk_user_id or user.github_username:
         return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)

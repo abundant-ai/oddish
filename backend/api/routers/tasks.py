@@ -147,8 +147,6 @@ def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
     if submission.github_username:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_username", submission.github_username)
-    # Carry github_id as metadata so it survives transport; resolution/precedence
-    # is G4's job, not here.
     if submission.github_id:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_id", submission.github_id)
@@ -239,12 +237,6 @@ async def _lookup_user_by_github_username(
     github_username: str,
     org_id: str,
 ) -> UserModel | None:
-    """The exactly-one connection predicate shared by owner resolution and the
-    linkage endpoint: a handle resolves to a user only when a single active org
-    member carries it. Zero or 2+ (ambiguous) active matches both resolve to
-    None — never an error — so a duplicated handle is a graceful no-owner, not a
-    500. Reuses the plural query for identical normalization/org-scope/active.
-    """
     users = await _lookup_users_by_github_username(
         session, github_username=github_username, org_id=org_id
     )
@@ -284,13 +276,6 @@ async def _lookup_user_by_github_id(
     github_id: str,
     org_id: str,
 ) -> UserModel | None:
-    """Exact-one, org-scoped, active-only lookup by immutable github_id.
-
-    github_id is org-unique (``uq_users_org_github_id``) so there is at most
-    one active match. No ``@``-strip / case-fold — github_id is an exact
-    immutable id string, not a handle — but a bare ``.strip()`` guards against
-    surrounding whitespace and treats empty/whitespace as no match.
-    """
     normalized = (github_id or "").strip()
     if not normalized:
         return None
@@ -311,13 +296,6 @@ async def _resolve_connected_user(
     github_id: str | None,
     github_username: str | None,
 ) -> UserModel | None:
-    """Shared connection predicate for owner resolution AND the linkage endpoint
-    (predicate parity, INV2). The immutable github_id wins over the mutable
-    handle: try the org-scoped exact-one github_id lookup first, and only fall
-    back to the exact-one github_username lookup when github_id is absent or
-    unmatched. Both call sites MUST route through here so 'resolvable owner'
-    (/tasks/sweep) and 'connected?' (endpoint) stay the identical predicate.
-    """
     if github_id:
         user = await _lookup_user_by_github_id(
             session, github_id=github_id, org_id=org_id
@@ -336,7 +314,6 @@ async def _resolve_created_by_user_id(
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> str | None:
-    """Who submitted the task (API key owner wins for CI/service accounts)."""
     if auth.api_key_id:
         api_key = auth.api_key
         if api_key is None:
@@ -365,10 +342,7 @@ async def _resolve_experiment_owner_user_id(
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> str | None:
-    """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
     if submission.github_id or submission.github_username:
-        # github_id (immutable) beats the mutable handle via the shared resolver
-        # (predicate parity with the linkage endpoint).
         user = await _resolve_connected_user(
             session,
             org_id=auth.org_id,
@@ -377,8 +351,6 @@ async def _resolve_experiment_owner_user_id(
         )
         if user:
             return user.id
-        # Explicit github identity with no linked org member: leave owner unset so
-        # the legacy primary-task Mine filter can match the github tag.
         return None
 
     if auth.user_id:

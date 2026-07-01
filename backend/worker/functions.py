@@ -368,8 +368,7 @@ async def reconcile_queue_state():
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
 
         try:
-            # Bounded per cycle so a large first-run backlog spreads across
-            # reconciles instead of one long throttled pass; drains to a no-op.
+            # Bounded so the first-run backlog spreads across reconciles.
             gid_counts = (await backfill_github_id(max_users=200)).as_dict()
             summary.update({k: int(v) for k, v in gid_counts.items()})
             if any(gid_counts.values()):

@@ -73,11 +73,7 @@ def compute_request_hash(submission: Any) -> str:
     defaulting), so the original and its faithful retry fingerprint identically.
     """
     data = submission.model_dump(mode="json")
-    # github_id was added after launch; a submission that doesn't use it must
-    # fingerprint identically to its pre-github_id form, or an in-flight
-    # Idempotency-Key retried across the deploy boundary would see a changed
-    # hash and spuriously 409. Drop only the unset case (set values stay,
-    # so a key reused with a different github_id still conflicts correctly).
+    # Keep unset github_id stable across the deploy boundary.
     if data.get("github_id") is None:
         data.pop("github_id", None)
     return _canonical_digest(data)
