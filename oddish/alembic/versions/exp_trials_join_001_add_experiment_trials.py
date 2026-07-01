@@ -4,7 +4,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "exp_trials_join_001"
-down_revision = "exp_owner_link_001"
+down_revision = "merge_mca01_wjtoken_heads"
 branch_labels = None
 depends_on = None
 
