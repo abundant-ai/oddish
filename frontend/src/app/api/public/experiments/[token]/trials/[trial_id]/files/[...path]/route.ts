@@ -3,14 +3,16 @@ import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
   _request: Request,
-  { params }: { params: Promise<{ trial_id: string; path: string[] }> },
+  {
+    params,
+  }: { params: Promise<{ token: string; trial_id: string; path: string[] }> },
 ) {
   try {
-    const { trial_id, path } = await params;
+    const { token, trial_id, path } = await params;
     const filePath = path.join("/");
     const url = getBackendUrl(
-      "public/trials",
-      `/${trial_id}/files/${filePath}`,
+      "public/experiments",
+      `/${token}/trials/${trial_id}/files/${filePath}`,
     );
 
     const res = await fetch(url, { cache: "no-store" });
