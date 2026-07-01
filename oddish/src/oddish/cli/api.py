@@ -1024,6 +1024,14 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
     )
 
     if response.status_code != 200:
+        if response.status_code in (402, 403):
+            try:
+                over_budget_message = response.json().get("message")
+            except Exception:
+                over_budget_message = None
+            if over_budget_message:
+                error_console.print(f"[red]{over_budget_message}[/red]")
+                raise typer.Exit(1)
         error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
         raise typer.Exit(1)
 
