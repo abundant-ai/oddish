@@ -25,8 +25,8 @@ class GitHubLinkageResponse(BaseModel):
 
 
 async def _fetch_clerk_github_username(clerk_user_id: str) -> str | None:
-    username, _email = await fetch_github_identity_from_clerk(clerk_user_id)
-    return username
+    # G4 will also consume identity.github_id here; today only the username.
+    return (await fetch_github_identity_from_clerk(clerk_user_id)).username
 
 
 async def _refresh_org_github_handles(session: AsyncSession, *, org_id: str) -> None:
