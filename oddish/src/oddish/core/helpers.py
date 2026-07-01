@@ -10,7 +10,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from harbor.models.environment_type import EnvironmentType
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,6 +83,17 @@ def _resolve_trial_cost(
     if estimated is None:
         return None, None
     return estimated, True
+
+
+def _has_fetchable_trajectory(trial: TrialModel) -> bool:
+    if trial.has_trajectory:
+        return True
+    # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
+    # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
+    return (
+        (trial.agent or "").strip().lower() == "grok-build"
+        and trial.finished_at is not None
+    )
 
 
 _ANALYSIS_SUMMARY_UNSET = object()
@@ -446,7 +456,7 @@ def build_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=trial.analysis,
         analysis_error=trial.analysis_error,
@@ -518,7 +528,7 @@ def build_compact_trial_response(
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         phase_timing=trial.phase_timing,
-        has_trajectory=trial.has_trajectory,
+        has_trajectory=_has_fetchable_trajectory(trial),
         analysis_status=trial.analysis_status,
         analysis=resolved_analysis_summary,
         analysis_error=None,
@@ -1254,10 +1264,11 @@ async def cancel_job_by_worker(
     """Best-effort terminate the remote sandbox backing a hanging job.
 
     Dispatches on the worker's ``provider`` (``"modal"`` / ``"daytona"``,
-    matching ``harbor``'s ``provider_name``) and tears down the sandbox
-    identified by ``external_id``. Cancellation paths call this for rows
-    they have already marked terminal in the DB, so it never raises into
-    the caller -- failures are logged and reported via the return value.
+    matching ``harbor``'s ``provider_name``) to the registered
+    ``ExecutionBackend`` and tears down the sandbox identified by
+    ``external_id``. Cancellation paths call this for rows they have already
+    marked terminal in the DB, so it never raises into the caller -- failures
+    are logged by the backend and reported via the return value.
 
     Returns ``True`` when a terminate/delete call was issued successfully,
     ``False`` when there was nothing to do or the teardown failed.
@@ -1265,53 +1276,18 @@ async def cancel_job_by_worker(
     if not provider or not external_id:
         return False
 
-    try:
-        env_type = EnvironmentType(provider.lower())
-    except ValueError:
+    from oddish.runtime.registry import get_backend
+
+    backend = get_backend(provider)
+    if backend is None:
         logger.warning(
-            "cancel_job_by_worker: unknown provider %r (external_id=%s)",
+            "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
             provider,
             external_id,
         )
         return False
 
-    try:
-        # import would crash every one of those processes; importing here
-        # keeps the teardown deps confined to the worker context that
-        # actually has them installed.
-        if env_type == EnvironmentType.MODAL:
-            import modal
-
-            sandbox = await modal.Sandbox.from_id.aio(external_id)
-            await sandbox.terminate.aio()
-        elif env_type == EnvironmentType.DAYTONA:
-            from daytona import AsyncDaytona
-
-            client = AsyncDaytona()
-            try:
-                sandbox = await client.get(external_id)
-                await client.delete(sandbox)
-            finally:
-                await client.close()
-        else:
-            logger.warning(
-                "cancel_job_by_worker: no teardown for provider %r (external_id=%s)",
-                provider,
-                external_id,
-            )
-            return False
-    except Exception:
-        # Hanging-sandbox cleanup is best-effort: the DB row is already terminal.
-        # Don't raise an exception, log and let the provider's auto-stop / TTL be backstop.
-        logger.exception(
-            "cancel_job_by_worker: failed to terminate %s sandbox %s",
-            provider,
-            external_id,
-        )
-        return False
-
-    logger.info("cancel_job_by_worker: terminated %s sandbox %s", provider, external_id)
-    return True
+    return await backend.teardown(external_id)
 
 
 def escape_like(needle: str) -> str:
