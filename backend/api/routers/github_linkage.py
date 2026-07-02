@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import Counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.routers.task_submission import resolve_connected_user
@@ -84,17 +85,65 @@ async def _apply_org_identities(
     """Apply the fetched identities SEQUENTIALLY on a short write session (an
     AsyncSession is not safe for concurrent ops). Re-pulls github_username and
     backfills github_id only when absent (collision-safe via the shared helper —
-    never overwrites a differing existing id)."""
+    never overwrites a differing existing id).
+
+    Two-phase so a renamed/recycled handle never ends up on two active members
+    (the exact-one resolver would then resolve nobody): first DEMOTE every
+    other active org member the resolver's handle scope would match — GitHub
+    handles are unique, so Clerk reporting a handle for one member makes any
+    other holder stale — then adopt. Two phases also settle intra-batch swaps.
+    A handle claimed by MORE than one batch identity (rename+reclaim landing
+    between their Clerk fetches) is no-information: excluded from both phases,
+    stored values kept, next refresh settles it once Clerk agrees. Deliberate
+    fail-closed: while Clerk keeps contradicting itself (e.g. case-variants of
+    one handle on two records) the handle — and any stored duplicate — stays
+    contested; the true owner is unknowable and winner-picking risks
+    misattribution. The demote phase self-heals the moment either record
+    corrects and the handle is uncontested again.
+    """
     if not identities:
         return
-    result = await session.execute(
-        select(UserModel).where(UserModel.id.in_(list(identities)))
+    claim_counts = Counter(
+        identity.username.lower()
+        for identity in identities.values()
+        if identity.username
     )
-    for user in result.scalars().all():
+    contested = {handle for handle, count in claim_counts.items() if count > 1}
+    users = (
+        (await session.execute(select(UserModel).where(UserModel.id.in_(list(identities)))))
+        .scalars()
+        .all()
+    )
+    for user in users:
+        identity = identities.get(user.id)
+        if (
+            identity is None
+            or not identity.username
+            or identity.username.lower() in contested
+        ):
+            continue
+        # Mirrors lookup_users_by_github_username's scope: same org, active,
+        # case-insensitive handle (deleted rows are auto-filtered).
+        await session.execute(
+            update(UserModel)
+            .where(
+                UserModel.id != user.id,
+                UserModel.org_id == user.org_id,
+                UserModel.is_active == True,  # noqa: E712
+                func.lower(UserModel.github_username) == identity.username.lower(),
+            )
+            .values(github_username=None)
+            .execution_options(synchronize_session="fetch")
+        )
+    for user in users:
         identity = identities.get(user.id)
         if identity is None:
             continue
-        if identity.username and identity.username != user.github_username:
+        if (
+            identity.username
+            and identity.username.lower() not in contested
+            and identity.username != user.github_username
+        ):
             user.github_username = identity.username
         await _set_github_id_if_absent(session, user, identity.github_id)
 
