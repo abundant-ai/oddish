@@ -11,7 +11,14 @@ from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import APIKeyModel, APIKeyScope, OrganizationModel, UserRole, hash_api_key
+from models import (
+    APIKeyModel,
+    APIKeyScope,
+    OrganizationModel,
+    UserModel,
+    UserRole,
+    hash_api_key,
+)
 from oddish.db import utcnow
 
 from auth.types import AuthMethod
@@ -51,6 +58,7 @@ class CachedAuthData:
     user_email: str | None = None
     user_role: UserRole | None = None
     api_key_id: str | None = None
+    api_key_created_by_role: str | None = None
     scope: APIKeyScope = APIKeyScope.FULL
 
 
@@ -236,7 +244,7 @@ async def verify_clerk_jwt(token: str) -> dict:
 async def verify_api_key(
     session: AsyncSession,
     raw_key: str,
-) -> tuple[APIKeyModel, OrganizationModel] | None:
+) -> tuple[APIKeyModel, OrganizationModel, UserModel | None] | None:
     """
     Verify an API key and return the key + org if valid.
 
@@ -274,7 +282,14 @@ async def verify_api_key(
     if org is None:
         return None
 
+    creator = None
+    if api_key.created_by_user_id:
+        creator_result = await session.execute(
+            select(UserModel).where(UserModel.id == api_key.created_by_user_id)
+        )
+        creator = creator_result.scalar_one_or_none()
+
     # Update last_used_at
     api_key.last_used_at = utcnow()
 
-    return api_key, org
+    return api_key, org, creator
