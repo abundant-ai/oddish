@@ -13,6 +13,7 @@ import { ChevronDown, FileText, Filter, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Popover,
   PopoverContent,
@@ -113,11 +114,14 @@ export function TasksFilterSidebar() {
   // Facets are fetched client-side once so a router.refresh() of the task
   // results never reloads the filter options. revalidateOnFocus stays off and
   // there's no interval, so this loads a single time per mount.
-  const { data: facetsData } = useSWR<TaskBrowseFacets>(
-    "/api/tasks/browse/facets",
-    fetcher,
-    { revalidateOnFocus: false }
-  );
+  const {
+    data: facetsData,
+    error: facetsError,
+    isLoading: facetsLoading,
+    mutate: mutateFacets,
+  } = useSWR<TaskBrowseFacets>("/api/tasks/browse/facets", fetcher, {
+    revalidateOnFocus: false,
+  });
   const facets = facetsData ?? null;
 
   const router = useRouter();
@@ -340,6 +344,9 @@ export function TasksFilterSidebar() {
               values={values}
               set={set}
               facets={facets}
+              facetsLoading={facetsLoading}
+              facetsError={Boolean(facetsError)}
+              onRetryFacets={() => mutateFacets()}
               onRemove={def.pinned ? undefined : () => clearKey(def.key)}
             />
           ))}
@@ -395,12 +402,18 @@ function FilterGroup({
   values,
   set,
   facets,
+  facetsLoading,
+  facetsError,
+  onRetryFacets,
   onRemove,
 }: {
   def: FilterDef;
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
   facets: TaskBrowseFacets | null;
+  facetsLoading: boolean;
+  facetsError: boolean;
+  onRetryFacets: () => void;
   onRemove?: () => void;
 }) {
   return (
@@ -418,9 +431,66 @@ function FilterGroup({
           </button>
         ) : null}
       </div>
-      <FilterControl def={def} values={values} set={set} facets={facets} />
+      <FilterControl
+        def={def}
+        values={values}
+        set={set}
+        facets={facets}
+        facetsLoading={facetsLoading}
+        facetsError={facetsError}
+        onRetryFacets={onRetryFacets}
+      />
     </div>
   );
+}
+
+// Placeholder shown in place of a facet-backed control while its options load.
+// Matches the h-8 control height so the sidebar layout doesn't shift on arrival.
+function ControlSkeleton({ rows = 1 }: { rows?: number }) {
+  return (
+    <div className="space-y-1.5">
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} className="h-8 w-full" />
+      ))}
+    </div>
+  );
+}
+
+// Shown when a facet/tag fetch fails: a short note plus a Retry that revalidates
+// the relevant SWR key.
+function ControlError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-muted-foreground text-xs">Couldn’t load options.</p>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-7 w-full text-xs"
+        onClick={onRetry}
+      >
+        Retry
+      </Button>
+    </div>
+  );
+}
+
+// Controls whose options come from the /api/tasks/browse/facets fetch. These show
+// a skeleton (or an error+retry) while that fetch is in flight/failed, so an
+// opened dropdown never flashes a misleading "No options" during load.
+function controlNeedsFacets(def: FilterDef): boolean {
+  return (
+    Boolean(def.facet) ||
+    def.control === "agentmodel" ||
+    def.control === "compare" ||
+    def.control === "top"
+  );
+}
+
+// Rough height of each facet-backed control, so its skeleton reserves the same
+// space (single-row popover buttons vs. the taller multi-row compare/top forms).
+function controlSkeletonRows(def: FilterDef): number {
+  return def.control === "compare" || def.control === "top" ? 3 : 1;
 }
 
 function FilterControl({
@@ -428,12 +498,24 @@ function FilterControl({
   values,
   set,
   facets,
+  facetsLoading,
+  facetsError,
+  onRetryFacets,
 }: {
   def: FilterDef;
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
   facets: TaskBrowseFacets | null;
+  facetsLoading: boolean;
+  facetsError: boolean;
+  onRetryFacets: () => void;
 }) {
+  if (controlNeedsFacets(def)) {
+    if (facetsError && !facets)
+      return <ControlError onRetry={onRetryFacets} />;
+    if (facetsLoading && !facets)
+      return <ControlSkeleton rows={controlSkeletonRows(def)} />;
+  }
   switch (def.control) {
     case "multiselect":
       return (
@@ -592,15 +674,23 @@ function TagsControl({
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
-  const { data } = useSWR<TagListResponse>("/api/tags", fetcher, {
-    revalidateOnFocus: false,
-  });
+  const { data, error, isLoading, mutate } = useSWR<TagListResponse>(
+    "/api/tags",
+    fetcher,
+    { revalidateOnFocus: false }
+  );
   const tags = useMemo(
     () => (data?.items ?? []).filter((t) => t.state === "ACTIVE"),
     [data]
   );
   const [mode, setMode] = useState<"all" | "any" | "none">("all");
   const [search, setSearch] = useState("");
+
+  // Mirror the facet-backed controls: skeleton while the tags fetch is in
+  // flight, error + Retry on failure — never the bare "No tags" empty state
+  // during load.
+  if (error && !data) return <ControlError onRetry={() => mutate()} />;
+  if (isLoading && !data) return <ControlSkeleton rows={2} />;
 
   const field: keyof FilterValues =
     mode === "all" ? "tagsAll" : mode === "any" ? "tagsAny" : "tagsNone";
