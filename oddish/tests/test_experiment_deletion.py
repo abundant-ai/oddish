@@ -115,6 +115,7 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
             "experiments": 1,
         },
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
 

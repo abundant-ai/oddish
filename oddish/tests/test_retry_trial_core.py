@@ -180,6 +180,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         "trial_id": "task-1-1",
         "superseded_trial_id": "task-1-0",
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     event_names = [event[0] for event in events]
     assert event_names.index("add") < event_names.index("flush")

@@ -106,7 +106,14 @@ async def retry_trial_core(
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> dict:
-    """Create a new trial that replaces an old one."""
+    """Create a new trial that replaces an old one.
+
+    POST-COMMIT CONTRACT: the superseded run's remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller must run ``oddish.core.helpers.terminate_run_harvest(result)``
+    after commit or the containers leak until provider TTL (the worker's
+    superseded-branch harvest and the reaper remain backstops).
+    """
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     old_trial = await session.get(TrialModel, old_trial.id)
     if old_trial is None:
@@ -252,11 +259,12 @@ async def retry_trial_core(
         text(
             """
             WITH to_cancel AS (
-                SELECT id, modal_function_call_id
+                SELECT id, modal_function_call_id, provider, external_id
                 FROM   worker_jobs
                 WHERE  subject_table = 'trials'
                   AND  subject_id = :trial_id
                   AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
                 FOR UPDATE
             )
             UPDATE worker_jobs w
@@ -269,12 +277,20 @@ async def retry_trial_core(
                    payload = payload - 'registry_auth_enc'
             FROM   to_cancel
             WHERE  w.id = to_cancel.id
-            RETURNING to_cancel.modal_function_call_id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"trial_id": trial_id},
     )
-    modal_fc_ids = [str(fc) for (fc,) in cancelled_jobs if fc]
+    modal_fc_ids: list[str] = []
+    worker_targets: set[tuple[str, str]] = set()
+    for fc, provider, external_id in cancelled_jobs:
+        if fc:
+            modal_fc_ids.append(str(fc))
+        if provider and external_id:
+            worker_targets.add((str(provider), str(external_id)))
 
     if task.status in (
         TaskStatus.ANALYZING,
@@ -334,6 +350,7 @@ async def retry_trial_core(
         "trial_id": new_trial_id,
         "superseded_trial_id": trial_id,
         "modal_function_call_ids": modal_fc_ids,
+        "worker_targets": sorted(worker_targets),
     }
 
 

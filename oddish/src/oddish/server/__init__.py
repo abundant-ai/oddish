@@ -548,6 +548,11 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
             detail="Couldn't cancel right now (database error). Please retry.",
         ) from exc
 
+    # Post-commit: terminate the harvested FC ids + sandbox targets.
+    from oddish.core.helpers import terminate_run_harvest
+
+    modal_cancelled = await terminate_run_harvest(result)
+
     return {
         "status": "cancelled",
         "task_ids": result.get("task_ids", []),
@@ -555,7 +560,7 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
         "tasks_found": result.get("tasks_found", 0),
         "tasks_cancelled": result.get("tasks_cancelled", 0),
         "trials_cancelled": result.get("trials_cancelled", 0),
-        "modal_calls_cancelled": 0,
+        "modal_calls_cancelled": modal_cancelled,
     }
 
 
@@ -564,7 +569,9 @@ async def cancel_tasks(payload: TaskBatchCancelRequest):
 # Removing a row over the network — even gated behind admin auth — is
 # never the right answer; if something needs to go, an operator runs
 # ``delete_{task,experiment,trial}_core`` from the CLI / a one-off
-# script. Previews running against clones of prod data make this
+# script — and then ``oddish.core.helpers.terminate_run_harvest(result)``
+# after commit, or the deleted runs' containers leak until provider TTL.
+# Previews running against clones of prod data make this
 # especially load-bearing: a stray DELETE in preview would target
 # the same prod S3 bucket.
 
@@ -666,7 +673,10 @@ async def retry_trial(
             trial_id=trial_id,
             registry_auth=(payload.registry_auth if payload else None),
         )
-    result.pop("modal_function_call_ids", None)
+    # Post-commit: terminate the superseded run's harvested handles.
+    from oddish.core.helpers import terminate_run_harvest
+
+    await terminate_run_harvest(result)
     return result
 
 

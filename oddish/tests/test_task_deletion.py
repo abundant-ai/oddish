@@ -85,6 +85,7 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
         "s3_prefixes": [],
         "deleted": {"task_id": "task-123"},
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
 
