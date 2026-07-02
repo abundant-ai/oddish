@@ -642,12 +642,53 @@ async def test_precedence_github_id_beats_stale_handle(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_precedence_falls_back_to_handle_when_id_unmatched(org_with_users):
-    """G4: when github_id has no match, resolution falls back to the exact-one
-    handle lookup (back-compat for id set on nobody)."""
+async def test_strict_supplied_id_unmatched_does_not_fall_back_to_handle(org_with_users):
+    """Strict resolve: a supplied github_id with no id match resolves to None even
+    when the handle matches a user — the id-only predicate is the linkage gate."""
+    org_id, add = org_with_users
+    await add("alice")
+    assert await _resolve(org_id, "alice", github_id="gid_nobody") is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_strict_supplied_id_linked_resolves_by_id(org_with_users):
+    """Strict resolve (a): a supplied github_id with an exact id match resolves to
+    that user, ignoring any handle."""
     org_id, add = org_with_users
     alice = await add("alice")
-    assert await _resolve(org_id, "alice", github_id="gid_nobody") == alice.id
+    await _set_github_id(alice, "gid_alice")
+    assert await _resolve(org_id, "wrong_handle", github_id="gid_alice") == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_strict_no_id_resolves_by_handle(org_with_users):
+    """Strict resolve (c): with no github_id supplied, resolution uses the exact-one
+    handle lookup as before."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    assert await _resolve(org_id, "alice") == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_strict_no_id_duplicated_handle_resolves_to_none(org_with_users):
+    """Strict resolve (d): no github_id, two users share the handle → None."""
+    org_id, add = org_with_users
+    await add("twin")
+    await add("twin")
+    assert await _resolve(org_id, "twin") is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_strict_empty_string_id_treated_as_absent(org_with_users):
+    """Strict resolve (e): an empty-string github_id is treated as absent, so
+    resolution falls through to the handle lookup."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    assert await _resolve(org_id, "alice", github_id="") == alice.id
 
 
 @requires_db

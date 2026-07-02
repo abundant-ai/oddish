@@ -154,11 +154,9 @@ async def _resolve_connected_user(
     github_username: str | None,
 ) -> UserModel | None:
     if github_id:
-        user = await _lookup_user_by_github_id(
+        return await _lookup_user_by_github_id(
             session, github_id=github_id, org_id=org_id
         )
-        if user is not None:
-            return user
     if github_username:
         return await _lookup_user_by_github_username(
             session, github_username=github_username, org_id=org_id
