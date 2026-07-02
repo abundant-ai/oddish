@@ -47,6 +47,7 @@ from oddish.core.endpoints import (
     rerun_task_qa_core,
     unlink_task_from_experiment_core,
 )
+from oddish.core.helpers import terminate_run_harvest
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -309,6 +310,21 @@ async def create_task_sweep_batch(
         apply_github_attribution(submission)
         return get_default_cloud_environment(submission)
 
+    # Owner resolved once in the pre-loop (inside _resolve_billed) and reused
+    # by _finalize -- same single-resolution shape as the single route.
+    owners: dict[int, str | None] = {}
+
+    async def _resolve_billed(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> str | None:
+        owner_user_id = await resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        owners[id(submission)] = owner_user_id
+        return await resolve_billed_user_id(
+            session, submission, auth, owner_user_id=owner_user_id
+        )
+
     async def _finalize(
         session: AsyncSession,
         submission: TaskSweepSubmission,
@@ -317,9 +333,7 @@ async def create_task_sweep_batch(
         experiment: ExperimentModel | None,
     ) -> None:
         # Post-create stamping, inside the savepoint (mirrors the single route).
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
+        owner_user_id = owners.get(id(submission))
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
             created_by_user_id = await resolve_created_by_user_id(
@@ -340,9 +354,7 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=lambda session, submission: resolve_billed_user_id(
-                session, submission, auth
-            ),
+            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 
@@ -917,9 +929,7 @@ async def delete_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.pop("modal_function_call_ids", [])
-    )
+    modal_cancelled = await terminate_run_harvest(result)
     return result | {"modal_calls_cancelled": modal_cancelled}
 
 
@@ -949,9 +959,7 @@ async def unlink_task_from_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.pop("modal_function_call_ids", [])
-    )
+    modal_cancelled = await terminate_run_harvest(result)
     return result | {"modal_calls_cancelled": modal_cancelled}
 
 
@@ -1100,9 +1108,8 @@ async def cancel_tasks(
             detail="Couldn't cancel right now (database error). Please retry.",
         ) from exc
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.get("modal_function_call_ids", [])
-    )
+    # Post-commit: terminate the harvested FC ids + sandbox targets.
+    modal_cancelled = await terminate_run_harvest(result)
 
     return {
         "status": "cancelled",

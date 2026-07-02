@@ -148,6 +148,10 @@ class PreparedTrialRun:
     trial_model: str
     trial_environment: str | None
     trial_harbor_config: dict | None
+    # trials.attempts captured at claim time: the attempt THIS run produces,
+    # threaded into settlement so redeliveries gate on the producing attempt.
+    # Required: a constructor that skipped it would silently bypass the gate.
+    trial_attempt: int
     # Fields for sauron S3 mirror
     task_name: str = ""
     experiment_id: str = ""
@@ -537,6 +541,7 @@ async def _prepare_trial_run(
             attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
             org_id=trial.org_id,
+            trial_attempt=trial.attempts,
         )
 
 
@@ -626,6 +631,7 @@ async def _store_trial_results(
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
+    outcome_attempt: int | None = None,
 ) -> None:
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
         session,
@@ -657,7 +663,7 @@ async def _store_trial_results(
                 "outcome cost only[/dim]"
             )
             if outcome:
-                apply_settled_cost(trial, outcome)
+                apply_settled_cost(trial, outcome, outcome_attempt=outcome_attempt)
             return
         if not await _worker_still_owns_trial(
             session, trial, worker_id=worker_id, worker_job_id=worker_job_id
@@ -690,7 +696,7 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
-            apply_settled_cost(trial, outcome)
+            apply_settled_cost(trial, outcome, outcome_attempt=outcome_attempt)
 
             trial.phase_timing = outcome.phase_timing
 
@@ -815,7 +821,7 @@ async def _handle_harbor_event(
                 ):
                     console.print(
                         f"[dim]Trial {trial_id} event {event.value} ignored "
-                        "(superseded)[/dim]"
+                        "(superseded/deleted)[/dim]"
                     )
                     return
                 if not await _worker_still_owns_trial(
@@ -836,7 +842,7 @@ async def _handle_harbor_event(
             if trial.superseded_by_trial_id is not None or trial.deleted_at is not None:
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
-                    "(superseded)[/dim]"
+                    "(superseded/deleted)[/dim]"
                 )
                 return
             if not await _worker_still_owns_trial(
@@ -1285,6 +1291,7 @@ async def run_trial_job(
                 probe_analysis=probe_analysis,
                 worker_id=worker_id,
                 worker_job_id=worker_job_id,
+                outcome_attempt=prepared_trial.trial_attempt,
             )
         )
     finally:

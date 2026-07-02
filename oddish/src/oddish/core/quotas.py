@@ -83,19 +83,6 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     ]
 
 
-async def inflight_count(
-    session: AsyncSession, org_id: str | None, billed_user_id: str
-) -> int:
-    return int(
-        await session.scalar(
-            select(func.count())
-            .select_from(TrialModel)
-            .where(*_inflight_predicates(org_id, billed_user_id))
-        )
-        or 0
-    )
-
-
 async def inflight_reserved_usd(
     session: AsyncSession, org_id: str | None, billed_user_id: str
 ) -> Decimal:

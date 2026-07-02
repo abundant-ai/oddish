@@ -148,6 +148,7 @@ async def test_unlink_tombstones_link_and_scoped_trials_only(_patched_side_effec
         },
         "unlinked": True,
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
     # Verdict cache cleared because the live trial set shrank.

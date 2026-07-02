@@ -499,6 +499,11 @@ async def cleanup_orphaned_queue_state(
                         session, row
                     )
             except _DomainRowLocked:
+                console.print(
+                    f"metric=worker_job_stale_reap_deferred id={stale_job_id} "
+                    f"subject={row['subject_table']}/{row['subject_id']} "
+                    "reason=domain_row_locked (retrying next sweep)"
+                )
                 continue
 
             if row["new_status"] == "RETRYING":
@@ -513,18 +518,6 @@ async def cleanup_orphaned_queue_state(
                 stale_trial_ids.append(committed_trial_id)
 
         await session.flush()
-
-        # Kill the orphaned sandboxes whose workers crashed
-        # Best-effort and concurrent: a dead sandbox can't block the rest of the reap,
-        # and the provider's auto-stop / auto-delete TTL is backstop if this fails.
-        if worker_targets:
-            results = await asyncio.gather(
-                *(
-                    cancel_job_by_worker(provider, external_id)
-                    for provider, external_id in worker_targets
-                )
-            )
-            worker_sandboxes_terminated = sum(1 for ok in results if ok)
 
         # Trigger stage transitions for tasks whose trials just got
         # failed, in case the failure marks the task "all trials done"
@@ -893,6 +886,19 @@ async def cleanup_orphaned_queue_state(
 
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
+
+    # Kill the orphaned sandboxes whose workers crashed. Runs AFTER the outer
+    # commit: a rolled-back sweep must never leave RUNNING rows pointing at
+    # sandboxes we already destroyed. Best-effort and concurrent; the
+    # provider's auto-stop / auto-delete TTL is the backstop.
+    if worker_targets:
+        results = await asyncio.gather(
+            *(
+                cancel_job_by_worker(provider, external_id)
+                for provider, external_id in worker_targets
+            )
+        )
+        worker_sandboxes_terminated = sum(1 for ok in results if ok)
 
     # Display-hygiene clear of terminal-trial claim metadata runs *after* the
     # main reconciliation transaction commits, in its own batched / SKIP-LOCKED

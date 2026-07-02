@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -11,7 +10,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
@@ -82,9 +80,13 @@ async def cancel_tasks_runs(
 
     The cancel path walks ``worker_jobs`` (single UPDATE covers trial /
     analysis / verdict kinds uniformly) and then mirrors the terminal
-    state back onto the domain rows for live-UI visibility. Modal
-    function call ids are harvested from the cancelled rows so callers
-    can terminate the remote containers.
+    state back onto the domain rows for live-UI visibility.
+
+    POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` and
+    ``worker_targets`` are RETURNED, not terminated here -- a rollback must
+    never leave live rows pointing at destroyed containers. The caller
+    (route or OSS operator invoking this directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit.
     """
     requested_task_ids = list(dict.fromkeys(task_ids))
     if not requested_task_ids:
@@ -95,6 +97,7 @@ async def cancel_tasks_runs(
             "tasks_cancelled": 0,
             "trials_cancelled": 0,
             "modal_function_call_ids": [],
+            "worker_targets": [],
         }
 
     query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
@@ -276,16 +279,6 @@ async def cancel_tasks_runs(
 
     await session.flush()
 
-    sandboxes_terminated = 0
-    if worker_targets:
-        results = await asyncio.gather(
-            *(
-                cancel_job_by_worker(provider, external_id)
-                for provider, external_id in worker_targets
-            )
-        )
-        sandboxes_terminated = sum(1 for ok in results if ok)
-
     return {
         "task_ids": found_task_ids,
         "not_found_task_ids": not_found_task_ids,
@@ -293,7 +286,7 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
-        "sandboxes_terminated": sandboxes_terminated,
+        "worker_targets": sorted(worker_targets),
     }
 
 

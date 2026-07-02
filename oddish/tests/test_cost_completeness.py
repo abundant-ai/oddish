@@ -229,14 +229,35 @@ def test_cancel_floor_replaced_by_late_real_outcome(monkeypatch):
 
 def test_same_attempt_outcome_redelivery_settles_once(monkeypatch):
     """At-least-once redelivery: the second delivery of the SAME attempt's
-    outcome must not re-accumulate (cost_settled_attempt gates it)."""
+    outcome must not re-accumulate (gated on the producing attempt)."""
     monkeypatch.setattr(trial_cost, "estimate_cost_usd", lambda *a, **k: None)
     trial = _billable_trial(cost_usd=3.0, attempts=2)
     outcome = _outcome(reward=1.0, cost_usd=0.80)
 
-    apply_settled_cost(trial, outcome)
+    apply_settled_cost(trial, outcome, outcome_attempt=2)
     assert trial.cost_usd == pytest.approx(3.80)
-    apply_settled_cost(trial, outcome)  # redelivery
+    apply_settled_cost(trial, outcome, outcome_attempt=2)  # redelivery
+    assert trial.cost_usd == pytest.approx(3.80)
+    assert trial.cost_settled_attempt == 2
+
+
+def test_stale_prior_attempt_redelivery_never_blocks_current_attempt(monkeypatch):
+    """A stale redelivery of attempt-1's outcome arriving DURING attempt 2 must
+    be skipped (its attempt is already settled) and must not stamp the marker
+    forward -- attempt-2's own outcome still settles afterwards."""
+    monkeypatch.setattr(trial_cost, "estimate_cost_usd", lambda *a, **k: None)
+    trial = _billable_trial(cost_usd=None, attempts=1)
+
+    apply_settled_cost(trial, _outcome(reward=None, cost_usd=3.0), outcome_attempt=1)
+    assert trial.cost_usd == pytest.approx(3.0)
+
+    trial.attempts = 2  # re-claimed for attempt 2
+    # Stale attempt-1 redelivery mid-attempt-2: skipped, marker stays at 1.
+    apply_settled_cost(trial, _outcome(reward=None, cost_usd=3.0), outcome_attempt=1)
+    assert trial.cost_usd == pytest.approx(3.0)
+    assert trial.cost_settled_attempt == 1
+
+    apply_settled_cost(trial, _outcome(reward=1.0, cost_usd=0.80), outcome_attempt=2)
     assert trial.cost_usd == pytest.approx(3.80)
     assert trial.cost_settled_attempt == 2
 
@@ -269,6 +290,7 @@ async def test_two_attempt_costs_accumulate_across_reclaim(monkeypatch):
         outcome=_outcome(reward=None, error="transient boom", cost_usd=3.00),
         trial_s3_key=None,
         execution_error=None,
+        outcome_attempt=1,
     )
     assert trial.status == TrialStatus.RETRYING
     assert trial.cost_usd == pytest.approx(3.00)
@@ -280,6 +302,7 @@ async def test_two_attempt_costs_accumulate_across_reclaim(monkeypatch):
         modal_function_call_id=None,
     )
     assert prepared is not None
+    assert prepared.trial_attempt == 2  # producing attempt captured at claim
     assert trial.attempts == 2
     assert trial.cost_usd == pytest.approx(3.00)  # re-claim must NOT clear it
 
@@ -288,6 +311,7 @@ async def test_two_attempt_costs_accumulate_across_reclaim(monkeypatch):
         outcome=_outcome(reward=1.0, cost_usd=0.80),
         trial_s3_key=None,
         execution_error=None,
+        outcome_attempt=prepared.trial_attempt,
     )
     assert trial.status == TrialStatus.SUCCESS
     assert trial.cost_usd == pytest.approx(3.80)
@@ -395,11 +419,13 @@ async def test_deleted_trial_late_outcome_replaces_floor(monkeypatch):
         execution_error=None,
         worker_id="w-1",
         worker_job_id="wj-1",
+        outcome_attempt=1,  # production shape: the claim-time producing attempt
     )
 
     assert deleted_trial.cost_usd == 4.0
     assert deleted_trial.status == TrialStatus.FAILED
     assert deleted_trial.finished_at == "already-set-by-delete-writer"
+    assert deleted_trial.cost_settled_attempt == 1
 
 
 # --- S1-T2: a tokens-only success persists an estimate, not NULL ---------------
@@ -579,7 +605,8 @@ async def _seed_retryable_trial(
 
     retry_trial_core does session.get(TrialModel, ...) + a raw-SQL CAS UPDATE
     that a SimpleNamespace can't satisfy, so the retry-supersede floor is
-    exercised against live rows. Returns (task_id, old_trial_id) and registers
+    exercised against live rows. Returns (task_id, old_trial_id, experiment_id)
+    and registers
     an ON DELETE CASCADE teardown that clears the committed rows.
     """
     suffix = uuid.uuid4().hex[:8]
@@ -644,6 +671,8 @@ async def test_retry_supersede_floors_old_trial_cost(monkeypatch, session):
         subject_table="trials",
         subject_id=old_trial_id,
         modal_function_call_id="fc-stuck-123",
+        provider="daytona",
+        external_id="sb-stuck-123",
     )
     session.add(stuck_job)
     await session.commit()
@@ -665,6 +694,7 @@ async def test_retry_supersede_floors_old_trial_cost(monkeypatch, session):
         # The superseded trial's live worker job surrenders its Modal function
         # call id so the route can terminate the remote container.
         assert result["modal_function_call_ids"] == ["fc-stuck-123"]
+        assert result["worker_targets"] == [("daytona", "sb-stuck-123")]
 
         superseded = await session.get(TrialModel, old_trial_id)
         await session.refresh(superseded)
@@ -686,6 +716,26 @@ async def test_retry_supersede_floors_old_trial_cost(monkeypatch, session):
             )
         )
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_classifier_skips_deleted_trial(monkeypatch):
+    """The analysis claim must not burn LLM spend on a tombstoned trial
+    (_trial_session is include_deleted for every worker caller now)."""
+    from contextlib import asynccontextmanager
+
+    import oddish.workers.queue.analysis_handler as analysis_handler
+
+    deleted_trial = _billable_trial(deleted_at="2026-07-02", analysis_status=None)
+
+    @asynccontextmanager
+    async def fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
+        yield object(), deleted_trial
+
+    monkeypatch.setattr(analysis_handler, "_trial_session", fake_trial_session)
+
+    assert await analysis_handler.classify_trial_and_store("trial-1") is None
+    assert deleted_trial.analysis_status is None  # never marked RUNNING
 
 
 # --- M3: retry x deletion races must not strand an unclaimable reservation -----
@@ -829,7 +879,11 @@ async def test_deleting_active_billable_trial_settles_before_tombstone(
 
         from sqlalchemy import text as sa_text
 
-        from oddish.core.quotas import inflight_count, start_of_today_utc, sum_cost_usd
+        from oddish.core.quotas import (
+            inflight_reserved_usd,
+            start_of_today_utc,
+            sum_cost_usd,
+        )
 
         row = (
             await session.execute(
@@ -848,7 +902,7 @@ async def test_deleting_active_billable_trial_settles_before_tombstone(
         # Settled spend keeps counting; the reservation is gone.
         settled = await sum_cost_usd(session, org_id, billed_user, start_of_today_utc())
         assert float(settled) == pytest.approx(reservation_floor_usd)
-        assert await inflight_count(session, org_id, billed_user) == 0
+        assert float(await inflight_reserved_usd(session, org_id, billed_user)) == 0
     finally:
         await session.rollback()
         from oddish.db import WorkerJobModel as _WJ
@@ -911,7 +965,11 @@ async def test_deleting_experiment_settles_all_active_billable_trials(
 
         from sqlalchemy import text as sa_text
 
-        from oddish.core.quotas import inflight_count, start_of_today_utc, sum_cost_usd
+        from oddish.core.quotas import (
+            inflight_reserved_usd,
+            start_of_today_utc,
+            sum_cost_usd,
+        )
 
         rows = (
             await session.execute(
@@ -931,7 +989,7 @@ async def test_deleting_experiment_settles_all_active_billable_trials(
 
         settled = await sum_cost_usd(session, org_id, billed_user, start_of_today_utc())
         assert float(settled) == pytest.approx(2 * reservation_floor_usd)
-        assert await inflight_count(session, org_id, billed_user) == 0
+        assert float(await inflight_reserved_usd(session, org_id, billed_user)) == 0
     finally:
         await session.rollback()
         await session.execute(
@@ -940,6 +998,101 @@ async def test_deleting_experiment_settles_all_active_billable_trials(
         await session.execute(
             ExperimentModel.__table__.delete().where(
                 ExperimentModel.id == experiment_id
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_experiment_delete_keeps_jobs_of_tasks_alive_via_other_experiments(
+    monkeypatch, session
+):
+    """B3: a task linked to E1 AND E2 (with live E2 trials) must keep its
+    task-level QA/VERDICT jobs when E1 is deleted -- only dying tasks lose them."""
+    from sqlalchemy import text as sa_text
+
+    monkeypatch.setattr(trial_cost, "estimate_cost_usd", lambda *a, **k: None)
+    suffix = uuid.uuid4().hex[:6]
+    org_id = f"org-b3-{suffix}"
+    task_id, e1_trial_id, e1_id = await _seed_retryable_trial(
+        session,
+        org_id=org_id,
+        status=TrialStatus.RUNNING,
+        cost_usd=None,
+        error_message=None,
+    )
+    e2_id = f"exp-b3b-{suffix}"
+    session.add(ExperimentModel(id=e2_id, name=e2_id, org_id=org_id))
+    e2_trial_id = f"{task_id}-1"
+    session.add(
+        TrialModel(
+            id=e2_trial_id,
+            name=e2_trial_id,
+            task_id=task_id,
+            experiment_id=e2_id,
+            org_id=org_id,
+            agent="codex",
+            provider="openai",
+            queue_key="openai/gpt-5",
+            model="gpt-5",
+            is_probe=False,
+            max_attempts=6,
+            attempts=0,
+            status=TrialStatus.QUEUED,
+        )
+    )
+    await session.flush()
+    for eid in (e1_id, e2_id):
+        await session.execute(
+            sa_text(
+                "INSERT INTO task_experiments (task_id, experiment_id, created_at) "
+                "VALUES (:t, :e, NOW()) ON CONFLICT DO NOTHING"
+            ),
+            {"t": task_id, "e": eid},
+        )
+    from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus
+
+    session.add(
+        WorkerJobModel(
+            kind=WorkerJobKind.QA,
+            status=WorkerJobStatus.RUNNING,
+            queue_key="qa",
+            subject_table="tasks",
+            subject_id=task_id,
+        )
+    )
+    await session.commit()
+
+    try:
+        await endpoints.delete_experiment_core(
+            session, experiment_id=e1_id, org_id=org_id
+        )
+
+        job_status = await session.scalar(
+            sa_text(
+                "SELECT status::text FROM worker_jobs "
+                "WHERE subject_table = 'tasks' AND subject_id = :tid"
+            ),
+            {"tid": task_id},
+        )
+        assert job_status == "RUNNING"  # task survives via E2 -> job untouched
+        task_deleted_at = await session.scalar(
+            sa_text("SELECT deleted_at FROM tasks WHERE id = :tid"), {"tid": task_id}
+        )
+        assert task_deleted_at is None
+    finally:
+        await session.rollback()
+        await session.execute(
+            WorkerJobModel.__table__.delete().where(
+                WorkerJobModel.subject_id == task_id
+            )
+        )
+        await session.execute(
+            TaskModel.__table__.delete().where(TaskModel.id == task_id)
+        )
+        await session.execute(
+            ExperimentModel.__table__.delete().where(
+                ExperimentModel.id.in_([e1_id, e2_id])
             )
         )
         await session.commit()
