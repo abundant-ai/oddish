@@ -100,10 +100,18 @@ async def backfill_github_id(
                     # Non-definitive Clerk answer (error / unset key): retry next
                     # run, stamp nothing.
                     summary.failed += 1
+                    cause = (
+                        repr(exc)
+                        if exc is not None
+                        else "no identity (secret unset / transient / non-github); "
+                        "see prior 'Failed to fetch Clerk user' warning if logged"
+                    )
                     logger.warning(
-                        "github_id backfill: Clerk fetch failed for user %s: %s",
+                        "github_id backfill: Clerk fetch failed for user %s "
+                        "(clerk_user_id=%s): %s",
                         user.id,
-                        exc,
+                        user.clerk_user_id,
+                        cause,
                     )
                     continue
                 if not identity.github_id:

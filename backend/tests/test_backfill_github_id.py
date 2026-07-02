@@ -415,6 +415,66 @@ async def test_fetch_errors_not_stamped_and_rescanned(monkeypatch) -> None:
         await _purge(org_id)
 
 
+@requires_db
+@pytest.mark.asyncio
+async def test_identity_none_failure_logs_cause_not_bare_none(monkeypatch, caplog) -> None:
+    """The dominant non-exception failure mode (Clerk returns None: unset secret /
+    transient / non-github) must log a real cause + clerk_user_id, not the
+    misleading 'Clerk fetch failed for user X: None' that leaves on-call blind."""
+    import logging
+
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk(monkeypatch, {user.clerk_user_id: None})
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        with caplog.at_level(logging.WARNING, logger="backfill_github_id"):
+            summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert summary.failed >= 1
+        failures = [
+            r for r in caplog.records if "Clerk fetch failed" in r.message
+        ]
+        assert failures, "expected a Clerk-fetch-failed log record"
+        rendered = failures[0].getMessage()
+        assert user.clerk_user_id in rendered
+        assert not rendered.rstrip().endswith(": None")
+        assert "no identity" in rendered
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_exception_failure_still_logs_exception(monkeypatch, caplog) -> None:
+    """When an exception escapes the fetch, the log still carries the exception
+    repr (not the identity-None cause) so genuine crashes stay diagnosable."""
+    import logging
+
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+
+    async def _boom(_clerk_user_id: str) -> ClerkGithubIdentity:
+        raise RuntimeError("clerk kaboom")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _boom)
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        with caplog.at_level(logging.WARNING, logger="backfill_github_id"):
+            summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert summary.failed >= 1
+        failures = [r for r in caplog.records if "Clerk fetch failed" in r.message]
+        assert failures
+        rendered = failures[0].getMessage()
+        assert "clerk kaboom" in rendered
+        assert user.clerk_user_id in rendered
+    finally:
+        await _purge(org_id)
+
+
 def _stale_marker() -> str:
     stale = datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
     return stale.isoformat()
