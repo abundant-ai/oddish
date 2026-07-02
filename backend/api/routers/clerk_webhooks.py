@@ -10,6 +10,12 @@ from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from svix import Webhook, WebhookVerificationError
 
+from auth.provisioning import (
+    _github_account_from_clerk_payload,
+    _mark_github_id_checked,
+    _seed_attribution_cache_from_github,
+    _set_github_id_if_absent,
+)
 from models import OrganizationModel, UserModel, UserRole, generate_id
 from oddish.db import get_session, utcnow
 
@@ -166,6 +172,37 @@ async def _upsert_user(
     return user
 
 
+async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None:
+    clerk_user_id = data.get("id")
+    if not clerk_user_id:
+        return
+    identity = _github_account_from_clerk_payload(data)
+    result = await session.execute(
+        select(UserModel)
+        .where(UserModel.clerk_user_id == clerk_user_id)
+        .where(UserModel.is_active == True)  # noqa: E712
+    )
+    for user in result.scalars().all():
+        try:
+            if identity.username and identity.username != user.github_username:
+                user.github_username = identity.username
+            await _set_github_id_if_absent(session, user, identity.github_id)
+            if identity.username or identity.email:
+                _seed_attribution_cache_from_github(
+                    user,
+                    github_username=identity.username or user.github_username,
+                    github_email=identity.email,
+                )
+            if not identity.github_id:
+                _mark_github_id_checked(user)
+        except Exception:
+            logger.exception(
+                "Failed to sync github_id for user %s (clerk %s)",
+                user.id,
+                clerk_user_id,
+            )
+
+
 def _verify_clerk_webhook(payload: bytes, headers: dict[str, Any]) -> dict[str, Any]:
     if not CLERK_WEBHOOK_SECRET:
         raise HTTPException(
@@ -192,6 +229,11 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
     data = event.get("data") or {}
 
     async with get_session() as session:
+        if event_type in {"user.created", "user.updated"}:
+            await _sync_github_id_from_user_event(session, data)
+            await session.commit()
+            return {"status": "ok"}
+
         if event_type in {"organization.created", "organization.updated"}:
             clerk_org_id = data.get("id")
             if not clerk_org_id:
