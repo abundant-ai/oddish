@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.experiment_membership import gathered_trial_ids_select
@@ -94,58 +94,14 @@ async def list_public_experiments(
     limit: int = 100,
     offset: int = 0,
 ) -> list[PublicExperimentListItem]:
-    """List all public experiments for dataset browsing."""
-    async with get_session() as session:
-        task_counts = (
-            select(
-                task_experiments.c.experiment_id.label("experiment_id"),
-                func.count(func.distinct(task_experiments.c.task_id)).label(
-                    "task_count"
-                ),
-            )
-            .select_from(
-                task_experiments.join(
-                    TaskModel,  # type: ignore[arg-type]
-                    TaskModel.id == task_experiments.c.task_id,
-                )
-            )
-            .where(
-                task_experiments.c.deleted_at.is_(None),
-                TaskModel.deleted_at.is_(None),
-            )
-            .group_by(task_experiments.c.experiment_id)
-            .subquery()
-        )
+    """Do not enumerate public share links.
 
-        query = (
-            select(
-                ExperimentModel.id,
-                ExperimentModel.name,
-                ExperimentModel.public_token,
-                ExperimentModel.created_at,
-                func.coalesce(task_counts.c.task_count, 0).label("task_count"),
-            )
-            .outerjoin(task_counts, task_counts.c.experiment_id == ExperimentModel.id)
-            .where(ExperimentModel.is_public == True)  # noqa: E712
-            .where(ExperimentModel.public_token.is_not(None))
-            .order_by(ExperimentModel.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        result = await session.execute(query)
-        rows = result.all()
-
-        return [
-            PublicExperimentListItem(
-                id=row.id,
-                name=row.name,
-                public_token=row.public_token,
-                task_count=int(row.task_count or 0),
-                created_at=row.created_at.isoformat(),
-            )
-            for row in rows
-            if row.public_token
-        ]
+    Direct ``/public/experiments/{public_token}`` lookups remain available for
+    users who already have a link, but the unauthenticated list endpoint must
+    not disclose share tokens.
+    """
+    _ = (limit, offset)
+    return []
 
 
 @router.get(
