@@ -12,7 +12,7 @@
 
 - Deployed server is **`backend/`** (`api.app:create_app`). The secondary `oddish/src/oddish/server/` is out of scope.
 - Shared core lives in `oddish/src/oddish/core/endpoints/collections.py`; schemas in `oddish/src/oddish/schemas.py`.
-- Selection filter (must match `ls`'s `latest_trials`): `(task_id, task_version_id) == (task.id, task.current_version_id)`, `superseded_by_trial_id IS NULL`, `status IN {SUCCESS, FAILED}`, `is_probe IS NOT TRUE`, `org_id == org_id`.
+- Selection filter: `(task_id, task_version_id) == (task.id, task.current_version_id)`, `superseded_by_trial_id IS NULL`, `status IN {SUCCESS, FAILED}` (terminal only — like `combine`; a **stricter subset** than `ls`'s `latest_trials`, which also shows running/pending), `is_probe IS NOT TRUE`, `org_id == org_id`.
 - Collections are **reference-based** (link via `experiment_trials` / `task_experiments`); never copy trial rows or artifacts.
 - Additive only: `trial_ids`-only callers, `combine`, and `experiment create` must behave exactly as before.
 - Publish is CLI-orchestrated via the existing `POST /experiments/{id}/publish`; publish-by-default with `--no-publish`.

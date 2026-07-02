@@ -45,8 +45,9 @@ version, and a `collect` CLI that publishes by default.
 
 ## Selection semantics
 
-For each requested task, link trials matching the filter behind `ls`'s `latest_trials`
-(`core/endpoints/tasks_query.py`):
+For each requested task, link its current-version trials. This is the same task/version
+scoping `ls`'s `latest_trials` uses, but **terminal-only** (like `combine`) — a stricter
+subset than `ls`, which also lists running/pending trials:
 
 - `(TrialModel.task_id, TrialModel.task_version_id)` equals `(task.id, task.current_version_id)`
   (`TaskModel.current_version_id`, `db/models.py:578`),
