@@ -91,7 +91,7 @@ export default async function DashboardPage({
   const initialQuery = firstParam(params.q);
   const pageNumber = Math.max(
     1,
-    Number.parseInt(firstParam(params.page), 10) || 1
+    Number.parseInt(firstParam(params.page), 10) || 1,
   );
   const initialOffset = (pageNumber - 1) * DASHBOARD_DEFAULT_EXPERIMENTS_LIMIT;
 

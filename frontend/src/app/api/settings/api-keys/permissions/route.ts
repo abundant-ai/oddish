@@ -24,11 +24,11 @@ export async function GET() {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[api-keys/permissions] Backend error: ${res.status} - ${errorText}`
+        `[api-keys/permissions] Backend error: ${res.status} - ${errorText}`,
       );
       return NextResponse.json(
         { error: "Failed to fetch API key permissions", details: errorText },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -37,7 +37,7 @@ export async function GET() {
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

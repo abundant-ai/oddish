@@ -161,6 +161,13 @@ def test_render_tells_agent_to_use_discretion():
 
 def test_overlay_has_no_stage_or_harbor_path_constants():
     import oddish.worker.probe_overlay as ov
-    for name in ("STAGE_DIR", "STAGE_DIR_ENV", "BOUNDARY_MARKER_NAME",
-                 "BOUNDARY_MARKER_TEXT", "HARBOR_DIR_NAME", "HARBOR_CONTAINER_DIR"):
+
+    for name in (
+        "STAGE_DIR",
+        "STAGE_DIR_ENV",
+        "BOUNDARY_MARKER_NAME",
+        "BOUNDARY_MARKER_TEXT",
+        "HARBOR_DIR_NAME",
+        "HARBOR_CONTAINER_DIR",
+    ):
         assert not hasattr(ov, name), f"{name} should be removed"

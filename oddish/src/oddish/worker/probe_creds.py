@@ -6,7 +6,9 @@ from oddish.config import api_base_url_for_modal_app
 from oddish.core.api_keys import mint_internal_read_key
 from oddish.db import get_session
 
-PROBE_KEY_TTL_MINUTES = 240  # cover queue wait + run; trial timeouts are well under this
+PROBE_KEY_TTL_MINUTES = (
+    240  # cover queue wait + run; trial timeouts are well under this
+)
 
 
 class ProbeCredsError(RuntimeError):

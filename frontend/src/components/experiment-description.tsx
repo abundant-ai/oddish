@@ -35,7 +35,9 @@ function extractErrorMessage(data: unknown): string | null {
   if (Array.isArray(detail)) {
     const msgs = detail
       .map((d) =>
-        d && typeof d === "object" && typeof (d as { msg?: unknown }).msg === "string"
+        d &&
+        typeof d === "object" &&
+        typeof (d as { msg?: unknown }).msg === "string"
           ? (d as { msg: string }).msg
           : null,
       )

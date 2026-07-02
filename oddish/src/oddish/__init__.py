@@ -30,7 +30,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "create_task": ("oddish.queue", "create_task"),
     "get_task_with_trials": ("oddish.queue", "get_task_with_trials"),
     "get_queue_stats": ("oddish.queue", "get_queue_stats"),
-    "get_pipeline_stats": ("oddish.queue", "get_pipeline_stats"),
     # Harbor
     "run_harbor_trial": ("oddish.workers", "run_harbor_trial"),
     "HarborOutcome": ("oddish.workers", "HarborOutcome"),

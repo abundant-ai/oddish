@@ -35,7 +35,9 @@ def read_query_cli_text() -> str:
 
 def stage_query_cli(work_task_dir: Path) -> None:
     """Copy the Node oddish-query CLI into the staged probe-harness dir, executable."""
-    cli_bytes = resources.files("oddish").joinpath(f"assets/{QUERY_CLI_NAME}").read_bytes()
+    cli_bytes = (
+        resources.files("oddish").joinpath(f"assets/{QUERY_CLI_NAME}").read_bytes()
+    )
     dest = work_task_dir / QUERY_CLI_NAME
     dest.write_bytes(cli_bytes)
     dest.chmod(0o755)

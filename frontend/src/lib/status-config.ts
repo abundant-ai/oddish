@@ -105,7 +105,8 @@ export const STATUS_CONFIG: Record<
     shortLabel: "Scoreless",
     symbol: "–",
     description: "Completed with verification disabled (no reward)",
-    badgeClass: "bg-slate-500/80 text-white border-slate-400 hover:bg-slate-600",
+    badgeClass:
+      "bg-slate-500/80 text-white border-slate-400 hover:bg-slate-600",
     matrixClass:
       "bg-paper-bg-2 text-paper-ink-2 border-paper-line hover:opacity-90",
     bracketClass: "bg-slate-500 text-white",

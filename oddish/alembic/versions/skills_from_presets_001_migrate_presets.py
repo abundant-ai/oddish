@@ -23,20 +23,26 @@ def upgrade() -> None:
     if not sa.inspect(bind).has_table("probe_presets"):
         return  # fresh DB without the legacy table
 
-    presets = bind.execute(
-        sa.text(
-            "SELECT id, org_id, name, operator_prompt, result_focus, "
-            "evaluation_metric, is_seed, created_at, updated_at, deleted_at "
-            "FROM probe_presets WHERE deleted_at IS NULL"
+    presets = (
+        bind.execute(
+            sa.text(
+                "SELECT id, org_id, name, operator_prompt, result_focus, "
+                "evaluation_metric, is_seed, created_at, updated_at, deleted_at "
+                "FROM probe_presets WHERE deleted_at IS NULL"
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     # Names already taken in skills (for the partial unique (org_id, name) index).
     taken = {
         (r["org_id"], r["name"])
         for r in bind.execute(
             sa.text("SELECT org_id, name FROM skills WHERE deleted_at IS NULL")
-        ).mappings().all()
+        )
+        .mappings()
+        .all()
     }
 
     for preset in presets:

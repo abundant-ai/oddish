@@ -4,6 +4,7 @@ Revision ID: skills_seed_directives_001
 Revises: skills_from_presets_001
 Create Date: 2026-06-25 00:00:00.000000
 """
+
 from datetime import datetime, timezone
 from typing import Sequence, Union
 
@@ -23,10 +24,7 @@ _TS = datetime(2026, 6, 25, tzinfo=timezone.utc)
 
 def upgrade() -> None:
     bind = op.get_bind()
-    existing = {
-        r[0]
-        for r in bind.execute(sa.text("SELECT id FROM skills")).all()
-    }
+    existing = {r[0] for r in bind.execute(sa.text("SELECT id FROM skills")).all()}
     for s in SEED_DIRECTIVE_SKILLS:
         if s["id"] in existing:
             continue
@@ -61,7 +59,15 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     ids = tuple(s["id"] for s in SEED_DIRECTIVE_SKILLS)
-    bind.execute(sa.text("DELETE FROM skill_files WHERE skill_id IN :ids").bindparams(
-        sa.bindparam("ids", expanding=True)), {"ids": list(ids)})
-    bind.execute(sa.text("DELETE FROM skills WHERE id IN :ids").bindparams(
-        sa.bindparam("ids", expanding=True)), {"ids": list(ids)})
+    bind.execute(
+        sa.text("DELETE FROM skill_files WHERE skill_id IN :ids").bindparams(
+            sa.bindparam("ids", expanding=True)
+        ),
+        {"ids": list(ids)},
+    )
+    bind.execute(
+        sa.text("DELETE FROM skills WHERE id IN :ids").bindparams(
+            sa.bindparam("ids", expanding=True)
+        ),
+        {"ids": list(ids)},
+    )

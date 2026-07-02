@@ -382,10 +382,7 @@ def _derive_task_name(task_path: str, task_id: str | None = None) -> str:
 # single enqueue surface for the TRIAL and (task-level) QA kinds.
 #
 # Trajectory analysis is task-scoped: a single QA worker job classifies
-# every trial in the task and then synthesizes the task verdict, so there
-# is no longer a per-trial classification enqueue on the normal pipeline.
-# ``enqueue_analysis_worker_job`` is retained only to drain in-flight
-# legacy ANALYSIS rows across a deploy.
+# every trial in the task and then synthesizes the task verdict.
 
 
 def _encrypt_submission_registry_auth(submission: TaskSubmission) -> str | None:
@@ -433,49 +430,6 @@ async def enqueue_trial_worker_job(
             max_attempts=max_attempts,
             parent_job_id=parent_job_id,
             harbor_variant_id=harbor_variant_id,
-        ),
-    )
-
-
-ANALYSIS_NO_RESULT_MESSAGE = (
-    "Analysis skipped: trial has no stored result to analyze "
-    "(neither an S3 key nor a local result path)."
-)
-
-
-async def enqueue_analysis_worker_job(
-    session: AsyncSession,
-    *,
-    trial_id: str,
-    org_id: str | None,
-    parent_job_id: str | None = None,
-) -> WorkerJobModel | None:
-    """Enqueue a trial-analysis job, unless the trial has nothing to analyze.
-
-    Analysis resolves the trial's result directory from either ``trial_s3_key``
-    or ``harbor_result_path``. A trial that has neither (e.g. one that FAILED
-    before any results were uploaded) can never be analyzed: the handler raises
-    "No trial location available" and burns every retry before giving up, which
-    is what fills the shared analysis queue with doomed jobs. Mark such trials'
-    analysis FAILED up front and skip the enqueue, returning ``None``.
-    """
-    trial = await session.get(TrialModel, trial_id)
-    if trial is not None and not trial.trial_s3_key and not trial.harbor_result_path:
-        trial.analysis_status = AnalysisStatus.FAILED
-        trial.analysis_error = ANALYSIS_NO_RESULT_MESSAGE
-        trial.analysis_finished_at = utcnow()
-        return None
-
-    return await enqueue_worker_job(
-        session,
-        EnqueueRequest(
-            kind=WorkerJobKind.ANALYSIS,
-            queue_key=settings.get_analysis_queue_key(),
-            payload={"trial_id": trial_id},
-            subject_table="trials",
-            subject_id=trial_id,
-            org_id=org_id,
-            parent_job_id=parent_job_id,
         ),
     )
 
@@ -700,9 +654,7 @@ async def _bulk_insert_trials(
 def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
     """Reject runs targeting a read-only collection experiment."""
     if experiment is not None and experiment.is_collection:
-        raise ValueError(
-            "Cannot run trials into a collection experiment (read-only)."
-        )
+        raise ValueError("Cannot run trials into a collection experiment (read-only).")
 
 
 async def create_task(
@@ -846,9 +798,8 @@ async def create_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment or (
-                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
-                ),
+                "environment": spec.environment
+                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1088,9 +1039,8 @@ async def append_trials_to_task(
                 "queue_key": queue_key,
                 "model": model,
                 "timeout_minutes": spec.timeout_minutes,
-                "environment": spec.environment or (
-                    "modal" if (harbor_config or {}).get("mode") == "probe" else None
-                ),
+                "environment": spec.environment
+                or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
                 "harbor_config": harbor_config,
                 "is_probe": (harbor_config or {}).get("mode") == "probe",
                 "harbor_sha": (harbor_config or {}).get("resolved_sha"),
@@ -1451,7 +1401,9 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         analysis_query = analysis_query.where(TrialModel.org_id == org_id)
     analysis_result = await session.execute(analysis_query)
     for analysis_status, count in analysis_result.all():
-        _accumulate_queue_stat(stats, analysis_queue_key, analysis_status.value, int(count))
+        _accumulate_queue_stat(
+            stats, analysis_queue_key, analysis_status.value, int(count)
+        )
 
     verdict_query = (
         select(TaskModel.verdict_status, func.count(TaskModel.id))
@@ -1462,7 +1414,9 @@ async def get_queue_stats(session: AsyncSession, org_id: str | None = None) -> d
         verdict_query = verdict_query.where(TaskModel.org_id == org_id)
     verdict_result = await session.execute(verdict_query)
     for verdict_status, count in verdict_result.all():
-        _accumulate_queue_stat(stats, verdict_queue_key, verdict_status.value, int(count))
+        _accumulate_queue_stat(
+            stats, verdict_queue_key, verdict_status.value, int(count)
+        )
 
     return stats
 
@@ -1512,7 +1466,10 @@ async def get_queue_stats_by_org(
     )
     for org_id, analysis_status, count in analysis_result.all():
         _accumulate_queue_stat(
-            _org_bucket(str(org_id)), analysis_queue_key, analysis_status.value, int(count)
+            _org_bucket(str(org_id)),
+            analysis_queue_key,
+            analysis_status.value,
+            int(count),
         )
 
     verdict_result = await session.execute(
@@ -1526,7 +1483,10 @@ async def get_queue_stats_by_org(
     )
     for org_id, verdict_status, count in verdict_result.all():
         _accumulate_queue_stat(
-            _org_bucket(str(org_id)), verdict_queue_key, verdict_status.value, int(count)
+            _org_bucket(str(org_id)),
+            verdict_queue_key,
+            verdict_status.value,
+            int(count),
         )
 
     return stats_by_org
@@ -1554,40 +1514,3 @@ async def get_queue_and_pipeline_stats_with_concurrency(
     """Collect queue and pipeline stats without duplicating status scans."""
     stats = await get_queue_stats(session, org_id)
     return _assemble_queue_and_pipeline(stats)
-
-
-async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get statistics for each pipeline stage."""
-    trial_query = select(TrialModel.status, func.count(TrialModel.id)).group_by(
-        TrialModel.status
-    )
-    if org_id:
-        trial_query = trial_query.where(TrialModel.org_id == org_id)
-    trial_stats = await session.execute(trial_query)
-    trials = {status.value: count for status, count in trial_stats.all()}
-
-    analysis_query = (
-        select(TrialModel.analysis_status, func.count(TrialModel.id))
-        .where(TrialModel.analysis_status.isnot(None))
-        .group_by(TrialModel.analysis_status)
-    )
-    if org_id:
-        analysis_query = analysis_query.where(TrialModel.org_id == org_id)
-    analysis_stats = await session.execute(analysis_query)
-    analyses = {status.value: count for status, count in analysis_stats.all()}
-
-    verdict_query = (
-        select(TaskModel.verdict_status, func.count(TaskModel.id))
-        .where(TaskModel.verdict_status.isnot(None))
-        .group_by(TaskModel.verdict_status)
-    )
-    if org_id:
-        verdict_query = verdict_query.where(TaskModel.org_id == org_id)
-    verdict_stats = await session.execute(verdict_query)
-    verdicts = {status.value: count for status, count in verdict_stats.all()}
-
-    return {
-        "trials": trials,
-        "analyses": analyses,
-        "verdicts": verdicts,
-    }

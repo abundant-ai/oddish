@@ -178,7 +178,7 @@ def test_parse_registry_login_token_may_contain_quoted_or_escaped_commas():
     assert creds == [{"username": "bob", "token": "a,b=c,d", "registry": "docker.io"}]
     creds = parse_registry_login(["username=bob,token=a\\,b"], {})
     assert creds[0]["token"] == "a,b"
-    creds = parse_registry_login(["username=bob,token=abc\\\"def"], {})
+    creds = parse_registry_login(['username=bob,token=abc\\"def'], {})
     assert creds[0]["token"] == 'abc"def'
     creds = parse_registry_login([r"username=bob,token=abc\xdef"], {})
     assert creds[0]["token"] == r"abc\xdef"

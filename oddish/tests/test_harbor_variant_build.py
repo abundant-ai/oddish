@@ -53,7 +53,9 @@ def test_harbor_git_requirement_empty_extras_is_bare_package():
 
 
 def test_harbor_variant_function_name():
-    assert harbor_variant_function_name("harbor-next") == "process_single_job__harbor-next"
+    assert (
+        harbor_variant_function_name("harbor-next") == "process_single_job__harbor-next"
+    )
 
 
 def test_uv_source_rewrite_repoints_harbor_pin_in_pyproject():
@@ -72,7 +74,10 @@ def test_uv_source_rewrite_repoints_harbor_pin_in_pyproject():
         )
         subprocess.run(cmd, shell=True, check=True)
         out = p.read_text()
-    assert f'harbor = {{ git = "https://github.com/dot-agi/harbor", rev = "{"c" * 40}" }}' in out
+    assert (
+        f'harbor = {{ git = "https://github.com/dot-agi/harbor", rev = "{"c" * 40}" }}'
+        in out
+    )
     assert "rishidesai" not in out
     # The unrelated oddish source line is untouched.
     assert 'oddish = { path = "../oddish", editable = true }' in out

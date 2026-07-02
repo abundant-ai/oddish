@@ -42,8 +42,8 @@ _REPAIR_PROMPT_OUTPUT_SPEC = (
 _REPAIR_PROMPT_SCHEMA = (
     "An operator supplied the text below as a JSON Schema describing the required "
     "shape of an analysis result, but it does not parse as valid JSON. Repair it "
-    "into a single valid JSON Schema object (Draft-7 style: a top-level \"type\", "
-    "\"properties\", and optionally \"required\"). Preserve their intended property "
+    'into a single valid JSON Schema object (Draft-7 style: a top-level "type", '
+    '"properties", and optionally "required"). Preserve their intended property '
     "names, types, and nesting as closely as possible; do not invent constraints "
     "or example values. Output ONLY the JSON object — no prose, no markdown, no "
     "code fences.\n\n"

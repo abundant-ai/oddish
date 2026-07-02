@@ -227,9 +227,14 @@ async def test_probe_overlay_prepends_extra_instructions_to_instruction_md(
     monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
 
     async def fake_mint_probe_creds(*, org_id, trial_id):
-        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+        return "fake-key-id", {
+            "ODDISH_API_KEY": "fake-key",
+            "ODDISH_API_BASE_URL": "http://localhost:8800",
+        }
 
-    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+    monkeypatch.setattr(
+        "oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds
+    )
 
     await _run_harbor_trial(trial_id)
 
@@ -271,6 +276,7 @@ async def test_probe_uploads_cli_to_harness(
         async def exec(self, command, **_kwargs):
             captured["exec_cmds"].append(command)
             from types import SimpleNamespace
+
             return SimpleNamespace(return_code=0)
 
     class FakeTrial:
@@ -298,9 +304,14 @@ async def test_probe_uploads_cli_to_harness(
     monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
 
     async def fake_mint_probe_creds(*, org_id, trial_id):
-        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+        return "fake-key-id", {
+            "ODDISH_API_KEY": "fake-key",
+            "ODDISH_API_BASE_URL": "http://localhost:8800",
+        }
 
-    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+    monkeypatch.setattr(
+        "oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds
+    )
     await _run_harbor_trial(trial_id)
 
     targets = {t for t, _ in uploads}
@@ -331,6 +342,7 @@ async def test_local_probe_env_contract(monkeypatch, seeded_probe_trial_with_tas
 
         async def exec(self, command, **_kwargs):
             from types import SimpleNamespace
+
             return SimpleNamespace(return_code=0)
 
     class FakeTrial:
@@ -358,9 +370,14 @@ async def test_local_probe_env_contract(monkeypatch, seeded_probe_trial_with_tas
     monkeypatch.setattr("oddish.worker.local_runner.Trial", FakeTrial)
 
     async def fake_mint_probe_creds(*, org_id, trial_id):
-        return "fake-key-id", {"ODDISH_API_KEY": "fake-key", "ODDISH_API_BASE_URL": "http://localhost:8800"}
+        return "fake-key-id", {
+            "ODDISH_API_KEY": "fake-key",
+            "ODDISH_API_BASE_URL": "http://localhost:8800",
+        }
 
-    monkeypatch.setattr("oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds)
+    monkeypatch.setattr(
+        "oddish.worker.local_runner.mint_probe_creds", fake_mint_probe_creds
+    )
     await _run_harbor_trial(trial_id)
 
     env = captured["env"]
