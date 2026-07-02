@@ -422,7 +422,7 @@ def build_trial_response(
     jobs: Sequence[VisibleWorkerJob] | None = None,
 ) -> TrialResponse:
     """Build a TrialResponse from a TrialModel."""
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
     return TrialResponse(
@@ -494,7 +494,7 @@ def build_compact_trial_response(
         resolved_analysis_summary = (
             analysis_summary if isinstance(analysis_summary, dict) else None
         )
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 
@@ -1047,7 +1047,7 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
             "subtype": trial.analysis.get("subtype"),
             "evidence": trial.analysis.get("evidence"),
         }
-    normalized_model = settings.normalize_trial_model(trial.agent, trial.model)
+    normalized_model = settings.normalize_trial_model(trial.agent, trial.model, strict=False)
     task_version, task_version_id = _resolve_trial_version_fields(trial)
     cost_usd, cost_is_estimated = _resolve_trial_cost(trial, normalized_model)
 

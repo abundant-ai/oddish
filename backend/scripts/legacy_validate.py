@@ -101,7 +101,14 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
         "AND idempotency_key IS NOT NULL GROUP BY idempotency_key HAVING count(*) > 1) d", *args)
     check("no duplicate idempotency keys", dup_keys == 0, f"dups={dup_keys}")
 
-    # Ledger reconcile (info, not hard-fail — a partial/in-progress run differs).
+    # Ledger completeness (HARD FAIL). Every trial in scope must be finished:
+    # either 'transferred' (moved in) or 'skipped' (deliberately excluded, e.g.
+    # the dedup mirror rows). Anything still 'discovered' (never attempted),
+    # 'transferring' (stuck mid-move), or 'failed' (errored) means the move is
+    # incomplete and data is silently missing. The ledger already records each
+    # trial's state, so we read that column directly — unlike comparing two
+    # totals, a leftover row cannot hide behind a coincidentally-matching count.
+    # (Run the transfer with --retry-failed to clear 'failed' rows first.)
     lwhere = "TRUE"
     largs: list = []
     if scope_base:
@@ -109,8 +116,16 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
     if scope_run:
         largs.append(scope_run); lwhere += f" AND run_id = ${len(largs)}"
     ledger_n = await conn.fetchval(f"SELECT count(*) FROM leg_trial_ledger WHERE {lwhere}", *largs)
-    info("ledger vs imported", f"ledger={ledger_n} imported={total} "
-         f"({'match' if ledger_n == total else 'differ — ok if partial run'})")
+    unfinished = await conn.fetch(
+        f"SELECT status, count(*) AS n FROM leg_trial_ledger "
+        f"WHERE {lwhere} AND status NOT IN ('transferred','skipped') "
+        f"GROUP BY status ORDER BY status", *largs)
+    n_unfinished = sum(r["n"] for r in unfinished)
+    detail = f"ledger={ledger_n} imported={total}"
+    if unfinished:
+        detail += "  UNFINISHED=" + ",".join(f"{r['status']}:{r['n']}" for r in unfinished)
+    check("every ledger trial is finished (moved or deliberately skipped)",
+          n_unfinished == 0, detail)
 
     # ---------------------------------------------------------------- Layer 2
     print("\n== Layer 2: structural parity vs native (origin='oddish', same org) ==")
@@ -137,7 +152,7 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
     rows = list(rows)
     random.shuffle(rows)
     rows = rows[: max(0, sample)]
-    reward_mismatch = missing_artifacts = model_suspect = 0
+    reward_mismatch = missing_prefix = missing_result = model_suspect = 0
     session = aioboto3.Session()
     async with session.client("s3", region_name=settings.s3_region or "us-east-1") as s3:
         for r in rows:
@@ -153,11 +168,19 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
                     break
                 except Exception:
                     continue
-            # result.json should exist at the trial root (proves trial_s3_key is valid)
+            # Prove orig_s3_src points at a real trial dir. trial.log is the
+            # universal signature (present for every discovered trial); a miss
+            # means the stored prefix is wrong (a transfer bug). result.json is
+            # tracked separately as info only: ~2% of genuine source trials
+            # (harness errors) never wrote one, so its absence is not a defect.
+            try:
+                await s3.head_object(Bucket=DEFAULT_BUCKET, Key=f"{prefix}trial.log")
+            except Exception:
+                missing_prefix += 1
             try:
                 await s3.head_object(Bucket=DEFAULT_BUCKET, Key=f"{prefix}result.json")
             except Exception:
-                missing_artifacts += 1
+                missing_result += 1
             # model un-collapse sanity: real agents shouldn't keep the lossy doubled prefix
             m = (r["model"] or "")
             if r["agent"] not in ("nop", "oracle") and any(
@@ -165,8 +188,10 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
                 model_suspect += 1
     check("sampled rewards match reward.txt", reward_mismatch == 0,
           f"mismatches={reward_mismatch}/{len(rows)}")
-    check("sampled result.json artifacts present", missing_artifacts == 0,
-          f"missing={missing_artifacts}/{len(rows)}")
+    check("sampled orig_s3_src prefixes valid (trial.log present)", missing_prefix == 0,
+          f"missing={missing_prefix}/{len(rows)}")
+    info("sampled result.json present (info: some source trials lack it)",
+         f"missing={missing_result}/{len(rows)}")
     check("model looks un-collapsed (no doubled prefix)", model_suspect == 0,
           f"suspect={model_suspect}/{len(rows)}")
 

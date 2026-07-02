@@ -97,7 +97,9 @@ def _ext_id(prefix: str) -> str:
 
 @app.function(image=image, secrets=[secret, aws_secret], timeout=60 * 60 * 6)
 async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
-                   scope_base: str | None, limit: int | None) -> None:
+                   scope_base: str | None, limit: int | None,
+                   concurrency: int, retry_failed: bool) -> None:
+    import asyncio
     import json
     from datetime import datetime, timezone
     from itertools import groupby
@@ -149,7 +151,13 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
     gen_id = lambda: str(uuid4())[:8]         # noqa: E731
 
     # ---- 1. work list from the ledger (scope, pending only, run order) ------
-    where = "status = 'discovered'"
+    # A trial that errors mid-import is marked status='failed' (line ~404), so
+    # normal runs skip it. --retry-failed re-includes those rows to sweep up
+    # failures after a fix (e.g. the legacy-model importer bug) or transient
+    # errors (network/Modal preemption). Safe & idempotent: rows that succeed
+    # flip to 'transferred'; any still-bad row is just re-marked 'failed'.
+    statuses = "('discovered','failed')" if retry_failed else "('discovered')"
+    where = f"status IN {statuses}"
     params: dict = {}
     if scope_base:
         where += " AND s3_base = :base"; params["base"] = scope_base
@@ -279,61 +287,88 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
         # ---- 3. per-task: create task + experiments, then import its trials --
         created = {"tasks": 0, "experiments": 0, "trials": 0, "skipped": 0,
                    "errors": 0}
-        rows.sort(key=lambda r: r["task_id"])
-        for task_id, group in groupby(rows, key=lambda r: r["task_id"]):
-            grp = list(group)
+        total = len(rows)
+        t0 = now()
 
-            # 3a. task + experiments (committed so the importer can see them)
-            async with get_session() as sess:
-                task = (await sess.execute(
-                    select(TaskModel).where(TaskModel.org_id == ORG_ID, TaskModel.name == task_id)
-                )).scalar_one_or_none()
-                if task is None:
-                    tid = gen_id()
-                    legacy_task_path = f"s3://{DEFAULT_BUCKET}/{grp[0]['s3_prefix']}task"
-                    task = TaskModel(
-                        id=tid, name=task_id, org_id=ORG_ID, user=IMPORT_TAG,
-                        task_path=legacy_task_path, task_s3_key=f"{grp[0]['s3_prefix']}task/",
-                        tags={"source": IMPORT_TAG, "legacy_task_id": task_id,
-                              "legacy_repos": sorted({r["s3_base"] for r in grp})},
-                        run_analysis=False, run_probe=False, imported_at=now(),
-                    )
-                    sess.add(task)
-                    await sess.flush()
-                    ver = TaskVersionModel(
-                        id=f"{tid}-v1", task_id=tid, version=1,
-                        task_path=legacy_task_path, task_s3_key=f"{grp[0]['s3_prefix']}task/",
-                    )
-                    sess.add(ver)
-                    await sess.flush()
-                    task.current_version_id = ver.id
-                    created["tasks"] += 1
-                task_pk = task.id
+        def tick() -> None:
+            done = created["trials"] + created["skipped"] + created["errors"]
+            if done % 100 == 0 and done:
+                secs = max((now() - t0).total_seconds(), 1e-9)
+                rate = done / secs
+                eta_min = (total - done) / rate / 60 if rate else 0
+                print(f"  progress {done}/{total}  rate={rate:.2f}/s  "
+                      f"eta={eta_min:.0f}min  (+{created['trials']} new, "
+                      f"{created['skipped']} skipped, {created['errors']} errors)")
 
-                exp_ids: dict[str, str] = {}   # run-root path -> experiment id
-                for root in sorted({_root_of(r["s3_prefix"]) for r in grp}):
-                    eid = _exp_id(root)
-                    exp = await sess.get(ExperimentModel, eid)
-                    if exp is None:
-                        m = manifests.get(root, {}) or {}
-                        meta = m.get("metadata", {}) or {}
-                        rt = m.get("runtime", {}) or {}
-                        exp = ExperimentModel(
-                            id=eid, org_id=ORG_ID,
-                            name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
-                            description=meta.get("description"),
-                            owner=rt.get("repository"),
-                            link=rt.get("workflow_url"),
-                            imported_at=now(),
-                            orig_s3_src=f"{root}/",  # immutable run-root anchor
+        # 3a. Pre-create ALL experiments up-front, sequentially. With concurrent
+        # task-groups, two groups can share a run-root experiment; creating them
+        # here once avoids duplicate-PK races inside the groups.
+        exp_ids: dict[str, str] = {}   # run-root path -> experiment id
+        async with get_session() as sess:
+            for root in roots:
+                eid = _exp_id(root)
+                exp = await sess.get(ExperimentModel, eid)
+                if exp is None:
+                    m = manifests.get(root, {}) or {}
+                    meta = m.get("metadata", {}) or {}
+                    rt = m.get("runtime", {}) or {}
+                    exp = ExperimentModel(
+                        id=eid, org_id=ORG_ID,
+                        name=meta.get("name") or f"Legacy {root.rsplit('/', 1)[-1]}",
+                        description=meta.get("description"),
+                        owner=rt.get("repository"),
+                        link=rt.get("workflow_url"),
+                        imported_at=now(),
+                        orig_s3_src=f"{root}/",  # immutable run-root anchor
+                    )
+                    sess.add(exp)
+                    await sess.flush()
+                    created["experiments"] += 1
+                exp_ids[root] = eid
+            await sess.commit()
+
+        # 3b. Task-groups run CONCURRENTLY up to --concurrency; each group's
+        # trials import SEQUENTIALLY (run-order index only matters within a
+        # task, and the importer's row lock is per-task -> cross-task
+        # parallelism is safe). concurrency=1 == the old sequential behavior.
+        sem = asyncio.Semaphore(max(1, concurrency))
+
+        async def _process_group(task_id: str, grp: list[dict]) -> None:
+          async with sem:
+            # task get-or-create (this group owns its name; no cross-group race)
+            try:
+                async with get_session() as sess:
+                    task = (await sess.execute(
+                        select(TaskModel).where(TaskModel.org_id == ORG_ID, TaskModel.name == task_id)
+                    )).scalar_one_or_none()
+                    if task is None:
+                        tid = gen_id()
+                        legacy_task_path = f"s3://{DEFAULT_BUCKET}/{grp[0]['s3_prefix']}task"
+                        task = TaskModel(
+                            id=tid, name=task_id, org_id=ORG_ID, user=IMPORT_TAG,
+                            task_path=legacy_task_path, task_s3_key=f"{grp[0]['s3_prefix']}task/",
+                            tags={"source": IMPORT_TAG, "legacy_task_id": task_id,
+                                  "legacy_repos": sorted({r["s3_base"] for r in grp})},
+                            run_analysis=False, run_probe=False, imported_at=now(),
                         )
-                        sess.add(exp)
+                        sess.add(task)
                         await sess.flush()
-                        created["experiments"] += 1
-                    exp_ids[root] = eid
-                await sess.commit()
+                        ver = TaskVersionModel(
+                            id=f"{tid}-v1", task_id=tid, version=1,
+                            task_path=legacy_task_path, task_s3_key=f"{grp[0]['s3_prefix']}task/",
+                        )
+                        sess.add(ver)
+                        await sess.flush()
+                        task.current_version_id = ver.id
+                        created["tasks"] += 1
+                    task_pk = task.id
+                    await sess.commit()
+            except Exception as e:
+                created["errors"] += len(grp)
+                print(f"  GROUP ERROR task={task_id!r}: {e!r} ({len(grp)} trials not attempted)")
+                return
 
-            # 3b. import this task's trials SEQUENTIALLY (preserves run-order index)
+            # import this task's trials SEQUENTIALLY (preserves run-order index)
             for r in grp:
                 root = _root_of(r["s3_prefix"])
                 eid = exp_ids[root]
@@ -374,6 +409,7 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                                 "WHERE s3_prefix=:p"), {"e": str(e)[:500], "p": r["s3_prefix"]})
                             await sess.commit()
                         print(f"  ERROR {r['s3_prefix']}: {e!r}")
+                        tick()
                         continue
 
                 # Record the Sauron source in orig_s3_src ONLY. We deliberately do
@@ -397,6 +433,12 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                     await sess.commit()
                 if fresh:
                     created["trials"] += 1
+                tick()
+
+        rows.sort(key=lambda r: r["task_id"])
+        groups = [(tid, list(g)) for tid, g in groupby(rows, key=lambda r: r["task_id"])]
+        print(f"processing {len(groups)} task-groups with concurrency={max(1, concurrency)}")
+        await asyncio.gather(*(_process_group(tid, grp) for tid, grp in groups))
 
     print("=" * 60)
     print(f"DONE  tasks+={created['tasks']} experiments+={created['experiments']} "
@@ -406,6 +448,8 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
 
 @app.local_entrypoint()
 def main(execute: bool = False, scope_pr: int | None = None, scope_run: str | None = None,
-         scope_base: str | None = None, limit: int | None = None) -> None:
+         scope_base: str | None = None, limit: int | None = None,
+         concurrency: int = 1, retry_failed: bool = False) -> None:
     transfer.remote(execute=execute, scope_pr=scope_pr, scope_run=scope_run,
-                    scope_base=scope_base, limit=limit)
+                    scope_base=scope_base, limit=limit, concurrency=concurrency,
+                    retry_failed=retry_failed)
