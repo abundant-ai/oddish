@@ -28,6 +28,7 @@ from oddish.core.sharing.helpers import (
     list_experiment_trials_for_org,
 )
 from oddish.core.sharing.public import (
+    get_public_task_status,
     list_public_experiment_tasks,
     list_public_experiments,
 )
@@ -118,6 +119,9 @@ async def _cleanup(
                 task_experiments.delete().where(
                     task_experiments.c.task_id.in_(task_ids)
                 )
+            )
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id.in_(task_ids))
             )
             await session.execute(
                 TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
@@ -251,6 +255,51 @@ async def test_public_trial_access_is_scoped_to_share_token(session):
     trials_b = await list_task_trials_for_public_experiment(session, token_b, task.id)
     assert trials_a is not None and [row.id for row in trials_a] == [trial.id]
     assert trials_b == []
+
+
+@pytest.mark.asyncio
+async def test_public_task_status_uses_share_experiment_context():
+    task_id: str | None = None
+    exp_ids: list[str] = []
+    token: str | None = None
+    trial_id: str | None = None
+    try:
+        async with get_session() as setup:
+            task = _task(_unique("scoped-public-status-task"), org_id=None)
+            setup.add(task)
+            await setup.flush()
+            task_id = task.id
+
+            exp = _experiment(_unique("scoped-public-status-exp"), org_id=None)
+            setup.add(exp)
+            await setup.flush()
+            exp_ids.append(exp.id)
+            await setup.execute(
+                task_experiments.insert(),
+                {"task_id": task.id, "experiment_id": exp.id},
+            )
+
+            trial = _trial(task, exp, org_id=None, is_probe=False)
+            setup.add(trial)
+            await setup.flush()
+            trial_id = trial.id
+
+            await ensure_experiment_public(setup, exp)
+            await setup.flush()
+            token = exp.public_token
+            assert token
+
+        assert task_id is not None
+        assert token is not None
+        task_status = await get_public_task_status(token, task_id)
+        assert task_status.experiment_id == exp_ids[0]
+        assert [row.id for row in task_status.trials] == [trial_id]
+    finally:
+        if task_id or exp_ids:
+            await _cleanup(
+                task_ids=[task_id] if task_id else None,
+                experiment_ids=exp_ids or None,
+            )
 
 
 @pytest.mark.asyncio

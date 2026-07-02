@@ -123,7 +123,7 @@ async def get_public_task_for_experiment(
     task_id: str,
     *,
     load_current_version: bool = False,
-) -> tuple[ExperimentModel, TaskModel] | None:
+) -> tuple[ExperimentModel, TaskModel, set[str]] | None:
     """Get a public task only through the share token that exposes it."""
     experiment = await get_public_experiment(session, public_token)
     if not experiment:
@@ -173,7 +173,7 @@ async def get_public_task_for_experiment(
             and (t.experiment_id == experiment.id or t.id in gathered_ids)
         ],
     )
-    return experiment, task
+    return experiment, task, gathered_ids
 
 
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
@@ -318,7 +318,7 @@ async def list_task_trials_for_public_experiment(
     resolved = await get_public_task_for_experiment(session, public_token, task_id)
     if resolved is None:
         return None
-    experiment, _ = resolved
+    experiment, _, _ = resolved
     result = await session.execute(
         select(TrialModel, TaskModel.task_path)
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
