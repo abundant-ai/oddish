@@ -2,15 +2,12 @@
 
 The canonical engineering guide for this repo is **`AGENTS.md`** at the repo root. Read it first; it covers the three packages (`oddish/` CLI+server, `backend/` hosted cloud layer, `frontend/` Next.js dashboard), required toolchains, and maintenance rules. End-user CLI docs are in `DOCS.md`.
 
-## Git workflow — NEVER commit or push to `main`
+## Git workflow
 
-**Never directly commit or push to `main`.** Always check out a new branch first
-(`git checkout -b <type>/<short-desc>`), commit there, push that branch, and open
-a PR for review. This applies to every change, no matter how small — even a
-one-line fix. If you find yourself on `main` with staged or unstaged changes,
-create a branch and move the work onto it before committing.
+Never directly commit or push to `main`. Check out a feature branch, commit
+there, push that branch, and open a PR for review.
 
-## Rule — preserve package boundaries
+## Preserve package boundaries
 
 `oddish/` is the self-hostable core package for the CLI, standalone FastAPI
 server, DB models/migrations, queue/runtime primitives, and worker handlers.
@@ -21,7 +18,7 @@ cloud-only policy. Do not import `backend/`, `backend.auth`, `backend.models`,
 `oddish/`. Shared logic should live in host-agnostic `oddish` modules and be
 wrapped by `backend/`.
 
-## Rule — task names stay unique and indexed
+## Task names stay unique and indexed
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so re-uploading the
@@ -30,7 +27,7 @@ instead of creating a different task. Renaming a task is allowed, but it must
 preserve the live `(org_id, name)` uniqueness invariant and the task's version
 history.
 
-## Rule — never expose probes in public/share views
+## Never expose probes in public/share views
 
 Probes are an **experimental, internal-only** feature. They must never appear in
 any public, unauthenticated surface — the `/share/[token]` experiment view, the
@@ -75,8 +72,7 @@ Oddish runs evals on [Harbor](https://github.com/laude-institute/harbor) tasks i
 
 ## Useful pointers
 
-- **Run backend locally:** `cd backend && uvicorn api.app:create_app --factory --reload`. See `backend/README.md` for required env vars.
+- **Run backend locally:** `cd backend && uv run modal serve deploy.py`. See `backend/README.md` for required env vars.
 - **Run frontend locally:** `cd frontend && pnpm dev`. See `frontend/README.md`.
 - **Tests:** `pytest` from `oddish/` or `backend/`. Frontend has no test suite wired up yet.
-- **Local job fixtures:** `jobs/` at the repo root contains a sample experiment tree mirroring the production S3 layout — useful when developing features that read trial artifacts.
-- **Design docs and plans:** `docs/superpowers/specs/` and `docs/superpowers/plans/`.
+- **Self-hosting:** see `SELF_HOSTING.md` for Modal, Clerk, migrations, and local HTTPS.
