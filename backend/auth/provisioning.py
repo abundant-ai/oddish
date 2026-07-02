@@ -220,7 +220,10 @@ async def _refresh_user_github_identity(
             github_username=identity.username or user.github_username,
             github_email=identity.email,
         )
-    if not user.github_id:
+    # Only a definitive no-github answer stamps the marker. If Clerk returned a
+    # github_id we couldn't claim (active clash / lost race), leave it unstamped
+    # so the backfill retries once the holder releases the id.
+    if not identity.github_id:
         _mark_github_id_checked(user)
 
 

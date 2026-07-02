@@ -12,6 +12,7 @@ from dashboard_attribution import (
     _db_cache_profile,
     _memory_get,
     _memory_set,
+    _persist_profile,
     _row_has_strong_attribution_match,
     _schedule_profile_refresh,
     invalidate_attribution_cache,
@@ -51,6 +52,40 @@ def test_baseline_profile_blocks_other_member_handles() -> None:
         blocked_emails=set(),
     )
     assert profile.github_handles == ("praxs",)
+
+
+@pytest.mark.asyncio
+async def test_persist_profile_preserves_github_id_checked() -> None:
+    """F6: rewriting the attribution cache must keep the github_id backfill
+    marker; dropping it re-admits a checked-absent user into the backfill scan."""
+    user = _user(
+        id="user_persist",
+        attribution_cache={
+            "github_handles": [],
+            "legacy_emails": [],
+            "github_id_checked": "2024-01-01T00:00:00+00:00",
+        },
+    )
+    await _persist_profile(
+        None,
+        user,
+        AttributionProfile(github_handles=("praxs",), legacy_emails=()),
+    )
+    assert user.attribution_cache["github_id_checked"] == "2024-01-01T00:00:00+00:00"
+    assert user.attribution_cache["github_handles"] == ["praxs"]
+    invalidate_attribution_cache(org_id="org_1", user_id="user_persist")
+
+
+@pytest.mark.asyncio
+async def test_persist_profile_without_marker_stays_absent() -> None:
+    user = _user(id="user_persist2", attribution_cache=None)
+    await _persist_profile(
+        None,
+        user,
+        AttributionProfile(github_handles=("praxs",), legacy_emails=()),
+    )
+    assert "github_id_checked" not in user.attribution_cache
+    invalidate_attribution_cache(org_id="org_1", user_id="user_persist2")
 
 
 def test_memory_cache_round_trip() -> None:

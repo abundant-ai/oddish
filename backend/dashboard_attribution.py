@@ -351,7 +351,14 @@ async def _persist_profile(
     user: UserModel,
     profile: AttributionProfile,
 ) -> None:
-    user.attribution_cache = profile.as_dict()
+    cache = profile.as_dict()
+    prior = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    # Preserve the github_id backfill marker; dropping it re-admits a
+    # checked-absent user into the backfill scan.
+    checked = prior.get("github_id_checked")
+    if isinstance(checked, str):
+        cache["github_id_checked"] = checked
+    user.attribution_cache = cache
     _memory_set(user.org_id, user.id, profile)
 
 

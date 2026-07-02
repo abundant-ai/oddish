@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 import auth.provisioning as prov
@@ -13,6 +14,7 @@ from auth.provisioning import (
     _github_account_from_clerk_payload,
     _refresh_user_github_identity,
     _set_github_id_if_absent,
+    fetch_github_identity_from_clerk,
     get_or_create_user_in_org,
 )
 from models import OrganizationModel, UserModel, UserRole
@@ -48,6 +50,48 @@ def test_payload_parse_github_id_missing_is_none() -> None:
 
 def test_payload_parse_no_github_account() -> None:
     identity = _github_account_from_clerk_payload({"external_accounts": []})
+    assert identity == ClerkGithubIdentity(None, None, None)
+
+
+def _mock_clerk_http(monkeypatch, handler) -> None:
+    real_client = httpx.AsyncClient
+
+    def _factory(*_args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(prov.httpx, "AsyncClient", _factory)
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_none_without_secret(monkeypatch) -> None:
+    """Real error contract: an unset CLERK_SECRET_KEY is 'couldn't verify'
+    (None), never a definitive no-github identity that would stamp the marker."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "")
+    assert await fetch_github_identity_from_clerk("clerk_1") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_none_on_http_error(monkeypatch) -> None:
+    """Real error contract: a Clerk HTTP error is 'couldn't verify' (None), so
+    the caller retries rather than stamping github_id_checked."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(500))
+    assert await fetch_github_identity_from_clerk("clerk_1") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_success_no_github_is_definitive_absent(monkeypatch) -> None:
+    """Real success-with-no-github answer is a definitive ClerkGithubIdentity of
+    all-None — distinct from the None couldn't-verify sentinel — so the marker
+    gets stamped."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    _mock_clerk_http(
+        monkeypatch,
+        lambda _req: httpx.Response(200, json={"external_accounts": []}),
+    )
+    identity = await fetch_github_identity_from_clerk("clerk_1")
     assert identity == ClerkGithubIdentity(None, None, None)
 
 
@@ -361,6 +405,56 @@ async def test_provisioning_github_id_active_clash_still_skips(monkeypatch) -> N
             assert user.github_id is None  # active holder keeps it
             holder = await session.get(UserModel, holder_id)
             assert holder.github_id == "collide-live"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.org_id == org_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_provisioning_active_clash_does_not_stamp_marker(monkeypatch) -> None:
+    """F5: Clerk returned a real github_id but an active clash blocked the claim.
+    That is NOT a definitive no-github answer, so github_id_checked must stay
+    unstamped — otherwise the backfill skips this user forever and never relinks
+    once the holder releases the id."""
+    org_id = f"org_gid_{uuid.uuid4().hex[:8]}"
+    holder_id = f"user_{uuid.uuid4().hex[:8]}"
+    new_clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    _mock_clerk(
+        monkeypatch,
+        ClerkGithubIdentity(username="dup", email="d@e.com", github_id="collide-x"),
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(
+                UserModel(
+                    id=holder_id,
+                    org_id=org_id,
+                    email="holder@e.com",
+                    github_id="collide-x",
+                    clerk_user_id=f"clerk_{uuid.uuid4().hex[:8]}",
+                    role=UserRole.MEMBER,
+                    is_active=True,
+                )
+            )
+            await session.flush()
+
+        async with get_session() as session:
+            org = await session.get(OrganizationModel, org_id)
+            user = await get_or_create_user_in_org(
+                session, new_clerk, org, "new@e.com", "member", UserRole.MEMBER
+            )
+            assert user.github_id is None
+            cache = user.attribution_cache or {}
+            assert "github_id_checked" not in cache
     finally:
         async with get_session() as session:
             await session.execute(
