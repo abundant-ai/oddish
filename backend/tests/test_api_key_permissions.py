@@ -197,3 +197,85 @@ def test_admin_created_task_key_can_publish_experiment():
     )
 
     require_experiment_publish_scope(auth)
+
+
+# --- auto-publish default: either github identity counts -----------------------
+
+
+def _publish_probe(monkeypatch):
+    """(published, auth, run) — run(submission) drives maybe_publish_experiment
+    with an admin-created org API key and records published experiments."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import api.routers.task_submission as task_submission
+
+    published: list[object] = []
+
+    async def record_publish(_session, experiment):
+        published.append(experiment)
+
+    monkeypatch.setattr(task_submission, "ensure_experiment_public", record_publish)
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id="admin_1",
+        user_role=UserRole.ADMIN,
+        api_key_id="key_1",
+        api_key_created_by_role=UserRole.ADMIN.value,
+        scope=APIKeyScope.TASKS,
+    )
+    task = SimpleNamespace(experiments=[SimpleNamespace(id="exp-1")])
+
+    def run(submission):
+        asyncio.run(
+            task_submission.maybe_publish_experiment(object(), task, submission, auth)
+        )
+
+    return published, run
+
+
+def test_github_id_only_submission_auto_publishes(monkeypatch):
+    from types import SimpleNamespace
+
+    published, run = _publish_probe(monkeypatch)
+    run(
+        SimpleNamespace(
+            publish_experiment=None, github_username=None, github_id="12345"
+        )
+    )
+    assert len(published) == 1
+
+
+def test_explicit_publish_false_still_skips_for_github_id(monkeypatch):
+    from types import SimpleNamespace
+
+    published, run = _publish_probe(monkeypatch)
+    run(
+        SimpleNamespace(
+            publish_experiment=False, github_username=None, github_id="12345"
+        )
+    )
+    assert published == []
+
+
+def test_handle_only_submission_auto_publishes_unchanged(monkeypatch):
+    from types import SimpleNamespace
+
+    published, run = _publish_probe(monkeypatch)
+    run(
+        SimpleNamespace(
+            publish_experiment=None, github_username="octocat", github_id=None
+        )
+    )
+    assert len(published) == 1
+
+
+def test_no_github_identity_does_not_auto_publish(monkeypatch):
+    from types import SimpleNamespace
+
+    published, run = _publish_probe(monkeypatch)
+    run(
+        SimpleNamespace(publish_experiment=None, github_username=None, github_id=None)
+    )
+    assert published == []

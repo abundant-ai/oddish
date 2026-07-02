@@ -32,6 +32,7 @@ from api.app import create_app
 from api.routers.task_submission import (
     lookup_user_by_github_id,
     lookup_user_by_github_username,
+    resolve_connected_user,
     resolve_experiment_owner_user_id,
 )
 from models import APIKeyScope, OrganizationModel, UserModel
@@ -841,3 +842,121 @@ def test_case6_action_forces_github_user_to_actor():
 def test_case18_action_fail_open_when_endpoint_down():
     """Case 18: if the linkage endpoint is unreachable, the Action ALLOWS the push
     (fail-open) rather than blocking CI."""
+
+
+# --- refresh demotes stale handle holders (duplicate-handle outage) -------------
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_refresh_demotes_stale_holder_and_reresolves(org_with_users):
+    from api.routers.github_linkage import _apply_org_identities
+    from auth.provisioning import ClerkGithubIdentity
+
+    org_id, add = org_with_users
+    stale_holder = await add("alice")  # renamed on GitHub; row is stale
+    reclaimer = await add("bob")  # actually owns "alice" per Clerk now
+
+    async with get_session() as session:
+        await _apply_org_identities(
+            session,
+            {
+                reclaimer.id: ClerkGithubIdentity(
+                    username="alice", email=None, github_id=None
+                )
+            },
+        )
+
+    async with get_session() as session:
+        resolved = await resolve_connected_user(
+            session, org_id=org_id, github_id=None, github_username="alice"
+        )
+        assert resolved is not None and resolved.id == reclaimer.id
+        cleared = await session.get(UserModel, stale_holder.id)
+        assert cleared.github_username is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_refresh_settles_intra_batch_handle_swap(org_with_users):
+    from api.routers.github_linkage import _apply_org_identities
+    from auth.provisioning import ClerkGithubIdentity
+
+    org_id, add = org_with_users
+    user_a = await add("alice")
+    user_b = await add("bob")
+    # Third STALE holder of "alice" outside the batch: without the demote the
+    # swap leaves two "alice" holders and the exact-one resolver fails closed.
+    stale_third = await add("alice")
+
+    async with get_session() as session:
+        await _apply_org_identities(
+            session,
+            {
+                user_a.id: ClerkGithubIdentity(
+                    username="bob", email=None, github_id=None
+                ),
+                user_b.id: ClerkGithubIdentity(
+                    username="alice", email=None, github_id=None
+                ),
+            },
+        )
+
+    async with get_session() as session:
+        a_owner = await resolve_connected_user(
+            session, org_id=org_id, github_id=None, github_username="bob"
+        )
+        b_owner = await resolve_connected_user(
+            session, org_id=org_id, github_id=None, github_username="alice"
+        )
+        assert a_owner is not None and a_owner.id == user_a.id
+        assert b_owner is not None and b_owner.id == user_b.id
+        demoted = await session.get(UserModel, stale_third.id)
+        assert demoted.github_username is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_refresh_skips_handle_contested_within_the_batch(org_with_users):
+    """Two batch identities claiming the SAME handle is no-information: the
+    refresh must change nothing for that handle (demoting the current holder
+    and double-assigning would create the very outage it exists to fix) while
+    still applying the batch's uncontested identities (skip, not no-op)."""
+    from api.routers.github_linkage import _apply_org_identities
+    from auth.provisioning import ClerkGithubIdentity
+
+    org_id, add = org_with_users
+    holder = await add("alice")
+    claimant_one = await add("bob")
+    claimant_two = await add("carol")
+    renamer = await add("dave")  # uncontested rename in the same batch
+
+    async with get_session() as session:
+        await _apply_org_identities(
+            session,
+            {
+                claimant_one.id: ClerkGithubIdentity(
+                    username="alice", email=None, github_id=None
+                ),
+                claimant_two.id: ClerkGithubIdentity(
+                    username="Alice", email=None, github_id=None
+                ),
+                renamer.id: ClerkGithubIdentity(
+                    username="dave-renamed", email=None, github_id=None
+                ),
+            },
+        )
+
+    async with get_session() as session:
+        resolved = await resolve_connected_user(
+            session, org_id=org_id, github_id=None, github_username="alice"
+        )
+        assert resolved is not None and resolved.id == holder.id
+        one = await session.get(UserModel, claimant_one.id)
+        two = await session.get(UserModel, claimant_two.id)
+        assert one.github_username == "bob"
+        assert two.github_username == "carol"
+        # The uncontested identity in the same batch WAS applied: the skip is
+        # targeted at the contested handle, not a blanket no-op.
+        renamed = await session.get(UserModel, renamer.id)
+        assert renamed.github_username == "dave-renamed"

@@ -387,13 +387,14 @@ redeploy of code:
    limit=…`) but never raise. Scrape those logs to enumerate who *would* be
    blocked and which submissions have an unresolved payer (`billed_user_id`
    None — an unlinked GitHub author); notify those users to link at oddish.app.
-3. **`enforce`** — over-budget submissions get HTTP **402**
-   `{message, used_usd, limit_usd, period}`; an unattributable run gets **403**.
+3. **`enforce`** — over-budget submissions get HTTP **402** with
+   `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
+   unattributable run gets **403**.
 
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
-API startup verifies `trials.billed_user_id` + its partial index exist and
+API startup verifies `trials.billed_user_id` and the `quotas` table exist and
 otherwise forces `off` (fail-safe, never a silent SUM fail-open). Tune
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` and `ODDISH_PENDING_TRIAL_RESERVATION_USD`
 without a code change.

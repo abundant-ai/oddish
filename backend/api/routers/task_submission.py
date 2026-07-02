@@ -309,7 +309,11 @@ async def maybe_publish_experiment(
 ) -> None:
     should_publish = submission.publish_experiment
     if should_publish is None:
-        should_publish = bool(submission.github_username and auth.api_key_id)
+        # Either github identity counts: github_id-only submissions no longer
+        # auto-fill a handle (explicit github_id suppresses the autofill).
+        should_publish = bool(
+            (submission.github_username or submission.github_id) and auth.api_key_id
+        )
     if not should_publish:
         return
 
