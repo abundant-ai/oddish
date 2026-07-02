@@ -457,6 +457,24 @@ async def test_endpoint_unlinked_returns_false(client, org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_endpoint_blank_actor_id_falls_back_to_handle(client, org_with_users):
+    """A blank actor_id query param is an absent id, so the handle still
+    resolves — matching the sweep transport's blank-is-absent normalization."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    key_id, raw = await _seed_key(org_id)
+    try:
+        for blank in ("", "   "):
+            resp = await _linkage(client, raw, "alice", actor_id=blank)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["linked"] is True and body["user_id"] == alice.id
+    finally:
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_endpoint_ambiguous_not_linked_not_500(client, org_with_users):
     """Cases 3 + 22 (endpoint): two users share the handle → {linked: false},
     NOT a 500; the endpoint shares the exactly-one predicate with the sweep."""

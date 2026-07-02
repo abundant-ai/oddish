@@ -154,7 +154,10 @@ async def _resolve_connected_user(
     github_id: str | None,
     github_username: str | None,
 ) -> UserModel | None:
-    if github_id is not None:
+    # A blank id is an absent id on every transport (schema-normalized
+    # submissions and raw query params alike).
+    github_id = (github_id or "").strip() or None
+    if github_id:
         return await _lookup_user_by_github_id(
             session, github_id=github_id, org_id=org_id
         )
