@@ -58,6 +58,7 @@ class CachedAuthData:
     user_email: str | None = None
     user_role: UserRole | None = None
     api_key_id: str | None = None
+    api_key_created_by_role: str | None = None
     scope: APIKeyScope = APIKeyScope.FULL
 
 

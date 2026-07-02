@@ -113,6 +113,7 @@ async def create_api_key_endpoint(
             name=request.name,
             scope=scope,
             created_by_user_id=auth.user_id,
+            created_by_role=auth.user_role.value if auth.user_role else None,
             expires_at=expires_at,
         )
         session.add(api_key_model)

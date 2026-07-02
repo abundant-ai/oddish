@@ -38,14 +38,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -183,6 +175,8 @@ interface APIKeyPermissions {
   allowed_scopes: string[];
 }
 
+const VISIBLE_API_KEY_LIMIT = 8;
+
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "—";
   return new Date(dateStr).toLocaleDateString(undefined, {
@@ -201,6 +195,13 @@ function formatDateTime(dateStr: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function getScopeLabel(scope: string): string {
+  if (scope === "full") return "Full access";
+  if (scope === "tasks") return "Tasks";
+  if (scope === "read") return "Read only";
+  return scope;
 }
 
 function ScopeBadge({ scope }: { scope: string }) {
@@ -531,6 +532,7 @@ function APIKeysPanel() {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [showAllKeys, setShowAllKeys] = useState(false);
 
   const {
     data: keys,
@@ -545,6 +547,21 @@ function APIKeysPanel() {
   const canManageAPIKeys = permissions?.can_manage ?? false;
   const allowedScopes = permissions?.allowed_scopes ?? [];
   const createRestriction = "Only Abundant org members can create API keys.";
+  const visibleKeys = showAllKeys
+    ? (keys ?? [])
+    : (keys ?? []).slice(0, VISIBLE_API_KEY_LIMIT);
+  const hiddenKeyCount = Math.max(
+    0,
+    (keys?.length ?? 0) - VISIBLE_API_KEY_LIMIT
+  );
+  const activeKeyCount = keys?.filter((key) => key.is_active).length ?? 0;
+  const recentlyUsedCount =
+    keys?.filter((key) => Boolean(key.last_used_at)).length ?? 0;
+  const scopeCounts =
+    keys?.reduce<Record<string, number>>((counts, key) => {
+      counts[key.scope] = (counts[key.scope] ?? 0) + 1;
+      return counts;
+    }, {}) ?? {};
 
   const handleRevoke = async () => {
     if (!revokeTarget) return;
@@ -633,60 +650,101 @@ function APIKeysPanel() {
             ) : null}
           </div>
         ) : (
-          <div className="border-border overflow-hidden rounded-lg border">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="h-9 text-xs">Name</TableHead>
-                  <TableHead className="h-9 text-xs">Key</TableHead>
-                  <TableHead className="h-9 text-xs">Scope</TableHead>
-                  <TableHead className="h-9 text-xs">Last used</TableHead>
-                  <TableHead className="h-9 text-xs">Created</TableHead>
-                  <TableHead className="h-9 w-10"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {keys.map((key) => (
-                  <TableRow
-                    key={key.id}
-                    className={cn(
-                      "border-border/70",
-                      !key.is_active && "opacity-50"
-                    )}
-                  >
-                    <TableCell className="py-2.5 font-medium">
-                      {key.name}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground py-2.5 font-mono text-xs">
-                      {key.key_prefix}…
-                    </TableCell>
-                    <TableCell className="py-2.5">
+          <div className="flex flex-col gap-4">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Active keys
+                </p>
+                <p className="text-foreground mt-1 text-2xl font-semibold">
+                  {activeKeyCount}
+                </p>
+              </div>
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Used keys
+                </p>
+                <p className="text-foreground mt-1 text-2xl font-semibold">
+                  {recentlyUsedCount}
+                </p>
+              </div>
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Scopes
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {Object.entries(scopeCounts).map(([scope, count]) => (
+                    <Badge key={scope} variant="secondary" className="text-xs">
+                      {getScopeLabel(scope)} · {count}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  Recent keys
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Showing {visibleKeys.length} of {keys.length}
+                </p>
+              </div>
+              {hiddenKeyCount > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowAllKeys((value) => !value)}
+                >
+                  {showAllKeys ? "Show fewer" : `Show all ${keys.length}`}
+                </Button>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {visibleKeys.map((key) => (
+                <div
+                  key={key.id}
+                  className={cn(
+                    "border-border bg-background flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between",
+                    !key.is_active && "opacity-50"
+                  )}
+                >
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="text-foreground truncate text-sm font-medium">
+                        {key.name}
+                      </p>
                       <ScopeBadge scope={key.scope} />
-                    </TableCell>
-                    <TableCell className="text-muted-foreground py-2.5 text-sm">
+                    </div>
+                    <p className="text-muted-foreground mt-1 font-mono text-xs">
+                      {key.key_prefix}… · Last used{" "}
                       {formatDateTime(key.last_used_at)}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground py-2.5 text-sm">
-                      {formatDate(key.created_at)}
-                    </TableCell>
-                    <TableCell className="py-2.5 text-right">
-                      {canManageAPIKeys && key.is_active && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setRevokeTarget(key)}
-                          disabled={revoking === key.id}
-                          className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
-                          aria-label={`Revoke ${key.name}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <div className="text-muted-foreground text-xs sm:text-right">
+                      <p>Created {formatDate(key.created_at)}</p>
+                      <p>Expires {formatDate(key.expires_at)}</p>
+                    </div>
+                    {canManageAPIKeys && key.is_active ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setRevokeTarget(key)}
+                        disabled={revoking === key.id}
+                        className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
+                        aria-label={`Revoke ${key.name}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
