@@ -30,6 +30,7 @@ class AuthContext:
     user_role: UserRole | None = None
     api_key_id: str | None = None
     api_key: APIKeyModel | None = None
+    api_key_created_by_role: str | None = None
     scope: APIKeyScope = APIKeyScope.FULL
 
     @property
@@ -42,8 +43,7 @@ class AuthContext:
         return (
             self.method == AuthMethod.API_KEY
             and self.scope == APIKeyScope.TASKS
-            and self.user_id is not None
-            and self.user_role != UserRole.ADMIN
+            and self.api_key_created_by_role != UserRole.ADMIN.value
         )
 
     def require_scope(
