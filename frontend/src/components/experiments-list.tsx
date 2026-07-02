@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/popover";
 import { cn, encodeExperimentRouteParam } from "@/lib/utils";
 
-export type ExperimentRef = { id: string; name: string };
+type ExperimentRef = { id: string; name: string };
 
 /**
  * Renders the experiments a task belongs to. Shows the first `maxVisible`

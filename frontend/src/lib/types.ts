@@ -753,12 +753,12 @@ export interface CostExperimentBreakdown {
   models: CostModelBreakdown[];
 }
 
-export interface CostSeriesKey {
+interface CostSeriesKey {
   key: string;
   label: string;
 }
 
-export interface CostSeriesBucket {
+interface CostSeriesBucket {
   bucket_start: string;
   cost_usd: number;
   trial_count: number;
@@ -771,7 +771,7 @@ export interface CostSeries {
   buckets: CostSeriesBucket[];
 }
 
-export interface CostTotals {
+interface CostTotals {
   window_days: number | null;
   trial_count: number;
   experiment_count: number;
@@ -808,13 +808,4 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
-}
-
-export interface ExperimentProbeRow {
-  task_id: string;
-  task_name: string;
-  version: number | null;
-  model: string | null;
-  status: string;
-  probe_trial_id: string;
 }
