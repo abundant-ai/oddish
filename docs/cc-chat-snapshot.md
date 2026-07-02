@@ -12,7 +12,7 @@ tool that's already present), cutting provisioning to a few seconds.
 ## What the snapshot must contain
 
 The runtime checks for these exact paths/imports and only skips the install
-when they're satisfied (see `claude_code_runtime.py`):
+when they're satisfied (see `backend/api/services/cc_chat/claude_code_runtime.py`):
 
 - `test -x /home/daytona/.npm-global/bin/claude` succeeds, **and**
 - `python -c 'import harbor'` succeeds (harbor `0.5.0`).
@@ -64,4 +64,5 @@ tools already exist. Unset the var to fall back to the default image + install.
 
 Bump the snapshot name (`-v2`, …) and update the env var whenever claude-code
 or harbor needs upgrading; old chats are ephemeral so nothing pins the old one.
-Keep the harbor version here in sync with `claude_code_runtime.py`.
+Keep the harbor version here in sync with
+`backend/api/services/cc_chat/claude_code_runtime.py`.
