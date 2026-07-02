@@ -10,6 +10,7 @@ from auth.provisioning import (
     _mark_github_id_checked,
     _set_github_id_if_absent,
     fetch_github_identity_from_clerk,
+    github_id_recheck_cutoff_iso,
 )
 from models import UserModel
 from oddish.db import get_session
@@ -47,6 +48,7 @@ async def backfill_github_id(
     summary = BackfillSummary()
     semaphore = asyncio.Semaphore(max(1, concurrency))
     after_id: str | None = None
+    cutoff_iso = github_id_recheck_cutoff_iso()
 
     async def _fetch(user: UserModel):
         async with semaphore:
@@ -74,6 +76,8 @@ async def backfill_github_id(
                     or_(
                         UserModel.attribution_cache.is_(None),
                         ~UserModel.attribution_cache.has_key("github_id_checked"),
+                        UserModel.attribution_cache["github_id_checked"].astext
+                        < cutoff_iso,
                     )
                 )
             )

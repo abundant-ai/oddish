@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 import backfill_github_id as job
-from auth.provisioning import ClerkGithubIdentity
+from auth.provisioning import GITHUB_ID_RECHECK_TTL, ClerkGithubIdentity
 from models import OrganizationModel, UserModel, UserRole
 from oddish.db import get_session
 
@@ -390,5 +390,82 @@ async def test_fetch_errors_not_stamped_and_rescanned(monkeypatch) -> None:
         second = await job.backfill_github_id(delay_seconds=0.0)
         assert second.scanned >= 1  # re-scanned, not excluded
         assert await _github_id_of(user.id) == "laterid"
+    finally:
+        await _purge(org_id)
+
+
+def _stale_marker() -> str:
+    stale = datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
+    return stale.isoformat()
+
+
+def _fresh_marker() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_stale_marker_rows_reenter_scan_and_fill(monkeypatch) -> None:
+    """Self-heal: a row stamped checked-absent longer ago than the TTL re-enters the
+    scan and gets its github_id filled once Clerk now returns one."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id, attribution_cache={"github_id_checked": _stale_marker()})
+    _mock_clerk(
+        monkeypatch,
+        {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "healed")},
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert summary.set == 1
+        assert await _github_id_of(user.id) == "healed"
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_stale_marker_still_no_github_restamped(monkeypatch) -> None:
+    """A stale-marker row that Clerk still reports as no-github re-enters the scan
+    and is re-stamped with a fresh timestamp."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    old = _stale_marker()
+    user = _user(org_id, attribution_cache={"github_id_checked": old})
+    _mock_clerk(monkeypatch, {user.clerk_user_id: ClerkGithubIdentity(None, None, None)})
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert summary.scanned >= 1
+        cache = await _cache_of(user.id)
+        assert isinstance(cache, dict)
+        assert cache.get("github_id_checked") > old
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_fresh_marker_rows_excluded_from_scan(monkeypatch) -> None:
+    """A row stamped checked-absent within the TTL stays excluded from the scan."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    fresh = _fresh_marker()
+    user = _user(org_id, attribution_cache={"github_id_checked": fresh})
+    _mock_clerk(
+        monkeypatch,
+        {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "shouldnotfill")},
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert summary.scanned == 0
+        assert await _github_id_of(user.id) is None
+        cache = await _cache_of(user.id)
+        assert isinstance(cache, dict) and cache.get("github_id_checked") == fresh
     finally:
         await _purge(org_id)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
@@ -16,6 +16,33 @@ logger = logging.getLogger(__name__)
 
 # Clerk secret key for API access
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
+
+# A checked-absent marker older than this is treated as UNchecked everywhere so a
+# user who links GitHub after being stamped self-heals on the next refresh/backfill.
+GITHUB_ID_RECHECK_TTL = timedelta(hours=1)
+
+
+def _github_id_checked_iso(now: datetime | None = None) -> str:
+    return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+
+
+def github_id_recheck_cutoff_iso(now: datetime | None = None) -> str:
+    reference = now or datetime.now(timezone.utc)
+    return _github_id_checked_iso(reference - GITHUB_ID_RECHECK_TTL)
+
+
+def _marker_is_fresh(marker: object, now: datetime | None = None) -> bool:
+    if not isinstance(marker, str):
+        return False
+    try:
+        stamped = datetime.fromisoformat(marker)
+    except ValueError:
+        return False
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=timezone.utc)
+    reference = now or datetime.now(timezone.utc)
+    return stamped > reference - GITHUB_ID_RECHECK_TTL
+
 
 # In preview Modal apps the seeded org is throwaway — let JIT-provisioned
 # users land as ADMIN so they can manage users etc. Prod stays MEMBER.
@@ -185,7 +212,7 @@ def _seed_attribution_cache_from_github(
 def _mark_github_id_checked(user: UserModel) -> None:
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
     cache = dict(raw)
-    cache["github_id_checked"] = datetime.now(timezone.utc).isoformat()
+    cache["github_id_checked"] = _github_id_checked_iso()
     user.attribution_cache = cache
 
 
@@ -195,8 +222,8 @@ async def _refresh_user_github_identity(
     if not user.clerk_user_id:
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    github_id_known = bool(user.github_id) or isinstance(
-        raw.get("github_id_checked"), str
+    github_id_known = bool(user.github_id) or _marker_is_fresh(
+        raw.get("github_id_checked")
     )
     # Avoid a hot-path Clerk GET just to backfill github_id.
     if user.github_username and isinstance(raw.get("refreshed_at"), str) and github_id_known:

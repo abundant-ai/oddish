@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 import auth.provisioning as prov
 from auth.provisioning import (
+    GITHUB_ID_RECHECK_TTL,
     ClerkGithubIdentity,
     _github_account_from_clerk_payload,
     _refresh_user_github_identity,
@@ -208,6 +209,78 @@ async def test_refresh_stamps_marker_and_skips_second_fetch(monkeypatch) -> None
     await _refresh_user_github_identity(user)
     assert calls == 1  # marker short-circuits the second refresh
     assert user.github_id is None
+
+
+def _stale_marker() -> str:
+    stale = datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
+    return stale.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_refresh_fresh_marker_skips_clerk(monkeypatch) -> None:
+    """A fresh (< TTL) checked-absent marker still short-circuits the refresh: no
+    Clerk GET, github_id stays None."""
+    called = False
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal called
+        called = True
+        return ClerkGithubIdentity(username="octocat", email=None, github_id="fresh")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username="octocat",
+        github_id=None,
+        attribution_cache={"github_id_checked": datetime.now(timezone.utc).isoformat()},
+    )
+    await _refresh_user_github_identity(user)
+    assert called is False
+    assert user.github_id is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_stale_marker_refetches_and_claims_github_id(monkeypatch) -> None:
+    """Codex MAJOR end-to-end: a user stamped checked-absent who later links GitHub
+    self-heals. Once the marker is older than the TTL, refresh re-fetches Clerk and
+    claims the now-present github_id."""
+    called = False
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal called
+        called = True
+        return ClerkGithubIdentity(username="octocat", email=None, github_id="linked")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username="octocat",
+        github_id=None,
+        attribution_cache={"github_id_checked": _stale_marker()},
+    )
+    await _refresh_user_github_identity(user)
+    assert called is True
+    assert user.github_id == "linked"
+
+
+@pytest.mark.asyncio
+async def test_refresh_stale_marker_still_no_github_restamps(monkeypatch) -> None:
+    """A stale marker + still-no-github answer re-fetches and re-stamps the marker
+    with a fresh timestamp (so the TTL window restarts)."""
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        return ClerkGithubIdentity(None, None, None)
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    old = _stale_marker()
+    user = _user(
+        github_username="octocat",
+        github_id=None,
+        attribution_cache={"github_id_checked": old},
+    )
+    await _refresh_user_github_identity(user)
+    assert user.github_id is None
+    new = user.attribution_cache.get("github_id_checked")
+    assert isinstance(new, str) and new > old
+    # The fresh restamp short-circuits a subsequent refresh.
+    assert prov._marker_is_fresh(new)
 
 
 @pytest.mark.asyncio

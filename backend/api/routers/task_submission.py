@@ -188,8 +188,8 @@ async def require_connected_github_user(
             detail=(
                 f"GitHub account {submission.github_id} is not connected to an "
                 "oddish user in this org. Sign in at https://oddish.app and link "
-                "your GitHub account, then rerun. If you linked recently, the sync "
-                "may take a few minutes."
+                "your GitHub account, then rerun. If you linked your GitHub account "
+                "recently, it can take up to an hour to sync."
             ),
         )
     return user
