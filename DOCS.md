@@ -22,12 +22,13 @@ export ODDISH_API_KEY="ok_..."
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
-- `oddish cancel` - stop in-flight task runs, analysis, or verdict jobs
+- `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish delete` - delete task data
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
+- `oddish probe` - internal probe-trial helpers
 
 Every command accepts `--json` for machine-readable output (CI / scripts / agents).
 
@@ -346,11 +347,14 @@ Options
 
 ## Delete Data
 
-Use `oddish delete` to delete experiments or trials.
+Use `oddish delete` to delete tasks, experiments, or trials.
 
 ```bash
 # Delete an experiment
 oddish delete --experiment <experiment_id>
+
+# Delete a task
+oddish delete <task_id>
 
 # Delete one or more trials and emit a JSON result
 oddish delete --trial <trial_id> --json

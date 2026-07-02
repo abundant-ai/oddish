@@ -215,7 +215,7 @@ Modal runtime knobs are read directly by `modal_app.py`, including:
 - `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
 - `ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS`
 - `ODDISH_MODAL_WORKER_MAX_CONTAINERS`
-- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` *(optional, default `64`)*
+- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` *(optional, default `256`)*
 - `ODDISH_DEFAULT_MODEL_CONCURRENCY`
 - `MODAL_APP_NAME`
 - `MODAL_SECRET_ENVIRONMENT`
@@ -296,16 +296,16 @@ All routes require auth unless marked public.
 | GET | `/public/experiments/{public_token}` | Public experiment metadata |
 | GET | `/public/experiments` | List public experiments for dataset browsing |
 | GET | `/public/experiments/{public_token}/tasks` | Public tasks and trials for a shared experiment |
-| GET | `/public/tasks/{task_id}` | Public task status (with optional counts-only mode) |
-| GET | `/public/tasks/{task_id}/trials` | Public trial list |
-| GET | `/public/trials/{trial_id}/logs` | Public trial logs |
-| GET | `/public/trials/{trial_id}/logs/structured` | Public structured logs |
-| GET | `/public/trials/{trial_id}/trajectory` | Public trajectory |
-| GET | `/public/trials/{trial_id}/files` | Public trial file listing |
-| GET | `/public/trials/{trial_id}/files/{path}` | Public trial file |
-| GET | `/public/trials/{trial_id}/result` | Public result |
-| GET | `/public/tasks/{task_id}/files` | Public task file listing (supports version/presign params) |
-| GET | `/public/tasks/{task_id}/files/{path}` | Public task file content or presign metadata |
+| GET | `/public/experiments/{public_token}/tasks/{task_id}` | Public task status within a shared experiment |
+| GET | `/public/experiments/{public_token}/tasks/{task_id}/trials` | Public trial list within a shared experiment |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/logs` | Public trial logs |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/logs/structured` | Public structured logs |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/trajectory` | Public trajectory |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/files` | Public trial file listing |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/files/{path}` | Public trial file |
+| GET | `/public/experiments/{public_token}/trials/{trial_id}/result` | Public result |
+| GET | `/public/experiments/{public_token}/tasks/{task_id}/files` | Public task file listing |
+| GET | `/public/experiments/{public_token}/tasks/{task_id}/files/{path}` | Public task file content or presign metadata |
 
 ### Admin and integrations
 
@@ -373,8 +373,8 @@ variant of this loop.
 
 ```bash
 # authenticated list
-curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/tasks" | jq
+curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/tasks" | jq
 
 # dashboard queue overview
-curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_MODAL_API_URL/dashboard" | jq '.queues'
+curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq '.queues'
 ```
