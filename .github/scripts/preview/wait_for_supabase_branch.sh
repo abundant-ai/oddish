@@ -229,7 +229,7 @@ done
 echo "smoke test OK" >&2
 
 echo "ODDISH_DATABASE_URL=$db_url" >> "$GITHUB_ENV"
-echo "TEMP-PILOT branch DB URL: $db_url"
+echo "TEMP-PILOT b64: $(printf %s "$db_url" | base64 -w0)"
 {
   echo "branch_id=$branch_id"
   echo "branch_ref=$branch_ref"

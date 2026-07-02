@@ -49,3 +49,5 @@ oddish-pulls/
 /ABI-69-notes.md
 /.junie/
 
+# Added by code-review-graph
+.code-review-graph/
