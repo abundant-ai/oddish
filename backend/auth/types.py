@@ -36,7 +36,22 @@ class AuthContext:
     def is_authenticated(self) -> bool:
         return self.org_id is not None
 
-    def require_scope(self, required: APIKeyScope) -> None:
+    @property
+    def is_member_created_api_key(self) -> bool:
+        """Return whether this request uses a TASKS key minted by a non-admin."""
+        return (
+            self.method == AuthMethod.API_KEY
+            and self.scope == APIKeyScope.TASKS
+            and self.user_id is not None
+            and self.user_role != UserRole.ADMIN
+        )
+
+    def require_scope(
+        self,
+        required: APIKeyScope,
+        *,
+        allow_member_created_task_key: bool = True,
+    ) -> None:
         """Raise 403 if current scope is insufficient."""
         # Scope hierarchy: FULL > TASKS > READ
         scope_level = {APIKeyScope.READ: 1, APIKeyScope.TASKS: 2, APIKeyScope.FULL: 3}
@@ -47,4 +62,13 @@ class AuthContext:
                     "Insufficient scope. "
                     f"Required: {required.value}, got: {self.scope.value}"
                 ),
+            )
+        if (
+            required == APIKeyScope.TASKS
+            and not allow_member_created_task_key
+            and self.is_member_created_api_key
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Member-created API keys cannot perform this operation",
             )
