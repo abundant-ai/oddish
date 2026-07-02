@@ -131,3 +131,90 @@ async def test_rejects_cross_org_trial(session):
             session, name="c", trial_ids=[other.id], org_id="org1"
         )
     assert exc.value.status_code == 404
+
+
+from datetime import datetime, timezone
+
+from oddish.db.models import TaskVersionModel, TrialStatus
+
+
+def _version(task, n: int) -> TaskVersionModel:
+    return TaskVersionModel(
+        id=f"{task.id}-v{n}", task_id=task.id, version=n, task_path=f"s3://t/{task.id}/v{n}"
+    )
+
+
+def _ver_trial(task, home, version_id, *, status=TrialStatus.SUCCESS,
+               is_probe=False, superseded=None, org_id="org1") -> TrialModel:
+    t = _trial(task, home, org_id=org_id)
+    t.task_version_id = version_id
+    t.status = status
+    t.is_probe = is_probe
+    t.superseded_by_trial_id = superseded
+    return t
+
+
+@pytest.mark.asyncio
+async def test_task_mode_links_only_current_version_terminal_trials(session):
+    task = _task("cbt-task")
+    session.add(task)
+    await session.flush()
+    v1, v2 = _version(task, 1), _version(task, 2)
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+    await session.flush()
+
+    home = _experiment("home")
+    session.add(home)
+    await session.flush()
+
+    keep_a = _ver_trial(task, home, v2.id, status=TrialStatus.SUCCESS)
+    keep_b = _ver_trial(task, home, v2.id, status=TrialStatus.FAILED)
+    old = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)       # old version
+    pending = _ver_trial(task, home, v2.id, status=TrialStatus.PENDING)   # not terminal
+    probe = _ver_trial(task, home, v2.id, is_probe=True)                  # probe
+    sup = _ver_trial(task, home, v2.id, superseded=keep_a.id)             # superseded
+    session.add_all([keep_a, keep_b, old, pending, probe, sup])
+    await session.flush()
+
+    resp = await create_trial_collection_core(
+        session, name="c", task_ids=[task.name], org_id="org1"
+    )
+    await session.flush()
+
+    linked = set((await session.execute(
+        select(experiment_trials.c.trial_id).where(
+            experiment_trials.c.experiment_id == resp.id
+        )
+    )).scalars().all())
+    assert linked == {keep_a.id, keep_b.id}
+    assert resp.trials_linked == 2
+    assert resp.trials_from_tasks == 2
+
+
+@pytest.mark.asyncio
+async def test_task_not_found_raises_404(session):
+    with pytest.raises(HTTPException) as ei:
+        await create_trial_collection_core(
+            session, name="c", task_ids=["nope"], org_id="org1"
+        )
+    assert ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_empty_task_is_skipped_and_counted(session):
+    task = _task("empty-task")
+    session.add(task)
+    await session.flush()
+    v1 = _version(task, 1)
+    session.add(v1)
+    await session.flush()
+    task.current_version_id = v1.id
+    await session.flush()
+    # no trials for v1 -> whole set empty -> 400
+    with pytest.raises(HTTPException) as ei:
+        await create_trial_collection_core(
+            session, name="c", task_ids=[task.name], org_id="org1"
+        )
+    assert ei.value.status_code == 400
