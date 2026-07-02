@@ -1,4 +1,4 @@
-import { Github } from "lucide-react";
+import { Github } from "@lobehub/icons";
 
 import { Button } from "@/components/ui/button";
 
