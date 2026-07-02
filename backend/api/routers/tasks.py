@@ -70,6 +70,7 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
+    require_experiment_publish_scope,
     resolve_actor_user_string,
     resolve_created_by_user_id,
     resolve_experiment_owner_user_id,
@@ -257,6 +258,7 @@ async def create_task_sweep(
             await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
+            require_experiment_publish_scope(auth)
             await ensure_experiment_public(session, experiment)
 
         await session.commit()
@@ -317,6 +319,7 @@ async def create_task_sweep_batch(
                 task.created_by_user_id = created_by_user_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
+            require_experiment_publish_scope(auth)
             await ensure_experiment_public(session, experiment)
 
     async with get_session() as session:
