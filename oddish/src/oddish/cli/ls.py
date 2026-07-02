@@ -461,16 +461,25 @@ def ls(
     _num("pass_rate_min", pass_rate_min)
     _num("pass_rate_max", pass_rate_max)
     _str("sort", sort)
-    _str("compare_by", compare_by)
-    _str("compare_a", compare_a)
-    _str("compare_b", compare_b)
-    _str("compare_metric", compare_metric)
-    _str("compare_agg", compare_agg)
-    _num("compare_margin", compare_margin)
-    _str("compare_margin_unit", compare_margin_unit)
-    _str("top_by", top_by)
-    _str("top_value", top_value)
-    _str("top_metric", top_metric)
+    # Compare — mirror the UI's filterParams(): only emit as a complete,
+    # defaulted group when a distinct A/B pair is given. The backend skips the
+    # comparison unless compare_by + compare_metric + compare_a + compare_b are
+    # all present (it defaults compare_agg itself), so forwarding partial flags
+    # would silently return unfiltered results.
+    if compare_a and compare_b and compare_a != compare_b:
+        params["compare_by"] = compare_by or "agent"
+        params["compare_a"] = compare_a
+        params["compare_b"] = compare_b
+        params["compare_metric"] = compare_metric or "reward"
+        params["compare_agg"] = compare_agg or "best"
+        if compare_margin is not None:
+            params["compare_margin"] = compare_margin
+            params["compare_margin_unit"] = compare_margin_unit or "pct"
+    # Top performer — needs a subject value; default by/metric (mirrors the UI).
+    if top_value:
+        params["top_by"] = top_by or "agent"
+        params["top_value"] = top_value
+        params["top_metric"] = top_metric or "reward"
     _str("or_groups", or_groups)
 
     try:
