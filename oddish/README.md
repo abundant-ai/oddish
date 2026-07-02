@@ -59,11 +59,12 @@ reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results.
-- `oddish ls` / `oddish status` — browse tasks and inspect progress.
+- `oddish ls` / `oddish status` — browse tasks (name/tag filters) and inspect progress.
 - `oddish cancel` — cancel active runs or task-level QA.
 - `oddish pull` — download logs, results, trajectories, and artifacts.
 - `oddish combine` — merge finished trials from multiple experiments.
-- `oddish delete` — delete tasks, experiments, or trials.
+- `oddish collect` / `oddish experiment create` — build read-only trial collections; `collect` can auto-publish a share link.
+- `oddish delete` — delete trials (hosted) or tasks/experiments (self-host only).
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 

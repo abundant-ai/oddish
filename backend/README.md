@@ -201,24 +201,18 @@ pick it up:
   every statement's expression tree, which is meaningful overhead on
   hot paths.
 
-Modal runtime knobs are read directly by `modal_app.py`, including:
-
-- `ODDISH_ENABLE_MODAL_WORKERS`
-- `ODDISH_MODAL_API_MIN_CONTAINERS`
-- `ODDISH_MODAL_API_BUFFER_CONTAINERS`
-- `ODDISH_MODAL_API_MAX_CONTAINERS`
-- `ODDISH_MODAL_API_CONCURRENCY_TARGET`
-- `ODDISH_MODAL_API_CONCURRENCY_MAX`
-- `ODDISH_MODAL_POLL_INTERVAL_SECONDS`
-- `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`
-- `ODDISH_MODAL_WORKER_MIN_CONTAINERS`
-- `ODDISH_MODAL_WORKER_BUFFER_CONTAINERS`
-- `ODDISH_MODAL_WORKER_SCALEDOWN_WINDOW_SECONDS`
-- `ODDISH_MODAL_WORKER_MAX_CONTAINERS`
-- `ODDISH_MODAL_MAX_WORKERS_PER_POLL` *(optional, default `256`)*
-- `ODDISH_DEFAULT_MODEL_CONCURRENCY`
-- `MODAL_APP_NAME`
-- `MODAL_SECRET_ENVIRONMENT`
+Modal runtime knobs are read directly by `modal_app.py`, which is the source
+of truth for the full list and defaults. They cover worker enablement
+(`ODDISH_ENABLE_MODAL_WORKERS`), API/worker/dispatcher/reconciler container
+scaling and CPU/memory sizing (`ODDISH_MODAL_API_*`, `ODDISH_MODAL_WORKER_*`,
+`ODDISH_MODAL_DISPATCHER_*`, `ODDISH_MODAL_RECONCILER_*`), schedule intervals
+and timeouts (`ODDISH_MODAL_POLL_INTERVAL_SECONDS`,
+`ODDISH_MODAL_CLEANUP_*_SECONDS`, `ODDISH_MODAL_WORKER_TIMEOUT_SECONDS`),
+throughput (`ODDISH_MODAL_MAX_WORKERS_PER_POLL`, default `256`;
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS`, default `2688`), per-model concurrency
+(`ODDISH_DEFAULT_MODEL_CONCURRENCY`, `ODDISH_MODEL_CONCURRENCY_OVERRIDES`,
+`ODDISH_MODAL_NOP_ORACLE_CONCURRENCY`), and app naming (`MODAL_APP_NAME`,
+`MODAL_SECRET_ENVIRONMENT`).
 
 Local `backend/.env` values are layered on top of the shared Modal secret for local deploys.
 
@@ -247,7 +241,6 @@ All routes require auth unless marked public.
 | GET | `/tasks/browse` | Browse latest task versions with pagination and search |
 | GET | `/tasks/{task_id}` | Task details |
 | POST | `/tasks/cancel` | Cancel in-flight trials and queue jobs for one or more tasks (org-scoped); Modal workers terminated when applicable |
-| DELETE | `/tasks/{task_id}` | Delete task and queued jobs |
 | POST | `/tasks/{task_id}/qa/retry` | Re-run task QA: classify trials and synthesize the verdict |
 | POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
 | GET | `/tasks/{task_id}/trials` | Trials for task |
@@ -274,7 +267,8 @@ All routes require auth unless marked public.
 | PATCH | `/experiments/{experiment_id}` | Rename experiment |
 | POST | `/experiments/{experiment_id}/publish` | Publish experiment |
 | POST | `/experiments/{experiment_id}/unpublish` | Unpublish experiment |
-| DELETE | `/experiments/{experiment_id}` | Delete experiment + tasks/trials |
+| DELETE | `/experiments/{experiment_id}` | Soft-delete experiment + its trials and now-orphaned tasks (admin only) |
+| DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Unlink a shared task from one experiment (tombstones the join row + that experiment's trials; the task survives) |
 
 ### Organization and auth
 

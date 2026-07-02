@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -1305,16 +1304,6 @@ async def maybe_advance_legacy_analyzing_task(
 # =============================================================================
 
 
-async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task with all its trials."""
-    result = await session.execute(
-        select(TaskModel)
-        .options(selectinload(TaskModel.experiments))
-        .where(TaskModel.id == task_id)
-    )
-    return result.scalar_one_or_none()
-
-
 # Valid per-queue status buckets. Shared by the per-org and grouped-by-org
 # aggregators so both emit byte-identical queue-stat shapes.
 _VALID_QUEUE_STATUSES = {
@@ -1554,40 +1543,3 @@ async def get_queue_and_pipeline_stats_with_concurrency(
     """Collect queue and pipeline stats without duplicating status scans."""
     stats = await get_queue_stats(session, org_id)
     return _assemble_queue_and_pipeline(stats)
-
-
-async def get_pipeline_stats(session: AsyncSession, org_id: str | None = None) -> dict:
-    """Get statistics for each pipeline stage."""
-    trial_query = select(TrialModel.status, func.count(TrialModel.id)).group_by(
-        TrialModel.status
-    )
-    if org_id:
-        trial_query = trial_query.where(TrialModel.org_id == org_id)
-    trial_stats = await session.execute(trial_query)
-    trials = {status.value: count for status, count in trial_stats.all()}
-
-    analysis_query = (
-        select(TrialModel.analysis_status, func.count(TrialModel.id))
-        .where(TrialModel.analysis_status.isnot(None))
-        .group_by(TrialModel.analysis_status)
-    )
-    if org_id:
-        analysis_query = analysis_query.where(TrialModel.org_id == org_id)
-    analysis_stats = await session.execute(analysis_query)
-    analyses = {status.value: count for status, count in analysis_stats.all()}
-
-    verdict_query = (
-        select(TaskModel.verdict_status, func.count(TaskModel.id))
-        .where(TaskModel.verdict_status.isnot(None))
-        .group_by(TaskModel.verdict_status)
-    )
-    if org_id:
-        verdict_query = verdict_query.where(TaskModel.org_id == org_id)
-    verdict_stats = await session.execute(verdict_query)
-    verdicts = {status.value: count for status, count in verdict_stats.all()}
-
-    return {
-        "trials": trials,
-        "analyses": analyses,
-        "verdicts": verdicts,
-    }
