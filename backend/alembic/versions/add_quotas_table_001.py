@@ -32,11 +32,9 @@ def upgrade() -> None:
             user_id       VARCHAR(64) NOT NULL
                           REFERENCES users(id) ON DELETE CASCADE,
             limit_usd     NUMERIC(12, 4) NOT NULL,
-            period_kind   VARCHAR(16) NOT NULL DEFAULT 'daily',
             created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             deleted_at    TIMESTAMPTZ,
-            CONSTRAINT ck_quotas_period_kind CHECK (period_kind IN ('daily')),
             CONSTRAINT uq_quotas_org_user UNIQUE (org_id, user_id)
         )
         """

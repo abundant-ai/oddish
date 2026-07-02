@@ -17,9 +17,11 @@ export function QuotaUsageCard() {
   const { data, error, isLoading } = useSWR<QuotaUsage>("/api/quotas/me", fetcher);
 
   const used = data?.used_usd ?? 0;
+  const reserved = data?.reserved_usd ?? 0;
   const limit = data?.limit_usd ?? 0;
-  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
-  const over = limit > 0 && used >= limit;
+  const pct =
+    limit > 0 ? Math.min(100, ((used + reserved) / limit) * 100) : data ? 100 : 0;
+  const over = limit <= 0 || used + reserved >= limit;
   // Only enforcement actually blocks runs. Under off/shadow (the default ship
   // state), being over is informational and the UI must not claim runs are blocked.
   const blocked = over && data?.enforced === true;
@@ -42,6 +44,12 @@ export function QuotaUsageCard() {
               <span className="font-semibold">{formatDollars(used)}</span> of{" "}
               <span className="font-semibold">{formatDollars(limit)}</span> used
               today
+              {reserved > 0 ? (
+                <span className="text-muted-foreground">
+                  {" "}
+                  ({formatDollars(reserved)} reserved)
+                </span>
+              ) : null}
             </p>
             <div className="bg-muted-foreground/20 h-2 w-full overflow-hidden rounded-full">
               <div

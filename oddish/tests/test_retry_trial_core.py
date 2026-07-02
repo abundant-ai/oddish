@@ -21,12 +21,16 @@ from oddish.workers.harbor.outcome import HarborOutcome
 
 
 class _Result:
-    def __init__(self, scalar=None, rowcount=0):
+    def __init__(self, scalar=None, rowcount=0, rows=()):
         self._scalar = scalar
         self.rowcount = rowcount
+        self._rows = list(rows)
 
     def scalar_one_or_none(self):
         return self._scalar
+
+    def __iter__(self):
+        return iter(self._rows)
 
 
 class _RecordingTrial:
@@ -49,12 +53,21 @@ class _RecordingTrial:
         self.harbor_config = None
         self.is_probe = False
         self.max_attempts = 6
+        self.attempts = 1
         self.status = status
         self.error_message = error_message
         self.harbor_stage = None
         self.finished_at = None
         self.current_worker_id = None
         self.current_queue_slot = None
+        self.cost_usd = None
+        self.cost_settled_attempt = 0
+        self.deleted_at = None
+        self.input_tokens = None
+        self.cache_tokens = None
+        self.cache_write_tokens = None
+        self.output_tokens = None
+        self.total_steps = None
 
     @property
     def superseded_by_trial_id(self):
@@ -96,6 +109,10 @@ class _RecordingSession:
         self.events.append(("expire", None))
 
     async def scalar(self, _statement, _params=None):
+        sql = str(_statement)
+        if "SELECT deleted_at FROM tasks" in sql:
+            self.events.append(("scalar", "task_deleted_at"))
+            return None  # task still live
         self.events.append(("scalar", None))
         return self.registry_auth_enc
 
@@ -162,6 +179,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         "status": "queued",
         "trial_id": "task-1-1",
         "superseded_trial_id": "task-1-0",
+        "modal_function_call_ids": [],
     }
     event_names = [event[0] for event in events]
     assert event_names.index("add") < event_names.index("flush")

@@ -98,15 +98,17 @@ export function QuotaAdminForm() {
     if (raw === "") {
       payload = { limit_usd: null };
     } else {
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed <= 0 || parsed > MAX_LIMIT_USD) {
+      // Validate the 2dp value actually sent, not the raw parse (e.g. 0.001
+      // parses > 0 but rounds to "0.00", which the backend rejects).
+      const rounded = Number(Number(raw).toFixed(2));
+      if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
         setRowError((e) => ({
           ...e,
           [id]: "Enter an amount greater than 0, or leave empty to reset.",
         }));
         return;
       }
-      payload = { limit_usd: parsed.toFixed(2) };
+      payload = { limit_usd: rounded.toFixed(2) };
     }
 
     setSavingId(id);

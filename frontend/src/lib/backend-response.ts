@@ -89,16 +89,20 @@ export async function proxyBackendJson({
       } catch {
         return NextResponse.json(
           { error: "Upstream error" },
-          { status: res.status },
+          { status: res.ok ? 502 : res.status },
         );
       }
     }
 
-    return res.ok
-      ? NextResponse.json(data)
-      : NextResponse.json(data ?? { error: "Upstream error" }, {
-          status: res.status,
-        });
+    if (!res.ok) {
+      return NextResponse.json(data ?? { error: "Upstream error" }, {
+        status: res.status,
+      });
+    }
+    // A 2xx with no JSON body is not a success the client can use.
+    return data === null
+      ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
+      : NextResponse.json(data);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

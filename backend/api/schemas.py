@@ -42,7 +42,8 @@ class QuotaUsageResponse(BaseModel):
     user_id: str
     limit_usd: float
     used_usd: float
-    period: str
+    # In-flight trial reservations; admission blocks when used + reserved >= limit.
+    reserved_usd: float = 0
     # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
     # enforce). False under off/shadow, so the UI must not claim runs are blocked.
     enforced: bool = False
@@ -56,7 +57,6 @@ class QuotaMemberItem(BaseModel):
     role: str
     limit_usd: float
     used_usd: float
-    period: str
 
 
 class QuotaListResponse(BaseModel):

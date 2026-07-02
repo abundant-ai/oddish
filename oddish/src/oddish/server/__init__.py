@@ -661,11 +661,13 @@ async def retry_trial(
 ) -> dict:
     """Re-queue a failed or completed trial for another attempt."""
     async with get_session() as session:
-        return await retry_trial_core(
+        result = await retry_trial_core(
             session,
             trial_id=trial_id,
             registry_auth=(payload.registry_auth if payload else None),
         )
+    result.pop("modal_function_call_ids", None)
+    return result
 
 
 # =============================================================================

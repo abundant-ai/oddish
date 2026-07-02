@@ -1,5 +1,5 @@
 """S5-T9: the startup schema guard forces quota_mode=off (never crashes) when
-the quota schema is incomplete -- covering BOTH the trials column/index (oddish
+the quota schema is incomplete -- covering BOTH the trials column (oddish
 alembic tree) and the backend quotas table, which migrate separately.
 """
 

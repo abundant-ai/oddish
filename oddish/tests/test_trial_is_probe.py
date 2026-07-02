@@ -180,12 +180,16 @@ async def test_retry_preserves_is_probe(monkeypatch):
     from oddish.db import TaskStatus, TrialStatus
 
     class _Result:
-        def __init__(self, scalar=None, rowcount=0):
+        def __init__(self, scalar=None, rowcount=0, rows=()):
             self._scalar = scalar
             self.rowcount = rowcount
+            self._rows = list(rows)
 
         def scalar_one_or_none(self):
             return self._scalar
+
+        def __iter__(self):
+            return iter(self._rows)
 
     class _ProbeTrial:
         """A probe trial stub — is_probe=True."""

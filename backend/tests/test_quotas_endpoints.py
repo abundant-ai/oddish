@@ -173,7 +173,6 @@ async def test_admin_quota_list_shows_grouped_usage_and_default_limit(org_with_s
     assert members_by_id[member_a.id]["used_usd"] == pytest.approx(0.30)
     assert members_by_id[member_b.id]["used_usd"] == pytest.approx(0.0)
     assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(10.0)
-    assert members_by_id[member_b.id]["period"] == "daily"
 
 
 # --- S3-T4: /quotas/me returns ONLY the caller's usage --------------------------

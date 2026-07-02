@@ -412,7 +412,9 @@ export interface QuotaUsage {
   user_id: string;
   limit_usd: number;
   used_usd: number;
-  period: string;
+  // In-flight reservations; admission blocks when used + reserved >= limit.
+  // Absent on the admin member list.
+  reserved_usd?: number;
   // True only when quota_mode == enforce, i.e. exceeding the limit actually
   // blocks new billable runs. Absent on the admin member list.
   enforced?: boolean;
