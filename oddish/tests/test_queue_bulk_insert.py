@@ -125,9 +125,9 @@ async def test_recompute_called_once_on_create(monkeypatch, cleanup_task_ids):
             session, _submission("create-once", n_trials=2), task_id=task_id
         )
 
-    assert calls == [task_id], (
-        f"expected a single create-path recompute, got {len(calls)}: {calls}"
-    )
+    assert calls == [
+        task_id
+    ], f"expected a single create-path recompute, got {len(calls)}: {calls}"
 
 
 @pytest.mark.asyncio
@@ -404,9 +404,8 @@ async def _legacy_per_row_create(session, task_id, experiment_id, submission):
             queue_key=queue_key,
             model=model,
             timeout_minutes=spec.timeout_minutes,
-            environment=spec.environment or (
-                "modal" if (harbor_config or {}).get("mode") == "probe" else None
-            ),
+            environment=spec.environment
+            or ("modal" if (harbor_config or {}).get("mode") == "probe" else None),
             harbor_config=harbor_config,
             is_probe=(harbor_config or {}).get("mode") == "probe",
             max_attempts=submission.max_trial_attempts,

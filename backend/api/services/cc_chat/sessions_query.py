@@ -27,7 +27,9 @@ async def list_sessions(
         where.append(ChatSession.title.ilike(f"%{q.strip()}%"))
 
     total = (
-        await session.execute(select(func.count()).select_from(ChatSession).where(*where))
+        await session.execute(
+            select(func.count()).select_from(ChatSession).where(*where)
+        )
     ).scalar_one()
 
     # Page the sessions first (served by ix_chat_sessions_org_scope_activity),

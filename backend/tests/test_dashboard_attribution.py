@@ -222,14 +222,16 @@ def _compiled(statement) -> str:  # noqa: ANN001
 
 @pytest.mark.asyncio
 async def test_plural_github_lookup_unions_collisions_case_insensitively() -> None:
-    from api.routers.tasks import _lookup_users_by_github_username
+    from api.routers.task_submission import lookup_users_by_github_username
 
     u1 = _user(id="user_a", github_username="skylark")
     u2 = _user(id="user_b", github_username="skylark")
     session = _CapturingSession([u1, u2])
 
-    result = await _lookup_users_by_github_username(
-        session, github_username="@Skylark", org_id="org_1"
+    result = await lookup_users_by_github_username(
+        session,  # type: ignore[arg-type]
+        github_username="@Skylark",
+        org_id="org_1",
     )
 
     # scalars().all() (not scalar_one_or_none) -> collisions union, no raise.
@@ -242,12 +244,17 @@ async def test_plural_github_lookup_unions_collisions_case_insensitively() -> No
 
 @pytest.mark.asyncio
 async def test_plural_github_lookup_empty_token_returns_empty() -> None:
-    from api.routers.tasks import _lookup_users_by_github_username
+    from api.routers.task_submission import lookup_users_by_github_username
 
     session = _CapturingSession([])
-    assert await _lookup_users_by_github_username(
-        session, github_username="  @  ", org_id="org_1"
-    ) == []
+    assert (
+        await lookup_users_by_github_username(
+            session,  # type: ignore[arg-type]
+            github_username="  @  ",
+            org_id="org_1",
+        )
+        == []
+    )
     assert session.statements == []  # short-circuits before querying
 
 
@@ -257,7 +264,9 @@ async def test_match_authors_for_token_matches_email_or_name() -> None:
     session = _CapturingSession([user])
 
     result = await dashboard_attribution._match_authors_for_token(
-        session, org_id="org_1", token="Ada L"
+        session,  # type: ignore[arg-type]
+        org_id="org_1",
+        token="Ada L",
     )
 
     assert [u.id for u in result] == ["user_d"]  # deduped by id across both queries
@@ -356,7 +365,9 @@ async def test_resolve_search_authors_ignores_blank_tokens(monkeypatch) -> None:
     monkeypatch.setattr(dashboard_attribution, "_match_authors_for_token", _fake_match)
 
     user_ids, handles, emails = await resolve_search_authors(
-        None, org_id="org_1", tokens=["", "  ", None]  # type: ignore[list-item]
+        None,
+        org_id="org_1",
+        tokens=["", "  ", None],  # type: ignore[list-item]
     )
 
     assert (user_ids, handles, emails) == ((), (), ())

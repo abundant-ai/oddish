@@ -1032,7 +1032,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return null;
         const groups = parsed.filter(
-          (g): g is OrGroup => typeof g === "object" && g !== null
+          (g): g is OrGroup => typeof g === "object" && g !== null,
         );
         return groups.length ? groups : null;
       } catch {

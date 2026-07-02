@@ -1,8 +1,8 @@
 """TDD tests for Task 4: mint creds + upload CLI for all scopes."""
+
 import pytest
 from contextlib import asynccontextmanager
 
-from api.services.cc_chat.daytona_client import CreatedSandbox
 from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
 from tests.cc_chat.conftest import ORG
 
@@ -20,7 +20,9 @@ class _FakeDaytona:
         self.sandboxes: dict = {}
         self.uploaded_query_cli: bool = False
 
-    async def create_sandbox(self, *, env_vars, auto_stop_minutes, auto_delete_minutes, labels):
+    async def create_sandbox(
+        self, *, env_vars, auto_stop_minutes, auto_delete_minutes, labels
+    ):
         sbx = _FakeSandbox()
         self.last_env_vars = env_vars
         self.sandboxes[sbx.id] = {"env": env_vars, "files": {}}
@@ -57,6 +59,7 @@ async def test_all_scopes_get_cli_and_creds(scope, db):
         async def _cm():
             async with db() as s:
                 yield s
+
         return _cm()
 
     fake_daytona = _FakeDaytona()
@@ -68,7 +71,8 @@ async def test_all_scopes_get_cli_and_creds(scope, db):
         public_api_base_url="https://api.example",
     )
     session_id = await o.start(
-        org_id=ORG, user_id="u",
+        org_id=ORG,
+        user_id="u",
         scope_kind=scope,
         scope_id="sid",
         db_session_factory=factory,
@@ -88,6 +92,7 @@ async def test_missing_public_api_base_url_raises_for_all_scopes(db):
         async def _cm():
             async with db() as s:
                 yield s
+
         return _cm()
 
     for scope in ["experiment", "task", "task_probes", "global"]:
@@ -100,7 +105,8 @@ async def test_missing_public_api_base_url_raises_for_all_scopes(db):
         )
         with pytest.raises(RuntimeError):
             await o.start(
-                org_id=ORG, user_id="u",
+                org_id=ORG,
+                user_id="u",
                 scope_kind=scope,
                 scope_id="sid",
                 db_session_factory=factory,

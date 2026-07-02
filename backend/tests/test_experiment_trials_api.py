@@ -66,9 +66,7 @@ async def _cleanup(
             )
         if api_key_ids:
             await session.execute(
-                APIKeyModel.__table__.delete().where(
-                    APIKeyModel.id.in_(api_key_ids)
-                )
+                APIKeyModel.__table__.delete().where(APIKeyModel.id.in_(api_key_ids))
             )
         if org_ids:
             await session.execute(
@@ -192,7 +190,9 @@ async def seed_experiment_with_trials():
 
 
 @pytest.mark.asyncio
-async def test_experiment_trials_returns_org_scoped_rows(client, seed_experiment_with_trials):
+async def test_experiment_trials_returns_org_scoped_rows(
+    client, seed_experiment_with_trials
+):
     exp_id, org_key = seed_experiment_with_trials
     resp = await client.get(
         f"/experiments/{exp_id}/trials",

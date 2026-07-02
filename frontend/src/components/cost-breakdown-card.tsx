@@ -255,7 +255,7 @@ function ChartTooltip(
   props: TooltipContentProps<ChartTooltipValue, ChartTooltipName> & {
     bucket: string;
     labels: Record<string, string>;
-  }
+  },
 ) {
   const { active, payload, label, bucket, labels } = props;
   if (!active || !payload || payload.length === 0) return null;
@@ -311,15 +311,15 @@ function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
       series.buckets.map((b) => ({
         bucket_start: b.bucket_start,
         ...Object.fromEntries(
-          series.keys.map((k) => [k.key, b.costs[k.key] ?? 0])
+          series.keys.map((k) => [k.key, b.costs[k.key] ?? 0]),
         ),
       })),
-    [series.buckets, series.keys]
+    [series.buckets, series.keys],
   );
 
   const colorByKey = useMemo(
     () => buildSeriesColors(series.keys),
-    [series.keys]
+    [series.keys],
   );
 
   if (series.buckets.length === 0)
@@ -448,7 +448,7 @@ export function CostBreakdownCard() {
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
     fetcher,
-    { refreshInterval: 30000 }
+    { refreshInterval: 30000 },
   );
 
   const windowLabel =

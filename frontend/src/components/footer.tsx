@@ -1,5 +1,6 @@
+import { Github } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
-import { GithubIcon } from "@/components/icons/github";
 
 export function Footer() {
   return (
@@ -28,7 +29,7 @@ export function Footer() {
             rel="noopener noreferrer"
             aria-label="Oddish GitHub"
           >
-            <GithubIcon className="h-4 w-4" />
+            <Github data-icon="inline-start" />
           </a>
         </Button>
       </div>

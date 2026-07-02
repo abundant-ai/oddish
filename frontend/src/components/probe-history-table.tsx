@@ -219,65 +219,67 @@ export function ProbeHistoryTable({ taskId }: { taskId: string }) {
 
   return (
     <>
-    <div>
-      <h2 className="mb-3 text-lg font-medium">History</h2>
-      {probes.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No probe runs yet.</p>
-      ) : (
-        <table className="w-full text-sm">
-          <thead className="text-left text-muted-foreground">
-            <tr>
-              <th className="py-2 pr-4 font-medium">Timestamp</th>
-              <th className="py-2 pr-4 font-medium">Probe</th>
-              <th className="py-2 pr-4 font-medium">Status</th>
-              <th className="py-2 pr-4 font-medium">Result</th>
-              <th className="py-2 font-medium"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {probes.map((t) => (
-              <tr key={t.id} className="border-t">
-                <td className="py-2 pr-4 font-mono text-xs">
-                  {t.started_at ? new Date(t.started_at).toLocaleString() : "—"}
-                </td>
-                <td className="py-2 pr-4">{probeLabel(t)}</td>
-                <td className="py-2 pr-4">{statusLabel(t)}</td>
-                <td className="py-2 pr-4">
-                  {(() => {
-                    const r = resultDisplay(t);
-                    return (
-                      <span
-                        className={VARIANT_CLASS[r.variant]}
-                        title={r.title}
-                      >
-                        {r.text}
-                      </span>
-                    );
-                  })()}
-                </td>
-                <td className="py-2">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedProbeId(t.id)}
-                    className="text-xs underline text-muted-foreground hover:text-foreground"
-                  >
-                    View →
-                  </button>
-                </td>
+      <div>
+        <h2 className="mb-3 text-lg font-medium">History</h2>
+        {probes.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No probe runs yet.</p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="text-left text-muted-foreground">
+              <tr>
+                <th className="py-2 pr-4 font-medium">Timestamp</th>
+                <th className="py-2 pr-4 font-medium">Probe</th>
+                <th className="py-2 pr-4 font-medium">Status</th>
+                <th className="py-2 pr-4 font-medium">Result</th>
+                <th className="py-2 font-medium"></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {probes.map((t) => (
+                <tr key={t.id} className="border-t">
+                  <td className="py-2 pr-4 font-mono text-xs">
+                    {t.started_at
+                      ? new Date(t.started_at).toLocaleString()
+                      : "—"}
+                  </td>
+                  <td className="py-2 pr-4">{probeLabel(t)}</td>
+                  <td className="py-2 pr-4">{statusLabel(t)}</td>
+                  <td className="py-2 pr-4">
+                    {(() => {
+                      const r = resultDisplay(t);
+                      return (
+                        <span
+                          className={VARIANT_CLASS[r.variant]}
+                          title={r.title}
+                        >
+                          {r.text}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  <td className="py-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedProbeId(t.id)}
+                      className="text-xs underline text-muted-foreground hover:text-foreground"
+                    >
+                      View →
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {selectedProbeId && (
+        <ProbeDetailPanel
+          taskId={taskId}
+          trialId={selectedProbeId}
+          isOpen
+          onClose={() => setSelectedProbeId(null)}
+        />
       )}
-    </div>
-    {selectedProbeId && (
-      <ProbeDetailPanel
-        taskId={taskId}
-        trialId={selectedProbeId}
-        isOpen
-        onClose={() => setSelectedProbeId(null)}
-      />
-    )}
     </>
   );
 }

@@ -219,17 +219,11 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -371,17 +365,11 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -946,8 +934,7 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
 
     assert agent_config.name is None
     assert (
-        agent_config.import_path
-        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+        agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/redacted-model"
     assert "XAI_API_KEY" not in (agent_config.env or {})
@@ -966,8 +953,7 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
 
     assert agent_config.name is None
     assert (
-        agent_config.import_path
-        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+        agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/redacted-model"
 
@@ -1077,7 +1063,9 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
     assert len(trajectory["steps"]) == 3
     assert trajectory["steps"][0]["reasoning_content"] == "Need to inspect files."
     assert trajectory["steps"][0]["tool_calls"][0]["function_name"] == "shell"
-    assert trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    assert (
+        trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    )
     assert trajectory["steps"][2]["message"] == "Done."
     assert trajectory["final_metrics"]["total_steps"] == 3
 
@@ -1587,17 +1575,11 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
 

@@ -118,7 +118,11 @@ async def replay_events(
         row = await session.get(ChatSession, session_id)
         if row is None or row.org_id != auth.org_id:
             raise HTTPException(404, detail="session not found")
-        return {"events": await events_mod.read_events(session, session_id=session_id, since=since)}
+        return {
+            "events": await events_mod.read_events(
+                session, session_id=session_id, since=since
+            )
+        }
 
 
 @router.post("/chat-sessions/{session_id}/messages")
@@ -160,7 +164,9 @@ async def close_session(
 ):
     auth.require_scope(APIKeyScope.READ)
     await _require_session(session_id, auth.org_id)
-    await _orch(request).close(session_id=session_id, db_session_factory=lambda: get_session())
+    await _orch(request).close(
+        session_id=session_id, db_session_factory=lambda: get_session()
+    )
 
 
 @router.post("/chat-sessions/{session_id}/resume", status_code=204)
@@ -172,8 +178,12 @@ async def resume_session(
     auth.require_scope(APIKeyScope.READ)
     await _require_session(session_id, auth.org_id)
     try:
-        await _orch(request).resume(session_id=session_id, db_session_factory=lambda: get_session())
+        await _orch(request).resume(
+            session_id=session_id, db_session_factory=lambda: get_session()
+        )
     except ResumeUnavailable:
-        raise HTTPException(409, detail="This chat can't be restored (no saved session).")
+        raise HTTPException(
+            409, detail="This chat can't be restored (no saved session)."
+        )
     except SessionNotFound:
         raise HTTPException(404, detail="session not found")
