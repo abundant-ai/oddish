@@ -76,7 +76,9 @@ async def backfill(trial_id: str, execute: bool) -> None:
         print(f"has_extra_instr  {bool(hc.get('extra_instructions'))}")
         print(f"result_focus     {hc.get('result_focus')!r}")
         print(f"eval_metric      {hc.get('evaluation_metric')!r}")
-        print(f"=> branch        {'PROBE analyzer' if is_probe else 'regular TrialClassifier'}")
+        print(
+            f"=> branch        {'PROBE analyzer' if is_probe else 'regular TrialClassifier'}"
+        )
         s3_key = trial.trial_s3_key
         result_path = trial.harbor_result_path
 
@@ -168,20 +170,23 @@ async def batch(task_names: str, execute: bool) -> None:
 
     for r in rows:
         for n in names:
-            if r["task_id"] == n or re.match(rf"^{re.escape(n)}-[0-9a-f]{{6,}}$", r["task_id"]):
+            if r["task_id"] == n or re.match(
+                rf"^{re.escape(n)}-[0-9a-f]{{6,}}$", r["task_id"]
+            ):
                 matched_by_name[n] += 1
                 break
 
     eligible = [
-        r for r in rows
-        if r["has_s3"] and (r["analysis_status"] or "") != "SUCCESS"
+        r for r in rows if r["has_s3"] and (r["analysis_status"] or "") != "SUCCESS"
     ]
 
     print(f"=== matched {len(rows)} probe trial(s) across {len(names)} name(s) ===")
     for n in names:
         flag = "" if matched_by_name[n] else "   <-- NO MATCH"
         print(f"  {n:32} probe_trials={matched_by_name[n]}{flag}")
-    print(f"\n=== {len(eligible)} eligible for backfill (has_s3, analysis != SUCCESS) ===")
+    print(
+        f"\n=== {len(eligible)} eligible for backfill (has_s3, analysis != SUCCESS) ==="
+    )
     for r in eligible:
         print(
             f"  {r['id']:42} status={r['status']} reward={r['reward']} "

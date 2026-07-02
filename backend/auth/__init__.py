@@ -11,7 +11,12 @@ from models import APIKeyScope, UserRole, hash_api_key
 from oddish.db import get_session
 from oddish.timing import add_server_timing_metric, elapsed_ms, now
 
-from auth.permissions import can_create_api_keys, can_manage_quotas
+from auth.permissions import (
+    allowed_api_key_scopes,
+    can_create_api_keys,
+    can_manage_api_keys,
+    can_manage_quotas,
+)
 from auth.provisioning import get_or_create_user_from_clerk
 from auth.types import AuthContext, AuthMethod
 from auth.verification import (
@@ -92,7 +97,11 @@ async def get_auth_context(
                     method=cached.method,
                     org_id=cached.org_id,
                     org_slug=cached.org_slug,
+                    user_id=cached.user_id,
+                    user_email=cached.user_email,
+                    user_role=cached.user_role,
                     api_key_id=cached.api_key_id,
+                    api_key_created_by_role=cached.api_key_created_by_role,
                     scope=cached.scope,
                     # Note: org/api_key ORM objects not included in cached response
                     # Endpoints should use org_id/api_key_id for queries
@@ -121,12 +130,16 @@ async def get_auth_context(
                             headers={"WWW-Authenticate": "Bearer"},
                         )
 
-                    api_key, org = result
+                    api_key, org, creator = result
                     cached_auth = CachedAuthData(
                         method=AuthMethod.API_KEY,
                         org_id=org.id,
                         org_slug=org.slug,
+                        user_id=creator.id if creator else api_key.created_by_user_id,
+                        user_email=creator.email if creator else None,
+                        user_role=creator.role if creator else None,
                         api_key_id=api_key.id,
+                        api_key_created_by_role=api_key.created_by_role,
                         scope=api_key.scope,
                     )
                     auth_context = AuthContext(
@@ -134,8 +147,13 @@ async def get_auth_context(
                         org_id=org.id,
                         org=org,
                         org_slug=org.slug,
+                        user_id=creator.id if creator else api_key.created_by_user_id,
+                        user=creator,
+                        user_email=creator.email if creator else None,
+                        user_role=creator.role if creator else None,
                         api_key_id=api_key.id,
                         api_key=api_key,
+                        api_key_created_by_role=api_key.created_by_role,
                         scope=api_key.scope,
                     )
 
@@ -369,7 +387,9 @@ __all__ = [
     "APIKeyScope",
     "AuthContext",
     "AuthMethod",
+    "allowed_api_key_scopes",
     "can_create_api_keys",
+    "can_manage_api_keys",
     "can_manage_quotas",
     "require_admin",
     "require_api_key_creator",

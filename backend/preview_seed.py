@@ -4,6 +4,7 @@ import asyncio
 import datetime as _dt
 import json
 import sys
+from typing import Any
 
 from sqlalchemy import JSON, MetaData, delete, text, tuple_
 from sqlalchemy.dialects.postgresql import JSONB
@@ -618,7 +619,7 @@ async def _reconcile_previous_draw(md: MetaData, conn, sample_rows: dict) -> Non
                 )
         else:
             keys = [k.split(":", len(pk_cols) - 1) for k in stale]
-            pk_tuple = tuple_(*pk_cols)
+            pk_tuple: Any = tuple_(*pk_cols)
             for start in range(0, len(keys), 5000):
                 await conn.execute(
                     delete(table).where(pk_tuple.in_(keys[start : start + 5000]))

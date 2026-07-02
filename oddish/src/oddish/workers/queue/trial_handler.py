@@ -198,7 +198,9 @@ def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:
 
 def _expects_no_reward(trial: object) -> bool:
     harbor_config = getattr(trial, "harbor_config", None)
-    verifier = harbor_config.get("verifier") if isinstance(harbor_config, dict) else None
+    verifier = (
+        harbor_config.get("verifier") if isinstance(harbor_config, dict) else None
+    )
     return isinstance(verifier, dict) and bool(verifier.get("disable"))
 
 
@@ -320,9 +322,10 @@ async def _touch_trial_execution(
     pending_last_error_at: datetime | None = None,
 ) -> bool:
     """Update the trial heartbeat row."""
-    async with _trial_session(
-        trial_id, allow_missing=True, with_for_update=True
-    ) as (session, trial):
+    async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
+        session,
+        trial,
+    ):
         if not trial or trial.status != TrialStatus.RUNNING:
             return False
         if trial.superseded_by_trial_id is not None or trial.deleted_at is not None:
@@ -624,9 +627,10 @@ async def _store_trial_results(
     worker_id: str | None = None,
     worker_job_id: str | None = None,
 ) -> None:
-    async with _trial_session(
-        trial_id, allow_missing=True, with_for_update=True
-    ) as (session, trial):
+    async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
+        session,
+        trial,
+    ):
         if not trial:
             return
 
@@ -760,7 +764,9 @@ async def _store_trial_results(
                 )
 
 
-async def _upload_probe_assets(environment, probe_task_dir: Path, trial_id: str) -> None:
+async def _upload_probe_assets(
+    environment, probe_task_dir: Path, trial_id: str
+) -> None:
     """Upload the oddish-query CLI to PROBE_HARNESS_DIR (best-effort Daytona/non-Modal
     fallback; a failure must never block the probe)."""
     harness_mount = Path(tempfile.mkdtemp(prefix=f"probe-cli-{trial_id}-"))
@@ -798,9 +804,10 @@ async def _handle_harbor_event(
             and hook_event.environment is not None
         )
         if should_upload_probe_dir:
-            async with _trial_session(
-                trial_id, allow_missing=True
-            ) as (_session, trial):
+            async with _trial_session(trial_id, allow_missing=True) as (
+                _session,
+                trial,
+            ):
                 if (
                     not trial
                     or trial.superseded_by_trial_id is not None
@@ -819,9 +826,7 @@ async def _handle_harbor_event(
                         "(worker no longer owns it)[/dim]"
                     )
                     return
-            await _upload_probe_assets(
-                hook_event.environment, probe_task_dir, trial_id
-            )
+            await _upload_probe_assets(hook_event.environment, probe_task_dir, trial_id)
 
         async with _trial_session(
             trial_id, allow_missing=True, with_for_update=True

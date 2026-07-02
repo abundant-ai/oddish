@@ -73,5 +73,3 @@ def test_non_probe_trial_environment_unchanged():
     spec = _make_spec()
     harbor_config = _build_harbor_config_for_trial(submission, spec)
     assert _compute_trial_environment(spec, harbor_config) is None
-
-

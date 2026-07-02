@@ -121,9 +121,7 @@ async def list_experiment_trials(
     """List all non-superseded trials for an experiment (org-scoped)."""
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        return await list_experiment_trials_for_org(
-            session, experiment_id, auth.org_id
-        )
+        return await list_experiment_trials_for_org(session, experiment_id, auth.org_id)
 
 
 # =============================================================================

@@ -79,9 +79,9 @@ async def test_bulk_enqueue_persists_harbor_variant_id():
         try:
             rows = (
                 await session.execute(
-                    select(
-                        WorkerJobModel.id, WorkerJobModel.harbor_variant_id
-                    ).where(WorkerJobModel.id.in_(ids))
+                    select(WorkerJobModel.id, WorkerJobModel.harbor_variant_id).where(
+                        WorkerJobModel.id.in_(ids)
+                    )
                 )
             ).all()
             variants = {r.id: r.harbor_variant_id for r in rows}

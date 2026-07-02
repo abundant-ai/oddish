@@ -41,7 +41,11 @@ def collect(
     ] = None,
     tasks: Annotated[
         Optional[list[str]],
-        typer.Option("--task", "-t", help="Task id/name; links its current-version trials. Repeatable."),
+        typer.Option(
+            "--task",
+            "-t",
+            help="Task id/name; links its current-version trials. Repeatable.",
+        ),
     ] = None,
     name: Annotated[
         Optional[str],
@@ -49,9 +53,14 @@ def collect(
     ] = None,
     publish: Annotated[
         bool,
-        typer.Option("--publish/--no-publish", help="Publish a public read-only link (default: publish)."),
+        typer.Option(
+            "--publish/--no-publish",
+            help="Publish a public read-only link (default: publish).",
+        ),
     ] = True,
-    json_output: Annotated[bool, typer.Option("--json", help="Print raw JSON.")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print raw JSON.")
+    ] = False,
     api_url: Annotated[
         Optional[str],
         typer.Option("--api-url", "-u", help="API URL (uses configured URL if unset)."),
@@ -59,8 +68,8 @@ def collect(
 ):
     """Gather the latest trials of one or more tasks into a read-only collection.
 
-        oddish collect --task activiti-spring-boot-3-upgrade --task struts-rest-showcase-to-spring-mvc
-        oddish collect --task my-task --no-publish -n "my rollup"
+    oddish collect --task activiti-spring-boot-3-upgrade --task struts-rest-showcase-to-spring-mvc
+    oddish collect --task my-task --no-publish -n "my rollup"
     """
     tasks = tasks or []
     trial_ids = trial_ids or []
@@ -87,7 +96,9 @@ def collect(
             console.print(f"[red]Failed to connect to API:[/red] {e}")
             raise typer.Exit(1)
         if resp.status_code != 200:
-            console.print(f"[red]Collect failed:[/red] {resp.status_code} - {resp.text}")
+            console.print(
+                f"[red]Collect failed:[/red] {resp.status_code} - {resp.text}"
+            )
             raise typer.Exit(1)
         data = resp.json()
 
@@ -109,7 +120,9 @@ def collect(
             raise typer.Exit(1)
         return
 
-    console.print(f"[green]Created collection {data.get('id')}[/green] ({data.get('name')})")
+    console.print(
+        f"[green]Created collection {data.get('id')}[/green] ({data.get('name')})"
+    )
     console.print(f"  Trials linked:      {data.get('trials_linked', 0)}")
     console.print(f"  From tasks:         {data.get('trials_from_tasks', 0)}")
     skipped = data.get("tasks_skipped_empty", 0)

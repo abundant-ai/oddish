@@ -27,8 +27,6 @@ def test_experiment_scope_probe_sets_key():
 
 
 def test_non_probe_submission_omits_key():
-    cfg = _build_harbor_config_for_trial(
-        _submission(probe_scope="experiment"), _spec()
-    )
+    cfg = _build_harbor_config_for_trial(_submission(probe_scope="experiment"), _spec())
     # No extra_instructions => not a probe => no probe_scope leaks in.
     assert cfg is None or "probe_scope" not in cfg
