@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,8 @@ from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.sharing.helpers import ensure_experiment_public
 from oddish.db import ExperimentModel, TaskModel
 from oddish.schemas import TaskSweepSubmission
+
+logger = logging.getLogger(__name__)
 
 
 def apply_github_attribution(submission: TaskSweepSubmission) -> None:
@@ -186,6 +190,11 @@ async def require_connected_github_user(
         session, github_id=submission.github_id, org_id=auth.org_id
     )
     if user is None:
+        logger.info(
+            "linkage gate rejected github_id=%s org=%s",
+            submission.github_id,
+            auth.org_id,
+        )
         raise HTTPException(
             status_code=403,
             detail=(

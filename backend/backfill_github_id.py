@@ -76,6 +76,8 @@ async def backfill_github_id(
                     or_(
                         UserModel.attribution_cache.is_(None),
                         ~UserModel.attribution_cache.has_key("github_id_checked"),
+                        # String < is chronological only because every marker is
+                        # UTC-normalized fixed-width ISO via _github_id_checked_iso.
                         UserModel.attribution_cache["github_id_checked"].astext
                         < cutoff_iso,
                     )
