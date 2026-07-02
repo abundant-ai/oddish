@@ -66,6 +66,7 @@ def test_member_created_task_key_is_blocked_from_restricted_task_operations():
         org_id="org_1",
         user_id="user_1",
         user_role=UserRole.MEMBER,
+        api_key_created_by_role=UserRole.MEMBER.value,
         scope=APIKeyScope.TASKS,
     )
 
@@ -87,18 +88,38 @@ def test_admin_created_task_key_can_use_restricted_task_operations():
         org_id="org_1",
         user_id="admin_1",
         user_role=UserRole.ADMIN,
+        api_key_created_by_role=UserRole.ADMIN.value,
         scope=APIKeyScope.TASKS,
     )
 
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
 
-def test_task_key_with_unknown_creator_role_is_restricted():
+def test_task_key_with_deleted_creator_is_restricted():
     auth = AuthContext(
         method=AuthMethod.API_KEY,
         org_id="org_1",
         user_id="deleted_user_1",
         user_role=None,
+        api_key_created_by_role=UserRole.MEMBER.value,
+        scope=APIKeyScope.TASKS,
+    )
+
+    try:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("task key with deleted creator should be restricted")
+
+
+def test_task_key_with_unknown_creator_role_is_restricted():
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id=None,
+        user_role=None,
+        api_key_created_by_role=None,
         scope=APIKeyScope.TASKS,
     )
 
@@ -108,3 +129,39 @@ def test_task_key_with_unknown_creator_role_is_restricted():
         assert exc.status_code == 403
     else:
         raise AssertionError("task key with unknown creator role should be restricted")
+
+
+def test_member_created_task_key_stays_restricted_after_creator_promotion():
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id="user_1",
+        user_role=UserRole.ADMIN,
+        api_key_created_by_role=UserRole.MEMBER.value,
+        scope=APIKeyScope.TASKS,
+    )
+
+    try:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("promoted creator should not expand a tasks key")
+
+
+def test_cached_admin_role_does_not_expand_member_created_task_key():
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id="user_1",
+        user_role=UserRole.ADMIN,
+        api_key_created_by_role=UserRole.MEMBER.value,
+        scope=APIKeyScope.TASKS,
+    )
+
+    try:
+        auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("cached creator role should not authorize the key")

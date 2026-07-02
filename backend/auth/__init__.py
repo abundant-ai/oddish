@@ -100,6 +100,7 @@ async def get_auth_context(
                     user_email=cached.user_email,
                     user_role=cached.user_role,
                     api_key_id=cached.api_key_id,
+                    api_key_created_by_role=cached.api_key_created_by_role,
                     scope=cached.scope,
                     # Note: org/api_key ORM objects not included in cached response
                     # Endpoints should use org_id/api_key_id for queries
@@ -137,6 +138,7 @@ async def get_auth_context(
                         user_email=creator.email if creator else None,
                         user_role=creator.role if creator else None,
                         api_key_id=api_key.id,
+                        api_key_created_by_role=api_key.created_by_role,
                         scope=api_key.scope,
                     )
                     auth_context = AuthContext(
@@ -150,6 +152,7 @@ async def get_auth_context(
                         user_role=creator.role if creator else None,
                         api_key_id=api_key.id,
                         api_key=api_key,
+                        api_key_created_by_role=api_key.created_by_role,
                         scope=api_key.scope,
                     )
 

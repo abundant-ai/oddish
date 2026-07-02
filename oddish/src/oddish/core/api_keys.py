@@ -27,6 +27,7 @@ def create_api_key(
     name: str,
     scope: APIKeyScope = APIKeyScope.FULL,
     created_by_user_id: str | None = None,
+    created_by_role: str | None = None,
     expires_at: datetime | None = None,
     is_internal: bool = False,
 ) -> tuple[APIKeyModel, str]:
@@ -38,6 +39,7 @@ def create_api_key(
         key_hash=hash_api_key(raw_key),
         scope=scope,
         created_by_user_id=created_by_user_id,
+        created_by_role=created_by_role,
         expires_at=expires_at,
         is_internal=is_internal,
     )
