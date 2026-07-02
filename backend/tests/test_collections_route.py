@@ -364,6 +364,6 @@ async def test_create_collection_from_task_ids(client, seed_org_with_task_trials
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    created_experiment_ids.append(body["id"])  # register for teardown before asserts
     assert body["trials_linked"] == trial_count
     assert body["trials_from_tasks"] == trial_count
-    created_experiment_ids.append(body["id"])

@@ -75,6 +75,11 @@ def collect(
     coll_name = (name or "").strip() or "collection"
     payload = _build_payload(name=coll_name, tasks=tasks, trial_ids=trial_ids)
 
+    public_url = None
+    public_token = None
+    publish_failed = False
+    publish_status = None
+
     with httpx.Client(timeout=120.0, headers=get_auth_headers()) as client:
         try:
             resp = client.post(f"{api_url}/experiments/collections", json=payload)
@@ -86,17 +91,22 @@ def collect(
             raise typer.Exit(1)
         data = resp.json()
 
-        public_url = None
         if publish and data.get("id"):
             pub = client.post(f"{api_url}/experiments/{data['id']}/publish")
             if pub.status_code == 200:
                 # ExperimentShareResponse returns public_token, not a full URL.
-                public_url = _share_url(api_url, pub.json().get("public_token"))
+                public_token = pub.json().get("public_token")
+                public_url = _share_url(api_url, public_token)
             else:
-                console.print(f"[yellow]Created, but publish failed:[/yellow] {pub.text}")
+                publish_failed = True
+                publish_status = pub.status_code
 
     if json_output:
-        console.print_json(data={**data, "public_url": public_url})
+        console.print_json(
+            data={**data, "public_token": public_token, "public_url": public_url}
+        )
+        if publish_failed:
+            raise typer.Exit(1)
         return
 
     console.print(f"[green]Created collection {data.get('id')}[/green] ({data.get('name')})")
@@ -105,9 +115,25 @@ def collect(
     skipped = data.get("tasks_skipped_empty", 0)
     if skipped:
         console.print(f"  Tasks skipped (empty): {skipped}")
+
     if public_url:
         console.print("[bold]This is a public, read-only link:[/bold]")
         console.print(f"  {public_url}")
+    elif publish_failed:
+        # Publish route requires a FULL-scope key while create only needs TASKS,
+        # so a TASKS-scoped key creates the collection but cannot publish it.
+        console.print(
+            f"[red]Collection created but NOT published (it is private).[/red] "
+            f"Publish returned HTTP {publish_status}."
+        )
+        if publish_status == 403:
+            console.print(
+                "  Publishing requires a FULL-scope API key; your key may be TASKS-scoped."
+            )
+        console.print(
+            f"  View (private): {get_dashboard_url(api_url)}/experiments/{data.get('id')}"
+        )
+        raise typer.Exit(1)
     else:
         exp_id = data.get("id")
         if exp_id:
