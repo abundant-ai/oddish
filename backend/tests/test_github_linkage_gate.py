@@ -1,16 +1,11 @@
-"""Stub suite for the account-merge in-Action linkage gate.
+"""Suite for the github_id linkage gate.
 
-Design (account-merge-plan.md v7): an experiments-repo GitHub Action checks that
-github.actor is a Clerk-linked Oddish user (via a NET-NEW GET /github/linkage)
-before pushing tasks; owner resolves at /tasks/sweep on the same EXACTLY-ONE
-predicate. No OIDC; direct API-key bypass accepted; fail-open on Clerk outage.
-
-Markers:
-  - runnable now: behaviour that already exists (org-scope, active-only, normalize).
-  - xfail(strict): asserts target behaviour not yet built (endpoint, github_id, A0,
-    constraint fingerprint) — flips to a hard failure when implemented, prompting
-    marker removal.
-  - skip: the experiments-repo Action is not in this repo.
+An experiments-repo GitHub Action checks that github.actor is a Clerk-linked
+Oddish user (via GET /github/linkage) before pushing tasks; the server-side gate
+at /tasks/sweep re-checks the same linkage and 403s an unlinked github_id before
+any rows are written. Owner resolves on the same strict predicate. No OIDC;
+direct API-key bypass accepted; fail-open on Clerk outage. The experiments-repo
+Action itself is not in this repo, so its contract tests are skipped.
 """
 
 from __future__ import annotations
@@ -38,7 +33,7 @@ from api.routers.task_submission import (
 )
 from models import APIKeyScope, OrganizationModel, UserModel
 from oddish.core.api_keys import create_api_key
-from oddish.db import ExperimentModel, TrialModel, get_session
+from oddish.db import TrialModel, get_session
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -368,7 +363,7 @@ async def test_case3_20_duplicate_handle_should_not_500(org_with_users):
 
 
 # ===========================================================================
-# 3. Linkage endpoint — xfail until GET /github/linkage exists
+# 3. Linkage endpoint — GET /github/linkage
 # ===========================================================================
 
 
@@ -478,7 +473,7 @@ async def test_M4_authorizes_by_org_scope_not_user_identity(client, org_with_use
 
 
 # ===========================================================================
-# 4. A0 schema fix + preview fingerprint — xfail until shipped
+# 4. A0 schema fix + preview fingerprint
 # ===========================================================================
 
 
@@ -507,7 +502,7 @@ def test_M1_fingerprint_covers_unique_constraint_change():
 
 
 # ===========================================================================
-# 5. Optional github_id correctness path — xfail until column/schema added
+# 5. Optional github_id correctness path
 # ===========================================================================
 
 
