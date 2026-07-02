@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import QuotaMode, settings
 from oddish.core.quotas import (
     get_effective_limit,
-    inflight_count,
+    inflight_reserved_usd,
     start_of_today_utc,
     sum_cost_usd,
 )
@@ -30,7 +31,6 @@ class QuotaExceeded(HTTPException):
                 "used_usd": float(used_usd),
                 "reserved_usd": float(reserved_usd),
                 "limit_usd": float(limit_usd),
-                "period": "daily",
             },
         )
 
@@ -63,6 +63,31 @@ def _log_would_block(
     )
 
 
+async def acquire_payer_lock(
+    session: AsyncSession, org_id: str | None, billed_user_id: str | None
+) -> None:
+    """Serialize same-payer transactions; released at commit.
+
+    Only under quota_mode == ENFORCE: shadow admissions are read-only logging
+    and tolerate races, so the dark feature must not serialize submissions.
+    LOCK ORDER: this must be the FIRST lock a quota-gated transaction takes --
+    before any row lock (task refresh, trial CAS, worker_jobs) or concurrent
+    submit/retry paths deadlock ABBA. The sweep cores acquire it up front;
+    retry relies on admit_trials acquiring it before its first row lock.
+    Re-acquiring a held xact advisory lock is a no-op.
+    """
+    if (
+        settings.quota_mode != QuotaMode.ENFORCE
+        or org_id is None
+        or billed_user_id is None
+    ):
+        return
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"quota:{org_id}:{billed_user_id}"},
+    )
+
+
 async def admit_trials(
     session: AsyncSession,
     org_id: str | None,
@@ -81,11 +106,14 @@ async def admit_trials(
         _log_would_block(org_id, None, None, None, None, reason="unattributed")
         return
 
+    await acquire_payer_lock(session, org_id, billed_user_id)
+
     effective_limit_usd = await get_effective_limit(session, org_id, billed_user_id)
     used_usd = await sum_cost_usd(session, org_id, billed_user_id, start_of_today_utc())
     reserved_usd = (
-        await inflight_count(session, org_id, billed_user_id) + count
-    ) * settings.pending_trial_reservation_usd
+        await inflight_reserved_usd(session, org_id, billed_user_id)
+        + count * settings.pending_trial_reservation_usd
+    )
 
     if used_usd + reserved_usd >= effective_limit_usd:
         if mode == QuotaMode.ENFORCE:

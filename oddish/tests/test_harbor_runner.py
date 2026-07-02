@@ -205,6 +205,8 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
+        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -280,6 +282,8 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
+        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -359,6 +363,8 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
+        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -434,6 +440,8 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         heartbeat_at=None,
         finished_at=object(),
         superseded_by_trial_id=None,
+        deleted_at=None,
+        cost_settled_attempt=0,
     )
     original_finished_at = trial.finished_at
 
@@ -1575,6 +1583,8 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
         heartbeat_at=None,
         finished_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
+        cost_settled_attempt=0,
     )
 
 

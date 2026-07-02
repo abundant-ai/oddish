@@ -135,7 +135,11 @@ async def create_task_sweep_core(
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
     from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
-    from oddish.core.quota_admission import admit_trials
+    from oddish.core.quota_admission import acquire_payer_lock, admit_trials
+
+    # Payer lock FIRST -- before the idempotency insert, the task refresh
+    # FOR UPDATE (append), and any trial inserts (see acquire_payer_lock).
+    await acquire_payer_lock(session, org_id, billed_user_id)
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
     # from the caller's raw pre-mutation snapshot when supplied (the backend
@@ -486,68 +490,87 @@ async def create_task_sweep_batch_core(
     ``oddish.queue._bulk_insert_trials`` / ``bulk_enqueue_worker_jobs``) is used
     here as on the single-sweep path.
 
-    ``prepare`` (optional) runs inside each item's savepoint before creation and
-    returns the default environment for that submission; it is where a caller
-    performs per-item, auth-aware setup (identity resolution, attribution).
-    ``finalize`` (optional) runs inside the savepoint after creation for
-    post-create stamping. Keeping both inside the savepoint preserves per-item
-    atomicity -- a failure in either rolls back just that item.
+    A read-only PRE-LOOP pass runs first, per item: ``prepare`` (caller's
+    identity resolution + attribution + default environment -- the same
+    identity->attribution->owner order as the single route), then
+    ``resolve_billed_user_id``. A failure there becomes that item's failure
+    result; the item is excluded from lock acquisition and creation. The
+    distinct payer advisory locks are then taken in SORTED order before any
+    item runs -- two batches acquiring in item order would deadlock ABBA --
+    and held for the whole batch transaction (accepted for MVP).
+
+    Each surviving submission then runs inside its own SAVEPOINT: a failure
+    rolls back only that item. ``finalize`` (optional) runs inside the
+    savepoint after creation for post-create stamping.
 
     Per-item idempotency-key replay is intentionally out of scope: this path
     calls :func:`create_task_sweep_core` without idempotency arguments, so batch
     items are not deduplicated server-side the way the single ``/tasks/sweep``
     route is.
     """
+    from oddish.core.quota_admission import acquire_payer_lock
     from oddish.core.sweeps import validate_sweep_submission
 
-    results: list[TaskSweepBatchItemResult] = []
-    for index, submission in enumerate(submissions):
-        try:
-            async with session.begin_nested():
-                validate_sweep_submission(submission)
-                item_default_env = default_environment
-                if prepare is not None:
-                    item_default_env = await prepare(session, submission)
-                item_billed_user_id = None
-                if resolve_billed_user_id is not None:
-                    item_billed_user_id = await resolve_billed_user_id(session, submission)
-                task, new_trials, is_append, experiment = await create_task_sweep_core(
-                    session,
-                    submission=submission,
-                    org_id=org_id,
-                    billed_user_id=item_billed_user_id,
-                    default_environment=item_default_env,
-                    allowed_environments=allowed_environments,
-                )
-                if finalize is not None:
-                    await finalize(session, submission, task, is_append, experiment)
-        except HTTPException as exc:
-            # Expected validation/lookup failures (e.g. missing task -> 404).
+    def _failure(index: int, exc: Exception) -> TaskSweepBatchItemResult:
+        if isinstance(exc, HTTPException):
             detail = exc.detail
             error = (
                 detail["message"]
                 if isinstance(detail, dict) and "message" in detail
                 else str(detail)
             )
-            results.append(
-                TaskSweepBatchItemResult(
-                    index=index,
-                    success=False,
-                    status_code=exc.status_code,
-                    error=error,
-                )
+            return TaskSweepBatchItemResult(
+                index=index, success=False, status_code=exc.status_code, error=error
             )
+        return TaskSweepBatchItemResult(
+            index=index, success=False, status_code=400, error=str(exc)
+        )
+
+    pre_failures: dict[int, TaskSweepBatchItemResult] = {}
+    item_envs: list[EnvironmentType | None] = [default_environment] * len(submissions)
+    billed_user_ids: list[str | None] = [None] * len(submissions)
+    for index, submission in enumerate(submissions):
+        try:
+            if prepare is not None:
+                item_envs[index] = await prepare(session, submission)
+            if resolve_billed_user_id is not None:
+                billed_user_ids[index] = await resolve_billed_user_id(
+                    session, submission
+                )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
-            # Any other error is contained to this item; the savepoint has been
-            # rolled back, so the session stays usable for the remaining items.
-            results.append(
-                TaskSweepBatchItemResult(
-                    index=index,
-                    success=False,
-                    status_code=400,
-                    error=str(exc),
+            pre_failures[index] = _failure(index, exc)
+
+    for payer in sorted(
+        {
+            b
+            for index, b in enumerate(billed_user_ids)
+            if b is not None and index not in pre_failures
+        }
+    ):
+        await acquire_payer_lock(session, org_id, payer)
+
+    results: list[TaskSweepBatchItemResult] = []
+    for index, submission in enumerate(submissions):
+        if index in pre_failures:
+            results.append(pre_failures[index])
+            continue
+        try:
+            async with session.begin_nested():
+                validate_sweep_submission(submission)
+                task, new_trials, is_append, experiment = await create_task_sweep_core(
+                    session,
+                    submission=submission,
+                    org_id=org_id,
+                    billed_user_id=billed_user_ids[index],
+                    default_environment=item_envs[index],
+                    allowed_environments=allowed_environments,
                 )
-            )
+                if finalize is not None:
+                    await finalize(session, submission, task, is_append, experiment)
+        except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
+            # The savepoint has been rolled back, so the session stays usable
+            # for the remaining items.
+            results.append(_failure(index, exc))
         else:
             results.append(
                 TaskSweepBatchItemResult(

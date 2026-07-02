@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -15,11 +16,13 @@ from oddish.config import QuotaMode, settings  # noqa: E402
 from oddish.core.quota_admission import (  # noqa: E402
     QuotaExceeded,
     Unattributed,
+    acquire_payer_lock,
     admit_trials,
 )
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
+    TrialStatus,
     WorkerJobModel,
     get_session,
 )
@@ -193,3 +196,108 @@ async def test_inflight_trials_count_toward_reservation(cleanup_task_ids, monkey
         with pytest.raises(QuotaExceeded) as raised:
             await admit_trials(session, org_id, billed_user, count=1)
     assert raised.value.detail["reserved_usd"] == pytest.approx(0.60)
+
+
+# --- concurrent same-payer admissions serialize on the advisory lock ----------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_admissions_serialize_on_the_payer_lock(
+    cleanup_task_ids, monkeypatch
+):
+    """A admits + inserts but hasn't committed; B (same payer) must wait on the
+    advisory xact lock and then see A's inflight row -> 402. Without the lock B
+    reads pre-commit state (0 inflight) and both submissions pass."""
+    monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.20"))
+    org_id = f"org-adm-{_RUN}-f"
+    billed_user = f"user-adm-{_RUN}-f"
+    task_id = f"quota-adm-{_RUN}-{uuid.uuid4().hex[:6]}"
+    cleanup_task_ids.append(task_id)
+
+    a_admitted = asyncio.Event()
+    a_release = asyncio.Event()
+
+    async def first_submission():
+        async with get_session() as session:
+            # reserved=(0 inflight + 1) * 0.20 = 0.20 < 0.30 default -> admitted
+            await admit_trials(session, org_id, billed_user, count=1)
+            await create_task(
+                session,
+                _submission("quota-adm", n_trials=1),
+                task_id=task_id,
+                org_id=org_id,
+                billed_user_id=billed_user,
+            )
+            await session.flush()
+            a_admitted.set()
+            await a_release.wait()
+        # get_session commits on exit, releasing the xact lock
+
+    async def second_submission():
+        async with get_session() as session:
+            # reserved=(1 inflight + 1) * 0.20 = 0.40 >= 0.30 -> blocked
+            with pytest.raises(QuotaExceeded):
+                await admit_trials(session, org_id, billed_user, count=1)
+
+    first = asyncio.create_task(first_submission())
+    await asyncio.wait_for(a_admitted.wait(), timeout=10)
+    second = asyncio.create_task(second_submission())
+    await asyncio.sleep(0.2)  # let B reach (and block on) the advisory lock
+    a_release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), timeout=30)
+
+
+# --- acquire_payer_lock: escape hatches mirror admit_trials -------------------
+
+
+class _RecordingSession:
+    def __init__(self):
+        self.calls = []
+
+    async def execute(self, statement, params=None):
+        self.calls.append((str(statement), params))
+
+
+@pytest.mark.asyncio
+async def test_acquire_payer_lock_escape_hatches(monkeypatch):
+    recording = _RecordingSession()
+
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.OFF)
+    await acquire_payer_lock(recording, "org-x", "user-x")
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
+    await acquire_payer_lock(recording, "org-x", "user-x")
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    await acquire_payer_lock(recording, None, "user-x")
+    await acquire_payer_lock(recording, "org-x", None)
+    assert recording.calls == []  # OFF / SHADOW / no org / no payer never lock
+
+    await acquire_payer_lock(recording, "org-x", "user-x")
+    assert len(recording.calls) == 1
+    sql, params = recording.calls[0]
+    assert "pg_advisory_xact_lock" in sql
+    assert params == {"k": "quota:org-x:user-x"}
+
+
+# --- M4: an in-flight retry's accumulated cost reserves at full value ---------
+
+
+@pytest.mark.asyncio
+async def test_retrying_attempt_cost_counts_toward_reservation(
+    cleanup_task_ids, monkeypatch
+):
+    monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.20"))
+    org_id = f"org-adm-{_RUN}-g"
+    billed_user = f"user-adm-{_RUN}-g"
+    task_id = await _make_billed_task(
+        cleanup_task_ids, n_trials=1, billed_user=billed_user, org_id=org_id
+    )
+    async with get_session() as session:
+        retrying = await session.get(TrialModel, f"{task_id}-0")
+        retrying.status = TrialStatus.RETRYING
+        retrying.cost_usd = 3.0  # attempt-1 burn, preserved across re-claim
+
+    async with get_session() as session:
+        # reserved = max(3.00, 0.20) inflight + 1 * 0.20 = 3.20 >= 0.30 default
+        with pytest.raises(QuotaExceeded) as raised:
+            await admit_trials(session, org_id, billed_user, count=1)
+    assert raised.value.detail["reserved_usd"] == pytest.approx(3.20)

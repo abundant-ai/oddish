@@ -222,13 +222,13 @@ def _compiled(statement) -> str:  # noqa: ANN001
 
 @pytest.mark.asyncio
 async def test_plural_github_lookup_unions_collisions_case_insensitively() -> None:
-    from api.routers.tasks import _lookup_users_by_github_username
+    from api.routers.task_submission import lookup_users_by_github_username
 
     u1 = _user(id="user_a", github_username="skylark")
     u2 = _user(id="user_b", github_username="skylark")
     session = _CapturingSession([u1, u2])
 
-    result = await _lookup_users_by_github_username(
+    result = await lookup_users_by_github_username(
         session, github_username="@Skylark", org_id="org_1"
     )
 
@@ -242,10 +242,10 @@ async def test_plural_github_lookup_unions_collisions_case_insensitively() -> No
 
 @pytest.mark.asyncio
 async def test_plural_github_lookup_empty_token_returns_empty() -> None:
-    from api.routers.tasks import _lookup_users_by_github_username
+    from api.routers.task_submission import lookup_users_by_github_username
 
     session = _CapturingSession([])
-    assert await _lookup_users_by_github_username(
+    assert await lookup_users_by_github_username(
         session, github_username="  @  ", org_id="org_1"
     ) == []
     assert session.statements == []  # short-circuits before querying

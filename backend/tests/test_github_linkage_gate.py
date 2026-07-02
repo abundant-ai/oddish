@@ -29,10 +29,10 @@ import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from api.routers.tasks import (
-    _lookup_user_by_github_id,
-    _lookup_user_by_github_username,
-    _resolve_experiment_owner_user_id,
+from api.routers.task_submission import (
+    lookup_user_by_github_id,
+    lookup_user_by_github_username,
+    resolve_experiment_owner_user_id,
 )
 from models import APIKeyScope, OrganizationModel, UserModel
 from oddish.core.api_keys import create_api_key
@@ -49,7 +49,7 @@ requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set
 
 
 def _auth(org_id: str, *, user_id: str | None = None) -> SimpleNamespace:
-    # _resolve_experiment_owner_user_id reads org_id / user_id / api_key_id / api_key.
+    # resolve_experiment_owner_user_id reads org_id / user_id / api_key_id / api_key.
     return SimpleNamespace(org_id=org_id, user_id=user_id, api_key_id=None, api_key=None)
 
 
@@ -183,7 +183,7 @@ async def _resolve(
     org_id: str, handle: str | None, *, github_id: str | None = None
 ) -> str | None:
     async with get_session() as session:
-        return await _resolve_experiment_owner_user_id(
+        return await resolve_experiment_owner_user_id(
             session, _submission(handle, github_id=github_id), _auth(org_id)
         )
 
@@ -271,7 +271,7 @@ async def test_case3_duplicate_handle_resolves_to_none(org_with_users):
     await add("twin")
     async with get_session() as session:
         assert (
-            await _lookup_user_by_github_username(
+            await lookup_user_by_github_username(
                 session, github_username="twin", org_id=org_id
             )
             is None
@@ -574,7 +574,7 @@ async def test_lookup_by_github_id_exact_one(org_with_users):
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
     async with get_session() as session:
-        found = await _lookup_user_by_github_id(
+        found = await lookup_user_by_github_id(
             session, github_id="gid_alice", org_id=org_id
         )
         assert found is not None and found.id == alice.id
@@ -591,7 +591,7 @@ async def test_lookup_by_github_id_org_scoped(org_with_users):
     await _set_github_id(bob, "gid_bob")
     async with get_session() as session:
         assert (
-            await _lookup_user_by_github_id(session, github_id="gid_bob", org_id=org_id)
+            await lookup_user_by_github_id(session, github_id="gid_bob", org_id=org_id)
             is None
         )
 
@@ -605,7 +605,7 @@ async def test_lookup_by_github_id_active_only(org_with_users):
     await _set_github_id(ghost, "gid_ghost")
     async with get_session() as session:
         assert (
-            await _lookup_user_by_github_id(
+            await lookup_user_by_github_id(
                 session, github_id="gid_ghost", org_id=org_id
             )
             is None
@@ -619,7 +619,7 @@ async def test_lookup_by_github_id_empty_is_none(org_with_users):
     org_id, _add = org_with_users
     async with get_session() as session:
         assert (
-            await _lookup_user_by_github_id(session, github_id="   ", org_id=org_id)
+            await lookup_user_by_github_id(session, github_id="   ", org_id=org_id)
             is None
         )
 
@@ -654,8 +654,8 @@ async def test_precedence_falls_back_to_handle_when_id_unmatched(org_with_users)
 @pytest.mark.asyncio
 async def test_parity_endpoint_and_sweep_resolve_same_user(client, org_with_users):
     """INV2 parity: for the SAME input (github_id=X), the endpoint (?actor_id=X)
-    and _resolve_experiment_owner_user_id (submission github_id=X) resolve to the
-    SAME user via the shared _resolve_connected_user predicate."""
+    and resolve_experiment_owner_user_id (submission github_id=X) resolve to the
+    SAME user via the shared resolve_connected_user predicate."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_parity")
@@ -822,7 +822,7 @@ async def test_endpoint_actor_id_refresh_backfills_github_id(
 # 6. Owner-stamp None-safety (M3) — already covered
 # ===========================================================================
 # M3 (resolving to no owner must never CLEAR attribution) is guarded by
-# tasks.py:350-351 and the existing tests/test_stamp_experiment_owner.py
+# task_submission.py and the existing tests/test_stamp_experiment_owner.py
 # (test_ignores_missing_inputs); not duplicated here.
 
 

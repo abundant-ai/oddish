@@ -123,6 +123,22 @@ def test_processed_batch_returns_results(monkeypatch, status):
     assert submit_sweep_batch("http://api", PAYLOADS) == results
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"detail": {"message": "Over your daily budget: nope."}},  # FastAPI wrap
+        {"message": "Over your daily budget: nope."},  # legacy flat handler
+    ],
+)
+def test_quota_402_message_read_from_both_wire_shapes(monkeypatch, capsys, body):
+    """The 402/403 message must surface whether the server wraps the detail
+    ({"detail": {...}}, FastAPI default) or returns it flat (old handler)."""
+    _install(monkeypatch, _Resp(402, json_data=body))
+    with pytest.raises(typer.Exit):
+        api.post_sweep_payload("http://api", {"task_id": "t-a"})
+    assert "Over your daily budget" in capsys.readouterr().err
+
+
 # ---------------------------------------------------------------------------
 # _map_batch_sweep_results (run.py): per-item mapping must not crash on junk.
 # ---------------------------------------------------------------------------

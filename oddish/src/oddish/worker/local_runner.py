@@ -24,6 +24,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.trial.trial import Trial
@@ -641,11 +642,21 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial.result = _strip_nul(result_payload)
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
-            trial.input_tokens = agent_result.n_input_tokens
-            trial.cache_tokens = agent_result.n_cache_tokens
-            trial.output_tokens = agent_result.n_output_tokens
-            trial.cost_usd = agent_result.cost_usd
-        trial.total_steps = _trajectory_total_steps(trajectory)
+            # Through apply_settled_cost so floor/estimate/accumulation and the
+            # once-only gate hold on the local path too.
+            apply_settled_cost(
+                trial,
+                SimpleNamespace(
+                    input_tokens=agent_result.n_input_tokens,
+                    cache_tokens=agent_result.n_cache_tokens,
+                    cache_write_tokens=None,
+                    output_tokens=agent_result.n_output_tokens,
+                    total_steps=_trajectory_total_steps(trajectory),
+                    cost_usd=agent_result.cost_usd,
+                ),
+            )
+        else:
+            trial.total_steps = _trajectory_total_steps(trajectory)
         trial.has_trajectory = trajectory is not None
         if analyzer_summary is not None:
             trial.analysis = _strip_nul(analyzer_summary)

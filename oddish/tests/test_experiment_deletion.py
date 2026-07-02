@@ -86,11 +86,17 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
         return None
 
     async def _noop_cancel_trials(*_args, **_kwargs):
+        return []
+
+    async def _noop_settle(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(_deletion, "_cancel_worker_jobs_for_task", _noop_cancel_task)
     monkeypatch.setattr(
         _deletion, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
+    )
+    monkeypatch.setattr(
+        _deletion, "_settle_active_billable_trials", _noop_settle
     )
 
     session = _FakeDeleteExperimentSession()
@@ -108,6 +114,7 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
             "tasks": 1,
             "experiments": 1,
         },
+        "modal_function_call_ids": [],
     }
     assert session.delete_called is False
 

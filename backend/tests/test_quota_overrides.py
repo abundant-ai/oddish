@@ -57,7 +57,6 @@ def test_quotas_migration_is_ddl_only():
     source = migration.read_text()
     assert "CREATE TABLE IF NOT EXISTS quotas" in source
     assert "UNIQUE (org_id, user_id)" in source
-    assert "period_kind IN ('daily')" in source
     assert "DROP TABLE IF EXISTS quotas" in source
 
     uppercased = source.upper()

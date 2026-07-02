@@ -10,15 +10,25 @@ def apply_settled_cost(trial, outcome=None) -> None:
             trial.cost_usd = _estimate_or_floor(trial)
         return
 
+    # Once-only per attempt: at-least-once outcome redelivery must not
+    # re-accumulate. cost_settled_attempt records the last settled attempt.
+    attempts = trial.attempts or 0
+    if attempts > 0 and (trial.cost_settled_attempt or 0) >= attempts:
+        return
+
+    # Attempts >1 already settled a prior attempt's cost; accumulate so a
+    # retried trial bills every attempt's spend. Token fields stay last-attempt.
+    prior_cost = trial.cost_usd if attempts > 1 else None
     trial.input_tokens = outcome.input_tokens
     trial.cache_tokens = outcome.cache_tokens
     trial.cache_write_tokens = outcome.cache_write_tokens
     trial.output_tokens = outcome.output_tokens
     trial.total_steps = outcome.total_steps
-    if outcome.cost_usd is not None:
-        trial.cost_usd = outcome.cost_usd
-    else:
-        trial.cost_usd = _estimate_or_floor(trial)
+    resolved = (
+        outcome.cost_usd if outcome.cost_usd is not None else _estimate_or_floor(trial)
+    )
+    trial.cost_usd = (prior_cost or 0) + resolved
+    trial.cost_settled_attempt = attempts
 
 
 def _estimate_or_floor(trial) -> float:

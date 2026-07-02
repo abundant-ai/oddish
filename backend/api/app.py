@@ -88,10 +88,6 @@ async def _assert_quota_schema_or_force_off() -> None:
                         WHERE table_name = 'trials'
                           AND column_name = 'billed_user_id'
                     ) AND EXISTS (
-                        SELECT 1 FROM pg_indexes
-                        WHERE tablename = 'trials'
-                          AND indexname = 'idx_trials_org_billed_user_finished'
-                    ) AND EXISTS (
                         SELECT 1 FROM information_schema.tables
                         WHERE table_name = 'quotas'
                     )
@@ -108,7 +104,7 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
     logger.error(
         "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
-        "column/index or the backend quotas table is missing -- the oddish and "
+        "column or the backend quotas table is missing -- the oddish and "
         "backend alembic trees migrate separately); forcing quota_mode=off to "
         "avoid a fail-open SUM or a 500 on every admission",
         settings.quota_mode,
@@ -263,17 +259,6 @@ def create_app() -> FastAPI:
         if combined:
             response.headers["Server-Timing"] = combined
         return response
-
-    from fastapi.responses import JSONResponse
-
-    from oddish.core.quota_admission import QuotaExceeded, Unattributed
-
-    @api.exception_handler(QuotaExceeded)
-    @api.exception_handler(Unattributed)
-    async def _quota_admission_handler(
-        request: Request, exc: QuotaExceeded | Unattributed
-    ):
-        return JSONResponse(status_code=exc.status_code, content=exc.detail)
 
     from api.capacity_headers import capacity_header_middleware
 

@@ -22,6 +22,52 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import ExperimentCombineResponse
+from oddish.trial_cost import apply_settled_cost
+
+_BILLABLE_DELETE_TRIAL_STATUSES = (
+    TrialStatus.QUEUED,
+    TrialStatus.RUNNING,
+    TrialStatus.RETRYING,
+)
+
+
+async def _settle_active_billable_trials(
+    session: AsyncSession, trial_ids: Collection[str], *, reason: str
+) -> None:
+    """Cancel parity for soft-deletes (mirrors queue.py cancel).
+
+    An active billable trial must settle (floored cost + finished_at) BEFORE it
+    is tombstoned, or its spend and its reservation both vanish from the
+    payer's quota. Runs before any worker_jobs cancel so trial-row locks are
+    taken first (same order as retry; the reaper skip-locks trials).
+    """
+    if not trial_ids:
+        return
+    trials = (
+        (
+            await session.execute(
+                select(TrialModel)
+                .where(
+                    TrialModel.id.in_(list(trial_ids)),
+                    TrialModel.billed_user_id.is_not(None),
+                    TrialModel.finished_at.is_(None),
+                    TrialModel.status.in_(_BILLABLE_DELETE_TRIAL_STATUSES),
+                )
+                .order_by(TrialModel.id)  # stable lock order, delete-vs-delete
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = utcnow()
+    for trial in trials:
+        trial.status = TrialStatus.FAILED
+        trial.error_message = reason
+        trial.finished_at = now
+        trial.current_worker_id = None
+        trial.current_queue_slot = None
+        apply_settled_cost(trial)
 
 
 def _task_has_active_analysis(task: TaskModel) -> bool:
@@ -118,17 +164,23 @@ async def delete_task_core(
             ).all()
         ]
 
+        harvest = _CancelHarvest()
         if scoped_trial_ids:
+            await _settle_active_billable_trials(
+                session, scoped_trial_ids, reason="Task deleted by user"
+            )
             await _cancel_worker_jobs_for_trials(
                 session,
                 trial_ids=scoped_trial_ids,
                 reason="Task deleted by user",
+                harvest=harvest,
             )
 
         await _cancel_worker_jobs_for_task(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
+            harvest=harvest,
         )
 
         await session.execute(
@@ -143,6 +195,7 @@ async def delete_task_core(
             .values(deleted_at=utcnow())
             .execution_options(synchronize_session=False)
         )
+        await harvest.terminate_sandboxes()
 
         return {
             # Soft-delete preserves S3 artifacts for potential restore.
@@ -151,6 +204,7 @@ async def delete_task_core(
             # remains stable; the empty list makes that cleanup a no-op.
             "s3_prefixes": [],
             "deleted": {"task_id": task_id},
+            "modal_function_call_ids": harvest.modal_fc_ids,
         }
 
     # Scoped delete: only this experiment's trials + the join row.
@@ -181,11 +235,16 @@ async def delete_task_core(
         )
 
     # Cancel live worker_jobs for those trials so workers release slots.
+    harvest = _CancelHarvest()
     if scoped_trial_ids:
+        await _settle_active_billable_trials(
+            session, scoped_trial_ids, reason="Task deleted by user"
+        )
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Task deleted by user",
+            harvest=harvest,
         )
 
         await session.execute(
@@ -236,6 +295,7 @@ async def delete_task_core(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
+            harvest=harvest,
         )
         await session.execute(
             update(TaskModel)
@@ -249,6 +309,7 @@ async def delete_task_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await harvest.terminate_sandboxes()
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -257,6 +318,7 @@ async def delete_task_core(
             "trials_deleted": len(scoped_trial_ids),
             "task_removed": task_removed,
         },
+        "modal_function_call_ids": harvest.modal_fc_ids,
     }
 
 
@@ -338,11 +400,16 @@ async def unlink_task_from_experiment_core(
             )
         ).all()
     ]
+    harvest = _CancelHarvest()
     if scoped_trial_ids:
+        await _settle_active_billable_trials(
+            session, scoped_trial_ids, reason="Task removed from experiment by user"
+        )
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Task removed from experiment by user",
+            harvest=harvest,
         )
         await session.execute(
             update(TrialModel)
@@ -393,6 +460,7 @@ async def unlink_task_from_experiment_core(
         org_id=task_org_id,
     )
 
+    await harvest.terminate_sandboxes()
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -402,7 +470,41 @@ async def unlink_task_from_experiment_core(
             "task_removed": False,
         },
         "unlinked": True,
+        "modal_function_call_ids": harvest.modal_fc_ids,
     }
+
+
+class _CancelHarvest:
+    """Remote-execution handles collected from cancelled worker_jobs rows.
+
+    Modal function-call ids go back to the route for termination; sandbox
+    worker targets are terminated in-core (parity with queue.py cancel).
+    """
+
+    def __init__(self) -> None:
+        self.modal_fc_ids: list[str] = []
+        self.worker_targets: set[tuple[str, str]] = set()
+
+    def add(self, rows) -> None:
+        for fc, provider, external_id in rows:
+            if fc:
+                self.modal_fc_ids.append(str(fc))
+            if provider and external_id:
+                self.worker_targets.add((str(provider), str(external_id)))
+
+    async def terminate_sandboxes(self) -> None:
+        if not self.worker_targets:
+            return
+        import asyncio
+
+        from oddish.core.helpers import cancel_job_by_worker
+
+        await asyncio.gather(
+            *(
+                cancel_job_by_worker(provider, external_id)
+                for provider, external_id in self.worker_targets
+            )
+        )
 
 
 async def _cancel_worker_jobs_for_trials(
@@ -410,6 +512,7 @@ async def _cancel_worker_jobs_for_trials(
     *,
     trial_ids: Collection[str],
     reason: str,
+    harvest: _CancelHarvest,
 ) -> None:
     """Cancel live worker_jobs whose subject is one of these trials.
 
@@ -420,11 +523,22 @@ async def _cancel_worker_jobs_for_trials(
     worker would keep holding a queue slot. Issued as raw SQL because
     ``worker_jobs.status`` is a Postgres enum and the cast keeps the
     statement portable across asyncpg / SQLAlchemy boundaries.
+
+    Modal FC ids + sandbox targets are harvested via CTE before nulling.
     """
-    await session.execute(
+    rows = await session.execute(
         text(
             """
-            UPDATE worker_jobs
+            WITH to_cancel AS (
+                SELECT id, modal_function_call_id, provider, external_id
+                FROM   worker_jobs
+                WHERE  subject_table = 'trials'
+                  AND  subject_id = ANY(:trial_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs w
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
                    error_message = :reason,
@@ -432,13 +546,16 @@ async def _cancel_worker_jobs_for_trials(
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL,
                    payload = payload - 'registry_auth_enc'
-            WHERE  subject_table = 'trials'
-              AND  subject_id = ANY(:trial_ids)
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"trial_ids": list(trial_ids), "reason": reason},
     )
+    harvest.add(rows)
 
 
 async def _cancel_worker_jobs_for_task(
@@ -446,25 +563,38 @@ async def _cancel_worker_jobs_for_task(
     *,
     task_id: str,
     reason: str,
+    harvest: _CancelHarvest,
 ) -> None:
     """Cancel live worker_jobs whose subject is this task (e.g. VERDICT)."""
-    await session.execute(
+    rows = await session.execute(
         text(
             """
-            UPDATE worker_jobs
+            WITH to_cancel AS (
+                SELECT id, modal_function_call_id, provider, external_id
+                FROM   worker_jobs
+                WHERE  subject_table = 'tasks'
+                  AND  subject_id = :task_id
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs w
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
                    error_message = :reason,
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  subject_table = 'tasks'
-              AND  subject_id = :task_id
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"task_id": task_id, "reason": reason},
     )
+    harvest.add(rows)
 
 
 async def delete_experiment_core(
@@ -509,15 +639,8 @@ async def delete_experiment_core(
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
 
-    if linked_task_ids:
-        for tid in linked_task_ids:
-            await _cancel_worker_jobs_for_task(
-                session,
-                task_id=tid,
-                reason="Experiment deleted by user",
-            )
-
-    # Trials scoped to this experiment.
+    # Trials scoped to this experiment. Settled BEFORE any worker_jobs cancel
+    # so trial-row locks come first (see _settle_active_billable_trials).
     trial_where = [TrialModel.experiment_id == experiment_id]
     if org_id is not None:
         trial_where.append(
@@ -530,12 +653,26 @@ async def delete_experiment_core(
             await session.execute(select(TrialModel.id).where(*trial_where))
         ).all()
     ]
+    await _settle_active_billable_trials(
+        session, scoped_trial_ids, reason="Experiment deleted by user"
+    )
+
+    harvest = _CancelHarvest()
+    if linked_task_ids:
+        for tid in linked_task_ids:
+            await _cancel_worker_jobs_for_task(
+                session,
+                task_id=tid,
+                reason="Experiment deleted by user",
+                harvest=harvest,
+            )
 
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Experiment deleted by user",
+            harvest=harvest,
         )
 
         trials_upd = await session.execute(
@@ -599,6 +736,7 @@ async def delete_experiment_core(
                 session,
                 task_id=tid,
                 reason="Experiment deleted by user",
+                harvest=harvest,
             )
             task_upd_result = await session.execute(
                 update(TaskModel)
@@ -618,6 +756,7 @@ async def delete_experiment_core(
                 _reset_task_verdict(task)
                 _clear_stale_task_pipeline_status(task)
 
+    await harvest.terminate_sandboxes()
     return {
         "s3_prefixes": [],
         "deleted": {
@@ -625,6 +764,7 @@ async def delete_experiment_core(
             "tasks": deleted_tasks,
             "experiments": deleted_experiments,
         },
+        "modal_function_call_ids": harvest.modal_fc_ids,
     }
 
 
@@ -904,13 +1044,19 @@ async def delete_trial_core(
     """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
 
+    await _settle_active_billable_trials(
+        session, [trial_id], reason="Trial deleted by user"
+    )
+
     # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
     # ANALYSIS jobs) so workers stop heart-beating and release slots
     # before the domain row goes invisible under them.
+    harvest = _CancelHarvest()
     await _cancel_worker_jobs_for_trials(
         session,
         trial_ids=[trial_id],
         reason="Trial deleted by user",
+        harvest=harvest,
     )
 
     task_id = trial.task_id
@@ -932,7 +1078,9 @@ async def delete_trial_core(
         if task is not None:
             _reset_task_verdict(task)
 
+    await harvest.terminate_sandboxes()
     return {
         "s3_prefixes": [],
         "deleted": {"trial_id": trial_id, "task_id": task_id},
+        "modal_function_call_ids": harvest.modal_fc_ids,
     }

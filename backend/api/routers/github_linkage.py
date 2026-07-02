@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.routers.tasks import _resolve_connected_user
+from api.routers.task_submission import resolve_connected_user
 from auth import AuthContext, require_auth
 from auth.provisioning import (
     ClerkGithubIdentity,
@@ -121,7 +121,7 @@ async def github_linkage(
     """
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        user = await _resolve_connected_user(
+        user = await resolve_connected_user(
             session, org_id=auth.org_id, github_id=actor_id, github_username=handle
         )
         if user is not None:
@@ -149,7 +149,7 @@ async def github_linkage(
                 "linkage refresh apply failed; answering from stored state",
                 exc_info=True,
             )
-        user = await _resolve_connected_user(
+        user = await resolve_connected_user(
             session, org_id=auth.org_id, github_id=actor_id, github_username=handle
         )
     if user is None:

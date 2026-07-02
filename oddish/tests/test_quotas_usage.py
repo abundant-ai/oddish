@@ -11,7 +11,11 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.core.quotas import start_of_today_utc, sum_cost_usd  # noqa: E402
+from oddish.core.quotas import (  # noqa: E402
+    start_of_today_utc,
+    sum_cost_usd,
+    sum_cost_usd_by_user,
+)
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
@@ -62,7 +66,7 @@ def test_start_of_today_utc_is_calendar_midnight_boundary():
 
 
 @pytest.mark.asyncio
-async def test_sum_cost_usd_excludes_inflight_deleted_before_window_and_null_billed(
+async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
     cleanup_task_ids,
 ):
     task_id = f"quota-sum-{_RUN}"
@@ -95,10 +99,11 @@ async def test_sum_cost_usd_excludes_inflight_deleted_before_window_and_null_bil
         still_in_flight.finished_at = None
         still_in_flight.cost_usd = 5.00
 
-        soft_deleted = await session.get(TrialModel, f"{task_id}-3")
-        soft_deleted.finished_at = now
-        soft_deleted.cost_usd = 9.00
-        soft_deleted.deleted_at = now
+        # Soft-deleted settled spend still counts: deleting is not a budget reset.
+        soft_deleted_but_counted = await session.get(TrialModel, f"{task_id}-3")
+        soft_deleted_but_counted.finished_at = now
+        soft_deleted_but_counted.cost_usd = 9.00
+        soft_deleted_but_counted.deleted_at = now
 
         billed_to_nobody = await session.get(TrialModel, f"{task_id}-4")
         billed_to_nobody.finished_at = now
@@ -114,5 +119,7 @@ async def test_sum_cost_usd_excludes_inflight_deleted_before_window_and_null_bil
         settled_today = await sum_cost_usd(
             session, org_id, billed_user, start_of_today_utc(now)
         )
+        grouped = await sum_cost_usd_by_user(session, org_id, start_of_today_utc(now))
 
-    assert settled_today == Decimal("0.30")
+    assert settled_today == Decimal("9.30")
+    assert grouped[billed_user] == Decimal("9.30")

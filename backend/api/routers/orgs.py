@@ -29,6 +29,7 @@ from oddish.config import QuotaMode, settings
 from models import QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import (
     get_effective_limit,
+    inflight_reserved_usd,
     start_of_today_utc,
     sum_cost_usd,
     sum_cost_usd_by_user,
@@ -137,6 +138,7 @@ async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
     used_today = Decimal(0)
+    reserved = Decimal(0)
     effective_limit_usd = settings.default_daily_quota_usd
     if auth.user_id:
         async with get_session() as session:
@@ -146,11 +148,14 @@ async def get_my_quota_usage(
             effective_limit_usd = await get_effective_limit(
                 session, auth.org_id, auth.user_id
             )
+            reserved = await inflight_reserved_usd(
+                session, auth.org_id, auth.user_id
+            )
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
         limit_usd=float(effective_limit_usd),
         used_usd=float(used_today),
-        period="daily",
+        reserved_usd=float(reserved),
         enforced=settings.quota_mode == QuotaMode.ENFORCE,
     )
 
@@ -164,7 +169,6 @@ def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem
         role=member.role.value,
         limit_usd=float(effective_limit_usd),
         used_usd=float(used_usd),
-        period="daily",
     )
 
 
@@ -195,7 +199,6 @@ async def list_member_quotas(
         override_rows = await session.execute(
             select(QuotaModel.user_id, QuotaModel.limit_usd).where(
                 QuotaModel.org_id == auth.org_id,
-                QuotaModel.deleted_at.is_(None),
             )
         )
         override_limit_by_user_id = dict(override_rows.all())
@@ -246,7 +249,6 @@ async def set_member_quota(
                     org_id=auth.org_id,
                     user_id=user_id,
                     limit_usd=payload.limit_usd,
-                    period_kind="daily",
                 )
                 .on_conflict_do_update(
                     index_elements=["org_id", "user_id"],

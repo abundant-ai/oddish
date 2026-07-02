@@ -856,6 +856,11 @@ class TrialModel(TimestampedMixin, Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Last attempt whose outcome settled cost_usd; gates at-least-once outcome
+    # redelivery so accumulation never double-bills an attempt.
+    cost_settled_attempt: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -916,13 +921,13 @@ class TrialModel(TimestampedMixin, Base):
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
         # Per-user daily spend SUM: WHERE org_id, billed_user_id, finished_at >=
-        # start_of_today AND deleted_at IS NULL. Partial to match that predicate.
+        # start_of_today. Not partial: settled spend counts soft-deleted rows
+        # (must match the billed_user_001 migration).
         Index(
             "idx_trials_org_billed_user_finished",
             "org_id",
             "billed_user_id",
             "finished_at",
-            postgresql_where=text("deleted_at IS NULL"),
         ),
         Index(
             "idx_trials_org_experiment_created_at",

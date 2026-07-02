@@ -27,11 +27,12 @@ def start_of_today_utc(now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+# Settled spend counts even after a trial/experiment is soft-deleted (deleting
+# is not a budget reset), so the sums bypass the deleted_at auto-filter.
 def _settled_cost_predicates(org_id: str | None, period_start: datetime) -> list:
     return [
         TrialModel.org_id == org_id,
         TrialModel.finished_at >= period_start,
-        TrialModel.deleted_at.is_(None),
     ]
 
 
@@ -43,10 +44,12 @@ async def sum_cost_usd(
 ) -> Decimal:
     return to_money_decimal(
         await session.scalar(
-            select(func.coalesce(func.sum(TrialModel.cost_usd), 0)).where(
+            select(func.coalesce(func.sum(TrialModel.cost_usd), 0))
+            .where(
                 *_settled_cost_predicates(org_id, period_start),
                 TrialModel.billed_user_id == user_id,
             )
+            .execution_options(include_deleted=True)
         )
     )
 
@@ -64,8 +67,20 @@ async def sum_cost_usd_by_user(
             TrialModel.billed_user_id.is_not(None),
         )
         .group_by(TrialModel.billed_user_id)
+        .execution_options(include_deleted=True)
     )
     return {user_id: to_money_decimal(total) for user_id, total in rows.all()}
+
+
+def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
+    return [
+        TrialModel.org_id == org_id,
+        TrialModel.billed_user_id == billed_user_id,
+        TrialModel.finished_at.is_(None),
+        TrialModel.deleted_at.is_(None),
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+    ]
 
 
 async def inflight_count(
@@ -75,16 +90,34 @@ async def inflight_count(
         await session.scalar(
             select(func.count())
             .select_from(TrialModel)
-            .where(
-                TrialModel.org_id == org_id,
-                TrialModel.billed_user_id == billed_user_id,
-                TrialModel.finished_at.is_(None),
-                TrialModel.deleted_at.is_(None),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
-            )
+            .where(*_inflight_predicates(org_id, billed_user_id))
         )
         or 0
+    )
+
+
+async def inflight_reserved_usd(
+    session: AsyncSession, org_id: str | None, billed_user_id: str
+) -> Decimal:
+    """Reservation for in-flight trials: each stands in at its accumulated
+    cost so far (a $3 RETRYING attempt reserves $3), floored at the pending
+    reservation."""
+    return to_money_decimal(
+        await session.scalar(
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.greatest(
+                            func.coalesce(TrialModel.cost_usd, 0),
+                            float(settings.pending_trial_reservation_usd),
+                        )
+                    ),
+                    0,
+                )
+            )
+            .select_from(TrialModel)
+            .where(*_inflight_predicates(org_id, billed_user_id))
+        )
     )
 
 
@@ -94,7 +127,7 @@ async def get_effective_limit(
     override_limit_usd = await session.scalar(
         text(
             "SELECT limit_usd FROM quotas "
-            "WHERE org_id = :org_id AND user_id = :user_id AND deleted_at IS NULL"
+            "WHERE org_id = :org_id AND user_id = :user_id"
         ),
         {"org_id": org_id, "user_id": user_id},
     )

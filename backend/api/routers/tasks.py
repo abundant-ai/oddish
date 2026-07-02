@@ -16,7 +16,7 @@ from fastapi import (
     status,
 )
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,7 +48,6 @@ from oddish.core.endpoints import (
     unlink_task_from_experiment_core,
 )
 from oddish.core.dashboard import (
-    EXPERIMENTS_UNATTRIBUTED_OWNER,
     invalidate_dashboard_cache,
 )
 from oddish.core.experiments import (
@@ -62,13 +61,22 @@ from oddish.core.sharing.helpers import (
 )
 from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
 from idempotency_store import SubmissionIdempotencyStore
-from models import APIKeyModel, UserModel
 from api.schemas import (
     ExperimentShareResponse,
     ExperimentUpdateRequest,
     ExperimentUpdateResponse,
 )
 from auth import APIKeyScope, AuthContext, require_admin, require_auth
+from api.routers.task_submission import (
+    apply_github_attribution,
+    maybe_publish_experiment,
+    resolve_actor_user_string,
+    resolve_billed_user_id,
+    resolve_created_by_user_id,
+    resolve_experiment_owner_user_id,
+    resolve_submission_identity,
+    stamp_experiment_owner,
+)
 from dashboard_attribution import resolve_search_authors
 from oddish.core.tasks import (
     complete_task_upload,
@@ -139,313 +147,6 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
     return await ModalDispatcher().cancel(handles)
 
 
-def _apply_github_attribution(submission: TaskSweepSubmission) -> None:
-    if submission.github_username:
-        submission.tags = submission.tags or {}
-        submission.tags.setdefault("github_username", submission.github_username)
-    # Carry github_id as metadata so it survives transport; resolution/precedence
-    # is G4's job, not here.
-    if submission.github_id:
-        submission.tags = submission.tags or {}
-        submission.tags.setdefault("github_id", submission.github_id)
-
-
-async def _resolve_actor_user(
-    session: AsyncSession,
-    auth: AuthContext,
-) -> UserModel | None:
-    """Return the UserModel of the authenticating principal, or None.
-
-    The auth dependency caches lightweight identity tuples — on cache hits
-    the ORM ``user`` / ``api_key`` objects are stripped and only the IDs are
-    available, so we lazy-load via ``session.get`` when needed.
-    """
-    if auth.user is not None:
-        return auth.user
-    if auth.user_id:
-        user = await session.get(UserModel, auth.user_id)
-        if user is not None:
-            return user
-    if auth.api_key_id:
-        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.created_by_user_id:
-            return await session.get(UserModel, api_key.created_by_user_id)
-    return None
-
-
-async def _resolve_actor_user_string(
-    session: AsyncSession,
-    auth: AuthContext,
-    explicit_user: str | None,
-    explicit_github_username: str | None,
-) -> str:
-    """Resolve a non-empty author string from the authenticated actor.
-
-    Precedence:
-      1. explicit_user (e.g. --user)
-      2. explicit_github_username (e.g. --github-user)
-      3. actor's UserModel.email (the stable Clerk-backed identity)
-      4. api_key.name (service-account API keys with no linked user)
-      5. "unknown" (so tasks.user is never empty)
-    """
-    if explicit_user:
-        return explicit_user
-    if explicit_github_username:
-        return explicit_github_username
-
-    actor = await _resolve_actor_user(session, auth)
-    if actor and actor.email:
-        return actor.email
-
-    if auth.api_key_id:
-        api_key = auth.api_key or await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.name:
-            return api_key.name
-
-    return "unknown"
-
-
-async def _resolve_submission_identity(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-) -> None:
-    """Fill submission.user and submission.github_username from the authenticated
-    actor when missing. Mutates submission in place.
-
-    `github_username` is only auto-filled from UserModel.github_username so the
-    dashboard's `source: "github"` attribution stays meaningful.
-    """
-    if not submission.github_username:
-        actor = await _resolve_actor_user(session, auth)
-        if actor and actor.github_username:
-            submission.github_username = actor.github_username
-
-    submission.user = await _resolve_actor_user_string(
-        session,
-        auth,
-        explicit_user=submission.user,
-        explicit_github_username=submission.github_username,
-    )
-
-
-async def _lookup_user_by_github_username(
-    session: AsyncSession,
-    *,
-    github_username: str,
-    org_id: str,
-) -> UserModel | None:
-    """The exactly-one connection predicate shared by owner resolution and the
-    linkage endpoint: a handle resolves to a user only when a single active org
-    member carries it. Zero or 2+ (ambiguous) active matches both resolve to
-    None — never an error — so a duplicated handle is a graceful no-owner, not a
-    500. Reuses the plural query for identical normalization/org-scope/active.
-    """
-    users = await _lookup_users_by_github_username(
-        session, github_username=github_username, org_id=org_id
-    )
-    return users[0] if len(users) == 1 else None
-
-
-async def _lookup_users_by_github_username(
-    session: AsyncSession,
-    *,
-    github_username: str,
-    org_id: str,
-) -> list[UserModel]:
-    """Plural sibling of ``_lookup_user_by_github_username``.
-
-    Two active members can share a GitHub handle, so search filters must
-    union *all* matches rather than assume a single owner. Uses
-    ``scalars().all()`` (not ``scalar_one_or_none()``, which raises on
-    duplicates) and reuses the same ``@``-strip + case-insensitive,
-    org-scoped, active-only normalization as the singular lookup.
-    """
-    normalized = (github_username or "").strip().lstrip("@")
-    if not normalized:
-        return []
-    result = await session.execute(
-        select(UserModel).where(
-            func.lower(UserModel.github_username) == normalized.lower(),
-            UserModel.org_id == org_id,
-            UserModel.is_active == True,  # noqa: E712
-        )
-    )
-    return list(result.scalars().all())
-
-
-async def _lookup_user_by_github_id(
-    session: AsyncSession,
-    *,
-    github_id: str,
-    org_id: str,
-) -> UserModel | None:
-    """Exact-one, org-scoped, active-only lookup by immutable github_id.
-
-    github_id is org-unique (``uq_users_org_github_id``) so there is at most
-    one active match. No ``@``-strip / case-fold — github_id is an exact
-    immutable id string, not a handle — but a bare ``.strip()`` guards against
-    surrounding whitespace and treats empty/whitespace as no match.
-    """
-    normalized = (github_id or "").strip()
-    if not normalized:
-        return None
-    result = await session.execute(
-        select(UserModel).where(
-            UserModel.github_id == normalized,
-            UserModel.org_id == org_id,
-            UserModel.is_active == True,  # noqa: E712
-        )
-    )
-    return result.scalars().first()
-
-
-async def _resolve_connected_user(
-    session: AsyncSession,
-    *,
-    org_id: str,
-    github_id: str | None,
-    github_username: str | None,
-) -> UserModel | None:
-    """Shared connection predicate for owner resolution AND the linkage endpoint
-    (predicate parity, INV2). The immutable github_id wins over the mutable
-    handle: try the org-scoped exact-one github_id lookup first, and only fall
-    back to the exact-one github_username lookup when github_id is absent or
-    unmatched. Both call sites MUST route through here so 'resolvable owner'
-    (/tasks/sweep) and 'connected?' (endpoint) stay the identical predicate.
-    """
-    if github_id:
-        user = await _lookup_user_by_github_id(
-            session, github_id=github_id, org_id=org_id
-        )
-        if user is not None:
-            return user
-    if github_username:
-        return await _lookup_user_by_github_username(
-            session, github_username=github_username, org_id=org_id
-        )
-    return None
-
-
-async def _resolve_created_by_user_id(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-) -> str | None:
-    """Who submitted the task (API key owner wins for CI/service accounts)."""
-    if auth.api_key_id:
-        api_key = auth.api_key
-        if api_key is None:
-            api_key = await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.created_by_user_id:
-            return api_key.created_by_user_id
-
-    if submission.github_id or submission.github_username:
-        user = await _resolve_connected_user(
-            session,
-            org_id=auth.org_id,
-            github_id=submission.github_id,
-            github_username=submission.github_username,
-        )
-        if user:
-            return user.id
-
-    if auth.user_id:
-        return auth.user_id
-
-    return None
-
-
-async def _resolve_experiment_owner_user_id(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-) -> str | None:
-    """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
-    if submission.github_id or submission.github_username:
-        # github_id (immutable) beats the mutable handle via the shared resolver
-        # (predicate parity with the linkage endpoint).
-        user = await _resolve_connected_user(
-            session,
-            org_id=auth.org_id,
-            github_id=submission.github_id,
-            github_username=submission.github_username,
-        )
-        if user:
-            return user.id
-        # Explicit github identity with no linked org member: leave owner unset so
-        # the legacy primary-task Mine filter can match the github tag.
-        return None
-
-    if auth.user_id:
-        return auth.user_id
-
-    if auth.api_key_id:
-        api_key = auth.api_key
-        if api_key is None:
-            api_key = await session.get(APIKeyModel, auth.api_key_id)
-        if api_key and api_key.created_by_user_id:
-            return api_key.created_by_user_id
-
-    return None
-
-
-async def _resolve_billed_user_id(
-    session: AsyncSession,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-    owner_user_id: str | None = None,
-) -> str | None:
-    if owner_user_id is None:
-        owner_user_id = await _resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-    if owner_user_id is not None:
-        return owner_user_id
-    return await _resolve_created_by_user_id(session, submission, auth)
-
-
-def _stamp_experiment_owner(
-    experiment: ExperimentModel | None,
-    owner_user_id: str | None,
-    *,
-    claim_unowned: bool = True,
-) -> None:
-    """Stamp the dashboard Mine owner on an experiment.
-
-    ``claim_unowned=False`` (append/rerun path) replaces only the sweep's
-    ``__unattributed__`` sentinel: a NULL owner means the sweep has not yet
-    attributed the experiment's primary task, and the appender is not
-    necessarily that author — claiming NULL here would race the sweep's
-    precedence-correct claim and hide the experiment from its real owner.
-    """
-    if experiment is None or not owner_user_id:
-        return
-    claimable = (
-        (None, EXPERIMENTS_UNATTRIBUTED_OWNER)
-        if claim_unowned
-        else (EXPERIMENTS_UNATTRIBUTED_OWNER,)
-    )
-    if experiment.owner_user_id in claimable:
-        experiment.owner_user_id = owner_user_id
-
-
-async def _maybe_publish_experiment(
-    session: AsyncSession,
-    task: TaskModel,
-    submission: TaskSweepSubmission,
-    auth: AuthContext,
-) -> None:
-    should_publish = submission.publish_experiment
-    if should_publish is None:
-        should_publish = bool(submission.github_username and auth.api_key_id)
-    if not should_publish:
-        return
-
-    experiments = list(task.experiments or [])
-    for experiment in experiments:
-        await ensure_experiment_public(session, experiment)
-
 
 # =============================================================================
 # Task Upload and Creation
@@ -479,7 +180,7 @@ async def finalize_task_upload(
     resolved_user = payload.user
     if payload.register_task and not resolved_user:
         async with get_session() as session:
-            resolved_user = await _resolve_actor_user_string(
+            resolved_user = await resolve_actor_user_string(
                 session,
                 auth,
                 explicit_user=payload.user,
@@ -524,15 +225,15 @@ async def create_task_sweep(
     request_hash = compute_request_hash(submission)
 
     async with get_session() as session:
-        await _resolve_submission_identity(session, submission, auth)
-        _apply_github_attribution(submission)
+        await resolve_submission_identity(session, submission, auth)
+        apply_github_attribution(submission)
 
         # Billing follows the resolved owner (submitted github_id/github_username,
         # github_id first), else the API-key owner / submitter. Every caller.
-        owner_user_id = await _resolve_experiment_owner_user_id(
+        owner_user_id = await resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        billed_user_id = await _resolve_billed_user_id(
+        billed_user_id = await resolve_billed_user_id(
             session, submission, auth, owner_user_id=owner_user_id
         )
 
@@ -553,16 +254,16 @@ async def create_task_sweep(
             # skip the owner-stamping / publish side effects below.
             return TaskResponse.model_validate(replay.response_json)
 
-        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
+        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
-            created_by_user_id = await _resolve_created_by_user_id(
+            created_by_user_id = await resolve_created_by_user_id(
                 session, submission, auth
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
 
-            await _maybe_publish_experiment(session, task, submission, auth)
+            await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
             await ensure_experiment_public(session, experiment)
@@ -599,10 +300,11 @@ async def create_task_sweep_batch(
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
     ) -> EnvironmentType | None:
-        # Per-item, auth-aware setup. Runs inside the item's savepoint so a
-        # failure here rolls back only this item (mirrors the single-sweep route).
-        await _resolve_submission_identity(session, submission, auth)
-        _apply_github_attribution(submission)
+        # Per-item, auth-aware setup. Runs in the batch core's read-only
+        # pre-loop (identity -> attribution -> billed, same order as the single
+        # route); a failure fails only this item.
+        await resolve_submission_identity(session, submission, auth)
+        apply_github_attribution(submission)
         return get_default_cloud_environment(submission)
 
     async def _finalize(
@@ -613,17 +315,17 @@ async def create_task_sweep_batch(
         experiment: ExperimentModel | None,
     ) -> None:
         # Post-create stamping, inside the savepoint (mirrors the single route).
-        owner_user_id = await _resolve_experiment_owner_user_id(
+        owner_user_id = await resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        _stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
+        stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
-            created_by_user_id = await _resolve_created_by_user_id(
+            created_by_user_id = await resolve_created_by_user_id(
                 session, submission, auth
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
-            await _maybe_publish_experiment(session, task, submission, auth)
+            await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             await ensure_experiment_public(session, experiment)
 
@@ -635,7 +337,7 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=lambda session, submission: _resolve_billed_user_id(
+            resolve_billed_user_id=lambda session, submission: resolve_billed_user_id(
                 session, submission, auth
             ),
         )
@@ -1208,7 +910,10 @@ async def delete_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    return result
+    modal_cancelled = await _cancel_modal_function_calls(
+        result.pop("modal_function_call_ids", [])
+    )
+    return result | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.delete("/experiments/{experiment_id}/tasks/{task_id}")
@@ -1237,7 +942,10 @@ async def unlink_task_from_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    return result
+    modal_cancelled = await _cancel_modal_function_calls(
+        result.pop("modal_function_call_ids", [])
+    )
+    return result | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.post(

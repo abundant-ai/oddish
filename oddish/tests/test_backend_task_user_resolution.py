@@ -1,9 +1,9 @@
-"""Unit tests for the author-resolution helpers in ``backend.api.routers.tasks``.
+"""Unit tests for the author-resolution helpers in ``backend.api.routers.task_submission``.
 
 Importing the router module is heavy because it pulls in Clerk auth,
 Modal config, and the rest of the backend. We mirror the same source-extraction
 trick used in ``test_backend_task_file_etag``: parse the helper functions out
-of the router module source and ``exec`` them into a throwaway namespace where
+of the module source and ``exec`` them into a throwaway namespace where
 we substitute ``AsyncSession``, ``AuthContext``, ``APIKeyModel``, and
 ``UserModel`` with simple stand-ins so we can drive the resolution logic
 without spinning up the full backend.
@@ -44,6 +44,7 @@ class _UserStub:
         email: str | None = None,
         org_id: str | None = None,
         is_active: bool = True,
+        deleted_at: object = None,
     ) -> None:
         self.id = id
         self.github_username = github_username
@@ -52,6 +53,7 @@ class _UserStub:
         self.email = email
         self.org_id = org_id
         self.is_active = is_active
+        self.deleted_at = deleted_at
 
 
 @dataclass
@@ -109,13 +111,13 @@ class _SessionStub:
 def _load_helpers() -> dict[str, Any]:
     """Extract the resolution helpers from the router source.
 
-    We slice out ``_resolve_actor_user`` and ``_resolve_actor_user_string``
-    from the ``backend/api/routers/tasks.py`` source and ``exec`` them with
+    We slice out ``_resolve_actor_user`` and ``resolve_actor_user_string``
+    from the ``backend/api/routers/task_submission.py`` source and ``exec`` them with
     the model/auth names rebound to our stubs. This keeps the test decoupled
     from FastAPI/Clerk/Modal imports.
     """
     router_path = (
-        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
+        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "task_submission.py"
     )
     source = router_path.read_text(encoding="utf-8")
 
@@ -129,13 +131,16 @@ def _load_helpers() -> dict[str, Any]:
         _slice(needle)
         for needle in (
             "async def _resolve_actor_user(",
-            "async def _resolve_actor_user_string(",
-            "async def _lookup_user_by_github_username(",
-            "async def _lookup_users_by_github_username(",
-            "async def _lookup_user_by_github_id(",
-            "async def _resolve_connected_user(",
-            "async def _resolve_created_by_user_id(",
-            "async def _resolve_experiment_owner_user_id(",
+            "async def resolve_actor_user_string(",
+            "async def resolve_submission_identity(",
+            "async def lookup_user_by_github_username(",
+            "async def lookup_users_by_github_username(",
+            "async def lookup_user_by_github_id(",
+            "async def resolve_connected_user(",
+            "async def _active_user_id(",
+            "async def _api_key_owner_user_id(",
+            "async def resolve_created_by_user_id(",
+            "async def resolve_experiment_owner_user_id(",
         )
     )
 
@@ -164,9 +169,10 @@ def _load_helpers() -> dict[str, Any]:
 
 _HELPERS = _load_helpers()
 _resolve_actor_user = _HELPERS["_resolve_actor_user"]
-_resolve_actor_user_string = _HELPERS["_resolve_actor_user_string"]
-_resolve_created_by_user_id = _HELPERS["_resolve_created_by_user_id"]
-_resolve_experiment_owner_user_id = _HELPERS["_resolve_experiment_owner_user_id"]
+resolve_actor_user_string = _HELPERS["resolve_actor_user_string"]
+resolve_submission_identity = _HELPERS["resolve_submission_identity"]
+resolve_created_by_user_id = _HELPERS["resolve_created_by_user_id"]
+resolve_experiment_owner_user_id = _HELPERS["resolve_experiment_owner_user_id"]
 
 
 def _run(coro):
@@ -177,7 +183,7 @@ def test_explicit_user_wins():
     auth = _AuthStub()
     session = _SessionStub()
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user="alice", explicit_github_username=None
         )
     )
@@ -188,7 +194,7 @@ def test_explicit_github_username_used_when_no_user():
     auth = _AuthStub()
     session = _SessionStub()
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session,
             auth,
             explicit_user=None,
@@ -206,7 +212,7 @@ def test_api_key_resolves_to_linked_user_email():
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -221,7 +227,7 @@ def test_clerk_jwt_uses_auth_user_email():
     auth = _AuthStub(user=user, user_id="u1")
     session = _SessionStub()  # no DB load needed
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -239,7 +245,7 @@ def test_clerk_jwt_cache_hit_lazy_loads_user():
     auth = _AuthStub(user_id="u1")  # no .user (cache-hit shape)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -251,7 +257,7 @@ def test_service_account_api_key_falls_back_to_key_name():
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub()
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -262,7 +268,7 @@ def test_no_actor_falls_back_to_unknown():
     auth = _AuthStub()  # no api key, no user
     session = _SessionStub()
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -275,7 +281,7 @@ def test_actor_with_empty_email_falls_back_to_api_key_name():
     auth = _AuthStub(api_key_id="k1", api_key=api_key)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     result = _run(
-        _resolve_actor_user_string(
+        resolve_actor_user_string(
             session, auth, explicit_user=None, explicit_github_username=None
         )
     )
@@ -311,6 +317,7 @@ def test_resolve_actor_user_returns_none_when_unauthenticated():
 class _SubmissionStub:
     github_username: str | None = None
     github_id: str | None = None
+    user: str | None = None
 
 
 def test_created_by_user_id_prefers_api_key_owner():
@@ -319,7 +326,7 @@ def test_created_by_user_id_prefers_api_key_owner():
     auth = _AuthStub(api_key_id="k1", api_key=api_key, user_id=None)
     session = _SessionStub(objects={(_UserStub, "u1"): user})
     submission = _SubmissionStub()
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
+    result = _run(resolve_created_by_user_id(session, submission, auth))
     assert result == "u1"
 
 
@@ -333,7 +340,7 @@ def test_created_by_user_id_resolves_github_username_to_user():
 
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="octocat")
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
+    result = _run(resolve_created_by_user_id(session, submission, auth))
     assert result == "u2"
 
 
@@ -341,7 +348,7 @@ def test_created_by_user_id_falls_back_to_auth_user_id():
     auth = _AuthStub(user_id="u-clerk", org_id="org-1")
     session = _SessionStub()
     submission = _SubmissionStub(github_username=None)
-    result = _run(_resolve_created_by_user_id(session, submission, auth))
+    result = _run(resolve_created_by_user_id(session, submission, auth))
     assert result == "u-clerk"
 
 
@@ -350,7 +357,9 @@ def test_experiment_owner_prefers_github_user_over_api_key_owner():
     gh_user = _UserStub(id="u-gh", github_username="praxs")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
-    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+    session = _SessionStub(
+        objects={(_APIKeyStub, "k1"): api_key, (_UserStub, "u-ci"): api_user}
+    )
 
     async def _fake_execute(stmt):
         return _execute_result([gh_user])
@@ -358,8 +367,8 @@ def test_experiment_owner_prefers_github_user_over_api_key_owner():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="praxs")
 
-    created_by = _run(_resolve_created_by_user_id(session, submission, auth))
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    created_by = _run(resolve_created_by_user_id(session, submission, auth))
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
 
     assert created_by == "u-ci"
     assert owner == "u-gh"
@@ -371,24 +380,70 @@ def test_experiment_owner_unset_when_explicit_github_not_linked():
     session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
     submission = _SubmissionStub(github_username="unknown-gh")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
     assert owner is None
 
 
 def test_experiment_owner_falls_back_to_api_key_without_github_username():
+    api_user = _UserStub(id="u-ci")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
-    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+    session = _SessionStub(
+        objects={(_APIKeyStub, "k1"): api_key, (_UserStub, "u-ci"): api_user}
+    )
     submission = _SubmissionStub(github_username=None)
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
     assert owner == "u-ci"
+
+
+def test_api_key_owner_offboarded_falls_through_to_auth_user():
+    offboarded = _UserStub(id="u1", is_active=False, deleted_at="2026-01-01")
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u1")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, user_id="u-clerk")
+    session = _SessionStub(objects={(_UserStub, "u1"): offboarded})
+    submission = _SubmissionStub()
+    assert _run(resolve_created_by_user_id(session, submission, auth)) == "u-clerk"
+
+
+def test_experiment_owner_offboarded_api_key_owner_resolves_none():
+    offboarded = _UserStub(id="u-ci", is_active=False)
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(
+        objects={(_APIKeyStub, "k1"): api_key, (_UserStub, "u-ci"): offboarded}
+    )
+    submission = _SubmissionStub(github_username=None)
+    assert _run(resolve_experiment_owner_user_id(session, submission, auth)) is None
+
+
+def test_missing_api_key_owner_row_falls_through():
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-gone")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, user_id="u-clerk")
+    session = _SessionStub()  # no user row at all (hard-deleted)
+    submission = _SubmissionStub()
+    assert _run(resolve_created_by_user_id(session, submission, auth)) == "u-clerk"
+
+
+def test_explicit_github_id_suppresses_username_autofill():
+    actor = _UserStub(
+        id="u-actor", github_username="actor-handle", email="actor@example.com"
+    )
+    auth = _AuthStub(user=actor, user_id="u-actor", org_id="org-1")
+    session = _SessionStub()  # github_id lookup finds nobody
+    submission = _SubmissionStub(github_id="777", github_username=None)
+
+    _run(resolve_submission_identity(session, submission, auth))
+    assert submission.github_username is None  # NOT auto-filled from the actor
+
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
+    assert owner is None  # unlinked github_id stays unowned, not billed to actor
 
 
 def _split_result(*, by_id, by_handle):
     """A result that answers the github_id lookup (``scalars().first()``) and the
     handle lookup (``scalars().all()``) DIFFERENTLY, so a test can prove which
-    branch of ``_resolve_connected_user`` actually resolved the owner."""
+    branch of ``resolve_connected_user`` actually resolved the owner."""
 
     class _Result:
         def scalars(self):
@@ -420,7 +475,7 @@ def test_experiment_owner_prefers_github_id_over_handle():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_id="12345", github_username="stale")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
     assert owner == "u-id"
 
 
@@ -438,5 +493,5 @@ def test_experiment_owner_falls_back_to_handle_when_github_id_unmatched():
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_id="99999", github_username="octocat")
 
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    owner = _run(resolve_experiment_owner_user_id(session, submission, auth))
     assert owner == "u-handle"

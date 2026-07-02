@@ -23,7 +23,7 @@ import asyncio
 from datetime import timedelta
 from typing import cast
 
-from sqlalchemy import text
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -230,6 +230,135 @@ async def clear_terminal_trial_runtime_refs(
     return total_cleared
 
 
+class _DomainRowLocked(Exception):
+    """Domain row exists but is FOR-UPDATE-locked by settle/retry; the caller
+    rolls back the job's savepoint so the whole unit retries next sweep."""
+
+
+async def _locked_or_missing(session, model, subject_id: str):
+    row = (
+        await session.execute(
+            select(model)
+            .where(model.id == subject_id)
+            .with_for_update(skip_locked=True)
+        )
+    ).scalar_one_or_none()
+    if row is not None:
+        return row
+    still_there = await session.scalar(
+        select(func.count()).select_from(model).where(model.id == subject_id)
+    )
+    if still_there:
+        raise _DomainRowLocked()
+    return None  # gone (or soft-deleted): nothing to mirror, keep the job CAS
+
+
+async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
+    """Mirror a reaped worker_jobs row's terminal state onto its domain row.
+
+    Returns the trial id when a TRIAL was mirrored FAILED (the caller triggers
+    stage transitions), else None. Raises ``_DomainRowLocked`` when the domain
+    row is locked by another writer.
+    """
+    kind = row["kind"]
+    subject_id = row["subject_id"]
+    if not subject_id:
+        return None
+
+    if kind == "TRIAL":
+        trial = await _locked_or_missing(session, TrialModel, str(subject_id))
+        if trial is None:
+            return None
+        if row["new_status"] == "RETRYING":
+            delay_seconds = calculate_trial_retry_delay_seconds(
+                attempts=int(row["attempts"]),
+                error_message=row["error_message"],
+            )
+            retry_at = utcnow() + timedelta(seconds=delay_seconds)
+            await session.execute(
+                text(
+                    """
+                    UPDATE worker_jobs
+                    SET    next_retry_at = :retry_at,
+                           available_after = :retry_at
+                    WHERE  id = :job_id
+                    """
+                ),
+                {"job_id": row["id"], "retry_at": retry_at},
+            )
+            # Domain row goes back to RETRYING so the UI reflects "waiting for
+            # another attempt". The new worker_jobs claim will bump
+            # trials.status back to RUNNING via ``_prepare_trial_run``.
+            trial.status = TrialStatus.RETRYING
+            trial.error_message = row["error_message"]
+            trial.next_retry_at = retry_at
+            trial.current_worker_id = None
+            trial.current_queue_slot = None
+            trial.stale_reaped_at = utcnow()
+            console.print(
+                f"metric=worker_job_stale_retry_scheduled id={row['id']} "
+                f"attempts={row['attempts']}/{row['max_attempts']} "
+                f"retry_reason={classify_retry_reason(row['error_message'])} "
+                f"retry_delay_seconds={delay_seconds:.2f}"
+            )
+            return None
+        trial.status = TrialStatus.FAILED
+        trial.error_message = row["error_message"]
+        trial.finished_at = trial.finished_at or utcnow()
+        trial.current_worker_id = None
+        trial.current_queue_slot = None
+        trial.stale_reaped_at = utcnow()
+        apply_settled_cost(trial)
+        if trial.harbor_stage not in {"completed", "cancelled"}:
+            trial.harbor_stage = "cancelled"
+
+        task = await session.get(TaskModel, trial.task_id)
+        if (
+            task
+            and task.run_analysis
+            and trial.analysis_status
+            not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
+        ):
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = (
+                "Analysis skipped because the trial was "
+                "cancelled during orphaned queue cleanup."
+            )
+            trial.analysis_finished_at = utcnow()
+        return trial.id
+
+    if kind == "ANALYSIS":
+        # Legacy per-trial classification rows, drained across a deploy.
+        trial = await _locked_or_missing(session, TrialModel, str(subject_id))
+        if trial is None:
+            return None
+        if row["new_status"] == "FAILED":
+            trial.analysis_status = AnalysisStatus.FAILED
+            trial.analysis_error = row["error_message"]
+            trial.analysis_finished_at = utcnow()
+        else:
+            # Retrying: show "queued for retry" in the UI rather than leaving
+            # the row on RUNNING. The handler resets to QUEUED on next claim.
+            trial.analysis_status = AnalysisStatus.QUEUED
+            trial.analysis_error = row["error_message"]
+        return None
+
+    if kind == "QA":
+        task = await _locked_or_missing(session, TaskModel, str(subject_id))
+        if task is None:
+            return None
+        if row["new_status"] == "FAILED":
+            task.verdict_status = VerdictStatus.FAILED
+            task.verdict_error = row["error_message"]
+            task.verdict_finished_at = utcnow()
+        else:
+            task.verdict_status = VerdictStatus.QUEUED
+            task.verdict_error = row["error_message"]
+        return None
+
+    return None
+
+
 async def cleanup_orphaned_queue_state(
     *,
     stale_after_minutes: int = STALE_HEARTBEAT_MINUTES,
@@ -268,16 +397,45 @@ async def cleanup_orphaned_queue_state(
         # -----------------------------------------------------------------
         # 1. Stale-heartbeat sweep on worker_jobs.
         #    Transitions RUNNING rows whose heartbeat stalled to
-        #    RETRYING (attempts remain) or FAILED (exhausted). This
-        #    is the single place stale-reap retry policy lives --
-        #    compare with three per-table queries in the legacy
-        #    cleanup.
+        #    RETRYING (attempts remain) or FAILED (exhausted), then
+        #    mirrors the terminal state onto the domain row. Each job is
+        #    one SAVEPOINT: when the domain row is locked (settle/retry
+        #    is writing its terminal state -- mirroring would clobber it
+        #    and waiting would deadlock, since we hold the job lock and
+        #    the holder takes domain-row -> worker_jobs), the whole unit
+        #    rolls back and retries next sweep.
         # -----------------------------------------------------------------
-        stale_rows = (
-            (
+        stale_candidate_ids = [
+            row[0]
+            for row in (
                 await session.execute(
                     text(
                         """
+                        SELECT id FROM worker_jobs
+                        WHERE  status::text = 'RUNNING'
+                          AND  (
+                              heartbeat_at IS NULL
+                              OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                          )
+                        ORDER BY id
+                        """
+                    ),
+                    {"stale_after_minutes": stale_after_minutes},
+                )
+            ).all()
+        ]
+
+        stale_trial_ids: list[str] = []
+        worker_targets: set[tuple[str, str]] = set()
+
+        for stale_job_id in stale_candidate_ids:
+            try:
+                async with session.begin_nested():
+                    row = (
+                        (
+                            await session.execute(
+                                text(
+                                    """
                     UPDATE worker_jobs
                     SET    status = CASE
                                WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
@@ -307,7 +465,8 @@ async def cleanup_orphaned_queue_state(
                                     || :stale_after_minutes
                                     || ' minutes.'
                            END
-                    WHERE  status::text = 'RUNNING'
+                    WHERE  id = :job_id
+                      AND  status::text = 'RUNNING'
                       AND  (
                           heartbeat_at IS NULL
                           OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
@@ -322,128 +481,36 @@ async def cleanup_orphaned_queue_state(
                               error_message,
                               provider,
                               external_id
-                    """
-                    ),
-                    {"stale_after_minutes": stale_after_minutes},
-                )
-            )
-            .mappings()
-            .all()
-        )
+                                    """
+                                ),
+                                {
+                                    "job_id": stale_job_id,
+                                    "stale_after_minutes": stale_after_minutes,
+                                },
+                            )
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if row is None:
+                        continue  # another actor already progressed this job
 
-        # Mirror the terminal worker_jobs state back onto the domain
-        # rows (``trials`` / ``tasks``) so dashboards don't lag. This
-        # is the per-kind piece of the cleanup -- but it's bounded to
-        # the stale rows we just reaped, so the cost is O(stale) not
-        # O(table).
-        stale_trial_ids: list[str] = []
-        worker_targets: set[tuple[str, str]] = set()
-        for row in stale_rows:
+                    committed_trial_id = await _mirror_stale_job_to_domain_row(
+                        session, row
+                    )
+            except _DomainRowLocked:
+                continue
+
             if row["new_status"] == "RETRYING":
                 worker_jobs_retried += 1
             else:
                 worker_jobs_failed += 1
-
             provider = row.get("provider")
             external_id = row.get("external_id")
             if provider and external_id:
                 worker_targets.add((str(provider), str(external_id)))
-
-            kind = row["kind"]
-            subject_id = row["subject_id"]
-            if not subject_id:
-                continue
-
-            if kind == "TRIAL":
-                trial = await session.get(TrialModel, str(subject_id))
-                if trial is None:
-                    continue
-                if row["new_status"] == "RETRYING":
-                    delay_seconds = calculate_trial_retry_delay_seconds(
-                        attempts=int(row["attempts"]),
-                        error_message=row["error_message"],
-                    )
-                    retry_at = utcnow() + timedelta(seconds=delay_seconds)
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE worker_jobs
-                            SET    next_retry_at = :retry_at,
-                                   available_after = :retry_at
-                            WHERE  id = :job_id
-                            """
-                        ),
-                        {"job_id": row["id"], "retry_at": retry_at},
-                    )
-                    # Domain row goes back to RETRYING so the UI
-                    # reflects "waiting for another attempt". The new
-                    # worker_jobs claim will bump trials.status back
-                    # to RUNNING via ``_prepare_trial_run``.
-                    trial.status = TrialStatus.RETRYING
-                    trial.error_message = row["error_message"]
-                    trial.next_retry_at = retry_at
-                    trial.current_worker_id = None
-                    trial.current_queue_slot = None
-                    trial.stale_reaped_at = utcnow()
-                    console.print(
-                        f"metric=worker_job_stale_retry_scheduled id={row['id']} "
-                        f"attempts={row['attempts']}/{row['max_attempts']} "
-                        f"retry_reason={classify_retry_reason(row['error_message'])} "
-                        f"retry_delay_seconds={delay_seconds:.2f}"
-                    )
-                else:
-                    trial.status = TrialStatus.FAILED
-                    trial.error_message = row["error_message"]
-                    trial.finished_at = trial.finished_at or utcnow()
-                    trial.current_worker_id = None
-                    trial.current_queue_slot = None
-                    trial.stale_reaped_at = utcnow()
-                    apply_settled_cost(trial)
-                    if trial.harbor_stage not in {"completed", "cancelled"}:
-                        trial.harbor_stage = "cancelled"
-
-                    task = await session.get(TaskModel, trial.task_id)
-                    if (
-                        task
-                        and task.run_analysis
-                        and trial.analysis_status
-                        not in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED)
-                    ):
-                        trial.analysis_status = AnalysisStatus.FAILED
-                        trial.analysis_error = (
-                            "Analysis skipped because the trial was "
-                            "cancelled during orphaned queue cleanup."
-                        )
-                        trial.analysis_finished_at = utcnow()
-                    stale_trial_ids.append(trial.id)
-
-            elif kind == "ANALYSIS":
-                # Legacy per-trial classification rows, drained across a deploy.
-                trial = await session.get(TrialModel, str(subject_id))
-                if trial is None:
-                    continue
-                if row["new_status"] == "FAILED":
-                    trial.analysis_status = AnalysisStatus.FAILED
-                    trial.analysis_error = row["error_message"]
-                    trial.analysis_finished_at = utcnow()
-                else:
-                    # Retrying: show "queued for retry" in the UI rather
-                    # than leaving the row on RUNNING. The handler
-                    # resets to QUEUED explicitly on next claim as well.
-                    trial.analysis_status = AnalysisStatus.QUEUED
-                    trial.analysis_error = row["error_message"]
-
-            elif kind == "QA":
-                task = await session.get(TaskModel, str(subject_id))
-                if task is None:
-                    continue
-                if row["new_status"] == "FAILED":
-                    task.verdict_status = VerdictStatus.FAILED
-                    task.verdict_error = row["error_message"]
-                    task.verdict_finished_at = utcnow()
-                else:
-                    task.verdict_status = VerdictStatus.QUEUED
-                    task.verdict_error = row["error_message"]
+            if committed_trial_id is not None:
+                stale_trial_ids.append(committed_trial_id)
 
         await session.flush()
 
