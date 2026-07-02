@@ -565,7 +565,8 @@ class TrialCollectionRequest(BaseModel):
     """Request to gather existing trials into a new read-only collection."""
 
     name: str
-    trial_ids: list[str]
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -574,6 +575,18 @@ class TrialCollectionRequest(BaseModel):
         if not stripped:
             raise ValueError("name must not be empty")
         return stripped
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "TrialCollectionRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids:
+            raise ValueError("provide at least one trial id or task id")
+        return self
 
 
 # =============================================================================
@@ -1053,6 +1066,8 @@ class TrialCollectionResponse(BaseModel):
     name: str
     trials_linked: int
     tasks_linked: int
+    trials_from_tasks: int = 0
+    tasks_skipped_empty: int = 0
 
 
 class TaskBrowseExperiment(BaseModel):

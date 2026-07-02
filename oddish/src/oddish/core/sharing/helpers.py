@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -71,52 +71,6 @@ async def get_public_experiment(
     return result.scalar_one_or_none()
 
 
-async def get_public_task(
-    session: AsyncSession,
-    task_id: str,
-    *,
-    load_current_version: bool = False,
-) -> TaskModel | None:
-    """Get a task that belongs to at least one public experiment.
-
-    Pass ``load_current_version=True`` from callers that read
-    ``task.current_version`` (the public file-serving routes).
-    Default is False so the public task-status path doesn't pay for
-    an extra ``task_versions`` round trip it never reads.
-    """
-    public_link_exists = exists(
-        select(1)
-        .select_from(
-            task_experiments.join(
-                ExperimentModel,  # type: ignore[arg-type]
-                ExperimentModel.id == task_experiments.c.experiment_id,
-            )
-        )
-        .where(
-            task_experiments.c.task_id == TaskModel.id,
-            task_experiments.c.deleted_at.is_(None),
-            ExperimentModel.is_public == True,  # noqa: E712
-        )
-    )
-    options = [selectinload(TaskModel.trials), selectinload(TaskModel.experiments)]
-    if load_current_version:
-        options.append(selectinload(TaskModel.current_version))
-    result = await session.execute(
-        select(TaskModel)
-        .options(*options)
-        .where(TaskModel.id == task_id)
-        .where(public_link_exists)
-    )
-    task = result.scalar_one_or_none()
-    if task is not None:
-        # Probes are an experimental, internal-only feature; never expose them
-        # through the public share/datasets views.
-        set_committed_value(
-            task, "trials", [t for t in task.trials if not t.is_probe]
-        )
-    return task
-
-
 async def get_public_task_for_experiment(
     session: AsyncSession,
     public_token: str,
@@ -174,29 +128,6 @@ async def get_public_task_for_experiment(
         ],
     )
     return experiment, task, gathered_ids
-
-
-async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial that is publicly visible (home experiment public, or gathered
-    into a public collection). Probes are never exposed publicly."""
-    public_home = select(ExperimentModel.id).where(ExperimentModel.is_public == True)  # noqa: E712
-    gathered_public = (
-        select(experiment_trials.c.trial_id)
-        .join(ExperimentModel, ExperimentModel.id == experiment_trials.c.experiment_id)
-        .where(ExperimentModel.is_public == True, experiment_trials.c.deleted_at.is_(None))  # noqa: E712
-    )
-    result = await session.execute(
-        select(TrialModel)
-        .where(TrialModel.id == trial_id)
-        .where(TrialModel.is_probe.is_(False))
-        .where(
-            or_(
-                TrialModel.experiment_id.in_(public_home),
-                TrialModel.id.in_(gathered_public),
-            )
-        )
-    )
-    return result.scalar_one_or_none()
 
 
 async def get_public_trial_for_experiment(
@@ -372,8 +303,8 @@ async def list_task_files_s3(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to list files")
 
 
 async def get_task_file_content_s3(
@@ -428,10 +359,8 @@ async def list_trial_files_s3(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list trial files: {str(e)}"
-        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to list trial files")
 
 
 async def get_trial_file_content_s3(
