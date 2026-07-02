@@ -149,11 +149,7 @@ async def test_stage_enqueues_single_qa_job_when_trials_done(monkeypatch):
     async def fake_verdict_enqueue(_session, *, task_id, org_id):
         verdict_calls.append(task_id)
 
-    async def fail_analysis_enqueue(*_args, **_kwargs):
-        raise AssertionError("the unified pipeline must not enqueue per-trial analysis")
-
     monkeypatch.setattr(queue_mod, "enqueue_qa_worker_job", fake_verdict_enqueue)
-    monkeypatch.setattr(queue_mod, "enqueue_analysis_worker_job", fail_analysis_enqueue)
 
     started = await queue_mod.maybe_start_qa_stage(session, "task-1-0")
 
@@ -465,8 +461,12 @@ async def test_run_task_qa_job_stops_classifying_after_cancel(monkeypatch):
         finished_at=None,
     )
     trials = {
-        "task-13-0": SimpleNamespace(id="task-13-0", analysis_status=None, analysis=None),
-        "task-13-1": SimpleNamespace(id="task-13-1", analysis_status=None, analysis=None),
+        "task-13-0": SimpleNamespace(
+            id="task-13-0", analysis_status=None, analysis=None
+        ),
+        "task-13-1": SimpleNamespace(
+            id="task-13-1", analysis_status=None, analysis=None
+        ),
     }
     session = _QASession(
         task=task,

@@ -990,8 +990,7 @@ export function TaskDetailClient({
             </h2>
             <span className="font-mono text-[10.5px] text-[color:var(--paper-ink-3)]">
               {realAgentCount} agent
-              {realAgentCount === 1 ? "" : "s"} ·{" "}
-              {realTrialCount} trial
+              {realAgentCount === 1 ? "" : "s"} · {realTrialCount} trial
               {realTrialCount === 1 ? "" : "s"}
             </span>
           </div>

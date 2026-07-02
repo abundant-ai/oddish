@@ -33,12 +33,14 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
         async def _cm():
             async with db() as s:
                 yield s
+
         return _cm()
 
     minted: dict[str, object] = {}
 
     async def fake_mint_internal_read_key(session, *, org_id, name, ttl_minutes):
         from models import APIKeyModel, APIKeyScope, generate_id
+
         model = APIKeyModel(
             id=generate_id(),
             org_id=org_id,
@@ -55,7 +57,9 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
         minted["model"] = model
         return model.id, "ok_rawsecretkey"
 
-    monkeypatch.setattr(orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key)
+    monkeypatch.setattr(
+        orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key
+    )
 
     fake = FakeDaytonaClient()
     orch = ChatOrchestrator(
@@ -69,14 +73,17 @@ async def test_global_scope_mints_read_key_injects_env_and_uploads_cli(db, monke
     )
 
     session_id = await orch.start(
-        org_id=ORG, user_id=None,
-        scope_kind="global", scope_id=ORG,
+        org_id=ORG,
+        user_id=None,
+        scope_kind="global",
+        scope_id=ORG,
         db_session_factory=factory,
     )
 
     # (a) a key was minted and has the expected scope/internal flag
     assert "model" in minted
     from models import APIKeyScope
+
     assert minted["model"].scope == APIKeyScope.READ, "minted key must be READ-scoped"
     assert minted["model"].is_internal is True, "minted key must be internal"
 
@@ -102,7 +109,9 @@ def _factory(db):
         async def _cm():
             async with db() as s:
                 yield s
+
         return _cm()
+
     return factory
 
 
@@ -128,7 +137,9 @@ def _patch_mint_key(monkeypatch, minted):
         minted["model"] = model
         return model.id, "ok_rawsecretkey"
 
-    monkeypatch.setattr(orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key)
+    monkeypatch.setattr(
+        orchestrator_module, "mint_internal_read_key", fake_mint_internal_read_key
+    )
 
 
 @pytest.mark.asyncio
@@ -151,8 +162,10 @@ async def test_global_scope_close_revokes_key(db, monkeypatch):
     )
 
     session_id = await orch.start(
-        org_id=ORG, user_id=None,
-        scope_kind="global", scope_id=ORG,
+        org_id=ORG,
+        user_id=None,
+        scope_kind="global",
+        scope_id=ORG,
         db_session_factory=_factory(db),
     )
 
@@ -182,10 +195,17 @@ async def test_global_scope_resume_revokes_prior_key(db, monkeypatch):
     _patch_mint_key(monkeypatch, minted)
 
     class _Blob:
-        def __init__(self): self.store = {}
-        async def upload_bytes(self, data, key, *, content_type=None): self.store[key] = data
-        async def download_bytes(self, key): return self.store[key]
-        async def object_exists(self, key): return key in self.store
+        def __init__(self):
+            self.store = {}
+
+        async def upload_bytes(self, data, key, *, content_type=None):
+            self.store[key] = data
+
+        async def download_bytes(self, key):
+            return self.store[key]
+
+        async def object_exists(self, key):
+            return key in self.store
 
     blob = _Blob()
     orch = ChatOrchestrator(
@@ -198,8 +218,10 @@ async def test_global_scope_resume_revokes_prior_key(db, monkeypatch):
     )
 
     session_id = await orch.start(
-        org_id=ORG, user_id=None,
-        scope_kind="global", scope_id=ORG,
+        org_id=ORG,
+        user_id=None,
+        scope_kind="global",
+        scope_id=ORG,
         db_session_factory=_factory(db),
     )
     key_a_id = minted["model"].id
@@ -240,8 +262,10 @@ async def test_empty_base_url_fast_fails(db):
 
         with pytest.raises(RuntimeError):
             await orch.start(
-                org_id=ORG, user_id=None,
-                scope_kind=scope, scope_id=ORG,
+                org_id=ORG,
+                user_id=None,
+                scope_kind=scope,
+                scope_id=ORG,
                 db_session_factory=_factory(db),
             )
 
@@ -267,11 +291,19 @@ async def test_all_scopes_mint_key_and_upload_cli(db, monkeypatch):
             public_api_base_url="https://api.oddish.example",
         )
         await orch.start(
-            org_id=ORG, user_id=None,
-            scope_kind=scope, scope_id="sid",
+            org_id=ORG,
+            user_id=None,
+            scope_kind=scope,
+            scope_id="sid",
             db_session_factory=_factory(db),
         )
         rec = next(iter(fake.sandboxes.values()))
-        assert rec["env"]["ODDISH_API_KEY"] == "ok_rawsecretkey", f"missing creds for {scope}"
-        assert rec["env"]["ODDISH_API_BASE_URL"] == "https://api.oddish.example", f"missing base URL for {scope}"
-        assert any(p.endswith("oddish-query") for p in rec["files"]), f"missing CLI for {scope}"
+        assert (
+            rec["env"]["ODDISH_API_KEY"] == "ok_rawsecretkey"
+        ), f"missing creds for {scope}"
+        assert (
+            rec["env"]["ODDISH_API_BASE_URL"] == "https://api.oddish.example"
+        ), f"missing base URL for {scope}"
+        assert any(
+            p.endswith("oddish-query") for p in rec["files"]
+        ), f"missing CLI for {scope}"

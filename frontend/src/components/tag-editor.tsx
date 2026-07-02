@@ -123,8 +123,7 @@ export function TagEditor({
       body: JSON.stringify({ key: rawKey, color, visibility: "PRIVATE" }),
     });
     const body = (await res.json().catch(() => null)) as
-      | (TagPickerItem & { detail?: string; error?: string })
-      | null;
+      (TagPickerItem & { detail?: string; error?: string }) | null;
     if (!res.ok || !body?.id) {
       setTags((prev) => prev.filter((t) => t.tag_id !== pendingId));
       flashError(body?.detail ?? body?.error ?? `Could not create ${rawKey}.`);

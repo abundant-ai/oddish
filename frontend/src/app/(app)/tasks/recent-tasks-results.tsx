@@ -31,7 +31,7 @@ function toUrlParams(searchParams: RawSearchParams): URLSearchParams {
 
 async function fetchBrowse(
   sp: URLSearchParams,
-  offset: number
+  offset: number,
 ): Promise<TaskBrowseResponse | null> {
   try {
     const authObj = await auth();
@@ -157,7 +157,7 @@ export async function RecentTasksResults({
             <span
               className={cn(
                 pagerClass,
-                "text-muted-foreground/50 cursor-not-allowed"
+                "text-muted-foreground/50 cursor-not-allowed",
               )}
               aria-disabled
             >
@@ -187,7 +187,7 @@ export async function RecentTasksResults({
             <span
               className={cn(
                 pagerClass,
-                "text-muted-foreground/50 cursor-not-allowed"
+                "text-muted-foreground/50 cursor-not-allowed",
               )}
               aria-disabled
             >

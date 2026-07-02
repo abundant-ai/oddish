@@ -30,7 +30,7 @@ async function getInitialUsageData(): Promise<DashboardResponse | null> {
         include_tasks: false,
         include_experiments: false,
         usage_minutes: DASHBOARD_DEFAULT_USAGE_MINUTES,
-      })
+      }),
     );
     const response = await fetch(url, {
       cache: "no-store",
@@ -38,7 +38,7 @@ async function getInitialUsageData(): Promise<DashboardResponse | null> {
     });
     if (!response.ok) {
       console.error(
-        `[usage/page] Failed initial usage fetch: ${response.status}`
+        `[usage/page] Failed initial usage fetch: ${response.status}`,
       );
       return null;
     }

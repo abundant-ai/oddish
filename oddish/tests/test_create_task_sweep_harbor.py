@@ -80,12 +80,16 @@ async def test_allowlisted_non_default_pin_is_stamped_on_trials_and_jobs(monkeyp
         # ephemeral variant rides onto the worker_jobs dispatch key.
         assert trials and all(t.harbor_sha == "c" * 40 for t in trials)
         variants = (
-            await session.execute(
-                select(WorkerJobModel.harbor_variant_id).where(
-                    WorkerJobModel.subject_id.in_([t.id for t in trials])
+            (
+                await session.execute(
+                    select(WorkerJobModel.harbor_variant_id).where(
+                        WorkerJobModel.subject_id.in_([t.id for t in trials])
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert variants and all(v == "ephemeral" for v in variants)
 
 

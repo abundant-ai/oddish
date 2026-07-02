@@ -336,9 +336,7 @@ def _canonical_task_config_bytes(config_path: Path) -> bytes:
     """Serialize only the task config fields that affect Harbor execution."""
     config = TaskConfig.model_validate_toml(config_path.read_text())
     data = config.model_dump(mode="json", exclude_none=True)
-    runtime_data = {
-        key: data[key] for key in _TASK_TOML_RUNTIME_FIELDS if key in data
-    }
+    runtime_data = {key: data[key] for key in _TASK_TOML_RUNTIME_FIELDS if key in data}
     return json.dumps(runtime_data, sort_keys=True, separators=(",", ":")).encode()
 
 

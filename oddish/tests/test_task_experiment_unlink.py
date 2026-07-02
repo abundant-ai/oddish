@@ -165,9 +165,7 @@ async def test_unlink_tombstones_link_and_scoped_trials_only(_patched_side_effec
     assert "tasks" not in write_tables
     # Bulk trial UPDATE stays cheap; the soft-delete filter handles reads.
     trials_update = next(s for s in writes if s.table.name == "trials")
-    assert (
-        trials_update.get_execution_options().get("synchronize_session") is False
-    )
+    assert trials_update.get_execution_options().get("synchronize_session") is False
 
 
 @pytest.mark.asyncio

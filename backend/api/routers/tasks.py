@@ -70,6 +70,7 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
+    require_experiment_publish_scope,
     resolve_actor_user_string,
     resolve_billed_user_id,
     resolve_created_by_user_id,
@@ -266,6 +267,7 @@ async def create_task_sweep(
             await maybe_publish_experiment(session, task, submission, auth)
 
         elif experiment and submission.publish_experiment:
+            require_experiment_publish_scope(auth)
             await ensure_experiment_public(session, experiment)
 
         await session.commit()
@@ -327,6 +329,7 @@ async def create_task_sweep_batch(
                 task.created_by_user_id = created_by_user_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
+            require_experiment_publish_scope(auth)
             await ensure_experiment_public(session, experiment)
 
     async with get_session() as session:
@@ -767,7 +770,9 @@ async def combine_experiments(
     into it. The sources are org-scoped and left untouched; append-only,
     so this needs only the ``tasks`` scope rather than admin.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         result = await combine_experiments_core(
@@ -793,7 +798,9 @@ async def create_trial_collection(
     Trials keep their home experiment; membership is additive via
     ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         result = await create_trial_collection_core(
@@ -1115,7 +1122,9 @@ async def retry_task_qa(
 ) -> dict:
     """(Re)run the single task-level QA job: classify every trial, then
     synthesize the task verdict."""
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
@@ -1133,7 +1142,9 @@ async def backfill_task_qa(
     (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
     into analysis going forward.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         return await backfill_task_analysis_core(

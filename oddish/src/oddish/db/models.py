@@ -1266,6 +1266,7 @@ class APIKeyModel(TimestampedMixin, Base):
     )
 
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # Status and expiry
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

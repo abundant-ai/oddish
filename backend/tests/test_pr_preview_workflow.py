@@ -122,9 +122,7 @@ def test_url_fragment_derives_from_modal_app_label():
 def test_prepare_stops_before_supabase_wait():
     s = PREPARE.read_text()
     assert "stop_modal_preview_app.sh" in s
-    assert s.index("stop_modal_preview_app.sh") < s.index(
-        "wait_for_supabase_branch.sh"
-    )
+    assert s.index("stop_modal_preview_app.sh") < s.index("wait_for_supabase_branch.sh")
 
 
 def _run_prepare(extra_env, *, branch_was_created="false", stop_exit=0):
