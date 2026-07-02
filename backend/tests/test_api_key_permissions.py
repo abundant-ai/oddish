@@ -69,6 +69,7 @@ def test_member_created_task_key_is_blocked_from_restricted_task_operations():
         scope=APIKeyScope.TASKS,
     )
 
+    # Default TASKS-scope checks include medium-tier actions such as cancellation.
     auth.require_scope(APIKeyScope.TASKS)
 
     try:

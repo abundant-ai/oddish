@@ -1052,9 +1052,7 @@ async def cancel_tasks(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     """Cancel in-flight runs for many tasks without deleting data."""
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS)
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
@@ -1142,9 +1140,7 @@ async def cancel_task_qa(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     """Cancel a task's in-flight QA job."""
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
         result = await cancel_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
