@@ -6,7 +6,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.schemas import (
@@ -31,10 +31,10 @@ from oddish.core.quotas import (
     get_effective_limit,
     start_of_today_utc,
     sum_cost_usd,
-    to_money_decimal,
+    sum_cost_usd_by_user,
 )
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
-from oddish.db import TrialModel, get_session, utcnow
+from oddish.db import get_session, utcnow
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
@@ -188,23 +188,9 @@ async def list_member_quotas(
             .all()
         )
 
-        grouped_usage = await session.execute(
-            select(
-                TrialModel.billed_user_id,
-                func.coalesce(func.sum(TrialModel.cost_usd), 0),
-            )
-            .where(
-                TrialModel.org_id == auth.org_id,
-                TrialModel.billed_user_id.is_not(None),
-                TrialModel.finished_at >= period_start,
-                TrialModel.deleted_at.is_(None),
-            )
-            .group_by(TrialModel.billed_user_id)
+        used_usd_by_user_id = await sum_cost_usd_by_user(
+            session, auth.org_id, period_start
         )
-        used_usd_by_user_id = {
-            billed_user_id: to_money_decimal(settled_total)
-            for billed_user_id, settled_total in grouped_usage.all()
-        }
 
         override_rows = await session.execute(
             select(QuotaModel.user_id, QuotaModel.limit_usd).where(
@@ -271,14 +257,9 @@ async def set_member_quota(
         used_today = await sum_cost_usd(
             session, auth.org_id, user_id, start_of_today_utc()
         )
+        effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
 
-    return _quota_member_item(
-        member,
-        payload.limit_usd
-        if payload.limit_usd is not None
-        else settings.default_daily_quota_usd,
-        used_today,
-    )
+    return _quota_member_item(member, effective_limit_usd, used_today)
 
 
 @router.post("/users", response_model=InviteUserResponse)

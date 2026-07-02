@@ -101,6 +101,7 @@ async def test_admit_blocks_at_exactly_the_cap(cleanup_task_ids):
             await admit_trials(session, org_id, billed_user, count=1)
     assert raised.value.status_code == 402
     assert raised.value.detail["used_usd"] == pytest.approx(0.30)
+    assert raised.value.detail["reserved_usd"] == pytest.approx(0.0)
     assert raised.value.detail["limit_usd"] == pytest.approx(0.30)
 
 
@@ -189,5 +190,6 @@ async def test_inflight_trials_count_toward_reservation(cleanup_task_ids, monkey
     )
     async with get_session() as session:
         # used=0, reserved=(inflight 2 + count 1) * 0.20 = 0.60 >= 0.30 default
-        with pytest.raises(QuotaExceeded):
+        with pytest.raises(QuotaExceeded) as raised:
             await admit_trials(session, org_id, billed_user, count=1)
+    assert raised.value.detail["reserved_usd"] == pytest.approx(0.60)
