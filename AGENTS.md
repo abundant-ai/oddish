@@ -448,8 +448,14 @@ There are exactly two org roles: `admin` (manage users/settings) and `member`
 Auth flow: read token → if `ok_` prefix validate API key → otherwise validate Clerk JWT and resolve org/user → return `AuthContext`.
 
 API key creation is user-auth only (API-key auth is rejected so one key cannot
-mint another) and requires an `admin` with an `@abundant.ai` email in the main
-Abundant org (`can_create_api_keys` / `require_api_key_creator`).
+mint another) and is available to `admin` and `member` users in the main
+Abundant org (`can_create_api_keys` / `require_api_key_creator`). Admins may
+mint `full`, `tasks`, or `read` keys; members may mint only `tasks` or `read`
+keys. Member-created `tasks` keys can run task/trial workflows and read files,
+and can cancel in-flight runs, but are blocked from broader org mutations such
+as tagging, collections, documents, skills, and GitHub webhook updates. The
+creator role is stamped on the API key at mint time so later role changes or
+deleted creator rows do not broaden a member-created key.
 
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 

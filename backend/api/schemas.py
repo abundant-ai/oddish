@@ -89,6 +89,8 @@ class APIKeyPermissionsResponse(BaseModel):
     """API key capability flags for the current user."""
 
     can_create: bool
+    can_manage: bool
+    allowed_scopes: list[str]
 
 
 class CreateAPIKeyRequest(BaseModel):
