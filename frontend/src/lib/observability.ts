@@ -113,8 +113,7 @@ function installFlushHandlers(): void {
 export async function withUserAction<T>(
   name: string,
   attributesOrFn:
-    | Record<string, string | number | boolean>
-    | (() => Promise<T> | T),
+    Record<string, string | number | boolean> | (() => Promise<T> | T),
   maybeFn?: () => Promise<T> | T,
 ): Promise<T> {
   const attributes = typeof attributesOrFn === "function" ? {} : attributesOrFn;

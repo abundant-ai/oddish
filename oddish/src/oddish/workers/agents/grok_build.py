@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import shlex
 import tempfile
-from typing import override
 
 from harbor.agents.installed.base import with_prompt_template
 from harbor.agents.installed.grok_build import GrokBuild
@@ -57,7 +56,6 @@ class OddishGrokBuild(GrokBuild):
             command=f"chmod 0644 {shlex.quote(_PROMPT_PATH)}",
         )
 
-    @override
     @with_prompt_template
     async def run(
         self,

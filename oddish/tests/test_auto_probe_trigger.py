@@ -218,9 +218,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         first = await _probe_trials(s, seeded_sweep_task_id)
-    assert len(first) == 1, (
-        f"Expected 1 probe trial after first sweep, got {len(first)}"
-    )
+    assert (
+        len(first) == 1
+    ), f"Expected 1 probe trial after first sweep, got {len(first)}"
 
     # Second sweep (same task version): probe should NOT be enqueued again.
     async with get_session() as s:
@@ -228,9 +228,9 @@ async def test_sweep_triggers_auto_probe_when_opted_in(seeded_sweep_task_id):
 
     async with get_session() as s:
         second = await _probe_trials(s, seeded_sweep_task_id)
-    assert len(second) == 1, (
-        f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
-    )
+    assert (
+        len(second) == 1
+    ), f"Expected dedup to hold (still 1 probe trial), got {len(second)}"
 
 
 @pytest.mark.asyncio

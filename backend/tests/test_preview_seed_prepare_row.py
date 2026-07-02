@@ -31,7 +31,12 @@ def test_prepare_row_drops_unknown_columns_warning_once(capsys, monkeypatch):
     table = _toy_table()
 
     rows = [
-        {"id": f"wj-{i}", "payload": {"k": i}, "provider": "anthropic", "external_id": "x"}
+        {
+            "id": f"wj-{i}",
+            "payload": {"k": i},
+            "provider": "anthropic",
+            "external_id": "x",
+        }
         for i in range(50)
     ]
     prepared = [preview_seed._prepare_row(table, r) for r in rows]
@@ -67,7 +72,5 @@ def test_prepare_row_preserves_json_coercion_and_filtering():
         Column("id", String, primary_key=True),
         Column("blob", JSON),
     )
-    out = preview_seed._prepare_row(
-        table, {"id": "x", "blob": '{"a": 1}', "gone": "y"}
-    )
+    out = preview_seed._prepare_row(table, {"id": "x", "blob": '{"a": 1}', "gone": "y"})
     assert out == {"id": "x", "blob": {"a": 1}}

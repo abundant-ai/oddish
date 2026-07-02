@@ -63,7 +63,9 @@ PICK ONE EXPLOIT, EXECUTE IT, ITERATE. Each attempt should set timeout=600 on Ba
 
 
 def _skill_md(name: str, description: str, body: str) -> str:
-    fm = yaml.safe_dump({"name": name, "description": description}, sort_keys=False).strip()
+    fm = yaml.safe_dump(
+        {"name": name, "description": description}, sort_keys=False
+    ).strip()
     return f"---\n{fm}\n---\n\n{body}"
 
 

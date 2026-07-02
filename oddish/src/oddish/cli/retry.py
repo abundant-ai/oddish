@@ -230,9 +230,7 @@ def _run_trial_retries(
         return {
             "kind": "trials",
             "target": {"type": "task", "id": target_id},
-            "trials": _retry_trial_ids(
-                api_url, trial_ids, registry_auth=registry_auth
-            ),
+            "trials": _retry_trial_ids(api_url, trial_ids, registry_auth=registry_auth),
         }
 
     # experiment

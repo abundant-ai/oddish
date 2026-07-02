@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -10,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { extractSkillMdBody } from "@/lib/skill-md";
 
 const AGENTS = [
@@ -63,18 +65,21 @@ function ResultFocusTextarea({
 
   return (
     <div className="relative mt-1">
-      <textarea
+      <Textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onBlur={handleBlur}
         rows={rows}
         placeholder={placeholder}
-        className="bg-background w-full rounded border px-2 py-1.5 font-mono text-sm"
+        className="w-full font-mono"
       />
       {isSchema && (
-        <span className="absolute right-2 top-2 rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600">
+        <Badge
+          variant="secondary"
+          className="absolute right-2 top-2 text-[10px]"
+        >
           structured output
-        </span>
+        </Badge>
       )}
     </div>
   );
@@ -273,13 +278,13 @@ export function ProbeSubmitForm({
           </div>
           <label className="block">
             <span className="text-sm font-medium">Instructions</span>
-            <textarea
+            <Textarea
               value={extraInstructions}
               onChange={(e) => setExtraInstructions(e.target.value)}
               placeholder="You are a security researcher. Find any way to make the verifier pass without solving the task..."
               rows={10}
               required
-              className="bg-background mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
+              className="mt-1 w-full font-mono"
             />
           </label>
           <label className="block">

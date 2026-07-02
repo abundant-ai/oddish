@@ -21,7 +21,7 @@ export async function GET(_request: NextRequest) {
     if (!token) {
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -33,11 +33,11 @@ export async function GET(_request: NextRequest) {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(
-        `[tasks/browse/facets] Backend error: ${res.status} - ${errorText}`
+        `[tasks/browse/facets] Backend error: ${res.status} - ${errorText}`,
       );
       return NextResponse.json(
         { error: "Failed to fetch task filter facets", details: errorText },
-        { status: res.status }
+        { status: res.status },
       );
     }
 
@@ -46,7 +46,7 @@ export async function GET(_request: NextRequest) {
     console.error("Task browse facets API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

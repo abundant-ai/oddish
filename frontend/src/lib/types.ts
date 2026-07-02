@@ -11,12 +11,7 @@ type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  | "pending"
-  | "queued"
-  | "running"
-  | "success"
-  | "failed"
-  | "retrying";
+  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
@@ -613,12 +608,7 @@ export interface OrphanedStateResponse {
 // additional kinds (QA_REVIEW, ...) don't break the type check when the
 // backend starts returning them before the frontend has opinions.
 export type WorkerJobKind =
-  | "TRIAL"
-  | "QA"
-  | "ANALYSIS"
-  | "VERDICT"
-  | "QA_REVIEW"
-  | (string & {});
+  "TRIAL" | "QA" | "ANALYSIS" | "VERDICT" | "QA_REVIEW" | (string & {});
 
 export type WorkerJobStatus =
   | "QUEUED"
