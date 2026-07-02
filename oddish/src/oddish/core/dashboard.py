@@ -450,9 +450,7 @@ def _build_aggregates_for_experiment_ids(
             ).label("active_trials"),
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
             func.sum(TrialModel.reward).label("reward_sum"),
-            func.count(case((TrialModel.reward.isnot(None), 1))).label(
-                "reward_total"
-            ),
+            func.count(case((TrialModel.reward.isnot(None), 1))).label("reward_total"),
         )
         .select_from(member)
         .join(TrialModel, TrialModel.id == member.c.trial_id)

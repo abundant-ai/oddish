@@ -111,6 +111,8 @@ def test_modal_dispatcher_import_is_lazy() -> None:
         "import oddish.dispatch.backends.modal\n"
         "print('ok')\n"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"

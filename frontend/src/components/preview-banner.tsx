@@ -1,13 +1,13 @@
-const linkClass = "underline underline-offset-2 hover:no-underline";
+import { prNumberFromUrl } from "@/lib/utils";
 
-function prNumberFromUrl(url: string) {
-  const match = url.match(/\/pull\/(\d+)/);
-  return match ? match[1] : null;
-}
+const linkClass = "underline underline-offset-2 hover:no-underline";
 
 function Dot() {
   return (
-    <span aria-hidden="true" className="text-amber-950/40 dark:text-amber-100/40">
+    <span
+      aria-hidden="true"
+      className="text-amber-950/40 dark:text-amber-100/40"
+    >
       ·
     </span>
   );
@@ -80,7 +80,11 @@ export function PreviewBanner() {
         <Dot />
         <LabeledTarget label="Backend" value={backendLabel} url={backendUrl} />
         <Dot />
-        <LabeledTarget label="Database" value={databaseLabel} url={databaseUrl} />
+        <LabeledTarget
+          label="Database"
+          value={databaseLabel}
+          url={databaseUrl}
+        />
       </div>
     </div>
   );

@@ -59,7 +59,7 @@ import { QueueKeyIcon } from "@/components/queue-key-icon";
 
 export function useDashboardUsage(
   usageMinutes: number | null,
-  fallbackData?: DashboardResponse | null
+  fallbackData?: DashboardResponse | null,
 ) {
   const swrKey = buildDashboardApiPath({
     include_tasks: false,
@@ -78,7 +78,7 @@ export function useDashboardUsage(
           (stats) =>
             (Number(stats.running) || 0) > 0 ||
             (Number(stats.queued) || 0) > 0 ||
-            (Number(stats.retrying) || 0) > 0
+            (Number(stats.retrying) || 0) > 0,
         );
         return hasActiveQueue ? 30000 : 90000;
       },
@@ -87,7 +87,7 @@ export function useDashboardUsage(
       revalidateIfStale: !hasFallbackData,
       keepPreviousData: true,
       fallbackData: fallbackData ?? undefined,
-    }
+    },
   );
 
   return {
@@ -518,7 +518,6 @@ function UsageStatusBadges({
   );
 }
 
-
 export function UsageSummaryCard({
   initialUsageData = null,
 }: {
@@ -607,7 +606,7 @@ export function UsageOverviewCard({
   onTimeRangeChange: (key: TimeRangeKey) => void;
 }) {
   const [isCustomPickerOpen, setIsCustomPickerOpen] = useState(
-    timeRange.startsWith("custom:")
+    timeRange.startsWith("custom:"),
   );
   const [customMagnitude, setCustomMagnitude] = useState("2");
   const [customUnit, setCustomUnit] = useState<"m" | "h" | "d">("h");
@@ -648,7 +647,7 @@ export function UsageOverviewCard({
         if (a.jobCount !== b.jobCount) return b.jobCount - a.jobCount;
         return a.model.localeCompare(b.model);
       }),
-    [usageRows]
+    [usageRows],
   );
 
   const totals = useMemo(
@@ -673,9 +672,9 @@ export function UsageOverviewCard({
           running: 0,
           queued: 0,
           retrying: 0,
-        }
+        },
       ),
-    [usageRows]
+    [usageRows],
   );
 
   // Pipeline aggregation: group active counts by actual worker_jobs kind.
@@ -699,7 +698,7 @@ export function UsageOverviewCard({
       customUnit === "d" ? 1440 : customUnit === "h" ? 60 : 1;
     const minutes = Math.min(
       86400,
-      Math.max(1, roundedMagnitude * minutesPerUnit)
+      Math.max(1, roundedMagnitude * minutesPerUnit),
     );
     onTimeRangeChange(`custom:${minutes}`);
     setIsCustomPickerOpen(false);
@@ -844,7 +843,7 @@ export function UsageOverviewCard({
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
                   {formatCompactNumber(
-                    totals.inputTokens + totals.outputTokens
+                    totals.inputTokens + totals.outputTokens,
                   )}
                 </div>
                 <div className="text-muted-foreground text-[10px]">Tokens</div>

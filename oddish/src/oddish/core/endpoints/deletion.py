@@ -320,9 +320,7 @@ async def unlink_task_from_experiment_core(
     if not link_exists:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Task {task_id} is not a member of experiment {experiment_id}"
-            ),
+            detail=(f"Task {task_id} is not a member of experiment {experiment_id}"),
         )
 
     # Tombstone this experiment's trials for the task (cancel their live

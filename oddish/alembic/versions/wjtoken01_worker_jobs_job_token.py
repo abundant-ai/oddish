@@ -21,9 +21,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "wjtoken01_worker_jobs_job_token"
-down_revision: Union[str, Sequence[str], None] = (
-    "wjstage01_stage_timestamps"
-)
+down_revision: Union[str, Sequence[str], None] = "wjstage01_stage_timestamps"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

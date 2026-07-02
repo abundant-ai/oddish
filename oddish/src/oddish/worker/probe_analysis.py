@@ -28,14 +28,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from oddish.core.result_focus_repair import repair_result_focus_if_needed
-from oddish.core.result_focus_schema import normalize_findings_schema, parse_result_focus
+from oddish.core.result_focus_schema import (
+    normalize_findings_schema,
+    parse_result_focus,
+)
 
 logger = logging.getLogger(__name__)
 
 # Models whose direct-API id supports output_config.format (structured outputs).
 _STRUCTURED_OUTPUT_PREFIXES = (
-    "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8",
-    "claude-opus-4-5", "claude-opus-4-1", "claude-fable-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
+    "claude-opus-4-8",
+    "claude-opus-4-5",
+    "claude-opus-4-1",
+    "claude-fable-5",
 )
 
 
@@ -84,6 +91,7 @@ def _build_envelope_schema(findings_schema: dict | None) -> dict:
         "properties": props,
         "required": list(props),
     }
+
 
 # Default analyzer model. Callers may override (e.g. the cloud worker passing
 # ``settings.analysis_model``).
@@ -319,7 +327,9 @@ def _build_transcript(agent_messages: list[dict]) -> str:
         return transcript
     head = transcript[: _TRANSCRIPT_MAX_CHARS * 2 // 3]
     tail = transcript[-(_TRANSCRIPT_MAX_CHARS // 3) :]
-    return f"{head}\n...[transcript truncated to fit context; head+tail kept]...\n{tail}"
+    return (
+        f"{head}\n...[transcript truncated to fit context; head+tail kept]...\n{tail}"
+    )
 
 
 def _repair_truncated_json(s: str) -> str | None:
@@ -538,7 +548,9 @@ async def run_probe_analyzer(
     # prompt framing (schema vs prose) or the structured-outputs envelope below;
     # without this a single stray comma silently drops the operator's schema to
     # prose mode. The deterministic parse below then sees clean JSON.
-    result_focus = await repair_result_focus_if_needed(result_focus, kind="schema") or ""
+    result_focus = (
+        await repair_result_focus_if_needed(result_focus, kind="schema") or ""
+    )
 
     transcript = _build_transcript(agent_messages)
 

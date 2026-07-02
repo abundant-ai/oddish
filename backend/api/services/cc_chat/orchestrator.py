@@ -140,7 +140,9 @@ class ChatOrchestrator:
 
     async def _upload_query_cli(self, sandbox: CreatedSandbox) -> None:
         """Upload the Node oddish-query CLI and make it executable."""
-        cli_bytes = resources.files("oddish").joinpath("assets/oddish-query").read_bytes()
+        cli_bytes = (
+            resources.files("oddish").joinpath("assets/oddish-query").read_bytes()
+        )
         dest = f"{WORKSPACE_ROOT}/{QUERY_CLI_DEST}"
         await self._daytona.upload_file(sandbox, dest_path=dest, content=cli_bytes)
         await self._daytona.exec_sync(sandbox, command=f"chmod +x {dest}")
@@ -167,7 +169,9 @@ class ChatOrchestrator:
         db_session_factory: Callable[[], object],
     ) -> str:
         if not self._public_api_base_url:
-            raise RuntimeError("ODDISH_PUBLIC_API_BASE_URL must be set for chat sessions")
+            raise RuntimeError(
+                "ODDISH_PUBLIC_API_BASE_URL must be set for chat sessions"
+            )
 
         session_id = generate_id()
 
@@ -179,7 +183,9 @@ class ChatOrchestrator:
         )
 
         query_api_key_id, raw_key = await self._mint_query_key(
-            org_id=org_id, session_id=session_id, db_session_factory=db_session_factory,
+            org_id=org_id,
+            session_id=session_id,
+            db_session_factory=db_session_factory,
         )
         extra_env = {
             "ODDISH_API_KEY": raw_key,
@@ -248,7 +254,9 @@ class ChatOrchestrator:
             prior_query_api_key_id = row.query_api_key_id
 
         if not self._public_api_base_url:
-            raise RuntimeError("ODDISH_PUBLIC_API_BASE_URL must be set for chat sessions")
+            raise RuntimeError(
+                "ODDISH_PUBLIC_API_BASE_URL must be set for chat sessions"
+            )
 
         claude_md = await self._resolve_scope_inputs(
             scope_kind=scope_kind,
@@ -274,7 +282,9 @@ class ChatOrchestrator:
                 )
 
         new_query_api_key_id, raw_key = await self._mint_query_key(
-            org_id=org_id, session_id=session_id, db_session_factory=db_session_factory,
+            org_id=org_id,
+            session_id=session_id,
+            db_session_factory=db_session_factory,
         )
         extra_env = {
             "ODDISH_API_KEY": raw_key,
@@ -289,8 +299,11 @@ class ChatOrchestrator:
         try:
             if claude_session_id:
                 restored = await restore_native_session(
-                    self._daytona, sandbox, blob=self._blob,
-                    session_id=session_id, claude_session_id=claude_session_id,
+                    self._daytona,
+                    sandbox,
+                    blob=self._blob,
+                    session_id=session_id,
+                    claude_session_id=claude_session_id,
                 )
             else:
                 restored = False
@@ -356,7 +369,9 @@ class ChatOrchestrator:
         if not recoverable:
             return None
         try:
-            await self.resume(session_id=session_id, db_session_factory=db_session_factory)
+            await self.resume(
+                session_id=session_id, db_session_factory=db_session_factory
+            )
         except (ResumeUnavailable, SessionNotFound):
             return None
         return self._sandboxes.get(session_id)
@@ -439,7 +454,9 @@ class ChatOrchestrator:
             raise
         finally:
             async with self._db(db_session_factory) as db:
-                await close_turn(db, turn_id=turn_id, status=turn_status, error=turn_error)
+                await close_turn(
+                    db, turn_id=turn_id, status=turn_status, error=turn_error
+                )
                 await db.commit()
 
         async with self._db(db_session_factory) as db:
@@ -448,11 +465,18 @@ class ChatOrchestrator:
                 r.last_activity = _now()
                 await db.commit()
 
-        if self._blob is not None and claude_session_id is not None and sandbox is not None:
+        if (
+            self._blob is not None
+            and claude_session_id is not None
+            and sandbox is not None
+        ):
             try:
                 await archive_native_session(
-                    self._daytona, sandbox, blob=self._blob,
-                    session_id=session_id, claude_session_id=claude_session_id,
+                    self._daytona,
+                    sandbox,
+                    blob=self._blob,
+                    session_id=session_id,
+                    claude_session_id=claude_session_id,
                 )
             except Exception:
                 log.exception("post-turn archival failed: %s", session_id)
