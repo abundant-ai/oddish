@@ -3,16 +3,18 @@ import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ task_id: string }> },
+  { params }: { params: Promise<{ token: string; task_id: string }> },
 ) {
   try {
-    const { task_id } = await params;
-    const searchParams = request.nextUrl.searchParams;
-    const queryString = searchParams.toString();
-    const baseUrl = getBackendUrl("public/tasks", `/${task_id}/files`);
+    const { token, task_id } = await params;
+    const queryString = request.nextUrl.searchParams.toString();
+    const baseUrl = getBackendUrl(
+      "public/experiments",
+      `/${token}/tasks/${task_id}`,
+    );
     const url = queryString ? `${baseUrl}?${queryString}` : baseUrl;
-
     const res = await fetch(url, { cache: "no-store" });
+
     const text = await res.text();
     const data = text ? JSON.parse(text) : null;
 

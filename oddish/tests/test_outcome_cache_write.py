@@ -1,4 +1,4 @@
-"""Tests for cache_write_tokens extraction in HarborOutcome."""
+"""Tests for cache_write_tokens extraction from ATIF trajectory data."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from oddish.workers.harbor.outcome import (
-    _sum_cache_write_from_steps,
+from oddish.core.harbor_artifacts import (
     _cache_write_from_final_metrics,
-    _extract_metrics_from_trajectory,
+    _sum_cache_write_from_steps,
+    extract_trajectory_metrics,
 )
 
 
@@ -65,7 +65,7 @@ def test_cache_write_from_final_metrics_missing_returns_none() -> None:
     assert _cache_write_from_final_metrics({"extra": "not-a-dict"}) is None
 
 
-def test_extract_metrics_from_trajectory_reads_cache_write(tmp_path: Path) -> None:
+def test_extract_trajectory_metrics_reads_cache_write(tmp_path: Path) -> None:
     traj = {
         "final_metrics": {
             "total_prompt_tokens": 1000,
@@ -82,16 +82,16 @@ def test_extract_metrics_from_trajectory_reads_cache_write(tmp_path: Path) -> No
     traj_file = tmp_path / "trajectory.json"
     traj_file.write_text(json.dumps(traj))
 
-    inp, out, cache_read, steps, cost, cache_write = _extract_metrics_from_trajectory(tmp_path)
-    assert inp == 1000
-    assert out == 200
-    assert cache_read == 300
-    assert steps == 5
-    assert cost == pytest.approx(0.01)
-    assert cache_write == 400  # 150 + 250
+    metrics = extract_trajectory_metrics(tmp_path)
+    assert metrics.input_tokens == 1000
+    assert metrics.output_tokens == 200
+    assert metrics.cache_tokens == 300
+    assert metrics.total_steps == 5
+    assert metrics.cost_usd == pytest.approx(0.01)
+    assert metrics.cache_write_tokens == 400  # 150 + 250
 
 
-def test_extract_metrics_from_trajectory_falls_back_to_final_metrics(tmp_path: Path) -> None:
+def test_extract_trajectory_metrics_falls_back_to_final_metrics(tmp_path: Path) -> None:
     traj = {
         "final_metrics": {
             "total_prompt_tokens": 500,
@@ -107,11 +107,10 @@ def test_extract_metrics_from_trajectory_falls_back_to_final_metrics(tmp_path: P
     traj_file = tmp_path / "trajectory.json"
     traj_file.write_text(json.dumps(traj))
 
-    _, _, _, _, _, cache_write = _extract_metrics_from_trajectory(tmp_path)
-    assert cache_write == 600
+    assert extract_trajectory_metrics(tmp_path).cache_write_tokens == 600
 
 
-def test_extract_metrics_from_trajectory_no_cache_write_returns_none(tmp_path: Path) -> None:
+def test_extract_trajectory_metrics_no_cache_write_returns_none(tmp_path: Path) -> None:
     traj = {
         "final_metrics": {
             "total_prompt_tokens": 100,
@@ -122,5 +121,4 @@ def test_extract_metrics_from_trajectory_no_cache_write_returns_none(tmp_path: P
     traj_file = tmp_path / "trajectory.json"
     traj_file.write_text(json.dumps(traj))
 
-    _, _, _, _, _, cache_write = _extract_metrics_from_trajectory(tmp_path)
-    assert cache_write is None
+    assert extract_trajectory_metrics(tmp_path).cache_write_tokens is None
