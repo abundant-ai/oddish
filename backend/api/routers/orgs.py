@@ -25,7 +25,7 @@ from auth import (
     require_auth,
     require_can_manage_quotas,
 )
-from oddish.config import settings
+from oddish.config import QuotaMode, settings
 from models import QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import (
     get_effective_limit,
@@ -151,6 +151,7 @@ async def get_my_quota_usage(
         limit_usd=float(effective_limit_usd),
         used_usd=float(used_today),
         period="daily",
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
     )
 
 
@@ -207,7 +208,8 @@ async def list_member_quotas(
 
         override_rows = await session.execute(
             select(QuotaModel.user_id, QuotaModel.limit_usd).where(
-                QuotaModel.org_id == auth.org_id
+                QuotaModel.org_id == auth.org_id,
+                QuotaModel.deleted_at.is_(None),
             )
         )
         override_limit_by_user_id = dict(override_rows.all())

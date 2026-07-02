@@ -69,12 +69,12 @@ async def admit_trials(
     count: int,
 ) -> None:
     mode = settings.quota_mode
-    if mode == QuotaMode.OFF or count <= 0:
+    # OSS/self-hosted single-tenant (no org -> no payer) never enforces, even when
+    # a billed_user_id is present.
+    if mode == QuotaMode.OFF or org_id is None or count <= 0:
         return
 
     if billed_user_id is None:
-        if org_id is None:
-            return  # OSS single-tenant: no org and no payer -> never enforce
         if mode == QuotaMode.ENFORCE:
             raise Unattributed()
         _log_would_block(org_id, None, None, None, reason="unattributed")

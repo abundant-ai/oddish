@@ -413,6 +413,9 @@ export interface QuotaUsage {
   limit_usd: number;
   used_usd: number;
   period: string;
+  // True only when quota_mode == enforce, i.e. exceeding the limit actually
+  // blocks new billable runs. Absent on the admin member list.
+  enforced?: boolean;
 }
 
 // A single member row in the admin GET /api/quotas list. Extends QuotaUsage

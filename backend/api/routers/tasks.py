@@ -512,17 +512,17 @@ async def create_task_sweep(
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
 
+        # Billing follows the resolved owner: a submitted github_id/github_username
+        # (github_id takes precedence) is billed to that user, otherwise the
+        # API-key owner / submitter. Applies to every caller.
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        if auth.user_id is not None:
-            billed_user_id = auth.user_id
-        else:
-            billed_user_id = (
-                owner_user_id
-                if owner_user_id is not None
-                else await _resolve_created_by_user_id(session, submission, auth)
-            )
+        billed_user_id = (
+            owner_user_id
+            if owner_user_id is not None
+            else await _resolve_created_by_user_id(session, submission, auth)
+        )
 
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
@@ -618,8 +618,8 @@ async def create_task_sweep_batch(
     async def _resolve_billed(
         session: AsyncSession, submission: TaskSweepSubmission
     ) -> str | None:
-        if auth.user_id is not None:
-            return auth.user_id
+        # Bill the resolved owner (submitted github_id/github_username takes
+        # precedence), else the API-key owner / submitter. Same rule for all callers.
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
         )
