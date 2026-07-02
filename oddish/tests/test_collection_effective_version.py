@@ -117,9 +117,7 @@ async def _build_old_version_collection(session):
     )
     await session.flush()
 
-    collection = (
-        await session.get(ExperimentModel, resp.id)
-    )
+    collection = await session.get(ExperimentModel, resp.id)
     return task, v1.id, v2.id, trial, collection
 
 
@@ -127,9 +125,7 @@ async def _build_old_version_collection(session):
 async def test_slim_path_surfaces_gathered_old_version_trial(session):
     """REGRESSION: the gathered v1 trial must appear on the collection's slim
     experiment grid, even though the task's current version is v2."""
-    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(
-        session
-    )
+    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(session)
 
     responses = await list_experiment_slim_tasks(
         session, experiment_id=collection.id, org_id="org1"
@@ -147,9 +143,7 @@ async def test_slim_path_surfaces_gathered_old_version_trial(session):
 @pytest.mark.asyncio
 async def test_compact_path_surfaces_gathered_old_version_trial(session):
     """REGRESSION: same via the compact ``list_tasks_core`` experiment path."""
-    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(
-        session
-    )
+    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(session)
 
     responses = await list_tasks_core(
         session,
@@ -171,9 +165,7 @@ async def test_compact_path_surfaces_gathered_old_version_trial(session):
 @pytest.mark.asyncio
 async def test_resolve_effective_version_uses_gathered_trial_version(session):
     """The effective version derives from the gathered trial's version (v1)."""
-    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(
-        session
-    )
+    task, v1_id, v2_id, trial, collection = await _build_old_version_collection(session)
 
     # Simulate the loaded, experiment-scoped ``task.trials`` the resolver reads:
     # the gathered trial carries its HOME experiment id, not the collection's.

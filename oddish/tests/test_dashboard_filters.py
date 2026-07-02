@@ -292,9 +292,7 @@ def test_search_author_filter_matches_unattributed_sentinel() -> None:
     # contributors). A github:<handle> search must still reach them via the
     # primary-task fallback -- gating on owner_user_id IS NULL alone dropped
     # every such experiment once the backfill had converged.
-    clause = _build_experiments_search_author_filter(
-        (), ("rstar327",), org_id="org_1"
-    )
+    clause = _build_experiments_search_author_filter((), ("rstar327",), org_id="org_1")
     sql = _compile_sql(clause)
     assert "'__unattributed__'" in sql
     assert "owner_user_id IS NULL" in sql

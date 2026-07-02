@@ -407,7 +407,9 @@ export function TaskFilesPanel({
   const qaActionLabel =
     verdictSource?.verdict_status ||
     verdictSource?.verdict ||
-    (task?.trials ?? []).some((trial) => trial.analysis_status || trial.analysis)
+    (task?.trials ?? []).some(
+      (trial) => trial.analysis_status || trial.analysis,
+    )
       ? "Rerun QA"
       : "Run QA";
 

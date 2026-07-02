@@ -5,7 +5,7 @@ import pytest_asyncio
 import models  # noqa: F401  registers cloud tables on the shared Base
 from oddish.db.models import Base
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # type: ignore[attr-defined]
 
 URL = os.environ.get("ODDISH_DATABASE_URL")
 
@@ -26,14 +26,30 @@ async def reset_and_seed(engine):
         )
 
 
-async def seed_session(maker, *, session_id="cs_1", status="active", scope_kind="experiment", scope_id="exp_1", sandbox_id=None):
+async def seed_session(
+    maker,
+    *,
+    session_id="cs_1",
+    status="active",
+    scope_kind="experiment",
+    scope_id="exp_1",
+    sandbox_id=None,
+):
     from models import ChatSession
+
     async with maker() as s:
-        s.add(ChatSession(
-            id=session_id, org_id=ORG, user_id="u1",
-            scope_kind=scope_kind, scope_id=scope_id,
-            status=status, daytona_session_id="cc", sandbox_id=sandbox_id,
-        ))
+        s.add(
+            ChatSession(
+                id=session_id,
+                org_id=ORG,
+                user_id="u1",
+                scope_kind=scope_kind,
+                scope_id=scope_id,
+                status=status,
+                daytona_session_id="cc",
+                sandbox_id=sandbox_id,
+            )
+        )
         await s.commit()
 
 
@@ -50,12 +66,15 @@ async def db():
         await engine.dispose()
 
 
-async def seed_task_with_trials(maker, *, task_id="task_1", versions=(1, 2), trials_per_version=1):
+async def seed_task_with_trials(
+    maker, *, task_id="task_1", versions=(1, 2), trials_per_version=1
+):
     """Seed an experiment, a task, its task_versions, current_version pointer,
     and trials via raw INSERTs (avoids ORM enum/NOT-NULL pitfalls). Returns
     {version_int: [trial_id, ...]}. Trials get trial_s3_key=None so
     resolve_trial_s3_prefix falls back to tasks/{task_id}/trials/{trial_id}/."""
     from sqlalchemy import text
+
     out: dict[int, list[str]] = {}
     exp_id = f"exp_{task_id}"
     async with maker() as s:
@@ -96,7 +115,13 @@ async def seed_task_with_trials(maker, *, task_id="task_1", versions=(1, 2), tri
                         "values (:id,:id,:tid,:vid,:eid,:org,'claude','anthropic','q',"
                         "'SUCCESS','oddish',false,1,6,now(),now())"
                     ),
-                    {"id": trial_id, "tid": task_id, "vid": vid, "eid": exp_id, "org": ORG},
+                    {
+                        "id": trial_id,
+                        "tid": task_id,
+                        "vid": vid,
+                        "eid": exp_id,
+                        "org": ORG,
+                    },
                 )
                 ids.append(trial_id)
             out[v] = ids

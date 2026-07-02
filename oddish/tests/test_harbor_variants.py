@@ -15,7 +15,9 @@ from oddish.core.harbor_source import (
 
 
 def test_harbor_variant_dataclass_fields():
-    v = HarborVariant(variant_id="harbor-v12", source=HARBOR_DEFAULT_SOURCE, sha="a" * 40)
+    v = HarborVariant(
+        variant_id="harbor-v12", source=HARBOR_DEFAULT_SOURCE, sha="a" * 40
+    )
     assert v.variant_id == "harbor-v12"
     assert v.source == HARBOR_DEFAULT_SOURCE
     assert v.sha == "a" * 40
@@ -26,12 +28,11 @@ def test_classify_default_normalizes_git_prefix_and_case():
     # not misrouted to "ephemeral".
     assert classify_variant(HARBOR_DEFAULT_SOURCE, HARBOR_DEFAULT_SHA) == "default"
     assert (
-        classify_variant(f"git+{HARBOR_DEFAULT_SOURCE}", HARBOR_DEFAULT_SHA) == "default"
+        classify_variant(f"git+{HARBOR_DEFAULT_SOURCE}", HARBOR_DEFAULT_SHA)
+        == "default"
     )
     assert (
-        classify_variant(
-            "https://github.com/RishiDesai/Harbor", HARBOR_DEFAULT_SHA
-        )
+        classify_variant("https://github.com/RishiDesai/Harbor", HARBOR_DEFAULT_SHA)
         == "default"
     )
 
@@ -51,14 +52,20 @@ def test_classify_blessed_variant_matches_normalized(monkeypatch):
     )
     # exact, git+, and case variants all classify to the blessed id.
     assert classify_variant("https://github.com/dot-agi/harbor", sha) == "harbor-next"
-    assert classify_variant("git+https://github.com/dot-agi/harbor", sha) == "harbor-next"
+    assert (
+        classify_variant("git+https://github.com/dot-agi/harbor", sha) == "harbor-next"
+    )
     assert classify_variant("https://github.com/DOT-AGI/harbor", sha) == "harbor-next"
     # a different sha on the same source is still ephemeral.
-    assert classify_variant("https://github.com/dot-agi/harbor", "d" * 40) == "ephemeral"
+    assert (
+        classify_variant("https://github.com/dot-agi/harbor", "d" * 40) == "ephemeral"
+    )
 
 
 def test_classify_unknown_is_ephemeral():
-    assert classify_variant("https://github.com/dot-agi/harbor", "e" * 40) == "ephemeral"
+    assert (
+        classify_variant("https://github.com/dot-agi/harbor", "e" * 40) == "ephemeral"
+    )
 
 
 def test_resolve_strips_git_prefix_on_40hex_short_circuit(monkeypatch):

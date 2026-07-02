@@ -13,8 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.db import WorkerJobModel, WorkerJobStatus, get_session  # noqa: E402
 from oddish.db.models import WorkerJobKind  # noqa: E402
-from oddish.workers.jobs.enqueue import EnqueueRequest, bulk_enqueue_worker_jobs  # noqa: E402
-from oddish.workers.queue.worker_job_single_job import claim_single_worker_job  # noqa: E402
+from oddish.workers.jobs.enqueue import (
+    EnqueueRequest,
+    bulk_enqueue_worker_jobs,
+)  # noqa: E402
+from oddish.workers.queue.worker_job_single_job import (
+    claim_single_worker_job,
+)  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 
@@ -60,9 +65,9 @@ async def test_claim_is_scoped_to_harbor_variant():
             statuses = dict(
                 (
                     await session.execute(
-                        select(
-                            WorkerJobModel.id, WorkerJobModel.status
-                        ).where(WorkerJobModel.id.in_(ids))
+                        select(WorkerJobModel.id, WorkerJobModel.status).where(
+                            WorkerJobModel.id.in_(ids)
+                        )
                     )
                 ).all()
             )

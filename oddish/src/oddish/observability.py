@@ -54,7 +54,11 @@ def configure_observability(service_name: str) -> bool:
             return False
         # Auto-instrument the DB/HTTP the dispatch cycle uses so its work nests
         # under the explicit ``dispatch.cycle`` span (see ``span`` below).
-        for name in ("instrument_asyncpg", "instrument_httpx", "instrument_system_metrics"):
+        for name in (
+            "instrument_asyncpg",
+            "instrument_httpx",
+            "instrument_system_metrics",
+        ):
             fn = getattr(logfire, name, None)
             if fn is None:
                 continue

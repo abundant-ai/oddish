@@ -143,7 +143,9 @@ def _extract_error(trial_result: Any) -> tuple[str | None, str | None]:
         or exception_type
         or "Harbor execution error"
     )
-    return str(message) if message else None, str(exception_type) if exception_type else None
+    return str(message) if message else None, (
+        str(exception_type) if exception_type else None
+    )
 
 
 def _extract_token_cost_totals(

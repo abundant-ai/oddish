@@ -152,9 +152,14 @@ export function TagChipEditor({
       }}
     >
       <PopoverTrigger asChild>
-        <button type="button" aria-label={`Edit tag ${tag.key}`}>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-auto p-0"
+          aria-label={`Edit tag ${tag.key}`}
+        >
           <TagChip tag={tag} className="cursor-pointer hover:bg-accent/40" />
-        </button>
+        </Button>
       </PopoverTrigger>
       <PopoverContent className="w-60 space-y-2 p-3">
         {confirmingDelete ? (
