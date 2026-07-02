@@ -20,6 +20,7 @@ from oddish.core.api_keys import create_api_key
 from oddish.db import (
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     TrialOrigin,
     TrialStatus,
@@ -176,6 +177,100 @@ async def seed_org_with_trials():
         )
 
 
+@pytest_asyncio.fixture
+async def seed_org_with_task_trials():
+    """Seed an org with a task at a current version, two SUCCESS trials at
+    that version, and a TASKS-scope key.
+
+    Yields (org_id, task_name, trial_count, raw_api_key). Tears itself down.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    org_id = f"org_coltask_{suffix}"
+    experiment_id = f"exp_coltask_{suffix}"
+    task_id = f"task_coltask_{suffix}"
+    task_name = f"col-task-v-{suffix}"
+    version_id = f"{task_id}-v1"
+    trial_id_1 = f"trial_coltask_1_{suffix}"
+    trial_id_2 = f"trial_coltask_2_{suffix}"
+
+    api_key_model = None
+    created_experiment_ids: list[str] = [experiment_id]
+
+    async with get_session() as session:
+        session.add(
+            OrganizationModel(
+                id=org_id, name=f"Test Org {suffix}", slug=f"test-org-{suffix}"
+            )
+        )
+        session.add(
+            ExperimentModel(id=experiment_id, name=f"col-test-{suffix}", org_id=org_id)
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_name,
+                user="test",
+                task_path="/tmp/fake",
+                org_id=org_id,
+            )
+        )
+        await session.flush()
+        session.add(
+            TaskVersionModel(
+                id=version_id,
+                task_id=task_id,
+                version=1,
+                task_path="/tmp/fake",
+            )
+        )
+        await session.flush()
+        await session.execute(
+            TaskModel.__table__.update()
+            .where(TaskModel.id == task_id)
+            .values(current_version_id=version_id)
+        )
+        await session.execute(
+            task_experiments.insert().values(
+                task_id=task_id,
+                experiment_id=experiment_id,
+                deleted_at=None,
+            )
+        )
+        for trial_id in (trial_id_1, trial_id_2):
+            session.add(
+                TrialModel(
+                    id=trial_id,
+                    name=trial_id,
+                    task_id=task_id,
+                    task_version_id=version_id,
+                    experiment_id=experiment_id,
+                    org_id=org_id,
+                    agent="claude-code",
+                    provider="anthropic",
+                    model="anthropic/claude-sonnet-4-6",
+                    queue_key=f"test-coltask-{trial_id}",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    is_probe=False,
+                )
+            )
+        api_key_model, raw_key = create_api_key(
+            org_id=org_id, name=f"test-key-{suffix}", scope=APIKeyScope.TASKS
+        )
+        session.add(api_key_model)
+
+    try:
+        yield org_id, task_name, 2, raw_key, created_experiment_ids
+    finally:
+        await _cleanup(
+            trial_ids=[trial_id_1, trial_id_2],
+            task_ids=[task_id],
+            experiment_ids=created_experiment_ids,
+            api_key_ids=[api_key_model.id] if api_key_model else None,
+            org_ids=[org_id],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -253,3 +348,22 @@ async def test_create_collection_rejects_wrong_scope(client, seed_org_with_trial
         assert resp.status_code == 403
     finally:
         await _cleanup(api_key_ids=[read_key_model.id])
+
+
+@pytest.mark.asyncio
+async def test_create_collection_from_task_ids(client, seed_org_with_task_trials):
+    _org_id, task_name, trial_count, raw_key, created_experiment_ids = (
+        seed_org_with_task_trials
+    )
+
+    resp = await client.post(
+        "/experiments/collections",
+        json={"name": "from-task", "task_ids": [task_name]},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["trials_linked"] == trial_count
+    assert body["trials_from_tasks"] == trial_count
+    created_experiment_ids.append(body["id"])
