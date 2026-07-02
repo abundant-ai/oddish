@@ -50,7 +50,7 @@ async def create_skill(
     data: SkillCreate,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SkillResponse:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         skill = await create_skill_core(
             session, data=data, org_id=auth.org_id, user_id=auth.user_id
@@ -65,7 +65,7 @@ async def update_skill(
     data: SkillUpdate,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SkillResponse:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         skill = await update_skill_core(
             session, skill_id, data=data, org_id=auth.org_id
@@ -79,7 +79,7 @@ async def delete_skill(
     skill_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict[str, bool]:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await delete_skill_core(session, skill_id, org_id=auth.org_id)
         await session.commit()

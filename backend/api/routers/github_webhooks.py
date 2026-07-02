@@ -37,7 +37,7 @@ async def refresh_task_pr_comment(
 
     Useful for testing the GitHub integration or forcing an update.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         task = await session.get(TaskModel, task_id)
@@ -87,7 +87,7 @@ async def refresh_experiment_pr_comment(
 
     Useful for testing the GitHub integration or forcing an update.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     from sqlalchemy import select
 

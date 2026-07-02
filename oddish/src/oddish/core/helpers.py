@@ -91,9 +91,8 @@ def _has_fetchable_trajectory(trial: TrialModel) -> bool:
     # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
     # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
     return (
-        (trial.agent or "").strip().lower() == "grok-build"
-        and trial.finished_at is not None
-    )
+        trial.agent or ""
+    ).strip().lower() == "grok-build" and trial.finished_at is not None
 
 
 _ANALYSIS_SUMMARY_UNSET = object()

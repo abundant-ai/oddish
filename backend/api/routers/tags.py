@@ -260,7 +260,7 @@ async def create_tag(
     payload: TagCreateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListItem:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     if not auth.org_id:
         raise HTTPException(status_code=400, detail="org_id required")
     async with get_session() as session:
@@ -353,7 +353,7 @@ async def update_tag(
     payload: TagUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagListItem:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         capability = "RENAME" if payload.key else "EDIT"
@@ -414,7 +414,7 @@ async def delete_tag(
         ),
     ),
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not await can_definition_capability(
@@ -446,7 +446,7 @@ async def archive_tag(
     payload: TagArchiveRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not await can_definition_capability(
@@ -477,7 +477,7 @@ async def merge_tag(
     payload: TagMergeRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         # The merge TARGET must be org-scoped too — merge_tag_core selects by
@@ -511,7 +511,7 @@ async def set_visibility(
     payload: TagSetVisibilityRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not await can_definition_capability(
@@ -542,7 +542,7 @@ async def assign_tag(
     payload: TagAssignRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagAssignResponse:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, payload.tag_id, auth.org_id)
         await _assert_target_in_org(
@@ -604,7 +604,7 @@ async def unassign_tag(
     payload: TagUnassignRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await _assert_target_in_org(
             session,
@@ -640,7 +640,7 @@ async def exclude_tag(
     payload: TagExcludeRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await _load_tag(session, payload.tag_id, auth.org_id)
         await _assert_target_in_org(
@@ -675,7 +675,7 @@ async def unexclude_tag(
     payload: TagExcludeRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await _load_tag(session, payload.tag_id, auth.org_id)
         await _assert_target_in_org(
@@ -747,7 +747,7 @@ async def create_grant(
     payload: TagGrantCreateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> TagGrantListItem:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not can_manage_grants(auth, tag=tag):
@@ -778,7 +778,7 @@ async def delete_grant(
     grant_id: Annotated[str, Path(...)],
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         tag = await _load_tag(session, tag_id, auth.org_id)
         if not can_manage_grants(auth, tag=tag):
@@ -931,7 +931,7 @@ async def create_filter(
     payload: SavedTagFilterCreateRequest,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> SavedTagFilterItem:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     if payload.visibility not in ("PRIVATE", "ORG"):
         raise HTTPException(
             status_code=400,
@@ -968,7 +968,7 @@ async def _update_filter(
     payload: SavedTagFilterUpdateRequest,
     auth: AuthContext,
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     if payload.visibility is not None and payload.visibility not in (
         "PRIVATE",
         "ORG",
@@ -1021,7 +1021,7 @@ async def remove_filter(
     filter_id: Annotated[str, Path(...)],
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await delete_saved_tag_filter_core(
             session,

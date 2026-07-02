@@ -297,5 +297,3 @@ def render_probe_instruction(
         f"---\n\n"
         f"{_final_summary_section()}"
     )
-
-

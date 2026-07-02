@@ -93,66 +93,6 @@ export interface FilterValues {
   orGroups: OrGroup[] | null;
 }
 
-export const EMPTY_FILTERS: FilterValues = {
-  statuses: [],
-  priorities: [],
-  verdictStatuses: [],
-  agents: [],
-  models: [],
-  agentModels: [],
-  providers: [],
-  environments: [],
-  trialStatuses: [],
-  origins: [],
-  analysisClassifications: [],
-  tagsAll: [],
-  tagsAny: [],
-  tagsNone: [],
-  hasLink: null,
-  hasError: null,
-  hasTrajectory: null,
-  trialIsProbe: null,
-  createdAfter: null,
-  createdBefore: null,
-  createdWithin: null,
-  minAttempts: null,
-  minTokens: null,
-  maxTokens: null,
-  minSteps: null,
-  maxSteps: null,
-  rewardMin: null,
-  rewardMax: null,
-  avgScoreMin: null,
-  avgScoreMax: null,
-  totalTokensMin: null,
-  totalTokensMax: null,
-  runtimeTotalMin: null,
-  runtimeTotalMax: null,
-  runtimeAvgMin: null,
-  runtimeAvgMax: null,
-  totalTrialsMin: null,
-  completedTrialsMin: null,
-  failedTrialsMin: null,
-  passCountMin: null,
-  partialCountMin: null,
-  failCountMin: null,
-  harnessCountMin: null,
-  sort: null,
-  compareBy: null,
-  compareA: null,
-  compareB: null,
-  compareMetric: null,
-  compareAgg: null,
-  compareMargin: null,
-  compareMarginUnit: null,
-  passRateMin: null,
-  passRateMax: null,
-  topBy: null,
-  topValue: null,
-  topMetric: null,
-  orGroups: null,
-};
-
 export interface Option {
   value: string;
   label: string;
@@ -163,7 +103,7 @@ export interface Option {
 //   - task status / priority / verdict: enum NAMES (uppercase) — default SQLEnum
 //   - trial status / origin: enum VALUES (lowercase) — values_callable columns
 // See db/models.py and browse_tasks_core.
-export const STATUS_OPTIONS: Option[] = [
+const STATUS_OPTIONS: Option[] = [
   { value: "COMPLETED", label: "Completed" },
   { value: "RUNNING", label: "Running" },
   { value: "PENDING", label: "Pending" },
@@ -172,12 +112,12 @@ export const STATUS_OPTIONS: Option[] = [
   { value: "FAILED", label: "Failed" },
 ];
 
-export const PRIORITY_OPTIONS: Option[] = [
+const PRIORITY_OPTIONS: Option[] = [
   { value: "HIGH", label: "High" },
   { value: "LOW", label: "Low" },
 ];
 
-export const VERDICT_OPTIONS: Option[] = [
+const VERDICT_OPTIONS: Option[] = [
   { value: "SUCCESS", label: "Pass" },
   { value: "FAILED", label: "Fail" },
   { value: "PENDING", label: "Pending" },
@@ -188,7 +128,7 @@ export const VERDICT_OPTIONS: Option[] = [
 // Values are the enum *names* (uppercase): TrialModel.status uses SQLEnum without
 // values_callable, so the column stores SUCCESS/FAILED/… not the lowercase enum
 // values. Matches the TaskStatus filter pattern; lowercase here matches no rows.
-export const TRIAL_STATUS_OPTIONS: Option[] = [
+const TRIAL_STATUS_OPTIONS: Option[] = [
   { value: "SUCCESS", label: "Success" },
   { value: "FAILED", label: "Failed" },
   { value: "RUNNING", label: "Running" },
@@ -196,12 +136,12 @@ export const TRIAL_STATUS_OPTIONS: Option[] = [
   { value: "RETRYING", label: "Retrying" },
 ];
 
-export const ORIGIN_OPTIONS: Option[] = [
+const ORIGIN_OPTIONS: Option[] = [
   { value: "oddish", label: "Oddish" },
   { value: "imported", label: "Imported" },
 ];
 
-export type ControlKind =
+type ControlKind =
   | "multiselect"
   | "select"
   | "boolean"
@@ -936,7 +876,7 @@ export const FILTER_PARAM_KEYS = [
 // loader forwards these in addition to FILTER_PARAM_KEYS so they aren't
 // silently dropped. They're intentionally NOT in FILTER_PARAM_KEYS so the
 // sidebar's clear-on-change loop doesn't wipe deep-linked values.
-export const EXTRA_BROWSE_PARAM_KEYS = [
+const EXTRA_BROWSE_PARAM_KEYS = [
   "experiment_ids",
   "run_analysis",
   "run_probe",
@@ -1032,7 +972,7 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return null;
         const groups = parsed.filter(
-          (g): g is OrGroup => typeof g === "object" && g !== null
+          (g): g is OrGroup => typeof g === "object" && g !== null,
         );
         return groups.length ? groups : null;
       } catch {

@@ -26,7 +26,12 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
             force=force,
             enable_analysis=enable_analysis,
         )
-        return {"status": "queued", "task_id": task_id, "trial_count": 1, "reset_count": 1}
+        return {
+            "status": "queued",
+            "task_id": task_id,
+            "trial_count": 1,
+            "reset_count": 1,
+        }
 
     @asynccontextmanager
     async def fake_get_session():
@@ -35,7 +40,9 @@ async def test_backfill_route_passes_body_to_core(monkeypatch):
     monkeypatch.setattr(tasks_router, "backfill_task_analysis_core", fake_core)
     monkeypatch.setattr(tasks_router, "get_session", fake_get_session)
 
-    auth = type("Auth", (), {"org_id": "org-1", "require_scope": lambda self, s: None})()
+    auth = type(
+        "Auth", (), {"org_id": "org-1", "require_scope": lambda self, s: None}
+    )()
     body = BackfillQARequest(force=True, enable_analysis=False, trial_ids=["tsk-1"])
 
     result = await tasks_router.backfill_task_qa("tsk", body, auth)  # type: ignore[arg-type]

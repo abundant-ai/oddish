@@ -79,8 +79,14 @@ async def experiment_with_probe():
             )
         )
         await session.flush()
-        session.add(TaskVersionModel(id=v0_id, task_id=task_id, version=0, task_path="/tmp/fake"))
-        session.add(TaskVersionModel(id=v_id, task_id=task_id, version=1, task_path="/tmp/fake"))
+        session.add(
+            TaskVersionModel(
+                id=v0_id, task_id=task_id, version=0, task_path="/tmp/fake"
+            )
+        )
+        session.add(
+            TaskVersionModel(id=v_id, task_id=task_id, version=1, task_path="/tmp/fake")
+        )
         await session.flush()
         task_obj = await session.get(TaskModel, task_id)
         task_obj.current_version_id = v_id
@@ -92,40 +98,72 @@ async def experiment_with_probe():
         )
         session.add(
             TrialModel(
-                id=real_id, name=f"{task_id}-0", task_id=task_id,
-                experiment_id=exp_id, org_id=org_id, agent="claude-code",
-                provider="anthropic", queue_key="test-ip", model="claude-sonnet-4-6",
-                task_version_id=v_id, is_probe=False, status=TrialStatus.SUCCESS,
+                id=real_id,
+                name=f"{task_id}-0",
+                task_id=task_id,
+                experiment_id=exp_id,
+                org_id=org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="test-ip",
+                model="claude-sonnet-4-6",
+                task_version_id=v_id,
+                is_probe=False,
+                status=TrialStatus.SUCCESS,
                 reward=1,
             )
         )
         session.add(
             TrialModel(
-                id=probe_id, name=f"{task_id}-probe", task_id=task_id,
-                experiment_id=exp_id, org_id=org_id, agent="claude-code",
-                provider="anthropic", queue_key="test-ip", model="claude-sonnet-4-6",
-                task_version_id=v_id, is_probe=True, status=TrialStatus.SUCCESS,
+                id=probe_id,
+                name=f"{task_id}-probe",
+                task_id=task_id,
+                experiment_id=exp_id,
+                org_id=org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="test-ip",
+                model="claude-sonnet-4-6",
+                task_version_id=v_id,
+                is_probe=True,
+                status=TrialStatus.SUCCESS,
                 reward=1,
             )
         )
         # Off-version probe must NOT appear (different task_version_id).
         session.add(
             TrialModel(
-                id=off_probe_id, name=f"{task_id}-probe-old", task_id=task_id,
-                experiment_id=exp_id, org_id=org_id, agent="claude-code",
-                provider="anthropic", queue_key="test-ip", model="claude-sonnet-4-6",
-                task_version_id=v0_id, is_probe=True, status=TrialStatus.SUCCESS,
+                id=off_probe_id,
+                name=f"{task_id}-probe-old",
+                task_id=task_id,
+                experiment_id=exp_id,
+                org_id=org_id,
+                agent="claude-code",
+                provider="anthropic",
+                queue_key="test-ip",
+                model="claude-sonnet-4-6",
+                task_version_id=v0_id,
+                is_probe=True,
+                status=TrialStatus.SUCCESS,
                 reward=1,
             )
         )
         await session.commit()
 
-    yield {"org_id": org_id, "exp_id": exp_id, "task_id": task_id,
-           "real_id": real_id, "probe_id": probe_id}
+    yield {
+        "org_id": org_id,
+        "exp_id": exp_id,
+        "task_id": task_id,
+        "real_id": real_id,
+        "probe_id": probe_id,
+    }
 
     await _cleanup(
-        trial_ids=[real_id, probe_id, off_probe_id], task_ids=[task_id],
-        version_ids=[v0_id, v_id], experiment_ids=[exp_id], org_ids=[org_id],
+        trial_ids=[real_id, probe_id, off_probe_id],
+        task_ids=[task_id],
+        version_ids=[v0_id, v_id],
+        experiment_ids=[exp_id],
+        org_ids=[org_id],
     )
 
 
@@ -143,7 +181,7 @@ async def test_probe_trial_merged_into_experiment_task_trials(experiment_with_pr
     task = next(r for r in responses if r.id == f["task_id"])
     ids = {t.id for t in task.trials}
     assert f["real_id"] in ids
-    assert f["probe_id"] in ids          # on-version probe is merged
+    assert f["probe_id"] in ids  # on-version probe is merged
     assert all(not t.id.startswith("trial_offprobe") for t in task.trials)
     probe = next(t for t in task.trials if t.id == f["probe_id"])
     assert probe.is_probe is True

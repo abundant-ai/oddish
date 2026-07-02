@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { Loader2 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -59,7 +60,7 @@ export function XlsxRenderer({ data, fileName }: XlsxRendererProps) {
   if (workbook === null) {
     return (
       <div className="flex items-center justify-center gap-2 p-8 text-muted-foreground">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+        <Loader2 className="size-5 animate-spin" />
         <span>Loading spreadsheet...</span>
       </div>
     );
@@ -89,24 +90,19 @@ export function XlsxRenderer({ data, fileName }: XlsxRendererProps) {
   return (
     <div className="flex flex-col gap-2">
       {sheetNames.length > 1 && (
-        <div className="flex flex-wrap gap-1 px-4 pt-3">
-          {sheetNames.map((name, i) => (
-            <Button
-              key={name}
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setActiveSheet(i)}
-              className={`h-auto rounded-md px-3 py-1 text-xs transition-colors ${
-                i === activeSheet
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-muted text-muted-foreground hover:bg-accent"
-              }`}
-            >
-              {name}
-            </Button>
-          ))}
-        </div>
+        <Tabs
+          value={String(activeSheet)}
+          onValueChange={(value) => setActiveSheet(Number(value))}
+          className="px-4 pt-3"
+        >
+          <TabsList className="h-auto flex-wrap justify-start">
+            {sheetNames.map((name, i) => (
+              <TabsTrigger key={name} value={String(i)}>
+                {name}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       )}
       <div className="max-h-[600px] overflow-auto">
         <Table className="border-collapse text-xs">

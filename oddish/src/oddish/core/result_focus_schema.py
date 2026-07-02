@@ -19,8 +19,19 @@ logger = logging.getLogger(__name__)
 
 # Keys the structured-outputs subset does not support (see plan Global Constraints).
 _UNSUPPORTED_KEYS = frozenset(
-    {"minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum",
-     "exclusiveMaximum", "multipleOf", "minItems", "maxItems", "pattern", "$ref"}
+    {
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minItems",
+        "maxItems",
+        "pattern",
+        "$ref",
+    }
 )
 
 

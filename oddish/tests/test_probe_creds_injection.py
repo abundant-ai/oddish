@@ -35,9 +35,7 @@ def test_modal_fallback_swallows_errors(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("no modal app")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.api_base_url_for_modal_app", _boom
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.api_base_url_for_modal_app", _boom)
     from oddish.worker.probe_creds import _modal_fallback
 
     assert _modal_fallback() == ""
@@ -62,16 +60,12 @@ async def test_mint_probe_creds_wraps_mint_failure(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.get_session", lambda: _FakeSession())
 
     async def _boom(*_a, **_k):
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.mint_internal_read_key", _boom
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_read_key", _boom)
 
     with pytest.raises(ProbeCredsError) as exc:
         await mint_probe_creds(org_id="org-1", trial_id="t1")
@@ -89,9 +83,7 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.get_session", lambda: _FakeSession())
 
     async def _mint(session, *, org_id, name, ttl_minutes):
         assert org_id == "org-1"
@@ -99,9 +91,7 @@ async def test_mint_probe_creds_returns_env(monkeypatch):
         assert ttl_minutes == PROBE_KEY_TTL_MINUTES
         return ("key-id-123", "ok_rawsecret")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.mint_internal_read_key", _mint
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_read_key", _mint)
 
     key_id, env = await mint_probe_creds(org_id="org-1", trial_id="t1")
     assert key_id == "key-id-123"
@@ -124,16 +114,12 @@ async def test_probe_env_has_task_id_and_harbor_pin_no_stage_dir(monkeypatch):
         async def __aexit__(self, *exc):
             return False
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.get_session", lambda: _FakeSession()
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.get_session", lambda: _FakeSession())
 
     async def _mint(session, *, org_id, name, ttl_minutes):
         return ("key-id-456", "secret456")
 
-    monkeypatch.setattr(
-        "oddish.worker.probe_creds.mint_internal_read_key", _mint
-    )
+    monkeypatch.setattr("oddish.worker.probe_creds.mint_internal_read_key", _mint)
 
     _, env = await mint_probe_creds(org_id="org-1", trial_id="trial-xyz")
     # Simulate what trial_handler does after mint_probe_creds returns
