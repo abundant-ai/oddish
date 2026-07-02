@@ -284,6 +284,6 @@ async def test_retry_preserves_is_probe(monkeypatch):
 
     assert added, "retry_trial_core should have added a new TrialModel"
     new_trial = added[0]
-    assert new_trial.is_probe is True, (
-        f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"
-    )
+    assert (
+        new_trial.is_probe is True
+    ), f"Expected is_probe=True on retried trial, got {new_trial.is_probe!r}"

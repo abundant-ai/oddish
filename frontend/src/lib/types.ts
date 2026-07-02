@@ -11,12 +11,7 @@ type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  | "pending"
-  | "queued"
-  | "running"
-  | "success"
-  | "failed"
-  | "retrying";
+  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
@@ -613,12 +608,7 @@ export interface OrphanedStateResponse {
 // additional kinds (QA_REVIEW, ...) don't break the type check when the
 // backend starts returning them before the frontend has opinions.
 export type WorkerJobKind =
-  | "TRIAL"
-  | "QA"
-  | "ANALYSIS"
-  | "VERDICT"
-  | "QA_REVIEW"
-  | (string & {});
+  "TRIAL" | "QA" | "ANALYSIS" | "VERDICT" | "QA_REVIEW" | (string & {});
 
 export type WorkerJobStatus =
   | "QUEUED"
@@ -763,12 +753,12 @@ export interface CostExperimentBreakdown {
   models: CostModelBreakdown[];
 }
 
-export interface CostSeriesKey {
+interface CostSeriesKey {
   key: string;
   label: string;
 }
 
-export interface CostSeriesBucket {
+interface CostSeriesBucket {
   bucket_start: string;
   cost_usd: number;
   trial_count: number;
@@ -781,7 +771,7 @@ export interface CostSeries {
   buckets: CostSeriesBucket[];
 }
 
-export interface CostTotals {
+interface CostTotals {
   window_days: number | null;
   trial_count: number;
   experiment_count: number;
@@ -818,13 +808,4 @@ export interface ExperimentShareInfo {
   is_public: boolean;
   public_token: string | null;
   description: string | null;
-}
-
-export interface ExperimentProbeRow {
-  task_id: string;
-  task_name: string;
-  version: number | null;
-  model: string | null;
-  status: string;
-  probe_trial_id: string;
 }

@@ -50,4 +50,6 @@ def test_compact_mapper_carries_harbor_source():
 
 def test_mappers_carry_environment():
     assert build_trial_response(_trial(), task_path="p").environment == "daytona"
-    assert build_compact_trial_response(_trial(), task_path="p").environment == "daytona"
+    assert (
+        build_compact_trial_response(_trial(), task_path="p").environment == "daytona"
+    )

@@ -11,6 +11,9 @@ Current app surface:
 - `/tasks` authenticated task browser with search, pagination, per-task version summaries, and links back to experiments
 - `/experiments` base page directing users to select an experiment
 - `/experiments/[experiment]` experiment detail, task and trial inspection, logs, results, files, version history, share controls, per-task retry actions, and **cancel** for in-flight work (task drawer **Cancel (N)** or experiment table bulk **Cancel** when tasks are selected; both use `POST /tasks/cancel` with one or more task ids)
+- `/qa` QA workspace (runs, skills, documents)
+- `/skills` and `/documents` org skill and doc-store management
+- `/usage` usage and cost reporting
 - `/settings` organization management and API key management
 - `/admin` two tabs: **Worker Jobs** (default) showing the unified `worker_jobs` kind×status matrix, stale-RUNNING samples, recent failures/cancels, duration percentiles, plus the `OrphanedStateCard`; and **Concurrency** with `queue_slots` leases and per-queue-key health
 - `/share/[token]` read-only public experiment view
@@ -121,8 +124,8 @@ If you want backend JWTs to include org context, configure a Clerk JWT template 
 The frontend proxies backend requests through `src/app/api/*`. Main groups:
 
 - `/api/dashboard` for dashboard data
-- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and per-task analysis or verdict retry actions
-- `/api/trials/*` for trial logs, structured logs, result payloads, retries, analysis retries, trajectories, and files
+- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and task-level QA retry/cancel actions
+- `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
@@ -199,7 +202,7 @@ NEXT_PUBLIC_APP_URL=https://local.oddish.app
 
 ## UI Stack
 
-- Next.js 15 App Router
+- Next.js 16 App Router
 - React 19
 - Tailwind CSS
 - shadcn/ui and Radix primitives

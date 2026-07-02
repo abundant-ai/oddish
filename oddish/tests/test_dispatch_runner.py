@@ -73,9 +73,7 @@ def test_run_once_invokes_cycle_with_built_dispatcher(monkeypatch) -> None:
         return "cycle-result"
 
     monkeypatch.setattr(runner, "run_dispatch_cycle", _fake_cycle)
-    result = asyncio.run(
-        runner.run_once({"ODDISH_DISPATCH_MAX_WORKERS": "7"})
-    )
+    result = asyncio.run(runner.run_once({"ODDISH_DISPATCH_MAX_WORKERS": "7"}))
     assert result == "cycle-result"
     assert isinstance(seen["dispatcher"], InProcessDispatcher)
     assert seen["max_workers"] == 7

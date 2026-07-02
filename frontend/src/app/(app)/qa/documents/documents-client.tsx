@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -201,7 +202,7 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
             <Label htmlFor="doc-content" className="text-xs font-medium">
               {sourceType === "link" ? "Notes / excerpt" : "Content"}
             </Label>
-            <textarea
+            <Textarea
               id="doc-content"
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -211,7 +212,7 @@ function DocumentIngestForm({ onSaved, onCancel }: IngestFormProps) {
                   ? "Paste the relevant content or your notes about this link…"
                   : "Paste the document text…"
               }
-              className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              className="resize-y border-[#6f88b4]/20 font-mono"
             />
           </div>
         )}
@@ -322,12 +323,12 @@ function DocumentEditForm({ doc, onSaved, onCancel }: EditFormProps) {
           <Label htmlFor="edit-summary" className="text-xs font-medium">
             Summary
           </Label>
-          <textarea
+          <Textarea
             id="edit-summary"
             value={summary}
             onChange={(e) => setSummary(e.target.value)}
             rows={3}
-            className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="resize-y border-[#6f88b4]/20"
           />
         </div>
         <div className="space-y-1.5">

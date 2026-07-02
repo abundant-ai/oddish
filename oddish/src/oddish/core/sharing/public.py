@@ -244,11 +244,7 @@ async def list_public_experiment_tasks(
                 t
                 for t in task.trials
                 if not t.is_probe
-                and (
-                    not exp_id
-                    or t.experiment_id == exp_id
-                    or t.id in gathered_ids
-                )
+                and (not exp_id or t.experiment_id == exp_id or t.id in gathered_ids)
             ]
             set_committed_value(task, "trials", filtered)
 
@@ -350,9 +346,7 @@ async def get_public_trial_logs_structured(public_token: str, trial_id: str) -> 
 
 
 @router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory")
-async def get_public_trial_trajectory(
-    public_token: str, trial_id: str
-) -> dict | None:
+async def get_public_trial_trajectory(public_token: str, trial_id: str) -> dict | None:
     """Get ATIF trajectory.json for a public trial."""
     trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_trajectory(trial)
@@ -380,7 +374,9 @@ async def list_public_trial_files(
     )
 
 
-@router.get("/public/experiments/{public_token}/trials/{trial_id}/files/{file_path:path}")
+@router.get(
+    "/public/experiments/{public_token}/trials/{trial_id}/files/{file_path:path}"
+)
 async def get_public_trial_file(
     public_token: str, trial_id: str, file_path: str
 ) -> Response:

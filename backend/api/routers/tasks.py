@@ -794,6 +794,7 @@ async def create_trial_collection(
             session,
             name=payload.name,
             trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
             org_id=auth.org_id,
         )
         await session.commit()
