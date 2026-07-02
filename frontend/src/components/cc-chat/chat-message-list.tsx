@@ -4,9 +4,17 @@ import { useEffect, useRef } from "react";
 import type { ChatBubble } from "@/lib/cc-chat-types";
 import { cn } from "@/lib/utils";
 
-export function ChatMessageList({ bubbles, working }: { bubbles: ChatBubble[]; working: boolean }) {
+export function ChatMessageList({
+  bubbles,
+  working,
+}: {
+  bubbles: ChatBubble[];
+  working: boolean;
+}) {
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [bubbles, working]);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [bubbles, working]);
 
   return (
     <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-3 text-sm">
@@ -22,7 +30,9 @@ export function ChatMessageList({ bubbles, working }: { bubbles: ChatBubble[]; w
         </div>
       ))}
       {working ? (
-        <div className="text-muted-foreground self-start px-1 text-xs italic">● working…</div>
+        <div className="text-muted-foreground self-start px-1 text-xs italic">
+          ● working…
+        </div>
       ) : null}
       <div ref={endRef} />
     </div>

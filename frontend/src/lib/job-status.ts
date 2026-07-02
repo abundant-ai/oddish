@@ -41,9 +41,7 @@ function isActiveVisibleJobKind(
   return job.kind === kind && isActiveVisibleJob(job);
 }
 
-export function trialHasActiveAnalysis(
-  trial: Trial | null | undefined,
-): boolean {
+function trialHasActiveAnalysis(trial: Trial | null | undefined): boolean {
   if (!trial) return false;
   return (
     isActivePipelineStatus(trial.analysis_status) ||

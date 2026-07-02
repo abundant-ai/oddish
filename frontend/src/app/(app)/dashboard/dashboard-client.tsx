@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, use, useEffect, useRef, useState, useTransition } from "react";
+import {
+  Suspense,
+  use,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -310,7 +317,9 @@ function ExperimentsTableBody({
         </Alert>
       ) : experiments.length === 0 && !hasMore && !hasFilters ? (
         authorFilter === "me" ? (
-          <MineEmptyExperimentsState onViewOrgExperiments={onViewOrgExperiments} />
+          <MineEmptyExperimentsState
+            onViewOrgExperiments={onViewOrgExperiments}
+          />
         ) : (
           <EmptyExperimentsState />
         )
@@ -716,7 +725,7 @@ function RecentTasksCard({
               />
               <SearchSyntaxRow example="tag:smoke" hint="by a specific tag" />
               <p className="text-muted-foreground">
-                Filters stack (AND) and are case-insensitive, e.g. {" "}
+                Filters stack (AND) and are case-insensitive, e.g.{" "}
                 <code className="rounded bg-muted px-1 font-mono">
                   github:alice tag:smoke
                 </code>
@@ -746,7 +755,10 @@ function RecentTasksCard({
                 onValueChange={onStatusFilterChange}
               >
                 {STATUS_FILTER_OPTIONS.map((option) => (
-                  <DropdownMenuRadioItem key={option.value} value={option.value}>
+                  <DropdownMenuRadioItem
+                    key={option.value}
+                    value={option.value}
+                  >
                     {option.label}
                   </DropdownMenuRadioItem>
                 ))}

@@ -128,8 +128,7 @@ export function TaskVerdictBadge({
   const showRunButton =
     onRunJudge != null && !p.pending && !isRunning && verdict?.is_good == null;
   const showCancelButton = onCancelJudge != null && p.pending;
-  const runLabel =
-    task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
+  const runLabel = task.verdict_status || task.verdict ? "Rerun QA" : "Run QA";
 
   if (variant === "inline") {
     return (

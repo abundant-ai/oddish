@@ -77,9 +77,7 @@ def _patch_common(monkeypatch, session, verdict_fn):
     monkeypatch.setattr(cleanup, "get_session", fake_get_session)
     monkeypatch.setattr(cleanup, "reap_idle_in_transaction_zombies", fake_reap_zombies)
     monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", no_op)
-    monkeypatch.setattr(
-        "oddish.queue.maybe_advance_legacy_analyzing_task", verdict_fn
-    )
+    monkeypatch.setattr("oddish.queue.maybe_advance_legacy_analyzing_task", verdict_fn)
 
 
 @pytest.mark.asyncio

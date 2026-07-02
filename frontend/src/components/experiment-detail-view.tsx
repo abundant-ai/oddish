@@ -18,11 +18,7 @@ import { ExperimentTrialsTable } from "@/components/experiment-trials-table";
 import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
-import {
-  prBadge,
-  prNumberFromUrl,
-  taskPrUrl,
-} from "@/lib/utils";
+import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
 import { formatCostUsd } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
@@ -325,7 +321,8 @@ function pickExperimentCreationMeta(tasks: Task[]): {
     tasks.find((task) => task.experiment_owner)?.experiment_owner ?? null;
   return {
     createdAt: experimentCreatedAt ?? earliest.created_at,
-    author: experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
+    author:
+      experimentOwner ?? earliest.github_username ?? earliest.user ?? null,
   };
 }
 

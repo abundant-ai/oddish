@@ -150,7 +150,11 @@ def test_azure_compat_codex_allowlists_per_trial_openai_base_url():
 
     domains = AzureCompatibleCodex.required_outbound_domains(
         model_name="openai/gpt-5.5",
-        kwargs={"extra_env": {"OPENAI_BASE_URL": "https://other-foundry.openai.azure.com/openai/v1"}},
+        kwargs={
+            "extra_env": {
+                "OPENAI_BASE_URL": "https://other-foundry.openai.azure.com/openai/v1"
+            }
+        },
     )
 
     assert "other-foundry.openai.azure.com" in domains

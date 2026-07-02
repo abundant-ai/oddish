@@ -36,7 +36,7 @@ def _guard(name, *args, **kwargs):
 
 builtins.__import__ = _guard
 
-from oddish.config import Settings, settings  # noqa: E402
+from oddish.config import Settings  # noqa: E402
 
 Settings.db_use_null_pool = True
 
@@ -68,15 +68,11 @@ async def _main() -> int:
     # so create every oddish table except api_keys. (Production builds the schema
     # via alembic, not create_all.)
     proof_tables = [
-        table
-        for name, table in Base.metadata.tables.items()
-        if name != "api_keys"
+        table for name, table in Base.metadata.tables.items() if name != "api_keys"
     ]
     async with _conn.engine.begin() as connection:
         await connection.run_sync(
-            lambda sync_conn: Base.metadata.create_all(
-                sync_conn, tables=proof_tables
-            )
+            lambda sync_conn: Base.metadata.create_all(sync_conn, tables=proof_tables)
         )
 
     job_id = "wj_" + uuid.uuid4().hex[:12]

@@ -62,7 +62,7 @@ export function TasksToolbar({ orgId = null }: { orgId?: string | null }) {
         size="sm"
         className={cn(
           "h-8 gap-1.5 text-xs",
-          !autoRefresh && "border-[#6f88b4]/20"
+          !autoRefresh && "border-[#6f88b4]/20",
         )}
         onClick={toggleAuto}
         aria-pressed={autoRefresh}
