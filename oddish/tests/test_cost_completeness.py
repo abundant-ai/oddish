@@ -952,8 +952,19 @@ async def test_deleting_experiment_settles_all_active_billable_trials(
 async def test_reaper_skips_trial_row_locked_by_another_session(monkeypatch, session):
     import oddish.db.connection as _conn
     from sqlalchemy import select as sa_select
+    from sqlalchemy import text as sa_text
 
     from oddish.db import WorkerJobKind, WorkerJobModel, WorkerJobStatus, utcnow
+
+    await session.execute(
+        sa_text(
+            "CREATE TABLE IF NOT EXISTS tag_projection_sweep_state ("
+            "id BOOLEAN PRIMARY KEY DEFAULT TRUE, "
+            "last_full_sweep_at TIMESTAMPTZ, "
+            "CONSTRAINT tag_sweep_singleton CHECK (id))"
+        )
+    )
+    await session.commit()
 
     suffix = uuid.uuid4().hex[:6]
     org_id = f"org-reap-{suffix}"

@@ -11,6 +11,17 @@ class _UserRole(str, Enum):
     MEMBER = "member"
 
 
+class _AuthMethod(str, Enum):
+    CLERK_JWT = "clerk_jwt"
+    API_KEY = "api_key"
+
+
+class _APIKeyScope(str, Enum):
+    FULL = "full"
+    TASKS = "tasks"
+    READ = "read"
+
+
 @dataclass
 class _UserStub:
     role: _UserRole
@@ -30,17 +41,24 @@ class _AuthStub:
     user: _UserStub | None = None
     user_email: str | None = None
     user_role: _UserRole | None = None
+    method: _AuthMethod = _AuthMethod.CLERK_JWT
 
 
 def _load_permissions() -> dict[str, Any]:
     permissions_path = (
         Path(__file__).resolve().parents[2] / "backend" / "auth" / "permissions.py"
     )
-    source = permissions_path.read_text(encoding="utf-8").replace(
-        "from auth.types import AuthContext\nfrom models import UserRole\n",
-        "",
+    source = "\n".join(
+        line
+        for line in permissions_path.read_text(encoding="utf-8").splitlines()
+        if not line.startswith(("from auth.", "from models import"))
     )
-    namespace: dict[str, Any] = {"AuthContext": _AuthStub, "UserRole": _UserRole}
+    namespace: dict[str, Any] = {
+        "AuthContext": _AuthStub,
+        "UserRole": _UserRole,
+        "AuthMethod": _AuthMethod,
+        "APIKeyScope": _APIKeyScope,
+    }
     exec(source, namespace)
     return namespace
 
@@ -56,7 +74,7 @@ def test_abundant_admin_can_create_api_keys() -> None:
     assert can_create_api_keys(auth) is True
 
 
-def test_non_abundant_admin_cannot_create_api_keys() -> None:
+def test_abundant_org_admin_can_create_api_keys_regardless_of_email() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
     auth = _AuthStub(
@@ -64,7 +82,7 @@ def test_non_abundant_admin_cannot_create_api_keys() -> None:
         user=_UserStub(role=_UserRole.ADMIN, email="admin@example.com"),
     )
 
-    assert can_create_api_keys(auth) is False
+    assert can_create_api_keys(auth) is True
 
 
 def test_abundant_admin_cannot_create_api_keys_in_other_org() -> None:
@@ -78,7 +96,7 @@ def test_abundant_admin_cannot_create_api_keys_in_other_org() -> None:
     assert can_create_api_keys(auth) is False
 
 
-def test_member_cannot_create_api_keys_even_with_abundant_email() -> None:
+def test_abundant_org_member_can_create_api_keys() -> None:
     can_create_api_keys = _load_permissions()["can_create_api_keys"]
 
     auth = _AuthStub(
@@ -86,7 +104,7 @@ def test_member_cannot_create_api_keys_even_with_abundant_email() -> None:
         user=_UserStub(role=_UserRole.MEMBER, email="member@abundant.ai"),
     )
 
-    assert can_create_api_keys(auth) is False
+    assert can_create_api_keys(auth) is True
 
 
 def test_cached_abundant_admin_can_create_api_keys() -> None:
