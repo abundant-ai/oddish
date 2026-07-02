@@ -223,6 +223,50 @@ def test_ls_compare_and_top_and_or_groups():
     assert p["or_groups"] == or_groups
 
 
+def test_ls_compare_defaults_when_only_pair_given():
+    # A distinct A/B pair with no --compare-by/-metric/-agg must still forward the
+    # defaulted trio (else the backend silently skips the comparison).
+    captured = _invoke(["--compare-a", "cursor-cli", "--compare-b", "gemini-cli"])
+    assert captured["exit_code"] == 0
+    p = captured["params"]
+    assert p["compare_by"] == "agent"
+    assert p["compare_metric"] == "reward"
+    assert p["compare_agg"] == "best"
+    assert p["compare_a"] == "cursor-cli"
+    assert p["compare_b"] == "gemini-cli"
+    # No margin flag → no margin params.
+    assert "compare_margin" not in p
+    assert "compare_margin_unit" not in p
+
+
+def test_ls_compare_omitted_when_pair_incomplete_or_equal():
+    # Lone A (no B) emits nothing — mirrors the UI dropping an incomplete pair.
+    lone = _invoke(["--compare-a", "cursor-cli"])
+    assert lone["exit_code"] == 0
+    assert not any(k.startswith("compare_") for k in lone["params"])
+
+    # Identical A == B is not a comparison; emit nothing.
+    same = _invoke(["--compare-a", "cursor-cli", "--compare-b", "cursor-cli"])
+    assert same["exit_code"] == 0
+    assert not any(k.startswith("compare_") for k in same["params"])
+
+
+def test_ls_top_defaults_when_only_value_given():
+    captured = _invoke(["--top-value", "gpt-5"])
+    assert captured["exit_code"] == 0
+    p = captured["params"]
+    assert p["top_by"] == "agent"
+    assert p["top_metric"] == "reward"
+    assert p["top_value"] == "gpt-5"
+
+
+def test_ls_top_omitted_without_value():
+    # --top-by/-metric without --top-value must not emit a partial top block.
+    captured = _invoke(["--top-by", "model", "--top-metric", "reward"])
+    assert captured["exit_code"] == 0
+    assert not any(k.startswith("top_") for k in captured["params"])
+
+
 def test_ls_created_within_resolves_to_created_after():
     captured = _invoke(["--created-within", "24h"])
     assert captured["exit_code"] == 0
