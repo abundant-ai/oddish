@@ -29,20 +29,21 @@ Python `3.13` is required for `oddish` and `backend`. Node.js `20+` and `pnpm` a
 oddish/                         # Core Python package (CLI, server, workers, DB)
 ├── src/oddish/
 │   ├── analyze/                # QA prompts and analysis helpers
-│   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/...
+│   ├── cli/                    # oddish run/upload/ls/status/cancel/pull/collect/...
 │   ├── core/                   # shared endpoint/service logic (reused by backend/)
 │   ├── server/                 # standalone FastAPI app (python -m oddish.server)
-│   ├── db/                     # models, connection helpers, storage
-│   ├── dispatch/               # local/cloud dispatch cycle backends
+│   ├── db/                     # models, connection helpers, storage, soft delete
+│   ├── dispatch/               # shared dispatch-cycle planning (Modal + self-host)
 │   ├── integrations/           # GitHub and external integrations
-│   ├── mcp/                    # doc-store MCP server
+│   ├── mcp/                    # doc-store MCP server (oddish-docstore-mcp)
 │   ├── runtime/                # runtime result/log helpers
+│   ├── worker/                 # local trial runner and probe staging helpers
 │   ├── workers/                # worker_jobs runtime, handlers, cleanup
-│   ├── backfill_queue_keys.py
-│   ├── config.py
-│   ├── experiment.py
+│   ├── config.py               # settings + model/queue-key canonicalization
 │   ├── queue.py                # task/trial enqueue + worker_jobs enqueue helpers
-│   └── schemas.py
+│   ├── schemas.py
+│   └── (shared modules: experiment.py, model_pricing.py, observability.py,
+│        registry_auth.py, task_timeouts.py, timing.py, backfill_queue_keys.py)
 ├── alembic/                    # Core DB migrations
 ├── env.example
 └── pyproject.toml
@@ -52,15 +53,19 @@ backend/                        # Hosted cloud layer (Modal deployment)
 │   ├── app.py                  # FastAPI app factory and lifespan wiring
 │   ├── schemas.py              # Pydantic models for org/auth/share responses
 │   ├── services/               # hosted services, including cc_chat
-│   └── routers/                # tasks, trials, dashboard, documents, tags, skills, admin, webhooks
-├── auth/                       # API key + Clerk JWT verification, provisioning, types
+│   └── routers/                # tasks, trials, dashboard, documents, tags, skills,
+│                               # admin, orgs, api_keys, imports, load, cc_chat, webhooks
+├── auth/                       # header parsing (auth/__init__.py), API key + Clerk JWT
+│                               # verification (auth/verification.py), provisioning, types
 ├── worker/                     # Modal dispatcher and single-job worker orchestration
 ├── deploy.py                   # Modal app entrypoint
-├── modal_app.py                # Modal image, volumes, shared runtime
+├── modal_app.py                # Modal image, volumes, shared runtime, env knobs
 ├── endpoints.py                # Modal ASGI app function with concurrency/volume wiring
 ├── serve.py                    # Railway/uvicorn entrypoint for non-Modal deployment
 ├── cloud_policy.py             # Hosted-only environment policy
 ├── models.py                   # Cloud auth models (orgs/users/api keys)
+├── dashboard_cache.py          # cached dashboard aggregation (+ attribution/backfill)
+├── idempotency_store.py        # DB-backed idempotency for task submission
 ├── alembic/                    # Cloud migrations (auth + cloud table extensions)
 └── pyproject.toml
 
@@ -68,7 +73,8 @@ frontend/                       # Next.js App Router dashboard
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx            # Public landing page / signed-in redirect
-│   │   ├── (app)/              # Authenticated app shell (dashboard, tasks, experiments, settings, admin)
+│   │   ├── (app)/              # Authenticated shell: dashboard, tasks, experiments,
+│   │   │                       # qa, skills, documents, usage, settings, admin
 │   │   ├── share/[token]/      # Public experiment page
 │   │   ├── datasets/           # Public dataset pages
 │   │   ├── api/                # Backend proxy route handlers
@@ -93,7 +99,7 @@ FastAPI server — oddish standalone (python -m oddish.server)
         |
         v
 Postgres
-  - worker_jobs       # unified queue (TRIAL / QA / …)
+  - worker_jobs       # unified queue (TRIAL / QA / TASK_EXPAND / TAG_PROJECT / …)
   - trials / tasks    # domain state + live UI columns
   - queue_slots       # per-queue-key concurrency leases
         |
@@ -112,22 +118,27 @@ High-level flow:
    row. Set `max_trial_attempts` on a sweep submission or sweep config to
    override the total attempt budget for newly-created trials.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
-   handler (`TRIAL` / `QA`), write heartbeats, and exit.
+   handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis is **task-scoped**: when every trial of a
    `run_analysis` task is terminal, a single `QA` job is enqueued. That one
-   job classifies every live trial's trajectory (same taxonomy / evidence /
-   reasoning, written to `trials.analysis`) and then synthesizes the task
-   verdict (`tasks.verdict`). A sweep of `T` tasks × `N` trials therefore
-   enqueues `T` QA jobs instead of `T × (N + 1)`. (The pre-refactor per-trial
-   `ANALYSIS` and per-task `VERDICT` kinds are kept as legacy enum values only
-   so historical / in-flight rows remain valid and drain across a deploy;
-   nothing enqueues them anymore. `trials.analysis` holds the per-trial
-   classification and `tasks.verdict` the task-level result — both are outputs
-   of the one QA job.)
+   job classifies every live trial's trajectory (written to `trials.analysis`)
+   and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
+   tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
 5. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, and trajectory availability. Use the CLI or dashboard
    to watch progress and pull logs/artifacts back locally.
+
+### Worker job kinds
+
+`WorkerJobKind` (in `oddish.db.models`):
+
+- **Active**: `TRIAL` (Harbor trial execution), `QA` (task-level classify-all-trials +
+  verdict), `TASK_EXPAND` (sweep expansion), `TAG_PROJECT` (tag recompute).
+- **Legacy, drain-only**: `ANALYSIS` (per-trial classification; `AnalysisJobHandler`
+  is kept only so in-flight rows survive a deploy) and `VERDICT` (enum value only,
+  no handler). Nothing enqueues either anymore.
+- **Reserved**: `QA_REVIEW` (enum value, no handler yet).
 
 ## Package Boundaries
 
@@ -135,17 +146,16 @@ High-level flow:
 
 - core models and migrations, including `worker_jobs` and `queue_slots`
 - unified claim/dispatch SQL, one `run_single_worker_job` runner, and a
- handler registry (`TrialJobHandler`, `QaJobHandler`, plus the legacy
- `AnalysisJobHandler` kept to drain in-flight rows)
+  handler registry (`TrialJobHandler`, `QaJobHandler`, `TaskExpandJobHandler`,
+  `TagProjectJobHandler`, plus the legacy `AnalysisJobHandler`)
 - the task-level QA job (`run_task_qa_job`): classify every live trial via
- the shared `classify_trial_and_store`, then synthesize the task verdict
+  the shared `classify_trial_and_store`, then synthesize the task verdict
 - shared queue-slot leasing, per-queue-key concurrency limits, and
- per-user fairness on `TRIAL` claims
+  per-user fairness on `TRIAL` claims
 - stale-heartbeat reaping, RETRYING → QUEUED mirror-back, and pipeline
- stage reconciliation in one cleanup sweep
+  stage reconciliation in one cleanup sweep
 - soft-delete semantics on domain rows via the `deleted_at` column and
- a session-level filter (`oddish.db.soft_delete`); every ORM read on a
- registered model gets `WHERE deleted_at IS NULL` automatically
+  a session-level filter (`oddish.db.soft_delete`)
 
 `oddish` must not import from `backend/`, `backend.auth`, `backend.models`,
 `cloud_policy`, `idempotency_store`, Clerk, or Modal app/deployment modules.
@@ -155,18 +165,13 @@ behavior is needed by both products, put the host-agnostic primitive under
 `oddish/src/oddish/core`, `oddish/src/oddish/workers`, or another neutral
 `oddish` module, then wrap it from `backend/`.
 
-`backend` wraps `oddish` with the hosted-only layer:
+`backend` wraps `oddish` with the hosted-only layer: Clerk/API key auth,
+org-scoped APIs, Modal worker spawning and runtime patching, cloud environment
+policy, GitHub notification hooks, and public sharing / product endpoints.
 
-- Clerk/API key auth and org-scoped APIs
-- Modal worker spawning and runtime patching
-- cloud environment policy and GitHub notification hooks
-- public sharing routes and other product-specific endpoints
-
-`frontend` provides the user-facing layer:
-
-- authenticated dashboard, task browser, experiment views
-- Clerk-based auth and org management
-- Next.js route handlers that proxy requests to the backend
+`frontend` provides the user-facing layer: the authenticated dashboard,
+Clerk-based auth and org management, and Next.js route handlers that proxy
+requests to the backend.
 
 ### Task Identity
 
@@ -198,52 +203,45 @@ pip install oddish[all]       # everything including dev tools
 - API server: `python -m oddish.server` (requires `oddish[server]`)
 - Standalone worker: `python -m oddish.workers.queue.worker` (requires `oddish[worker]`)
 - DB helper CLI: `python -m oddish.db` (requires `oddish[server]`)
-- Queue key backfill: `python -m oddish.backfill_queue_keys`
+- Doc-store MCP server: `oddish-docstore-mcp` (see `oddish/src/oddish/mcp/README.md`)
+- Queue key backfill (one-off ops tool): `python -m oddish.backfill_queue_keys`
 
 ### Soft Delete
 
-Every model that mixes in `TimestampedMixin` has a `deleted_at` column,
-but only the classes registered through
-`oddish.db.soft_delete.register_soft_delete_models` participate in the
-session-level auto-filter:
+Every model that mixes in `TimestampedMixin` has a `deleted_at` column, but
+only classes registered through `oddish.db.soft_delete.register_soft_delete_models`
+participate in the session-level auto-filter:
 
 | Package | Soft-deletable models |
 |---------|------------------------|
-| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `TrialModel` |
+| `oddish.db.models` | `ExperimentModel`, `TaskModel`, `TrialModel`, `TagModel`, `TagAssignmentModel`, `TagExclusionModel`, `TagGrantModel`, `SavedTagFilterModel`, `SkillModel`, `DocumentModel` |
 | `backend.models` | `OrganizationModel`, `UserModel`, `APIKeyModel` |
 
 Behavior:
 
 - ORM `SELECT` / `UPDATE` / `DELETE` issued through a session pick up
   `WHERE deleted_at IS NULL` automatically, including eager-loaded
-  relationships (`selectinload`, `joinedload`) and aliased subqueries.
-- The DELETE endpoints (`delete_task_core`, `delete_experiment_core`,
-  `delete_trial_core`) tombstone rows via `UPDATE ... SET deleted_at = NOW()`
-  and cancel any matching `worker_jobs` rows. They return an empty
-  `s3_prefixes` list so caller best-effort S3 cleanup is a no-op --
-  S3 data is preserved for restore.
+  relationships and aliased subqueries.
+- The deletion helpers in `oddish.core.endpoints.deletion` (`delete_task_core`,
+  `delete_experiment_core`, `delete_trial_core`) tombstone rows via
+  `UPDATE ... SET deleted_at = NOW()` and cancel any matching `worker_jobs`
+  rows. They return an empty `s3_prefixes` list so caller S3 cleanup is a
+  no-op — S3 data is preserved for restore.
 - `unlink_task_from_experiment_core` (same module) is the *scoped* sibling:
   it tombstones only the `task_experiments` join row for one
-  `(task_id, experiment_id)` pair plus that experiment's trials for the
-  task, and **never** tombstones the task row. It exists so a *shared* task
-  can be pulled out of one experiment without disturbing the others (a
-  whole-task `delete_task_core` would hit every experiment). It also fires
-  the membership-removed tag hook so inherited EXPERIMENT tags drop. The
-  experiment-scoped trials are tombstoned alongside the link to keep the
-  experiment consistent — its task list is join-driven, but dashboard trial
-  counts key off `trials.experiment_id`.
-- The `task_experiments` join table also carries `deleted_at` so experiment
-  membership is preserved for audit/restore. Because it is a SQLAlchemy
-  `Table`, not a registered model, live membership queries and relationship
-  joins must explicitly include `task_experiments.deleted_at IS NULL`.
-- Raw `text()` SQL doesn't run through the ORM listener; the dispatcher
-  claim path (`worker_job_single_job.py`), cleanup sweep, and admin
-  diagnostics each add `deleted_at IS NULL` inline.
-- The `(org_id, name)` uniqueness on `tasks` is a **partial** unique
-  index (`WHERE deleted_at IS NULL`) so a deleted task's name slot is
-  reusable.
-- To read or rewrite tombstoned rows (admin tooling, future restore
-  flows) opt out per statement:
+  `(task_id, experiment_id)` pair plus that experiment's trials for the task,
+  and **never** the task row — so a *shared* task can be pulled out of one
+  experiment without disturbing the others. It also fires the
+  membership-removed tag hook so inherited EXPERIMENT tags drop.
+- The `task_experiments` join table also carries `deleted_at`. Because it is a
+  SQLAlchemy `Table`, not a registered model, live membership queries and
+  relationship joins must explicitly include `task_experiments.deleted_at IS NULL`.
+- Raw `text()` SQL doesn't run through the ORM listener; the dispatcher claim
+  path (`worker_job_single_job.py`), cleanup sweep, and admin diagnostics each
+  add `deleted_at IS NULL` inline.
+- The `(org_id, name)` uniqueness on `tasks` is a **partial** unique index
+  (`WHERE deleted_at IS NULL`) so a deleted task's name slot is reusable.
+- To read or rewrite tombstoned rows, opt out per statement:
   `session.execute(stmt.execution_options(include_deleted=True))`.
 
 ### Worker Runtime (`oddish.workers.queue`)
@@ -255,10 +253,14 @@ Behavior:
 | `trial_handler.py` | TRIAL execution body |
 | `qa_handler.py` | Task-level QA job: `run_task_qa_job` classifies every live trial then synthesizes the verdict |
 | `analysis_handler.py` | `classify_trial_and_store` (shared per-trial classifier) + the transitional `run_analysis_job` wrapper for in-flight legacy ANALYSIS rows |
+| `task_expand_handler.py` / `tag_project_handler.py` | TASK_EXPAND and TAG_PROJECT job bodies |
 | `cleanup.py` | Zombie reaper, stale-heartbeat sweep, stage safety nets, **per-slot** orphaned-slot release (see invariants below) |
 | `slots.py` | `queue_slots` lease acquire/release (`locked_by` / `locked_until` / `locked_at`) |
-| `queue_manager.py` | Per-queue-key concurrency bookkeeping |
+| `queue_manager.py` | Per-queue-key concurrency bookkeeping, `run_polling_worker` |
 | `worker.py` | Standalone poll loop (`python -m oddish.workers.queue.worker`) |
+
+Auxiliary modules (`concurrency_controller.py`, `db_helpers.py`, `job_tokens.py`,
+`runtime_status.py`, `shared.py`, `trial_failures.py`) support these.
 
 Handler registration lives in `oddish.workers.jobs` (`registry.py`,
 `handlers.py`). Both the standalone worker and the backend call
@@ -278,31 +280,13 @@ uv run python -m oddish.db setup
 uv run python -m oddish.server
 ```
 
-That gives you:
+That gives you the API on `http://localhost:8000` with background workers
+started by the API process. Point the CLI at it with
+`export ODDISH_API_URL="http://localhost:8000"`. For the hosted Oddish API
+instead, keep the default API URL and set `ODDISH_API_KEY="ok_..."`.
 
-- the API on `http://localhost:8000`
-- background workers started by the API process
-
-Point the CLI at your local server:
-
-```bash
-export ODDISH_API_URL="http://localhost:8000"
-```
-
-For the hosted Oddish API instead, keep the default API URL and set:
-
-```bash
-export ODDISH_API_KEY="ok_..."
-```
-
-### Standalone Workers
-
-`python -m oddish.server` auto-starts workers by default. If you want separate
-worker processes for scaling or debugging:
-
-```bash
-uv run python -m oddish.workers.queue.worker
-```
+`python -m oddish.server` auto-starts workers by default. For separate worker
+processes (scaling or debugging): `uv run python -m oddish.workers.queue.worker`.
 
 ### Database Commands
 
@@ -320,29 +304,30 @@ uv run python -m oddish.server --host 0.0.0.0 --port 9000
 uv run python -m oddish.server --n-concurrent '{"openai/gpt-5.2": 8, "anthropic/claude-sonnet-4-5": 8}'
 ```
 
-### HTTP Endpoints (core)
+### HTTP Endpoints (core standalone server)
 
-| Method | Endpoint | Purpose |
-|--------|----------|---------|
-| POST | `/tasks/upload/init` | Prepare a task upload and return a presigned PUT URL when S3 is enabled |
-| POST | `/tasks/upload/complete` | Finalize a direct-to-S3 task upload after the client PUT succeeds |
-| GET | `/health` | API and DB health check |
-| POST | `/tasks/sweep` | Expand a sweep into a task plus trials |
-| GET | `/tasks` | List tasks |
-| GET | `/tasks/{task_id}` | Fetch a task with trials |
-| POST | `/tasks/cancel` | Cancel many tasks in one request |
-| DELETE | `/tasks/{task_id}` | Soft-delete a task and its trials (sets `deleted_at`; S3 artifacts are preserved for restore) |
-| POST | `/tasks/{task_id}/qa/retry` | (Re)run the single task-level QA job: reset every live trial's classification + the verdict, then classify all trials and synthesize a fresh verdict |
-| POST | `/tasks/{task_id}/qa/cancel` | Cancel a task's in-flight QA job |
-| POST | `/experiments/combine` | Create a new experiment that merges the task memberships and finished trials (with artifacts) of two or more source experiments |
-| DELETE | `/experiments/{experiment_id}` | Soft-delete an experiment, its trials, and any now-orphaned tasks |
-| DELETE | `/experiments/{experiment_id}/tasks/{task_id}` | Soft-delete just the task↔experiment association (the `task_experiments` join row) plus that experiment's trials for the task; the task itself and its data in other experiments are left intact. Use to pull a *shared* task out of one experiment. Hosted backend only |
-| PATCH | `/experiments/{experiment_id}` | Update experiment metadata |
-| GET | `/tasks/{task_id}/trials/{index}` | Fetch a trial by 0-based index |
-| DELETE | `/trials/{trial_id}` | Soft-delete a single trial, cancel its in-flight jobs, and invalidate the parent task's cached verdict |
-| POST | `/trials/{trial_id}/retry` | Retry a trial by creating a fresh replacement row. Optional body: `registry_auth` to supply fresh per-run registry credentials for the replacement trial |
-| GET | `/trials/{trial_id}/logs` | Fetch logs for a trial |
-| GET | `/trials/{trial_id}/result` | Fetch `result.json` for a trial |
+Routes registered in `oddish/src/oddish/server/__init__.py`. The hosted backend
+exposes a superset (org-scoped, plus documents/tags/skills/orgs/api-keys/admin
+extensions) — see `backend/README.md`.
+
+| Area | Endpoints |
+|------|-----------|
+| Health / dashboard | `GET /health`, `GET /dashboard` |
+| Task upload | `POST /tasks/upload/init` (returns presigned PUT URL), `POST /tasks/upload/complete` |
+| Trial import | `POST /trials/import/init`, `POST /trials/import/complete` |
+| Sweeps | `POST /tasks/sweep`, `POST /tasks/sweep/batch` |
+| Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `POST /tasks/cancel` |
+| Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
+| Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
+| Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
+| Files | `GET /tasks/{task_id}/files[/{path}]`, `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
+| Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
+| Public sharing | `/public/experiments...` router from `oddish.core.sharing.public` |
+
+The core server has **no DELETE routes**. Deletion endpoints
+(`DELETE /experiments/{id}`, `DELETE /experiments/{id}/tasks/{task_id}`,
+`DELETE /trials/{trial_id}`) exist only on the hosted backend (admin-gated) and
+call the shared `oddish.core.endpoints.deletion` helpers.
 
 Public share links use 256-bit `public_token` values and are access-by-link, not
 enumerable. The unauthenticated `/public/experiments` list intentionally returns
@@ -403,11 +388,56 @@ from oddish.workers import run_polling_worker
 
 ---
 
+## Repo-wide Gotchas
+
+### Never expose probes in public/share views
+
+Probes are an **experimental, internal-only** feature. They must never appear in
+any public, unauthenticated surface — the `/share/[token]` experiment view, the
+`/datasets/[token]` view, or any `/public/*` API response. Both public views are
+fed by the same endpoints in `oddish/src/oddish/core/sharing/public.py`, so the
+filtering lives at the **data layer** (don't return `is_probe` trials), not just
+the UI:
+
+- `get_public_task` (`sharing/helpers.py`) strips `is_probe` trials from the
+  loaded task, covering `get_public_task_status`.
+- `list_public_experiment_tasks` excludes `is_probe` when filtering each task's
+  trials.
+- `list_public_task_trials` always passes `probe=False` (never honors a
+  caller-supplied probe filter publicly).
+
+When adding a new public/share endpoint or surfacing a new trial/task field
+publicly, exclude probes the same way. Filter at the query/data layer — UI
+guards alone are not enough, since the trials still ship to the browser.
+
+### `list_tasks_core` `load_only` and MissingGreenlet
+
+`list_tasks_core` (`oddish/src/oddish/core/endpoints/tasks_query.py`) powers
+every `/tasks` route, including the experiment page. Its **compact path**
+(`compact_trials=True`) restricts the trial/task/experiment selectin loads with
+`load_only(...)`, which makes *only* the enumerated columns eager and defers
+everything else. Under async SQLAlchemy, reading a deferred column in a
+response builder fires a lazy-load outside the request greenlet and 500s with
+`sqlalchemy.exc.MissingGreenlet`.
+
+So: whenever you surface a **new `TrialModel` / `TaskModel` / `ExperimentModel`
+column in the FE** (i.e. read it in `build_trial_response`,
+`build_compact_trial_response`, or `_build_task_status_response` in
+`core/helpers.py`), you **must also add that column to the matching `load_only`
+set** in `list_tasks_core`. The full (non-compact) builder has no `load_only`,
+so it won't catch the omission — the failure only shows up on the compact
+experiment page. Builder unit tests can't catch it either (in-memory models
+have all attrs set); the bug lives in the query options, not the builder.
+
+---
+
 ## `backend/` — Hosted Cloud Layer
 
 ### Authentication Model
 
-The backend accepts auth from `Authorization`, `X-Clerk-Authorization`, or `X-Authorization`.
+The backend accepts auth from `Authorization`, `X-Clerk-Authorization`, or
+`X-Authorization` (parsed in `backend/auth/__init__.py:get_auth_context`;
+token verification lives in `backend/auth/verification.py`).
 
 - **API keys** (`ok_...`): stored hashed (SHA-256) in `api_keys`; scopes are `full`, `tasks`, `read`
 - **Clerk JWTs**: validated against Clerk JWKS; org context extracted from token claims
@@ -429,45 +459,40 @@ Dispatcher + reconciler + single-job pattern, backed by the unified
 `worker_jobs` table. **Dispatch and reconciliation are deliberately separate
 scheduled functions** so a slow or deadlocking reconciliation sweep can never
 block worker spawning (previously they shared one function under a tight 60s
-timeout, so a sweep that timed out or deadlocked spawned zero workers that
-cycle — and a SIGKILL mid-sweep left orphaned `idle in transaction` locks that
-deadlocked the next sweep):
+timeout; a sweep that timed out spawned zero workers that cycle, and a SIGKILL
+mid-sweep left orphaned `idle in transaction` locks that deadlocked the next
+sweep):
 
 1. `poll_queue()` runs on a `POLL_INTERVAL_SECONDS` (180s) Modal schedule under
-   `DISPATCHER_TIMEOUT_SECONDS` (120s). It does only two things: discover active
-   queue keys via `discover_active_worker_job_queue_keys`, and launch up to
+   `DISPATCHER_TIMEOUT_SECONDS` (120s). It only discovers active queue keys
+   (`discover_active_worker_job_queue_keys`) and launches up to
    `MAX_WORKERS_PER_POLL` single-job containers via the org-first fair-share
-   `build_spawn_plan`. It runs no cleanup, so dispatch is never blocked by it.
-   `MAX_WORKERS_PER_POLL` is the dominant throughput ceiling: long agent trials
-   hold a `queue_slots` lease for their full duration, so steady-state running
-   workers ≈ `spawns_per_poll × trial_duration / poll_interval`. It must stay
-   high enough to fill the per-model concurrency limits (which sum into the
-   hundreds); the per-queue-key slot caps and `WORKER_MAX_CONTAINERS` remain the
-   real bounds.
+   `build_spawn_plan`. It runs no cleanup. `MAX_WORKERS_PER_POLL` is the
+   dominant throughput ceiling: long agent trials hold a `queue_slots` lease
+   for their full duration, so steady-state running workers ≈
+   `spawns_per_poll × trial_duration / poll_interval`. It must stay high enough
+   to fill the per-model concurrency limits; the per-queue-key slot caps and
+   `WORKER_MAX_CONTAINERS` remain the real bounds.
 2. `reconcile_queue_state()` runs on its own `CLEANUP_INTERVAL_SECONDS` (240s)
    schedule under a generous `CLEANUP_TIMEOUT_SECONDS` (600s) so it is never
-   SIGKILLed mid-transaction. It runs (each phase wrapped best-effort so one
-   failure doesn't abort the rest): stale `queue_slots` lease cleanup,
-   `cleanup_orphaned_queue_state` (zombie-txn reap + stale-heartbeat sweep +
-   stage safety nets + **per-slot** orphaned slot release — see "Worker runtime
-   invariants" below), and the experiments owner
-   backfill (`dashboard_owner_backfill` — converges `owner_user_id` so the
-   dashboard Mine filter stays on its indexed fast path). The display-hygiene
-   clear of terminal-trial claim metadata
-   (`clear_terminal_trial_runtime_refs`) runs after the main reconciliation
+   SIGKILLed mid-transaction. Each phase is wrapped best-effort: stale
+   `queue_slots` lease cleanup, `cleanup_orphaned_queue_state` (zombie-txn reap
+   + stale-heartbeat sweep + stage safety nets + **per-slot** orphaned slot
+   release — see invariants below), and the experiments owner backfill
+   (`dashboard_owner_backfill`, which keeps the dashboard Mine filter on its
+   indexed fast path). The display-hygiene clear of terminal-trial claim
+   metadata (`clear_terminal_trial_runtime_refs`) runs after the main
    transaction commits, in batched `FOR UPDATE SKIP LOCKED` transactions, so it
    can neither deadlock against live workers nor roll back the sweep.
-3. `process_single_job(queue_key)` acquires a `queue_slots` lease for the
-   queue key (stamping `locked_by = <worker_id>`, `locked_at = NOW()`,
-   `locked_until = NOW() + WORKER_TIMEOUT + 30s`) and calls
-   `run_single_worker_job` → `drain_worker_jobs`, which atomically claims one or
-   more rows from `worker_jobs` (stamping `current_worker_id = <worker_id>`),
-   dispatches to the registered handler (`TRIAL` or the task-level `QA` job;
-   `ANALYSIS` only for legacy in-flight rows), writes heartbeats on both
-   `worker_jobs.heartbeat_at` and the mirrored domain column, records the
-   outcome (`SUCCESS` / `RETRYING` / `FAILED` / `CANCELLED`), runs the
-   post-success hook (GitHub notification) when applicable, releases the slot
-   in its `finally`, and exits.
+3. `process_single_job(queue_key)` acquires a `queue_slots` lease (stamping
+   `locked_by = <worker_id>`, `locked_at = NOW()`, `locked_until = NOW() +
+   WORKER_TIMEOUT + 30s`) and calls `run_single_worker_job` →
+   `drain_worker_jobs`, which atomically claims one or more `worker_jobs` rows
+   (stamping `current_worker_id`), dispatches to the registered handler for the
+   row's kind, writes heartbeats on both `worker_jobs.heartbeat_at` and the
+   mirrored domain column, records the outcome (`SUCCESS` / `RETRYING` /
+   `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
+   releases the slot in its `finally`, and exits.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
@@ -502,11 +527,11 @@ silently breaks throughput or correctness — read before touching
    (`locked_until`) is `WORKER_TIMEOUT_SECONDS + 30` (~12h); a SIGKILLed /
    preempted worker never runs its `finally` release. `cleanup_orphaned_queue_state`
    frees a slot whenever its `locked_by` has no `RUNNING` `worker_jobs` row on
-   `current_worker_id` (with a `locked_at` grace, `ORPHANED_SLOT_GRACE_MINUTES`,
-   for the acquire→claim gap). ⚠️ Never gate this per-queue_key (e.g. "release
-   only if zero jobs RUNNING on the key") — that was the original bug: one live
-   job pinned every leaked lease for ~12h and starved the queue. The link is
-   always `queue_slots.locked_by == worker_jobs.current_worker_id`.
+   `current_worker_id` (with a `locked_at` grace, `ORPHANED_SLOT_GRACE_MINUTES`
+   = 2, for the acquire→claim gap). ⚠️ Never gate this per-queue_key (e.g.
+   "release only if zero jobs RUNNING on the key") — that was the original bug:
+   one live job pinned every leaked lease for ~12h and starved the queue. The
+   link is always `queue_slots.locked_by == worker_jobs.current_worker_id`.
 
 4. **One model ⇒ one queue_key.** Limits key off the full `queue_key`; the same
    model under two keys gets the *sum* of both buckets against one provider quota
@@ -531,7 +556,6 @@ silently breaks throughput or correctness — read before touching
 ### Local Development
 
 ```bash
-# Modal local serve
 cd backend
 uv sync
 uv run modal serve deploy.py
@@ -543,68 +567,26 @@ uv run modal serve deploy.py
 cp backend/.env.example backend/.env
 ```
 
-Minimum required:
-
-```bash
-ODDISH_DATABASE_URL=...
-CLERK_DOMAIN=...
-```
-
-Required for Clerk-backed org management:
-
-```bash
-CLERK_SECRET_KEY=...
-```
-
-Required for Clerk webhook ingestion:
-
-```bash
-CLERK_WEBHOOK_SECRET=...
-```
-
-Common optional settings:
-
-```bash
-CORS_ALLOWED_ORIGINS=...
-CLERK_ISSUER=...
-CLERK_JWT_AUDIENCE=...
-ODDISH_S3_*=...
-AZURE_OPENAI_*=... ANTHROPIC_API_KEY=... GEMINI_API_KEY=...
-GITHUB_TOKEN=...
-ODDISH_DASHBOARD_URL=...
-```
+Minimum required: `ODDISH_DATABASE_URL` and `CLERK_DOMAIN`. Add
+`CLERK_SECRET_KEY` for Clerk-backed org management and `CLERK_WEBHOOK_SECRET`
+for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
+`CLERK_ISSUER`, `CLERK_JWT_AUDIENCE`, the `ODDISH_S3_*` set, provider keys
+(`AZURE_OPENAI_*`, `GEMINI_API_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, …),
+`GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
+full surface and `backend/README.md` for details.
 
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
 poolers such as Supavisor / PgBouncer.
 
-Modal runtime knobs (read by `modal_app.py`):
-
-```bash
-ODDISH_ENABLE_MODAL_WORKERS=...
-ODDISH_MODAL_API_MIN_CONTAINERS=...
-ODDISH_MODAL_API_MAX_CONTAINERS=...
-ODDISH_MODAL_POLL_INTERVAL_SECONDS=...
-ODDISH_MODAL_DISPATCHER_TIMEOUT_SECONDS=...
-ODDISH_MODAL_CLEANUP_INTERVAL_SECONDS=...
-ODDISH_MODAL_CLEANUP_TIMEOUT_SECONDS=...
-ODDISH_MODAL_WORKER_TIMEOUT_SECONDS=...
-ODDISH_MODAL_WORKER_NONPREEMPTIBLE=...
-ODDISH_MODAL_MAX_WORKERS_PER_POLL=256
-ODDISH_MODAL_API_CPU=2.0
-ODDISH_MODAL_API_MEMORY_MB=4096
-ODDISH_MODAL_WORKER_CPU=1.0
-ODDISH_MODAL_WORKER_MEMORY_MB=3072
-ODDISH_MODAL_DISPATCHER_CPU=1.0
-ODDISH_MODAL_DISPATCHER_MEMORY_MB=1024
-ODDISH_MODAL_RECONCILER_CPU=1.0
-ODDISH_MODAL_RECONCILER_MEMORY_MB=2048
-ODDISH_DEFAULT_MODEL_CONCURRENCY=...
-ODDISH_MODAL_NOP_ORACLE_CONCURRENCY=...
-MODAL_APP_NAME=...
-MODAL_SECRET_ENVIRONMENT=...
-```
+Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
+directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
+`ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
+`MODAL_APP_NAME` / `MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
+source of truth for the full list and defaults (e.g.
+`ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
+`ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
 
 ### Database Migrations
 
@@ -623,15 +605,16 @@ uv run alembic upgrade head
 | Path | Purpose |
 |------|---------|
 | `deploy.py` | Modal app entrypoint |
-| `modal_app.py` | Modal image, volumes, shared runtime |
+| `modal_app.py` | Modal image, volumes, shared runtime, env knobs |
 | `endpoints.py` | Modal ASGI app function |
 | `serve.py` | Railway/uvicorn entrypoint |
 | `cloud_policy.py` | Hosted-only environment policy |
 | `api/app.py` | FastAPI app factory |
-| `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries |
-| `api/routers/trials.py` | Trial logs, result, trajectory, retries |
+| `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries, deletion |
+| `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
+| `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |
 | `auth/verification.py` | API key + Clerk JWT verification |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
@@ -649,7 +632,6 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production
 deployment.
-
 
 ---
 

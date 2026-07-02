@@ -8,7 +8,6 @@ from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -1253,16 +1252,6 @@ async def maybe_advance_legacy_analyzing_task(
 # =============================================================================
 # Query Helpers
 # =============================================================================
-
-
-async def get_task_with_trials(session: AsyncSession, task_id: str) -> TaskModel | None:
-    """Get a task with all its trials."""
-    result = await session.execute(
-        select(TaskModel)
-        .options(selectinload(TaskModel.experiments))
-        .where(TaskModel.id == task_id)
-    )
-    return result.scalar_one_or_none()
 
 
 # Valid per-queue status buckets. Shared by the per-org and grouped-by-org

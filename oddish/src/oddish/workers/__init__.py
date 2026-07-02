@@ -1,9 +1,7 @@
-from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial
-from oddish.workers.queue import run_polling_worker, run_worker as run_queue_worker
+from oddish.workers.harbor.runner import HarborOutcome
+from oddish.workers.queue import run_polling_worker
 
 __all__ = [
     "HarborOutcome",
-    "run_harbor_trial",
     "run_polling_worker",
-    "run_queue_worker",
 ]
