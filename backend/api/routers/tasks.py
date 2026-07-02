@@ -59,7 +59,12 @@ from oddish.core.sharing.helpers import (
     get_task_file_content_s3,
     list_task_files_s3,
 )
-from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
+from oddish.core.idempotency import (
+    IdempotencyReplay,
+    SWEEP_ROUTE,
+    compute_request_hash,
+    probe_completed_replay,
+)
 from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
@@ -86,6 +91,7 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     get_session,
+    utcnow,
 )
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
@@ -227,6 +233,24 @@ async def create_task_sweep(
     request_hash = compute_request_hash(submission)
 
     async with get_session() as session:
+        # A COMPLETED, hash-matched, unexpired idempotency record must replay the
+        # stored response BEFORE the linkage gate: a faithful retry of an
+        # already-created sweep must not 403 just because the linked user was
+        # deactivated (or lost their github_id) in between. Every other case (no
+        # record, in-progress, hash mismatch, expired) returns None and falls
+        # through to the unchanged gate-then-core path below.
+        if idempotency_key:
+            replay_json = await probe_completed_replay(
+                SubmissionIdempotencyStore(session),
+                org_id=auth.org_id,
+                route=SWEEP_ROUTE,
+                raw_key=idempotency_key,
+                request_hash=request_hash,
+                now=utcnow(),
+            )
+            if replay_json is not None:
+                return TaskResponse.model_validate(replay_json)
+
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)
 

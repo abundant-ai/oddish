@@ -260,3 +260,33 @@ async def reserve_idempotency_slot(
     raise IdempotencyConflict(
         "A submission with this Idempotency-Key is already in progress."
     )
+
+
+async def probe_completed_replay(
+    store: IdempotencyStore,
+    *,
+    org_id: str,
+    route: str,
+    raw_key: str,
+    request_hash: str,
+    now: datetime,
+) -> dict | None:
+    """Read-only probe: return the stored response iff this exact retry replays.
+
+    Returns the recorded ``response_json`` only when a live (unexpired),
+    request-hash-matched, ``completed`` record exists for ``raw_key`` -- the
+    same predicate :func:`reserve_idempotency_slot` uses to raise
+    :class:`IdempotencyReplay`. Every other case (no record, in-progress, hash
+    mismatch, expired) returns ``None``, leaving the caller to run its normal
+    reserve-then-work path unchanged. Writes nothing.
+
+    Callers run this before side-effecting gates so a faithful retry of an
+    already-completed submission replays the stored response instead of being
+    re-gated on state that changed after the original request.
+    """
+    existing = await store.get(org_id, route, hash_idempotency_key(raw_key))
+    if existing is None or existing.expires_at <= now:
+        return None
+    if existing.request_hash != request_hash or existing.status != STATUS_COMPLETED:
+        return None
+    return existing.response_json or {}

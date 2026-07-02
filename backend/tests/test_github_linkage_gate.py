@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,9 +32,16 @@ from api.routers.task_submission import (
     require_connected_github_user,
     resolve_experiment_owner_user_id,
 )
-from models import APIKeyScope, OrganizationModel, UserModel
+from models import APIKeyScope, OrganizationModel, SubmissionIdempotency, UserModel
 from oddish.core.api_keys import create_api_key
-from oddish.db import TrialModel, get_session
+from oddish.core.idempotency import (
+    STATUS_COMPLETED,
+    STATUS_IN_PROGRESS,
+    SWEEP_ROUTE,
+    compute_request_hash,
+    hash_idempotency_key,
+)
+from oddish.db import TrialModel, get_session, utcnow
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -178,6 +186,57 @@ async def _trial_count(task_id: str) -> int:
             .select_from(TrialModel)
             .where(TrialModel.task_id == task_id)
         )
+
+
+def _body_request_hash(body: dict) -> str:
+    """The route fingerprints the RAW submission the client posted; mirror it by
+    validating the body into the schema and hashing that, so a seeded record's
+    request_hash matches a real retry of the same body."""
+    return compute_request_hash(TaskSweepSubmission.model_validate(body))
+
+
+async def _seed_idempotency(
+    org_id: str,
+    raw_key: str,
+    *,
+    status: str,
+    request_hash: str,
+    response_json: dict | None = None,
+    expired: bool = False,
+) -> None:
+    now = utcnow()
+    async with get_session() as session:
+        session.add(
+            SubmissionIdempotency(
+                org_id=org_id,
+                route=SWEEP_ROUTE,
+                key_hash=hash_idempotency_key(raw_key),
+                request_hash=request_hash,
+                status=status,
+                response_json=response_json,
+                expires_at=(
+                    now - timedelta(seconds=1) if expired else now + timedelta(hours=24)
+                ),
+            )
+        )
+
+
+async def _purge_idempotency(org_id: str) -> None:
+    async with get_session() as session:
+        await session.execute(
+            SubmissionIdempotency.__table__.delete().where(
+                SubmissionIdempotency.org_id == org_id
+            )
+        )
+
+
+async def _deactivate_and_release_github_id(user: UserModel) -> None:
+    """Reproduce the Bugbot precondition: the linked user leaves the org after
+    the first sweep — deactivated and its github_id released."""
+    async with get_session() as session:
+        row = await session.get(UserModel, user.id)
+        row.is_active = False
+        row.github_id = None
 
 
 def _sweep_body(task_id: str, *, github_id: str | None = None) -> dict:
@@ -990,4 +1049,161 @@ async def test_batch_route_gates_each_submission(client, org_with_users):
         assert await _trial_count(unlinked_task) == 0
     finally:
         await _purge_tasks([linked_task, unlinked_task])
+        await _purge(api_key_ids=[key_id])
+
+
+# ===========================================================================
+# 9. F8 — a COMPLETED idempotency replay must bypass the linkage gate
+# ===========================================================================
+# The gate runs in the route BEFORE create_task_sweep_core (where the reserve /
+# replay lives), so a faithful retry of an already-completed sweep would be 403d
+# if the linked user was deactivated / lost their github_id in between. A probe
+# in the route replays a COMPLETED, hash-matched, unexpired record before the
+# gate; every other case falls through to the unchanged gate-then-core path.
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f8_completed_replay_bypasses_gate_after_user_deactivated(
+    client, org_with_users
+):
+    """Bugbot scenario: sweep created with a linked github_id + Idempotency-Key;
+    the linked user is then deactivated and its github_id released; the SAME
+    key+body retried → 200 with the ORIGINAL stored response (not 403), and no
+    duplicate trials."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_alice")
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    body = _sweep_body(task_id, github_id="gid_alice")
+    headers = {"Authorization": f"Bearer {raw}", "Idempotency-Key": "f8-key"}
+    try:
+        first = await client.post("/tasks/sweep", json=body, headers=headers)
+        assert first.status_code == 200, first.text
+        assert first.json()["trials_count"] == 1
+        original = first.json()
+        assert await _trial_count(task_id) == 1
+
+        # The linked user leaves the org between attempts: a fresh gate would 403.
+        await _deactivate_and_release_github_id(alice)
+
+        retry = await client.post("/tasks/sweep", json=body, headers=headers)
+        assert retry.status_code == 200, retry.text
+        # Replays the ORIGINAL response verbatim — same task + trial ids.
+        assert retry.json()["new_trial_ids"] == original["new_trial_ids"]
+        assert retry.json()["id"] == original["id"]
+        # And crucially no duplicate trials were created.
+        assert await _trial_count(task_id) == 1
+    finally:
+        await _purge_idempotency(org_id)
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f8_fresh_key_unlinked_still_403_and_zero_rows(client, org_with_users):
+    """A FRESH Idempotency-Key with an unlinked github_id has no completed record
+    to replay, so the probe returns None and the gate still 403s with zero rows
+    (and no idempotency record is left behind, since the gate precedes reserve)."""
+    org_id, add = org_with_users
+    await add("alice")  # exists, but carries no github_id
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    try:
+        resp = await client.post(
+            "/tasks/sweep",
+            json=_sweep_body(task_id, github_id="gid_unlinked"),
+            headers={"Authorization": f"Bearer {raw}", "Idempotency-Key": "fresh-key"},
+        )
+        assert resp.status_code == 403
+        assert "gid_unlinked" in resp.json()["detail"]
+        assert await _trial_count(task_id) == 0
+        async with get_session() as session:
+            left = await session.scalar(
+                select(func.count())
+                .select_from(SubmissionIdempotency)
+                .where(SubmissionIdempotency.org_id == org_id)
+            )
+        assert left == 0
+    finally:
+        await _purge_idempotency(org_id)
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f8_completed_record_with_mismatched_hash_is_not_replayed(
+    client, org_with_users
+):
+    """A COMPLETED record whose request_hash does NOT match the retry body must
+    NOT be replayed (predicate parity with reserve_idempotency_slot). With an
+    unlinked github_id it falls through to the gate → 403 (asserted deliberately),
+    proving the probe never bypasses the gate on a hash mismatch."""
+    org_id, add = org_with_users
+    await add("alice")  # no github_id → gate would 403
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    body = _sweep_body(task_id, github_id="gid_unlinked")
+    try:
+        # Same key, but a request_hash for a DIFFERENT body -> not a faithful retry.
+        await _seed_idempotency(
+            org_id,
+            "mismatch-key",
+            status=STATUS_COMPLETED,
+            request_hash="deadbeef" * 8,
+            response_json={"id": "should-not-be-returned", "new_trial_ids": []},
+        )
+        resp = await client.post(
+            "/tasks/sweep",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {raw}",
+                "Idempotency-Key": "mismatch-key",
+            },
+        )
+        assert resp.status_code == 403
+        assert "gid_unlinked" in resp.json()["detail"]
+        assert await _trial_count(task_id) == 0
+    finally:
+        await _purge_idempotency(org_id)
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_f8_in_progress_record_does_not_replay_early(client, org_with_users):
+    """An IN_PROGRESS record (even hash-matched) must not replay in the probe; it
+    falls through to the gate. With an unlinked github_id that means a 403
+    (asserted deliberately) rather than an early 200 replay."""
+    org_id, add = org_with_users
+    await add("alice")  # no github_id → gate would 403
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    body = _sweep_body(task_id, github_id="gid_unlinked")
+    try:
+        await _seed_idempotency(
+            org_id,
+            "inflight-key",
+            status=STATUS_IN_PROGRESS,
+            request_hash=_body_request_hash(body),
+            response_json=None,
+        )
+        resp = await client.post(
+            "/tasks/sweep",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {raw}",
+                "Idempotency-Key": "inflight-key",
+            },
+        )
+        assert resp.status_code == 403
+        assert "gid_unlinked" in resp.json()["detail"]
+        assert await _trial_count(task_id) == 0
+    finally:
+        await _purge_idempotency(org_id)
+        await _purge_tasks([task_id])
         await _purge(api_key_ids=[key_id])
