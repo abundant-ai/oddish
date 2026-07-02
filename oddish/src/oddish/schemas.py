@@ -563,6 +563,7 @@ class TrialCollectionRequest(BaseModel):
     name: str
     trial_ids: list[str] = Field(default_factory=list)
     task_ids: list[str] = Field(default_factory=list)
+    experiment_ids: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -580,8 +581,11 @@ class TrialCollectionRequest(BaseModel):
         self.task_ids = list(
             dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
         )
-        if not self.trial_ids and not self.task_ids:
-            raise ValueError("provide at least one trial id or task id")
+        self.experiment_ids = list(
+            dict.fromkeys(s.strip() for s in self.experiment_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids and not self.experiment_ids:
+            raise ValueError("provide at least one trial id, task id, or experiment id")
         return self
 
 
@@ -1064,6 +1068,8 @@ class TrialCollectionResponse(BaseModel):
     tasks_linked: int
     trials_from_tasks: int = 0
     tasks_skipped_empty: int = 0
+    trials_from_experiments: int = 0
+    experiments_skipped_empty: int = 0
 
 
 class TaskBrowseExperiment(BaseModel):

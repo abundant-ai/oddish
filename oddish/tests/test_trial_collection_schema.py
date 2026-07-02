@@ -30,3 +30,23 @@ def test_rejects_empty_sources():
 def test_rejects_blank_name():
     with pytest.raises(ValueError):
         TrialCollectionRequest(name="  ", trial_ids=["t1"])
+
+
+def test_experiment_ids_dedupe_and_strip():
+    req = TrialCollectionRequest(
+        name="c", experiment_ids=[" exp1 ", "exp1", "", "exp2"]
+    )
+    assert req.experiment_ids == ["exp1", "exp2"]
+
+
+def test_experiment_ids_alone_is_a_valid_source():
+    req = TrialCollectionRequest(name="c", experiment_ids=["exp1"])
+    assert req.trial_ids == []
+    assert req.task_ids == []
+    assert req.experiment_ids == ["exp1"]
+
+
+def test_all_sources_empty_still_rejected():
+    import pytest
+    with pytest.raises(ValueError):
+        TrialCollectionRequest(name="c")
