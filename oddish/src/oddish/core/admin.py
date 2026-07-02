@@ -12,7 +12,7 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
-from oddish.db import ExperimentModel, TrialModel, utcnow
+from oddish.db import ExperimentModel, TaskModel, TrialModel, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1100,8 +1100,18 @@ class CostExperimentBreakdown(BaseModel):
     input_tokens: int
     cache_tokens: int
     output_tokens: int
+    # ``cost_usd`` is trial-execution spend only (real + probe), unchanged for
+    # back-compat. The split below partitions the experiment's *full* spend:
+    #   cost_real_execution_usd + cost_probe_execution_usd == cost_usd
+    #   cost_usd + cost_qa_usd                              == cost_total_usd
     cost_usd: float
     cost_estimated_usd: float
+    cost_real_execution_usd: float = 0.0
+    cost_probe_execution_usd: float = 0.0
+    # QA / analysis spend: per-trial trajectory classification + the one
+    # per-task verdict synthesis, attributed to this experiment.
+    cost_qa_usd: float = 0.0
+    cost_total_usd: float = 0.0
     models: list[CostModelBreakdown]
 
 
@@ -1139,9 +1149,18 @@ class CostTotals(BaseModel):
     input_tokens: int
     cache_tokens: int
     output_tokens: int
+    # ``cost_usd`` stays trial-execution-only (real + probe) for back-compat.
     cost_usd: float
     cost_native_usd: float
     cost_estimated_usd: float
+    # Execution split + QA spend. real + probe == cost_usd; the qa fields are
+    # additive on top, so cost_usd + cost_qa_usd == cost_total_usd.
+    cost_real_execution_usd: float = 0.0
+    cost_probe_execution_usd: float = 0.0
+    cost_qa_analysis_usd: float = 0.0
+    cost_qa_verdict_usd: float = 0.0
+    cost_qa_usd: float = 0.0
+    cost_total_usd: float = 0.0
 
 
 class CostBreakdownResponse(BaseModel):
@@ -1435,7 +1454,11 @@ async def get_cost_breakdown_core(
             ExperimentModel.last_activity_at.label("exp_last_activity_at"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
+            TrialModel.is_probe.label("is_probe"),
             func.count(TrialModel.id).label("trial_count"),
+            func.coalesce(func.sum(TrialModel.analysis_cost_usd), 0.0).label(
+                "analysis_cost"
+            ),
             func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
             func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
@@ -1486,6 +1509,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.last_activity_at,
             TrialModel.model,
             TrialModel.provider,
+            TrialModel.is_probe,
         )
     )
     if since is not None:
@@ -1503,6 +1527,9 @@ async def get_cost_breakdown_core(
     total_output = 0
     total_native = 0.0
     total_estimated = 0.0
+    total_real_exec = 0.0
+    total_probe_exec = 0.0
+    total_qa_analysis = 0.0
 
     for row in rows:
         model = _model_label(row.model)
@@ -1522,6 +1549,10 @@ async def get_cost_breakdown_core(
             or 0.0
         )
         cost = native + estimated
+        is_probe = bool(row.is_probe)
+        real_exec = 0.0 if is_probe else cost
+        probe_exec = cost if is_probe else 0.0
+        analysis_cost = float(row.analysis_cost or 0.0)
 
         total_trials += trial_count
         total_input += input_tokens
@@ -1529,6 +1560,9 @@ async def get_cost_breakdown_core(
         total_output += output_tokens
         total_native += native
         total_estimated += estimated
+        total_real_exec += real_exec
+        total_probe_exec += probe_exec
+        total_qa_analysis += analysis_cost
 
         _accumulate_model(
             by_model,
@@ -1557,6 +1591,9 @@ async def get_cost_breakdown_core(
                 "output_tokens": 0,
                 "cost_usd": 0.0,
                 "cost_estimated_usd": 0.0,
+                "cost_real_execution_usd": 0.0,
+                "cost_probe_execution_usd": 0.0,
+                "cost_qa_analysis_usd": 0.0,
                 "models": {},
             }
         exp["trial_count"] += trial_count
@@ -1565,6 +1602,9 @@ async def get_cost_breakdown_core(
         exp["output_tokens"] += output_tokens
         exp["cost_usd"] += cost
         exp["cost_estimated_usd"] += estimated
+        exp["cost_real_execution_usd"] += real_exec
+        exp["cost_probe_execution_usd"] += probe_exec
+        exp["cost_qa_analysis_usd"] += analysis_cost
         _accumulate_model(
             exp["models"],
             model=model,
@@ -1610,6 +1650,45 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
+    # Per-task verdict synthesis cost is the other half of QA spend (the
+    # per-trial analysis cost above is the first). A task can belong to several
+    # experiments (task<->experiment is many-to-many via the trials), so we
+    # attribute each task's verdict cost once per experiment it has trials in,
+    # and count it once globally (dedup on task_id). Windowed on the same
+    # trial.created_at as the rest of the breakdown.
+    verdict_query = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+            TaskModel.verdict_cost_usd.label("verdict_cost"),
+        )
+        .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(TaskModel.verdict_cost_usd.isnot(None))
+        .group_by(
+            TrialModel.experiment_id,
+            TrialModel.task_id,
+            TaskModel.verdict_cost_usd,
+        )
+    )
+    if since is not None:
+        verdict_query = verdict_query.where(TrialModel.created_at >= since)
+
+    verdict_by_exp: dict[str, float] = {}
+    total_qa_verdict = 0.0
+    seen_verdict_tasks: set[str] = set()
+    for vrow in (await session.execute(verdict_query)).all():
+        vcost = float(vrow.verdict_cost or 0.0)
+        verdict_by_exp[vrow.experiment_id] = (
+            verdict_by_exp.get(vrow.experiment_id, 0.0) + vcost
+        )
+        if vrow.task_id not in seen_verdict_tasks:
+            seen_verdict_tasks.add(vrow.task_id)
+            total_qa_verdict += vcost
+
+    for exp_id, exp in experiments.items():
+        exp["cost_qa_verdict_usd"] = verdict_by_exp.get(exp_id, 0.0)
+
     user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
         :user_limit
     ]
@@ -1629,27 +1708,39 @@ async def get_cost_breakdown_core(
         for u in user_rows
     ]
 
+    # Ranked by trial-execution spend (``cost_usd``), the established "Top
+    # experiments by cost" ordering. QA cost is small relative to execution and
+    # shown per-row alongside it rather than driving the rank.
     experiment_rows = sorted(
         experiments.values(), key=lambda e: e["cost_usd"], reverse=True
     )[:experiment_limit]
-    experiments_out = [
-        CostExperimentBreakdown(
-            experiment_id=str(e["experiment_id"]),
-            name=e["name"],
-            org_id=e["org_id"],
-            owner_user_id=e["owner_user_id"],
-            created_at=e["created_at"],
-            last_activity_at=e["last_activity_at"],
-            trial_count=int(e["trial_count"]),
-            input_tokens=int(e["input_tokens"]),
-            cache_tokens=int(e["cache_tokens"]),
-            output_tokens=int(e["output_tokens"]),
-            cost_usd=round(float(e["cost_usd"]), 4),
-            cost_estimated_usd=round(float(e["cost_estimated_usd"]), 4),
-            models=_model_breakdowns(e["models"], limit=_MAX_MODELS_PER_EXPERIMENT),
+    experiments_out = []
+    for e in experiment_rows:
+        qa = float(e["cost_qa_analysis_usd"]) + float(e.get("cost_qa_verdict_usd", 0.0))
+        execution = float(e["cost_usd"])
+        experiments_out.append(
+            CostExperimentBreakdown(
+                experiment_id=str(e["experiment_id"]),
+                name=e["name"],
+                org_id=e["org_id"],
+                owner_user_id=e["owner_user_id"],
+                created_at=e["created_at"],
+                last_activity_at=e["last_activity_at"],
+                trial_count=int(e["trial_count"]),
+                input_tokens=int(e["input_tokens"]),
+                cache_tokens=int(e["cache_tokens"]),
+                output_tokens=int(e["output_tokens"]),
+                cost_usd=round(execution, 4),
+                cost_estimated_usd=round(float(e["cost_estimated_usd"]), 4),
+                cost_real_execution_usd=round(float(e["cost_real_execution_usd"]), 4),
+                cost_probe_execution_usd=round(
+                    float(e["cost_probe_execution_usd"]), 4
+                ),
+                cost_qa_usd=round(qa, 4),
+                cost_total_usd=round(execution + qa, 4),
+                models=_model_breakdowns(e["models"], limit=_MAX_MODELS_PER_EXPERIMENT),
+            )
         )
-        for e in experiment_rows
-    ]
 
     totals = CostTotals(
         window_days=window_days,
@@ -1662,6 +1753,14 @@ async def get_cost_breakdown_core(
         cost_usd=round(total_native + total_estimated, 4),
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
+        cost_real_execution_usd=round(total_real_exec, 4),
+        cost_probe_execution_usd=round(total_probe_exec, 4),
+        cost_qa_analysis_usd=round(total_qa_analysis, 4),
+        cost_qa_verdict_usd=round(total_qa_verdict, 4),
+        cost_qa_usd=round(total_qa_analysis + total_qa_verdict, 4),
+        cost_total_usd=round(
+            total_native + total_estimated + total_qa_analysis + total_qa_verdict, 4
+        ),
     )
 
     return CostBreakdownResponse(

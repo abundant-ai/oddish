@@ -124,6 +124,10 @@ async def classify_trial_and_store(
     trial_dir_to_use: Path | None = None
     classification_result = None
     analysis_error = None
+    # USD cost of this trial's QA LLM call, persisted into
+    # ``trials.analysis_cost_usd`` on success. The probe branch reads it from
+    # the returned summary; the classifier branch reads it off the classifier.
+    analysis_cost_usd: float | None = None
 
     try:
         (
@@ -175,6 +179,7 @@ async def classify_trial_and_store(
                 result_focus=trial_harbor_config.get("result_focus") or "",
                 model=settings.analysis_model,
             )
+            analysis_cost_usd = classification_result.get("analysis_cost_usd")
             console.print(
                 f"[green]Probe analysis complete:[/green] {classification_result.get('headline', '')}"
             )
@@ -192,6 +197,7 @@ async def classify_trial_and_store(
                 task_dir=task_dir_to_use,
                 trial_agent=trial_agent,
             )
+            analysis_cost_usd = classifier.last_cost_usd
 
             # Convert to dict for storage
             classification_result = {
@@ -248,6 +254,7 @@ async def classify_trial_and_store(
                 trial.analysis_status = AnalysisStatus.SUCCESS
                 trial.analysis_finished_at = utcnow()
                 trial.analysis_error = None
+                trial.analysis_cost_usd = analysis_cost_usd
                 stored_status = AnalysisStatus.SUCCESS
                 console.print(f"[green]Analysis {trial_id} SUCCESS[/green]")
             else:

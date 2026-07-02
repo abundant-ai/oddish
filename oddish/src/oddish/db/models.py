@@ -607,6 +607,11 @@ class TaskModel(TimestampedMixin, Base):
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Resolved USD cost of this task's verdict-synthesis LLM call (one OpenAI
+    # call per task that consolidates the trial classifications). A per-model
+    # token estimate. Part of the task's total QA cost alongside the per-trial
+    # ``analysis_cost_usd``.
+    verdict_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Relationships
     experiments: Mapped[list["ExperimentModel"]] = relationship(  # type: ignore[assignment]
@@ -870,6 +875,13 @@ class TrialModel(TimestampedMixin, Base):
     analysis_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Resolved USD cost of this trial's QA analysis LLM call (trajectory
+    # classification, or the probe summary for probe trials). Native cost when
+    # the runtime reports one (the classifier's Claude CLI emits
+    # ``total_cost_usd``), otherwise a per-model token estimate. This is the
+    # cost of *analyzing* the trial -- distinct from ``cost_usd``, the cost of
+    # *running* it.
+    analysis_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Immutable-trial rerun pointer. When a user retries a trial we
     # don't reset this row; instead we insert a fresh trial that copies
