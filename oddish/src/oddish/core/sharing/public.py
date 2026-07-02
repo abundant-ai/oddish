@@ -300,6 +300,7 @@ async def get_public_task_status(
         )
         response = build_task_status_response(
             task,
+            include_trials=include_trials,
             queue_info_by_trial_id=queue_info_by_trial_id,
             experiment_context_id=exp.id,
             gathered_trial_ids=gathered_ids,

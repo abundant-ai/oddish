@@ -294,6 +294,11 @@ async def test_public_task_status_uses_share_experiment_context():
         task_status = await get_public_task_status(token, task_id)
         assert task_status.experiment_id == exp_ids[0]
         assert [row.id for row in task_status.trials] == [trial_id]
+
+        summary = await get_public_task_status(token, task_id, include_trials=False)
+        assert summary.experiment_id == exp_ids[0]
+        assert summary.trials is None
+        assert summary.total == 1
     finally:
         if task_id or exp_ids:
             await _cleanup(
