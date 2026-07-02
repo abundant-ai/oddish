@@ -17,6 +17,7 @@ async def create_trial_collection_core(
     name: str,
     trial_ids: list[str] | None = None,
     task_ids: list[str] | None = None,
+    experiment_ids: list[str] | None = None,
     org_id: str | None,
 ) -> TrialCollectionResponse:
     """Gather existing trials into a new read-only collection experiment.
@@ -25,7 +26,10 @@ async def create_trial_collection_core(
     created and the trials are linked into it via ``experiment_trials`` /
     ``task_experiments`` (no copy). ``trial_ids`` links those exact trials;
     ``task_ids`` links each task's current-version terminal, non-superseded,
-    non-probe trials. The caller's session context manager commits.
+    non-probe trials. ``experiment_ids`` links each source experiment's
+    terminal, non-superseded, non-probe trials, unioning join-table members
+    when the source is itself a collection. The caller's session context
+    manager commits.
     """
     from oddish.queue import _link_task_to_experiment
 
@@ -35,8 +39,14 @@ async def create_trial_collection_core(
     task_idents = list(
         dict.fromkeys(t.strip() for t in (task_ids or []) if t and t.strip())
     )
-    if not explicit_ids and not task_idents:
-        raise HTTPException(status_code=400, detail="Provide at least one trial id or task id")
+    experiment_idents = list(
+        dict.fromkeys(t.strip() for t in (experiment_ids or []) if t and t.strip())
+    )
+    if not explicit_ids and not task_idents and not experiment_idents:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide at least one trial id, task id, or experiment id",
+        )
 
     # 1. Explicit trials (existing behavior).
     explicit_rows: list[TrialModel] = []
@@ -95,10 +105,74 @@ async def create_trial_collection_core(
             contributed = {t.task_id for t in task_rows}
             tasks_skipped_empty += sum(1 for tid, _ in pairs if tid not in contributed)
 
+    # 2b. Experiment-sourced trials (link, never copy).
+    experiments_skipped_empty = 0
+    experiment_rows: list[TrialModel] = []
+    if experiment_idents:
+        exp_seen: set[str] = set()
+        for ident in experiment_idents:
+            source = (
+                await session.execute(
+                    select(ExperimentModel).where(
+                        or_(ExperimentModel.id == ident, ExperimentModel.name == ident),
+                        ExperimentModel.org_id == org_id,
+                    )
+                )
+            ).scalars().first()
+            if source is None:
+                raise HTTPException(
+                    status_code=404, detail=f"Experiment {ident} not found"
+                )
+
+            contributed = list(
+                (
+                    await session.execute(
+                        select(TrialModel)
+                        .where(
+                            TrialModel.experiment_id == source.id,
+                            TrialModel.superseded_by_trial_id.is_(None),
+                            TrialModel.status.in_(_TERMINAL),
+                            TrialModel.is_probe.isnot(True),
+                            TrialModel.org_id == org_id,
+                        )
+                        .order_by(TrialModel.created_at)
+                    )
+                ).scalars().all()
+            )
+            # A collection owns no native trials; its members live in the join table.
+            if source.is_collection:
+                contributed.extend(
+                    (
+                        await session.execute(
+                            select(TrialModel)
+                            .join(
+                                experiment_trials,
+                                experiment_trials.c.trial_id == TrialModel.id,
+                            )
+                            .where(
+                                experiment_trials.c.experiment_id == source.id,
+                                experiment_trials.c.deleted_at.is_(None),
+                                TrialModel.status.in_(_TERMINAL),
+                                TrialModel.is_probe.isnot(True),
+                                TrialModel.org_id == org_id,
+                            )
+                        )
+                    ).scalars().all()
+                )
+
+            if not contributed:
+                experiments_skipped_empty += 1
+                continue
+            for t in contributed:
+                if t.id in exp_seen:
+                    continue
+                exp_seen.add(t.id)
+                experiment_rows.append(t)
+
     # 3. Union + dedupe (explicit first).
     seen: set[str] = set()
     trials: list[TrialModel] = []
-    for t in (*explicit_rows, *task_rows):
+    for t in (*explicit_rows, *task_rows, *experiment_rows):
         if t.id in seen:
             continue
         seen.add(t.id)
@@ -107,7 +181,15 @@ async def create_trial_collection_core(
         raise HTTPException(status_code=400, detail="resulting trial set is empty")
 
     explicit_id_set = {t.id for t in explicit_rows}
-    trials_from_tasks = sum(1 for t in trials if t.id not in explicit_id_set)
+    task_id_set = {t.id for t in task_rows}
+    trials_from_tasks = sum(
+        1 for t in trials if t.id in task_id_set and t.id not in explicit_id_set
+    )
+    trials_from_experiments = sum(
+        1
+        for t in trials
+        if t.id not in explicit_id_set and t.id not in task_id_set
+    )
 
     # 4. Create the collection experiment and link additively.
     last_activity = max((t.created_at for t in trials), default=None) or utcnow()
@@ -136,4 +218,6 @@ async def create_trial_collection_core(
         tasks_linked=len(linked_task_ids),
         trials_from_tasks=trials_from_tasks,
         tasks_skipped_empty=tasks_skipped_empty,
+        trials_from_experiments=trials_from_experiments,
+        experiments_skipped_empty=experiments_skipped_empty,
     )

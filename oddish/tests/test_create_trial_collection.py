@@ -259,3 +259,150 @@ async def test_tasks_skipped_empty_counted_on_success(session):
     await session.flush()
     assert resp.trials_linked == 1
     assert resp.tasks_skipped_empty == 1      # empty task counted, good task not
+
+
+@pytest.mark.asyncio
+async def test_experiment_source_links_terminal_non_probe_native_trials(session):
+    task = _task("exp-src-task")
+    session.add(task); await session.flush()
+    v1 = _version(task, 1); session.add(v1); await session.flush()
+    task.current_version_id = v1.id; await session.flush()
+
+    src = _experiment("source-exp"); session.add(src); await session.flush()
+
+    keep_a = _ver_trial(task, src, v1.id, status=TrialStatus.SUCCESS)
+    keep_b = _ver_trial(task, src, v1.id, status=TrialStatus.FAILED)
+    pending = _ver_trial(task, src, v1.id, status=TrialStatus.PENDING)   # not terminal
+    probe = _ver_trial(task, src, v1.id, is_probe=True)                  # probe
+    sup = _ver_trial(task, src, v1.id, superseded=keep_a.id)            # superseded
+    session.add_all([keep_a, keep_b, pending, probe, sup]); await session.flush()
+
+    resp = await create_trial_collection_core(
+        session, name="c", experiment_ids=[src.name], org_id="org1"
+    )
+    await session.flush()
+
+    linked = set((await session.execute(
+        select(experiment_trials.c.trial_id).where(
+            experiment_trials.c.experiment_id == resp.id
+        )
+    )).scalars().all())
+    assert linked == {keep_a.id, keep_b.id}
+    assert resp.trials_linked == 2
+    assert resp.trials_from_experiments == 2
+
+
+@pytest.mark.asyncio
+async def test_experiment_source_resolves_by_id(session):
+    task = _task("exp-src-byid")
+    session.add(task); await session.flush()
+    v1 = _version(task, 1); session.add(v1); await session.flush()
+    task.current_version_id = v1.id; await session.flush()
+    src = _experiment("source-byid"); session.add(src); await session.flush()
+    keep = _ver_trial(task, src, v1.id, status=TrialStatus.SUCCESS)
+    session.add(keep); await session.flush()
+
+    resp = await create_trial_collection_core(
+        session, name="c", experiment_ids=[src.id], org_id="org1"
+    )
+    await session.flush()
+    linked = set((await session.execute(
+        select(experiment_trials.c.trial_id).where(
+            experiment_trials.c.experiment_id == resp.id
+        )
+    )).scalars().all())
+    assert linked == {keep.id}
+
+
+@pytest.mark.asyncio
+async def test_collecting_a_collection_unions_join_table_trials(session):
+    task = _task("nested-task")
+    session.add(task); await session.flush()
+    v1 = _version(task, 1); session.add(v1); await session.flush()
+    task.current_version_id = v1.id; await session.flush()
+    home = _experiment("nested-home"); session.add(home); await session.flush()
+
+    t1 = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)
+    t2 = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)
+    session.add_all([t1, t2]); await session.flush()
+
+    # Build a first collection from those two trials.
+    inner = await create_trial_collection_core(
+        session, name="inner", trial_ids=[t1.id, t2.id], org_id="org1"
+    )
+    await session.flush()
+
+    # Collect the collection -> should pull its join-table trials.
+    outer = await create_trial_collection_core(
+        session, name="outer", experiment_ids=[inner.id], org_id="org1"
+    )
+    await session.flush()
+
+    linked = set((await session.execute(
+        select(experiment_trials.c.trial_id).where(
+            experiment_trials.c.experiment_id == outer.id
+        )
+    )).scalars().all())
+    assert linked == {t1.id, t2.id}
+    assert outer.trials_from_experiments == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_experiment_id_raises_404(session):
+    with pytest.raises(HTTPException) as ei:
+        await create_trial_collection_core(
+            session, name="c", experiment_ids=["nope"], org_id="org1"
+        )
+    assert ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_empty_experiment_counted_skipped(session):
+    good_task = _task("g-task"); session.add(good_task); await session.flush()
+    gv = _version(good_task, 1); session.add(gv); await session.flush()
+    good_task.current_version_id = gv.id; await session.flush()
+    good = _experiment("good-exp"); empty = _experiment("empty-exp")
+    session.add_all([good, empty]); await session.flush()
+    keep = _ver_trial(good_task, good, gv.id, status=TrialStatus.SUCCESS)
+    session.add(keep); await session.flush()
+
+    resp = await create_trial_collection_core(
+        session, name="c", experiment_ids=[good.name, empty.name], org_id="org1"
+    )
+    await session.flush()
+    assert resp.trials_linked == 1
+    assert resp.experiments_skipped_empty == 1
+
+
+@pytest.mark.asyncio
+async def test_mixed_trial_task_experiment_sources_dedupe(session):
+    task = _task("mixed-task")
+    session.add(task); await session.flush()
+    v1 = _version(task, 1); session.add(v1); await session.flush()
+    task.current_version_id = v1.id; await session.flush()
+    src = _experiment("mixed-src"); session.add(src); await session.flush()
+
+    # t1 reachable via explicit id AND via the experiment source -> dedupe.
+    t1 = _ver_trial(task, src, v1.id, status=TrialStatus.SUCCESS)
+    t2 = _ver_trial(task, src, v1.id, status=TrialStatus.SUCCESS)
+    session.add_all([t1, t2]); await session.flush()
+
+    resp = await create_trial_collection_core(
+        session,
+        name="c",
+        trial_ids=[t1.id],
+        task_ids=[task.name],
+        experiment_ids=[src.name],
+        org_id="org1",
+    )
+    await session.flush()
+    linked = set((await session.execute(
+        select(experiment_trials.c.trial_id).where(
+            experiment_trials.c.experiment_id == resp.id
+        )
+    )).scalars().all())
+    assert linked == {t1.id, t2.id}       # no duplicate rows
+    assert resp.trials_linked == 2
+    # t1 is explicit; t2 first attributed to the task source.
+    assert resp.trials_from_tasks == 1
+    assert resp.trials_from_experiments == 0
