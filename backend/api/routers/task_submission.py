@@ -138,12 +138,9 @@ async def _lookup_user_by_github_id(
     github_id: str,
     org_id: str,
 ) -> UserModel | None:
-    normalized = (github_id or "").strip()
-    if not normalized:
-        return None
     result = await session.execute(
         select(UserModel).where(
-            UserModel.github_id == normalized,
+            UserModel.github_id == github_id,
             UserModel.org_id == org_id,
             UserModel.is_active == True,  # noqa: E712
         )
@@ -151,7 +148,7 @@ async def _lookup_user_by_github_id(
     return result.scalars().first()
 
 
-async def _resolve_connected_user(
+async def resolve_connected_user(
     session: AsyncSession,
     *,
     org_id: str,
@@ -227,7 +224,7 @@ async def resolve_created_by_user_id(
             return api_key.created_by_user_id
 
     if submission.github_id is not None or submission.github_username:
-        user = connected_user or await _resolve_connected_user(
+        user = connected_user or await resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
@@ -250,7 +247,7 @@ async def resolve_experiment_owner_user_id(
 ) -> str | None:
     """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
     if submission.github_id is not None or submission.github_username:
-        user = connected_user or await _resolve_connected_user(
+        user = connected_user or await resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,

@@ -48,26 +48,6 @@ def test_build_sweep_payload_omits_github_id_when_absent():
     assert "github_id" not in _payload()
 
 
-def test_payload_round_trips_into_submission_with_github_id():
-    payload = build_sweep_payload(
-        task_id="task_lg",
-        configs=[
-            {"agent": "claude-code", "model": "anthropic/claude-sonnet-4-6", "n_trials": 1}
-        ],
-        environment=None,
-        user=None,
-        priority="low",
-        experiment_id=None,
-        github_username="octocat",
-        github_id="123456",
-    )
-    submission = TaskSweepSubmission.model_validate(
-        {**payload, "configs": [AgentModelPair(**c) for c in payload["configs"]]}
-    )
-    assert submission.github_id == "123456"
-    assert submission.github_username == "octocat"
-
-
 def _submission(**kwargs) -> TaskSweepSubmission:
     return TaskSweepSubmission(
         task_id="task_lg",

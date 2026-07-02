@@ -54,10 +54,7 @@ async def backfill_github_id(
         async with semaphore:
             if delay_seconds:
                 await asyncio.sleep(delay_seconds)
-            try:
-                return user, await fetch_github_identity_from_clerk(user.clerk_user_id), None
-            except Exception as exc:  # fail-open: unexpected escaping error
-                return user, None, exc
+            return await fetch_github_identity_from_clerk(user.clerk_user_id)
 
     while max_users is None or summary.scanned < max_users:
         remaining = (
@@ -94,9 +91,17 @@ async def backfill_github_id(
             # Advance over skipped rows so keyset pagination terminates.
             after_id = users[-1].id
 
-            fetched = await asyncio.gather(*(_fetch(u) for u in users))
-            for user, identity, exc in fetched:
-                if exc is not None or identity is None:
+            fetched = await asyncio.gather(
+                *(_fetch(u) for u in users), return_exceptions=True
+            )
+            for user, result in zip(users, fetched, strict=True):
+                if isinstance(result, BaseException) and not isinstance(
+                    result, Exception
+                ):
+                    raise result
+                exc = result if isinstance(result, Exception) else None
+                identity = None if exc is not None else result
+                if identity is None:
                     # Non-definitive Clerk answer (error / unset key): retry next
                     # run, stamp nothing.
                     summary.failed += 1

@@ -1,8 +1,6 @@
-"""F13: push-based github_id sync via Clerk user.created / user.updated webhooks.
+"""Push-based github_id sync via Clerk user.created and user.updated webhooks.
 
-A user who links GitHub is usable in seconds instead of waiting up to the 1h
-marker TTL for the login/backfill repair path. These exercise the sync helper
-behind the svix-verified POST /webhooks/clerk route directly against Postgres.
+These exercise the sync helper behind POST /webhooks/clerk against Postgres.
 """
 
 from __future__ import annotations
@@ -83,8 +81,7 @@ async def _purge(org_ids: list[str]) -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_user_updated_sets_id_and_handle_on_every_org_row() -> None:
-    """Case (a): one human = one row per org. user.updated with a github account
-    sets github_id + username on EVERY active row for that clerk_user_id."""
+    """A GitHub payload sets github_id and username on every active org row."""
     org_a = f"org_wh_{uuid.uuid4().hex[:8]}"
     org_b = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
@@ -107,8 +104,7 @@ async def test_user_updated_sets_id_and_handle_on_every_org_row() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_org_scoped_collision_skips_only_that_org() -> None:
-    """Case (b): an active row in one org already holds the id. That org is
-    skipped (its user keeps no id), the other org still gets set — org-scoped."""
+    """An active id collision skips only the colliding org."""
     org_a = f"org_wh_{uuid.uuid4().hex[:8]}"
     org_b = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
@@ -133,9 +129,7 @@ async def test_org_scoped_collision_skips_only_that_org() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_no_github_account_stamps_marker_and_keeps_existing_id() -> None:
-    """Case (c): a payload with NO github account stamps the checked marker fresh
-    (definitive-absent) but must NOT clear a pre-existing github_id — unlink is
-    out of scope; set-if-absent philosophy."""
+    """A no-GitHub payload stamps the marker without clearing an existing id."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:
@@ -157,8 +151,7 @@ async def test_no_github_account_stamps_marker_and_keeps_existing_id() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_truthy_id_does_not_stamp_marker() -> None:
-    """F5 coherence: a payload WITH a github_id claims it but does NOT stamp the
-    checked marker — only a definitive no-github answer stamps."""
+    """A payload with github_id claims it without stamping the checked marker."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:
@@ -177,8 +170,7 @@ async def test_truthy_id_does_not_stamp_marker() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_unknown_clerk_user_id_is_noop() -> None:
-    """Case (d): a clerk_user_id we never provisioned -> no-op, no rows touched,
-    no error (the route returns 2xx so Clerk stops retrying)."""
+    """An unknown clerk_user_id is a no-op."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     other_clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:
@@ -197,8 +189,7 @@ async def test_unknown_clerk_user_id_is_noop() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_redelivery_is_idempotent() -> None:
-    """Case (e): redelivering the same event twice is idempotent — no error, the
-    id/handle are unchanged, no duplicate cache entries."""
+    """Redelivering the same event is idempotent."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:
@@ -223,9 +214,7 @@ async def test_redelivery_is_idempotent() -> None:
 @requires_db
 @pytest.mark.asyncio
 async def test_checked_absent_user_then_linked_gets_id() -> None:
-    """Case (f) — THE reason F13 exists: a user stamped checked-absent (fresh
-    marker, no id) who then links GitHub gets github_id set by the webhook,
-    killing the up-to-1h wait for the login/backfill repair path."""
+    """A checked-absent user gets github_id when a later webhook links GitHub."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:

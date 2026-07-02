@@ -45,42 +45,19 @@ def test_helper_linked_true_fails_open(monkeypatch):
     assert api.github_id_is_unlinked("http://api", "42") is False
 
 
-def test_helper_scope_403_fails_open(monkeypatch):
-    _mock_client(
+@pytest.mark.parametrize(
+    "handler",
+    [
         lambda r: httpx.Response(403, json={"detail": "Insufficient scope."}),
-        monkeypatch,
-    )
-    assert api.github_id_is_unlinked("http://api", "42") is False
-
-
-def test_helper_500_fails_open(monkeypatch):
-    _mock_client(lambda r: httpx.Response(500, text="boom"), monkeypatch)
-    assert api.github_id_is_unlinked("http://api", "42") is False
-
-
-def test_helper_transport_error_fails_open(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("no route")
-
+        lambda r: httpx.Response(500, text="boom"),
+        lambda r: (_ for _ in ()).throw(httpx.ConnectError("no route")),
+        lambda r: (_ for _ in ()).throw(httpx.ReadTimeout("slow")),
+        lambda r: httpx.Response(200, text="not json"),
+        lambda r: httpx.Response(200, json={"other": 1}),
+    ],
+)
+def test_helper_failures_fail_open(monkeypatch, handler):
     _mock_client(handler, monkeypatch)
-    assert api.github_id_is_unlinked("http://api", "42") is False
-
-
-def test_helper_timeout_fails_open(monkeypatch):
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ReadTimeout("slow")
-
-    _mock_client(handler, monkeypatch)
-    assert api.github_id_is_unlinked("http://api", "42") is False
-
-
-def test_helper_unparseable_body_fails_open(monkeypatch):
-    _mock_client(lambda r: httpx.Response(200, text="not json"), monkeypatch)
-    assert api.github_id_is_unlinked("http://api", "42") is False
-
-
-def test_helper_missing_linked_key_fails_open(monkeypatch):
-    _mock_client(lambda r: httpx.Response(200, json={"other": 1}), monkeypatch)
     assert api.github_id_is_unlinked("http://api", "42") is False
 
 
@@ -152,55 +129,8 @@ def test_run_proceeds_to_upload_when_linked(monkeypatch, tmp_path):
     assert calls["upload"] == 1
 
 
-def test_run_fail_open_proceeds_to_upload(monkeypatch, tmp_path):
-    # Endpoint unreachable / 500 / scope-403 all surface as helper -> False.
-    _run_env(monkeypatch)
-    task_path = _make_task_dir(tmp_path)
-    _stub_task_resolution(monkeypatch, task_path)
-
-    calls = {"upload": 0, "preflight": 0}
-
-    def fake_upload(api_url, task_paths, **kwargs):
-        calls["upload"] += 1
-        raise typer.Exit(0)
-
-    def fake_preflight(url, gid):
-        calls["preflight"] += 1
-        return False
-
-    monkeypatch.setattr(run_mod, "upload_tasks_with_progress", fake_upload)
-    monkeypatch.setattr(run_mod, "github_id_is_unlinked", fake_preflight)
-
-    with pytest.raises(typer.Exit):
-        run_mod.run(path=task_path, github_id="42", watch=False)
-    assert calls["preflight"] == 1
-    assert calls["upload"] == 1
-
-
-def test_run_no_github_id_skips_preflight(monkeypatch, tmp_path):
-    _run_env(monkeypatch)
-    task_path = _make_task_dir(tmp_path)
-    _stub_task_resolution(monkeypatch, task_path)
-
-    calls = {"preflight": 0}
-
-    def boom(url, gid):
-        calls["preflight"] += 1
-        raise AssertionError("pre-flight must not run without a github_id")
-
-    monkeypatch.setattr(run_mod, "github_id_is_unlinked", boom)
-    monkeypatch.setattr(
-        run_mod,
-        "upload_tasks_with_progress",
-        lambda *a, **k: (_ for _ in ()).throw(typer.Exit(0)),
-    )
-
-    with pytest.raises(typer.Exit):
-        run_mod.run(path=task_path, github_id=None, watch=False)
-    assert calls["preflight"] == 0
-
-
-def test_run_blank_github_id_skips_preflight(monkeypatch, tmp_path):
+@pytest.mark.parametrize("github_id", [None, "   "])
+def test_run_absent_github_id_skips_preflight(monkeypatch, tmp_path, github_id):
     _run_env(monkeypatch)
     task_path = _make_task_dir(tmp_path)
     _stub_task_resolution(monkeypatch, task_path)
@@ -219,5 +149,5 @@ def test_run_blank_github_id_skips_preflight(monkeypatch, tmp_path):
     )
 
     with pytest.raises(typer.Exit):
-        run_mod.run(path=task_path, github_id="   ", watch=False)
+        run_mod.run(path=task_path, github_id=github_id, watch=False)
     assert calls["preflight"] == 0

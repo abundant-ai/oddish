@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import pytest_asyncio
 
 import httpx
 
@@ -76,6 +77,24 @@ async def _purge(org_id: str) -> None:
                 OrganizationModel.id == org_id
             )
         )
+
+
+@pytest_asyncio.fixture
+async def org_with_users():
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+
+    async def add(**overrides) -> UserModel:
+        user = _user(org_id, **overrides)
+        async with get_session() as session:
+            session.add(user)
+        return user
+
+    try:
+        yield org_id, add
+    finally:
+        await _purge(org_id)
 
 
 async def _github_id_of(user_id: str) -> str | None:
@@ -291,128 +310,57 @@ async def test_collision_with_soft_deleted_holder_relinks(monkeypatch) -> None:
 
 @requires_db
 @pytest.mark.asyncio
-async def test_full_batch_of_skips_terminates_and_reaches_later_users(monkeypatch) -> None:
-    """Regression (keyset cursor): a FULL batch of unfillable users (Clerk returns
-    no github_id, so they stay github_id IS NULL) must not re-select forever — an
-    infinite loop in drain mode / starvation under a max_users cap. A fillable user
-    ordered AFTER the skip prefix must still be reached."""
-    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
-    skips = [_user(org_id, id=f"user_bf_a{i}") for i in range(3)]
-    fillable = _user(org_id, id="user_bf_z")
+async def test_single_run_pages_past_a_full_batch_of_skips(
+    monkeypatch, org_with_users
+) -> None:
+    """An uncapped run keeps paging past a full batch of unfillable rows and
+    fills a later user in the SAME call (drain mode must not stop at one batch)."""
+    org_id, add = org_with_users
+    skips = [await add(id=f"user_bf_a{i}") for i in range(3)]
+    fillable = await add(id="user_bf_z")
     mapping = {u.clerk_user_id: ClerkGithubIdentity(None, None, None) for u in skips}
     mapping[fillable.clerk_user_id] = ClerkGithubIdentity("octocat", None, "42424242")
     _mock_clerk(monkeypatch, mapping)
-    try:
-        async with get_session() as session:
-            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
-            for u in [*skips, fillable]:
-                session.add(u)
-        # batch_size=3 => the first page is exactly the 3 skips (a full batch): the
-        # pre-fix trigger for the non-terminating re-select. wait_for turns a hang
-        # into a test failure instead of blocking the whole suite.
-        summary = await asyncio.wait_for(
-            job.backfill_github_id(batch_size=3, delay_seconds=0.0), timeout=15
-        )
-        assert await _github_id_of(fillable.id) == "42424242"  # reached, not starved
-        assert await _github_id_of(skips[0].id) is None
-        assert summary.set >= 1
-        assert summary.skipped >= 3
-    finally:
-        await _purge(org_id)
+    summary = await asyncio.wait_for(
+        job.backfill_github_id(batch_size=3, delay_seconds=0.0), timeout=15
+    )
+    assert await _github_id_of(fillable.id) == "42424242"
+    assert await _github_id_of(skips[0].id) is None
+    assert summary.set >= 1
+    assert summary.skipped >= 3
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_stamped_rows_excluded_from_scan(monkeypatch) -> None:
-    """A definitive no-github row is stamped github_id_checked in run 1; run 2 no
-    longer selects it (the WHERE excludes stamped rows)."""
-    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
-    user = _user(org_id)
-    _mock_clerk(monkeypatch, {user.clerk_user_id: ClerkGithubIdentity(None, None, None)})
-    try:
-        async with get_session() as session:
-            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
-            session.add(user)
-        first = await job.backfill_github_id(delay_seconds=0.0)
-        assert first.scanned >= 1
-        assert first.skipped >= 1
-        cache = await _cache_of(user.id)
-        assert isinstance(cache, dict) and isinstance(
-            cache.get("github_id_checked"), str
-        )
-        second = await job.backfill_github_id(delay_seconds=0.0)
-        assert second.scanned == 0
-    finally:
-        await _purge(org_id)
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_head_of_table_no_github_batch_does_not_starve(monkeypatch) -> None:
-    """Starvation regression: a full head batch of permanently-unfillable rows is
-    stamped in run 1 (not just cursor-skipped); run 2 begins from after_id=None yet
-    reaches rows beyond them because the stamped head no longer matches the scan."""
-    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
-    head = [_user(org_id, id=f"user_bf_a{i}") for i in range(3)]
-    tail = _user(org_id, id="user_bf_z")
+async def test_full_head_batch_stamped_then_tail_reached_next_run(
+    monkeypatch, org_with_users
+) -> None:
+    """A full head batch of no-github rows is stamped and skipped next run."""
+    org_id, add = org_with_users
+    head = [await add(id=f"user_bf_a{i}") for i in range(3)]
+    tail = await add(id="user_bf_z")
     mapping: dict[str, ClerkGithubIdentity | None] = {
         u.clerk_user_id: ClerkGithubIdentity(None, None, None) for u in head
     }
     mapping[tail.clerk_user_id] = ClerkGithubIdentity("octocat", None, "tailid")
     _mock_clerk(monkeypatch, mapping)
-    try:
-        async with get_session() as session:
-            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
-            for u in [*head, tail]:
-                session.add(u)
-        # max_users=3 with batch_size=3: run 1 caps out on the head batch alone and
-        # never reaches the tail. Pre-fix (no stamping) run 2 would re-scan the same
-        # head and starve the tail forever.
-        first = await job.backfill_github_id(
-            batch_size=3, max_users=3, delay_seconds=0.0
+    first = await asyncio.wait_for(
+        job.backfill_github_id(batch_size=3, max_users=3, delay_seconds=0.0),
+        timeout=15,
+    )
+    assert first.scanned == 3
+    assert await _github_id_of(tail.id) is None
+    for u in head:
+        cache = await _cache_of(u.id)
+        assert isinstance(cache, dict) and isinstance(
+            cache.get("github_id_checked"), str
         )
-        assert first.scanned == 3
-        assert await _github_id_of(tail.id) is None  # not reached in run 1
-        for u in head:
-            cache = await _cache_of(u.id)
-            assert isinstance(cache, dict) and isinstance(
-                cache.get("github_id_checked"), str
-            )
-        second = await job.backfill_github_id(
-            batch_size=3, max_users=3, delay_seconds=0.0
-        )
-        assert await _github_id_of(tail.id) == "tailid"  # reached, not starved
-        assert second.set >= 1
-    finally:
-        await _purge(org_id)
 
-
-@requires_db
-@pytest.mark.asyncio
-async def test_fetch_errors_not_stamped_and_rescanned(monkeypatch) -> None:
-    """A non-definitive Clerk answer (None) stamps nothing and is re-scanned next
-    run; a later definitive fetch then fills the id."""
-    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
-    user = _user(org_id)
-    _mock_clerk(monkeypatch, {user.clerk_user_id: None})
-    try:
-        async with get_session() as session:
-            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
-            session.add(user)
-        first = await job.backfill_github_id(delay_seconds=0.0)
-        assert first.failed >= 1
-        cache = await _cache_of(user.id)
-        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
-
-        _mock_clerk(
-            monkeypatch,
-            {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
-        )
-        second = await job.backfill_github_id(delay_seconds=0.0)
-        assert second.scanned >= 1  # re-scanned, not excluded
-        assert await _github_id_of(user.id) == "laterid"
-    finally:
-        await _purge(org_id)
+    second = await job.backfill_github_id(
+        batch_size=3, max_users=3, delay_seconds=0.0
+    )
+    assert await _github_id_of(tail.id) == "tailid"
+    assert second.set >= 1
 
 
 @requires_db
@@ -558,7 +506,7 @@ async def test_clerk_404_user_stamped_skipped_and_excluded(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_clerk_500_user_failed_not_stamped_rescanned(monkeypatch) -> None:
     """A transient Clerk error (500) is non-definitive: run 1 counts it failed and
-    stamps nothing; the row is re-scanned next run (unchanged behavior)."""
+    stamps nothing; a later definitive fetch fills the id."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
     user = _user(org_id)
     _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(500))
@@ -571,8 +519,13 @@ async def test_clerk_500_user_failed_not_stamped_rescanned(monkeypatch) -> None:
         assert first.skipped == 0
         cache = await _cache_of(user.id)
         assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        _mock_clerk(
+            monkeypatch,
+            {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
+        )
         second = await job.backfill_github_id(delay_seconds=0.0)
         assert second.scanned >= 1  # re-scanned, not excluded
+        assert await _github_id_of(user.id) == "laterid"
     finally:
         await _purge(org_id)
 

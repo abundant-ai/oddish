@@ -56,8 +56,7 @@ def test_baseline_profile_blocks_other_member_handles() -> None:
 
 @pytest.mark.asyncio
 async def test_persist_profile_preserves_github_id_checked() -> None:
-    """F6: rewriting the attribution cache must keep the github_id backfill
-    marker; dropping it re-admits a checked-absent user into the backfill scan."""
+    """Rewriting attribution cache preserves the github_id backfill marker."""
     user = _user(
         id="user_persist",
         attribution_cache={
@@ -78,6 +77,7 @@ async def test_persist_profile_preserves_github_id_checked() -> None:
 
 @pytest.mark.asyncio
 async def test_persist_profile_without_marker_stays_absent() -> None:
+    """A never-checked user must not gain a marker from a profile rewrite."""
     user = _user(id="user_persist2", attribution_cache=None)
     await _persist_profile(
         None,

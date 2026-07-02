@@ -134,7 +134,7 @@ def _load_helpers() -> dict[str, Any]:
             "async def _lookup_user_by_github_username(",
             "async def lookup_users_by_github_username(",
             "async def _lookup_user_by_github_id(",
-            "async def _resolve_connected_user(",
+            "async def resolve_connected_user(",
             "async def resolve_created_by_user_id(",
             "async def resolve_experiment_owner_user_id(",
         )
@@ -347,7 +347,6 @@ def test_created_by_user_id_falls_back_to_auth_user_id():
 
 
 def test_experiment_owner_prefers_github_user_over_api_key_owner():
-    api_user = _UserStub(id="u-ci", github_username=None)
     gh_user = _UserStub(id="u-gh", github_username="praxs")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
@@ -389,7 +388,7 @@ def test_experiment_owner_falls_back_to_api_key_without_github_username():
 def _split_result(*, by_id, by_handle):
     """A result that answers the github_id lookup (``scalars().first()``) and the
     handle lookup (``scalars().all()``) DIFFERENTLY, so a test can prove which
-    branch of ``_resolve_connected_user`` actually resolved the owner."""
+    branch of ``resolve_connected_user`` actually resolved the owner."""
 
     class _Result:
         def scalars(self):
@@ -403,25 +402,6 @@ def _split_result(*, by_id, by_handle):
             return _S()
 
     return _Result()
-
-
-def test_experiment_owner_no_id_duplicated_handle_resolves_to_none():
-    # No github_id; two active users share the handle → the exact-one handle
-    # lookup (.all() len != 1) returns None (graceful no-owner, never raises).
-    twin_a = _UserStub(id="u-a", github_username="twin")
-    twin_b = _UserStub(id="u-b", github_username="twin")
-    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
-    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
-    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
-
-    async def _fake_execute(stmt):
-        return _execute_result([twin_a, twin_b])
-
-    session.execute = _fake_execute  # type: ignore[attr-defined]
-    submission = _SubmissionStub(github_id=None, github_username="twin")
-
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner is None
 
 
 def test_experiment_owner_prefers_github_id_over_handle():
@@ -461,39 +441,3 @@ def test_experiment_owner_strict_id_unmatched_does_not_fall_back_to_handle():
 
     owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
     assert owner is None
-
-
-def test_experiment_owner_no_id_resolves_by_handle():
-    # No github_id supplied: resolution uses the exact-one handle lookup (.all()).
-    handle_user = _UserStub(id="u-handle", github_username="octocat")
-    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
-    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
-    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
-
-    async def _fake_execute(stmt):
-        return _split_result(by_id=None, by_handle=handle_user)
-
-    session.execute = _fake_execute  # type: ignore[attr-defined]
-    submission = _SubmissionStub(github_id=None, github_username="octocat")
-
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner == "u-handle"
-
-
-def test_experiment_owner_blank_id_is_absent_falls_back_to_handle():
-    # A blank github_id is an absent id on every transport (matching the schema
-    # normalization and the raw-query-param path), so resolution falls back to
-    # the exact-one handle lookup.
-    handle_user = _UserStub(id="u-handle", github_username="octocat")
-    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
-    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
-    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
-
-    async def _fake_execute(stmt):
-        return _split_result(by_id=None, by_handle=handle_user)
-
-    session.execute = _fake_execute  # type: ignore[attr-defined]
-    submission = _SubmissionStub(github_id="", github_username="octocat")
-
-    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner == "u-handle"

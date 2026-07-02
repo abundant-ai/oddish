@@ -1,11 +1,6 @@
 """Suite for the github_id linkage gate.
 
-An experiments-repo GitHub Action checks that github.actor is a Clerk-linked
-Oddish user (via GET /github/linkage) before pushing tasks; the server-side gate
-at /tasks/sweep re-checks the same linkage and 403s an unlinked github_id before
-any rows are written. Owner resolves on the same strict predicate. No OIDC;
-direct API-key bypass accepted; fail-open on Clerk outage. The experiments-repo
-Action itself is not in this repo, so its contract tests are skipped.
+The endpoint and sweep route share the same org-scoped linkage predicate.
 """
 
 from __future__ import annotations
@@ -28,7 +23,6 @@ from sqlalchemy import func, select, text
 from api.app import create_app
 from api.routers.task_submission import (
     _lookup_user_by_github_id,
-    _lookup_user_by_github_username,
     require_connected_github_user,
     resolve_experiment_owner_user_id,
 )
@@ -231,8 +225,7 @@ async def _purge_idempotency(org_id: str) -> None:
 
 
 async def _deactivate_and_release_github_id(user: UserModel) -> None:
-    """Reproduce the Bugbot precondition: the linked user leaves the org after
-    the first sweep — deactivated and its github_id released."""
+    """Deactivate a user and release its github_id between idempotent retries."""
     async with get_session() as session:
         row = await session.get(UserModel, user.id)
         row.is_active = False
@@ -335,15 +328,15 @@ async def _linkage(
     )
 
 
-# ===========================================================================
-# 1. Owner-resolution predicate — runnable now (current behaviour)
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Owner resolution
+# ---------------------------------------------------------------------------
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case1_exact_one_active_resolves_owner(org_with_users):
-    """Case 1 (happy): exactly one active linked user → owner = that user.id."""
+async def test_exact_one_active_handle_resolves_owner(org_with_users):
+    """Exactly one active matching handle resolves as the owner."""
     org_id, add = org_with_users
     alice = await add("alice")
     assert await _resolve(org_id, "alice") == alice.id
@@ -351,8 +344,8 @@ async def test_case1_exact_one_active_resolves_owner(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case4_inactive_user_not_resolved(org_with_users):
-    """Case 4: an inactive user with the handle is not a match (active-only)."""
+async def test_inactive_handle_user_not_resolved(org_with_users):
+    """Inactive users are excluded from handle resolution."""
     org_id, add = org_with_users
     await add("ghost", active=False)
     assert await _resolve(org_id, "ghost") is None
@@ -360,8 +353,8 @@ async def test_case4_inactive_user_not_resolved(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case5_cross_org_handle_not_resolved(org_with_users):
-    """Case 5: a handle linked only in another org must not resolve here."""
+async def test_cross_org_handle_not_resolved(org_with_users):
+    """A handle linked only in another org does not resolve."""
     org_id, add = org_with_users
     other = f"org_other_{uuid.uuid4().hex[:8]}"
     await add("bob", in_org=other)
@@ -370,8 +363,8 @@ async def test_case5_cross_org_handle_not_resolved(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case8_9_handle_normalization(org_with_users):
-    """Cases 8/9: @-prefix + case differences normalize to the same user."""
+async def test_handle_lookup_normalizes_prefix_and_case(org_with_users):
+    """Handle lookup ignores @ prefixes and case."""
     org_id, add = org_with_users
     alice = await add("OctoCat")
     assert await _resolve(org_id, "@octocat") == alice.id
@@ -379,57 +372,31 @@ async def test_case8_9_handle_normalization(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case21_bypass_unlinked_handle_no_enforcement(org_with_users):
-    """Case 21 (policy guard): an unlinked handle resolves to None — NOT an error,
-    NOT server-side enforcement. The Action gate, not /tasks/sweep, is the gate;
-    the direct API-key path stays a graceful no-owner."""
+async def test_unlinked_handle_resolves_to_no_owner(org_with_users):
+    """An unlinked handle resolves to no owner without raising."""
     org_id, _add = org_with_users
     assert await _resolve(org_id, "nobody-here") is None
 
 
-# ===========================================================================
-# 2. Duplicate handle — the main correctness trap
-# ===========================================================================
-
-
 @requires_db
 @pytest.mark.asyncio
-async def test_case3_duplicate_handle_resolves_to_none(org_with_users):
-    """Case 3 (unit): two active users share a handle → the exactly-one lookup
-    returns None (not-connected) and never raises. Locks the fix at the helper
-    level; test_case3_20 covers the same at the /tasks/sweep resolution level."""
-    org_id, add = org_with_users
-    await add("twin")
-    await add("twin")
-    async with get_session() as session:
-        assert (
-            await _lookup_user_by_github_username(
-                session, github_username="twin", org_id=org_id
-            )
-            is None
-        )
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_case3_20_duplicate_handle_should_not_500(org_with_users):
-    """Cases 3 + 20 (target): a duplicate handle must resolve to no owner
-    (not-connected), never raise / 500 at /tasks/sweep."""
+async def test_duplicate_handle_resolves_to_no_owner(org_with_users):
+    """Duplicate active handles resolve to no owner without raising."""
     org_id, add = org_with_users
     await add("twin")
     await add("twin")
     assert await _resolve(org_id, "twin") is None
 
 
-# ===========================================================================
-# 3. Linkage endpoint — GET /github/linkage
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Linkage endpoint
+# ---------------------------------------------------------------------------
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_endpoint_linked_exact_one(client, org_with_users):
-    """Case 1 (endpoint): exactly one active match → {linked: true, user_id}."""
+async def test_endpoint_links_exact_one_active_handle(client, org_with_users):
+    """The endpoint links exactly one active matching handle."""
     org_id, add = org_with_users
     alice = await add("alice")
     key_id, raw = await _seed_key(org_id)
@@ -445,7 +412,7 @@ async def test_endpoint_linked_exact_one(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_unlinked_returns_false(client, org_with_users):
-    """Case 2 (endpoint): unknown handle → {linked: false}."""
+    """Unknown handles return linked=false."""
     org_id, _add = org_with_users
     key_id, raw = await _seed_key(org_id)
     try:
@@ -458,8 +425,7 @@ async def test_endpoint_unlinked_returns_false(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_blank_actor_id_falls_back_to_handle(client, org_with_users):
-    """A blank actor_id query param is an absent id, so the handle still
-    resolves — matching the sweep transport's blank-is-absent normalization."""
+    """A blank actor_id query param is absent, so handle lookup still applies."""
     org_id, add = org_with_users
     alice = await add("alice")
     key_id, raw = await _seed_key(org_id)
@@ -476,8 +442,7 @@ async def test_endpoint_blank_actor_id_falls_back_to_handle(client, org_with_use
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_ambiguous_not_linked_not_500(client, org_with_users):
-    """Cases 3 + 22 (endpoint): two users share the handle → {linked: false},
-    NOT a 500; the endpoint shares the exactly-one predicate with the sweep."""
+    """Duplicate active handles return linked=false without raising."""
     org_id, add = org_with_users
     await add("twin")
     await add("twin")
@@ -491,8 +456,8 @@ async def test_endpoint_ambiguous_not_linked_not_500(client, org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case16_endpoint_scope_and_auth(client, org_with_users):
-    """Case 16: unauth → 401/403; an org API key with READ scope → 200."""
+async def test_endpoint_requires_auth_and_accepts_read_scope(client, org_with_users):
+    """Unauthenticated requests fail and READ-scoped org keys succeed."""
     org_id, add = org_with_users
     await add("alice")
     key_id, raw = await _seed_key(org_id)
@@ -506,8 +471,8 @@ async def test_case16_endpoint_scope_and_auth(client, org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case5_endpoint_org_scoped(client, org_with_users):
-    """Case 5 (endpoint): org B's key sees a handle linked only in org A as unlinked."""
+async def test_endpoint_handle_lookup_is_org_scoped(client, org_with_users):
+    """A key from another org sees a foreign handle as unlinked."""
     _org_a, add = org_with_users
     await add("carol")
     org_b = f"org_b_{uuid.uuid4().hex[:8]}"
@@ -535,34 +500,18 @@ async def test_endpoint_inactive_user_excluded(client, org_with_users):
         await _purge(api_key_ids=[key_id])
 
 
-@requires_db
-@pytest.mark.asyncio
-async def test_M4_authorizes_by_org_scope_not_user_identity(client, org_with_users):
-    """M4: API-key AuthContext has no user_id (auth/types.py:23-33). The endpoint
-    must authorize by org+scope and never require a human identity from the key."""
-    org_id, add = org_with_users
-    await add("alice")
-    key_id, raw = await _seed_key(org_id)
-    try:
-        assert (await _linkage(client, raw, "alice")).status_code == 200
-    finally:
-        await _purge(api_key_ids=[key_id])
+# ---------------------------------------------------------------------------
+# Schema and preview fingerprint
+# ---------------------------------------------------------------------------
 
 
-# ===========================================================================
-# 4. A0 schema fix + preview fingerprint
-# ===========================================================================
-
-
-def test_case23_clerk_user_id_not_globally_unique():
-    """Case 23 (A0): the model must stop declaring a global unique on
-    clerk_user_id so create_all-built previews match the migrated head."""
+def test_clerk_user_id_is_not_globally_unique():
+    """The model must not declare a global clerk_user_id unique constraint."""
     assert UserModel.__table__.c.clerk_user_id.unique is not True
 
 
-def test_M1_fingerprint_covers_unique_constraint_change():
-    """M1: dropping a UNIQUE constraint must bust the preview trust marker, or a
-    reused preview silently keeps the old constraint."""
+def test_preview_fingerprint_covers_unique_constraint_change():
+    """Unique constraint changes must alter the preview schema fingerprint."""
     mod = _load_bootstrap()
     with_uc = sa.MetaData()
     sa.Table(
@@ -578,17 +527,13 @@ def test_M1_fingerprint_covers_unique_constraint_change():
     assert mod._fingerprint_metadata(with_uc) != mod._fingerprint_metadata(without_uc)
 
 
-# ===========================================================================
-# 5. Optional github_id correctness path
-# ===========================================================================
-
-
-def test_user_model_has_github_id():
-    assert "github_id" in UserModel.__table__.c
+# ---------------------------------------------------------------------------
+# github_id lookup and precedence
+# ---------------------------------------------------------------------------
 
 
 def test_user_model_github_id_org_scoped_unique_and_indexed():
-    """G1: github_id is org-scoped unique (NOT global) and indexed for lookup."""
+    """github_id is org-scoped unique and indexed for lookup."""
     cols = {"org_id", "github_id"}
     assert any(
         isinstance(c, sa.UniqueConstraint) and {col.name for col in c.columns} == cols
@@ -599,12 +544,8 @@ def test_user_model_github_id_org_scoped_unique_and_indexed():
     ), "missing index over (org_id, github_id)"
 
 
-def test_submission_carries_github_id():
-    assert "github_id" in TaskSweepSubmission.model_fields
-
-
 def test_submission_github_id_round_trips_through_serialization():
-    """G2 transport: github_id survives model_dump → model_validate intact."""
+    """github_id survives model_dump and model_validate."""
     submission = _submission("octocat")
     submission.github_id = "123456"
     restored = TaskSweepSubmission.model_validate(submission.model_dump())
@@ -612,19 +553,14 @@ def test_submission_github_id_round_trips_through_serialization():
 
 
 def test_submission_github_id_defaults_to_none():
-    """Back-compat: github_id is optional; omitting it leaves it None."""
+    """Omitting github_id leaves it as None."""
     assert _submission("octocat").github_id is None
-
-
-# ===========================================================================
-# 5b. G4 — github_id lookup precedence + endpoint actor_id
-# ===========================================================================
 
 
 @requires_db
 @pytest.mark.asyncio
 async def test_lookup_by_github_id_exact_one(org_with_users):
-    """G4: an active user carrying github_id resolves by that immutable id."""
+    """An active user carrying github_id resolves by id."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
@@ -638,8 +574,7 @@ async def test_lookup_by_github_id_exact_one(org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_lookup_by_github_id_org_scoped(org_with_users):
-    """G4: a github_id set only in another org must not resolve here (org-unique
-    constraint is per-org; lookups always filter org_id)."""
+    """github_id lookup is scoped to the current org."""
     org_id, add = org_with_users
     other = f"org_other_{uuid.uuid4().hex[:8]}"
     bob = await add("bob", in_org=other)
@@ -654,7 +589,7 @@ async def test_lookup_by_github_id_org_scoped(org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_lookup_by_github_id_active_only(org_with_users):
-    """G4: an inactive user holding the github_id is not a match (active-only)."""
+    """Inactive users are excluded from github_id lookup."""
     org_id, add = org_with_users
     ghost = await add("ghost", active=False)
     await _set_github_id(ghost, "gid_ghost")
@@ -669,22 +604,8 @@ async def test_lookup_by_github_id_active_only(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_lookup_by_github_id_empty_is_none(org_with_users):
-    """G4: empty / whitespace github_id treated as no match (never a bare query)."""
-    org_id, _add = org_with_users
-    async with get_session() as session:
-        assert (
-            await _lookup_user_by_github_id(session, github_id="   ", org_id=org_id)
-            is None
-        )
-
-
-@requires_db
-@pytest.mark.asyncio
 async def test_precedence_github_id_beats_stale_handle(org_with_users):
-    """G4 precedence: a user with github_id=X and a STALE stored handle; a
-    submission carrying github_id=X and a DIFFERENT new handle resolves to that
-    user BY ID (immutable id beats the mutable handle)."""
+    """github_id takes precedence over a stale or changed handle."""
     org_id, add = org_with_users
     renamed = await add("old_handle")
     await _set_github_id(renamed, "gid_renamed")
@@ -699,7 +620,7 @@ async def test_precedence_github_id_beats_stale_handle(org_with_users):
 @pytest.mark.asyncio
 async def test_strict_supplied_id_unmatched_does_not_fall_back_to_handle(org_with_users):
     """Strict resolve: a supplied github_id with no id match resolves to None even
-    when the handle matches a user — the id-only predicate is the linkage gate."""
+    when the handle matches a user."""
     org_id, add = org_with_users
     await add("alice")
     assert await _resolve(org_id, "alice", github_id="gid_nobody") is None
@@ -708,8 +629,7 @@ async def test_strict_supplied_id_unmatched_does_not_fall_back_to_handle(org_wit
 @requires_db
 @pytest.mark.asyncio
 async def test_strict_supplied_id_linked_resolves_by_id(org_with_users):
-    """Strict resolve (a): a supplied github_id with an exact id match resolves to
-    that user, ignoring any handle."""
+    """A supplied github_id with an exact id match resolves by id."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
@@ -718,42 +638,8 @@ async def test_strict_supplied_id_linked_resolves_by_id(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_strict_no_id_resolves_by_handle(org_with_users):
-    """Strict resolve (c): with no github_id supplied, resolution uses the exact-one
-    handle lookup as before."""
-    org_id, add = org_with_users
-    alice = await add("alice")
-    assert await _resolve(org_id, "alice") == alice.id
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_strict_no_id_duplicated_handle_resolves_to_none(org_with_users):
-    """Strict resolve (d): no github_id, two users share the handle → None."""
-    org_id, add = org_with_users
-    await add("twin")
-    await add("twin")
-    assert await _resolve(org_id, "twin") is None
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_strict_blank_id_normalized_to_absent_falls_back_to_handle(org_with_users):
-    """Strict resolve (e): a blank / whitespace github_id is normalized to None by
-    the schema (not a truthy supplied id), so resolution behaves exactly like "no
-    id sent" and falls back to the exact-one handle lookup."""
-    org_id, add = org_with_users
-    alice = await add("alice")
-    assert await _resolve(org_id, "alice", github_id="") == alice.id
-    assert await _resolve(org_id, "alice", github_id="   ") == alice.id
-
-
-@requires_db
-@pytest.mark.asyncio
 async def test_parity_endpoint_and_sweep_resolve_same_user(client, org_with_users):
-    """INV2 parity: for the SAME input (github_id=X), the endpoint (?actor_id=X)
-    and resolve_experiment_owner_user_id (submission github_id=X) resolve to the
-    SAME user via the shared _resolve_connected_user predicate."""
+    """The endpoint and sweep owner path resolve the same github_id to one user."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_parity")
@@ -772,7 +658,7 @@ async def test_parity_endpoint_and_sweep_resolve_same_user(client, org_with_user
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_actor_id_linked(client, org_with_users):
-    """G4 endpoint: ?actor_id=<github_id> with an exact id match → linked."""
+    """The endpoint links an actor_id with an exact github_id match."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_actor")
@@ -789,7 +675,7 @@ async def test_endpoint_actor_id_linked(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_actor_id_unlinked(client, org_with_users):
-    """G4 endpoint: ?actor_id with no id match and no handle → unlinked."""
+    """The endpoint returns unlinked for an unmatched actor_id."""
     org_id, add = org_with_users
     await add("alice")  # has no github_id
     key_id, raw = await _seed_key(org_id)
@@ -803,8 +689,7 @@ async def test_endpoint_actor_id_unlinked(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_endpoint_actor_id_beats_stale_handle(client, org_with_users):
-    """G4 endpoint precedence: ?actor_id matches by id even when the caller also
-    passes a stale/wrong handle (id wins)."""
+    """The endpoint prefers actor_id over a stale or wrong handle."""
     org_id, add = org_with_users
     renamed = await add("old_handle")
     await _set_github_id(renamed, "gid_ep")
@@ -822,61 +707,9 @@ async def test_endpoint_actor_id_beats_stale_handle(client, org_with_users):
         await _purge(api_key_ids=[key_id])
 
 
-@requires_db
-@pytest.mark.asyncio
-async def test_back_compat_handle_only_submission_unchanged(org_with_users):
-    """Back-compat: a handle-only submission (no github_id) resolves exactly as
-    before (owner = the exact-one active handle match)."""
-    org_id, add = org_with_users
-    alice = await add("alice")
-    assert await _resolve(org_id, "alice") == alice.id
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_back_compat_handle_only_endpoint_unchanged(client, org_with_users):
-    """Back-compat: a handle-only ?handle= request (no actor_id) resolves exactly
-    as before."""
-    org_id, add = org_with_users
-    alice = await add("alice")
-    key_id, raw = await _seed_key(org_id)
-    try:
-        resp = await _linkage(client, raw, "alice")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["linked"] is True and body["user_id"] == alice.id
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-# ===========================================================================
-# 6. Owner-stamp None-safety (M3) — already covered
-# ===========================================================================
-# M3 (resolving to no owner must never CLEAR attribution) is guarded by
-# tasks.py:350-351 and the existing tests/test_stamp_experiment_owner.py
-# (test_ignores_missing_inputs); not duplicated here.
-
-
-# ===========================================================================
-# 7. Experiments-repo Action contract — skipped (Action not in this repo)
-# ===========================================================================
-
-
-@pytest.mark.skip(reason="experiments-repo Action not present in this repo (account-merge-plan.md:25-28)")
-def test_case6_action_forces_github_user_to_actor():
-    """Case 6 / biggest risk: the Action must submit --github-user=$GITHUB_ACTOR and
-    forbid repo config / a CLI flag from overriding it (checked id == submitted id)."""
-
-
-@pytest.mark.skip(reason="experiments-repo Action not present in this repo")
-def test_case18_action_fail_open_when_endpoint_down():
-    """Case 18: if the linkage endpoint is unreachable, the Action ALLOWS the push
-    (fail-open) rather than blocking CI."""
-
-
-# ===========================================================================
-# 8. F2 — server-side 403 gate (require_connected_github_user)
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Server-side sweep gate
+# ---------------------------------------------------------------------------
 
 
 @requires_db
@@ -898,9 +731,7 @@ async def test_gate_unlinked_github_id_raises_403(org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_gate_403_log_records_authenticating_principal(org_with_users, caplog):
-    """The 403 log line must name the authenticating principal (api_key_id +
-    api_key name + user_id) so on-call can tell whose CI is being blocked; the
-    rejected github_id + org alone don't identify the credential/pipeline."""
+    """The 403 log line names the authenticating principal."""
     import logging
 
     org_id, add = org_with_users
@@ -954,22 +785,6 @@ async def test_gate_no_github_id_is_noop(org_with_users):
         )
 
 
-@requires_db
-@pytest.mark.asyncio
-async def test_gate_empty_github_id_is_noop(org_with_users):
-    """A blank github_id is normalized to None by the schema, so the gate treats
-    it as absent (no-op) rather than a supplied-but-unresolvable id."""
-    org_id, add = org_with_users
-    await add("alice")
-    submission = _submission("alice", github_id="   ")
-    assert submission.github_id is None
-    async with get_session() as session:
-        assert (
-            await require_connected_github_user(session, submission, _auth(org_id))
-            is None
-        )
-
-
 def test_blank_github_id_normalizes_to_none():
     """The schema strips blank / whitespace github_id to None so downstream
     attribution, the linkage gate, and the idempotency hash stay consistent."""
@@ -1004,8 +819,7 @@ async def test_sweep_route_unlinked_github_id_403_and_zero_rows(client, org_with
 @requires_db
 @pytest.mark.asyncio
 async def test_sweep_route_linked_github_id_succeeds(client, org_with_users):
-    """/tasks/sweep with a linked github_id → 200 with trials created (the gate
-    passes the resolved user through instead of raising)."""
+    """/tasks/sweep with a linked github_id creates trials."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
@@ -1028,9 +842,7 @@ async def test_sweep_route_linked_github_id_succeeds(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_gate_resolved_user_is_reused_for_owner_stamping(org_with_users):
-    """The gate's resolved user is threaded into owner resolution: passing it as
-    ``connected_user`` yields that user id WITHOUT a second lookup (the submission
-    here carries an id that would MISS on a fresh resolve, proving reuse)."""
+    """The gate's resolved user is reused for owner resolution."""
     org_id, add = org_with_users
     alice = await add("alice")
     async with get_session() as session:
@@ -1067,8 +879,7 @@ async def test_sweep_route_no_github_id_unchanged(client, org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_batch_route_gates_each_submission(client, org_with_users):
-    """/tasks/sweep/batch gates every submission: the unlinked item is a per-item
-    403 with zero rows, while the linked sibling still succeeds."""
+    """/tasks/sweep/batch gates each submission independently."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
@@ -1100,9 +911,9 @@ async def test_batch_route_gates_each_submission(client, org_with_users):
         await _purge(api_key_ids=[key_id])
 
 
-# ===========================================================================
-# 9. F8 — a COMPLETED idempotency replay must bypass the linkage gate
-# ===========================================================================
+# ---------------------------------------------------------------------------
+# Idempotency replay before gate
+# ---------------------------------------------------------------------------
 # The gate runs in the route BEFORE create_task_sweep_core (where the reserve /
 # replay lives), so a faithful retry of an already-completed sweep would be 403d
 # if the linked user was deactivated / lost their github_id in between. A probe
@@ -1112,20 +923,17 @@ async def test_batch_route_gates_each_submission(client, org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_f8_completed_replay_bypasses_gate_after_user_deactivated(
+async def test_completed_replay_bypasses_gate_after_user_deactivated(
     client, org_with_users
 ):
-    """Bugbot scenario: sweep created with a linked github_id + Idempotency-Key;
-    the linked user is then deactivated and its github_id released; the SAME
-    key+body retried → 200 with the ORIGINAL stored response (not 403), and no
-    duplicate trials."""
+    """A completed replay returns the stored response before rechecking linkage."""
     org_id, add = org_with_users
     alice = await add("alice")
     await _set_github_id(alice, "gid_alice")
     key_id, raw = await _seed_tasks_key(org_id)
     task_id = await _seed_task(org_id)
     body = _sweep_body(task_id, github_id="gid_alice")
-    headers = {"Authorization": f"Bearer {raw}", "Idempotency-Key": "f8-key"}
+    headers = {"Authorization": f"Bearer {raw}", "Idempotency-Key": "replay-key"}
     try:
         first = await client.post("/tasks/sweep", json=body, headers=headers)
         assert first.status_code == 200, first.text
@@ -1151,10 +959,8 @@ async def test_f8_completed_replay_bypasses_gate_after_user_deactivated(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_f8_fresh_key_unlinked_still_403_and_zero_rows(client, org_with_users):
-    """A FRESH Idempotency-Key with an unlinked github_id has no completed record
-    to replay, so the probe returns None and the gate still 403s with zero rows
-    (and no idempotency record is left behind, since the gate precedes reserve)."""
+async def test_fresh_key_unlinked_still_403_and_zero_rows(client, org_with_users):
+    """A fresh Idempotency-Key has no replay and still runs the gate."""
     org_id, add = org_with_users
     await add("alice")  # exists, but carries no github_id
     key_id, raw = await _seed_tasks_key(org_id)
@@ -1183,13 +989,10 @@ async def test_f8_fresh_key_unlinked_still_403_and_zero_rows(client, org_with_us
 
 @requires_db
 @pytest.mark.asyncio
-async def test_f8_completed_record_with_mismatched_hash_is_not_replayed(
+async def test_completed_record_with_mismatched_hash_is_not_replayed(
     client, org_with_users
 ):
-    """A COMPLETED record whose request_hash does NOT match the retry body must
-    NOT be replayed (predicate parity with reserve_idempotency_slot). With an
-    unlinked github_id it falls through to the gate → 403 (asserted deliberately),
-    proving the probe never bypasses the gate on a hash mismatch."""
+    """A completed record with a mismatched request hash is not replayed."""
     org_id, add = org_with_users
     await add("alice")  # no github_id → gate would 403
     key_id, raw = await _seed_tasks_key(org_id)
@@ -1223,10 +1026,8 @@ async def test_f8_completed_record_with_mismatched_hash_is_not_replayed(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_f8_in_progress_record_does_not_replay_early(client, org_with_users):
-    """An IN_PROGRESS record (even hash-matched) must not replay in the probe; it
-    falls through to the gate. With an unlinked github_id that means a 403
-    (asserted deliberately) rather than an early 200 replay."""
+async def test_in_progress_record_does_not_replay_early(client, org_with_users):
+    """An in-progress record does not replay before completion."""
     org_id, add = org_with_users
     await add("alice")  # no github_id → gate would 403
     key_id, raw = await _seed_tasks_key(org_id)

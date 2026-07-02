@@ -228,28 +228,20 @@ async def _refresh_user_github_identity(
     if not user.clerk_user_id:
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    # Handle-less checked-absent users are the marker's main audience: with no
-    # username and no id, the two shortcuts below never fire, so a fresh marker
-    # must short-circuit here or they hit Clerk on every provisioning call.
-    if (
-        not user.github_username
-        and not user.github_id
-        and _marker_is_fresh(raw.get("github_id_checked"))
-    ):
-        return
     github_id_known = bool(user.github_id) or _marker_is_fresh(
         raw.get("github_id_checked")
     )
-    # Avoid a hot-path Clerk GET just to backfill github_id.
-    if user.github_username and isinstance(raw.get("refreshed_at"), str) and github_id_known:
-        return
-    if user.github_username and github_id_known:
-        _seed_attribution_cache_from_github(
-            user,
-            github_username=user.github_username,
-            github_email=None,
-        )
-        return
+    if github_id_known:
+        if user.github_username:
+            if not isinstance(raw.get("refreshed_at"), str):
+                _seed_attribution_cache_from_github(
+                    user,
+                    github_username=user.github_username,
+                    github_email=None,
+                )
+            return
+        if not user.github_id:
+            return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
     if identity is None:
         return
