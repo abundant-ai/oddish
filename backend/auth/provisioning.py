@@ -91,6 +91,12 @@ async def fetch_github_identity_from_clerk(
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            # Gone Clerk user: definitive no-github, not a transient error.
+            return ClerkGithubIdentity(None, None, None)
+        logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
+        return None
     except httpx.HTTPError as exc:
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
         return None

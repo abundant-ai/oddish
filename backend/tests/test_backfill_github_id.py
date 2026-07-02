@@ -7,6 +7,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import httpx
+
+import auth.provisioning as prov
 import backfill_github_id as job
 from auth.provisioning import GITHUB_ID_RECHECK_TTL, ClerkGithubIdentity
 from models import OrganizationModel, UserModel, UserRole
@@ -14,6 +17,24 @@ from oddish.db import get_session
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
+
+
+def _mock_clerk_http(monkeypatch, handler) -> None:
+    """Drive the REAL fetch_github_identity_from_clerk through a mocked HTTP
+    transport so the backfill exercises the 404/500 status contract, not just the
+    identity seam."""
+    real_client = httpx.AsyncClient
+
+    def _factory(*_args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    monkeypatch.setattr(prov.httpx, "AsyncClient", _factory)
+    monkeypatch.setattr(
+        job, "fetch_github_identity_from_clerk", prov.fetch_github_identity_from_clerk
+    )
 
 
 def _mock_clerk(
@@ -443,6 +464,55 @@ async def test_stale_marker_still_no_github_restamped(monkeypatch) -> None:
         cache = await _cache_of(user.id)
         assert isinstance(cache, dict)
         assert cache.get("github_id_checked") > old
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_clerk_404_user_stamped_skipped_and_excluded(monkeypatch) -> None:
+    """A gone Clerk user (404) is a DEFINITIVE no-github: run 1 stamps the marker
+    and counts it skipped (NOT failed); run 2 no longer selects it — no permanent
+    starvation, no re-fetch every sweep."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        first = await job.backfill_github_id(delay_seconds=0.0)
+        assert first.skipped >= 1
+        assert first.failed == 0
+        cache = await _cache_of(user.id)
+        assert isinstance(cache, dict) and isinstance(
+            cache.get("github_id_checked"), str
+        )
+        second = await job.backfill_github_id(delay_seconds=0.0)
+        assert second.scanned == 0
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_clerk_500_user_failed_not_stamped_rescanned(monkeypatch) -> None:
+    """A transient Clerk error (500) is non-definitive: run 1 counts it failed and
+    stamps nothing; the row is re-scanned next run (unchanged behavior)."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(500))
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        first = await job.backfill_github_id(delay_seconds=0.0)
+        assert first.failed >= 1
+        assert first.skipped == 0
+        cache = await _cache_of(user.id)
+        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        second = await job.backfill_github_id(delay_seconds=0.0)
+        assert second.scanned >= 1  # re-scanned, not excluded
     finally:
         await _purge(org_id)
 

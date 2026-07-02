@@ -83,6 +83,30 @@ async def test_fetch_returns_none_on_http_error(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_404_is_definitive_absent(monkeypatch) -> None:
+    """Real error contract: a Clerk 404 means the user is gone — a DEFINITIVE
+    no-github answer (empty identity that stamps the marker), not the None
+    couldn't-verify sentinel that would re-fetch forever."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
+    identity = await fetch_github_identity_from_clerk("clerk_gone")
+    assert identity == ClerkGithubIdentity(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_returns_none_on_transport_error(monkeypatch) -> None:
+    """Real error contract: a transport error is 'couldn't verify' (None), so the
+    caller retries rather than stamping github_id_checked."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+
+    def _boom(_req):
+        raise httpx.ConnectError("no route")
+
+    _mock_clerk_http(monkeypatch, _boom)
+    assert await fetch_github_identity_from_clerk("clerk_1") is None
+
+
+@pytest.mark.asyncio
 async def test_fetch_success_no_github_is_definitive_absent(monkeypatch) -> None:
     """Real success-with-no-github answer is a definitive ClerkGithubIdentity of
     all-None — distinct from the None couldn't-verify sentinel — so the marker
