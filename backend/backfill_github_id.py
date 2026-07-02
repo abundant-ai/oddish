@@ -4,9 +4,10 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from auth.provisioning import (
+    _mark_github_id_checked,
     _set_github_id_if_absent,
     fetch_github_identity_from_clerk,
 )
@@ -69,6 +70,12 @@ async def backfill_github_id(
                 .where(UserModel.clerk_user_id.isnot(None))
                 .where(UserModel.github_id.is_(None))
                 .where(UserModel.is_active == True)  # noqa: E712
+                .where(
+                    or_(
+                        UserModel.attribution_cache.is_(None),
+                        ~UserModel.attribution_cache.has_key("github_id_checked"),
+                    )
+                )
             )
             if after_id is not None:
                 stmt = stmt.where(UserModel.id > after_id)
@@ -83,7 +90,9 @@ async def backfill_github_id(
 
             fetched = await asyncio.gather(*(_fetch(u) for u in users))
             for user, identity, exc in fetched:
-                if exc is not None:
+                if exc is not None or identity is None:
+                    # Non-definitive Clerk answer (error / unset key): retry next
+                    # run, stamp nothing.
                     summary.failed += 1
                     logger.warning(
                         "github_id backfill: Clerk fetch failed for user %s: %s",
@@ -92,6 +101,8 @@ async def backfill_github_id(
                     )
                     continue
                 if not identity.github_id:
+                    # Definitive no-github: stamp so the scan stops re-selecting.
+                    _mark_github_id_checked(user)
                     summary.skipped += 1
                     continue
                 before = user.github_id

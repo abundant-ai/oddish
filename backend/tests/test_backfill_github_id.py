@@ -16,10 +16,13 @@ DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
 
 
-def _mock_clerk(monkeypatch, mapping: dict[str, ClerkGithubIdentity]) -> None:
-    """Seam: fetch_github_identity_from_clerk keyed by clerk_user_id."""
+def _mock_clerk(
+    monkeypatch, mapping: dict[str, ClerkGithubIdentity | None]
+) -> None:
+    """Seam: fetch_github_identity_from_clerk keyed by clerk_user_id. A None value
+    models a non-definitive Clerk answer (error / secret unset)."""
 
-    async def _fetch(clerk_user_id: str) -> ClerkGithubIdentity:
+    async def _fetch(clerk_user_id: str) -> ClerkGithubIdentity | None:
         return mapping.get(clerk_user_id, ClerkGithubIdentity(None, None, None))
 
     monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
@@ -58,6 +61,12 @@ async def _github_id_of(user_id: str) -> str | None:
     async with get_session() as session:
         row = await session.get(UserModel, user_id)
         return row.github_id if row else None
+
+
+async def _cache_of(user_id: str) -> dict | None:
+    async with get_session() as session:
+        row = await session.get(UserModel, user_id)
+        return row.attribution_cache if row else None
 
 
 @requires_db
@@ -287,5 +296,99 @@ async def test_full_batch_of_skips_terminates_and_reaches_later_users(monkeypatc
         assert await _github_id_of(skips[0].id) is None
         assert summary.set >= 1
         assert summary.skipped >= 3
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_stamped_rows_excluded_from_scan(monkeypatch) -> None:
+    """A definitive no-github row is stamped github_id_checked in run 1; run 2 no
+    longer selects it (the WHERE excludes stamped rows)."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk(monkeypatch, {user.clerk_user_id: ClerkGithubIdentity(None, None, None)})
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        first = await job.backfill_github_id(delay_seconds=0.0)
+        assert first.scanned >= 1
+        assert first.skipped >= 1
+        cache = await _cache_of(user.id)
+        assert isinstance(cache, dict) and isinstance(
+            cache.get("github_id_checked"), str
+        )
+        second = await job.backfill_github_id(delay_seconds=0.0)
+        assert second.scanned == 0
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_head_of_table_no_github_batch_does_not_starve(monkeypatch) -> None:
+    """Starvation regression: a full head batch of permanently-unfillable rows is
+    stamped in run 1 (not just cursor-skipped); run 2 begins from after_id=None yet
+    reaches rows beyond them because the stamped head no longer matches the scan."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    head = [_user(org_id, id=f"user_bf_a{i}") for i in range(3)]
+    tail = _user(org_id, id="user_bf_z")
+    mapping: dict[str, ClerkGithubIdentity | None] = {
+        u.clerk_user_id: ClerkGithubIdentity(None, None, None) for u in head
+    }
+    mapping[tail.clerk_user_id] = ClerkGithubIdentity("octocat", None, "tailid")
+    _mock_clerk(monkeypatch, mapping)
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            for u in [*head, tail]:
+                session.add(u)
+        # max_users=3 with batch_size=3: run 1 caps out on the head batch alone and
+        # never reaches the tail. Pre-fix (no stamping) run 2 would re-scan the same
+        # head and starve the tail forever.
+        first = await job.backfill_github_id(
+            batch_size=3, max_users=3, delay_seconds=0.0
+        )
+        assert first.scanned == 3
+        assert await _github_id_of(tail.id) is None  # not reached in run 1
+        for u in head:
+            cache = await _cache_of(u.id)
+            assert isinstance(cache, dict) and isinstance(
+                cache.get("github_id_checked"), str
+            )
+        second = await job.backfill_github_id(
+            batch_size=3, max_users=3, delay_seconds=0.0
+        )
+        assert await _github_id_of(tail.id) == "tailid"  # reached, not starved
+        assert second.set >= 1
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_fetch_errors_not_stamped_and_rescanned(monkeypatch) -> None:
+    """A non-definitive Clerk answer (None) stamps nothing and is re-scanned next
+    run; a later definitive fetch then fills the id."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk(monkeypatch, {user.clerk_user_id: None})
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        first = await job.backfill_github_id(delay_seconds=0.0)
+        assert first.failed >= 1
+        cache = await _cache_of(user.id)
+        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+
+        _mock_clerk(
+            monkeypatch,
+            {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
+        )
+        second = await job.backfill_github_id(delay_seconds=0.0)
+        assert second.scanned >= 1  # re-scanned, not excluded
+        assert await _github_id_of(user.id) == "laterid"
     finally:
         await _purge(org_id)
