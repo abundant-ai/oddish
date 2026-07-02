@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
@@ -16,12 +16,14 @@ from oddish.core.admin import (
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
+    UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
+    get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
@@ -191,6 +193,39 @@ async def get_costs(
             user_limit=user_limit,
         )
         await _enrich_cost_breakdown(session, result)
+    return result
+
+
+@router.get("/costs/users/{user_id}", response_model=UserCostBreakdownResponse)
+async def get_user_costs(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    user_id: str,
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    task_limit: int = Query(100, ge=1, le=500),
+) -> UserCostBreakdownResponse:
+    """Per-user billed-spend drilldown for the admin cost dashboard.
+
+    Attributed via ``billed_user_id`` (the quota payer), so totals can diverge
+    from the ``/admin/costs`` by-user table (owner-basis). Settled trials only,
+    time axis is ``finished_at``; soft-deleted trials are included.
+    """
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        user = await session.get(UserModel, user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        result = await get_user_cost_breakdown_core(
+            session,
+            org_id=user.org_id,
+            billed_user_id=user_id,
+            window_days=effective_window,
+            task_limit=task_limit,
+        )
+    result.name = user.name
+    result.email = user.email
+    result.github_username = user.github_username
     return result
 
 
