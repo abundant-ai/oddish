@@ -17,9 +17,17 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_org_id_fkey")
     op.execute(
-        "ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_created_by_user_id_fkey"
+        """
+        DO $$
+        BEGIN
+            IF to_regclass('public.api_keys') IS NOT NULL THEN
+                ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_org_id_fkey;
+                ALTER TABLE api_keys
+                DROP CONSTRAINT IF EXISTS api_keys_created_by_user_id_fkey;
+            END IF;
+        END $$;
+        """
     )
 
 

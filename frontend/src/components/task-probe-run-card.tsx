@@ -170,7 +170,13 @@ export function TaskProbeRunCard({
 
 // One delineated section per probe type. The header labels the probe type and
 // the agent that produced it; the existing ProbeRow body renders inside.
-function ProbeSection({ taskId, trial }: { taskId: string; trial: ProbeTrial }) {
+function ProbeSection({
+  taskId,
+  trial,
+}: {
+  taskId: string;
+  trial: ProbeTrial;
+}) {
   const title = probeLabel(trial);
   const agentLabel = [trial.agent, trial.model].filter(Boolean).join(" · ");
   // probeLabel() falls back to the agent name, so for preset-less runs the

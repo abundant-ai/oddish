@@ -63,7 +63,7 @@ export function SelectionProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<SelectionContextValue>(
     () => ({ isSelected: (id) => selected.has(id), toggle }),
-    [selected, toggle]
+    [selected, toggle],
   );
 
   return (

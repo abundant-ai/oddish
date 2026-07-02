@@ -26,9 +26,7 @@ class _FakeBatchApi:
 
     def create_namespaced_job(self, *, namespace, body):
         name = body["metadata"]["name"]
-        self.jobs[name] = types.SimpleNamespace(
-            status=types.SimpleNamespace(active=1)
-        )
+        self.jobs[name] = types.SimpleNamespace(status=types.SimpleNamespace(active=1))
         return self.jobs[name]
 
     def read_namespaced_job_status(self, *, name, namespace):
@@ -76,9 +74,7 @@ def _hermetic_modal_dispatcher() -> ModalDispatcher:
     async def _spawn_aio(*, queue_key: str):
         return None
 
-    spawn_function = types.SimpleNamespace(
-        spawn=types.SimpleNamespace(aio=_spawn_aio)
-    )
+    spawn_function = types.SimpleNamespace(spawn=types.SimpleNamespace(aio=_spawn_aio))
 
     async def _cancel_fn(fc_ids: list[str]) -> list[str]:
         # The cancel contract returns the ids actually cancelled; this fake

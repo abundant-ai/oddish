@@ -10,6 +10,7 @@ the chat tables are created with ``IF NOT EXISTS`` raw SQL that the ORM model
 mirrors, so this uses ``ADD COLUMN IF NOT EXISTS`` to be a no-op on a DB that
 already has the column.
 """
+
 from typing import Sequence, Union
 
 from alembic import op

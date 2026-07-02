@@ -19,7 +19,11 @@ def _trial(trial_id, *, analysis_status=AnalysisStatus.SUCCESS):
     return SimpleNamespace(
         id=trial_id,
         superseded_by_trial_id=None,
-        analysis={"classification": "GOOD_SUCCESS"} if analysis_status == AnalysisStatus.SUCCESS else None,
+        analysis=(
+            {"classification": "GOOD_SUCCESS"}
+            if analysis_status == AnalysisStatus.SUCCESS
+            else None
+        ),
         analysis_status=analysis_status,
         analysis_error=None,
         analysis_started_at=None,
@@ -88,10 +92,15 @@ async def test_only_missing_resets_no_trials_but_resets_verdict(_stub_enqueue):
         session, task_id="tsk", org_id="org-1"
     )
 
-    assert result == {"status": "queued", "task_id": "tsk", "trial_count": 2, "reset_count": 0}
+    assert result == {
+        "status": "queued",
+        "task_id": "tsk",
+        "trial_count": 2,
+        "reset_count": 0,
+    }
     assert done.analysis_status == AnalysisStatus.SUCCESS  # untouched
-    assert task.verdict_status == VerdictStatus.QUEUED       # reset+requeued
-    assert task.run_analysis is False                        # flag untouched
+    assert task.verdict_status == VerdictStatus.QUEUED  # reset+requeued
+    assert task.run_analysis is False  # flag untouched
     assert _stub_enqueue == [("tsk", "org-1")]
 
 
@@ -156,5 +165,7 @@ async def test_qa_in_progress_400(_stub_enqueue):
     )
     session = _FakeSession(task)
     with pytest.raises(HTTPException) as exc:
-        await endpoints.backfill_task_analysis_core(session, task_id="tsk", org_id="org-1")
+        await endpoints.backfill_task_analysis_core(
+            session, task_id="tsk", org_id="org-1"
+        )
     assert exc.value.status_code == 400
