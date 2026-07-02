@@ -981,6 +981,7 @@ async def unpublish_experiment(
             raise HTTPException(status_code=404, detail="Experiment not found")
 
         experiment.is_public = False
+        experiment.public_token = None
         await session.commit()
 
         return ExperimentShareResponse(
