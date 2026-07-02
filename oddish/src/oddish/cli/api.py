@@ -1342,6 +1342,32 @@ def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
     return cast(dict, response.json())
 
 
+def github_id_is_unlinked(api_url: str, github_id: str) -> bool:
+    """Pre-flight the server's linkage gate for a supplied ``github_id``.
+
+    Returns True ONLY on an authoritative ``{"linked": false}`` from
+    ``GET /github/linkage`` (HTTP 200) -- the one signal that lets the CLI
+    fail fast before uploading. Every other outcome fails open (returns
+    False) so the pre-flight can never block a legitimate run: network /
+    timeout errors, any non-200 (including a scope 403 for a key that
+    doesn't satisfy READ), an unparseable body, or ``linked`` missing/true.
+    The server gate on ``/tasks/sweep`` remains the authority.
+    """
+    try:
+        with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+            response = client.get(
+                f"{api_url}/github/linkage", params={"actor_id": github_id}
+            )
+    except httpx.HTTPError:
+        return False
+    if response.status_code != 200:
+        return False
+    try:
+        return response.json().get("linked") is False
+    except (ValueError, AttributeError):
+        return False
+
+
 # =============================================================================
 # Trial Import (off-oddish Harbor run -> oddish trial rows)
 # =============================================================================

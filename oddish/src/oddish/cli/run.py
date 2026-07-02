@@ -29,6 +29,7 @@ from oddish.cli.api import (
     build_sweep_payload,
     get_experiment_share,
     get_task_summary,
+    github_id_is_unlinked,
     load_sweep_config,
     post_sweep_payload,
     print_final_results,
@@ -622,6 +623,19 @@ def run(
         return
     if retry_qa:
         error_console.print("[red]--qa requires --retry.[/red]")
+        raise typer.Exit(1)
+
+    # Pre-flight the linkage gate before any upload so an unlinked github_id
+    # fails in milliseconds instead of after uploading. Fail-open: only an
+    # authoritative linked=false aborts; the /tasks/sweep gate stays the
+    # authority.
+    if github_id and github_id.strip() and github_id_is_unlinked(api_url, github_id):
+        error_console.print(
+            f"[red]GitHub account {github_id} is not connected to an oddish user "
+            "in this org. Sign in at https://oddish.app and link your GitHub "
+            "account, then rerun. If you linked your GitHub account recently, it "
+            "can take up to an hour to sync.[/red]"
+        )
         raise typer.Exit(1)
 
     # Handle config file vs CLI mode for agent configs
