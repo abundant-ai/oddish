@@ -84,7 +84,9 @@ async def maybe_enqueue_auto_probe(
             task_id=task.id,
             append_to_task=True,
             name=task.name,
-            configs=[AgentModelPair(agent=DEFAULT_PROBE_AGENT, model=model, n_trials=1)],
+            configs=[
+                AgentModelPair(agent=DEFAULT_PROBE_AGENT, model=model, n_trials=1)
+            ],
             extra_instructions=skill.operator_prompt,
             probe_name=skill.name,
             result_focus=skill.result_focus,

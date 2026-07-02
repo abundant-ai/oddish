@@ -198,8 +198,9 @@ async def list_experiment_trials_for_org(
     trials = [trial for trial, _ in rows]
     queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
     return [
-        build_trial_response(trial, task_path,
-                             queue_info=queue_info_by_trial_id.get(trial.id))
+        build_trial_response(
+            trial, task_path, queue_info=queue_info_by_trial_id.get(trial.id)
+        )
         for trial, task_path in rows
     ]
 

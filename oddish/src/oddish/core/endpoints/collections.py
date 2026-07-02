@@ -36,19 +36,25 @@ async def create_trial_collection_core(
         dict.fromkeys(t.strip() for t in (task_ids or []) if t and t.strip())
     )
     if not explicit_ids and not task_idents:
-        raise HTTPException(status_code=400, detail="Provide at least one trial id or task id")
+        raise HTTPException(
+            status_code=400, detail="Provide at least one trial id or task id"
+        )
 
     # 1. Explicit trials (existing behavior).
     explicit_rows: list[TrialModel] = []
     if explicit_ids:
         rows = (
-            await session.execute(
-                select(TrialModel).where(
-                    TrialModel.id.in_(explicit_ids),
-                    TrialModel.org_id == org_id,
+            (
+                await session.execute(
+                    select(TrialModel).where(
+                        TrialModel.id.in_(explicit_ids),
+                        TrialModel.org_id == org_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         found = {t.id: t for t in rows}
         missing = [i for i in explicit_ids if i not in found]
         if missing:
@@ -64,13 +70,17 @@ async def create_trial_collection_core(
         pairs: list[tuple[str, str]] = []
         for ident in task_idents:
             task = (
-                await session.execute(
-                    select(TaskModel).where(
-                        or_(TaskModel.id == ident, TaskModel.name == ident),
-                        TaskModel.org_id == org_id,
+                (
+                    await session.execute(
+                        select(TaskModel).where(
+                            or_(TaskModel.id == ident, TaskModel.name == ident),
+                            TaskModel.org_id == org_id,
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if task is None:
                 raise HTTPException(status_code=404, detail=f"Task {ident} not found")
             if task.current_version_id is None:
@@ -80,18 +90,24 @@ async def create_trial_collection_core(
 
         if pairs:
             task_rows = (
-                await session.execute(
-                    select(TrialModel)
-                    .where(
-                        tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(pairs),
-                        TrialModel.superseded_by_trial_id.is_(None),
-                        TrialModel.status.in_(_TERMINAL),
-                        TrialModel.is_probe.isnot(True),
-                        TrialModel.org_id == org_id,
+                (
+                    await session.execute(
+                        select(TrialModel)
+                        .where(
+                            tuple_(TrialModel.task_id, TrialModel.task_version_id).in_(
+                                pairs
+                            ),
+                            TrialModel.superseded_by_trial_id.is_(None),
+                            TrialModel.status.in_(_TERMINAL),
+                            TrialModel.is_probe.isnot(True),
+                            TrialModel.org_id == org_id,
+                        )
+                        .order_by(TrialModel.task_id, TrialModel.created_at)
                     )
-                    .order_by(TrialModel.task_id, TrialModel.created_at)
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             contributed = {t.task_id for t in task_rows}
             tasks_skipped_empty += sum(1 for tid, _ in pairs if tid not in contributed)
 
@@ -122,7 +138,9 @@ async def create_trial_collection_core(
 
     linked_task_ids = list(dict.fromkeys(t.task_id for t in trials))
     for task_id in linked_task_ids:
-        await _link_task_to_experiment(session, task_id=task_id, experiment_id=result.id)
+        await _link_task_to_experiment(
+            session, task_id=task_id, experiment_id=result.id
+        )
 
     await session.execute(
         insert(experiment_trials),

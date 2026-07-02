@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR, { mutate } from "swr";
 import {
   OrganizationProfile,
@@ -38,14 +38,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -179,7 +171,11 @@ interface APIKey {
 
 interface APIKeyPermissions {
   can_create: boolean;
+  can_manage: boolean;
+  allowed_scopes: string[];
 }
+
+const VISIBLE_API_KEY_LIMIT = 8;
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "—";
@@ -201,6 +197,13 @@ function formatDateTime(dateStr: string | null): string {
   });
 }
 
+function getScopeLabel(scope: string): string {
+  if (scope === "full") return "Full access";
+  if (scope === "tasks") return "Tasks";
+  if (scope === "read") return "Read only";
+  return scope;
+}
+
 function ScopeBadge({ scope }: { scope: string }) {
   const variants: Record<string, string> = {
     full: "bg-[color:var(--paper-queued-bg)] text-[color:var(--paper-queued)] border-[color:var(--paper-queued)]/30",
@@ -213,8 +216,8 @@ function ScopeBadge({ scope }: { scope: string }) {
     <Badge
       variant="outline"
       className={cn(
-        "rounded-md font-mono text-[11px] font-medium uppercase tracking-wide",
-        variants[scope] ?? "bg-muted text-muted-foreground",
+        "rounded-md font-mono text-[11px] font-medium tracking-wide uppercase",
+        variants[scope] ?? "bg-muted text-muted-foreground"
       )}
     >
       {scope}
@@ -239,7 +242,7 @@ function SectionHeading({
         {title}
       </h2>
       {description ? (
-        <p className="text-sm leading-relaxed text-muted-foreground">
+        <p className="text-muted-foreground text-sm leading-relaxed">
           {description}
         </p>
       ) : null}
@@ -270,7 +273,7 @@ function SectionContainer({
       inert={!active}
       className={cn(
         "transition-opacity duration-200 ease-out",
-        active ? "relative opacity-100" : "absolute inset-0 opacity-0",
+        active ? "relative opacity-100" : "absolute inset-0 opacity-0"
       )}
     >
       {children}
@@ -288,8 +291,8 @@ function Panel({
   return (
     <Card
       className={cn(
-        "rounded-xl border-border/80 bg-card/95 shadow-xs",
-        className,
+        "border-border/80 bg-card/95 rounded-xl shadow-xs",
+        className
       )}
     >
       <CardContent className="p-5">{children}</CardContent>
@@ -309,19 +312,19 @@ function PanelHeader({
   icon?: typeof UserIcon;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-border/70 pb-4">
+    <div className="border-border/70 flex items-start justify-between gap-4 border-b pb-4">
       <div className="flex items-start gap-3">
         {Icon ? (
-          <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 text-muted-foreground">
+          <div className="border-border bg-muted/60 text-muted-foreground mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border">
             <Icon className="h-4 w-4" />
           </div>
         ) : null}
         <div className="space-y-1">
-          <h3 className="text-base font-semibold leading-none tracking-tight text-foreground">
+          <h3 className="text-foreground text-base leading-none font-semibold tracking-tight">
             {title}
           </h3>
           {description ? (
-            <p className="text-sm text-muted-foreground">{description}</p>
+            <p className="text-muted-foreground text-sm">{description}</p>
           ) : null}
         </div>
       </div>
@@ -338,16 +341,25 @@ function CreateAPIKeyModal({
   isOpen,
   onClose,
   onKeyCreated,
+  allowedScopes,
 }: {
   isOpen: boolean;
   onClose: () => void;
   onKeyCreated: (key: string) => void;
+  allowedScopes: string[];
 }) {
   const [name, setName] = useState("");
-  const [scope, setScope] = useState("full");
+  const defaultScope = allowedScopes[0] ?? "tasks";
+  const [scope, setScope] = useState(defaultScope);
   const [expiresInDays, setExpiresInDays] = useState("never");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen && allowedScopes.length > 0) {
+      setScope(defaultScope);
+    }
+  }, [allowedScopes.length, defaultScope, isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -375,7 +387,7 @@ function CreateAPIKeyModal({
       onKeyCreated(data.key);
       mutate(`/api/settings/api-keys`);
       setName("");
-      setScope("full");
+      setScope(defaultScope);
       setExpiresInDays("never");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create API key");
@@ -413,11 +425,17 @@ function CreateAPIKeyModal({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="full">Full — all operations</SelectItem>
-                <SelectItem value="tasks">
-                  Tasks — create and view tasks
-                </SelectItem>
-                <SelectItem value="read">Read — read-only</SelectItem>
+                {allowedScopes.includes("full") ? (
+                  <SelectItem value="full">Full — all operations</SelectItem>
+                ) : null}
+                {allowedScopes.includes("tasks") ? (
+                  <SelectItem value="tasks">
+                    Tasks — run trials, create tasks, read files
+                  </SelectItem>
+                ) : null}
+                {allowedScopes.includes("read") ? (
+                  <SelectItem value="read">Read — read-only</SelectItem>
+                ) : null}
               </SelectContent>
             </Select>
           </div>
@@ -483,7 +501,7 @@ function NewKeyDisplay({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex items-center gap-2 rounded-md border border-border bg-background p-3 font-mono text-sm">
+        <div className="border-border bg-background flex items-center gap-2 rounded-md border p-3 font-mono text-sm">
           <code className="flex-1 break-all">{apiKey}</code>
           <Button variant="ghost" size="sm" onClick={handleCopy}>
             {copied ? (
@@ -514,6 +532,7 @@ function APIKeysPanel() {
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<APIKey | null>(null);
   const [revokeError, setRevokeError] = useState<string | null>(null);
+  const [showAllKeys, setShowAllKeys] = useState(false);
 
   const {
     data: keys,
@@ -522,11 +541,27 @@ function APIKeysPanel() {
   } = useSWR<APIKey[]>(`/api/settings/api-keys`, fetcher);
   const { data: permissions } = useSWR<APIKeyPermissions>(
     `/api/settings/api-keys/permissions`,
-    fetcher,
+    fetcher
   );
   const canCreateAPIKeys = permissions?.can_create ?? false;
-  const createRestriction =
-    "Only @abundant.ai admins in the Abundant org can create API keys.";
+  const canManageAPIKeys = permissions?.can_manage ?? false;
+  const allowedScopes = permissions?.allowed_scopes ?? [];
+  const createRestriction = "Only Abundant org members can create API keys.";
+  const visibleKeys = showAllKeys
+    ? (keys ?? [])
+    : (keys ?? []).slice(0, VISIBLE_API_KEY_LIMIT);
+  const hiddenKeyCount = Math.max(
+    0,
+    (keys?.length ?? 0) - VISIBLE_API_KEY_LIMIT
+  );
+  const activeKeyCount = keys?.filter((key) => key.is_active).length ?? 0;
+  const recentlyUsedCount =
+    keys?.filter((key) => Boolean(key.last_used_at)).length ?? 0;
+  const scopeCounts =
+    keys?.reduce<Record<string, number>>((counts, key) => {
+      counts[key.scope] = (counts[key.scope] ?? 0) + 1;
+      return counts;
+    }, {}) ?? {};
 
   const handleRevoke = async () => {
     if (!revokeTarget) return;
@@ -586,17 +621,17 @@ function APIKeysPanel() {
             <AlertDescription>{revokeError}</AlertDescription>
           </Alert>
         ) : isLoading ? (
-          <p className="py-6 text-center text-sm text-muted-foreground">
+          <p className="text-muted-foreground py-6 text-center text-sm">
             Loading…
           </p>
         ) : !keys || keys.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 py-10 text-center">
-            <Key className="h-8 w-8 text-muted-foreground/60" />
+          <div className="border-border bg-muted/30 flex flex-col items-center gap-2 rounded-lg border border-dashed py-10 text-center">
+            <Key className="text-muted-foreground/60 h-8 w-8" />
             <div className="space-y-0.5">
-              <p className="text-sm font-medium text-foreground">
+              <p className="text-foreground text-sm font-medium">
                 No API keys yet
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 {canCreateAPIKeys
                   ? "Create one to use the Oddish CLI from your laptop or CI."
                   : createRestriction}
@@ -615,60 +650,101 @@ function APIKeysPanel() {
             ) : null}
           </div>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/40 hover:bg-muted/40">
-                  <TableHead className="h-9 text-xs">Name</TableHead>
-                  <TableHead className="h-9 text-xs">Key</TableHead>
-                  <TableHead className="h-9 text-xs">Scope</TableHead>
-                  <TableHead className="h-9 text-xs">Last used</TableHead>
-                  <TableHead className="h-9 text-xs">Created</TableHead>
-                  <TableHead className="h-9 w-10"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {keys.map((key) => (
-                  <TableRow
-                    key={key.id}
-                    className={cn(
-                      "border-border/70",
-                      !key.is_active && "opacity-50",
-                    )}
-                  >
-                    <TableCell className="py-2.5 font-medium">
-                      {key.name}
-                    </TableCell>
-                    <TableCell className="py-2.5 font-mono text-xs text-muted-foreground">
-                      {key.key_prefix}…
-                    </TableCell>
-                    <TableCell className="py-2.5">
+          <div className="flex flex-col gap-4">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Active keys
+                </p>
+                <p className="text-foreground mt-1 text-2xl font-semibold">
+                  {activeKeyCount}
+                </p>
+              </div>
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Used keys
+                </p>
+                <p className="text-foreground mt-1 text-2xl font-semibold">
+                  {recentlyUsedCount}
+                </p>
+              </div>
+              <div className="border-border bg-muted/30 rounded-lg border p-3">
+                <p className="text-muted-foreground text-xs font-medium">
+                  Scopes
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {Object.entries(scopeCounts).map(([scope, count]) => (
+                    <Badge key={scope} variant="secondary" className="text-xs">
+                      {getScopeLabel(scope)} · {count}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-foreground text-sm font-medium">
+                  Recent keys
+                </p>
+                <p className="text-muted-foreground text-xs">
+                  Showing {visibleKeys.length} of {keys.length}
+                </p>
+              </div>
+              {hiddenKeyCount > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowAllKeys((value) => !value)}
+                >
+                  {showAllKeys ? "Show fewer" : `Show all ${keys.length}`}
+                </Button>
+              ) : null}
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {visibleKeys.map((key) => (
+                <div
+                  key={key.id}
+                  className={cn(
+                    "border-border bg-background flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center sm:justify-between",
+                    !key.is_active && "opacity-50"
+                  )}
+                >
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <p className="text-foreground truncate text-sm font-medium">
+                        {key.name}
+                      </p>
                       <ScopeBadge scope={key.scope} />
-                    </TableCell>
-                    <TableCell className="py-2.5 text-sm text-muted-foreground">
+                    </div>
+                    <p className="text-muted-foreground mt-1 font-mono text-xs">
+                      {key.key_prefix}… · Last used{" "}
                       {formatDateTime(key.last_used_at)}
-                    </TableCell>
-                    <TableCell className="py-2.5 text-sm text-muted-foreground">
-                      {formatDate(key.created_at)}
-                    </TableCell>
-                    <TableCell className="py-2.5 text-right">
-                      {key.is_active && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setRevokeTarget(key)}
-                          disabled={revoking === key.id}
-                          className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                          aria-label={`Revoke ${key.name}`}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 sm:justify-end">
+                    <div className="text-muted-foreground text-xs sm:text-right">
+                      <p>Created {formatDate(key.created_at)}</p>
+                      <p>Expires {formatDate(key.expires_at)}</p>
+                    </div>
+                    {canManageAPIKeys && key.is_active ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setRevokeTarget(key)}
+                        disabled={revoking === key.id}
+                        className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
+                        aria-label={`Revoke ${key.name}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -680,6 +756,7 @@ function APIKeysPanel() {
           setNewKey(key);
           setShowCreateModal(false);
         }}
+        allowedScopes={allowedScopes}
       />
 
       {newKey && (
@@ -755,10 +832,10 @@ function WorkspaceSwitcherPanel() {
         description="Workspaces isolate tasks, members, and API keys. Switch or create one from the workspace menu in the top navigation."
       />
       <div className="space-y-4 pt-4">
-        <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="border-border bg-muted/30 flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0 space-y-1">
             {organization ? (
-              <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
+              <div className="text-muted-foreground flex items-center gap-2 text-[11px] font-medium">
                 <span
                   className="inline-block h-1.5 w-1.5 rounded-full bg-[color:var(--paper-pass)]"
                   aria-hidden
@@ -766,13 +843,13 @@ function WorkspaceSwitcherPanel() {
                 Active workspace
               </div>
             ) : null}
-            <p className="truncate font-display text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
+            <p className="font-display truncate text-lg font-medium tracking-tight text-[color:var(--paper-ink)]">
               {organization?.name ?? "No workspace selected"}
             </p>
             {role ? (
-              <p className="text-xs capitalize text-muted-foreground">
+              <p className="text-muted-foreground text-xs capitalize">
                 Your role:{" "}
-                <span className="font-medium text-foreground">{role}</span>
+                <span className="text-foreground font-medium">{role}</span>
               </p>
             ) : null}
           </div>
@@ -789,14 +866,14 @@ function WorkspaceManagementPanel() {
     return (
       <Panel>
         <div className="flex flex-col items-center gap-3 py-10 text-center">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-dashed border-border bg-muted/40 text-muted-foreground">
+          <div className="border-border bg-muted/40 text-muted-foreground flex h-10 w-10 items-center justify-center rounded-full border border-dashed">
             <Users className="h-5 w-5" />
           </div>
           <div className="space-y-1">
-            <p className="text-sm font-medium text-foreground">
+            <p className="text-foreground text-sm font-medium">
               No workspace selected
             </p>
-            <p className="max-w-sm text-xs text-muted-foreground">
+            <p className="text-muted-foreground max-w-sm text-xs">
               Pick a workspace from the menu in the top navigation — or create a
               new one — to manage members, roles, and organization details.
             </p>
@@ -861,8 +938,8 @@ function SidebarNav({
             className={cn(
               "group h-auto shrink-0 justify-start gap-2.5 rounded-md border border-transparent px-3 py-2 text-left text-sm font-normal lg:w-full",
               active
-                ? "border-border bg-card text-foreground shadow-xs hover:bg-card"
-                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                ? "border-border bg-card text-foreground hover:bg-card shadow-xs"
+                : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
             )}
           >
             <Icon
@@ -870,10 +947,10 @@ function SidebarNav({
                 "h-4 w-4 shrink-0",
                 active
                   ? "text-[color:var(--paper-ink)]"
-                  : "text-muted-foreground group-hover:text-foreground",
+                  : "text-muted-foreground group-hover:text-foreground"
               )}
             />
-            <span className="whitespace-nowrap font-medium">{entry.label}</span>
+            <span className="font-medium whitespace-nowrap">{entry.label}</span>
           </Button>
         );
       })}
@@ -914,13 +991,13 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto w-full max-w-6xl space-y-8 py-2">
       <header className="space-y-2">
-        <p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+        <p className="text-muted-foreground text-xs font-medium tracking-[0.18em] uppercase">
           Settings
         </p>
         <h1 className="font-display text-3xl font-medium tracking-tight text-[color:var(--paper-ink)] sm:text-4xl">
           Account &amp; workspace
         </h1>
-        <p className="max-w-2xl text-sm leading-relaxed text-muted-foreground">
+        <p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
           Manage your personal profile, your workspace&rsquo;s members, and the
           API keys that authenticate the Oddish CLI and backend.
         </p>

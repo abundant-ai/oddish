@@ -53,7 +53,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       const status = getMatrixStatus(
         trial.status,
         trial.reward,
-        trial.error_message
+        trial.error_message,
       );
       counts[status] += 1;
       return counts;
@@ -66,7 +66,7 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       pending: 0,
       queued: 0,
       running: 0,
-    } as Record<ReturnType<typeof getMatrixStatus>, number>
+    } as Record<ReturnType<typeof getMatrixStatus>, number>,
   );
 }
 
@@ -155,7 +155,7 @@ function TrialGraphics({ task }: { task: TaskBrowseItem }) {
         const status = getMatrixStatus(
           trial.status,
           trial.reward,
-          trial.error_message
+          trial.error_message,
         );
         const config = STATUS_CONFIG[status];
         const badgeLabel =
@@ -201,7 +201,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
     <Card
       className={cn(
         "bg-card/95 border-[#6f88b4]/20 shadow-xs transition-colors hover:border-[#6f88b4]/40",
-        selected && "border-[#6f88b4]/70 ring-1 ring-[#6f88b4]/40"
+        selected && "border-[#6f88b4]/70 ring-1 ring-[#6f88b4]/40",
       )}
     >
       <CardHeader className="space-y-2 px-5 pt-5 pb-2">
@@ -242,7 +242,7 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                     onClick={(e) => e.stopPropagation()}
                     className={cn(
                       badgeVariants({ variant: "outline" }),
-                      "hover:bg-accent w-fit gap-1.5 font-mono text-[11px] transition-colors"
+                      "hover:bg-accent w-fit gap-1.5 font-mono text-[11px] transition-colors",
                     )}
                   >
                     <GitPullRequest className="h-3 w-3 shrink-0" aria-hidden />

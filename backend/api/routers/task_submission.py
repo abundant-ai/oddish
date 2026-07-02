@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import AuthContext
+from auth import APIKeyScope, AuthContext
 from models import APIKeyModel, UserModel
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.sharing.helpers import ensure_experiment_public
@@ -208,6 +208,10 @@ def stamp_experiment_owner(
         experiment.owner_user_id = owner_user_id
 
 
+def require_experiment_publish_scope(auth: AuthContext) -> None:
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
+
+
 async def maybe_publish_experiment(
     session: AsyncSession,
     task: TaskModel,
@@ -220,6 +224,7 @@ async def maybe_publish_experiment(
     if not should_publish:
         return
 
+    require_experiment_publish_scope(auth)
     experiments = list(task.experiments or [])
     for experiment in experiments:
         await ensure_experiment_public(session, experiment)
