@@ -399,42 +399,8 @@ async def run_harbor_trial_async(
             task_tmpdir.cleanup()
 
 
-def run_harbor_trial(
-    task_path: Path,
-    agent: str,
-    jobs_dir: Path,
-    model: str | None = None,
-    environment: EnvironmentType = EnvironmentType.DOCKER,
-    hook_callback: HookCallback | None = None,
-    trial_id: str | None = None,
-    harbor_config: dict[str, Any] | None = None,
-    org_id: str | None = None,
-    extra_agent_env: dict[str, str] | None = None,
-) -> HarborOutcome:
-    """Synchronous wrapper around run_harbor_trial_async."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(
-            run_harbor_trial_async(
-                task_path=task_path,
-                agent=agent,
-                jobs_dir=jobs_dir,
-                model=model,
-                environment=environment,
-                hook_callback=hook_callback,
-                trial_id=trial_id,
-                harbor_config=harbor_config,
-                org_id=org_id,
-                extra_agent_env=extra_agent_env,
-            )
-        )
-    raise RuntimeError("run_harbor_trial cannot be called from an active event loop.")
-
-
 __all__ = [
     "HarborOutcome",
     "log_local_storage_snapshot",
-    "run_harbor_trial",
     "run_harbor_trial_async",
 ]

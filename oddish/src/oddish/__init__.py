@@ -28,13 +28,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "TrialResponse": ("oddish.schemas", "TrialResponse"),
     # Queue
     "create_task": ("oddish.queue", "create_task"),
-    "get_task_with_trials": ("oddish.queue", "get_task_with_trials"),
     "get_queue_stats": ("oddish.queue", "get_queue_stats"),
     # Harbor
-    "run_harbor_trial": ("oddish.workers", "run_harbor_trial"),
     "HarborOutcome": ("oddish.workers", "HarborOutcome"),
     # Workers
-    "run_queue_worker": ("oddish.workers", "run_queue_worker"),
+    "run_polling_worker": ("oddish.workers", "run_polling_worker"),
 }
 
 __all__ = ["__version__", *_EXPORTS.keys()]
