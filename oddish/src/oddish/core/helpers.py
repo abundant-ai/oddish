@@ -437,6 +437,7 @@ def build_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
         attempts=trial.attempts,
@@ -509,6 +510,7 @@ def build_compact_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
         attempts=trial.attempts,
@@ -610,6 +612,7 @@ def resolve_effective_version_id(
     task: TaskModel,
     *,
     experiment_context_id: str | None = None,
+    gathered_trial_ids: set[str] | None = None,
 ) -> str | None:
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
@@ -621,6 +624,12 @@ def resolve_effective_version_id(
     even if the underlying task has since been re-uploaded and bumped to a
     newer version elsewhere.  Falls back to ``task.current_version_id`` when
     no scoped trial has a ``task_version_id``.
+
+    ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
+    via the ``experiment_trials`` join table -- these carry their home
+    experiment's scalar ``experiment_id`` (not this collection's), so they'd
+    otherwise be invisible to the scalar-column membership test.  Passing the
+    default ``None`` leaves the behavior byte-for-byte unchanged.
     """
     if experiment_context_id is None:
         return task.current_version_id
@@ -630,7 +639,11 @@ def resolve_effective_version_id(
         if not version_id:
             continue
         trial_exp_id = getattr(trial, "experiment_id", None)
-        if trial_exp_id == experiment_context_id or trial_exp_id is None:
+        if (
+            trial_exp_id == experiment_context_id
+            or trial_exp_id is None
+            or (gathered_trial_ids and trial.id in gathered_trial_ids)
+        ):
             candidates.append(version_id)
     if not candidates:
         return task.current_version_id
@@ -661,6 +674,7 @@ async def fetch_experiment_effective_version_ids(
     if not task_ids:
         return {}
 
+    from oddish.core.experiment_membership import gathered_trial_ids_select
     from oddish.db import TaskVersionModel  # local import: avoid cycle
 
     stmt = (
@@ -671,6 +685,11 @@ async def fetch_experiment_effective_version_ids(
             or_(
                 TrialModel.experiment_id == experiment_id,
                 TrialModel.experiment_id.is_(None),
+                # Collection experiments own trials additively via the
+                # ``experiment_trials`` join table without rewriting the
+                # scalar ``experiment_id``; fold those gathered trials in so
+                # the effective version reflects the versions they ran on.
+                TrialModel.id.in_(gathered_trial_ids_select(experiment_id)),
             ),
             TrialModel.task_version_id.is_not(None),
         )
@@ -857,10 +876,12 @@ def build_task_status_response(
     task: TaskModel,
     *,
     include_empty_rewards: bool = True,
+    include_trials: bool = True,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """Build a TaskStatusResponse from a TaskModel with eagerly loaded trials.
 
@@ -870,10 +891,15 @@ def build_task_status_response(
     experiment by the caller).  This keeps experiment pages showing trials at
     whatever version actually ran in that experiment, even if the task has
     since been re-uploaded to a newer version elsewhere.
+
+    ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
+    collection-gathered trials on an older version aren't re-resolved away.
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     total = len(task_trials)
@@ -882,23 +908,27 @@ def build_task_status_response(
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [
-        build_trial_response(
-            t,
-            task.task_path,
-            queue_info=(
-                queue_info_by_trial_id.get(t.id)
-                if queue_info_by_trial_id is not None
-                else None
-            ),
-            jobs=(
-                jobs_by_subject.get(("trials", t.id), [])
-                if jobs_by_subject is not None
-                else None
-            ),
-        )
-        for t in task_trials
-    ]
+    trials = (
+        [
+            build_trial_response(
+                t,
+                task.task_path,
+                queue_info=(
+                    queue_info_by_trial_id.get(t.id)
+                    if queue_info_by_trial_id is not None
+                    else None
+                ),
+                jobs=(
+                    jobs_by_subject.get(("trials", t.id), [])
+                    if jobs_by_subject is not None
+                    else None
+                ),
+            )
+            for t in task_trials
+        ]
+        if include_trials
+        else None
+    )
     task_jobs = []
     if jobs_by_subject is not None:
         task_jobs.extend(jobs_by_subject.get(("tasks", task.id), []))
@@ -930,6 +960,7 @@ def build_task_status_response_compact(
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
@@ -937,7 +968,9 @@ def build_task_status_response_compact(
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     real_trials = [t for t in task_trials if not t.is_probe]
@@ -1055,6 +1088,7 @@ def build_slim_task_status_response(
     include_empty_rewards: bool = True,
     experiment_context_id: str | None = None,
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
     """``build_task_status_response_compact`` with SLIM per-trial payloads.
 
@@ -1064,7 +1098,9 @@ def build_slim_task_status_response(
     """
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
-            task, experiment_context_id=experiment_context_id
+            task,
+            experiment_context_id=experiment_context_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     total = len(task_trials)

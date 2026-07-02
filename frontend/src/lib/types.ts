@@ -130,6 +130,7 @@ export interface Trial {
   agent: string;
   provider: string;
   model: string | null;
+  environment?: string | null;
   status: TrialStatus;
   attempts: number;
   max_attempts: number;
@@ -280,6 +281,17 @@ export interface TaskBrowseResponse {
   limit: number;
   offset: number;
   has_more: boolean;
+}
+
+export interface TaskBrowseFacets {
+  agents: string[];
+  models: string[];
+  agent_models: { agent: string; model: string | null }[];
+  providers: string[];
+  environments: string[];
+  harbor_stages: string[];
+  analysis_classifications: string[];
+  experiments: { id: string; name: string }[];
 }
 
 export interface TaskVersionSummary {

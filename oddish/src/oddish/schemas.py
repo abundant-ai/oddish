@@ -557,6 +557,34 @@ class ExperimentCombineRequest(BaseModel):
         return self
 
 
+class TrialCollectionRequest(BaseModel):
+    """Request to gather existing trials into a new read-only collection."""
+
+    name: str
+    trial_ids: list[str] = Field(default_factory=list)
+    task_ids: list[str] = Field(default_factory=list)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be empty")
+        return stripped
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "TrialCollectionRequest":
+        self.trial_ids = list(
+            dict.fromkeys(s.strip() for s in self.trial_ids if s and s.strip())
+        )
+        self.task_ids = list(
+            dict.fromkeys(s.strip() for s in self.task_ids if s and s.strip())
+        )
+        if not self.trial_ids and not self.task_ids:
+            raise ValueError("provide at least one trial id or task id")
+        return self
+
+
 # =============================================================================
 # Response Schemas
 # =============================================================================
@@ -758,6 +786,10 @@ class TrialResponse(BaseModel):
     provider: str
     queue_key: str
     model: str | None
+    environment: str | None = Field(
+        None,
+        description="Execution sandbox environment recorded on the trial row.",
+    )
     status: TrialStatus = Field(
         ...,
         description="Execution status: 'success'=completed (regardless of test result), 'failed'=execution error",
@@ -1023,6 +1055,17 @@ class ExperimentCombineResponse(BaseModel):
     )
 
 
+class TrialCollectionResponse(BaseModel):
+    """Result of gathering trials into a new read-only collection."""
+
+    id: str
+    name: str
+    trials_linked: int
+    tasks_linked: int
+    trials_from_tasks: int = 0
+    tasks_skipped_empty: int = 0
+
+
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
@@ -1065,6 +1108,32 @@ class TaskBrowseResponse(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class AgentModelFacet(BaseModel):
+    """A distinct (agent, model) pair a trial ran. ``model`` is null for legacy
+    rows with no recorded model."""
+
+    agent: str
+    model: str | None = None
+
+
+class TaskBrowseFacets(BaseModel):
+    """Distinct values for populating the task-browser filter controls.
+
+    Trial-derived facets are scoped to the org's non-probe, non-superseded
+    trials. Enum-valued filters (task status, priority, trial status, origin)
+    are static and supplied client-side, so they are not returned here.
+    """
+
+    agents: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
+    agent_models: list[AgentModelFacet] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    environments: list[str] = Field(default_factory=list)
+    harbor_stages: list[str] = Field(default_factory=list)
+    analysis_classifications: list[str] = Field(default_factory=list)
+    experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
 
 
 class TaskStatusResponse(BaseModel):

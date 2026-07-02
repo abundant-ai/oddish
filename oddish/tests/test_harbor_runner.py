@@ -1834,6 +1834,117 @@ def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(
     assert outcome.total_steps == 2
 
 
+def test_extract_outcome_from_job_result_prefers_later_agent_context_over_trajectory(
+    tmp_path,
+):
+    traj_dir = tmp_path / "first-trial" / "agent"
+    traj_dir.mkdir(parents=True)
+    (traj_dir / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "final_metrics": {
+                    "total_prompt_tokens": 1,
+                    "total_completion_tokens": 2,
+                    "total_cached_tokens": 3,
+                    "total_steps": 4,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent_context = SimpleNamespace(
+        is_empty=lambda: False,
+        n_input_tokens=10,
+        n_cache_tokens=4,
+        n_output_tokens=6,
+        cost_usd=None,
+    )
+    first_trial = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=None,
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    second_trial = SimpleNamespace(
+        exception_info=None,
+        agent_result=agent_context,
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[first_trial, second_trial],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=tmp_path / "result.json",
+        job_dir=tmp_path,
+        duration_sec=1.0,
+    )
+
+    assert outcome.input_tokens == 10
+    assert outcome.output_tokens == 6
+    assert outcome.cache_tokens == 4
+    assert outcome.total_steps == 4
+
+
+def test_extract_outcome_from_job_result_uses_single_non_reward_metric():
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"score": 0.5}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.reward == 0.5
+
+
+def test_extract_outcome_from_job_result_ignores_non_numeric_reward():
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"reward": "not-a-number"}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.reward is None
+
+
 def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():
     """A successful trial (no exception_info) must leave exception_type as
     None so we don't accidentally surface a placeholder string into retry

@@ -2,15 +2,12 @@
 
 The canonical engineering guide for this repo is **`AGENTS.md`** at the repo root. Read it first; it covers the three packages (`oddish/` CLI+server, `backend/` hosted cloud layer, `frontend/` Next.js dashboard), required toolchains, and maintenance rules. End-user CLI docs are in `DOCS.md`.
 
-## Git workflow — NEVER commit or push to `main`
+## Git workflow
 
-**Never directly commit or push to `main`.** Always check out a new branch first
-(`git checkout -b <type>/<short-desc>`), commit there, push that branch, and open
-a PR for review. This applies to every change, no matter how small — even a
-one-line fix. If you find yourself on `main` with staged or unstaged changes,
-create a branch and move the work onto it before committing.
+Never directly commit or push to `main`. Check out a feature branch, commit
+there, push that branch, and open a PR for review.
 
-## Rule — preserve package boundaries
+## Preserve package boundaries
 
 `oddish/` is the self-hostable core package for the CLI, standalone FastAPI
 server, DB models/migrations, queue/runtime primitives, and worker handlers.
@@ -21,7 +18,7 @@ cloud-only policy. Do not import `backend/`, `backend.auth`, `backend.models`,
 `oddish/`. Shared logic should live in host-agnostic `oddish` modules and be
 wrapped by `backend/`.
 
-## Rule — task names stay unique and indexed
+## Task names stay unique and indexed
 
 `tasks.name` is the human-readable lookup key within an org. Live task names
 must stay unique and indexed (`idx_tasks_unique_org_name`) so re-uploading the
@@ -30,7 +27,7 @@ instead of creating a different task. Renaming a task is allowed, but it must
 preserve the live `(org_id, name)` uniqueness invariant and the task's version
 history.
 
-## Rule — never expose probes in public/share views
+## Never expose probes in public/share views
 
 Probes are an **experimental, internal-only** feature. They must never appear in
 any public, unauthenticated surface — the `/share/[token]` experiment view, the
@@ -75,47 +72,7 @@ Oddish runs evals on [Harbor](https://github.com/laude-institute/harbor) tasks i
 
 ## Useful pointers
 
-- **Run backend locally:** `cd backend && uvicorn api.app:create_app --factory --reload`. See `backend/README.md` for required env vars.
+- **Run backend locally:** `cd backend && uv run modal serve deploy.py`. See `backend/README.md` for required env vars.
 - **Run frontend locally:** `cd frontend && pnpm dev`. See `frontend/README.md`.
 - **Tests:** `pytest` from `oddish/` or `backend/`. Frontend has no test suite wired up yet.
-- **Local job fixtures:** `jobs/` at the repo root contains a sample experiment tree mirroring the production S3 layout — useful when developing features that read trial artifacts.
-- **Design docs and plans:** `docs/superpowers/specs/` and `docs/superpowers/plans/`.
-
-<!-- code-review-graph MCP tools -->
-## MCP Tools: code-review-graph
-
-**IMPORTANT: This project has a knowledge graph. ALWAYS use the
-code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
-the codebase.** The graph is faster, cheaper (fewer tokens), and gives
-you structural context (callers, dependents, test coverage) that file
-scanning cannot.
-
-### When to use graph tools FIRST
-
-- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
-- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
-- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
-- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
-- **Architecture questions**: `get_architecture_overview` + `list_communities`
-
-Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
-
-### Key Tools
-
-| Tool | Use when |
-| ------ | ---------- |
-| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
-| `get_review_context` | Need source snippets for review — token-efficient |
-| `get_impact_radius` | Understanding blast radius of a change |
-| `get_affected_flows` | Finding which execution paths are impacted |
-| `query_graph` | Tracing callers, callees, imports, tests, dependencies |
-| `semantic_search_nodes` | Finding functions/classes by name or keyword |
-| `get_architecture_overview` | Understanding high-level codebase structure |
-| `refactor_tool` | Planning renames, finding dead code |
-
-### Workflow
-
-1. The graph auto-updates on file changes (via hooks).
-2. Use `detect_changes` for code review.
-3. Use `get_affected_flows` to understand impact.
-4. Use `query_graph` pattern="tests_for" to check coverage.
+- **Self-hosting:** see `SELF_HOSTING.md` for Modal, Clerk, migrations, and local HTTPS.

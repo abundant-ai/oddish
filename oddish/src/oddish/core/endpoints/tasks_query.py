@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 from sqlalchemy import (
     and_,
     case,
+    exists,
+    extract,
     func,
     nulls_last,
     or_,
@@ -16,6 +22,10 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only, selectinload
 
+from oddish.core.experiment_membership import (
+    gathered_trial_ids_select,
+    trial_in_experiment,
+)
 from oddish.core.helpers import (
     escape_like,
     parse_search_query,
@@ -50,7 +60,9 @@ from oddish.db import (
     task_experiments,
 )
 from oddish.schemas import (
+    AgentModelFacet,
     TaskBrowseExperiment,
+    TaskBrowseFacets,
     TaskBrowseItem,
     TaskBrowseResponse,
     TaskBrowseTrial,
@@ -143,7 +155,7 @@ async def list_tasks_core(
         # Python) or the filter will silently not apply.
         if experiment_id:
             trials_relationship = TaskModel.trials.and_(
-                TrialModel.experiment_id == experiment_id,
+                trial_in_experiment(experiment_id),
                 TrialModel.is_probe.is_(False),
             )
         else:
@@ -161,6 +173,10 @@ async def list_tasks_core(
                 TrialModel.provider,
                 TrialModel.queue_key,
                 TrialModel.model,
+                # Surfaced by ``build_compact_trial_response`` so the UI can
+                # show the trial's sandbox backend without waiting for
+                # worker_jobs metadata.
+                TrialModel.environment,
                 TrialModel.status,
                 # ``origin`` is surfaced in compact responses, so it must
                 # be loaded eagerly; otherwise the response builder
@@ -300,6 +316,20 @@ async def list_tasks_core(
     # is the latest version that has trials in that experiment — not the task's
     # global ``current_version_id`` — so an experiment still shows its own
     # trials after the underlying task is re-uploaded elsewhere.
+    # Collection experiments gather trials additively via ``experiment_trials``
+    # without rewriting each trial's scalar ``experiment_id``. Compute that
+    # gathered set once so effective-version resolution recognizes those trials
+    # (otherwise a gathered trial on an older version is loaded, then
+    # double-filtered away by the effective-version drop). Empty for a normal
+    # experiment -> every path stays identical to before.
+    gathered_trial_ids: set[str] = set()
+    if experiment_id:
+        gathered_trial_ids = set(
+            (await session.execute(gathered_trial_ids_select(experiment_id)))
+            .scalars()
+            .all()
+        )
+
     if include_trials:
         from sqlalchemy.orm.attributes import set_committed_value
 
@@ -315,7 +345,9 @@ async def list_tasks_core(
                 # superseded / off-version trials -- identical result to before,
                 # without re-filtering in Python.
                 effective = resolve_effective_version_id(
-                    task, experiment_context_id=experiment_id
+                    task,
+                    experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 effective_by_task[task.id] = effective
                 set_committed_value(
@@ -401,6 +433,7 @@ async def list_tasks_core(
                     queue_info_by_trial_id=queue_info_by_trial_id,
                     jobs_by_subject=jobs_by_subject,
                     experiment_context_id=experiment_id,
+                    gathered_trial_ids=gathered_trial_ids,
                 )
                 for task in tasks
             ]
@@ -419,6 +452,7 @@ async def list_tasks_core(
                 queue_info_by_trial_id=queue_info_by_trial_id,
                 jobs_by_subject=jobs_by_subject,
                 experiment_context_id=experiment_id,
+                gathered_trial_ids=gathered_trial_ids,
             )
             for task in tasks
         ]
@@ -508,9 +542,7 @@ async def list_experiment_task_shells_core(
     query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
-        record_timing(
-            "tasks_query", elapsed_ms(query_started_at), "Task shells query"
-        )
+        record_timing("tasks_query", elapsed_ms(query_started_at), "Task shells query")
     tasks = result.scalars().all()
 
     # Attach only the context experiment -- no fan-out. ``set_committed_value``
@@ -534,9 +566,7 @@ async def list_experiment_task_shells_core(
         jobs_by_subject={},
     )
     if record_timing is not None:
-        record_timing(
-            "tasks_build", elapsed_ms(build_started_at), "Build task shells"
-        )
+        record_timing("tasks_build", elapsed_ms(build_started_at), "Build task shells")
     return response
 
 
@@ -570,7 +600,7 @@ async def list_experiment_slim_tasks(
     from sqlalchemy.orm.attributes import set_committed_value
 
     trials_relationship = TaskModel.trials.and_(
-        TrialModel.experiment_id == experiment_id,
+        trial_in_experiment(experiment_id),
         TrialModel.is_probe.is_(False),
     )
     query = (
@@ -586,9 +616,7 @@ async def list_experiment_slim_tasks(
     query_started_at = now()
     result = await session.execute(query)
     if record_timing is not None:
-        record_timing(
-            "tasks_query", elapsed_ms(query_started_at), "Slim tasks query"
-        )
+        record_timing("tasks_query", elapsed_ms(query_started_at), "Slim tasks query")
     tasks = result.scalars().all()
 
     if tasks:
@@ -597,19 +625,27 @@ async def list_experiment_slim_tasks(
         for task in tasks:
             set_committed_value(task, "experiments", scoped_experiments)
 
+    # Trials gathered into a collection carry their home experiment's scalar
+    # ``experiment_id``; fold them in so the builder's auto-resolve keeps them
+    # at their own (possibly older) version instead of dropping them.
+    gathered_trial_ids = set(
+        (await session.execute(gathered_trial_ids_select(experiment_id)))
+        .scalars()
+        .all()
+    )
+
     build_started_at = now()
     response = [
         build_slim_task_status_response(
             task,
             include_empty_rewards=include_empty_rewards,
             experiment_context_id=experiment_id,
+            gathered_trial_ids=gathered_trial_ids,
         )
         for task in tasks
     ]
     if record_timing is not None:
-        record_timing(
-            "tasks_build", elapsed_ms(build_started_at), "Build slim tasks"
-        )
+        record_timing("tasks_build", elapsed_ms(build_started_at), "Build slim tasks")
     return response
 
 
@@ -688,6 +724,400 @@ def _build_browse_author_filter(
     return or_(*clauses)
 
 
+# --- Phase 1.2-lite aggregate metrics (no migration) -----------------------
+# Everything below is computed ON THE FLY over the scoped trial set (current
+# version, non-probe, non-superseded) with NO supporting index or denormalized
+# roll-up. This is the deliberately-slow "works now" path; full Phase 1.2
+# denormalizes these into task columns + a backfill + indexes so the same filter
+# surface becomes cheap. Do not assume any of these predicates is free.
+
+# Substrings that mark an agent timeout in ``error_message`` — kept in lockstep
+# with the frontend ``getMatrixStatus`` (see status-config.ts): a timeout that
+# still produced a reward is NOT a harness error, it scores normally.
+_AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
+
+
+def _trial_bucket_label() -> Any:
+    """SQL bucket (``pass``/``partial``/``fail``/``harness``/``scoreless``/``other``)
+    for one trial, mirroring the frontend ``getMatrixStatus``
+    (oddish/frontend/src/lib/status-config.ts) EXACTLY so the browser's
+    Pass/Partial/Fail/Harness count filters agree with the card chips:
+
+      * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
+        that still produced a reward (then it scores normally);
+      * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
+      * ``SUCCESS`` status is the reward bucket (``pass`` reward==1 / ``fail``
+        reward==0 / ``partial`` otherwise) when a reward exists, else ``scoreless``;
+      * anything else (pending/queued/running) is ``other`` and stays uncounted.
+
+    Keep this in lockstep with ``getMatrixStatus``; the AgentTimeout agreement
+    test in ``test_browse_filters.py`` guards the carve-out.
+    """
+    is_agent_timeout = and_(
+        TrialModel.error_message.isnot(None),
+        or_(*(TrialModel.error_message.like(p) for p in _AGENT_TIMEOUT_LIKE)),
+    )
+    has_reward = TrialModel.reward.isnot(None)
+    reward_bucket: Any = case(
+        (TrialModel.reward == 1, "pass"),
+        (TrialModel.reward == 0, "fail"),
+        else_="partial",
+    )
+    return case(
+        (
+            and_(
+                TrialModel.error_message.isnot(None),
+                ~and_(is_agent_timeout, has_reward),
+            ),
+            "harness",
+        ),
+        (
+            TrialModel.status == TrialStatus.FAILED,
+            case(
+                (and_(is_agent_timeout, has_reward), reward_bucket),
+                else_="harness",
+            ),
+        ),
+        (
+            TrialModel.status == TrialStatus.SUCCESS,
+            case((has_reward, reward_bucket), else_="scoreless"),
+        ),
+        else_="other",
+    )
+
+
+def _trial_runtime_seconds() -> Any:
+    """Wall-clock seconds for one trial (``finished_at − started_at``), NULL when
+    either timestamp is missing so SUM/AVG/MIN ignore unfinished trials. Shared by
+    the aggregate metrics and the Phase 2.1 agent/model comparison."""
+    return case(
+        (
+            and_(
+                TrialModel.finished_at.isnot(None),
+                TrialModel.started_at.isnot(None),
+            ),
+            extract("epoch", TrialModel.finished_at - TrialModel.started_at),
+        ),
+        else_=None,
+    )
+
+
+def _trial_total_tokens(*, null_when_all_missing: bool = False) -> Any:
+    """Input+output+cache tokens for one trial. By default missing components
+    count as 0 (matches the aggregate sum). With ``null_when_all_missing`` the
+    whole expression is NULL when the trial reports no tokens at all, so MIN/AVG
+    comparisons ignore token-less trials instead of treating them as 0 tokens."""
+    total = (
+        func.coalesce(TrialModel.input_tokens, 0)
+        + func.coalesce(TrialModel.output_tokens, 0)
+        + func.coalesce(TrialModel.cache_tokens, 0)
+    )
+    if not null_when_all_missing:
+        return total
+    return case(
+        (
+            or_(
+                TrialModel.input_tokens.isnot(None),
+                TrialModel.output_tokens.isnot(None),
+                TrialModel.cache_tokens.isnot(None),
+            ),
+            total,
+        ),
+        else_=None,
+    )
+
+
+# --- Phase 2.1 agent/model comparison (no migration) -----------------------
+# "Beats" direction per metric: reward is higher-better; run time, tokens and
+# steps are lower-better. Everything is computed on the fly over the same scoped
+# trial set the aggregate filters use; denormalize in full Phase 2.
+_COMPARE_METRIC_HIGHER_BETTER: dict[str, bool] = {
+    "reward": True,
+    "runtime": False,
+    "tokens": False,
+    "steps": False,
+    "pass_rate": True,
+}
+# Per-trial metrics (reduced via best/avg/median). ``pass_rate`` is NOT here: it
+# is already a per-subject ratio, so the agg toggle doesn't apply to it.
+_PER_TRIAL_METRICS = frozenset({"reward", "runtime", "tokens", "steps"})
+
+
+def _compare_metric_expr(metric: str) -> Any | None:
+    """Per-trial value for a comparison metric, or ``None`` for an unknown key."""
+    if metric == "reward":
+        return TrialModel.reward
+    if metric == "runtime":
+        return _trial_runtime_seconds()
+    if metric == "tokens":
+        return _trial_total_tokens(null_when_all_missing=True)
+    if metric == "steps":
+        return TrialModel.total_steps
+    return None
+
+
+def _compare_subject_column(compare_by: str) -> Any | None:
+    """The trial column the comparison groups on — agent or model."""
+    if compare_by == "agent":
+        return TrialModel.agent
+    if compare_by == "model":
+        return TrialModel.model
+    return None
+
+
+def _subject_metric_value(subject_col: Any, value: str, metric: str, agg: str) -> Any:
+    """Reduce ONE subject's (agent/model) trials to a single number for a metric.
+
+    Scoped to that subject via ``CASE`` so a task missing the subject yields NULL
+    (and drops out of the comparison). Handles:
+
+    * ``pass_rate`` — pass-bucket count ÷ the subject's trials, as a percent
+      (0-100); the ``agg`` toggle does not apply.
+    * per-trial metrics (reward/runtime/tokens/steps) reduced by ``best`` (MAX for
+      higher-better, MIN otherwise), ``avg``, or ``median`` (``percentile_cont``).
+    """
+    matches = subject_col == value
+    if metric == "pass_rate":
+        pass_ct = func.count(case((and_(matches, _trial_bucket_label() == "pass"), 1)))
+        total_ct = func.count(case((matches, 1)))
+        return pass_ct * 100.0 / func.nullif(total_ct, 0)
+    scoped: Any = case((matches, _compare_metric_expr(metric)), else_=None)
+    if agg == "median":
+        return func.percentile_cont(0.5).within_group(scoped)
+    if agg == "avg":
+        return func.avg(scoped)
+    return (
+        func.max(scoped)
+        if _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+        else func.min(scoped)
+    )
+
+
+def _compare_threshold(
+    b_val: Any, margin: float | None, unit: str | None, higher: bool
+) -> Any:
+    """B's value adjusted by an optional margin (percent of B or absolute)."""
+    if margin is None or margin <= 0:
+        return b_val
+    if unit == "abs":
+        return b_val + margin if higher else b_val - margin
+    factor = 1 + margin / 100.0 if higher else 1 - margin / 100.0
+    return b_val * factor
+
+
+def _agent_compare_subquery(
+    org_id: str | None,
+    *,
+    subject_col: Any,
+    value_a: str,
+    value_b: str,
+    metric: str,
+    agg: str,
+) -> Any:
+    """Per-``(task, version)`` values for two subjects (agents or models) on one
+    metric, so the GLOBAL "A beats B" filter can join + compare. Same scoped
+    trial set as ``_task_metrics_subquery`` (current version via the later join,
+    non-probe, non-superseded). On-the-fly; denormalize in full Phase 2."""
+    a_val = _subject_metric_value(subject_col, value_a, metric, agg).label("a_val")
+    b_val = _subject_metric_value(subject_col, value_b, metric, agg).label("b_val")
+    stmt = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        a_val,
+        b_val,
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.group_by(TrialModel.task_id, TrialModel.task_version_id).subquery()
+
+
+def _subject_value_scalar(
+    org_id: str | None, subject_col: Any, value: str, metric: str, agg: str
+) -> Any:
+    """A CORRELATED scalar subquery for one subject's metric value on the current
+    task (``TaskModel``). Used to express "A beats B" as a self-contained boolean
+    predicate that composes inside an OR-group (Phase 2.3). Two of these compared
+    is slower than the global join, but needs no named join — the price of being
+    composable."""
+    stmt = select(_subject_metric_value(subject_col, value, metric, agg)).where(
+        TrialModel.task_id == TaskModel.id,
+        TrialModel.task_version_id == TaskModel.current_version_id,
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.correlate(TaskModel).scalar_subquery()
+
+
+def _compare_predicate_correlated(
+    org_id: str | None,
+    *,
+    subject_col: Any,
+    value_a: str,
+    value_b: str,
+    metric: str,
+    agg: str,
+    margin: float | None,
+    margin_unit: str | None,
+) -> Any:
+    """ "A beats B" as a boolean predicate over correlated subqueries (for groups)."""
+    higher = _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+    a_val = _subject_value_scalar(org_id, subject_col, value_a, metric, agg)
+    b_val = _subject_value_scalar(org_id, subject_col, value_b, metric, agg)
+    threshold = _compare_threshold(b_val, margin, margin_unit, higher)
+    return a_val > threshold if higher else a_val < threshold
+
+
+def _top_performer_predicate(
+    org_id: str | None, *, subject_col: Any, value: str, metric: str
+) -> Any:
+    """ "``value`` is the top subject on ``metric`` for the task" — argmax
+    (higher-better) / argmin (lower-better) across ALL subjects. Built from a
+    per-``(task, version, subject)`` best-value subquery plus a window extreme
+    over the task; ties all count. Returns an EXISTS predicate over ``TaskModel``.
+    On-the-fly; no migration."""
+    higher = _COMPARE_METRIC_HIGHER_BETTER.get(metric, True)
+    # Per-subject best value (no CASE needed — we group by the subject column).
+    if metric == "pass_rate":
+        best_val = (
+            func.count(case((_trial_bucket_label() == "pass", 1)))
+            * 100.0
+            / func.nullif(func.count(TrialModel.id), 0)
+        )
+    else:
+        metric_expr = _compare_metric_expr(metric)
+        best_val = func.max(metric_expr) if higher else func.min(metric_expr)
+    per_subject_stmt = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        subject_col.label("subject"),
+        best_val.label("val"),
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+        subject_col.isnot(None),
+    )
+    if org_id is not None:
+        per_subject_stmt = per_subject_stmt.where(TrialModel.org_id == org_id)
+    per_subject = per_subject_stmt.group_by(
+        TrialModel.task_id, TrialModel.task_version_id, subject_col
+    ).subquery()
+
+    extreme = (func.max if higher else func.min)(per_subject.c.val).over(
+        partition_by=[per_subject.c.task_id, per_subject.c.task_version_id]
+    )
+    ranked = select(
+        per_subject.c.task_id,
+        per_subject.c.task_version_id,
+        per_subject.c.subject,
+        per_subject.c.val,
+        extreme.label("task_extreme"),
+    ).subquery()
+    winners = (
+        select(ranked.c.task_id, ranked.c.task_version_id)
+        .where(
+            ranked.c.subject == value,
+            ranked.c.val == ranked.c.task_extreme,
+        )
+        .subquery()
+    )
+    return exists(
+        select(winners.c.task_id).where(
+            winners.c.task_id == TaskModel.id,
+            winners.c.task_version_id == TaskModel.current_version_id,
+        )
+    )
+
+
+def _task_metrics_subquery(org_id: str | None) -> Any:
+    """One GROUP BY over the scoped trials, aggregated per (task, version).
+
+    Grouped by ``(task_id, task_version_id)`` and joined later on the task's
+    ``current_version_id`` so the aggregates match the same trial set the direct
+    ``_trial_exists`` filters use (non-probe, non-superseded, current version).
+    Every column is an on-the-fly computation (see the module note above).
+    """
+    total_tokens = _trial_total_tokens()
+    # Wall-clock seconds, NULL when a timestamp is missing so SUM/AVG ignore
+    # unfinished / not-yet-started trials (shared with the Phase 2.1 comparison).
+    runtime_seconds = _trial_runtime_seconds()
+    bucket = _trial_bucket_label()
+    stmt = select(
+        TrialModel.task_id.label("task_id"),
+        TrialModel.task_version_id.label("task_version_id"),
+        func.avg(TrialModel.reward).label("avg_reward"),
+        func.sum(total_tokens).label("total_tokens"),
+        func.count(TrialModel.id).label("total_trials"),
+        func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
+            "completed_trials"
+        ),
+        func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
+            "failed_trials"
+        ),
+        func.count(case((bucket == "pass", 1))).label("pass_count"),
+        func.count(case((bucket == "partial", 1))).label("partial_count"),
+        func.count(case((bucket == "fail", 1))).label("fail_count"),
+        func.count(case((bucket == "harness", 1))).label("harness_count"),
+        # Pass rate = pass-bucket count ÷ scoped trials, as a percent (0-100).
+        (
+            func.count(case((bucket == "pass", 1)))
+            * 100.0
+            / func.nullif(func.count(TrialModel.id), 0)
+        ).label("pass_rate"),
+        func.sum(runtime_seconds).label("runtime_total"),
+        func.avg(runtime_seconds).label("runtime_avg"),
+    ).where(
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.is_probe.isnot(True),
+    )
+    if org_id is not None:
+        stmt = stmt.where(TrialModel.org_id == org_id)
+    return stmt.group_by(TrialModel.task_id, TrialModel.task_version_id).subquery()
+
+
+# Aggregate sort tokens -> (metrics column label added to ranked_tasks, descending).
+# The column labels must match the ``add_columns`` labels in browse_tasks_core.
+_AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
+    "avg_score_desc": ("avg_reward", True),
+    "avg_score_asc": ("avg_reward", False),
+    "total_tokens_desc": ("total_tokens", True),
+    "total_tokens_asc": ("total_tokens", False),
+    "runtime_total_desc": ("runtime_total", True),
+    "runtime_total_asc": ("runtime_total", False),
+    "runtime_avg_desc": ("runtime_avg", True),
+    "runtime_avg_asc": ("runtime_avg", False),
+}
+
+# Phase 2.2: aggregate condition keys allowed inside an OR-group. If any group
+# uses one, the ``_task_metrics_subquery`` join is added so the group predicate
+# can reference its columns (same columns the global aggregate filters use).
+_AGGREGATE_GROUP_KEYS = frozenset(
+    {
+        "avg_score_min",
+        "avg_score_max",
+        "total_tokens_min",
+        "total_tokens_max",
+        "total_trials_min",
+        "completed_trials_min",
+        "failed_trials_min",
+        "pass_count_min",
+        "partial_count_min",
+        "fail_count_min",
+        "harness_count_min",
+        "runtime_total_min",
+        "runtime_total_max",
+        "runtime_avg_min",
+        "runtime_avg_max",
+        "pass_rate_min",
+        "pass_rate_max",
+    }
+)
+
+
 async def browse_tasks_core(
     session: AsyncSession,
     *,
@@ -701,9 +1131,97 @@ async def browse_tasks_core(
     author_user_ids: Sequence[str] | None = None,
     author_github_usernames: Sequence[str] | None = None,
     author_emails: Sequence[str] | None = None,
+    statuses: Sequence[str] | None = None,
+    priorities: Sequence[str] | None = None,
+    verdict_statuses: Sequence[str] | None = None,
+    has_link: bool | None = None,
+    run_analysis: bool | None = None,
+    run_probe: bool | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    experiment_ids: Sequence[str] | None = None,
+    agents: Sequence[str] | None = None,
+    models: Sequence[str] | None = None,
+    agent_models: Sequence[str] | None = None,
+    providers: Sequence[str] | None = None,
+    environments: Sequence[str] | None = None,
+    trial_statuses: Sequence[str] | None = None,
+    origins: Sequence[str] | None = None,
+    trial_is_probe: bool | None = None,
+    harbor_shas: Sequence[str] | None = None,
+    harbor_stages: Sequence[str] | None = None,
+    analysis_classifications: Sequence[str] | None = None,
+    has_error: bool | None = None,
+    has_trajectory: bool | None = None,
+    min_attempts: int | None = None,
+    min_tokens: int | None = None,
+    max_tokens: int | None = None,
+    min_steps: int | None = None,
+    max_steps: int | None = None,
+    reward_min: float | None = None,
+    reward_max: float | None = None,
+    # --- Phase 1.2-lite aggregate filters / sort (no migration) ---
+    avg_score_min: float | None = None,
+    avg_score_max: float | None = None,
+    total_tokens_min: int | None = None,
+    total_tokens_max: int | None = None,
+    total_trials_min: int | None = None,
+    completed_trials_min: int | None = None,
+    failed_trials_min: int | None = None,
+    pass_count_min: int | None = None,
+    partial_count_min: int | None = None,
+    fail_count_min: int | None = None,
+    harness_count_min: int | None = None,
+    runtime_total_min: float | None = None,
+    runtime_total_max: float | None = None,
+    runtime_avg_min: float | None = None,
+    runtime_avg_max: float | None = None,
+    pass_rate_min: float | None = None,
+    pass_rate_max: float | None = None,
+    sort: str | None = None,
+    # --- Phase 2.1 agent/model comparison (no migration) ---
+    compare_by: str | None = None,
+    compare_a: str | None = None,
+    compare_b: str | None = None,
+    compare_metric: str | None = None,
+    compare_agg: str | None = None,
+    compare_margin: float | None = None,
+    compare_margin_unit: str | None = None,
+    # --- Phase 2.3 top performer (best agent/model per task), no migration ---
+    top_by: str | None = None,
+    top_value: str | None = None,
+    top_metric: str | None = None,
+    # --- Phase 2.2 OR-groups ("Match any of…"), no migration ---
+    or_groups: Sequence[Mapping[str, Any]] | None = None,
     record_timing: TimingRecorder | None = None,
 ) -> TaskBrowseResponse:
-    """List latest-version task summaries for the task browser."""
+    """List latest-version task summaries for the task browser.
+
+    Beyond the free-text / tag / author filters, the browser supports a set of
+    "Phase 1.1.1" direct filters that require no schema change:
+
+    * Task-column filters (``statuses``, ``priorities``, ``verdict_statuses``,
+      ``has_link``, ``run_analysis``, ``run_probe``, ``created_after`` /
+      ``created_before``, ``experiment_ids``) are plain ``WHERE`` predicates on
+      the ``tasks`` row.
+    * Trial-level filters (``agents``, ``models``, ``providers``,
+      ``environments``, ``trial_statuses``, ``origins``, ``trial_is_probe``,
+      ``harbor_*``, ``analysis_classifications``, ``has_error``,
+      ``has_trajectory``, ``min_attempts``, token / step / reward ranges) are
+      "task has at least one current-version trial matching X" — expressed as a
+      correlated ``EXISTS`` over ``trials`` (non-superseded, current version,
+      non-probe unless ``trial_is_probe`` is set). They filter the task set; they
+      are NOT aggregates, so e.g. a token range matches a single trial's value,
+      not the task average.
+    * "Phase 1.2-lite" AGGREGATE filters/sort (``avg_score_*``, ``total_tokens_*``,
+      ``*_trials_min``, ``pass/partial/fail/harness_count_min``, ``runtime_*``,
+      ``sort``) are computed on the fly by ``_task_metrics_subquery`` — a single
+      GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
+      predicates before pagination. There is NO supporting index or roll-up; this
+      is the deliberately-slow path that full Phase 1.2 will denormalize. Cost-based
+      aggregates stay deferred (cost is partly Python-estimated, so a pure-SQL sum
+      would silently miss the estimated trials).
+    """
 
     current_version = aliased(TaskVersionModel)
     normalized_query = query.strip() if query else None
@@ -783,6 +1301,565 @@ async def browse_tasks_core(
     if author_filter is not None:
         ranked_tasks = ranked_tasks.where(author_filter)
 
+    # --- Phase 1.1.1 direct filters (no schema change) ---------------------
+    # Task-column predicates: plain WHERE on the tasks row.
+    if statuses:
+        ranked_tasks = ranked_tasks.where(TaskModel.status.in_(list(statuses)))
+    if priorities:
+        ranked_tasks = ranked_tasks.where(TaskModel.priority.in_(list(priorities)))
+    if verdict_statuses:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.verdict_status.in_(list(verdict_statuses))
+        )
+    if has_link is not None:
+        ranked_tasks = ranked_tasks.where(
+            TaskModel.link.isnot(None) if has_link else TaskModel.link.is_(None)
+        )
+    if run_analysis is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.run_analysis.is_(run_analysis))
+    if run_probe is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.run_probe.is_(run_probe))
+    if created_after is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.created_at >= created_after)
+    if created_before is not None:
+        ranked_tasks = ranked_tasks.where(TaskModel.created_at <= created_before)
+    if experiment_ids:
+        ranked_tasks = ranked_tasks.where(
+            exists(
+                select(task_experiments.c.task_id).where(
+                    task_experiments.c.task_id == TaskModel.id,
+                    task_experiments.c.experiment_id.in_(list(experiment_ids)),
+                    task_experiments.c.deleted_at.is_(None),
+                )
+            )
+        )
+
+    # Trial-level predicates: "task has >=1 current-version trial matching".
+    def _trial_exists(*predicates: Any, include_probes: bool = False) -> Any:
+        conds = [
+            TrialModel.task_id == TaskModel.id,
+            TrialModel.task_version_id == TaskModel.current_version_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+        ]
+        if not include_probes:
+            conds.append(TrialModel.is_probe.isnot(True))
+        conds.extend(predicates)
+        return exists(select(TrialModel.id).where(and_(*conds)))
+
+    if agents:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.agent.in_(list(agents)))
+        )
+    if models:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.model.in_(list(models)))
+        )
+    if agent_models:
+        # Each token is "agent:model" (model = everything after the first colon;
+        # agent names have no colons) or bare "agent" for a null model. Match a
+        # single trial whose (agent, model) equals one of the selected pairs.
+        pair_conds = []
+        for token in agent_models:
+            agent_name, sep, model_name = token.partition(":")
+            if not agent_name:
+                continue
+            if sep and model_name:
+                pair_conds.append(
+                    and_(
+                        TrialModel.agent == agent_name,
+                        TrialModel.model == model_name,
+                    )
+                )
+            else:
+                pair_conds.append(
+                    and_(
+                        TrialModel.agent == agent_name,
+                        TrialModel.model.is_(None),
+                    )
+                )
+        if pair_conds:
+            ranked_tasks = ranked_tasks.where(_trial_exists(or_(*pair_conds)))
+    if providers:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.provider.in_(list(providers)))
+        )
+    if environments:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.environment.in_(list(environments)))
+        )
+    if trial_statuses:
+        # Values are the uppercase enum NAMES (SUCCESS/FAILED/…), matching the
+        # frontend TRIAL_STATUS_OPTIONS. TrialModel.status uses SQLEnum without
+        # values_callable, so the column stores names, not the lowercase values.
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.status.in_(list(trial_statuses)))
+        )
+    if origins:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.origin.in_(list(origins)))
+        )
+    if trial_is_probe is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.is_probe.is_(trial_is_probe), include_probes=True)
+        )
+    if harbor_shas:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.harbor_sha.in_(list(harbor_shas)))
+        )
+    if harbor_stages:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.harbor_stage.in_(list(harbor_stages)))
+        )
+    if analysis_classifications:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(
+                TrialModel.analysis["classification"].astext.in_(
+                    list(analysis_classifications)
+                )
+            )
+        )
+    if has_error is not None:
+        has_errored_trial = _trial_exists(TrialModel.error_message.isnot(None))
+        if has_error:
+            ranked_tasks = ranked_tasks.where(has_errored_trial)
+        else:
+            # "No" is the complement of "Yes": the task ran at least one real
+            # trial and none of them errored (so a task with a mix of errored
+            # and clean trials counts as "Yes", not "No").
+            ranked_tasks = ranked_tasks.where(and_(_trial_exists(), ~has_errored_trial))
+    if has_trajectory is not None:
+        has_trajectory_trial = _trial_exists(TrialModel.has_trajectory.is_(True))
+        if has_trajectory:
+            ranked_tasks = ranked_tasks.where(has_trajectory_trial)
+        else:
+            # Same complement semantics as has_error: ran a real trial, none
+            # of which has a trajectory.
+            ranked_tasks = ranked_tasks.where(
+                and_(_trial_exists(), ~has_trajectory_trial)
+            )
+    if min_attempts is not None:
+        ranked_tasks = ranked_tasks.where(
+            _trial_exists(TrialModel.attempts >= min_attempts)
+        )
+    if min_tokens is not None or max_tokens is not None:
+        # Token size = input + output + cache for a single trial (per-trial
+        # existence, not a task aggregate). Backs the "Token size" sidebar filter.
+        total_tokens = (
+            func.coalesce(TrialModel.input_tokens, 0)
+            + func.coalesce(TrialModel.output_tokens, 0)
+            + func.coalesce(TrialModel.cache_tokens, 0)
+        )
+        token_preds = []
+        if min_tokens is not None:
+            token_preds.append(total_tokens >= min_tokens)
+        if max_tokens is not None:
+            token_preds.append(total_tokens <= max_tokens)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*token_preds))
+    if min_steps is not None or max_steps is not None:
+        step_preds = [TrialModel.total_steps.isnot(None)]
+        if min_steps is not None:
+            step_preds.append(TrialModel.total_steps >= min_steps)
+        if max_steps is not None:
+            step_preds.append(TrialModel.total_steps <= max_steps)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*step_preds))
+    if reward_min is not None or reward_max is not None:
+        reward_preds = [TrialModel.reward.isnot(None)]
+        if reward_min is not None:
+            reward_preds.append(TrialModel.reward >= reward_min)
+        if reward_max is not None:
+            reward_preds.append(TrialModel.reward <= reward_max)
+        ranked_tasks = ranked_tasks.where(_trial_exists(*reward_preds))
+
+    # --- Phase 1.2-lite aggregate filters / sort (no migration) -----------
+    # Unlike the ``_trial_exists`` filters above (which match a SINGLE trial),
+    # these are TASK aggregates over the scoped trial set and must be computed
+    # in SQL BEFORE pagination. We build one GROUP BY subquery and LEFT JOIN it
+    # on the task's current version, then apply the range predicates as WHERE on
+    # the aggregated columns (HAVING semantics) so tasks are filtered out of the
+    # ranked set before ``name_rank`` / LIMIT. The join + columns are added ONLY
+    # when an aggregate filter or aggregate sort is requested, so the default
+    # browse query is byte-for-byte unchanged. Each aggregate is an on-the-fly
+    # computation to be denormalized in full Phase 1.2 (see module note above).
+    aggregate_sort_active = sort in _AGGREGATE_SORTS
+    aggregate_filter_active = any(
+        value is not None
+        for value in (
+            avg_score_min,
+            avg_score_max,
+            total_tokens_min,
+            total_tokens_max,
+            total_trials_min,
+            completed_trials_min,
+            failed_trials_min,
+            pass_count_min,
+            partial_count_min,
+            fail_count_min,
+            harness_count_min,
+            runtime_total_min,
+            runtime_total_max,
+            runtime_avg_min,
+            runtime_avg_max,
+            pass_rate_min,
+            pass_rate_max,
+        )
+    )
+    # Phase 2.2 OR-groups ("Match any of…"): drop empty / non-mapping specs. If any
+    # group uses an aggregate condition, the metrics join must be present so the
+    # group predicate can reference its columns.
+    group_specs = [
+        spec for spec in (or_groups or []) if isinstance(spec, Mapping) and spec
+    ]
+    groups_use_aggregates = any(
+        any(key in _AGGREGATE_GROUP_KEYS for key in spec) for spec in group_specs
+    )
+    task_metrics = None
+    if aggregate_filter_active or aggregate_sort_active or groups_use_aggregates:
+        task_metrics = _task_metrics_subquery(org_id)
+        ranked_tasks = ranked_tasks.add_columns(
+            task_metrics.c.avg_reward.label("avg_reward"),
+            task_metrics.c.total_tokens.label("total_tokens"),
+            task_metrics.c.total_trials.label("agg_total_trials"),
+            task_metrics.c.completed_trials.label("agg_completed_trials"),
+            task_metrics.c.failed_trials.label("agg_failed_trials"),
+            task_metrics.c.pass_count.label("pass_count"),
+            task_metrics.c.partial_count.label("partial_count"),
+            task_metrics.c.fail_count.label("fail_count"),
+            task_metrics.c.harness_count.label("harness_count"),
+            task_metrics.c.pass_rate.label("pass_rate"),
+            task_metrics.c.runtime_total.label("runtime_total"),
+            task_metrics.c.runtime_avg.label("runtime_avg"),
+        ).outerjoin(
+            task_metrics,
+            and_(
+                task_metrics.c.task_id == TaskModel.id,
+                task_metrics.c.task_version_id == TaskModel.current_version_id,
+            ),
+        )
+        # ``avg_score`` is a PERCENT (0-100) at this boundary; ``reward`` is 0-1.
+        # A task with no scored trials has a NULL avg and drops out of both the
+        # min and the max bound (NULL comparisons are not-true) — undefined score
+        # is neither "high" nor "low".
+        if avg_score_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.avg_reward * 100 >= avg_score_min
+            )
+        if avg_score_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.avg_reward * 100 <= avg_score_max
+            )
+        if total_tokens_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_tokens >= total_tokens_min
+            )
+        if total_tokens_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_tokens <= total_tokens_max
+            )
+        if total_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.total_trials >= total_trials_min
+            )
+        if completed_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.completed_trials >= completed_trials_min
+            )
+        if failed_trials_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.failed_trials >= failed_trials_min
+            )
+        if pass_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.pass_count >= pass_count_min
+            )
+        if partial_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.partial_count >= partial_count_min
+            )
+        if fail_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.fail_count >= fail_count_min
+            )
+        if harness_count_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.harness_count >= harness_count_min
+            )
+        if runtime_total_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_total >= runtime_total_min
+            )
+        if runtime_total_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_total <= runtime_total_max
+            )
+        if runtime_avg_min is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_avg >= runtime_avg_min
+            )
+        if runtime_avg_max is not None:
+            ranked_tasks = ranked_tasks.where(
+                task_metrics.c.runtime_avg <= runtime_avg_max
+            )
+        if pass_rate_min is not None:
+            ranked_tasks = ranked_tasks.where(task_metrics.c.pass_rate >= pass_rate_min)
+        if pass_rate_max is not None:
+            ranked_tasks = ranked_tasks.where(task_metrics.c.pass_rate <= pass_rate_max)
+
+    # --- Phase 2.3 top performer (best agent/model per task) --------------
+    top_subject_col = _compare_subject_column(top_by) if top_by else None
+    if (
+        top_subject_col is not None
+        and top_value
+        and top_metric in _COMPARE_METRIC_HIGHER_BETTER
+    ):
+        ranked_tasks = ranked_tasks.where(
+            _top_performer_predicate(
+                org_id,
+                subject_col=top_subject_col,
+                value=top_value,
+                metric=top_metric,
+            )
+        )
+
+    # --- Phase 2.1 agent/model comparison (no migration) ------------------
+    # Keep only tasks where subject A beats subject B on one metric, computed on
+    # the fly. Missing-subject tasks drop out automatically: a task lacking A or B
+    # yields a NULL a_val/b_val, so the comparison is NULL -> not-true -> excluded
+    # (this is the "exclude if a task has only one of the two" behaviour). Only
+    # built when a valid, distinct pair + a known metric are requested.
+    compare_subject_col = _compare_subject_column(compare_by) if compare_by else None
+    compare_metric_known = (
+        compare_metric in _COMPARE_METRIC_HIGHER_BETTER if compare_metric else False
+    )
+    if (
+        compare_subject_col is not None
+        and compare_metric_known
+        and compare_a
+        and compare_b
+        and compare_a != compare_b
+    ):
+        higher_better = _COMPARE_METRIC_HIGHER_BETTER[compare_metric]
+        agg = compare_agg if compare_agg in ("avg", "median") else "best"
+        compare_metrics = _agent_compare_subquery(
+            org_id,
+            subject_col=compare_subject_col,
+            value_a=compare_a,
+            value_b=compare_b,
+            metric=compare_metric,
+            agg=agg,
+        )
+        ranked_tasks = ranked_tasks.outerjoin(
+            compare_metrics,
+            and_(
+                compare_metrics.c.task_id == TaskModel.id,
+                compare_metrics.c.task_version_id == TaskModel.current_version_id,
+            ),
+        )
+        a_val = compare_metrics.c.a_val
+        b_val = compare_metrics.c.b_val
+        # Optional margin: A must beat B by MORE than ``compare_margin`` — a
+        # percent of B (``pct``, default) or an absolute difference (``abs``).
+        if compare_margin is not None and compare_margin > 0:
+            if compare_margin_unit == "abs":
+                threshold = (
+                    b_val + compare_margin if higher_better else b_val - compare_margin
+                )
+            else:
+                factor = (
+                    1 + compare_margin / 100.0
+                    if higher_better
+                    else 1 - compare_margin / 100.0
+                )
+                threshold = b_val * factor
+        else:
+            threshold = b_val
+        ranked_tasks = ranked_tasks.where(
+            a_val > threshold if higher_better else a_val < threshold
+        )
+
+    # --- Phase 2.2 OR-groups ("Match any of…"), no migration --------------
+    # DNF combinator scoped to one block: each group's conditions are ANDed, the
+    # groups are ORed, and the whole thing is intersected (ANDed) with the global
+    # filters above via a SINGLE extra ``.where(or_(...))``. Conditions reuse the
+    # same predicate primitives as the global filters (``_trial_exists`` for the
+    # trial-level ones; ``task_metrics`` columns for the aggregate ones), so a
+    # group is "a mini-sidebar". Compare A vs B is global-only in v1.
+    def _group_predicate(spec: Mapping[str, Any]) -> Any:
+        preds: list[Any] = []
+
+        def _list(key: str) -> list[Any] | None:
+            value = spec.get(key)
+            return list(value) if value else None
+
+        if (statuses_ := _list("statuses")) is not None:
+            preds.append(TaskModel.status.in_(statuses_))
+        if (priorities_ := _list("priorities")) is not None:
+            preds.append(TaskModel.priority.in_(priorities_))
+        if (verdicts_ := _list("verdict_statuses")) is not None:
+            preds.append(TaskModel.verdict_status.in_(verdicts_))
+        if spec.get("has_link") is not None:
+            preds.append(
+                TaskModel.link.isnot(None)
+                if spec["has_link"]
+                else TaskModel.link.is_(None)
+            )
+        if spec.get("run_analysis") is not None:
+            preds.append(TaskModel.run_analysis.is_(bool(spec["run_analysis"])))
+        if spec.get("run_probe") is not None:
+            preds.append(TaskModel.run_probe.is_(bool(spec["run_probe"])))
+
+        if (agents_ := _list("agents")) is not None:
+            preds.append(_trial_exists(TrialModel.agent.in_(agents_)))
+        if (models_ := _list("models")) is not None:
+            preds.append(_trial_exists(TrialModel.model.in_(models_)))
+        if (agent_models_ := _list("agent_models")) is not None:
+            pair_conds = []
+            for token in agent_models_:
+                agent_name, sep, model_name = str(token).partition(":")
+                if not agent_name:
+                    continue
+                if sep and model_name:
+                    pair_conds.append(
+                        and_(
+                            TrialModel.agent == agent_name,
+                            TrialModel.model == model_name,
+                        )
+                    )
+                else:
+                    pair_conds.append(
+                        and_(
+                            TrialModel.agent == agent_name,
+                            TrialModel.model.is_(None),
+                        )
+                    )
+            if pair_conds:
+                preds.append(_trial_exists(or_(*pair_conds)))
+        if (providers_ := _list("providers")) is not None:
+            preds.append(_trial_exists(TrialModel.provider.in_(providers_)))
+        if (environments_ := _list("environments")) is not None:
+            preds.append(_trial_exists(TrialModel.environment.in_(environments_)))
+        if (trial_statuses_ := _list("trial_statuses")) is not None:
+            preds.append(_trial_exists(TrialModel.status.in_(trial_statuses_)))
+        if (origins_ := _list("origins")) is not None:
+            preds.append(_trial_exists(TrialModel.origin.in_(origins_)))
+        if (classifications_ := _list("analysis_classifications")) is not None:
+            preds.append(
+                _trial_exists(
+                    TrialModel.analysis["classification"].astext.in_(classifications_)
+                )
+            )
+        if spec.get("trial_is_probe") is not None:
+            preds.append(
+                _trial_exists(
+                    TrialModel.is_probe.is_(bool(spec["trial_is_probe"])),
+                    include_probes=True,
+                )
+            )
+        if spec.get("has_error") is not None:
+            errored = _trial_exists(TrialModel.error_message.isnot(None))
+            preds.append(
+                errored if spec["has_error"] else and_(_trial_exists(), ~errored)
+            )
+        if spec.get("has_trajectory") is not None:
+            traj = _trial_exists(TrialModel.has_trajectory.is_(True))
+            preds.append(
+                traj if spec["has_trajectory"] else and_(_trial_exists(), ~traj)
+            )
+        if spec.get("min_attempts") is not None:
+            preds.append(_trial_exists(TrialModel.attempts >= spec["min_attempts"]))
+
+        min_tok, max_tok = spec.get("min_tokens"), spec.get("max_tokens")
+        if min_tok is not None or max_tok is not None:
+            tokens_expr = _trial_total_tokens()
+            tok_preds = []
+            if min_tok is not None:
+                tok_preds.append(tokens_expr >= min_tok)
+            if max_tok is not None:
+                tok_preds.append(tokens_expr <= max_tok)
+            preds.append(_trial_exists(*tok_preds))
+        min_st, max_st = spec.get("min_steps"), spec.get("max_steps")
+        if min_st is not None or max_st is not None:
+            step_preds = [TrialModel.total_steps.isnot(None)]
+            if min_st is not None:
+                step_preds.append(TrialModel.total_steps >= min_st)
+            if max_st is not None:
+                step_preds.append(TrialModel.total_steps <= max_st)
+            preds.append(_trial_exists(*step_preds))
+        r_min, r_max = spec.get("reward_min"), spec.get("reward_max")
+        if r_min is not None or r_max is not None:
+            r_preds = [TrialModel.reward.isnot(None)]
+            if r_min is not None:
+                r_preds.append(TrialModel.reward >= r_min)
+            if r_max is not None:
+                r_preds.append(TrialModel.reward <= r_max)
+            preds.append(_trial_exists(*r_preds))
+
+        # Aggregate conditions reference the metrics join (present because
+        # ``groups_use_aggregates`` forced it above).
+        if task_metrics is not None:
+            m = task_metrics.c
+            agg_preds = {
+                "avg_score_min": lambda v: m.avg_reward * 100 >= v,
+                "avg_score_max": lambda v: m.avg_reward * 100 <= v,
+                "total_tokens_min": lambda v: m.total_tokens >= v,
+                "total_tokens_max": lambda v: m.total_tokens <= v,
+                "total_trials_min": lambda v: m.total_trials >= v,
+                "completed_trials_min": lambda v: m.completed_trials >= v,
+                "failed_trials_min": lambda v: m.failed_trials >= v,
+                "pass_count_min": lambda v: m.pass_count >= v,
+                "partial_count_min": lambda v: m.partial_count >= v,
+                "fail_count_min": lambda v: m.fail_count >= v,
+                "harness_count_min": lambda v: m.harness_count >= v,
+                "runtime_total_min": lambda v: m.runtime_total >= v,
+                "runtime_total_max": lambda v: m.runtime_total <= v,
+                "runtime_avg_min": lambda v: m.runtime_avg >= v,
+                "runtime_avg_max": lambda v: m.runtime_avg <= v,
+                "pass_rate_min": lambda v: m.pass_rate >= v,
+                "pass_rate_max": lambda v: m.pass_rate <= v,
+            }
+            for key, make_pred in agg_preds.items():
+                if spec.get(key) is not None:
+                    preds.append(make_pred(spec[key]))
+
+        # Phase 2.3: a "Compare A vs B" condition inside the group, built from
+        # correlated subqueries so it composes here (unlike the global joined
+        # form). ``spec["compare"]`` mirrors the global compare params.
+        cmp = spec.get("compare")
+        if isinstance(cmp, Mapping):
+            cmp_subject = _compare_subject_column(cmp.get("compare_by") or "agent")
+            cmp_metric = cmp.get("compare_metric")
+            cmp_a, cmp_b = cmp.get("compare_a"), cmp.get("compare_b")
+            if (
+                cmp_subject is not None
+                and cmp_metric in _COMPARE_METRIC_HIGHER_BETTER
+                and cmp_a
+                and cmp_b
+                and cmp_a != cmp_b
+            ):
+                cmp_agg = cmp.get("compare_agg")
+                preds.append(
+                    _compare_predicate_correlated(
+                        org_id,
+                        subject_col=cmp_subject,
+                        value_a=cmp_a,
+                        value_b=cmp_b,
+                        metric=cmp_metric,
+                        agg=cmp_agg if cmp_agg in ("avg", "median") else "best",
+                        margin=cmp.get("compare_margin"),
+                        margin_unit=cmp.get("compare_margin_unit"),
+                    )
+                )
+
+        return and_(*preds) if preds else None
+
+    if group_specs:
+        group_predicates = [
+            pred
+            for pred in (_group_predicate(spec) for spec in group_specs)
+            if pred is not None
+        ]
+        if group_predicates:
+            ranked_tasks = ranked_tasks.where(or_(*group_predicates))
+
     ranked_tasks_subquery = ranked_tasks.subquery()
 
     version_counts = (
@@ -844,7 +1921,24 @@ async def browse_tasks_core(
             ),
         )
         .where(ranked_tasks_subquery.c.name_rank == 1)
-        .order_by(
+    )
+
+    # Aggregate sort (Phase 1.2-lite): when requested, order by the aggregate
+    # column FIRST (nulls last), keeping the existing recency order as the
+    # tiebreak so tasks with an equal / NULL metric still fall back to the
+    # familiar ordering. The metric columns exist on the subquery only when the
+    # aggregate join was added above, hence the ``aggregate_sort_active`` guard.
+    aggregate_order = []
+    if aggregate_sort_active:
+        column_label, descending = _AGGREGATE_SORTS[sort]  # type: ignore[index]
+        metric_column = ranked_tasks_subquery.c[column_label]
+        aggregate_order.append(
+            nulls_last(metric_column.desc() if descending else metric_column.asc())
+        )
+
+    paged_rows = (
+        paged_rows.order_by(
+            *aggregate_order,
             # Fresh "never run" tasks should appear near the top of the
             # browser (ordered by upload time), not buried below every
             # real experiment. Fall back to the task's created_at when
@@ -878,7 +1972,7 @@ async def browse_tasks_core(
     # Per-task cost rollup (token-estimated for CLI agents that report tokens
     # but no native cost_usd). Folded into the trials loop below to avoid an
     # extra query. Mirrors the task-detail TaskCostTotals fields.
-    cost_by_task: dict[str, dict] = {}
+    cost_by_task: dict[str, dict[str, Any]] = {}
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -1019,7 +2113,7 @@ async def browse_tasks_core(
             )
             resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
             if resolved_cost is not None:
-                agg = cost_by_task.setdefault(
+                cost_agg: dict[str, Any] = cost_by_task.setdefault(
                     task_key,
                     {
                         "cost_usd": 0.0,
@@ -1028,12 +2122,12 @@ async def browse_tasks_core(
                         "cost_has_native": False,
                     },
                 )
-                agg["cost_usd"] += resolved_cost
-                agg["cost_trial_count"] += 1
+                cost_agg["cost_usd"] += resolved_cost
+                cost_agg["cost_trial_count"] += 1
                 if cost_estimated:
-                    agg["cost_has_estimated"] = True
+                    cost_agg["cost_has_estimated"] = True
                 else:
-                    agg["cost_has_native"] = True
+                    cost_agg["cost_has_native"] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -1134,6 +2228,107 @@ async def browse_tasks_core(
             "Build browse response",
         )
     return response
+
+
+async def browse_task_facets_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None = None,
+) -> TaskBrowseFacets:
+    """Distinct filter-option values for the task browser.
+
+    Returns the trial-derived facets (agent, model, provider, environment,
+    harbor stage, analysis classification) plus the org's experiments. Scoped to
+    the same trials the browse filters match — non-probe, non-superseded, and on
+    each task's CURRENT version — so every option yields at least one task.
+    """
+
+    def _distinct(column: Any) -> Any:
+        stmt = (
+            select(column)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                column.isnot(None),
+                TrialModel.is_probe.isnot(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+            )
+        )
+        if org_id is not None:
+            stmt = stmt.where(TrialModel.org_id == org_id)
+        return stmt.distinct().order_by(column)
+
+    # Each facet is computed independently and a failure in one (e.g. a
+    # data-dependent JSON query) must not 500 the whole endpoint and blank every
+    # filter dropdown. On error we log, roll back the aborted transaction so the
+    # next query runs clean, and return an empty list for just that facet.
+    async def _values(column: Any, name: str) -> list[str]:
+        try:
+            result = await session.execute(_distinct(column))
+            return [v for v in result.scalars().all() if v]
+        except Exception:  # noqa: BLE001 - facets are best-effort
+            logger.exception("browse facets: %s query failed", name)
+            await session.rollback()
+            return []
+
+    classification = TrialModel.analysis["classification"].astext
+
+    agents = await _values(TrialModel.agent, "agent")
+    models = await _values(TrialModel.model, "model")
+    providers = await _values(TrialModel.provider, "provider")
+
+    # Distinct (agent, model) pairs — the meaningful "what was run" unit. A trial
+    # is an agent at a specific model, so this is the primary run-config facet.
+    agent_models: list[AgentModelFacet] = []
+    try:
+        pairs_stmt = (
+            select(TrialModel.agent, TrialModel.model)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(
+                TrialModel.agent.isnot(None),
+                TrialModel.is_probe.isnot(True),
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+            )
+        )
+        if org_id is not None:
+            pairs_stmt = pairs_stmt.where(TrialModel.org_id == org_id)
+        pairs_stmt = pairs_stmt.distinct().order_by(TrialModel.agent, TrialModel.model)
+        pair_rows = (await session.execute(pairs_stmt)).all()
+        agent_models = [
+            AgentModelFacet(agent=row[0], model=row[1]) for row in pair_rows
+        ]
+    except Exception:  # noqa: BLE001 - facets are best-effort
+        logger.exception("browse facets: agent_models query failed")
+        await session.rollback()
+    environments = await _values(TrialModel.environment, "environment")
+    harbor_stages = await _values(TrialModel.harbor_stage, "harbor_stage")
+    analysis_classifications = await _values(classification, "analysis_classification")
+
+    experiments: list[TaskBrowseExperiment] = []
+    try:
+        experiments_stmt = select(ExperimentModel.id, ExperimentModel.name)
+        if org_id is not None:
+            experiments_stmt = experiments_stmt.where(ExperimentModel.org_id == org_id)
+        experiments_stmt = experiments_stmt.order_by(ExperimentModel.name)
+        experiment_rows = (await session.execute(experiments_stmt)).all()
+        experiments = [
+            TaskBrowseExperiment(id=row[0], name=row[1]) for row in experiment_rows
+        ]
+    except Exception:  # noqa: BLE001 - facets are best-effort
+        logger.exception("browse facets: experiments query failed")
+        await session.rollback()
+
+    return TaskBrowseFacets(
+        agents=agents,
+        models=models,
+        agent_models=agent_models,
+        providers=providers,
+        environments=environments,
+        harbor_stages=harbor_stages,
+        analysis_classifications=analysis_classifications,
+        experiments=experiments,
+    )
 
 
 async def get_task_status_core(

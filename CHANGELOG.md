@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-02]
+
+### Added
+
+- Trial-collection experiments: `oddish experiment create --name "..." <trial_id...>` and `POST /experiments/collections` (TASKS scope) gather existing trials into a new read-only `is_collection` experiment via `create_trial_collection_core`, without moving trials out of their home experiment. Membership is additive through a new `experiment_trials` join table (plus `task_experiments` for parent tasks); read paths — dashboard aggregates, task listing/effective-version resolution (including older task versions), export, and public/share views — treat membership as home `experiment_id` OR a gathered row via shared `experiment_membership` helpers, with probes still excluded from every public surface. New runs and sweep-appends targeting a collection are rejected. (First landed in #536, reverted, relanded in #552, reverted again after a prod migration deadlock, and relanded unchanged in #556 with a deadlock-safe `exp_trials_join_001` migration — each DDL step now runs in its own `autocommit_block`, FKs are added `NOT VALID` then `VALIDATE CONSTRAINT`, and a `lock_timeout` guards against lock-order conflicts with hot-table DML.) (#536, #552, #556)
+- Task browser overhaul: `browse_tasks_core` / `GET /tasks/browse` accept a large set of new filters — task metadata (status, priority, verdict, has-link, run-analysis/probe, created-date presets/custom range, experiments), trial-level `EXISTS` filters (agent, model, agent·model pair, provider, environment, trial status, origin, analysis classification, has-error, has-trajectory, attempts, tokens/steps/reward ranges), on-the-fly aggregate filters/sort (avg score, total tokens, trial counts, pass/partial/fail/harness buckets, run time), agent/model "Compare A vs B" and "top performer" comparisons, and an `or_groups` DNF combinator for "match any of" condition groups. A new `GET /tasks/browse/facets` endpoint supplies sidebar option values. The frontend tasks page moves from client-side SWR to URL-driven, server-rendered filtering with a sticky filter sidebar (draft-then-Apply for heavy fields), Suspense/skeleton loading, link-based pagination, and whole-URL (v2) saved filters. (#540)
+- Migration Head Guard CI workflow: a new `.github/workflows/migration-head-guard.yml` runs `alembic heads` on the PR's merge ref for both the `oddish` and `backend` Alembic trees and fails if either would have more than one head after merging into main, catching stale `down_revision` forks (the kind that caused a prior `experiments.is_collection` prod incident) before they reach main. (#549)
+
+### Changed
+
+- Harbor artifact extraction is now centralized: a new `oddish.core.harbor_artifacts` module holds shared trajectory-metrics, timing, token, reward, and error extraction from Harbor `TrialResult`s; both the live worker outcome path (`workers/harbor/outcome.py`) and CLI/server trial import (`cli/api.py`) reuse it instead of duplicating logic. Sauron trial-directory discovery now uses Harbor's `JobScanner` (with legacy fallback preserved), zip-import task-name inference prefers Harbor config/result model parsing over nested legacy JSON discovery, and several edge cases were fixed along the way (worker reward propagation, multi-trial token precedence, invalid trajectory cost handling, non-numeric verifier reward handling). (#557)
+- Task version content hashing (`compute_task_content_hash`) now hashes only execution-relevant task contents: it uses Harbor's `Packager.collect_files` publishable-file selection (respecting default ignores like `__pycache__`) and semantically parses `task.toml` via `TaskConfig`, so descriptive `[metadata]`/`[task]` edits no longer create a new Oddish task version — only changes to runtime fields (verifier, agent, environment, steps, etc.) or other files do. (#546)
+- Dispatch planning is now shared across hosts: a new `build_dispatch_plan` / `DispatchPlan` in `oddish.dispatch.cycle` centralizes queue discovery, counts, held-slot accounting, concurrency limits, and spawn-plan calculation. Modal's `poll_queue` (`backend/worker/functions.py`) and the standalone self-hosted `run_polling_worker()` (now routed through `run_dispatch_loop` with a new `InProcessDispatcher`) both consume the shared planner, while assigned single-queue Docker/Kubernetes workers are unchanged. The shared dispatch loop also now catches and retries on transient failures instead of propagating them. (#545, #547)
+- Backend router decomposition: hosted task-submission identity resolution, GitHub attribution, experiment-owner stamping, and auto-publish logic are extracted out of the large `backend/api/routers/tasks.py` into a new `task_submission.py` module; Claude Code's Anthropic-compatible environment setup in `workers/harbor/agent_config.py` is now shared across the OpenRouter, Fireworks, z.ai, MiniMax, and Moonshot routes instead of being duplicated per provider. (#554)
+- Trial `environment` is now surfaced directly in trial responses: `TrialResponse.environment` (including the compact experiment-page response) exposes `trials.environment`, added to the compact eager-load `load_only` set in `list_tasks_core`; the trial detail drawer's sandbox badge and rerun command now prefer this field over worker-job metadata, so the badge renders instantly instead of waiting on `jobs` data (worker-job metadata remains the fallback for legacy rows). (#531)
+- Locked `harbor` git dependency (`rishidesai/harbor@main`) advances from `aeadaf4b` to `2ae61e86`, with `HARBOR_DEFAULT_SHA` and both `uv.lock` files updated in lockstep. (#543)
+- Probe detail panel: the trial ID on the probe run detail view now renders as a labeled "Trial: <id>" line (matching the existing "Preset:" styling) instead of small unlabeled muted text; the panel also no longer shows the red trial-error block when `error_message` contains "exit 137" (SIGKILL/OOM-style termination). (#532, #534)
+
+### Fixed
+
+- Off-Modal dispatch no longer over-spawns workers: `run_dispatch_cycle` now sizes its spawn plan against `max(running, held)` per `queue_key`, using a new `count_held_queue_slots` helper, instead of `worker_jobs` RUNNING counts alone. An event-triggered cycle re-firing before newly-spawned workers show as RUNNING previously over-planned, causing wasted Docker/Kubernetes container churn as the extras lost the `queue_slots` acquire race and exited; Modal's production `poll_queue` is unaffected since it doesn't pass held counts. (#539)
+- An empty Alembic merge migration (`merge_mca01_wjtoken_heads`) unified two Alembic heads left by concurrently-merged migrations, which had blocked `alembic upgrade head` with "Multiple head revisions" and stalled the production Supabase DB migration deploy. (#538)
+- Grok Build trials no longer fail deterministically on large instructions: `OddishGrokBuild.run()` now uploads the rendered task instruction into the sandbox as a file (`environment.upload_file`, `chmod 0644`) and reads it back via `grok -p "$(cat ...)"` instead of inlining it into the exec argv (embedded up to three times across CLI fallbacks); large instructions previously produced exec commands exceeding Modal's 65536-byte ARG_MAX limit and failed at agent start. (#535)
+
+### Removed
+
+- The hosted per-user probe auto-opt-in default is removed: the `users.run_probe_default` column and its submission-time hook are dropped, so `run_probe` is now only ever true when explicitly requested on a submission — no per-user server-side default can silently enable probe trials. (#553)
+
+### Security
+
+- The unauthenticated public-experiments list endpoint (`list_public_experiments`) no longer queries or returns any experiment rows — it always returns an empty list — so share tokens can no longer be discovered by enumeration; direct `/public/experiments/{public_token}` lookups for a token a caller already has continue to work unchanged. (#558)
+
+---
+
 ## [2026-07-01]
 
 ### Added
@@ -301,7 +335,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Copy button in the task file viewer header copies the raw file content to clipboard with a 2-second check-icon confirmation; resets on file switch and cleans up its timeout on unmount (#299)
-- Per-user `run_probe_default` column on the `users` table: when set, new task submissions for that user automatically get `run_probe=true` without `--run-probe`; explicit `run_probe=true` still wins and append mode is unaffected; configured per-user via SQL with no UI yet (#302)
 
 ### Changed
 

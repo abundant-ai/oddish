@@ -121,8 +121,8 @@ If you want backend JWTs to include org context, configure a Clerk JWT template 
 The frontend proxies backend requests through `src/app/api/*`. Main groups:
 
 - `/api/dashboard` for dashboard data
-- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and per-task analysis or verdict retry actions
-- `/api/trials/*` for trial logs, structured logs, result payloads, retries, analysis retries, trajectories, and files
+- `/api/tasks/*` for task browse/search, task detail, versions, trials, files, direct-to-S3 upload init/complete, `POST /api/tasks/cancel`, and task-level QA retry/cancel actions
+- `/api/trials/*` for trial logs, structured logs, result payloads, retries, trajectories, and files
 - `/api/experiments/*` for experiment detail, task listing, publish, unpublish, and share token creation
 - `/api/settings/api-keys*` for API key management
 - `/api/admin/*` for queue slots, queue status, orphaned state, and the unified `worker-jobs` matrix (`/api/admin/worker-jobs`)
@@ -199,7 +199,7 @@ NEXT_PUBLIC_APP_URL=https://local.oddish.app
 
 ## UI Stack
 
-- Next.js 15 App Router
+- Next.js 16 App Router
 - React 19
 - Tailwind CSS
 - shadcn/ui and Radix primitives
