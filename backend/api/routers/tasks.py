@@ -754,7 +754,9 @@ async def combine_experiments(
     into it. The sources are org-scoped and left untouched; append-only,
     so this needs only the ``tasks`` scope rather than admin.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         result = await combine_experiments_core(
@@ -780,7 +782,9 @@ async def create_trial_collection(
     Trials keep their home experiment; membership is additive via
     ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         result = await create_trial_collection_core(
@@ -1048,7 +1052,9 @@ async def cancel_tasks(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     """Cancel in-flight runs for many tasks without deleting data."""
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
     if not payload.task_ids:
         raise HTTPException(status_code=400, detail="Provide at least one task_id")
 
@@ -1095,7 +1101,9 @@ async def retry_task_qa(
 ) -> dict:
     """(Re)run the single task-level QA job: classify every trial, then
     synthesize the task verdict."""
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
@@ -1113,7 +1121,9 @@ async def backfill_task_qa(
     (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
     into analysis going forward.
     """
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         return await backfill_task_analysis_core(
@@ -1132,7 +1142,9 @@ async def cancel_task_qa(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     """Cancel a task's in-flight QA job."""
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(
+        APIKeyScope.TASKS, allow_member_created_task_key=False
+    )
 
     async with get_session() as session:
         result = await cancel_task_qa_core(session, task_id=task_id, org_id=auth.org_id)

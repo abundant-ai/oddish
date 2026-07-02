@@ -15,7 +15,9 @@ from api.schemas import (
 from auth import (
     APIKeyScope,
     AuthContext,
+    allowed_api_key_scopes,
     can_create_api_keys,
+    can_manage_api_keys,
     require_admin,
     require_api_key_creator,
     require_auth,
@@ -29,17 +31,21 @@ router = APIRouter(prefix="/api-keys", tags=["API Keys"])
 
 @router.get("", response_model=list[APIKeyResponse])
 async def list_api_keys(
-    auth: Annotated[AuthContext, Depends(require_admin)],
+    auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> list[APIKeyResponse]:
-    """List all API keys for the organization."""
+    """List visible API keys for the organization."""
 
     async with get_session() as session:
-        result = await session.execute(
+        stmt = (
             select(APIKeyModel)
             .where(APIKeyModel.org_id == auth.org_id)
             .where(APIKeyModel.is_internal.is_(False))
             .order_by(APIKeyModel.created_at.desc())
         )
+        if not can_manage_api_keys(auth):
+            stmt = stmt.where(APIKeyModel.created_by_user_id == auth.user_id)
+
+        result = await session.execute(stmt)
         keys = result.scalars().all()
 
         return [
@@ -63,7 +69,12 @@ async def get_api_key_permissions(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> APIKeyPermissionsResponse:
     """Return API key creation capabilities for the current user."""
-    return APIKeyPermissionsResponse(can_create=can_create_api_keys(auth))
+    scopes = allowed_api_key_scopes(auth)
+    return APIKeyPermissionsResponse(
+        can_create=can_create_api_keys(auth),
+        can_manage=can_manage_api_keys(auth),
+        allowed_scopes=[scope.value for scope in scopes],
+    )
 
 
 @router.post("", response_model=APIKeyCreateResponse)
@@ -80,6 +91,15 @@ async def create_api_key_endpoint(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid scope: {request.scope}. Must be one of: full, tasks, read",
+        )
+    allowed_scopes = set(allowed_api_key_scopes(auth))
+    if scope not in allowed_scopes:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "You may only create API keys with these scopes: "
+                + ", ".join(sorted(s.value for s in allowed_scopes))
+            ),
         )
 
     # Calculate expiry
