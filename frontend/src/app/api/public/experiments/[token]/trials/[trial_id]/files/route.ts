@@ -3,12 +3,15 @@ import { getBackendUrl } from "@/lib/backend-config";
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ trial_id: string }> },
+  { params }: { params: Promise<{ token: string; trial_id: string }> },
 ) {
   try {
-    const { trial_id } = await params;
+    const { token, trial_id } = await params;
     const search = request.nextUrl.search;
-    const url = getBackendUrl("public/trials", `/${trial_id}/files${search}`);
+    const url = getBackendUrl(
+      "public/experiments",
+      `/${token}/trials/${trial_id}/files${search}`,
+    );
     const res = await fetch(url);
 
     if (!res.ok) {

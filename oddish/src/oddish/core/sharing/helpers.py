@@ -117,6 +117,65 @@ async def get_public_task(
     return task
 
 
+async def get_public_task_for_experiment(
+    session: AsyncSession,
+    public_token: str,
+    task_id: str,
+    *,
+    load_current_version: bool = False,
+) -> tuple[ExperimentModel, TaskModel, set[str]] | None:
+    """Get a public task only through the share token that exposes it."""
+    experiment = await get_public_experiment(session, public_token)
+    if not experiment:
+        return None
+
+    membership_exists = exists(
+        select(1)
+        .select_from(task_experiments)
+        .where(
+            task_experiments.c.task_id == TaskModel.id,
+            task_experiments.c.experiment_id == experiment.id,
+            task_experiments.c.deleted_at.is_(None),
+        )
+    )
+    options = [selectinload(TaskModel.trials), selectinload(TaskModel.experiments)]
+    if load_current_version:
+        options.append(selectinload(TaskModel.current_version))
+    result = await session.execute(
+        select(TaskModel)
+        .options(*options)
+        .where(TaskModel.id == task_id)
+        .where(membership_exists)
+    )
+    task = result.scalar_one_or_none()
+    if task is None:
+        return None
+
+    gathered_ids = set(
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == experiment.id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    set_committed_value(
+        task,
+        "trials",
+        [
+            t
+            for t in task.trials
+            if not t.is_probe
+            and (t.experiment_id == experiment.id or t.id in gathered_ids)
+        ],
+    )
+    return experiment, task, gathered_ids
+
+
 async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
     """Get a trial that is publicly visible (home experiment public, or gathered
     into a public collection). Probes are never exposed publicly."""
@@ -136,6 +195,22 @@ async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel |
                 TrialModel.id.in_(gathered_public),
             )
         )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_public_trial_for_experiment(
+    session: AsyncSession, public_token: str, trial_id: str
+) -> TrialModel | None:
+    """Get a public trial only through the share token that exposes it."""
+    experiment = await get_public_experiment(session, public_token)
+    if not experiment:
+        return None
+    result = await session.execute(
+        select(TrialModel)
+        .where(TrialModel.id == trial_id)
+        .where(TrialModel.is_probe.is_(False))
+        .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
 
@@ -221,6 +296,38 @@ async def list_task_trials_for_task(
         select(TrialModel, TaskModel.task_path)
         .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .where(*conditions)
+        .order_by(TrialModel.created_at.asc())
+    )
+    rows = result.all()
+    trials = [trial for trial, _ in rows]
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    return [
+        build_trial_response(
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+        )
+        for trial, task_path in rows
+    ]
+
+
+async def list_task_trials_for_public_experiment(
+    session: AsyncSession, public_token: str, task_id: str
+) -> list[TrialResponse] | None:
+    """List real-attempt task trials visible through one public share token."""
+    resolved = await get_public_task_for_experiment(session, public_token, task_id)
+    if resolved is None:
+        return None
+    experiment, _, _ = resolved
+    result = await session.execute(
+        select(TrialModel, TaskModel.task_path)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.is_(False),
+            trial_in_experiment(experiment.id),
+        )
         .order_by(TrialModel.created_at.asc())
     )
     rows = result.all()
