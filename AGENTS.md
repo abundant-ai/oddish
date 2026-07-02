@@ -694,8 +694,8 @@ mint another) and is available to `admin` and `member` users in the main
 Abundant org (`can_create_api_keys` / `require_api_key_creator`). Admins may
 mint `full`, `tasks`, or `read` keys; members may mint only `tasks` or `read`
 keys. Member-created `tasks` keys can run task/trial workflows and read files,
-but are blocked from broader org mutations such as cancellation, tagging,
-collections, documents, skills, and GitHub webhook updates.
+and can cancel in-flight runs, but are blocked from broader org mutations such
+as tagging, collections, documents, skills, and GitHub webhook updates.
 
 If a Clerk JWT arrives without `org_id`, the backend tries to resolve a single existing org membership, or provisions a personal org.
 
