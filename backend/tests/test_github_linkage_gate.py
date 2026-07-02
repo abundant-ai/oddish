@@ -683,12 +683,13 @@ async def test_strict_no_id_duplicated_handle_resolves_to_none(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_strict_empty_string_id_treated_as_absent(org_with_users):
-    """Strict resolve (e): an empty-string github_id is treated as absent, so
-    resolution falls through to the handle lookup."""
+async def test_strict_empty_string_id_supplied_no_handle_fallback(org_with_users):
+    """Strict resolve (e): an empty-string github_id is a supplied id, not an
+    absent one. It routes through the id-only lookup (which matches nobody) and
+    never falls back to the handle — the gate rejects it."""
     org_id, add = org_with_users
-    alice = await add("alice")
-    assert await _resolve(org_id, "alice", github_id="") == alice.id
+    await add("alice")
+    assert await _resolve(org_id, "alice", github_id="") is None
 
 
 @requires_db

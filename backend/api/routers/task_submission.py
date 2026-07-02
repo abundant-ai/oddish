@@ -153,7 +153,7 @@ async def _resolve_connected_user(
     github_id: str | None,
     github_username: str | None,
 ) -> UserModel | None:
-    if github_id:
+    if github_id is not None:
         return await _lookup_user_by_github_id(
             session, github_id=github_id, org_id=org_id
         )
@@ -177,7 +177,7 @@ async def resolve_created_by_user_id(
         if api_key and api_key.created_by_user_id:
             return api_key.created_by_user_id
 
-    if submission.github_id or submission.github_username:
+    if submission.github_id is not None or submission.github_username:
         user = await _resolve_connected_user(
             session,
             org_id=auth.org_id,
@@ -199,7 +199,7 @@ async def resolve_experiment_owner_user_id(
     auth: AuthContext,
 ) -> str | None:
     """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
-    if submission.github_id or submission.github_username:
+    if submission.github_id is not None or submission.github_username:
         user = await _resolve_connected_user(
             session,
             org_id=auth.org_id,

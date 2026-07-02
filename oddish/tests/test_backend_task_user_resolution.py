@@ -480,9 +480,10 @@ def test_experiment_owner_no_id_resolves_by_handle():
     assert owner == "u-handle"
 
 
-def test_experiment_owner_empty_string_id_treated_as_absent():
-    # An empty-string github_id is falsy: resolution ignores it and resolves by
-    # the handle instead (empty id == no id supplied).
+def test_experiment_owner_empty_string_id_supplied_no_handle_fallback():
+    # An empty-string github_id is a SUPPLIED id, not an absent one: resolution
+    # goes through the id-only lookup (which matches nobody) and never falls back
+    # to the handle. The gate rejects it.
     handle_user = _UserStub(id="u-handle", github_username="octocat")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
@@ -495,4 +496,4 @@ def test_experiment_owner_empty_string_id_treated_as_absent():
     submission = _SubmissionStub(github_id="", github_username="octocat")
 
     owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
-    assert owner == "u-handle"
+    assert owner is None
