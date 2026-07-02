@@ -1038,6 +1038,21 @@ def build_sweep_payload(
     return payload
 
 
+def _extract_error_detail(response: httpx.Response) -> str:
+    """Prefer a FastAPI ``{"detail": ...}`` message over the raw JSON body.
+
+    Server rejections (e.g. the 403 GitHub-linkage gate) carry a human-readable
+    string in ``detail``; surface that plainly instead of the wrapped JSON.
+    """
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return response.text
+    if isinstance(detail, str) and detail:
+        return detail
+    return response.text
+
+
 def post_sweep_payload(api_url: str, payload: dict) -> dict:
     """POST one prebuilt sweep payload to ``/tasks/sweep`` and return its body."""
     # Stamp the submission with a stable idempotency key so a retried identical
@@ -1067,7 +1082,9 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
     report_advertised_ceiling_from_response(response)
 
     if response.status_code != 200:
-        error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
+        error_console.print(
+            f"[red]Failed to submit task:[/red] {_extract_error_detail(response)}"
+        )
         raise typer.Exit(1)
 
     result: dict = response.json()

@@ -1,6 +1,30 @@
-from oddish.cli.api import build_sweep_payload
+import httpx
+
+from oddish.cli.api import _extract_error_detail, build_sweep_payload
 from oddish.core.idempotency import compute_request_hash
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
+
+
+def test_extract_error_detail_surfaces_403_gate_message():
+    resp = httpx.Response(
+        403,
+        json={
+            "detail": (
+                "GitHub account 42 is not connected to an oddish user in this org."
+            )
+        },
+    )
+    assert _extract_error_detail(resp) == (
+        "GitHub account 42 is not connected to an oddish user in this org."
+    )
+
+
+def test_extract_error_detail_falls_back_to_body_without_string_detail():
+    assert _extract_error_detail(httpx.Response(500, text="boom")) == "boom"
+    assert (
+        _extract_error_detail(httpx.Response(422, json={"detail": [{"msg": "x"}]}))
+        == '{"detail":[{"msg":"x"}]}'
+    )
 
 
 def _payload(**kwargs):

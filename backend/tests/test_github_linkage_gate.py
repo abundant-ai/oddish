@@ -28,15 +28,19 @@ import pytest_asyncio
 import sqlalchemy as sa
 from httpx import ASGITransport, AsyncClient
 
+from fastapi import HTTPException
+from sqlalchemy import func, select, text
+
 from api.app import create_app
 from api.routers.task_submission import (
     _lookup_user_by_github_id,
     _lookup_user_by_github_username,
+    require_connected_github_user,
     resolve_experiment_owner_user_id,
 )
 from models import APIKeyScope, OrganizationModel, UserModel
 from oddish.core.api_keys import create_api_key
-from oddish.db import get_session
+from oddish.db import ExperimentModel, TrialModel, get_session
 from oddish.schemas import AgentModelPair, TaskSweepSubmission
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -122,6 +126,82 @@ async def _seed_key(org_id: str) -> tuple[str, str]:
     async with get_session() as session:
         session.add(model)
     return model.id, raw
+
+
+async def _seed_tasks_key(org_id: str) -> tuple[str, str]:
+    """Create an org-scoped TASKS API key; return (key_id, raw_token)."""
+    model, raw = create_api_key(org_id=org_id, name="lg-sweep", scope=APIKeyScope.TASKS)
+    async with get_session() as session:
+        session.add(model)
+    return model.id, raw
+
+
+async def _seed_task(org_id: str) -> str:
+    """Insert a bare append-target task in ``org_id``; return its id.
+
+    The task has no trials yet, so an ``append_to_task`` sweep runs in append
+    mode and auto-creates an experiment for it. Cleaned up by ``_purge_tasks``.
+    """
+    task_id = f"task_lg_{uuid.uuid4().hex[:8]}"
+    async with get_session() as session:
+        await session.execute(
+            text(
+                "insert into tasks "
+                '(id,name,org_id,"user",priority,status,task_path,tags,'
+                "effective_tag_ids,current_version_tag_ids,"
+                "run_analysis,run_probe,created_at,updated_at) "
+                "values (:id,:id,:org,'u','LOW','COMPLETED','p','{}'::jsonb,"
+                "'{}'::text[],'{}'::text[],false,false,now(),now())"
+            ),
+            {"id": task_id, "org": org_id},
+        )
+    return task_id
+
+
+async def _purge_tasks(task_ids: list[str]) -> None:
+    from oddish.db import TaskModel
+
+    async with get_session() as session:
+        await session.execute(
+            text("delete from worker_jobs where subject_id = any(:t)"), {"t": task_ids}
+        )
+        await session.execute(
+            TrialModel.__table__.delete().where(TrialModel.task_id.in_(task_ids))
+        )
+        await session.execute(
+            text("delete from experiments where org_id in "
+                 "(select org_id from tasks where id = any(:t))"),
+            {"t": task_ids},
+        )
+        await session.execute(
+            TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
+        )
+
+
+async def _trial_count(task_id: str) -> int:
+    async with get_session() as session:
+        return await session.scalar(
+            select(func.count())
+            .select_from(TrialModel)
+            .where(TrialModel.task_id == task_id)
+        )
+
+
+def _sweep_body(task_id: str, *, github_id: str | None = None) -> dict:
+    body: dict = {
+        "task_id": task_id,
+        "append_to_task": True,
+        "configs": [
+            {
+                "agent": "claude-code",
+                "model": "anthropic/claude-sonnet-4-6",
+                "n_trials": 1,
+            }
+        ],
+    }
+    if github_id is not None:
+        body["github_id"] = github_id
+    return body
 
 
 @pytest_asyncio.fixture
@@ -883,3 +963,189 @@ def test_case6_action_forces_github_user_to_actor():
 def test_case18_action_fail_open_when_endpoint_down():
     """Case 18: if the linkage endpoint is unreachable, the Action ALLOWS the push
     (fail-open) rather than blocking CI."""
+
+
+# ===========================================================================
+# 8. F2 — server-side 403 gate (require_connected_github_user)
+# ===========================================================================
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_gate_unlinked_github_id_raises_403(org_with_users):
+    """A truthy github_id resolving to no active org user raises 403."""
+    org_id, add = org_with_users
+    await add("alice")  # linked by handle, but no github_id set
+    async with get_session() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await require_connected_github_user(
+                session, _submission("alice", github_id="gid_unlinked"), _auth(org_id)
+            )
+    assert excinfo.value.status_code == 403
+    assert "gid_unlinked" in str(excinfo.value.detail)
+    assert "oddish.app" in str(excinfo.value.detail)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_gate_linked_github_id_returns_user(org_with_users):
+    """A truthy github_id with an exact id match returns that user (no raise)."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_alice")
+    async with get_session() as session:
+        user = await require_connected_github_user(
+            session, _submission("wrong_handle", github_id="gid_alice"), _auth(org_id)
+        )
+    assert user is not None and user.id == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_gate_no_github_id_is_noop(org_with_users):
+    """No github_id supplied → gate is a no-op returning None (never raises),
+    even when the handle matches nobody."""
+    org_id, _add = org_with_users
+    async with get_session() as session:
+        assert (
+            await require_connected_github_user(
+                session, _submission("whoever"), _auth(org_id)
+            )
+            is None
+        )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_gate_empty_github_id_is_noop(org_with_users):
+    """An empty / whitespace github_id is not a truthy id → gate is a no-op."""
+    org_id, add = org_with_users
+    await add("alice")
+    async with get_session() as session:
+        assert (
+            await require_connected_github_user(
+                session, _submission("alice", github_id="   "), _auth(org_id)
+            )
+            is None
+        )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_sweep_route_unlinked_github_id_403_and_zero_rows(client, org_with_users):
+    """/tasks/sweep with an unlinked github_id → 403 AND zero trial rows created."""
+    org_id, add = org_with_users
+    await add("alice")  # exists, but carries no github_id
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    try:
+        resp = await client.post(
+            "/tasks/sweep",
+            json=_sweep_body(task_id, github_id="gid_unlinked"),
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+        assert resp.status_code == 403
+        assert "gid_unlinked" in resp.json()["detail"]
+        assert await _trial_count(task_id) == 0
+    finally:
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_sweep_route_linked_github_id_succeeds(client, org_with_users):
+    """/tasks/sweep with a linked github_id → 200 with trials created (the gate
+    passes the resolved user through instead of raising)."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_alice")
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    try:
+        resp = await client.post(
+            "/tasks/sweep",
+            json=_sweep_body(task_id, github_id="gid_alice"),
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trials_count"] == 1
+        assert await _trial_count(task_id) == 1
+    finally:
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_gate_resolved_user_is_reused_for_owner_stamping(org_with_users):
+    """The gate's resolved user is threaded into owner resolution: passing it as
+    ``connected_user`` yields that user id WITHOUT a second lookup (the submission
+    here carries an id that would MISS on a fresh resolve, proving reuse)."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    async with get_session() as session:
+        owner = await resolve_experiment_owner_user_id(
+            session,
+            _submission("alice", github_id="gid_nonexistent"),
+            _auth(org_id),
+            connected_user=alice,
+        )
+    assert owner == alice.id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_sweep_route_no_github_id_unchanged(client, org_with_users):
+    """/tasks/sweep with NO github_id → behavior unchanged (200, trials created)."""
+    org_id, _add = org_with_users
+    key_id, raw = await _seed_tasks_key(org_id)
+    task_id = await _seed_task(org_id)
+    try:
+        resp = await client.post(
+            "/tasks/sweep",
+            json=_sweep_body(task_id),
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["trials_count"] == 1
+        assert await _trial_count(task_id) == 1
+    finally:
+        await _purge_tasks([task_id])
+        await _purge(api_key_ids=[key_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_batch_route_gates_each_submission(client, org_with_users):
+    """/tasks/sweep/batch gates every submission: the unlinked item is a per-item
+    403 with zero rows, while the linked sibling still succeeds."""
+    org_id, add = org_with_users
+    alice = await add("alice")
+    await _set_github_id(alice, "gid_alice")
+    key_id, raw = await _seed_tasks_key(org_id)
+    linked_task = await _seed_task(org_id)
+    unlinked_task = await _seed_task(org_id)
+    try:
+        resp = await client.post(
+            "/tasks/sweep/batch",
+            json={
+                "submissions": [
+                    _sweep_body(linked_task, github_id="gid_alice"),
+                    _sweep_body(unlinked_task, github_id="gid_unlinked"),
+                ]
+            },
+            headers={"Authorization": f"Bearer {raw}"},
+        )
+        assert resp.status_code == 207  # mixed: one ok, one gated
+        results = {r["index"]: r for r in resp.json()["results"]}
+        assert results[0]["success"] is True
+        assert results[1]["success"] is False
+        assert results[1]["status_code"] == 403
+        assert "gid_unlinked" in results[1]["error"]
+        # The linked item committed its trial; the gated item wrote nothing.
+        assert await _trial_count(linked_task) == 1
+        assert await _trial_count(unlinked_task) == 0
+    finally:
+        await _purge_tasks([linked_task, unlinked_task])
+        await _purge(api_key_ids=[key_id])

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,10 +165,41 @@ async def _resolve_connected_user(
     return None
 
 
+async def require_connected_github_user(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> UserModel | None:
+    """Gate a sweep on GitHub linkage, quota-independent.
+
+    A submission carrying a truthy ``github_id`` must strict-resolve (id-only)
+    to an active org user or the sweep is rejected with 403 before any rows are
+    written. Returns the resolved user (reusable for owner / created_by
+    stamping), or None when no ``github_id`` was supplied (gate is a no-op).
+    """
+    if not (submission.github_id and submission.github_id.strip()):
+        return None
+    user = await _lookup_user_by_github_id(
+        session, github_id=submission.github_id, org_id=auth.org_id
+    )
+    if user is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"GitHub account {submission.github_id} is not connected to an "
+                "oddish user in this org. Sign in at https://oddish.app and link "
+                "your GitHub account, then rerun. If you linked recently, the sync "
+                "may take a few minutes."
+            ),
+        )
+    return user
+
+
 async def resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
     """Who submitted the task. API key owner wins for CI/service accounts."""
     if auth.api_key_id:
@@ -178,7 +210,7 @@ async def resolve_created_by_user_id(
             return api_key.created_by_user_id
 
     if submission.github_id is not None or submission.github_username:
-        user = await _resolve_connected_user(
+        user = connected_user or await _resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
@@ -197,10 +229,11 @@ async def resolve_experiment_owner_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
     """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
     if submission.github_id is not None or submission.github_username:
-        user = await _resolve_connected_user(
+        user = connected_user or await _resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
