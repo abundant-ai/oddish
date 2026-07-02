@@ -53,9 +53,7 @@ class _FakeClient:
 
     def post(self, url, json=None):
         _FakeClient.last_request = {"url": url, "json": json}
-        return httpx.Response(
-            200, json={"id": "skill_abc", "name": "my-skill-2"}
-        )
+        return httpx.Response(200, json={"id": "skill_abc", "name": "my-skill-2"})
 
 
 def test_skill_add_posts_and_reports_stored_name(tmp_path, monkeypatch):

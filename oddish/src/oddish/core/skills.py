@@ -91,13 +91,7 @@ def _rewrite_skill_name(files: list[SkillFile], new_name: str) -> list[SkillFile
             frontmatter,
             count=1,
         )
-        rebuilt = (
-            prefix
-            + _FRONTMATTER_DELIM
-            + frontmatter
-            + _FRONTMATTER_DELIM
-            + body
-        )
+        rebuilt = prefix + _FRONTMATTER_DELIM + frontmatter + _FRONTMATTER_DELIM + body
         out.append(SkillFile(relative_path=f.relative_path, content=rebuilt))
     return out
 

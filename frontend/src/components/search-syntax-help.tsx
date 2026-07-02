@@ -18,7 +18,9 @@ export function SearchSyntaxRow({
 }) {
   return (
     <p className="flex items-baseline gap-2">
-      <code className="shrink-0 rounded bg-muted px-1 font-mono">{example}</code>
+      <code className="shrink-0 rounded bg-muted px-1 font-mono">
+        {example}
+      </code>
       <span className="text-muted-foreground">{hint}</span>
     </p>
   );

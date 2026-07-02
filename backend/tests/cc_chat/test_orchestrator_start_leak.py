@@ -14,8 +14,11 @@ class _FakeRuntime:
 
 
 class _FakeBlob:
-    async def list_keys(self, prefix): return []
-    async def download_bytes(self, key): return b""
+    async def list_keys(self, prefix):
+        return []
+
+    async def download_bytes(self, key):
+        return b""
 
 
 async def test_start_sets_auto_delete_and_labels(db):
@@ -24,6 +27,7 @@ async def test_start_sets_auto_delete_and_labels(db):
         async def _cm():
             async with db() as s:
                 yield s
+
         return _cm()
 
     fake = FakeDaytonaClient()
@@ -39,8 +43,10 @@ async def test_start_sets_auto_delete_and_labels(db):
     )
 
     session_id = await orch.start(
-        org_id=ORG, user_id="u1",
-        scope_kind="experiment", scope_id="exp_1",
+        org_id=ORG,
+        user_id="u1",
+        scope_kind="experiment",
+        scope_id="exp_1",
         db_session_factory=factory,
     )
 

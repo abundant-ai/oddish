@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 export function ChatComposer({
   disabled,
@@ -19,14 +20,17 @@ export function ChatComposer({
   };
   return (
     <div className="border-border flex items-end gap-2 border-t p-2">
-      <textarea
-        className="bg-background min-h-[38px] flex-1 resize-none rounded-md border px-2 py-1.5 text-sm"
+      <Textarea
+        className="min-h-[38px] flex-1 resize-none"
         rows={1}
         value={value}
         placeholder="Ask about this scope…"
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            submit();
+          }
         }}
         disabled={disabled}
       />
