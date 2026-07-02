@@ -208,11 +208,15 @@ async def test_provisioning_github_id_collision_does_not_crash(monkeypatch) -> N
 
 @requires_db
 @pytest.mark.asyncio
-async def test_provisioning_github_id_collision_with_soft_deleted_holder(monkeypatch) -> None:
-    """The org-unique constraint spans SOFT-DELETED rows too. A tombstoned user
-    holding the github_id must be detected by the pre-check (include_deleted),
-    or provisioning would IntegrityError at commit. Fail-open: skip, no crash."""
+async def test_provisioning_github_id_relink_releases_soft_deleted_holder(
+    monkeypatch,
+) -> None:
+    """Leave-and-rejoin: a tombstoned row still holds the github_id. When the
+    rejoining user's active row provisions, the soft-deleted holder must release
+    the id (github_id -> None) so the new row can claim it. Otherwise the gate
+    rejects the returning user forever."""
     org_id = f"org_gid_{uuid.uuid4().hex[:8]}"
+    old_id = f"user_{uuid.uuid4().hex[:8]}"
     new_clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     _mock_clerk(
         monkeypatch,
@@ -223,7 +227,7 @@ async def test_provisioning_github_id_collision_with_soft_deleted_holder(monkeyp
             session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
             session.add(
                 UserModel(
-                    id=f"user_{uuid.uuid4().hex[:8]}",
+                    id=old_id,
                     org_id=org_id,
                     email="tombstone@e.com",
                     github_id="collide-sd",
@@ -240,13 +244,115 @@ async def test_provisioning_github_id_collision_with_soft_deleted_holder(monkeyp
             user = await get_or_create_user_in_org(
                 session, new_clerk, org, "new@e.com", "member", UserRole.MEMBER
             )
-            assert user.github_id is None  # soft-deleted holder detected, skipped
+            assert user.github_id == "collide-sd"  # relinked onto the active row
+            released = await session.execute(
+                UserModel.__table__.select()
+                .where(UserModel.id == old_id)
+                .execution_options(include_deleted=True)
+            )
+            assert released.mappings().one()["github_id"] is None
     finally:
         async with get_session() as session:
             await session.execute(
                 UserModel.__table__.delete()
                 .where(UserModel.org_id == org_id)
                 .execution_options(include_deleted=True)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_provisioning_github_id_active_clash_still_skips(monkeypatch) -> None:
+    """An ACTIVE (not soft-deleted, is_active) clash row keeps its github_id and
+    the new user is skipped — two live users must never share a github_id."""
+    org_id = f"org_gid_{uuid.uuid4().hex[:8]}"
+    holder_id = f"user_{uuid.uuid4().hex[:8]}"
+    new_clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    _mock_clerk(
+        monkeypatch,
+        ClerkGithubIdentity(username="dup", email="d@e.com", github_id="collide-live"),
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(
+                UserModel(
+                    id=holder_id,
+                    org_id=org_id,
+                    email="live@e.com",
+                    github_id="collide-live",
+                    clerk_user_id=f"clerk_{uuid.uuid4().hex[:8]}",
+                    role=UserRole.MEMBER,
+                    is_active=True,
+                )
+            )
+            await session.flush()
+
+        async with get_session() as session:
+            org = await session.get(OrganizationModel, org_id)
+            user = await get_or_create_user_in_org(
+                session, new_clerk, org, "new@e.com", "member", UserRole.MEMBER
+            )
+            assert user.github_id is None  # active holder keeps it
+            holder = await session.get(UserModel, holder_id)
+            assert holder.github_id == "collide-live"
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.org_id == org_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_provisioning_github_id_inactive_clash_releases(monkeypatch) -> None:
+    """A clash row that is not soft-deleted but is_active=False also releases the
+    id — deactivation without a tombstone must not gate a rejoining user."""
+    org_id = f"org_gid_{uuid.uuid4().hex[:8]}"
+    old_id = f"user_{uuid.uuid4().hex[:8]}"
+    new_clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    _mock_clerk(
+        monkeypatch,
+        ClerkGithubIdentity(username="dup", email="d@e.com", github_id="collide-inact"),
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(
+                UserModel(
+                    id=old_id,
+                    org_id=org_id,
+                    email="inactive@e.com",
+                    github_id="collide-inact",
+                    clerk_user_id=f"clerk_{uuid.uuid4().hex[:8]}",
+                    role=UserRole.MEMBER,
+                    is_active=False,
+                )
+            )
+            await session.flush()
+
+        async with get_session() as session:
+            org = await session.get(OrganizationModel, org_id)
+            user = await get_or_create_user_in_org(
+                session, new_clerk, org, "new@e.com", "member", UserRole.MEMBER
+            )
+            assert user.github_id == "collide-inact"
+            holder = await session.get(UserModel, old_id)
+            assert holder.github_id is None
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.org_id == org_id)
             )
             await session.execute(
                 OrganizationModel.__table__.delete().where(

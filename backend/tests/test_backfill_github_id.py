@@ -225,9 +225,9 @@ async def test_concurrent_batch_backfills_all_users(monkeypatch) -> None:
 
 @requires_db
 @pytest.mark.asyncio
-async def test_collision_with_soft_deleted_holder_is_skipped(monkeypatch) -> None:
-    """A github_id already claimed by a soft-deleted org member must be skipped
-    (via _set_github_id_if_absent's include_deleted pre-check), not crash."""
+async def test_collision_with_soft_deleted_holder_relinks(monkeypatch) -> None:
+    """A github_id claimed only by a soft-deleted org member is released to the
+    active target during backfill (relink), not skipped forever."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
     holder = _user(
         org_id,
@@ -246,8 +246,15 @@ async def test_collision_with_soft_deleted_holder_is_skipped(monkeypatch) -> Non
             session.add(holder)
             session.add(target)
         summary = await job.backfill_github_id(delay_seconds=0.0)
-        assert await _github_id_of(target.id) is None
-        assert summary.skipped >= 1
+        assert await _github_id_of(target.id) == "taken"
+        assert summary.set >= 1
+        async with get_session() as session:
+            released = await session.execute(
+                UserModel.__table__.select()
+                .where(UserModel.id == holder.id)
+                .execution_options(include_deleted=True)
+            )
+            assert released.mappings().one()["github_id"] is None
     finally:
         await _purge(org_id)
 

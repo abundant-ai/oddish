@@ -81,20 +81,25 @@ async def _set_github_id_if_absent(
     if session is not None:
         # Match uq_users_org_github_id scope, including soft-deleted rows.
         clash = await session.execute(
-            select(UserModel.id)
+            select(UserModel)
             .where(UserModel.org_id == user.org_id)
             .where(UserModel.github_id == github_id)
             .where(UserModel.id != user.id)
             .execution_options(include_deleted=True)
         )
-        if clash.first() is not None:
-            logger.warning(
-                "Skipping github_id %s for user %s: already claimed in org %s",
-                github_id,
-                user.id,
-                user.org_id,
-            )
-            return
+        for other in clash.scalars().all():
+            if other.deleted_at is None and other.is_active:
+                logger.warning(
+                    "Skipping github_id %s for user %s: already claimed in org %s",
+                    github_id,
+                    user.id,
+                    user.org_id,
+                )
+                return
+            # Soft-deleted / deactivated holder: release the id so a rejoining
+            # user can relink instead of being gated forever.
+            other.github_id = None
+        await session.flush()
     user.github_id = github_id
 
 
