@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import useSWR from "swr";
 
 import {
@@ -163,9 +164,12 @@ export function QuotaAdminForm() {
                 <TableRow key={id} className="border-border/70">
                   <TableCell className="py-2.5">
                     <div className="min-w-0">
-                      <p className="text-foreground truncate text-sm font-medium">
+                      <Link
+                        href={`/admin/users/${encodeURIComponent(id)}`}
+                        className="block truncate text-sm font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                      >
                         {member.name || member.email}
-                      </p>
+                      </Link>
                       <p className="text-muted-foreground truncate text-xs">
                         {member.email}
                       </p>

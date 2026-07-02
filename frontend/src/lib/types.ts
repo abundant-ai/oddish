@@ -837,6 +837,41 @@ export interface CostBreakdownResponse {
   timestamp: string;
 }
 
+// ---------------------------------------------------------------------------
+// Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
+// ---------------------------------------------------------------------------
+
+export interface UserCostTaskBreakdown {
+  task_id: string;
+  task_name: string | null;
+  trial_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+  models: CostModelBreakdown[];
+}
+
+interface UserCostTotals {
+  window_days: number | null;
+  trial_count: number;
+  task_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+}
+
+export interface UserCostBreakdownResponse {
+  billed_user_id: string;
+  name: string | null;
+  email: string | null;
+  github_username: string | null;
+  org_id: string | null;
+  window_days: number | null;
+  bucket: string;
+  totals: UserCostTotals;
+  tasks: UserCostTaskBreakdown[];
+  series_by_model: CostSeries;
+  timestamp: string;
+}
+
 export interface PublicExperimentInfo {
   name: string;
   public_token: string;
