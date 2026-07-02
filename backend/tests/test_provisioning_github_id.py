@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from auth.provisioning import (
     ClerkGithubIdentity,
     _github_account_from_clerk_payload,
     _refresh_user_github_identity,
+    _set_github_id_if_absent,
     get_or_create_user_in_org,
 )
 from models import OrganizationModel, UserModel, UserRole
@@ -407,6 +409,62 @@ async def test_provisioning_github_id_inactive_clash_releases(monkeypatch) -> No
             assert user.github_id == "collide-inact"
             holder = await session.get(UserModel, old_id)
             assert holder.github_id is None
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.org_id == org_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_set_github_id_savepoint_swallows_concurrent_race() -> None:
+    """Genuine concurrent race: two separate sessions claim the same github_id for
+    two users in one org at once. Exactly one wins uq_users_org_github_id; the
+    loser's claim trips the constraint at the SAVEPOINT flush, which must swallow
+    the IntegrityError, leave that user's github_id None, and keep its transaction
+    committable — neither claim may raise."""
+    org_id = f"org_gid_{uuid.uuid4().hex[:8]}"
+    a_id = f"user_{uuid.uuid4().hex[:8]}"
+    b_id = f"user_{uuid.uuid4().hex[:8]}"
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            for uid, email in ((a_id, "a@e.com"), (b_id, "b@e.com")):
+                session.add(
+                    UserModel(
+                        id=uid,
+                        org_id=org_id,
+                        email=email,
+                        github_id=None,
+                        clerk_user_id=f"clerk_{uuid.uuid4().hex[:8]}",
+                        role=UserRole.MEMBER,
+                        is_active=True,
+                    )
+                )
+
+        async def _claim(uid: str) -> str | None:
+            async with get_session() as session:
+                user = await session.get(UserModel, uid)
+                await _set_github_id_if_absent(session, user, "raced")
+                return user.github_id
+
+        results = await asyncio.wait_for(
+            asyncio.gather(_claim(a_id), _claim(b_id)), timeout=15
+        )
+        # Exactly one wins the id; the loser is swallowed to None, no exception.
+        assert sorted(results, key=lambda v: v or "") == [None, "raced"]
+
+        async with get_session() as session:
+            a = await session.get(UserModel, a_id)
+            b = await session.get(UserModel, b_id)
+            holders = [u.github_id for u in (a, b) if u.github_id == "raced"]
+            assert len(holders) == 1  # persisted exactly once
     finally:
         async with get_session() as session:
             await session.execute(

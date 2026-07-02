@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
@@ -102,6 +103,22 @@ async def _set_github_id_if_absent(
             # user can relink instead of being gated forever.
             other.github_id = None
         await session.flush()
+        # Claim inside a SAVEPOINT: the assignment + flush must live under the
+        # savepoint so a concurrent claim that raced past the clash query trips
+        # uq_users_org_github_id here instead of poisoning the whole transaction.
+        try:
+            async with session.begin_nested():
+                user.github_id = github_id
+                await session.flush()
+        except IntegrityError:
+            user.github_id = None
+            logger.warning(
+                "Lost concurrent race claiming github_id %s for user %s in org %s",
+                github_id,
+                user.id,
+                user.org_id,
+            )
+        return
     user.github_id = github_id
 
 
