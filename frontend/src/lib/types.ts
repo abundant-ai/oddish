@@ -760,12 +760,6 @@ export interface CostExperimentBreakdown {
   output_tokens: number;
   cost_usd: number;
   cost_estimated_usd: number;
-  // 3-way spend split: real + probe execution sum to cost_usd; cost_qa_usd is
-  // additive on top, so cost_usd + cost_qa_usd === cost_total_usd.
-  cost_real_execution_usd: number;
-  cost_probe_execution_usd: number;
-  cost_qa_usd: number;
-  cost_total_usd: number;
   models: CostModelBreakdown[];
 }
 
@@ -798,12 +792,6 @@ export interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
-  cost_real_execution_usd: number;
-  cost_probe_execution_usd: number;
-  cost_qa_analysis_usd: number;
-  cost_qa_verdict_usd: number;
-  cost_qa_usd: number;
-  cost_total_usd: number;
 }
 
 export interface CostBreakdownResponse {

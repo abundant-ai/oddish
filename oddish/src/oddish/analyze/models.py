@@ -195,9 +195,6 @@ class TaskVerdict:
     harness_error_count: int = 0
     classifications: list[TrialClassification] = field(default_factory=list)
     baseline: BaselineValidation | None = None
-    # Estimated USD cost of the verdict-synthesis LLM call, persisted by the QA
-    # worker into ``tasks.verdict_cost_usd``. None when usage wasn't available.
-    cost_usd: float | None = None
 
     def summary(self) -> str:
         if self.is_good:

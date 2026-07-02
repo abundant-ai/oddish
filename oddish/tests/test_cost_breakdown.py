@@ -53,23 +53,12 @@ _EXPECTED_EST = estimate_cost_usd(_EST_MODEL, _EST_IN, _EST_OUT, _EST_CACHE)
 # back down to just this test's rows.
 USER_A = f"costuser-a-{_RUN}"
 USER_B = f"costuser-b-{_RUN}"
-USER_C = f"costuser-c-{_RUN}"
 ORG_1 = f"costorg-1-{_RUN}"
 ORG_2 = f"costorg-2-{_RUN}"
-ORG_3 = f"costorg-3-{_RUN}"
 E1 = f"costexp-1-{_RUN}"
 E2 = f"costexp-2-{_RUN}"
 E3 = f"costexp-3-{_RUN}"
 E4 = f"costexp-deleted-{_RUN}"
-# E5 exercises the QA / probe 3-way split; isolated under its own user/org so
-# it doesn't perturb the USER_A/USER_B attribution assertions above.
-E5 = f"costexp-qa-{_RUN}"
-# Per-trial QA (analysis) and per-task verdict costs seeded on E5.
-_E5_REAL_EXEC = 4.0
-_E5_PROBE_EXEC = 1.0
-_E5_ANALYSIS_REAL = 0.10
-_E5_ANALYSIS_PROBE = 0.05
-_E5_VERDICT = 0.02
 
 
 def _approx(a: float | None, b: float | None, tol: float = 1e-6) -> bool:
@@ -124,14 +113,6 @@ async def seeded_cost_data():
                     last_activity_at=recent,
                     deleted_at=now,
                 ),
-                ExperimentModel(
-                    id=E5,
-                    name="cost-exp-qa",
-                    org_id=ORG_3,
-                    owner_user_id=USER_C,
-                    created_at=recent,
-                    last_activity_at=recent,
-                ),
             ]
         )
         for exp_id, org_id in ((E1, ORG_1), (E2, ORG_1), (E3, ORG_2), (E4, ORG_1)):
@@ -144,17 +125,6 @@ async def seeded_cost_data():
                     task_path="some/path",
                 )
             )
-        # E5's task carries a verdict-synthesis cost (the per-task half of QA).
-        session.add(
-            TaskModel(
-                id=f"{E5}-task",
-                name=f"{E5}-task",
-                user="test",
-                org_id=ORG_3,
-                task_path="some/path",
-                verdict_cost_usd=_E5_VERDICT,
-            )
-        )
         session.add_all(
             [
                 _trial(E1, 0, model="claude-opus-4-8", cost_usd=2.0, created_at=recent),
@@ -190,32 +160,13 @@ async def seeded_cost_data():
                 ),
                 # Old trial in E1: out of the 7d window, in all-time.
                 _trial(E1, 3, model="claude-opus-4-8", cost_usd=7.0, created_at=old),
-                # E5: one real + one probe trial, each with a per-trial QA
-                # (analysis) cost; the task also carries a verdict cost above.
-                _trial(
-                    E5,
-                    0,
-                    model="claude-opus-4-8",
-                    cost_usd=_E5_REAL_EXEC,
-                    analysis_cost_usd=_E5_ANALYSIS_REAL,
-                    created_at=recent,
-                ),
-                _trial(
-                    E5,
-                    1,
-                    model="claude-opus-4-8",
-                    cost_usd=_E5_PROBE_EXEC,
-                    analysis_cost_usd=_E5_ANALYSIS_PROBE,
-                    is_probe=True,
-                    created_at=recent,
-                ),
             ]
         )
 
     yield
 
     async with get_session() as session:
-        for exp_id in (E1, E2, E3, E4, E5):
+        for exp_id in (E1, E2, E3, E4):
             await session.execute(
                 TrialModel.__table__.delete().where(TrialModel.experiment_id == exp_id)
             )
@@ -240,14 +191,11 @@ def _trial(
     output_tokens: int | None = None,
     cache_tokens: int | None = None,
     deleted_at=None,
-    is_probe: bool = False,
-    analysis_cost_usd: float | None = None,
-    task_id: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
         name=f"{experiment_id}-{index}",
-        task_id=task_id or f"{experiment_id}-task",
+        task_id=f"{experiment_id}-task",
         experiment_id=experiment_id,
         org_id=None,
         agent=agent,
@@ -260,8 +208,6 @@ def _trial(
         cost_usd=cost_usd,
         created_at=created_at,
         deleted_at=deleted_at,
-        is_probe=is_probe,
-        analysis_cost_usd=analysis_cost_usd,
     )
 
 
@@ -342,49 +288,6 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
     assert "__unattributed__" in user_keys
-
-
-@pytest.mark.asyncio
-async def test_cost_breakdown_qa_and_probe_split(seeded_cost_data):
-    """E5 partitions spend into real exec / probe exec / QA (analysis+verdict)."""
-    async with get_session() as session:
-        result = await get_cost_breakdown_core(
-            session, window_days=7, experiment_limit=500, user_limit=500
-        )
-
-    e5 = {e.experiment_id: e for e in result.experiments}[E5]
-
-    # Execution split: real and probe partition cost_usd.
-    assert _approx(e5.cost_real_execution_usd, _E5_REAL_EXEC), e5.cost_real_execution_usd
-    assert _approx(e5.cost_probe_execution_usd, _E5_PROBE_EXEC)
-    assert _approx(e5.cost_usd, _E5_REAL_EXEC + _E5_PROBE_EXEC)
-
-    # QA = per-trial analysis (real + probe) + the per-task verdict cost.
-    expected_qa = _E5_ANALYSIS_REAL + _E5_ANALYSIS_PROBE + _E5_VERDICT
-    assert _approx(e5.cost_qa_usd, expected_qa), e5.cost_qa_usd
-
-    # Grand total is execution + QA.
-    assert _approx(e5.cost_total_usd, _E5_REAL_EXEC + _E5_PROBE_EXEC + expected_qa)
-
-    # ``cost_usd`` stays execution-only for back-compat (no QA double-count).
-    assert _approx(e5.cost_usd, _E5_REAL_EXEC + _E5_PROBE_EXEC)
-    assert e5.trial_count == 2
-
-    # The windowed totals include E5's contribution to each split bucket. Use
-    # >= since the global aggregation may include unrelated rows in a shared DB.
-    assert result.totals.cost_probe_execution_usd >= _E5_PROBE_EXEC - 1e-6
-    assert result.totals.cost_qa_usd >= expected_qa - 1e-6
-    # QA verdict and analysis halves both land in the totals.
-    assert result.totals.cost_qa_verdict_usd >= _E5_VERDICT - 1e-6
-    assert result.totals.cost_qa_analysis_usd >= (
-        _E5_ANALYSIS_REAL + _E5_ANALYSIS_PROBE - 1e-6
-    )
-    # Total reconciles: execution (real+probe) + QA.
-    assert _approx(
-        result.totals.cost_total_usd,
-        result.totals.cost_usd + result.totals.cost_qa_usd,
-        tol=0.01,
-    )
 
 
 @pytest.mark.asyncio
