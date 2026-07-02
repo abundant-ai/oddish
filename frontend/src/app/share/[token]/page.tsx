@@ -66,6 +66,9 @@ export default function PublicExperimentPage() {
 
   const experimentName = experimentInfo?.name || "Public Experiment";
   const hasErrors = Boolean(experimentError || error);
+  const scopedApiBaseUrl = token
+    ? `${PUBLIC_API_URL}/experiments/${encodeURIComponent(token)}`
+    : PUBLIC_API_URL;
 
   return (
     <>
@@ -93,7 +96,7 @@ export default function PublicExperimentPage() {
             readOnly
             allowRetry={false}
             showAnalysis={false}
-            apiBaseUrl={PUBLIC_API_URL}
+            apiBaseUrl={scopedApiBaseUrl}
           />
         </div>
       </main>
