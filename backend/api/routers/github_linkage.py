@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -10,8 +9,6 @@ from api.routers.task_submission import _resolve_connected_user
 from auth import AuthContext, require_auth
 from models import APIKeyScope
 from oddish.db import get_session
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/github", tags=["GitHub"])
 
