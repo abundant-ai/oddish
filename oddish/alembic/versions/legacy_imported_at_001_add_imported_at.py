@@ -23,7 +23,7 @@ from alembic import op
 
 
 revision: str = "legacy_imported_at_001"
-down_revision: Union[str, Sequence[str], None] = "exp_trials_join_001"
+down_revision: Union[str, Sequence[str], None] = "api_key_creator_role_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
