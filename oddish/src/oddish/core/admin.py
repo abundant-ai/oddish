@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TrialModel, utcnow
+from oddish.db import ExperimentModel, TaskModel, TrialModel, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1624,5 +1624,283 @@ async def get_cost_breakdown_core(
         by_user=by_user_out,
         by_model=_model_breakdowns(by_model),
         experiments=experiments_out,
+        timestamp=now.isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Per-user cost drilldown
+#
+# One user's billed spend for the admin drilldown: total, per-task breakdown,
+# and a stacked-by-model cost-over-time series. Attribution is billed_user_id
+# (the quota payer), not experiment ownership -- so the totals here can diverge
+# from the /admin/costs by_user table (owner-basis). Settled trials only
+# (finished_at IS NOT NULL), time axis is finished_at, soft-deleted trials
+# included (mirrors quota spend: deleting isn't a budget reset), estimates
+# split out the same way as the global breakdown.
+# ---------------------------------------------------------------------------
+
+
+class CostTaskBreakdown(BaseModel):
+    task_id: str
+    task_name: str | None
+    trial_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_estimated_usd: float
+    models: list[CostModelBreakdown]
+
+
+class UserCostTotals(BaseModel):
+    window_days: int | None
+    trial_count: int
+    task_count: int
+    input_tokens: int
+    cache_tokens: int
+    output_tokens: int
+    cost_usd: float
+    cost_native_usd: float
+    cost_estimated_usd: float
+
+
+class UserCostBreakdownResponse(BaseModel):
+    billed_user_id: str
+    org_id: str | None
+    name: str | None = None
+    email: str | None = None
+    github_username: str | None = None
+    window_days: int | None
+    bucket: str
+    series_by_model: CostSeries
+    totals: UserCostTotals
+    tasks: list[CostTaskBreakdown]
+    timestamp: str
+
+
+async def get_user_cost_breakdown_core(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    billed_user_id: str,
+    window_days: int | None = 7,
+    task_limit: int = 100,
+) -> UserCostBreakdownResponse:
+    now = datetime.now(timezone.utc)
+    since = None if window_days is None else now - timedelta(days=window_days)
+    bucket = _series_bucket(window_days)
+
+    # Settled spend counts soft-deleted trials (deleting isn't a budget reset),
+    # so bypass the deleted_at auto-filter -- same invariant as quotas.py.
+    filters = [
+        TrialModel.org_id == org_id,
+        TrialModel.billed_user_id == billed_user_id,
+        TrialModel.finished_at.isnot(None),
+    ]
+    if since is not None:
+        filters.append(TrialModel.finished_at >= since)
+
+    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
+    has_native = TrialModel.cost_usd.isnot(None)
+    no_native = TrialModel.cost_usd.is_(None)
+
+    detail_query = (
+        select(
+            TrialModel.task_id.label("task_id"),
+            TaskModel.name.label("task_name"),
+            TrialModel.model.label("model"),
+            TrialModel.provider.label("provider"),
+            func.coalesce(
+                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
+            ).label("native_cost"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
+            ).label("est_input"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
+            ).label("est_output"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
+            ).label("est_cache"),
+            func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
+            func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
+            func.count(TrialModel.id).label("trial_count"),
+        )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .where(*filters)
+        .group_by(
+            TrialModel.task_id,
+            TaskModel.name,
+            TrialModel.model,
+            TrialModel.provider,
+        )
+        .execution_options(include_deleted=True)
+    )
+
+    series_query = (
+        select(
+            bucket_col.label("bucket"),
+            TrialModel.model.label("model"),
+            func.coalesce(
+                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
+            ).label("native_cost"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
+            ).label("est_input"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
+            ).label("est_output"),
+            func.coalesce(
+                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
+            ).label("est_cache"),
+            func.count(TrialModel.id).label("trial_count"),
+        )
+        .where(*filters)
+        .group_by(bucket_col, TrialModel.model)
+        .execution_options(include_deleted=True)
+    )
+
+    detail_rows = (await session.execute(detail_query)).all()
+    series_rows = (await session.execute(series_query)).all()
+
+    model_per_bucket: dict[datetime, dict[str, float]] = {}
+    model_totals: dict[str, float] = {}
+    trials_per_bucket: dict[datetime, int] = {}
+
+    for row in series_rows:
+        model = _model_label(row.model)
+        cost = float(row.native_cost or 0.0) + (
+            estimate_cost_usd(
+                row.model,
+                int(row.est_input or 0),
+                int(row.est_output or 0),
+                int(row.est_cache or 0),
+            )
+            or 0.0
+        )
+        bstart = row.bucket
+        slot = model_per_bucket.setdefault(bstart, {})
+        slot[model] = slot.get(model, 0.0) + cost
+        model_totals[model] = model_totals.get(model, 0.0) + cost
+        trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
+            row.trial_count or 0
+        )
+
+    tasks: dict[str, dict[str, Any]] = {}
+
+    total_trials = 0
+    total_input = 0
+    total_cache = 0
+    total_output = 0
+    total_native = 0.0
+    total_estimated = 0.0
+
+    for row in detail_rows:
+        model = _model_label(row.model)
+        provider = _provider_label(row.provider)
+        trial_count = int(row.trial_count or 0)
+        input_tokens = int(row.input_tokens or 0)
+        cache_tokens = int(row.cache_tokens or 0)
+        output_tokens = int(row.output_tokens or 0)
+        native = float(row.native_cost or 0.0)
+        estimated = (
+            estimate_cost_usd(
+                row.model,
+                int(row.est_input or 0),
+                int(row.est_output or 0),
+                int(row.est_cache or 0),
+            )
+            or 0.0
+        )
+        cost = native + estimated
+
+        total_trials += trial_count
+        total_input += input_tokens
+        total_cache += cache_tokens
+        total_output += output_tokens
+        total_native += native
+        total_estimated += estimated
+
+        task = tasks.get(row.task_id)
+        if task is None:
+            task = tasks[row.task_id] = {
+                "task_id": row.task_id,
+                "task_name": row.task_name,
+                "trial_count": 0,
+                "input_tokens": 0,
+                "cache_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                "cost_estimated_usd": 0.0,
+                "models": {},
+            }
+        task["trial_count"] += trial_count
+        task["input_tokens"] += input_tokens
+        task["cache_tokens"] += cache_tokens
+        task["output_tokens"] += output_tokens
+        task["cost_usd"] += cost
+        task["cost_estimated_usd"] += estimated
+        _accumulate_model(
+            task["models"],
+            model=model,
+            provider=provider,
+            trial_count=trial_count,
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost,
+            cost_estimated_usd=estimated,
+        )
+
+    bucket_starts = sorted(trials_per_bucket.keys())
+    series_by_model = _build_dimension_series(
+        "model",
+        bucket_starts=bucket_starts,
+        per_bucket=model_per_bucket,
+        totals=model_totals,
+        trials_per_bucket=trials_per_bucket,
+        labels={},
+    )
+
+    task_rows = sorted(tasks.values(), key=lambda t: t["cost_usd"], reverse=True)[
+        :task_limit
+    ]
+    tasks_out = [
+        CostTaskBreakdown(
+            task_id=str(t["task_id"]),
+            task_name=t["task_name"],
+            trial_count=int(t["trial_count"]),
+            input_tokens=int(t["input_tokens"]),
+            cache_tokens=int(t["cache_tokens"]),
+            output_tokens=int(t["output_tokens"]),
+            cost_usd=round(float(t["cost_usd"]), 4),
+            cost_estimated_usd=round(float(t["cost_estimated_usd"]), 4),
+            models=_model_breakdowns(t["models"]),
+        )
+        for t in task_rows
+    ]
+
+    totals = UserCostTotals(
+        window_days=window_days,
+        trial_count=total_trials,
+        task_count=len(tasks),
+        input_tokens=total_input,
+        cache_tokens=total_cache,
+        output_tokens=total_output,
+        cost_usd=round(total_native + total_estimated, 4),
+        cost_native_usd=round(total_native, 4),
+        cost_estimated_usd=round(total_estimated, 4),
+    )
+
+    return UserCostBreakdownResponse(
+        billed_user_id=billed_user_id,
+        org_id=org_id,
+        window_days=window_days,
+        bucket=bucket,
+        series_by_model=series_by_model,
+        totals=totals,
+        tasks=tasks_out,
         timestamp=now.isoformat(),
     )
