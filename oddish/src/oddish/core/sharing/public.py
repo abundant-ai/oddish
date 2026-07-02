@@ -293,7 +293,7 @@ async def get_public_task_status(
         resolved = await get_public_task_for_experiment(session, public_token, task_id)
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        exp, task = resolved
+        exp, task, gathered_ids = resolved
         queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
             trials=task.trials if include_trials else [],
@@ -301,6 +301,8 @@ async def get_public_task_status(
         response = build_task_status_response(
             task,
             queue_info_by_trial_id=queue_info_by_trial_id,
+            experiment_context_id=exp.id,
+            gathered_trial_ids=gathered_ids,
         )
         user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task.id])
         response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
@@ -417,7 +419,7 @@ async def list_public_task_files(
         )
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task = resolved
+        _, task, _ = resolved
         if version is None and task.current_version:
             version = task.current_version.version
 
@@ -447,7 +449,7 @@ async def get_public_task_file_content(
         )
         if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-        _, task = resolved
+        _, task, _ = resolved
         if version is None and task.current_version:
             version = task.current_version.version
 
