@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 
 from fastapi import HTTPException
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
@@ -71,31 +71,25 @@ async def get_public_experiment(
     return result.scalar_one_or_none()
 
 
-async def get_public_task(
+async def get_public_task_for_experiment(
     session: AsyncSession,
+    public_token: str,
     task_id: str,
     *,
     load_current_version: bool = False,
-) -> TaskModel | None:
-    """Get a task that belongs to at least one public experiment.
+) -> tuple[ExperimentModel, TaskModel, set[str]] | None:
+    """Get a public task only through the share token that exposes it."""
+    experiment = await get_public_experiment(session, public_token)
+    if not experiment:
+        return None
 
-    Pass ``load_current_version=True`` from callers that read
-    ``task.current_version`` (the public file-serving routes).
-    Default is False so the public task-status path doesn't pay for
-    an extra ``task_versions`` round trip it never reads.
-    """
-    public_link_exists = exists(
+    membership_exists = exists(
         select(1)
-        .select_from(
-            task_experiments.join(
-                ExperimentModel,  # type: ignore[arg-type]
-                ExperimentModel.id == task_experiments.c.experiment_id,
-            )
-        )
+        .select_from(task_experiments)
         .where(
             task_experiments.c.task_id == TaskModel.id,
+            task_experiments.c.experiment_id == experiment.id,
             task_experiments.c.deleted_at.is_(None),
-            ExperimentModel.is_public == True,  # noqa: E712
         )
     )
     options = [selectinload(TaskModel.trials), selectinload(TaskModel.experiments)]
@@ -105,37 +99,49 @@ async def get_public_task(
         select(TaskModel)
         .options(*options)
         .where(TaskModel.id == task_id)
-        .where(public_link_exists)
+        .where(membership_exists)
     )
     task = result.scalar_one_or_none()
-    if task is not None:
-        # Probes are an experimental, internal-only feature; never expose them
-        # through the public share/datasets views.
-        set_committed_value(
-            task, "trials", [t for t in task.trials if not t.is_probe]
+    if task is None:
+        return None
+
+    gathered_ids = set(
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == experiment.id,
+                    experiment_trials.c.deleted_at.is_(None),
+                )
+            )
         )
-    return task
-
-
-async def get_public_trial(session: AsyncSession, trial_id: str) -> TrialModel | None:
-    """Get a trial that is publicly visible (home experiment public, or gathered
-    into a public collection). Probes are never exposed publicly."""
-    public_home = select(ExperimentModel.id).where(ExperimentModel.is_public == True)  # noqa: E712
-    gathered_public = (
-        select(experiment_trials.c.trial_id)
-        .join(ExperimentModel, ExperimentModel.id == experiment_trials.c.experiment_id)
-        .where(ExperimentModel.is_public == True, experiment_trials.c.deleted_at.is_(None))  # noqa: E712
+        .scalars()
+        .all()
     )
+    set_committed_value(
+        task,
+        "trials",
+        [
+            t
+            for t in task.trials
+            if not t.is_probe
+            and (t.experiment_id == experiment.id or t.id in gathered_ids)
+        ],
+    )
+    return experiment, task, gathered_ids
+
+
+async def get_public_trial_for_experiment(
+    session: AsyncSession, public_token: str, trial_id: str
+) -> TrialModel | None:
+    """Get a public trial only through the share token that exposes it."""
+    experiment = await get_public_experiment(session, public_token)
+    if not experiment:
+        return None
     result = await session.execute(
         select(TrialModel)
         .where(TrialModel.id == trial_id)
         .where(TrialModel.is_probe.is_(False))
-        .where(
-            or_(
-                TrialModel.experiment_id.in_(public_home),
-                TrialModel.id.in_(gathered_public),
-            )
-        )
+        .where(trial_in_experiment(experiment.id))
     )
     return result.scalar_one_or_none()
 
@@ -236,6 +242,38 @@ async def list_task_trials_for_task(
     ]
 
 
+async def list_task_trials_for_public_experiment(
+    session: AsyncSession, public_token: str, task_id: str
+) -> list[TrialResponse] | None:
+    """List real-attempt task trials visible through one public share token."""
+    resolved = await get_public_task_for_experiment(session, public_token, task_id)
+    if resolved is None:
+        return None
+    experiment, _, _ = resolved
+    result = await session.execute(
+        select(TrialModel, TaskModel.task_path)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.is_probe.is_(False),
+            trial_in_experiment(experiment.id),
+        )
+        .order_by(TrialModel.created_at.asc())
+    )
+    rows = result.all()
+    trials = [trial for trial, _ in rows]
+    queue_info_by_trial_id = await fetch_trial_queue_info(session, trials=trials)
+    return [
+        build_trial_response(
+            trial,
+            task_path,
+            queue_info=queue_info_by_trial_id.get(trial.id),
+        )
+        for trial, task_path in rows
+    ]
+
+
 # =============================================================================
 # S3 File Operations
 # =============================================================================
@@ -265,8 +303,8 @@ async def list_task_files_s3(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list files: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to list files")
 
 
 async def get_task_file_content_s3(
@@ -321,10 +359,8 @@ async def list_trial_files_s3(
         )
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to list trial files: {str(e)}"
-        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to list trial files")
 
 
 async def get_trial_file_content_s3(

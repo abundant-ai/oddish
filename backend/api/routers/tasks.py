@@ -828,6 +828,7 @@ async def create_trial_collection(
             session,
             name=payload.name,
             trial_ids=payload.trial_ids,
+            task_ids=payload.task_ids,
             org_id=auth.org_id,
         )
         await session.commit()
@@ -1022,6 +1023,7 @@ async def unpublish_experiment(
             raise HTTPException(status_code=404, detail="Experiment not found")
 
         experiment.is_public = False
+        experiment.public_token = None
         await session.commit()
 
         return ExperimentShareResponse(
