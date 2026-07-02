@@ -8,19 +8,6 @@ export function formatCostUsd(value: number): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
-// Whimsical alternate cost unit: one Sweetgreen Harvest Bowl. Kept as a
-// constant so the going rate is edited in exactly one place.
-export const HARVEST_BOWL_USD = 15.75;
-
-export function formatHarvestBowls(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 🥗";
-  const bowls = value / HARVEST_BOWL_USD;
-  if (bowls < 0.01) return `${bowls.toFixed(3)} 🥗`;
-  if (bowls < 10) return `${bowls.toFixed(2)} 🥗`;
-  if (bowls < 1000) return `${bowls.toFixed(1)} 🥗`;
-  return `${bowls.toLocaleString(undefined, { maximumFractionDigits: 0 })} 🥗`;
-}
-
 export function formatDurationSec(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
   if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;
