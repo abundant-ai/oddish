@@ -27,13 +27,17 @@ def _format_collection_summary(data: dict) -> list[str]:
 @experiment_app.command("create")
 def create(
     trial_ids: Annotated[
-        list[str],
-        typer.Argument(help="Trial IDs to gather (space-separated)."),
-    ],
+        Optional[list[str]],
+        typer.Argument(help="Trial IDs to gather (optional; combine with --experiment)."),
+    ] = None,
     name: Annotated[
         str,
         typer.Option("--name", "-n", help="Name for the collection experiment."),
-    ],
+    ] = ...,
+    experiments: Annotated[
+        Optional[list[str]],
+        typer.Option("--experiment", "-e", help="Experiment id/name; links its qualifying trials. Repeatable."),
+    ] = None,
     json_output: Annotated[
         bool, typer.Option("--json", help="Print the raw JSON response.")
     ] = False,
@@ -49,9 +53,10 @@ def create(
 
         oddish experiment create --name "my collection" trial_a trial_b trial_c
     """
-    ids = _normalize_trial_ids(trial_ids)
-    if not ids:
-        console.print("[red]Provide at least one trial id.[/red]")
+    ids = _normalize_trial_ids(trial_ids or [])
+    exp_ids = _normalize_trial_ids(experiments or [])
+    if not ids and not exp_ids:
+        console.print("[red]Provide at least one trial id or --experiment.[/red]")
         raise typer.Exit(1)
 
     if not api_url:
@@ -61,7 +66,7 @@ def create(
     with httpx.Client(timeout=60.0, headers=get_auth_headers()) as client:
         resp = client.post(
             f"{api_url}/experiments/collections",
-            json={"name": name, "trial_ids": ids},
+            json={"name": name, "trial_ids": ids, "experiment_ids": exp_ids},
         )
     if resp.status_code != 200:
         console.print(f"[red]Failed:[/red] {resp.text}")

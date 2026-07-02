@@ -20,12 +20,19 @@ def _dedupe(raw: list[str]) -> list[str]:
     return list(dict.fromkeys(s.strip() for s in raw if s and s.strip()))
 
 
-def _guard_sources(*, tasks: list[str], trial_ids: list[str]) -> bool:
-    return bool(_dedupe(tasks) or _dedupe(trial_ids))
+def _guard_sources(*, tasks: list[str], trial_ids: list[str], experiments: list[str]) -> bool:
+    return bool(_dedupe(tasks) or _dedupe(trial_ids) or _dedupe(experiments))
 
 
-def _build_payload(*, name: str, tasks: list[str], trial_ids: list[str]) -> dict:
-    return {"name": name, "task_ids": _dedupe(tasks), "trial_ids": _dedupe(trial_ids)}
+def _build_payload(
+    *, name: str, tasks: list[str], trial_ids: list[str], experiments: list[str]
+) -> dict:
+    return {
+        "name": name,
+        "task_ids": _dedupe(tasks),
+        "trial_ids": _dedupe(trial_ids),
+        "experiment_ids": _dedupe(experiments),
+    }
 
 
 def _share_url(api_url: str, public_token: str | None) -> str | None:
@@ -42,6 +49,10 @@ def collect(
     tasks: Annotated[
         Optional[list[str]],
         typer.Option("--task", "-t", help="Task id/name; links its current-version trials. Repeatable."),
+    ] = None,
+    experiments: Annotated[
+        Optional[list[str]],
+        typer.Option("--experiment", "-e", help="Experiment id/name; links its qualifying trials. Repeatable."),
     ] = None,
     name: Annotated[
         Optional[str],
@@ -64,8 +75,9 @@ def collect(
     """
     tasks = tasks or []
     trial_ids = trial_ids or []
-    if not _guard_sources(tasks=tasks, trial_ids=trial_ids):
-        console.print("[red]Provide at least one --task or trial id.[/red]")
+    experiments = experiments or []
+    if not _guard_sources(tasks=tasks, trial_ids=trial_ids, experiments=experiments):
+        console.print("[red]Provide at least one --task, --experiment, or trial id.[/red]")
         raise typer.Exit(1)
 
     if not api_url:
@@ -73,7 +85,9 @@ def collect(
     require_api_key(api_url)
 
     coll_name = (name or "").strip() or "collection"
-    payload = _build_payload(name=coll_name, tasks=tasks, trial_ids=trial_ids)
+    payload = _build_payload(
+        name=coll_name, tasks=tasks, trial_ids=trial_ids, experiments=experiments
+    )
 
     public_url = None
     public_token = None
@@ -115,6 +129,10 @@ def collect(
     skipped = data.get("tasks_skipped_empty", 0)
     if skipped:
         console.print(f"  Tasks skipped (empty): {skipped}")
+    console.print(f"  From experiments:   {data.get('trials_from_experiments', 0)}")
+    exp_skipped = data.get("experiments_skipped_empty", 0)
+    if exp_skipped:
+        console.print(f"  Experiments skipped (empty): {exp_skipped}")
 
     if public_url:
         console.print("[bold]This is a public, read-only link:[/bold]")

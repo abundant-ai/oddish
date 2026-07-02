@@ -13,13 +13,34 @@ from oddish.cli.collect import _build_payload, _guard_sources
 
 
 def test_build_payload_tasks_and_trials():
-    payload = _build_payload(name="c", tasks=["taskA", "taskA"], trial_ids=["t1"])
-    assert payload == {"name": "c", "task_ids": ["taskA"], "trial_ids": ["t1"]}
+    payload = _build_payload(
+        name="c", tasks=["taskA", "taskA"], trial_ids=["t1"], experiments=[]
+    )
+    assert payload == {
+        "name": "c",
+        "task_ids": ["taskA"],
+        "trial_ids": ["t1"],
+        "experiment_ids": [],
+    }
 
 
 def test_guard_requires_a_source():
-    assert _guard_sources(tasks=[], trial_ids=[]) is False
-    assert _guard_sources(tasks=["a"], trial_ids=[]) is True
+    assert _guard_sources(tasks=[], trial_ids=[], experiments=[]) is False
+    assert _guard_sources(tasks=["a"], trial_ids=[], experiments=[]) is True
+
+
+def test_build_payload_includes_experiment_ids():
+    payload = _build_payload(
+        name="c", tasks=["t1"], trial_ids=["tr1"], experiments=[" e1 ", "e1", "e2"]
+    )
+    assert payload["experiment_ids"] == ["e1", "e2"]
+    assert payload["task_ids"] == ["t1"]
+    assert payload["trial_ids"] == ["tr1"]
+
+
+def test_guard_sources_true_with_only_experiments():
+    assert _guard_sources(tasks=[], trial_ids=[], experiments=["e1"]) is True
+    assert _guard_sources(tasks=[], trial_ids=[], experiments=[]) is False
 
 
 # ---------------------------------------------------------------------------
