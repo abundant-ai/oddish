@@ -1,6 +1,7 @@
 from fastapi import HTTPException
 
 from auth.permissions import allowed_api_key_scopes, can_create_api_keys
+from api.routers.task_submission import require_experiment_publish_scope
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserRole
 
@@ -165,3 +166,34 @@ def test_cached_admin_role_does_not_expand_member_created_task_key():
         assert exc.status_code == 403
     else:
         raise AssertionError("cached creator role should not authorize the key")
+
+
+def test_member_created_task_key_cannot_publish_experiment():
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id="user_1",
+        user_role=UserRole.MEMBER,
+        api_key_created_by_role=UserRole.MEMBER.value,
+        scope=APIKeyScope.TASKS,
+    )
+
+    try:
+        require_experiment_publish_scope(auth)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("member-created task key should not publish")
+
+
+def test_admin_created_task_key_can_publish_experiment():
+    auth = AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        user_id="admin_1",
+        user_role=UserRole.ADMIN,
+        api_key_created_by_role=UserRole.ADMIN.value,
+        scope=APIKeyScope.TASKS,
+    )
+
+    require_experiment_publish_scope(auth)
