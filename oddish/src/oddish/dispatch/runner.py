@@ -65,7 +65,9 @@ def build_dispatcher_from_env(env: Mapping[str, str] = os.environ) -> Dispatcher
     if kind == "docker":
         image = env.get("ODDISH_WORKER_IMAGE")
         if not image:
-            raise ValueError("ODDISH_WORKER_IMAGE is required for the docker dispatcher")
+            raise ValueError(
+                "ODDISH_WORKER_IMAGE is required for the docker dispatcher"
+            )
         return DockerPoolDispatcher(
             image=image,
             env=worker_env_from(env),

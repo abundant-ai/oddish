@@ -163,7 +163,7 @@ _HARBOR_SOURCE_REWRITE_PY = (
     "import re,sys\n"
     "src,sha=sys.argv[1],sys.argv[2]\n"
     "for p in sys.argv[3:]:\n"
-    '    s=open(p).read()\n'
+    "    s=open(p).read()\n"
     '    s=re.sub(r"harbor = \\{ git = [^}]*\\}", '
     '"harbor = { git = \\""+src+"\\", rev = \\""+sha+"\\" }", s)\n'
     '    open(p,"w").write(s)'

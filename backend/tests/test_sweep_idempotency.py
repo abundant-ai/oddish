@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from alembic import command
+from alembic import command  # type: ignore[attr-defined]
 from alembic.config import Config
 from fastapi import HTTPException
 from sqlalchemy import func, select, text, update
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # type: ignore[attr-defined]
 
 import models  # noqa: F401  registers SubmissionIdempotency on the shared Base
 from models import SubmissionIdempotency

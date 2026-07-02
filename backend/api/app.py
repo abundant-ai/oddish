@@ -108,10 +108,11 @@ async def lifespan(_api: FastAPI):
             if _daytona_key and _anthropic_key:
                 from api.services.cc_chat.daytona_client import RealDaytonaClient
                 from api.services.cc_chat.claude_code_runtime import ClaudeCodeRuntime
-                from api.services.cc_chat.transcript_buffer import SessionTranscriptBuffer
+                from api.services.cc_chat.transcript_buffer import (
+                    SessionTranscriptBuffer,
+                )
                 from api.services.cc_chat.orchestrator import ChatOrchestrator
                 from oddish.config import api_base_url_for_modal_app
-                from oddish.db import get_session
                 from oddish.db.storage import get_storage_client
 
                 _daytona = RealDaytonaClient(

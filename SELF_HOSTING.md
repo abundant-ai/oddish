@@ -196,7 +196,8 @@ One-time setup:
 echo "127.0.0.1 local.oddish.app" | sudo tee -a /etc/hosts
 
 # 2. Install mkcert and the local CA
-brew install mkcert
+# macOS: brew install mkcert
+# Linux: use your distro package manager, or see https://github.com/FiloSottile/mkcert
 mkcert -install
 ```
 

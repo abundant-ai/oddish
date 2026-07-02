@@ -27,13 +27,15 @@ async def test_stage_filters_to_selected_ids(tmp_path, monkeypatch):
     monkeypatch.setattr(probe_staging, "materialize_skills", fake_materialize)
 
     class _Sess:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
     monkeypatch.setattr(probe_staging, "get_session", lambda: _Sess())
 
-    n = await probe_staging.stage_org_skills(
-        tmp_path, org_id="org1", skill_ids=["b"]
-    )
+    n = await probe_staging.stage_org_skills(tmp_path, org_id="org1", skill_ids=["b"])
     assert n == 1
     assert materialized == ["beta"]
 
@@ -42,12 +44,17 @@ async def test_stage_filters_to_selected_ids(tmp_path, monkeypatch):
 async def test_stage_empty_ids_mounts_nothing(tmp_path, monkeypatch):
     async def fake_list(session, *, org_id=None):
         return [_Skill("a", "alpha")]
+
     monkeypatch.setattr(probe_staging, "list_skills_core", fake_list)
     monkeypatch.setattr(probe_staging, "materialize_skills", lambda b, r: None)
 
     class _Sess:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
     monkeypatch.setattr(probe_staging, "get_session", lambda: _Sess())
 
     n = await probe_staging.stage_org_skills(tmp_path, org_id="org1", skill_ids=[])

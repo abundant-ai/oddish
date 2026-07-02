@@ -371,7 +371,9 @@ def test_claude_code_fireworks_agent_config_sets_fireworks_skin_env(
     # prefix stays on model_name so Harbor's allowlist can resolve the Fireworks
     # endpoint for closed-internet tasks (once the fork maps it).
     assert agent_config.model_name == "fireworks/glm-5p2"
-    assert agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+    assert (
+        agent_config.env["ANTHROPIC_BASE_URL"] == "https://api.fireworks.ai/inference"
+    )
     assert agent_config.env["ANTHROPIC_AUTH_TOKEN"] == "${FIREWORKS_API_KEY}"
     # Claude Code must send the full Fireworks model path, mirrored across every
     # size alias since the image defaults to Bedrock mode.

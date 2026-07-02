@@ -114,9 +114,7 @@ class ModalDispatcher:
                 yield handle
 
     async def cancel(self, handles: Sequence[WorkerHandle]) -> int:
-        fc_ids = [
-            h.id for h in handles if h.id and h.id not in self._cancelled
-        ]
+        fc_ids = [h.id for h in handles if h.id and h.id not in self._cancelled]
         if not fc_ids:
             return 0
         cancelled = await self._cancel_fn(list(dict.fromkeys(fc_ids)))
