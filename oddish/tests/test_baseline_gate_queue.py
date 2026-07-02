@@ -595,3 +595,90 @@ async def test_agent_only_append_faulty_advances_task(monkeypatch, cleanup_task_
             await session.execute(select(TaskModel).where(TaskModel.id == task_id))
         ).scalar_one()
     assert task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING)
+
+
+# ---------------------------------------------------------------------------
+# Per-run opt-out (--no-baseline-gate / gate_baselines=False)
+# ---------------------------------------------------------------------------
+
+
+def _no_gate(sub: TaskSubmission) -> TaskSubmission:
+    """Copy a submission with the per-run baseline gate opted out."""
+    return sub.model_copy(update={"gate_baselines": False})
+
+
+@pytest.mark.asyncio
+async def test_opt_out_create_never_blocks_llm(monkeypatch, cleanup_task_ids):
+    """--no-baseline-gate on create: LLM trials run ungated (baselines still run)."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"optout-create-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(
+            session, _no_gate(_mixed_submission("optout")), task_id=task_id
+        )
+    statuses = await _job_status_by_agent(task_id)
+    # Baselines still run; the LLM agent is QUEUED (not BLOCKED) despite the
+    # global flag being on and baselines being present.
+    assert statuses["oracle"] == WorkerJobStatus.QUEUED
+    assert statuses["nop"] == WorkerJobStatus.QUEUED
+    assert statuses[_LLM_AGENT] == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_opt_out_append_not_blocked(monkeypatch, cleanup_task_ids):
+    """--no-baseline-gate on an append: the new LLM trial isn't blocked."""
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"optout-append-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _baselines_only_submission(), task_id=task_id)
+    # Baselines are still pending -> a gated append would BLOCK; opting out runs it.
+    async with get_session() as session:
+        task = (
+            await session.execute(
+                select(TaskModel)
+                .options(selectinload(TaskModel.experiments))
+                .where(TaskModel.id == task_id)
+            )
+        ).scalar_one()
+        new = await append_trials_to_task(
+            session, task=task, submission=_no_gate(_llm_only_submission())
+        )
+        kimi = new[0].id
+    assert await _wj_status(kimi) == WorkerJobStatus.QUEUED
+
+
+@pytest.mark.asyncio
+async def test_retry_opt_out_not_regated(monkeypatch, cleanup_task_ids):
+    """Retry with gate_baselines=False re-runs ungated even on a faulty task."""
+    from oddish.core.endpoints.trials import retry_trial_core
+
+    monkeypatch.setattr(settings, "gate_llm_on_baselines", True)
+    task_id = f"optout-retry-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    async with get_session() as session:
+        await create_task(session, _mixed_submission("optout-retry"), task_id=task_id)
+    # Faulty baselines -> the create-blocked kimi is cancelled.
+    baseline_id = await _set_baseline_outcomes(
+        task_id, oracle_reward=0.0, nop_reward=0.0
+    )
+    async with get_session() as session:
+        await maybe_gate_llm_trials(session, baseline_id)
+    async with get_session() as session:
+        kimi_id = (
+            await session.execute(
+                select(TrialModel.id).where(
+                    TrialModel.task_id == task_id, TrialModel.agent == _LLM_AGENT
+                )
+            )
+        ).scalar_one()
+
+    # A default retry would re-gate and cancel (see test_retry_of_gated_llm_trial_
+    # reports_skipped); opting out on the retry runs it ungated instead.
+    async with get_session() as session:
+        result = await retry_trial_core(
+            session, trial_id=kimi_id, org_id=None, gate_baselines=False
+        )
+    assert result["status"] == "queued"
+    assert await _wj_status(result["trial_id"]) == WorkerJobStatus.QUEUED

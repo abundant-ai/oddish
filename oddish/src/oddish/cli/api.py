@@ -931,6 +931,7 @@ def build_sweep_payload(
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     run_probe: bool = False,
+    gate_baselines: bool = True,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
@@ -1000,6 +1001,7 @@ def build_sweep_payload(
         "priority": priority,
         "run_analysis": run_analysis,
         "run_probe": run_probe,
+        "gate_baselines": gate_baselines,
     }
     if user:
         payload["user"] = user
@@ -1082,6 +1084,7 @@ def submit_sweep(
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     run_probe: bool = False,
+    gate_baselines: bool = True,
     github_username: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
@@ -1114,6 +1117,7 @@ def submit_sweep(
         max_trial_attempts=max_trial_attempts,
         run_analysis=run_analysis,
         run_probe=run_probe,
+        gate_baselines=gate_baselines,
         github_username=github_username,
         tags=tags,
         publish_experiment=publish_experiment,
