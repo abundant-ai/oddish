@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import useSWR from "swr";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -51,7 +51,7 @@ import type {
   CostUserBreakdown,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
-import { formatCostUsd, formatHarvestBowls, HARVEST_BOWL_USD } from "@/lib/format";
+import { formatCostUsd } from "@/lib/format";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { AGENT_COLORS } from "@/components/pass-at-k-graph";
@@ -117,17 +117,6 @@ function buildSeriesColors(keys: { key: string }[]): Record<string, string> {
   return result;
 }
 
-// Cost unit ($ vs Sweetgreen Harvest Bowls) selected by the card-level toggle
-// and shared with every leaf cell/tooltip so they all render the same unit
-// without prop-drilling a formatter through the table components.
-type CostUnit = "usd" | "bowls";
-const COST_FORMATTERS: Record<CostUnit, (usd: number) => string> = {
-  usd: formatCostUsd,
-  bowls: formatHarvestBowls,
-};
-const CostFormatContext = createContext<(usd: number) => string>(formatCostUsd);
-const useCostFormat = () => useContext(CostFormatContext);
-
 function formatTokens(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
   if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
@@ -166,7 +155,6 @@ function ModelLabel({ model }: { model: CostModelBreakdown }) {
 
 // Top model inline + "+N more" with a tooltip listing every model's cost.
 function ModelMix({ models }: { models: CostModelBreakdown[] }) {
-  const fmt = useCostFormat();
   if (models.length === 0)
     return <span className="text-muted-foreground">—</span>;
   const [top, ...rest] = models;
@@ -192,7 +180,7 @@ function ModelMix({ models }: { models: CostModelBreakdown[] }) {
                     {m.model}{" "}
                     <span className="text-muted-foreground">{m.provider}</span>
                   </span>
-                  <span>{fmt(m.cost_usd)}</span>
+                  <span>{formatCostUsd(m.cost_usd)}</span>
                 </div>
               ))}
             </div>
@@ -216,7 +204,6 @@ function EstimateMarker({
   cost: number;
   estimated: number;
 }) {
-  const fmt = useCostFormat();
   if (estimated <= 0) return null;
   const pct = estimatedPct(cost, estimated);
   return (
@@ -225,35 +212,19 @@ function EstimateMarker({
         <Info className="text-muted-foreground ml-1 inline h-3 w-3 cursor-help align-text-top" />
       </TooltipTrigger>
       <TooltipContent className="max-w-[280px]">
-        {fmt(estimated)} of {fmt(cost)} ({pct}%) is estimated from token counts
-        (no native cost was reported by the runtime); the rest is the
-        runtime-reported cost.
+        {formatCostUsd(estimated)} of {formatCostUsd(cost)} ({pct}%) is
+        estimated from token counts (no native cost was reported by the
+        runtime); the rest is the runtime-reported cost.
       </TooltipContent>
     </Tooltip>
   );
 }
 
-// A non-total cost column (exec / probe / QA split). Renders a muted dash for
-// zero so the eye lands on the columns that actually carry spend.
-function SubCostCell({ value }: { value: number }) {
-  const fmt = useCostFormat();
-  return (
-    <TableCell className="text-right font-mono text-xs">
-      {value > 0 ? (
-        fmt(value)
-      ) : (
-        <span className="text-muted-foreground">—</span>
-      )}
-    </TableCell>
-  );
-}
-
 function CostCell({ cost, estimated }: { cost: number; estimated: number }) {
-  const fmt = useCostFormat();
   return (
     <TableCell className="text-right font-mono text-xs font-medium">
       <span className="inline-flex items-center justify-end">
-        {fmt(cost)}
+        {formatCostUsd(cost)}
         <EstimateMarker cost={cost} estimated={estimated} />
       </span>
     </TableCell>
@@ -287,7 +258,6 @@ function ChartTooltip(
   }
 ) {
   const { active, payload, label, bucket, labels } = props;
-  const fmt = useCostFormat();
   if (!active || !payload || payload.length === 0) return null;
   const when =
     bucket === "hour"
@@ -317,20 +287,19 @@ function ChartTooltip(
                 {labels[e.key] ?? e.key}
               </span>
             </span>
-            <span className="font-mono">{fmt(e.value)}</span>
+            <span className="font-mono">{formatCostUsd(e.value)}</span>
           </div>
         ))}
       </div>
       <div className="mt-1 flex justify-between gap-3 border-t pt-1 font-medium">
         <span>Total</span>
-        <span className="font-mono">{fmt(total)}</span>
+        <span className="font-mono">{formatCostUsd(total)}</span>
       </div>
     </div>
   );
 }
 
 function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
-  const fmt = useCostFormat();
   const labels = useMemo(() => {
     const map: Record<string, string> = {};
     series.keys.forEach((k) => (map[k.key] = k.label));
@@ -376,7 +345,7 @@ function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
               minTickGap={24}
             />
             <YAxis
-              tickFormatter={(v: number) => fmt(v)}
+              tickFormatter={(v: number) => formatCostUsd(v)}
               tick={{ fontSize: 11 }}
               width={56}
             />
@@ -453,30 +422,11 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            The per-experiment table splits spend into{" "}
-            <strong>Exec</strong> (real trial runs), <strong>Probe</strong>{" "}
-            (internal probe trial runs), and <strong>QA</strong> (the LLM
-            analysis pipeline: per-trial trajectory classification + the
-            per-task verdict synthesis). Exec + Probe + QA = Total. QA cost is
-            tracked only from when this was deployed; older analyses show $0.
-          </li>
-          <li>
-            The over-time chart, per-user, and per-model views cover trial
-            execution only (not QA), so they still sum to the execution total.
-          </li>
-          <li>
             Per-user figures attribute each experiment to its owner; per-model
             and per-user are the same per-trial costs grouped differently, so
             each view sums back to the same total.
           </li>
           <li>Figures span all organizations.</li>
-          <li>
-            The <span className="font-mono">$</span> /{" "}
-            <span aria-hidden>🥗</span> toggle restates every figure in US
-            dollars or Sweetgreen Harvest Bowls (1 🥗 = $
-            {HARVEST_BOWL_USD.toFixed(2)}). Purely cosmetic — the underlying
-            numbers are unchanged.
-          </li>
         </ul>
       </PopoverContent>
     </Popover>
@@ -494,8 +444,6 @@ const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
 export function CostBreakdownCard() {
   const [windowDays, setWindowDays] = useState("7");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
-  const [unit, setUnit] = useState<CostUnit>("usd");
-  const costFmt = COST_FORMATTERS[unit];
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
@@ -523,32 +471,12 @@ export function CostBreakdownCard() {
             <MethodologyNote />
             {data && (
               <Badge variant="outline" className="text-xs">
-                {costFmt(data.totals.cost_total_usd)} ·{" "}
+                {formatCostUsd(data.totals.cost_usd)} ·{" "}
                 {windowLabel.toLowerCase()}
               </Badge>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1">
-              <Button
-                variant={unit === "usd" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setUnit("usd")}
-                title="Show costs in US dollars"
-              >
-                $
-              </Button>
-              <Button
-                variant={unit === "bowls" ? "secondary" : "ghost"}
-                size="sm"
-                className="h-8 px-2 text-xs"
-                onClick={() => setUnit("bowls")}
-                title={`Show costs in Sweetgreen Harvest Bowls ($${HARVEST_BOWL_USD.toFixed(2)} each)`}
-              >
-                🥗
-              </Button>
-            </div>
             <Select value={windowDays} onValueChange={setWindowDays}>
               <SelectTrigger className="h-8 w-[150px] text-xs">
                 <SelectValue />
@@ -600,7 +528,6 @@ export function CostBreakdownCard() {
         ) : !data || !series ? (
           <p className="text-muted-foreground">Loading...</p>
         ) : (
-          <CostFormatContext.Provider value={costFmt}>
           <TooltipProvider delayDuration={150}>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -625,24 +552,13 @@ export function CostBreakdownCard() {
 
             <div className="flex flex-wrap gap-2 text-xs">
               <Badge variant="outline">
-                total {costFmt(data.totals.cost_total_usd)}
+                total {formatCostUsd(data.totals.cost_usd)}
               </Badge>
               <Badge variant="outline">
-                execution {costFmt(data.totals.cost_real_execution_usd)}
-              </Badge>
-              {data.totals.cost_probe_execution_usd > 0 && (
-                <Badge variant="outline">
-                  probe {costFmt(data.totals.cost_probe_execution_usd)}
-                </Badge>
-              )}
-              <Badge variant="outline">
-                QA {costFmt(data.totals.cost_qa_usd)}
+                native {formatCostUsd(data.totals.cost_native_usd)}
               </Badge>
               <Badge variant="outline">
-                native {costFmt(data.totals.cost_native_usd)}
-              </Badge>
-              <Badge variant="outline">
-                estimated {costFmt(data.totals.cost_estimated_usd)}
+                estimated {formatCostUsd(data.totals.cost_estimated_usd)}
               </Badge>
               <Badge variant="outline">
                 {data.totals.trial_count.toLocaleString()} trials
@@ -675,7 +591,6 @@ export function CostBreakdownCard() {
               <ExperimentTable experiments={data.experiments} />
             </section>
           </TooltipProvider>
-          </CostFormatContext.Provider>
         )}
       </CardContent>
     </Card>
@@ -798,10 +713,7 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">Exec</TableHead>
-          <TableHead className="text-right">Probe</TableHead>
-          <TableHead className="text-right">QA</TableHead>
-          <TableHead className="text-right">Total</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>
@@ -822,13 +734,7 @@ function ExperimentTable({
             <TableCell className="text-muted-foreground text-[11px]">
               {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
             </TableCell>
-            <SubCostCell value={exp.cost_real_execution_usd} />
-            <SubCostCell value={exp.cost_probe_execution_usd} />
-            <SubCostCell value={exp.cost_qa_usd} />
-            <CostCell
-              cost={exp.cost_total_usd}
-              estimated={exp.cost_estimated_usd}
-            />
+            <CostCell cost={exp.cost_usd} estimated={exp.cost_estimated_usd} />
             <TableCell className="text-right font-mono text-xs">
               {exp.trial_count.toLocaleString()}
             </TableCell>

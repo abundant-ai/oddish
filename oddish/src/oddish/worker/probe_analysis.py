@@ -722,35 +722,7 @@ async def run_probe_analyzer(
 
     parsed = _coerce_analyzer_json(raw_text)
 
-    summary = _normalize_probe_summary(parsed, result_focus=result_focus, model=model)
-    summary["analysis_cost_usd"] = _estimate_message_cost_usd(
-        getattr(msg, "usage", None), model
-    )
-    return summary
-
-
-def _estimate_message_cost_usd(usage, model: str) -> float | None:
-    """Estimate the USD cost of an Anthropic Messages call from its usage.
-
-    Anthropic reports ``input_tokens`` net of cache plus
-    ``cache_creation_input_tokens`` / ``cache_read_input_tokens``; price the
-    grossed-up input (cache read at the cache rate) and the output via the
-    per-model table. Returns None when usage is missing or unpriceable.
-    """
-    if usage is None:
-        return None
-    from oddish.model_pricing import estimate_cost_usd
-
-    input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    cache_creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
-    cache_read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
-    return estimate_cost_usd(
-        model,
-        input_tokens + cache_creation + cache_read,
-        output_tokens,
-        cache_read,
-    )
+    return _normalize_probe_summary(parsed, result_focus=result_focus, model=model)
 
 
 def _normalize_probe_summary(parsed: dict, *, result_focus: str, model: str) -> dict:
