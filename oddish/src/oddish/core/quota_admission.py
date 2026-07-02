@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,25 +13,24 @@ from oddish.core.quotas import (
     sum_cost_usd,
 )
 
-if TYPE_CHECKING:
-    from oddish.schemas import TaskSubmission
-
 logger = logging.getLogger(__name__)
 
 
 class QuotaExceeded(HTTPException):
-    def __init__(self, used_usd, limit_usd, period: str = "daily") -> None:
+    def __init__(self, used_usd, reserved_usd, limit_usd) -> None:
         super().__init__(
             status_code=402,
             detail={
                 "message": (
-                    f"Over your daily budget: used ${float(used_usd):.2f} of "
-                    f"${float(limit_usd):.2f} ({period}). Ask an org admin to "
+                    f"Over your daily budget: used ${float(used_usd):.2f} + "
+                    f"${float(reserved_usd):.2f} reserved of "
+                    f"${float(limit_usd):.2f} (daily). Ask an org admin to "
                     "raise your quota."
                 ),
                 "used_usd": float(used_usd),
+                "reserved_usd": float(reserved_usd),
                 "limit_usd": float(limit_usd),
-                "period": period,
+                "period": "daily",
             },
         )
 
@@ -50,14 +48,17 @@ class Unattributed(HTTPException):
         )
 
 
-def _log_would_block(org_id, billed_user_id, used, limit, *, reason: str) -> None:
+def _log_would_block(
+    org_id, billed_user_id, used, reserved, limit, *, reason: str
+) -> None:
     logger.warning(
         "metric=quota.would_block reason=%s org_id=%s billed_user_id=%s "
-        "used=%s limit=%s",
+        "used=%s reserved=%s limit=%s",
         reason,
         org_id,
         billed_user_id,
         used,
+        reserved,
         limit,
     )
 
@@ -77,7 +78,7 @@ async def admit_trials(
     if billed_user_id is None:
         if mode == QuotaMode.ENFORCE:
             raise Unattributed()
-        _log_would_block(org_id, None, None, None, reason="unattributed")
+        _log_would_block(org_id, None, None, None, None, reason="unattributed")
         return
 
     effective_limit_usd = await get_effective_limit(session, org_id, billed_user_id)
@@ -88,16 +89,12 @@ async def admit_trials(
 
     if used_usd + reserved_usd >= effective_limit_usd:
         if mode == QuotaMode.ENFORCE:
-            raise QuotaExceeded(used_usd, effective_limit_usd)
+            raise QuotaExceeded(used_usd, reserved_usd, effective_limit_usd)
         _log_would_block(
-            org_id, billed_user_id, used_usd, effective_limit_usd, reason="over_budget"
+            org_id,
+            billed_user_id,
+            used_usd,
+            reserved_usd,
+            effective_limit_usd,
+            reason="over_budget",
         )
-
-
-async def admit_submission_trials(
-    session: AsyncSession,
-    org_id: str | None,
-    billed_user_id: str | None,
-    submission: "TaskSubmission",
-) -> None:
-    await admit_trials(session, org_id, billed_user_id, count=len(submission.trials))

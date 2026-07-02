@@ -77,9 +77,13 @@ export function QuotaAdminForm() {
 
   const draftValue = (member: QuotaMember) =>
     drafts[member.user_id] ?? member.limit_usd.toFixed(2);
-  const isDirty = (member: QuotaMember) =>
-    member.user_id in drafts &&
-    drafts[member.user_id] !== member.limit_usd.toFixed(2);
+  const isDirty = (member: QuotaMember) => {
+    const draft = drafts[member.user_id];
+    return (
+      draft !== undefined &&
+      (draft === "" ? true : Number(draft) !== member.limit_usd)
+    );
+  };
 
   const setDraft = (userId: string, value: string) => {
     setRowError(({ [userId]: _drop, ...rest }) => rest);
@@ -158,7 +162,7 @@ export function QuotaAdminForm() {
                   <TableCell className="py-2.5">
                     <div className="min-w-0">
                       <p className="text-foreground truncate text-sm font-medium">
-                        {member.name ?? member.email}
+                        {member.name || member.email}
                       </p>
                       <p className="text-muted-foreground truncate text-xs">
                         {member.email}

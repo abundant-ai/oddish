@@ -1,3 +1,7 @@
+import { NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import { getAuthHeaders, getBackendUrl, getClerkToken } from "./backend-config";
+
 type JsonObject = Record<string, unknown>;
 
 type BackendJsonResult = {
@@ -49,4 +53,56 @@ export function backendErrorPayload(
   }
 
   return { error: fallbackError };
+}
+
+export async function proxyBackendJson({
+  path,
+  method = "GET",
+  body,
+}: {
+  path: string;
+  method?: "GET" | "PUT";
+  body?: unknown;
+}): Promise<NextResponse> {
+  try {
+    const { getToken } = await auth();
+    const token = await getClerkToken(getToken);
+    if (!token) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const res = await fetch(getBackendUrl(path), {
+      method,
+      cache: "no-store",
+      headers:
+        method === "PUT"
+          ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
+          : getAuthHeaders(token),
+      body: method === "PUT" ? JSON.stringify(body) : undefined,
+    });
+
+    const text = await res.text();
+    let data: unknown = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return NextResponse.json(
+          { error: "Upstream error" },
+          { status: res.status },
+        );
+      }
+    }
+
+    return res.ok
+      ? NextResponse.json(data)
+      : NextResponse.json(data ?? { error: "Upstream error" }, {
+          status: res.status,
+        });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Unknown error" },
+      { status: 503 },
+    );
+  }
 }

@@ -27,6 +27,14 @@ def start_of_today_utc(now: datetime | None = None) -> datetime:
     return (now or datetime.now(timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _settled_cost_predicates(org_id: str | None, period_start: datetime) -> list:
+    return [
+        TrialModel.org_id == org_id,
+        TrialModel.finished_at >= period_start,
+        TrialModel.deleted_at.is_(None),
+    ]
+
+
 async def sum_cost_usd(
     session: AsyncSession,
     org_id: str | None,
@@ -36,13 +44,28 @@ async def sum_cost_usd(
     return to_money_decimal(
         await session.scalar(
             select(func.coalesce(func.sum(TrialModel.cost_usd), 0)).where(
-                TrialModel.org_id == org_id,
+                *_settled_cost_predicates(org_id, period_start),
                 TrialModel.billed_user_id == user_id,
-                TrialModel.finished_at >= period_start,
-                TrialModel.deleted_at.is_(None),
             )
         )
     )
+
+
+async def sum_cost_usd_by_user(
+    session: AsyncSession, org_id: str | None, period_start: datetime
+) -> dict[str, Decimal]:
+    rows = await session.execute(
+        select(
+            TrialModel.billed_user_id,
+            func.coalesce(func.sum(TrialModel.cost_usd), 0),
+        )
+        .where(
+            *_settled_cost_predicates(org_id, period_start),
+            TrialModel.billed_user_id.is_not(None),
+        )
+        .group_by(TrialModel.billed_user_id)
+    )
+    return {user_id: to_money_decimal(total) for user_id, total in rows.all()}
 
 
 async def inflight_count(

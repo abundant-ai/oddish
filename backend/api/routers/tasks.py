@@ -390,6 +390,21 @@ async def _resolve_experiment_owner_user_id(
     return None
 
 
+async def _resolve_billed_user_id(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+    owner_user_id: str | None = None,
+) -> str | None:
+    if owner_user_id is None:
+        owner_user_id = await _resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+    if owner_user_id is not None:
+        return owner_user_id
+    return await _resolve_created_by_user_id(session, submission, auth)
+
+
 def _stamp_experiment_owner(
     experiment: ExperimentModel | None,
     owner_user_id: str | None,
@@ -512,16 +527,13 @@ async def create_task_sweep(
         await _resolve_submission_identity(session, submission, auth)
         _apply_github_attribution(submission)
 
-        # Billing follows the resolved owner: a submitted github_id/github_username
-        # (github_id takes precedence) is billed to that user, otherwise the
-        # API-key owner / submitter. Applies to every caller.
+        # Billing follows the resolved owner (submitted github_id/github_username,
+        # github_id first), else the API-key owner / submitter. Every caller.
         owner_user_id = await _resolve_experiment_owner_user_id(
             session, submission, auth
         )
-        billed_user_id = (
-            owner_user_id
-            if owner_user_id is not None
-            else await _resolve_created_by_user_id(session, submission, auth)
+        billed_user_id = await _resolve_billed_user_id(
+            session, submission, auth, owner_user_id=owner_user_id
         )
 
         try:
@@ -615,18 +627,6 @@ async def create_task_sweep_batch(
         elif experiment and submission.publish_experiment:
             await ensure_experiment_public(session, experiment)
 
-    async def _resolve_billed(
-        session: AsyncSession, submission: TaskSweepSubmission
-    ) -> str | None:
-        # Bill the resolved owner (submitted github_id/github_username takes
-        # precedence), else the API-key owner / submitter. Same rule for all callers.
-        owner_user_id = await _resolve_experiment_owner_user_id(
-            session, submission, auth
-        )
-        if owner_user_id is not None:
-            return owner_user_id
-        return await _resolve_created_by_user_id(session, submission, auth)
-
     async with get_session() as session:
         results = await create_task_sweep_batch_core(
             session,
@@ -635,7 +635,9 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
-            resolve_billed_user_id=_resolve_billed,
+            resolve_billed_user_id=lambda session, submission: _resolve_billed_user_id(
+                session, submission, auth
+            ),
         )
         await session.commit()
 
