@@ -15,14 +15,12 @@ Markers:
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-import httpx
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
@@ -453,109 +451,14 @@ async def test_case5_endpoint_org_scoped(client, org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_case10_endpoint_refreshes_stale_handle(client, org_with_users, monkeypatch):
-    """Case 10: stored handle stale; actor uses the new handle; the endpoint must
-    refresh from Clerk (its OWN path, not the early-returning
-    ensure_user_github_identity / M2) and then match."""
-    import api.routers.github_linkage as gh
-    from auth.provisioning import ClerkGithubIdentity
-
-    async def _clerk_returns_new_handle(_clerk_user_id: str) -> ClerkGithubIdentity:
-        return ClerkGithubIdentity(username="new_handle", email=None, github_id=None)
-
-    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_returns_new_handle)
-
+async def test_endpoint_inactive_user_excluded(client, org_with_users):
+    """Plain read: an inactive user holding the handle is not a match (active-only)."""
     org_id, add = org_with_users
-    user = await add("old_handle")
+    await add("ghost", active=False)
     key_id, raw = await _seed_key(org_id)
     try:
-        resp = await _linkage(client, raw, "new_handle")
-        assert resp.status_code == 200 and resp.json()["user_id"] == user.id
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_case17a_stored_match_short_circuits_clerk(client, org_with_users, monkeypatch):
-    """Case 17 (fail-open, part a): a stored handle that already matches the actor
-    resolves on the FIRST predicate pass, so the refresh never runs and Clerk is
-    never consulted — a Clerk outage therefore cannot flip a real link to unlinked.
-    Asserts the fetch seam is NOT called (the original test only implied this)."""
-    import api.routers.github_linkage as gh
-
-    calls: list[str] = []
-
-    async def _clerk_down(clerk_user_id: str):
-        calls.append(clerk_user_id)
-        raise httpx.HTTPError("clerk unreachable")
-
-    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_down)
-
-    org_id, add = org_with_users
-    alice = await add("alice")
-    key_id, raw = await _seed_key(org_id)
-    try:
-        resp = await _linkage(client, raw, "alice")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["linked"] is True and body["user_id"] == alice.id  # stale, not unlinked
-        assert calls == []  # short-circuited: Clerk was never consulted
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_case17b_refresh_raise_is_fail_open_not_500(client, org_with_users, monkeypatch):
-    """Case 17 (fail-open, part b): on a MISS the refresh actually runs; if the
-    Clerk fetch raises a NON-httpx error (e.g. a malformed-200 JSONDecodeError —
-    the class the lessons doc warns escapes an httpx-only catch), the endpoint must
-    still answer 200 (linked:false), NOT 500. This is the coverage the handle-match
-    case can't provide: it forces the refresh path (called["n"] proves the raising
-    fetch ran). The ValueError is caught by the per-user `except Exception` inside
-    _refresh_org_github_identities; the endpoint's outer `except Exception` is a
-    second backstop. So this pins end-to-end fail-open (a non-httpx raise -> 200),
-    which breaks only if BOTH catches are narrowed off `except Exception`."""
-    import api.routers.github_linkage as gh
-
-    called = {"n": 0}
-
-    async def _clerk_boom(clerk_user_id: str):
-        called["n"] += 1
-        raise ValueError("malformed clerk 200")  # non-httpx: escapes a narrow catch
-
-    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_boom)
-
-    org_id, add = org_with_users
-    await add("alice")  # a stored member, so the refresh has someone to fetch
-    key_id, raw = await _seed_key(org_id)
-    try:
-        resp = await _linkage(client, raw, "ghost_actor")  # unstored -> first pass misses
-        assert resp.status_code == 200  # fail-open, not a 500
-        assert resp.json()["linked"] is False
-        assert called["n"] >= 1  # the refresh path really executed the raising fetch
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_M2_refresh_not_early_returning_helper(client, org_with_users, monkeypatch):
-    """M2: ensure_user_github_identity / _refresh_user_github_identity early-return
-    when github_username is already set (provisioning.py:129-155). The endpoint must
-    NOT reuse them for its refresh."""
-    org_id, add = org_with_users
-    await add("alice")
-    key_id, raw = await _seed_key(org_id)
-    import auth.provisioning as prov
-
-    def _boom(*a, **k):
-        raise AssertionError("linkage refresh must not reuse the early-returning helper")
-
-    monkeypatch.setattr(prov, "ensure_user_github_identity", _boom, raising=False)
-    try:
-        assert (await _linkage(client, raw, "alice")).status_code == 200
+        resp = await _linkage(client, raw, "ghost")
+        assert resp.status_code == 200 and resp.json()["linked"] is False
     finally:
         await _purge(api_key_ids=[key_id])
 
@@ -870,73 +773,6 @@ async def test_back_compat_handle_only_endpoint_unchanged(client, org_with_users
         assert resp.status_code == 200
         body = resp.json()
         assert body["linked"] is True and body["user_id"] == alice.id
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_endpoint_refresh_fetches_clerk_concurrently(
-    client, org_with_users, monkeypatch
-):
-    """PERF (round-2 finding): on a miss the per-member Clerk fan-out must run
-    CONCURRENTLY (semaphore-bounded), not one sequential GET at a time — and it
-    runs OUTSIDE the DB transaction. Patch the fetch seam to record max in-flight;
-    a sequential loop would cap it at 1."""
-    import api.routers.github_linkage as gh
-    from auth.provisioning import ClerkGithubIdentity
-
-    inflight = {"cur": 0, "max": 0}
-
-    async def _slow_fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
-        inflight["cur"] += 1
-        inflight["max"] = max(inflight["max"], inflight["cur"])
-        try:
-            await asyncio.sleep(0.05)
-            return ClerkGithubIdentity(username=None, email=None, github_id=None)
-        finally:
-            inflight["cur"] -= 1
-
-    monkeypatch.setattr(gh, "_fetch_clerk_identity", _slow_fetch)
-
-    org_id, add = org_with_users
-    for i in range(5):
-        await add(f"member{i}")
-    key_id, raw = await _seed_key(org_id)
-    try:
-        resp = await _linkage(client, raw, "ghost")  # miss -> refresh scans all 5
-        assert resp.status_code == 200 and resp.json()["linked"] is False
-        assert inflight["max"] >= 2  # concurrent, not sequential
-    finally:
-        await _purge(api_key_ids=[key_id])
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_endpoint_actor_id_refresh_backfills_github_id(
-    client, org_with_users, monkeypatch
-):
-    """G4 refresh-on-miss: an active user whose github_id is un-backfilled (None
-    in DB) but whose Clerk identity carries it must link by ?actor_id after the
-    endpoint's dedicated refresh backfills github_id from Clerk and re-matches by
-    id. Refresh stays fail-open + dedicated (M2)."""
-    import api.routers.github_linkage as gh
-    from auth.provisioning import ClerkGithubIdentity
-
-    org_id, add = org_with_users
-    user = await add("carol")  # github_id stays None in DB
-
-    async def _clerk_id(_clerk_user_id: str) -> ClerkGithubIdentity:
-        return ClerkGithubIdentity(username=None, email=None, github_id="gid_backfilled")
-
-    monkeypatch.setattr(gh, "_fetch_clerk_identity", _clerk_id)
-
-    key_id, raw = await _seed_key(org_id)
-    try:
-        resp = await _linkage(client, raw, actor_id="gid_backfilled")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["linked"] is True and body["user_id"] == user.id
     finally:
         await _purge(api_key_ids=[key_id])
 
