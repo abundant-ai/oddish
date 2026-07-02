@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
@@ -50,9 +51,9 @@ def _github_account_from_clerk_payload(data: dict) -> ClerkGithubIdentity:
 
 async def fetch_github_identity_from_clerk(
     clerk_user_id: str,
-) -> ClerkGithubIdentity:
+) -> ClerkGithubIdentity | None:
     if not CLERK_SECRET_KEY:
-        return ClerkGithubIdentity(None, None, None)
+        return None
 
     url = f"https://api.clerk.com/v1/users/{clerk_user_id}"
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
@@ -64,13 +65,14 @@ async def fetch_github_identity_from_clerk(
             data = response.json()
     except httpx.HTTPError as exc:
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
-        return ClerkGithubIdentity(None, None, None)
+        return None
 
     return _github_account_from_clerk_payload(data)
 
 
 async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
-    return (await fetch_github_identity_from_clerk(clerk_user_id)).username
+    identity = await fetch_github_identity_from_clerk(clerk_user_id)
+    return identity.username if identity else None
 
 
 async def _set_github_id_if_absent(
@@ -157,6 +159,16 @@ def _seed_attribution_cache_from_github(
     if isinstance(prior_refreshed, str):
         # Preserve discovery timestamps; only _persist_profile sets a new one.
         cache["refreshed_at"] = prior_refreshed
+    prior_checked = raw.get("github_id_checked")
+    if isinstance(prior_checked, str):
+        cache["github_id_checked"] = prior_checked
+    user.attribution_cache = cache
+
+
+def _mark_github_id_checked(user: UserModel) -> None:
+    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    cache = dict(raw)
+    cache["github_id_checked"] = datetime.now(timezone.utc).isoformat()
     user.attribution_cache = cache
 
 
@@ -166,10 +178,13 @@ async def _refresh_user_github_identity(
     if not user.clerk_user_id:
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    github_id_known = bool(user.github_id) or isinstance(
+        raw.get("github_id_checked"), str
+    )
     # Avoid a hot-path Clerk GET just to backfill github_id.
-    if user.github_username and isinstance(raw.get("refreshed_at"), str):
+    if user.github_username and isinstance(raw.get("refreshed_at"), str) and github_id_known:
         return
-    if user.github_username:
+    if user.github_username and github_id_known:
         _seed_attribution_cache_from_github(
             user,
             github_username=user.github_username,
@@ -177,6 +192,8 @@ async def _refresh_user_github_identity(
         )
         return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
+    if identity is None:
+        return
     if identity.username and not user.github_username:
         user.github_username = identity.username
     await _set_github_id_if_absent(session, user, identity.github_id)
@@ -186,6 +203,8 @@ async def _refresh_user_github_identity(
             github_username=identity.username or user.github_username,
             github_email=identity.email,
         )
+    if not user.github_id:
+        _mark_github_id_checked(user)
 
 
 async def ensure_user_github_identity(
@@ -195,7 +214,7 @@ async def ensure_user_github_identity(
     if not user.clerk_user_id or user.github_username:
         return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
-    if identity.username:
+    if identity and identity.username:
         user.github_username = identity.username
         await _set_github_id_if_absent(session, user, identity.github_id)
         await session.flush()

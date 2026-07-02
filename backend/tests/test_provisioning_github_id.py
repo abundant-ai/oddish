@@ -49,8 +49,8 @@ def test_payload_parse_no_github_account() -> None:
     assert identity == ClerkGithubIdentity(None, None, None)
 
 
-def _mock_clerk(monkeypatch, identity: ClerkGithubIdentity) -> None:
-    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
+def _mock_clerk(monkeypatch, identity: ClerkGithubIdentity | None) -> None:
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
         return identity
 
     monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
@@ -95,36 +95,94 @@ async def test_refresh_does_not_overwrite_differing_github_id(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_refresh_no_clerk_call_when_username_present(monkeypatch) -> None:
-    """Hot-path guard: a user that already has a github_username must NOT trigger
-    a Clerk GET on refresh (that would storm Clerk on every login of an
-    un-backfilled user). github_id backfill for existing users is G5's job."""
+async def test_refresh_no_clerk_call_once_github_id_known(monkeypatch) -> None:
+    """Hot-path guard: a user with a github_username AND a known github_id (either
+    the column is set or the checked marker is stamped) must NOT trigger a Clerk
+    GET on refresh."""
     called = False
 
-    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
         nonlocal called
         called = True
         return ClerkGithubIdentity(username="octocat", email=None, github_id="999")
 
     monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
-    user = _user(github_username="octocat", github_id=None)
+    user = _user(
+        github_username="octocat",
+        github_id="already-set",
+        attribution_cache={"refreshed_at": "2020-01-01T00:00:00+00:00"},
+    )
     await _refresh_user_github_identity(user)
     assert called is False
+
+
+@pytest.mark.asyncio
+async def test_refresh_fills_github_id_for_cached_pre_deploy_user(monkeypatch) -> None:
+    """Login-fill regression: a pre-deploy user with a cached github_username and
+    refreshed_at but NULL github_id must still get github_id filled on the next
+    refresh (the old early-return starved these users forever)."""
+    called = False
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal called
+        called = True
+        return ClerkGithubIdentity(username="octocat", email=None, github_id="777")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username="octocat",
+        github_id=None,
+        attribution_cache={
+            "github_handles": ["octocat"],
+            "legacy_emails": [],
+            "refreshed_at": "2020-01-01T00:00:00+00:00",
+        },
+    )
+    await _refresh_user_github_identity(user)
+    assert called is True
+    assert user.github_id == "777"
+
+
+@pytest.mark.asyncio
+async def test_refresh_stamps_marker_and_skips_second_fetch(monkeypatch) -> None:
+    """After a definitive no-github answer, the checked marker is stamped so a
+    second refresh does NOT re-fetch (no per-login Clerk storm)."""
+    calls = 0
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal calls
+        calls += 1
+        return ClerkGithubIdentity(None, None, None)
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(github_username="octocat", github_id=None)
+    await _refresh_user_github_identity(user)
+    assert calls == 1
+    assert isinstance(user.attribution_cache.get("github_id_checked"), str)
+    await _refresh_user_github_identity(user)
+    assert calls == 1  # marker short-circuits the second refresh
     assert user.github_id is None
 
 
 @pytest.mark.asyncio
-async def test_refresh_fail_open_leaves_github_id_none(monkeypatch) -> None:
-    """A Clerk error path (fetch returns empty identity) never raises and leaves
-    github_id None."""
-    user = _user()
+async def test_refresh_none_answer_stamps_nothing_then_fills_later(monkeypatch) -> None:
+    """A None (Clerk error / secret unset) answer stamps nothing and is retried;
+    a later definitive fetch fills the id."""
+    result: ClerkGithubIdentity | None = None
 
-    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
-        return ClerkGithubIdentity(None, None, None)
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        return result
 
     monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(github_username="octocat", github_id=None)
     await _refresh_user_github_identity(user)
+    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    assert "github_id_checked" not in cache
     assert user.github_id is None
+
+    result = ClerkGithubIdentity(username="octocat", email=None, github_id="888")
+    await _refresh_user_github_identity(user)
+    assert user.github_id == "888"
 
 
 @requires_db
