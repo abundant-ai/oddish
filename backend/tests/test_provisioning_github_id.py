@@ -328,6 +328,73 @@ async def test_refresh_none_answer_stamps_nothing_then_fills_later(monkeypatch) 
     assert user.github_id == "888"
 
 
+@pytest.mark.asyncio
+async def test_refresh_handleless_fresh_marker_skips_clerk(monkeypatch) -> None:
+    """Handle-less checked-absent user (no username, no id) with a FRESH marker —
+    the marker's main audience — must NOT hit Clerk on refresh."""
+    calls = 0
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal calls
+        calls += 1
+        return ClerkGithubIdentity(username=None, email=None, github_id=None)
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username=None,
+        github_id=None,
+        attribution_cache={"github_id_checked": datetime.now(timezone.utc).isoformat()},
+    )
+    await _refresh_user_github_identity(user)
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_refresh_handleless_stale_marker_refetches_and_claims(monkeypatch) -> None:
+    """Handle-less user with a STALE marker re-fetches Clerk and claims a
+    now-present github_id (self-heal once the TTL lapses)."""
+    called = False
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal called
+        called = True
+        return ClerkGithubIdentity(username="octocat", email=None, github_id="linked")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username=None,
+        github_id=None,
+        attribution_cache={"github_id_checked": _stale_marker()},
+    )
+    await _refresh_user_github_identity(user)
+    assert called is True
+    assert user.github_id == "linked"
+    assert user.github_username == "octocat"
+
+
+@pytest.mark.asyncio
+async def test_refresh_id_without_username_still_fetches(monkeypatch) -> None:
+    """A user with a github_id but NO username must still fetch — the new
+    handle-less skip only applies when there is also no id — so the fetch fills
+    the missing username."""
+    called = False
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal called
+        called = True
+        return ClerkGithubIdentity(username="octocat", email=None, github_id="already")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(
+        github_username=None,
+        github_id="already",
+        attribution_cache={"github_id_checked": datetime.now(timezone.utc).isoformat()},
+    )
+    await _refresh_user_github_identity(user)
+    assert called is True
+    assert user.github_username == "octocat"
+
+
 @requires_db
 @pytest.mark.asyncio
 async def test_provisioning_sets_github_id_on_new_user(monkeypatch) -> None:
