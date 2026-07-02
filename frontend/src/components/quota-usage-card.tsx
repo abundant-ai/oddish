@@ -20,6 +20,9 @@ export function QuotaUsageCard() {
   const limit = data?.limit_usd ?? 0;
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
   const over = limit > 0 && used >= limit;
+  // Only enforcement actually blocks runs. Under off/shadow (the default ship
+  // state), being over is informational and the UI must not claim runs are blocked.
+  const blocked = over && data?.enforced === true;
 
   return (
     <div className="border-border bg-muted/30 rounded-lg border p-4">
@@ -43,17 +46,22 @@ export function QuotaUsageCard() {
             <div className="bg-muted-foreground/20 h-2 w-full overflow-hidden rounded-full">
               <div
                 className={
-                  over
+                  blocked
                     ? "bg-destructive h-full"
                     : "h-full bg-[color:var(--paper-running)]"
                 }
                 style={{ width: `${pct}%` }}
               />
             </div>
-            {over ? (
+            {blocked ? (
               <p className="text-destructive text-xs">
                 You&rsquo;ve reached today&rsquo;s limit. New billable runs are
                 blocked until it resets.
+              </p>
+            ) : over ? (
+              <p className="text-muted-foreground text-xs">
+                You&rsquo;re over today&rsquo;s budget. Runs aren&rsquo;t blocked
+                yet, but usage is being tracked.
               </p>
             ) : null}
           </div>

@@ -43,6 +43,9 @@ class QuotaUsageResponse(BaseModel):
     limit_usd: float
     used_usd: float
     period: str
+    # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
+    # enforce). False under off/shadow, so the UI must not claim runs are blocked.
+    enforced: bool = False
 
 
 class QuotaMemberItem(BaseModel):
