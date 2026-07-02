@@ -1,7 +1,7 @@
 """add api key creator role
 
 Revision ID: api_key_creator_role_001
-Revises: z3a4b5c6d7e8
+Revises: exp_trials_join_001
 Create Date: 2026-07-02 18:45:00.000000
 """
 
@@ -11,7 +11,7 @@ from alembic import op
 
 
 revision: str = "api_key_creator_role_001"
-down_revision: Union[str, Sequence[str], None] = "z3a4b5c6d7e8"
+down_revision: Union[str, Sequence[str], None] = "exp_trials_join_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
