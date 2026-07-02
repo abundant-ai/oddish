@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import selectinload
 
 from oddish.core.experiment_membership import gathered_trial_ids_select
@@ -20,13 +20,12 @@ from oddish.core.trial_io import (
 )
 from .helpers import (
     get_public_experiment,
-    get_public_task,
-    get_public_trial,
+    get_public_task_for_experiment,
+    get_public_trial_for_experiment,
     get_task_file_content_s3,
-    get_task_status_counts,
     get_trial_file_content_s3,
+    list_task_trials_for_public_experiment,
     list_task_files_s3,
-    list_task_trials_for_task,
     list_trial_files_s3,
 )
 from oddish.db import (
@@ -76,10 +75,10 @@ def _user_tag_refs(views) -> list[UserTagRef]:
     ]
 
 
-async def _get_detached_public_trial(trial_id: str) -> TrialModel:
+async def _get_detached_public_trial(public_token: str, trial_id: str) -> TrialModel:
     """Load a public trial, then release the DB session before artifact I/O."""
     async with get_session() as session:
-        trial = await get_public_trial(session, trial_id)
+        trial = await get_public_trial_for_experiment(session, public_token, trial_id)
         if not trial:
             raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
         session.expunge(trial)
@@ -94,58 +93,14 @@ async def list_public_experiments(
     limit: int = 100,
     offset: int = 0,
 ) -> list[PublicExperimentListItem]:
-    """List all public experiments for dataset browsing."""
-    async with get_session() as session:
-        task_counts = (
-            select(
-                task_experiments.c.experiment_id.label("experiment_id"),
-                func.count(func.distinct(task_experiments.c.task_id)).label(
-                    "task_count"
-                ),
-            )
-            .select_from(
-                task_experiments.join(
-                    TaskModel,  # type: ignore[arg-type]
-                    TaskModel.id == task_experiments.c.task_id,
-                )
-            )
-            .where(
-                task_experiments.c.deleted_at.is_(None),
-                TaskModel.deleted_at.is_(None),
-            )
-            .group_by(task_experiments.c.experiment_id)
-            .subquery()
-        )
+    """Do not enumerate public share links.
 
-        query = (
-            select(
-                ExperimentModel.id,
-                ExperimentModel.name,
-                ExperimentModel.public_token,
-                ExperimentModel.created_at,
-                func.coalesce(task_counts.c.task_count, 0).label("task_count"),
-            )
-            .outerjoin(task_counts, task_counts.c.experiment_id == ExperimentModel.id)
-            .where(ExperimentModel.is_public == True)  # noqa: E712
-            .where(ExperimentModel.public_token.is_not(None))
-            .order_by(ExperimentModel.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        result = await session.execute(query)
-        rows = result.all()
-
-        return [
-            PublicExperimentListItem(
-                id=row.id,
-                name=row.name,
-                public_token=row.public_token,
-                task_count=int(row.task_count or 0),
-                created_at=row.created_at.isoformat(),
-            )
-            for row in rows
-            if row.public_token
-        ]
+    Direct ``/public/experiments/{public_token}`` lookups remain available for
+    users who already have a link, but the unauthenticated list endpoint must
+    not disclose share tokens.
+    """
+    _ = (limit, offset)
+    return []
 
 
 @router.get(
@@ -324,84 +279,88 @@ async def list_public_experiment_tasks(
         return responses
 
 
-@router.get("/public/tasks/{task_id}", response_model=TaskStatusResponse)
+@router.get(
+    "/public/experiments/{public_token}/tasks/{task_id}",
+    response_model=TaskStatusResponse,
+)
 async def get_public_task_status(
+    public_token: str,
     task_id: str,
     include_trials: bool = True,
 ) -> TaskStatusResponse:
     """Get task status for a public experiment."""
     async with get_session() as session:
-        if include_trials:
-            task = await get_public_task(session, task_id)
-            if not task:
-                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-            queue_info_by_trial_id = await fetch_trial_queue_info(
-                session,
-                trials=task.trials,
-            )
-            response = build_task_status_response(
-                task,
-                queue_info_by_trial_id=queue_info_by_trial_id,
-            )
-            user_tags_by_task = await _hydrate_public_user_tags(
-                session, task_ids=[task.id]
-            )
-            response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
-            public_exps = await _public_experiment_refs(session, [task.id])
-            _apply_public_experiments(response, public_exps.get(task.id, []))
-            return response
-
-        response = await get_task_status_counts(
+        resolved = await get_public_task_for_experiment(session, public_token, task_id)
+        if not resolved:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        exp, task, gathered_ids = resolved
+        queue_info_by_trial_id = await fetch_trial_queue_info(
             session,
-            task_id,
-            filters=[ExperimentModel.is_public == True],  # noqa: E712
-            join_experiment=True,
+            trials=task.trials if include_trials else [],
         )
-        user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task_id])
-        response.user_tags = _user_tag_refs(user_tags_by_task.get(task_id, []))
-        public_exps = await _public_experiment_refs(session, [task_id])
-        _apply_public_experiments(response, public_exps.get(task_id, []))
+        response = build_task_status_response(
+            task,
+            include_trials=include_trials,
+            queue_info_by_trial_id=queue_info_by_trial_id,
+            experiment_context_id=exp.id,
+            gathered_trial_ids=gathered_ids,
+        )
+        user_tags_by_task = await _hydrate_public_user_tags(session, task_ids=[task.id])
+        response.user_tags = _user_tag_refs(user_tags_by_task.get(task.id, []))
+        public_exps = await _public_experiment_refs(session, [task.id])
+        _apply_public_experiments(
+            response, public_exps.get(task.id, []), preferred_id=exp.id
+        )
         return response
 
 
-@router.get("/public/tasks/{task_id}/trials", response_model=list[TrialResponse])
-async def list_public_task_trials(task_id: str) -> list[TrialResponse]:
+@router.get(
+    "/public/experiments/{public_token}/tasks/{task_id}/trials",
+    response_model=list[TrialResponse],
+)
+async def list_public_task_trials(
+    public_token: str, task_id: str
+) -> list[TrialResponse]:
     """List real-attempt trials for a public task.
 
     Probes are experimental and never exposed publicly, so this always
     filters to real attempts (``probe=False``) regardless of caller input.
     """
     async with get_session() as session:
-        task = await get_public_task(session, task_id)
-        if not task:
+        trials = await list_task_trials_for_public_experiment(
+            session, public_token, task_id
+        )
+        if trials is None:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        return trials
 
-        return await list_task_trials_for_task(session, task_id, probe=False)
 
-
-@router.get("/public/trials/{trial_id}/logs")
-async def get_public_trial_logs(trial_id: str) -> dict:
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/logs")
+async def get_public_trial_logs(public_token: str, trial_id: str) -> dict:
     """Get logs for a public trial."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_logs(trial)
 
 
-@router.get("/public/trials/{trial_id}/logs/structured")
-async def get_public_trial_logs_structured(trial_id: str) -> dict:
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/logs/structured")
+async def get_public_trial_logs_structured(public_token: str, trial_id: str) -> dict:
     """Get structured logs for a public trial."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_logs_structured(trial)
 
 
-@router.get("/public/trials/{trial_id}/trajectory")
-async def get_public_trial_trajectory(trial_id: str) -> dict | None:
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/trajectory")
+async def get_public_trial_trajectory(
+    public_token: str, trial_id: str
+) -> dict | None:
     """Get ATIF trajectory.json for a public trial."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_trajectory(trial)
 
 
-@router.get("/public/trials/{trial_id}/files")
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/files")
 async def list_public_trial_files(
+    public_token: str,
     trial_id: str,
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
@@ -410,7 +369,7 @@ async def list_public_trial_files(
     presign: bool = Query(True),
 ) -> dict:
     """List all files in a public trial's S3 directory."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     return await list_trial_files_s3(
         trial,
         prefix=prefix,
@@ -421,10 +380,12 @@ async def list_public_trial_files(
     )
 
 
-@router.get("/public/trials/{trial_id}/files/{file_path:path}")
-async def get_public_trial_file(trial_id: str, file_path: str) -> Response:
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/files/{file_path:path}")
+async def get_public_trial_file(
+    public_token: str, trial_id: str, file_path: str
+) -> Response:
     """Get a file from a public trial's S3 directory."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     try:
         content, media_type = await get_trial_file_content_s3(trial, file_path)
         return Response(content=content, media_type=media_type)
@@ -434,15 +395,16 @@ async def get_public_trial_file(trial_id: str, file_path: str) -> Response:
     return Response(content=content, media_type=media_type)
 
 
-@router.get("/public/trials/{trial_id}/result")
-async def get_public_trial_result(trial_id: str) -> dict:
+@router.get("/public/experiments/{public_token}/trials/{trial_id}/result")
+async def get_public_trial_result(public_token: str, trial_id: str) -> dict:
     """Get result.json for a public trial."""
-    trial = await _get_detached_public_trial(trial_id)
+    trial = await _get_detached_public_trial(public_token, trial_id)
     return await read_trial_result(trial)
 
 
-@router.get("/public/tasks/{task_id}/files")
+@router.get("/public/experiments/{public_token}/tasks/{task_id}/files")
 async def list_public_task_files(
+    public_token: str,
     task_id: str,
     prefix: str | None = Query(None),
     recursive: bool = Query(True),
@@ -453,9 +415,12 @@ async def list_public_task_files(
 ) -> dict:
     """List all files in a public task's S3 directory."""
     async with get_session() as session:
-        task = await get_public_task(session, task_id, load_current_version=True)
-        if not task:
+        resolved = await get_public_task_for_experiment(
+            session, public_token, task_id, load_current_version=True
+        )
+        if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        _, task, _ = resolved
         if version is None and task.current_version:
             version = task.current_version.version
 
@@ -470,8 +435,9 @@ async def list_public_task_files(
     )
 
 
-@router.get("/public/tasks/{task_id}/files/{file_path:path}")
+@router.get("/public/experiments/{public_token}/tasks/{task_id}/files/{file_path:path}")
 async def get_public_task_file_content(
+    public_token: str,
     task_id: str,
     file_path: str,
     presign: bool = Query(False),
@@ -479,9 +445,12 @@ async def get_public_task_file_content(
 ) -> dict:
     """Get content of a specific public task file from S3."""
     async with get_session() as session:
-        task = await get_public_task(session, task_id, load_current_version=True)
-        if not task:
+        resolved = await get_public_task_for_experiment(
+            session, public_token, task_id, load_current_version=True
+        )
+        if not resolved:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        _, task, _ = resolved
         if version is None and task.current_version:
             version = task.current_version.version
 

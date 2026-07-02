@@ -97,7 +97,7 @@ def _get_task_status(client: httpx.Client, task_id: str) -> dict | None:
     data = _get_json(
         client,
         f"/tasks/{task_id}",
-        f"/public/tasks/{task_id}",
+        None,
     )
     if isinstance(data, dict):
         return data
@@ -108,7 +108,7 @@ def _list_trial_files(client: httpx.Client, trial_id: str) -> dict | None:
     data = _get_json(
         client,
         f"/trials/{trial_id}/files",
-        f"/public/trials/{trial_id}/files",
+        None,
     )
     if isinstance(data, dict):
         return data
@@ -120,7 +120,7 @@ def _list_task_files(client: httpx.Client, task_id: str) -> dict | None:
     data = _get_json(
         client,
         f"/tasks/{task_id}/files",
-        f"/public/tasks/{task_id}/files",
+        None,
         params=params,
     )
     if isinstance(data, dict):
@@ -148,26 +148,6 @@ def _list_tasks_for_experiment(client: httpx.Client, experiment_id: str) -> list
     if isinstance(private_data, list) and private_data:
         return private_data
 
-    public_experiments = _get_json(client, "/public/experiments", "/public/experiments")
-    if not isinstance(public_experiments, list):
-        return []
-    public_token = None
-    for exp in public_experiments:
-        if isinstance(exp, dict) and exp.get("id") == experiment_id:
-            token = exp.get("public_token")
-            if isinstance(token, str) and token:
-                public_token = token
-                break
-    if not public_token:
-        return []
-
-    data = _get_json(
-        client,
-        f"/public/experiments/{public_token}/tasks",
-        f"/public/experiments/{public_token}/tasks",
-    )
-    if isinstance(data, list):
-        return data
     return []
 
 
@@ -181,8 +161,6 @@ def _download_trial_file(
         return _download_presigned_bytes(download_url)
     encoded_path = quote(remote_path, safe="/")
     response = client.get(f"/trials/{trial_id}/files/{encoded_path}")
-    if response.status_code != 200:
-        response = client.get(f"/public/trials/{trial_id}/files/{encoded_path}")
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     return response.content, None
@@ -208,11 +186,6 @@ def _download_task_file(
         f"/tasks/{task_id}/files/{encoded_path}",
         params=params,
     )
-    if response.status_code != 200:
-        response = client.get(
-            f"/public/tasks/{task_id}/files/{encoded_path}",
-            params=params,
-        )
     if response.status_code != 200:
         return None, f"{response.status_code}: {response.text}"
     data = response.json()
@@ -313,7 +286,7 @@ def _pull_trial(
         logs_payload = _get_json(
             client,
             f"/trials/{trial_id}/logs",
-            f"/public/trials/{trial_id}/logs",
+            None,
         )
         if isinstance(logs_payload, dict):
             _write_text(trial_root / "logs.txt", logs_payload.get("logs", ""))
@@ -327,7 +300,7 @@ def _pull_trial(
             structured_payload = _get_json(
                 client,
                 f"/trials/{trial_id}/logs/structured",
-                f"/public/trials/{trial_id}/logs/structured",
+                None,
             )
             if isinstance(structured_payload, dict):
                 _write_json(trial_root / "logs_structured.json", structured_payload)
@@ -338,14 +311,14 @@ def _pull_trial(
     result_payload = _get_json(
         client,
         f"/trials/{trial_id}/result",
-        f"/public/trials/{trial_id}/result",
+        None,
     )
     if isinstance(result_payload, dict):
         _write_json(trial_root / "result.json", result_payload)
     trajectory_payload = _get_json(
         client,
         f"/trials/{trial_id}/trajectory",
-        f"/public/trials/{trial_id}/trajectory",
+        None,
     )
     if isinstance(trajectory_payload, dict):
         _write_json(trial_root / "trajectory.json", trajectory_payload)

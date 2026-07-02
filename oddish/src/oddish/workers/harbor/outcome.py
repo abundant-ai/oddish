@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from harbor.models.job.result import JobResult
+
+from oddish.core.harbor_artifacts import (
+    detect_trajectory,
+    extract_trajectory_metrics,
+    extract_trial_result_fields,
+)
 
 
 @dataclass(frozen=True)
@@ -50,119 +55,9 @@ class HarborOutcome:
     exception_type: str | None = None
 
 
-def _extract_timing_info(trial_result: Any) -> dict[str, Any] | None:
-    """Extract per-phase timing from a TrialResult's TimingInfo fields."""
-    timing: dict[str, Any] = {}
-    for phase in ("environment_setup", "agent_setup", "agent_execution", "verifier"):
-        info = getattr(trial_result, phase, None)
-        if info and info.started_at and info.finished_at:
-            timing[phase] = {
-                "started_at": info.started_at.isoformat(),
-                "finished_at": info.finished_at.isoformat(),
-                "duration_sec": round(
-                    (info.finished_at - info.started_at).total_seconds(), 2
-                ),
-            }
-    return timing or None
-
-
 def _detect_trajectory(job_dir: Path) -> bool:
-    """Check if any ATIF trajectory file exists in the job output."""
-    if not job_dir or not job_dir.exists():
-        return False
-    if any(job_dir.rglob("trajectory.json")):
-        return True
-    if any(job_dir.rglob("trajectory.jsonl")):
-        return True
-    return False
-
-
-def _as_int(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-_CACHE_WRITE_KEYS = (
-    "cache_creation_input_tokens",
-    "input_cache_creation",
-    "cacheWriteTokens",
-    "cache_write_tokens",
-)
-
-
-def _sum_cache_write_from_steps(steps: list) -> int | None:
-    """Sum cache-write tokens across trajectory steps from metrics.extra."""
-    total = 0
-    found = False
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        metrics = step.get("metrics") or {}
-        extra = metrics.get("extra") or {} if isinstance(metrics, dict) else {}
-        if not isinstance(extra, dict):
-            continue
-        for key in _CACHE_WRITE_KEYS:
-            val = extra.get(key)
-            if val is not None:
-                n = _as_int(val)
-                if n is not None:
-                    total += n
-                    found = True
-                break
-    return total if found else None
-
-
-def _cache_write_from_final_metrics(fm: dict) -> int | None:
-    """Read cache-write tokens from final_metrics.extra."""
-    extra = fm.get("extra")
-    if not isinstance(extra, dict):
-        return None
-    for key in _CACHE_WRITE_KEYS:
-        val = extra.get(key)
-        if val is not None:
-            return _as_int(val)
-    return None
-
-
-def _extract_metrics_from_trajectory(
-    job_dir: Path,
-) -> tuple[int | None, int | None, int | None, int | None, float | None, int | None]:
-    """Fallback: read token/step/cost metrics from ATIF trajectory data.
-
-    Returns (input, output, cache_read, total_steps, cost_usd, cache_write).
-    """
-    if not job_dir or not job_dir.exists():
-        return None, None, None, None, None, None
-    for traj_path in job_dir.rglob("trajectory.json"):
-        try:
-            data = json.loads(traj_path.read_text())
-            fm = data.get("final_metrics")
-            steps = data.get("steps")
-            if not fm and not isinstance(steps, list):
-                continue
-            total_steps = _as_int(fm.get("total_steps")) if isinstance(fm, dict) else None
-            if total_steps is None and isinstance(steps, list):
-                total_steps = len(steps)
-            cache_write: int | None = None
-            if isinstance(steps, list):
-                cache_write = _sum_cache_write_from_steps(steps)
-            if cache_write is None and isinstance(fm, dict):
-                cache_write = _cache_write_from_final_metrics(fm)
-            return (
-                fm.get("total_prompt_tokens") if isinstance(fm, dict) else None,
-                fm.get("total_completion_tokens") if isinstance(fm, dict) else None,
-                fm.get("total_cached_tokens") if isinstance(fm, dict) else None,
-                total_steps,
-                fm.get("total_cost_usd") if isinstance(fm, dict) else None,
-                cache_write,
-            )
-        except Exception:
-            continue
-    return None, None, None, None, None, None
+    """Backward-compatible wrapper for tests/imports."""
+    return detect_trajectory(job_dir)
 
 
 def _extract_outcome_from_job_result(
@@ -174,17 +69,6 @@ def _extract_outcome_from_job_result(
     """Extract reward, error, token usage, timing, and trajectory from Harbor's JobResult."""
     error: str | None = None
     exception_type: str | None = None
-    for trial_result in job_result.trial_results:
-        if trial_result.exception_info:
-            exc = trial_result.exception_info
-            msg = exc.exception_message or exc.exception_type
-            if msg:
-                error = str(msg)
-            if exc.exception_type:
-                exception_type = str(exc.exception_type)
-            if error or exception_type:
-                break
-
     input_tokens: int | None = None
     cache_tokens: int | None = None
     cache_write_tokens: int | None = None
@@ -192,37 +76,41 @@ def _extract_outcome_from_job_result(
     total_steps: int | None = None
     cost_usd: float | None = None
     phase_timing: dict[str, Any] | None = None
+    trial_reward: float | None = None
 
     for trial_result in job_result.trial_results:
-        ctx = trial_result.agent_result
-        if ctx and not ctx.is_empty():
-            input_tokens = ctx.n_input_tokens
-            cache_tokens = ctx.n_cache_tokens
-            output_tokens = ctx.n_output_tokens
-            cost_usd = ctx.cost_usd
+        fields = extract_trial_result_fields(trial_result)
+        if error is None and fields.error is not None:
+            error = fields.error
+            exception_type = fields.exception_type
+        if trial_reward is None and fields.reward is not None:
+            trial_reward = fields.reward
+        if input_tokens is None and output_tokens is None:
+            input_tokens = fields.input_tokens
+            cache_tokens = fields.cache_tokens
+            output_tokens = fields.output_tokens
+            cost_usd = fields.cost_usd
+        if phase_timing is None and fields.phase_timing is not None:
+            phase_timing = fields.phase_timing
+        if (
+            (error is not None or exception_type is not None)
+            and trial_reward is not None
+            and (input_tokens is not None or output_tokens is not None)
+            and phase_timing is not None
+        ):
             break
 
+    trajectory = extract_trajectory_metrics(job_dir)
     if input_tokens is None and output_tokens is None:
-        t_in, t_out, t_cache, t_steps, t_cost, t_cache_write = _extract_metrics_from_trajectory(job_dir)
-        input_tokens = t_in
-        output_tokens = t_out
-        cache_tokens = t_cache
-        cache_write_tokens = t_cache_write
-        total_steps = t_steps
-        if cost_usd is None:
-            cost_usd = t_cost
-    else:
-        _, _, _, total_steps, t_cost, t_cache_write = _extract_metrics_from_trajectory(job_dir)
-        cache_write_tokens = t_cache_write
-        if cost_usd is None:
-            cost_usd = t_cost
+        input_tokens = trajectory.input_tokens
+        output_tokens = trajectory.output_tokens
+        cache_tokens = trajectory.cache_tokens
+    cache_write_tokens = trajectory.cache_write_tokens
+    total_steps = trajectory.total_steps
+    if cost_usd is None:
+        cost_usd = trajectory.cost_usd
 
-    for trial_result in job_result.trial_results:
-        phase_timing = _extract_timing_info(trial_result)
-        if phase_timing:
-            break
-
-    has_trajectory = _detect_trajectory(job_dir)
+    has_trajectory = detect_trajectory(job_dir)
 
     def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
@@ -263,10 +151,4 @@ def _extract_outcome_from_job_result(
                 except (TypeError, ValueError):
                     continue
 
-    for trial_result in job_result.trial_results:
-        if trial_result.verifier_result and trial_result.verifier_result.rewards:
-            reward_value = trial_result.verifier_result.rewards.get("reward")
-            if reward_value is not None:
-                return _outcome(float(reward_value))
-
-    return _outcome(None)
+    return _outcome(trial_reward)
