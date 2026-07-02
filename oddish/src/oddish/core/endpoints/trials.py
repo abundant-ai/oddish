@@ -107,8 +107,15 @@ async def retry_trial_core(
     trial_id: str,
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
+    gate_baselines: bool = True,
 ) -> dict[str, str]:
-    """Create a new trial that replaces an old one."""
+    """Create a new trial that replaces an old one.
+
+    ``gate_baselines`` is a fresh, per-retry decision (the opt-out does not
+    persist from the original run): when True (default) a retried LLM trial
+    re-consults its scope's baselines; ``--no-baseline-gate`` sets it False to
+    re-run the trial ungated.
+    """
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     old_trial = await session.get(TrialModel, old_trial.id)
     if old_trial is None:
@@ -300,7 +307,11 @@ async def retry_trial_core(
     # The gate may leave it BLOCKED (baselines still running) or CANCELLED
     # (faulty baselines), so report its real state rather than always "queued".
     status_label = "queued"
-    if settings.gate_llm_on_baselines and not is_nop_oracle_agent(new_trial.agent):
+    if (
+        settings.gate_llm_on_baselines
+        and gate_baselines
+        and not is_nop_oracle_agent(new_trial.agent)
+    ):
         await apply_baseline_gate_to_new_llm_trials(
             session,
             task_id=new_trial.task_id,

@@ -705,11 +705,14 @@ async def _bulk_insert_trials(
 def _submission_gates_llm_trials(submission: TaskSubmission) -> bool:
     """True when this submission should hold its LLM trials on its baselines.
 
-    Active only when the global flag is on and the submission mixes nop/oracle
+    Active only when the global flag is on, this submission opts in
+    (``gate_baselines``, the default), and the submission mixes nop/oracle
     baselines with LLM agents. Applies to both the initial create and later
     appends, so a re-run that adds fresh baselines re-gates its agent trials.
+    ``--no-baseline-gate`` sets ``gate_baselines=False`` to run this
+    submission's LLM trials ungated (the baselines still run).
     """
-    if not settings.gate_llm_on_baselines:
+    if not settings.gate_llm_on_baselines or not submission.gate_baselines:
         return False
     specs = submission.trials
     has_baseline = any(is_nop_oracle_agent(s.agent) for s in specs)
@@ -1206,13 +1209,16 @@ async def append_trials_to_task(
     # when the gate cancels the appended trials, its maybe_start_qa_stage call
     # advances the (now all-terminal) task instead of being clobbered back to
     # RUNNING. An append with no baselines anywhere in scope is left QUEUED.
-    await apply_baseline_gate_to_new_llm_trials(
-        session,
-        task_id=task.id,
-        task_version_id=current_version_id,
-        experiment_id=trial_experiment_id,
-        llm_trial_ids=new_llm_trial_ids,
-    )
+    # Skipped when this submission opts out (``--no-baseline-gate``): the new
+    # LLM trials were enqueued QUEUED and simply run ungated.
+    if submission.gate_baselines:
+        await apply_baseline_gate_to_new_llm_trials(
+            session,
+            task_id=task.id,
+            task_version_id=current_version_id,
+            experiment_id=trial_experiment_id,
+            llm_trial_ids=new_llm_trial_ids,
+        )
 
     await session.flush()
     await session.refresh(task, attribute_names=["trials"])
