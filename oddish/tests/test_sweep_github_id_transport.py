@@ -60,8 +60,15 @@ def test_unset_github_id_does_not_change_request_hash():
     data = _submission().model_dump(mode="json")
     data.pop("github_id")  # the body a pre-github_id client/server would hash
     legacy_hash = compute_request_hash(_submission())  # github_id is None here
-    from oddish.core.idempotency import _canonical_digest
+    from oddish.core.idempotency import (
+        _canonical_digest,
+        _registry_auth_fingerprints,
+    )
 
+    # compute_request_hash also fingerprints registry_auth; mirror that on the
+    # hand-built body so this test isolates the github_id-drop behavior.
+    if "registry_auth" in data:
+        data["registry_auth"] = _registry_auth_fingerprints(data.get("registry_auth"))
     assert legacy_hash == _canonical_digest(data)
 
 
