@@ -21,6 +21,7 @@ from oddish.config import (
     to_anthropic_api_model_id,
 )
 from oddish.analyze._sdk_utils import Colors, print_process_stream
+from oddish.model_pricing import estimate_cost_usd
 
 from .models import (
     BaselineValidation,
@@ -110,6 +111,54 @@ def _get_trial_agent_context(trial_agent: str | None) -> str:
     return ""
 
 
+def _extract_cli_cost_usd(payload: dict, model_id: str) -> float | None:
+    """Resolve the USD cost of a Claude Code CLI classification call.
+
+    Prefers the CLI's native ``total_cost_usd``; falls back to a per-model
+    token estimate from the ``usage`` block (Anthropic reports ``input_tokens``
+    net of cache, plus ``cache_creation_input_tokens`` /
+    ``cache_read_input_tokens``). Returns None when neither is available.
+    """
+    if not isinstance(payload, dict):
+        return None
+    native = payload.get("total_cost_usd")
+    if isinstance(native, (int, float)):
+        return float(native)
+
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    return estimate_cost_usd(
+        model_id,
+        input_tokens + cache_creation + cache_read,
+        output_tokens,
+        cache_read,
+    )
+
+
+def _extract_openai_cost_usd(usage: Any, model: str) -> float | None:
+    """Estimate the USD cost of an OpenAI completion from its ``usage`` block.
+
+    Reads ``prompt_tokens`` / ``completion_tokens`` (and the cached-prompt
+    subset under ``prompt_tokens_details.cached_tokens`` when present) and
+    prices them via the per-model table. Returns None when usage is missing or
+    the model isn't priceable.
+    """
+    if usage is None:
+        return None
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    cached = 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = int(getattr(details, "cached_tokens", 0) or 0)
+    return estimate_cost_usd(model, prompt_tokens, completion_tokens, cached)
+
+
 def classify_trial(
     trial_dir: str | Path,
     task_dir: str | Path,
@@ -138,6 +187,11 @@ class TrialClassifier:
         self._model = model
         self._verbose = verbose
         self._timeout = timeout
+        # USD cost of the most recent ``classify_trial`` Claude CLI call, read
+        # back by the QA worker to persist ``trials.analysis_cost_usd``. Reset
+        # at the start of each ``classify_trial`` and only set after a CLI call
+        # actually completes (the early-return error paths leave it None).
+        self.last_cost_usd: float | None = None
         self._setup_authentication()
 
     def _setup_authentication(self) -> None:
@@ -160,6 +214,10 @@ class TrialClassifier:
         trial_agent: str | None = None,
     ) -> TrialClassification:
         """Classify a single trial outcome using Claude Code CLI."""
+        # Reset per call; ``_run_claude_cli`` sets it from the CLI's reported
+        # ``total_cost_usd`` once the call completes. Error paths that return
+        # before the CLI runs leave it None (no cost recorded).
+        self.last_cost_usd = None
         result_path = trial_dir / "result.json"
 
         if result_path.exists():
@@ -369,6 +427,12 @@ class TrialClassifier:
                 print_process_stream("Claude stdout", stdout_text, Colors.BLUE)
             raise RuntimeError(f"Claude CLI returned invalid JSON: {exc}") from exc
 
+        # Record the QA cost of this classification. Claude Code's JSON output
+        # reports a native ``total_cost_usd``; fall back to a per-model token
+        # estimate from the ``usage`` block when it's absent. Read back by the
+        # QA worker into ``trials.analysis_cost_usd``.
+        self.last_cost_usd = _extract_cli_cost_usd(payload, model_id)
+
         structured_output = payload.get("structured_output")
         if structured_output is not None:
             return structured_output
@@ -528,6 +592,10 @@ def _compute_task_verdict_openai(
         if verdict_model is None:
             raise RuntimeError("OpenAI returned no parsed result for verdict synthesis")
 
+        verdict_cost_usd = _extract_openai_cost_usd(
+            getattr(completion, "usage", None), model
+        )
+
         if verbose:
             print(
                 f"{Colors.GREEN}[Verdict] Verdict synthesis complete{Colors.RESET}\n",
@@ -568,6 +636,7 @@ def _compute_task_verdict_openai(
         harness_error_count=harness_error_count,
         classifications=classifications,
         baseline=baseline,
+        cost_usd=verdict_cost_usd,
     )
 
 
