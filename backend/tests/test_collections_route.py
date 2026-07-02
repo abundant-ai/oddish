@@ -160,7 +160,10 @@ async def seed_org_with_trials():
                 )
             )
         api_key_model, raw_key = create_api_key(
-            org_id=org_id, name=f"test-key-{suffix}", scope=APIKeyScope.TASKS
+            org_id=org_id,
+            name=f"test-key-{suffix}",
+            scope=APIKeyScope.TASKS,
+            created_by_role="admin",
         )
         session.add(api_key_model)
 
