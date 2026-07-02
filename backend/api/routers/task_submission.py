@@ -190,10 +190,15 @@ async def require_connected_github_user(
         session, github_id=submission.github_id, org_id=auth.org_id
     )
     if user is None:
+        api_key = auth.api_key
         logger.info(
-            "linkage gate rejected github_id=%s org=%s",
+            "linkage gate rejected github_id=%s org=%s api_key_id=%s "
+            "api_key_name=%s user_id=%s",
             submission.github_id,
             auth.org_id,
+            auth.api_key_id,
+            api_key.name if api_key else None,
+            auth.user_id,
         )
         raise HTTPException(
             status_code=403,

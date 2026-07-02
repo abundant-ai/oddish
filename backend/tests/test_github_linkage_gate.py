@@ -897,6 +897,36 @@ async def test_gate_unlinked_github_id_raises_403(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_gate_403_log_records_authenticating_principal(org_with_users, caplog):
+    """The 403 log line must name the authenticating principal (api_key_id +
+    api_key name + user_id) so on-call can tell whose CI is being blocked; the
+    rejected github_id + org alone don't identify the credential/pipeline."""
+    import logging
+
+    org_id, add = org_with_users
+    await add("alice")  # no github_id set → gate rejects
+    auth = SimpleNamespace(
+        org_id=org_id,
+        user_id="user_ci_bot",
+        api_key_id="apikey_ci123",
+        api_key=SimpleNamespace(name="ci-pipeline-key"),
+    )
+    with caplog.at_level(logging.INFO, logger="api.routers.task_submission"):
+        async with get_session() as session:
+            with pytest.raises(HTTPException):
+                await require_connected_github_user(
+                    session, _submission("alice", github_id="gid_unlinked"), auth
+                )
+    rejections = [r for r in caplog.records if "linkage gate rejected" in r.message]
+    assert rejections, "expected a linkage-gate rejection log record"
+    rendered = rejections[0].getMessage()
+    assert "apikey_ci123" in rendered
+    assert "ci-pipeline-key" in rendered
+    assert "user_ci_bot" in rendered
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_gate_linked_github_id_returns_user(org_with_users):
     """A truthy github_id with an exact id match returns that user (no raise)."""
     org_id, add = org_with_users
