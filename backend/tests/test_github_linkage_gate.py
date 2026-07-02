@@ -763,13 +763,14 @@ async def test_strict_no_id_duplicated_handle_resolves_to_none(org_with_users):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_strict_empty_string_id_supplied_no_handle_fallback(org_with_users):
-    """Strict resolve (e): an empty-string github_id is a supplied id, not an
-    absent one. It routes through the id-only lookup (which matches nobody) and
-    never falls back to the handle — the gate rejects it."""
+async def test_strict_blank_id_normalized_to_absent_falls_back_to_handle(org_with_users):
+    """Strict resolve (e): a blank / whitespace github_id is normalized to None by
+    the schema (not a truthy supplied id), so resolution behaves exactly like "no
+    id sent" and falls back to the exact-one handle lookup."""
     org_id, add = org_with_users
-    await add("alice")
-    assert await _resolve(org_id, "alice", github_id="") is None
+    alice = await add("alice")
+    assert await _resolve(org_id, "alice", github_id="") == alice.id
+    assert await _resolve(org_id, "alice", github_id="   ") == alice.id
 
 
 @requires_db
@@ -1018,16 +1019,26 @@ async def test_gate_no_github_id_is_noop(org_with_users):
 @requires_db
 @pytest.mark.asyncio
 async def test_gate_empty_github_id_is_noop(org_with_users):
-    """An empty / whitespace github_id is not a truthy id → gate is a no-op."""
+    """A blank github_id is normalized to None by the schema, so the gate treats
+    it as absent (no-op) rather than a supplied-but-unresolvable id."""
     org_id, add = org_with_users
     await add("alice")
+    submission = _submission("alice", github_id="   ")
+    assert submission.github_id is None
     async with get_session() as session:
         assert (
-            await require_connected_github_user(
-                session, _submission("alice", github_id="   "), _auth(org_id)
-            )
+            await require_connected_github_user(session, submission, _auth(org_id))
             is None
         )
+
+
+def test_blank_github_id_normalizes_to_none():
+    """The schema strips blank / whitespace github_id to None so downstream
+    attribution, the linkage gate, and the idempotency hash stay consistent."""
+    assert _submission("alice", github_id="").github_id is None
+    assert _submission("alice", github_id="   ").github_id is None
+    assert _submission("alice", github_id=" gid_alice ").github_id == "gid_alice"
+    assert _submission("alice", github_id=None).github_id is None
 
 
 @requires_db

@@ -479,6 +479,13 @@ class TaskSweepSubmission(BaseModel):
     )
     registry_auth: list[RegistryAuth] | None = Field(None)
 
+    @field_validator("github_id", mode="before")
+    @classmethod
+    def _normalize_github_id(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
     @model_validator(mode="after")
     def require_models(self):
         for config in self.configs:
