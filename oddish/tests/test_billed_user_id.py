@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import oddish.queue as queue_mod  # noqa: E402
 from oddish.core import endpoints  # noqa: E402
-from oddish.db import TaskStatus, TrialModel, TrialStatus  # noqa: E402
+from oddish.db import (  # noqa: E402
+    ExperimentModel,
+    TaskModel,
+    TaskStatus,
+    TrialModel,
+    TrialStatus,
+)
 from oddish.queue import _TRIAL_BULK_INSERT_SQL, _bulk_insert_trials  # noqa: E402
 
 
@@ -119,75 +126,52 @@ def test_bulk_insert_sql_keeps_billed_user_id_arity_aligned():
 # --- S2-T5: retry carries the payer forward (NULL stays NULL) ------------------
 
 
-class _RetryResult:
-    def __init__(self, scalar):
-        self._scalar = scalar
+async def _run_retry(monkeypatch, session, *, billed_user_id):
+    """Seed a real trial, drive retry_trial_core, return the committed new trial.
 
-    def scalar_one_or_none(self):
-        return self._scalar
+    retry_trial_core reads the source row via session.get(TrialModel, ...) and
+    supersedes it with a raw-SQL CAS UPDATE, so a SimpleNamespace can't stand in
+    for the session. Seed live rows, run the real function, and re-read the
+    inserted replacement trial to assert its billed_user_id was carried forward.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    experiment_id = f"exp-{suffix}"
+    task_id = f"task-{suffix}"
+    old_trial_id = f"{task_id}-0"
 
-
-class _RetrySession:
-    def __init__(self, *, old_trial, task):
-        self.old_trial = old_trial
-        self.task = task
-        self.added = []
-
-    async def execute(self, _statement, _params=None):
-        return _RetryResult(self.old_trial)
-
-    async def get(self, _model, _key):
-        return self.task
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def flush(self):
-        return None
-
-    async def commit(self):
-        return None
-
-
-def _retryable_old_trial(billed_user_id):
-    return SimpleNamespace(
-        id="task-1-0",
-        name="task-1-0",
-        task_id="task-1",
-        task_version_id="task-1-v1",
-        experiment_id="exp-1",
-        org_id="org-1",
-        agent="codex",
-        model="gpt-5",
-        provider="openai",
-        queue_key="openai/gpt-5",
-        timeout_minutes=None,
-        environment=None,
-        harbor_config=None,
-        is_probe=False,
-        max_attempts=6,
-        status=TrialStatus.FAILED,
-        error_message="boom",
-        harbor_stage=None,
-        finished_at=None,
-        current_worker_id=None,
-        current_queue_slot=None,
-        superseded_by_trial_id=None,
-        billed_user_id=billed_user_id,
-        input_tokens=None,
-        cache_tokens=None,
-        cache_write_tokens=None,
-        output_tokens=None,
-        total_steps=None,
-        cost_usd=0.01,
+    session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id="org-1"))
+    session.add(
+        TaskModel(
+            id=task_id,
+            name=task_id,
+            org_id="org-1",
+            user="tester",
+            task_path="s3://test-bucket/retry-fake-task",
+            status=TaskStatus.COMPLETED,
+        )
     )
-
-
-async def _run_retry(monkeypatch, old_trial):
-    task = SimpleNamespace(
-        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+    session.add(
+        TrialModel(
+            id=old_trial_id,
+            name=old_trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            org_id="org-1",
+            agent="codex",
+            provider="openai",
+            queue_key="openai/gpt-5",
+            model="gpt-5",
+            is_probe=False,
+            max_attempts=6,
+            attempts=1,
+            status=TrialStatus.FAILED,
+            error_message="boom",
+            billed_user_id=billed_user_id,
+            cost_usd=0.01,
+        )
     )
-    session = _RetrySession(old_trial=old_trial, task=task)
+    await session.flush()
+    await session.commit()
 
     async def fake_reserve_next_trial_index(_session, *, task_id):
         return 1
@@ -198,8 +182,23 @@ async def _run_retry(monkeypatch, old_trial):
     monkeypatch.setattr(queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index)
     monkeypatch.setattr(queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job)
 
-    await endpoints.retry_trial_core(session, trial_id="task-1-0", org_id="org-1")
-    return session.added[0]
+    try:
+        result = await endpoints.retry_trial_core(
+            session, trial_id=old_trial_id, org_id="org-1"
+        )
+        new_trial = await session.get(TrialModel, result["trial_id"])
+        await session.refresh(new_trial)
+        return new_trial.billed_user_id
+    finally:
+        await session.execute(
+            TaskModel.__table__.delete().where(TaskModel.id == task_id)
+        )
+        await session.execute(
+            ExperimentModel.__table__.delete().where(
+                ExperimentModel.id == experiment_id
+            )
+        )
+        await session.commit()
 
 
 # --- S2 review: auto-probe forwards the payer to the probe trial insert --------
@@ -264,12 +263,16 @@ async def test_auto_probe_forwards_billed_user_id_to_append(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_retry_carries_billed_user_id_forward(monkeypatch):
-    replacement_trial = await _run_retry(monkeypatch, _retryable_old_trial("user-42"))
-    assert replacement_trial.billed_user_id == "user-42"
+async def test_retry_carries_billed_user_id_forward(monkeypatch, session):
+    replacement_billed_user_id = await _run_retry(
+        monkeypatch, session, billed_user_id="user-42"
+    )
+    assert replacement_billed_user_id == "user-42"
 
 
 @pytest.mark.asyncio
-async def test_retry_of_null_billed_trial_stays_null(monkeypatch):
-    replacement_trial = await _run_retry(monkeypatch, _retryable_old_trial(None))
-    assert replacement_trial.billed_user_id is None
+async def test_retry_of_null_billed_trial_stays_null(monkeypatch, session):
+    replacement_billed_user_id = await _run_retry(
+        monkeypatch, session, billed_user_id=None
+    )
+    assert replacement_billed_user_id is None

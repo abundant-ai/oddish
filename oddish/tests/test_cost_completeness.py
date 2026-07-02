@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,13 @@ import oddish.queue as queue_mod  # noqa: E402
 import oddish.trial_cost as trial_cost  # noqa: E402
 from oddish.config import settings  # noqa: E402
 from oddish.core import endpoints  # noqa: E402
-from oddish.db import TaskStatus, TrialStatus  # noqa: E402
+from oddish.db import (  # noqa: E402
+    ExperimentModel,
+    TaskModel,
+    TaskStatus,
+    TrialModel,
+    TrialStatus,
+)
 from oddish.trial_cost import apply_settled_cost  # noqa: E402
 from oddish.workers.harbor.runner import HarborOutcome  # noqa: E402
 from oddish.workers.queue import cleanup  # noqa: E402
@@ -91,7 +98,7 @@ def _outcome(reward=None, error=None, cost_usd=None, **token_fields):
 
 def _patch_store_trial_results_session(monkeypatch, trial):
     @asynccontextmanager
-    async def fake_trial_session(trial_id, *, allow_missing=False):
+    async def fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
         yield object(), trial
 
     monkeypatch.setattr(trial_handler_module, "_trial_session", fake_trial_session)
@@ -361,50 +368,65 @@ async def test_stale_reaper_failed_branch_floors_cost(monkeypatch):
 # --- S1-T6: retry-supersede floors the old trial's cost ------------------------
 
 
-class _RetryResult:
-    def __init__(self, scalar=None):
-        self._scalar = scalar
+async def _seed_retryable_trial(session, *, org_id, status, cost_usd, error_message):
+    """Insert a real org/experiment/task/trial tree for a retry test.
 
-    def scalar_one_or_none(self):
-        return self._scalar
+    retry_trial_core does session.get(TrialModel, ...) + a raw-SQL CAS UPDATE
+    that a SimpleNamespace can't satisfy, so the retry-supersede floor is
+    exercised against live rows. Returns (task_id, old_trial_id) and registers
+    an ON DELETE CASCADE teardown that clears the committed rows.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    experiment_id = f"exp-{suffix}"
+    task_id = f"task-{suffix}"
+    old_trial_id = f"{task_id}-0"
 
-
-class _RetrySession:
-    def __init__(self, *, old_trial, task):
-        self.old_trial = old_trial
-        self.task = task
-        self.added = []
-
-    async def execute(self, _statement, _params=None):
-        return _RetryResult(scalar=self.old_trial)
-
-    async def get(self, _model, _key):
-        return self.task
-
-    def add(self, obj):
-        self.added.append(obj)
-
-    async def flush(self):
-        return None
-
-    async def commit(self):
-        return None
+    session.add(ExperimentModel(id=experiment_id, name=experiment_id, org_id=org_id))
+    session.add(
+        TaskModel(
+            id=task_id,
+            name=task_id,
+            org_id=org_id,
+            user="tester",
+            task_path="s3://test-bucket/retry-fake-task",
+            status=TaskStatus.RUNNING,
+        )
+    )
+    session.add(
+        TrialModel(
+            id=old_trial_id,
+            name=old_trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            org_id=org_id,
+            agent="codex",
+            provider="openai",
+            queue_key="openai/gpt-5",
+            model="gpt-5",
+            is_probe=False,
+            max_attempts=6,
+            attempts=1,
+            status=status,
+            error_message=error_message,
+            cost_usd=cost_usd,
+        )
+    )
+    await session.flush()
+    await session.commit()
+    return task_id, old_trial_id, experiment_id
 
 
 @pytest.mark.asyncio
-async def test_retry_supersede_floors_old_trial_cost(monkeypatch):
+async def test_retry_supersede_floors_old_trial_cost(monkeypatch, session):
     monkeypatch.setattr(trial_cost, "estimate_cost_usd", lambda *args, **kwargs: None)
-    stuck_old_trial = _billable_trial(
-        id="task-1-0",
-        name="task-1-0",
+
+    task_id, old_trial_id, experiment_id = await _seed_retryable_trial(
+        session,
+        org_id="org-1",
         status=TrialStatus.RUNNING,
-        error_message="stuck",
         cost_usd=None,
+        error_message="stuck",
     )
-    task = SimpleNamespace(
-        id="task-1", name="task-1", status=TaskStatus.RUNNING, finished_at=None
-    )
-    session = _RetrySession(old_trial=stuck_old_trial, task=task)
 
     async def fake_reserve_next_trial_index(_session, *, task_id):
         return 1
@@ -415,11 +437,27 @@ async def test_retry_supersede_floors_old_trial_cost(monkeypatch):
     monkeypatch.setattr(queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index)
     monkeypatch.setattr(queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job)
 
-    await endpoints.retry_trial_core(session, trial_id="task-1-0", org_id="org-1")
+    try:
+        result = await endpoints.retry_trial_core(
+            session, trial_id=old_trial_id, org_id="org-1"
+        )
+        assert result["superseded_trial_id"] == old_trial_id
 
-    assert stuck_old_trial.superseded_by_trial_id == "task-1-1"
-    assert stuck_old_trial.status == TrialStatus.FAILED
-    assert stuck_old_trial.cost_usd == reservation_floor_usd
+        superseded = await session.get(TrialModel, old_trial_id)
+        await session.refresh(superseded)
+        assert superseded.superseded_by_trial_id == result["trial_id"]
+        assert superseded.status == TrialStatus.FAILED
+        assert superseded.cost_usd == reservation_floor_usd
+    finally:
+        await session.execute(
+            TaskModel.__table__.delete().where(TaskModel.id == task_id)
+        )
+        await session.execute(
+            ExperimentModel.__table__.delete().where(
+                ExperimentModel.id == experiment_id
+            )
+        )
+        await session.commit()
 
 
 # --- S1-review: the estimate path must never raise in a settlement path --------
