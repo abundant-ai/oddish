@@ -13,6 +13,7 @@ from svix import Webhook, WebhookVerificationError
 from auth.provisioning import (
     _github_account_from_clerk_payload,
     _mark_github_id_checked,
+    _refresh_user_github_identity,
     _seed_attribution_cache_from_github,
     _set_github_id_if_absent,
 )
@@ -193,7 +194,10 @@ async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None
                     github_username=identity.username or user.github_username,
                     github_email=identity.email,
                 )
-            if not identity.github_id:
+            if not identity.github_id and not identity.username:
+                # Only a definitive no-github answer stamps. A reported username
+                # with a missing id is a partial answer — leave it unstamped so
+                # a later event retries once Clerk reports the id.
                 _mark_github_id_checked(user)
         except Exception:
             logger.exception(
@@ -261,7 +265,7 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                 name=(data.get("organization") or {}).get("name"),
                 slug=(data.get("organization") or {}).get("slug"),
             )
-            await _upsert_user(
+            user = await _upsert_user(
                 session,
                 org=org,
                 clerk_user_id=clerk_user_id,
@@ -269,6 +273,9 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                 name=_resolve_user_name(data),
                 role=_map_role(data.get("role")),
             )
+            # Membership payload carries no external_accounts; fetch from Clerk so
+            # new members land with github_id like login-time JIT provisioning.
+            await _refresh_user_github_identity(user, session)
             await session.commit()
             return {"status": "ok"}
 

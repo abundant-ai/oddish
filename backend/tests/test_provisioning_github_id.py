@@ -323,6 +323,29 @@ async def test_refresh_none_answer_stamps_nothing_then_fills_later(monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_refresh_username_no_id_stamps_nothing_then_fills_later(monkeypatch) -> None:
+    """A partial Clerk answer (username present, id absent) is NOT a definitive
+    no-github: it stamps nothing and stays eligible; a later fetch that reports
+    the id fills github_id."""
+    result = ClerkGithubIdentity(username="octocat", email=None, github_id=None)
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        return result
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+    user = _user(github_username=None, github_id=None)
+    await _refresh_user_github_identity(user)
+    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    assert "github_id_checked" not in cache
+    assert user.github_id is None
+    assert user.github_username == "octocat"
+
+    result = ClerkGithubIdentity(username="octocat", email=None, github_id="888")
+    await _refresh_user_github_identity(user)
+    assert user.github_id == "888"
+
+
+@pytest.mark.asyncio
 async def test_refresh_handleless_stale_marker_refetches_and_claims(monkeypatch) -> None:
     """Handle-less user with a STALE marker re-fetches Clerk and claims a
     now-present github_id (self-heal once the TTL lapses)."""

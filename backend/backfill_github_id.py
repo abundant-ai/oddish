@@ -120,8 +120,11 @@ async def backfill_github_id(
                     )
                     continue
                 if not identity.github_id:
-                    # Definitive no-github: stamp so the scan stops re-selecting.
-                    _mark_github_id_checked(user)
+                    if not identity.username:
+                        # Definitive no-github: stamp so the scan stops re-selecting.
+                        _mark_github_id_checked(user)
+                    # Username present but id absent is a partial answer: leave it
+                    # unstamped so a later run retries once Clerk reports the id.
                     summary.skipped += 1
                     continue
                 before = user.github_id

@@ -532,6 +532,38 @@ async def test_clerk_500_user_failed_not_stamped_rescanned(monkeypatch) -> None:
 
 @requires_db
 @pytest.mark.asyncio
+async def test_username_no_id_not_stamped_rescanned_then_filled(monkeypatch) -> None:
+    """A GitHub account exists in Clerk (username) but the id wasn't reported in
+    this response (partial answer): run 1 counts it skipped and stamps NOTHING;
+    the row is re-scanned on a later run, and once Clerk returns the id it fills."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+    _mock_clerk(
+        monkeypatch,
+        {user.clerk_user_id: ClerkGithubIdentity("octocat", None, None)},
+    )
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        first = await job.backfill_github_id(delay_seconds=0.0)
+        assert first.skipped >= 1
+        assert await _github_id_of(user.id) is None
+        cache = await _cache_of(user.id)
+        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        _mock_clerk(
+            monkeypatch,
+            {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
+        )
+        second = await job.backfill_github_id(delay_seconds=0.0)
+        assert second.scanned >= 1  # re-scanned, not excluded
+        assert await _github_id_of(user.id) == "laterid"
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_fresh_marker_rows_excluded_from_scan(monkeypatch) -> None:
     """A row stamped checked-absent within the TTL stays excluded from the scan."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"

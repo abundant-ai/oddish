@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+import api.routers.clerk_webhooks as webhooks
+import auth.provisioning as prov
 from api.routers.clerk_webhooks import _sync_github_id_from_user_event
-from auth.provisioning import _marker_is_fresh
+from auth.provisioning import ClerkGithubIdentity, _marker_is_fresh
 from models import OrganizationModel, UserModel, UserRole
 from oddish.db import get_session
 
@@ -165,6 +167,82 @@ async def test_truthy_id_does_not_stamp_marker() -> None:
         assert "github_id_checked" not in (row.attribution_cache or {})
     finally:
         await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_username_no_id_does_not_stamp_marker() -> None:
+    """A partial payload (github username present, provider_user_id null) sets the
+    username but does NOT stamp the checked marker, so the row stays eligible for
+    a later run once Clerk reports the id."""
+    org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
+    clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    try:
+        await _add_org(org_id)
+        uid = await _add_user(org_id, clerk)
+
+        await _sync(_event(clerk, github={"provider_user_id": None}))
+
+        row = await _get(uid)
+        assert row.github_id is None
+        assert row.github_username == "octocat"
+        assert "github_id_checked" not in (row.attribution_cache or {})
+    finally:
+        await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_membership_created_syncs_github_id_from_clerk(monkeypatch) -> None:
+    """organizationMembership.created creates the user AND fetches the GitHub
+    identity from Clerk (the payload has no external_accounts), so a new member
+    lands with github_id + username like login-time JIT provisioning."""
+    org_id = None
+    clerk_org = f"clerk_org_{uuid.uuid4().hex[:8]}"
+    clerk_user = f"clerk_{uuid.uuid4().hex[:8]}"
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
+        return ClerkGithubIdentity("octocat", "o@e.com", "583231")
+
+    monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
+
+    event = {
+        "type": "organizationMembership.created",
+        "data": {
+            "organization": {"id": clerk_org, "name": "Acme", "slug": "acme"},
+            "user_id": clerk_user,
+            "public_user_data": {"identifier": "member@e.com"},
+            "role": "org:member",
+        },
+    }
+    monkeypatch.setattr(webhooks, "_verify_clerk_webhook", lambda *_a, **_k: event)
+
+    class _Req:
+        headers: dict = {}
+
+        async def body(self) -> bytes:
+            return b"{}"
+
+    try:
+        await webhooks.handle_clerk_webhook(_Req())
+        async with get_session() as session:
+            org = await session.execute(
+                OrganizationModel.__table__.select().where(
+                    OrganizationModel.clerk_org_id == clerk_org
+                )
+            )
+            org_id = org.mappings().one()["id"]
+            result = await session.execute(
+                UserModel.__table__.select().where(
+                    UserModel.clerk_user_id == clerk_user
+                )
+            )
+            row = result.mappings().one()
+        assert row["github_id"] == "583231"
+        assert row["github_username"] == "octocat"
+    finally:
+        if org_id is not None:
+            await _purge([org_id])
 
 
 @requires_db
