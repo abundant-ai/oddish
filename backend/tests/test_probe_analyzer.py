@@ -63,10 +63,9 @@ async def test_schema_mode_returns_object_findings_and_enforces():
     _, kwargs = fake.messages.create.call_args
     fmt = kwargs["extra_body"]["output_config"]["format"]
     assert fmt["type"] == "json_schema"
-    assert (
-        fmt["schema"]["properties"]["result_focus_findings"]["properties"]["verdict"]
-        == {"enum": ["good", "bad"]}
-    )
+    assert fmt["schema"]["properties"]["result_focus_findings"]["properties"][
+        "verdict"
+    ] == {"enum": ["good", "bad"]}
 
 
 def test_normalize_passes_object_findings_through():
@@ -97,8 +96,7 @@ def test_normalize_keeps_result_focus_summary():
         model="m",
     )
     assert (
-        out["result_focus_summary"]
-        == "Verdict: solvable only by guessing; 3 blockers."
+        out["result_focus_summary"] == "Verdict: solvable only by guessing; 3 blockers."
     )
 
 

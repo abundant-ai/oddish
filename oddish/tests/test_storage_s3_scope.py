@@ -25,9 +25,7 @@ def test_upload_enforces_authorized_prefix(tmp_path, monkeypatch) -> None:
     client, uploaded = _client_with_recorder()
 
     prefix = "tasks/task_a/trials/task_a-0/"
-    asyncio.run(
-        client._upload_directory(tmp_path, prefix, authorized_prefix=prefix)
-    )
+    asyncio.run(client._upload_directory(tmp_path, prefix, authorized_prefix=prefix))
     # Keys are under the authorized prefix -> uploaded.
     assert uploaded == [f"{prefix}result.json"]
 
@@ -57,7 +55,5 @@ def test_upload_without_authorized_prefix_is_unrestricted(tmp_path) -> None:
     (tmp_path / "result.json").write_text("{}", encoding="utf-8")
     client, uploaded = _client_with_recorder()
 
-    asyncio.run(
-        client._upload_directory(tmp_path, "anything/", authorized_prefix=None)
-    )
+    asyncio.run(client._upload_directory(tmp_path, "anything/", authorized_prefix=None))
     assert uploaded == ["anything/result.json"]

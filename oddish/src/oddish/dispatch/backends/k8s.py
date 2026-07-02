@@ -173,9 +173,7 @@ class K8sJobDispatcher:
             label_selector=f"{MANAGED_LABEL_KEY}=true",
         )
         return [
-            WorkerHandle(
-                provider=self.name, queue_key="", id=item.metadata.name
-            )
+            WorkerHandle(provider=self.name, queue_key="", id=item.metadata.name)
             for item in resp.items
         ]
 

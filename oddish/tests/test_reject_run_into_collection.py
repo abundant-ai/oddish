@@ -19,7 +19,12 @@ from oddish.core.endpoints import create_task_sweep_core
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.db.models import ExperimentModel, TaskModel, TrialModel, generate_id
 from oddish.queue import create_task
-from oddish.schemas import AgentModelPair, TaskSubmission, TaskSweepSubmission, TrialSpec
+from oddish.schemas import (
+    AgentModelPair,
+    TaskSubmission,
+    TaskSweepSubmission,
+    TrialSpec,
+)
 
 
 def _task(name: str, *, org_id: str = "org1") -> TaskModel:
@@ -35,7 +40,9 @@ def _experiment(name: str, *, org_id: str = "org1") -> ExperimentModel:
     return ExperimentModel(name=name, org_id=org_id)
 
 
-def _trial(task: TaskModel, home_experiment: ExperimentModel, *, org_id: str = "org1") -> TrialModel:
+def _trial(
+    task: TaskModel, home_experiment: ExperimentModel, *, org_id: str = "org1"
+) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
         id=trial_id,

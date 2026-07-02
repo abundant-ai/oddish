@@ -10,7 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.dashboard import _build_aggregates_for_experiment_ids
 from oddish.core.endpoints.collections import create_trial_collection_core
-from oddish.db.models import ExperimentModel, TaskModel, TrialModel, TrialStatus, generate_id
+from oddish.db.models import (
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    TrialStatus,
+    generate_id,
+)
 
 
 def _task(name: str, *, org_id: str = "org1") -> TaskModel:
@@ -75,18 +81,26 @@ async def test_collection_aggregate_counts_gathered_trials(session):
     )
 
     trial_row = (
-        await session.execute(
-            select(trial_agg).where(trial_agg.c.experiment_id == coll.id)
+        (
+            await session.execute(
+                select(trial_agg).where(trial_agg.c.experiment_id == coll.id)
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert trial_row["total_trials"] == 2
     assert trial_row["completed_trials"] == 2
 
     score_row = (
-        await session.execute(
-            select(score_agg).where(score_agg.c.experiment_id == coll.id)
+        (
+            await session.execute(
+                select(score_agg).where(score_agg.c.experiment_id == coll.id)
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert score_row["avg_score"] is not None
     assert score_row["avg_score"] == pytest.approx(0.5)
 
@@ -112,10 +126,14 @@ async def test_normal_experiment_aggregate_unaffected_by_membership_union(sessio
     )
 
     trial_row = (
-        await session.execute(
-            select(trial_agg).where(trial_agg.c.experiment_id == home.id)
+        (
+            await session.execute(
+                select(trial_agg).where(trial_agg.c.experiment_id == home.id)
+            )
         )
-    ).mappings().one()
+        .mappings()
+        .one()
+    )
     assert trial_row["total_trials"] == 2
     assert trial_row["completed_trials"] == 1
     assert trial_row["failed_trials"] == 1

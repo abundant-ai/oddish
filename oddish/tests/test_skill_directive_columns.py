@@ -8,7 +8,12 @@ def test_skill_model_has_directive_columns():
         operator_prompt="do the thing",
         result_focus="what happened?",
         evaluation_metric="result_focus",
-        files=[SkillFileModel(relative_path="SKILL.md", content="---\nname: x\ndescription: d\n---\nbody")],
+        files=[
+            SkillFileModel(
+                relative_path="SKILL.md",
+                content="---\nname: x\ndescription: d\n---\nbody",
+            )
+        ],
     )
     assert skill.operator_prompt == "do the thing"
     assert skill.result_focus == "what happened?"

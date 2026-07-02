@@ -30,7 +30,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
-DEFAULT_TTL_SECONDS = 14400  # 4h: covers queue wait + run; trial timeouts are under this
+DEFAULT_TTL_SECONDS = (
+    14400  # 4h: covers queue wait + run; trial timeouts are under this
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,9 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
     provider = (settings.get_provider_for_trial(agent, model) or "").lower()
 
     if provider in _OPENAI_FAMILY:
-        return {k: v for k, v in settings.get_openai_agent_env(model=model).items() if v}
+        return {
+            k: v for k, v in settings.get_openai_agent_env(model=model).items() if v
+        }
     if provider in ("anthropic", "claude"):
         key = getattr(settings, "anthropic_api_key", None)
         return {"ANTHROPIC_API_KEY": key} if key else {}

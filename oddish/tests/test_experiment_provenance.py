@@ -44,7 +44,9 @@ def _submission(task_id, experiment_id, link, *, user="alice", github_username=N
         experiment_id=experiment_id,
         link=link,
         configs=[
-            AgentModelPair(agent="claude-code", model="anthropic/claude-sonnet-4-6", n_trials=1)
+            AgentModelPair(
+                agent="claude-code", model="anthropic/claude-sonnet-4-6", n_trials=1
+            )
         ],
         user=user,
         github_username=github_username,
@@ -66,17 +68,32 @@ async def seeded_task_id(tmp_path):
     (task_dir / "instruction.md").write_text("solve")
     (task_dir / "task.toml").write_text('version = "1.0"\n')
     async with get_session() as s:
-        s.add(TaskModel(id=task_id, name="exp-prov-test", user="uploader", task_path=str(task_dir)))
+        s.add(
+            TaskModel(
+                id=task_id,
+                name="exp-prov-test",
+                user="uploader",
+                task_path=str(task_dir),
+            )
+        )
     yield task_id
     async with get_session() as s:
-        await s.execute(TrialModel.__table__.delete().where(TrialModel.task_id == task_id))
-        await s.execute(task_experiments.delete().where(task_experiments.c.task_id == task_id))
+        await s.execute(
+            TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+        )
+        await s.execute(
+            task_experiments.delete().where(task_experiments.c.task_id == task_id)
+        )
         await s.execute(TaskModel.__table__.delete().where(TaskModel.id == task_id))
-        await s.execute(ExperimentModel.__table__.delete().where(ExperimentModel.name.in_([E1, E2])))
+        await s.execute(
+            ExperimentModel.__table__.delete().where(ExperimentModel.name.in_([E1, E2]))
+        )
 
 
 @pytest.mark.asyncio
-async def test_experiment_owner_and_link_are_set_once_and_scoped(monkeypatch, seeded_task_id):
+async def test_experiment_owner_and_link_are_set_once_and_scoped(
+    monkeypatch, seeded_task_id
+):
     monkeypatch.setenv("ODDISH_LOCAL_MODE", "1")
     import oddish.config as cfg_mod
 
@@ -87,7 +104,13 @@ async def test_experiment_owner_and_link_are_set_once_and_scoped(monkeypatch, se
     async with get_session() as s:
         await create_task_sweep_core(
             s,
-            submission=_submission(seeded_task_id, E1, PR_A, user="octocat@x.com", github_username="octocat"),
+            submission=_submission(
+                seeded_task_id,
+                E1,
+                PR_A,
+                user="octocat@x.com",
+                github_username="octocat",
+            ),
             org_id=None,
         )
     e1 = await _experiment(E1)
@@ -98,7 +121,13 @@ async def test_experiment_owner_and_link_are_set_once_and_scoped(monkeypatch, se
     async with get_session() as s:
         await create_task_sweep_core(
             s,
-            submission=_submission(seeded_task_id, E1, PR_B, user="someone@x.com", github_username="someone"),
+            submission=_submission(
+                seeded_task_id,
+                E1,
+                PR_B,
+                user="someone@x.com",
+                github_username="someone",
+            ),
             org_id=None,
         )
     e1 = await _experiment(E1)
@@ -109,7 +138,9 @@ async def test_experiment_owner_and_link_are_set_once_and_scoped(monkeypatch, se
     async with get_session() as s:
         await create_task_sweep_core(
             s,
-            submission=_submission(seeded_task_id, E2, PR_B, user="bob@x.com", github_username="bob"),
+            submission=_submission(
+                seeded_task_id, E2, PR_B, user="bob@x.com", github_username="bob"
+            ),
             org_id=None,
         )
     e2 = await _experiment(E2)
@@ -130,7 +161,9 @@ async def test_owner_falls_back_to_user_without_github(monkeypatch, seeded_task_
     async with get_session() as s:
         await create_task_sweep_core(
             s,
-            submission=_submission(seeded_task_id, E1, None, user="plain-user", github_username=None),
+            submission=_submission(
+                seeded_task_id, E1, None, user="plain-user", github_username=None
+            ),
             org_id=None,
         )
     e1 = await _experiment(E1)

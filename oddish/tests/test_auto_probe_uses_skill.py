@@ -9,5 +9,6 @@ def test_default_probe_skill_id_is_a_seed_skill():
 
 def test_auto_probe_does_not_import_probe_preset_model():
     import inspect
+
     src = inspect.getsource(auto_probe)
     assert "ProbePresetModel" not in src

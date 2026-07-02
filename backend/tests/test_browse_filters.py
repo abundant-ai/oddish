@@ -109,9 +109,7 @@ async def test_browse_filters():
             assert await _names(session, agents=["codex"]) == {"beta"}
             # Agent+model pair: trials have a null model, so the token is the
             # bare agent and matches the same trial's (agent, null) pair.
-            assert await _names(session, agent_models=["claude-code"]) == {
-                "alpha"
-            }
+            assert await _names(session, agent_models=["claude-code"]) == {"alpha"}
             assert await _names(session, agent_models=["nope"]) == set()
             assert await _names(session, environments=["docker"]) == {"beta"}
             assert await _names(session, has_trajectory=True) == {"alpha"}
@@ -384,9 +382,7 @@ async def test_browse_agent_compare():
                 session, "agent", "codex", "claude-code", "runtime", "best"
             ) == {"cmp-runtime"}
             assert (
-                await _cmp(
-                    session, "agent", "claude-code", "codex", "runtime", "best"
-                )
+                await _cmp(session, "agent", "claude-code", "codex", "runtime", "best")
                 == set()
             )
 
@@ -405,9 +401,9 @@ async def test_browse_agent_compare():
             ) == {"cmp-reward", "cmp-avg"}
 
             # Model-vs-model on the same control.
-            assert await _cmp(
-                session, "model", "m-a", "m-b", "reward", "best"
-            ) == {"cmp-model"}
+            assert await _cmp(session, "model", "m-a", "m-b", "reward", "best") == {
+                "cmp-model"
+            }
     finally:
         await engine.dispose()
 
@@ -453,9 +449,7 @@ async def test_browse_or_groups():
                 ],
             ) == {"alpha", "beta"}
             # Aggregate condition inside a group forces the metrics join.
-            assert await _names(session, or_groups=[{"avg_score_min": 90}]) == {
-                "alpha"
-            }
+            assert await _names(session, or_groups=[{"avg_score_min": 90}]) == {"alpha"}
             assert await _names(
                 session,
                 or_groups=[{"avg_score_min": 90}, {"avg_score_max": 10}],
@@ -554,9 +548,12 @@ async def test_browse_comparison_extras():
             }
 
             # --- Compare A vs B inside an OR-group ---
-            assert await _names(
-                session, or_groups=[{"compare": cc_beats_codex}]
-            ) == {"cmp-reward", "cmp-margin", "cmp-avg", "cmp-median"}
+            assert await _names(session, or_groups=[{"compare": cc_beats_codex}]) == {
+                "cmp-reward",
+                "cmp-margin",
+                "cmp-avg",
+                "cmp-median",
+            }
             assert await _names(
                 session,
                 or_groups=[{"compare": {**cc_beats_codex, "compare_agg": "median"}}],
@@ -565,9 +562,9 @@ async def test_browse_comparison_extras():
             # --- Pass rate range filter (percent 0-100) ---
             # alpha = 1 pass / 1 trial = 100%; cmp-avg = 1 pass / 2 = 50%.
             assert await _names(session, pass_rate_min=90) == {"alpha"}
-            assert await _names(
-                session, pass_rate_min=45, pass_rate_max=55
-            ) == {"cmp-avg"}
+            assert await _names(session, pass_rate_min=45, pass_rate_max=55) == {
+                "cmp-avg"
+            }
     finally:
         await engine.dispose()
 

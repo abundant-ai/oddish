@@ -4,6 +4,7 @@ Revision ID: p2q3r4s5t6u7
 Revises: o1p2q3r4s5t6
 Create Date: 2026-06-14 00:00:00.000000
 """
+
 from typing import Sequence, Union
 from alembic import op
 
@@ -33,7 +34,9 @@ def upgrade() -> None:
         )
         """
     )
-    op.execute("CREATE INDEX IF NOT EXISTS ix_chat_sessions_org_id ON chat_sessions (org_id)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_chat_sessions_org_id ON chat_sessions (org_id)"
+    )
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_chat_sessions_status_last_activity "
         "ON chat_sessions (status, last_activity)"
@@ -74,7 +77,9 @@ def upgrade() -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_chat_turns_one_running "
         "ON chat_turns (session_id) WHERE status = 'running'"
     )
-    op.execute("CREATE INDEX IF NOT EXISTS ix_chat_turns_session_seq ON chat_turns (session_id, seq)")
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_chat_turns_session_seq ON chat_turns (session_id, seq)"
+    )
 
 
 def downgrade() -> None:

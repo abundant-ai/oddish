@@ -20,6 +20,7 @@ class AgentRunResult:
     duration_s: float
     error: str | None = None
 
+
 _NPM_PREFIX = "/home/daytona/.npm-global"
 _CLAUDE_BIN = f"{_NPM_PREFIX}/bin/claude"
 _WORKSPACE = "/home/daytona/workspace"
@@ -48,9 +49,7 @@ class ClaudeCodeRuntime:
         instead of ~a minute of npm/pip. When both are missing (default image)
         they install concurrently rather than sequentially.
         """
-        need_claude = not await self._present(
-            client, sandbox, f"test -x {_CLAUDE_BIN}"
-        )
+        need_claude = not await self._present(client, sandbox, f"test -x {_CLAUDE_BIN}")
         need_harbor = not await self._present(
             client, sandbox, "python -c 'import harbor'"
         )
@@ -64,7 +63,9 @@ class ClaudeCodeRuntime:
             await asyncio.gather(*jobs)
 
     @staticmethod
-    async def _present(client: DaytonaClient, sandbox: CreatedSandbox, check: str) -> bool:
+    async def _present(
+        client: DaytonaClient, sandbox: CreatedSandbox, check: str
+    ) -> bool:
         exit_code, _ = await client.exec_sync(sandbox, command=check)
         return exit_code == 0
 
@@ -190,9 +191,7 @@ class ClaudeCodeRuntime:
         # Belt-and-suspenders: write our captured stdout to the transcript
         # path inside the sandbox in case `tee` didn't flush. Tests rely on this.
         body = ("".join(captured_stdout) + "".join(captured_stderr)).encode("utf-8")
-        await client.upload_file(
-            sandbox, dest_path=_TRANSCRIPT_PATH, content=body
-        )
+        await client.upload_file(sandbox, dest_path=_TRANSCRIPT_PATH, content=body)
 
         return AgentRunResult(
             transcript_path=_TRANSCRIPT_PATH,
@@ -221,11 +220,7 @@ class ClaudeCodeRuntime:
             parts += ["--resume", shlex.quote(claude_session_id)]
         parts += ["--", shlex.quote(content)]
 
-        cmd_str = (
-            f"cd {shlex.quote(_WORKSPACE)} && "
-            + " ".join(parts)
-            + " < /dev/null"
-        )
+        cmd_str = f"cd {shlex.quote(_WORKSPACE)} && " + " ".join(parts) + " < /dev/null"
 
         cmd_id = await client.exec_async(
             sandbox,

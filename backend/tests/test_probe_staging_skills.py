@@ -57,7 +57,9 @@ async def test_stages_skills_into_root_per_skill_dirs(org_id, tmp_path):
         await session.commit()
 
     skills_root = tmp_path / "agent_skills"
-    n = await stage_org_skills(skills_root, org_id=org_id, skill_ids=[alpha_id, beta_id])
+    n = await stage_org_skills(
+        skills_root, org_id=org_id, skill_ids=[alpha_id, beta_id]
+    )
     assert n == 2
 
     # Layout is <root>/<name>/<relative_path> — NOT nested under .claude/skills.
@@ -120,7 +122,9 @@ async def test_one_bad_skill_does_not_block_others(org_id, tmp_path, monkeypatch
         return real(bundles, root)
 
     monkeypatch.setattr(ps, "materialize_skills", flaky)
-    n = await stage_org_skills(tmp_path / "agent_skills", org_id=org_id, skill_ids=[good_id])
+    n = await stage_org_skills(
+        tmp_path / "agent_skills", org_id=org_id, skill_ids=[good_id]
+    )
     assert n == 0  # the only skill failed, but no exception propagated
 
 

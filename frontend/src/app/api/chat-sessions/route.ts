@@ -21,7 +21,10 @@ async function authedToken() {
   }
   const token = await getClerkToken(authObj.getToken);
   if (!token) {
-    return { error: "Failed to get authentication token" as const, status: 401 };
+    return {
+      error: "Failed to get authentication token" as const,
+      status: 401,
+    };
   }
   return { token };
 }
