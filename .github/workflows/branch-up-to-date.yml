@@ -1,60 +1,57 @@
 name: Branch up to date
 
-# Fails a PR whenever its branch does not already contain the current tip of the
-# base branch (main for normal PRs). It re-runs on every push to the PR (the
-# `synchronize` activity type), so the red X reappears until you rebase or merge
-# the latest base in and push again. Add it as a required status check on main
-# (Settings -> Branches, or a ruleset) to actually block the merge button.
+# Fails a PR whose branch does not already contain the current tip of its base
+# branch (main, for normal PRs). Runs on every push to the PR (`synchronize`),
+# so pushing from a stale branch flips the check red and it stays red until you
+# rebase or merge the base in and push again. To make it actually block the
+# merge button, mark the "Up to date with base" check as required on main
+# (Settings -> Branches, or a ruleset).
 #
-# Why it checks out head.sha instead of the default ref: on `pull_request` events
-# actions/checkout defaults to the merge ref (refs/pull/N/merge), which is the PR
-# already merged with main -- main is always its ancestor there, so the check
-# would always pass. We check out the real branch tip (head.sha) and test whether
-# the freshly-fetched base tip is an ancestor of it.
+# Implementation: one commit-compare API call, `BASE_REF...HEAD_SHA`. Its
+# `behind_by` counts base commits missing from the branch, so 0 means the live
+# base tip is already an ancestor of the PR head. No checkout: the obvious git
+# version needs full history for `merge-base --is-ancestor`, and checking out
+# the default `pull_request` ref would be a trap besides — that ref is the PR
+# pre-merged with main, so main is always its ancestor and the check could
+# never fail. Comparing `head.sha` against the base *branch name* resolves the
+# base tip at request time, the freshest answer available.
 #
-# Caveat this can't cover alone: when main advances *after* your last push, no
-# `pull_request` event fires, so this check keeps its last (green) result until
-# you next push. GitHub's native "Require branches to be up to date before
-# merging" setting closes that gap at merge time; this workflow gives the earlier,
-# visible nudge on each push.
+# Known gap, by design: when main advances *after* your last push, no PR event
+# fires, so a green result can go stale until the next push. GitHub's native
+# "Require branches to be up to date before merging" setting closes that gap at
+# merge time; this check is the earlier, per-push signal.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
 
 concurrency:
-  group: branch-up-to-date-${{ github.event.pull_request.number }}
+  group: branch-up-to-date-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   up-to-date:
-    name: Up to date with main
+    name: Up to date with base
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - name: Check out PR branch tip
-        uses: actions/checkout@v5
-        with:
-          # The real branch head, NOT the refs/pull/N/merge default (see header).
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-
       - name: Require branch to contain the latest base commit
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$BASE_REF"
-          base_sha="$(git rev-parse FETCH_HEAD)"
-          echo "Latest $BASE_REF commit: $base_sha"
-          echo "This branch tip:        $(git rev-parse HEAD)"
-          if git merge-base --is-ancestor "$base_sha" HEAD; then
-            echo "Branch is up to date with $BASE_REF."
+          compare="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BASE_REF//\//%2F}...${HEAD_SHA}")"
+          behind="$(jq -r '.behind_by' <<<"$compare")"
+          base_tip="$(jq -r '.base_commit.sha' <<<"$compare")"
+          echo "Latest ${BASE_REF} commit: ${base_tip}"
+          echo "PR branch head:           ${HEAD_SHA}"
+          if [ "$behind" -eq 0 ]; then
+            echo "Branch already contains the latest ${BASE_REF} commit."
             exit 0
           fi
-          behind="$(git rev-list --count "HEAD..${base_sha}")"
-          echo "::error::This branch is $behind commit(s) behind $BASE_REF. Bring it up to date and push again:"
-          echo "::error::  git fetch origin $BASE_REF && git merge origin/$BASE_REF   (or: git rebase origin/$BASE_REF)"
+          echo "::error::Branch is ${behind} commit(s) behind ${BASE_REF}. Bring it up to date and push again:"
+          echo "::error::  git fetch origin ${BASE_REF} && git merge origin/${BASE_REF}   (or rebase instead of merge)"
           exit 1
