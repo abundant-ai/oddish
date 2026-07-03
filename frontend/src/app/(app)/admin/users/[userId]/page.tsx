@@ -236,7 +236,9 @@ export default function AdminUserCostPage({
         </div>
         <p className="text-muted-foreground text-xs">
           Billed-user attribution — spend billed to this user. Totals can
-          differ from the Costs tab, which attributes by experiment owner.
+          differ slightly from the Costs tab: this view counts settled trials
+          by finish time (deleted included); the Costs tab buckets by creation
+          time.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">

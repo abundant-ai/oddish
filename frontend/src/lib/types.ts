@@ -759,7 +759,8 @@ export interface CostModelBreakdown {
 }
 
 export interface CostUserBreakdown {
-  owner_user_id: string | null;
+  // Quota payer (trials.billed_user_id); null rows fold into "Unattributed".
+  billed_user_id: string | null;
   org_id: string | null;
   name: string | null;
   email: string | null;

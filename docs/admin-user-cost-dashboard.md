@@ -61,6 +61,13 @@ tables, columns, or migrations.
    API-key/impersonated submissions. The drilldown header carries an explicit
    "billed-user attribution" caption. Migrating `/admin/costs` to billed
    attribution is a follow-up, not this change.
+   > **Update (follow-up landed):** `/admin/costs` `by_user` and
+   > `series_by_user` are now billed-basis too (`billed_user_id`, wire field
+   > renamed accordingly). Pre-rollout trials have no payer (no backfill) and
+   > fold into "Unattributed" on longer windows. The experiments table stays
+   > owner-basis. Remaining drilldown-vs-Costs-tab divergence is the time
+   > axis: settled-only `finished_at` (deleted included) here vs `created_at`
+   > buckets (deleted excluded) there.
 
 ## Backend
 

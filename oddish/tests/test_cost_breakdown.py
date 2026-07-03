@@ -11,8 +11,9 @@ Covered behaviors:
 
 * native ``cost_usd`` is summed, and trials lacking it are priced from token
   counts via the per-model estimate (the ``cost_estimated_usd`` split);
-* per-user attribution flows through ``experiments.owner_user_id`` (including
-  the unattributed ``None`` owner);
+* per-user attribution flows through ``trials.billed_user_id`` (the quota
+  payer) -- a trial billed to someone other than the experiment owner
+  attributes to the payer, and a ``None`` payer is unattributed;
 * soft-deleted experiments (and soft-deleted trials) are excluded;
 * the trailing-window filter bounds the rollups;
 * model ids are normalized so spellings (case/whitespace) collapse onto one row;
@@ -127,8 +128,14 @@ async def seeded_cost_data():
             )
         session.add_all(
             [
-                _trial(E1, 0, model="claude-opus-4-8", cost_usd=2.0, created_at=recent),
-                _trial(E1, 1, model="claude-opus-4-8", cost_usd=3.0, created_at=recent),
+                _trial(
+                    E1, 0, model="claude-opus-4-8", cost_usd=2.0,
+                    billed_user_id=USER_A, created_at=recent,
+                ),
+                _trial(
+                    E1, 1, model="claude-opus-4-8", cost_usd=3.0,
+                    billed_user_id=USER_A, created_at=recent,
+                ),
                 # No native cost -> priced from tokens. Distinct agent so the
                 # by-agent series has more than one stack.
                 _trial(
@@ -138,16 +145,25 @@ async def seeded_cost_data():
                     provider="openai",
                     agent="codex",
                     cost_usd=None,
+                    billed_user_id=USER_B,
                     input_tokens=_EST_IN,
                     output_tokens=_EST_OUT,
                     cache_tokens=_EST_CACHE,
                     created_at=recent,
                 ),
+                # Owner != payer: a trial in USER_A's experiment billed to
+                # USER_B must attribute to USER_B (the payer).
+                _trial(
+                    E1, 4, model="claude-opus-4-8", cost_usd=0.25,
+                    billed_user_id=USER_B, created_at=recent,
+                ),
                 # Mixed-case model id -> must normalize to "claude-opus-4-8".
+                # NULL payer -> unattributed.
                 _trial(E3, 0, model="Claude-Opus-4-8", cost_usd=1.5, created_at=recent),
                 # Excluded: trial of a soft-deleted experiment.
                 _trial(
-                    E4, 0, model="claude-opus-4-8", cost_usd=99.0, created_at=recent
+                    E4, 0, model="claude-opus-4-8", cost_usd=99.0,
+                    billed_user_id=USER_A, created_at=recent,
                 ),
                 # Excluded: soft-deleted trial.
                 _trial(
@@ -155,11 +171,15 @@ async def seeded_cost_data():
                     2,
                     model="claude-opus-4-8",
                     cost_usd=50.0,
+                    billed_user_id=USER_A,
                     created_at=recent,
                     deleted_at=now,
                 ),
                 # Old trial in E1: out of the 7d window, in all-time.
-                _trial(E1, 3, model="claude-opus-4-8", cost_usd=7.0, created_at=old),
+                _trial(
+                    E1, 3, model="claude-opus-4-8", cost_usd=7.0,
+                    billed_user_id=USER_A, created_at=old,
+                ),
             ]
         )
 
@@ -185,6 +205,7 @@ def _trial(
     model: str | None,
     cost_usd: float | None,
     created_at,
+    billed_user_id: str | None = None,
     provider: str = "bedrock",
     agent: str = "claude-code",
     input_tokens: int | None = None,
@@ -198,6 +219,7 @@ def _trial(
         task_id=f"{experiment_id}-task",
         experiment_id=experiment_id,
         org_id=None,
+        billed_user_id=billed_user_id,
         agent=agent,
         provider=provider,
         queue_key=f"{provider}/{model or 'default'}",
@@ -226,11 +248,11 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert E4 not in exps
 
     # Native cost is summed; the soft-deleted 50.0 trial does not inflate E1.
-    assert _approx(exps[E1].cost_usd, 5.0), exps[E1].cost_usd
+    assert _approx(exps[E1].cost_usd, 5.25), exps[E1].cost_usd
     assert _approx(exps[E1].cost_estimated_usd, 0.0)
-    assert exps[E1].trial_count == 2
+    assert exps[E1].trial_count == 3
     assert exps[E1].models[0].model == "claude-opus-4-8"
-    assert _approx(exps[E1].models[0].cost_usd, 5.0)
+    assert _approx(exps[E1].models[0].cost_usd, 5.25)
 
     # No native cost -> fully estimated from tokens.
     assert _approx(exps[E2].cost_usd, _EXPECTED_EST), exps[E2].cost_usd
@@ -238,17 +260,21 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E2].models[0].model == _EST_MODEL
     assert exps[E2].input_tokens == _EST_IN
 
-    # Unattributed-owner experiment still aggregates, and its mixed-case model
+    # Unattributed-payer experiment still aggregates, and its mixed-case model
     # id is normalized to the canonical lowercase form.
     assert _approx(exps[E3].cost_usd, 1.5)
     assert exps[E3].models[0].model == "claude-opus-4-8"
 
-    # Per-user attribution via experiment ownership.
-    by_user = {u.owner_user_id: u for u in result.by_user}
+    # Per-user attribution via billed_user_id (the quota payer): E1's 0.25
+    # trial is billed to USER_B despite USER_A owning the experiment, and
+    # E3's NULL-payer trial lands in the unattributed (None) row.
+    by_user = {u.billed_user_id: u for u in result.by_user}
     assert _approx(by_user[USER_A].cost_usd, 5.0)
     assert by_user[USER_A].experiment_count == 1
     assert by_user[USER_A].trial_count == 2
-    assert _approx(by_user[USER_B].cost_usd, _EXPECTED_EST)
+    assert _approx(by_user[USER_B].cost_usd, _EXPECTED_EST + 0.25)
+    assert by_user[USER_B].experiment_count == 2
+    assert _approx(by_user[None].cost_usd, 1.5)
 
     # Experiments are ranked by descending cost.
     costs = [e.cost_usd for e in result.experiments]
@@ -284,7 +310,7 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert "claude-opus-4-8" in model_keys
     assert "Claude-Opus-4-8" not in model_keys
 
-    # by-user series carries both owners plus the unattributed (E3) bucket.
+    # by-user series carries both payers plus the unattributed (E3) bucket.
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
     assert "__unattributed__" in user_keys
@@ -304,9 +330,9 @@ async def test_cost_breakdown_all_time_includes_old_trials(seeded_cost_data):
     e1_all = {e.experiment_id: e for e in all_time.experiments}[E1]
 
     # The 40-day-old 7.0 trial is excluded from 7d but included in all-time.
-    assert _approx(e1_windowed.cost_usd, 5.0)
-    assert _approx(e1_all.cost_usd, 12.0)
-    assert e1_all.trial_count == 3
+    assert _approx(e1_windowed.cost_usd, 5.25)
+    assert _approx(e1_all.cost_usd, 12.25)
+    assert e1_all.trial_count == 4
 
-    user_a_all = {u.owner_user_id: u for u in all_time.by_user}[USER_A]
+    user_a_all = {u.billed_user_id: u for u in all_time.by_user}[USER_A]
     assert _approx(user_a_all.cost_usd, 12.0)
