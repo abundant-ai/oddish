@@ -1207,18 +1207,44 @@ async def load_dashboard_experiments(
     # on every trial at submission time, so it is correct across appends. May
     # be NULL for legacy/pre-quota trials -- the hosted layer only overrides
     # ``last_runner`` when this id resolves to a named org member.
-    latest_trial_runner_query = (
+    #
+    # Trial membership mirrors the aggregate semantics in
+    # ``_build_aggregates_for_experiment_ids``: a trial belongs to its home
+    # ``TrialModel.experiment_id`` OR to a collection via ``experiment_trials``
+    # (gathered trials keep their home experiment_id, so filtering on the home
+    # column alone would leave collections permanently unresolved), and
+    # superseded retry attempts are excluded so they can't drive the label.
+    runner_member = (
         select(
             TrialModel.experiment_id.label("experiment_id"),
-            TrialModel.billed_user_id.label("billed_user_id"),
+            TrialModel.id.label("trial_id"),
         )
         .where(TrialModel.experiment_id.in_(experiment_ids))
+        .union(
+            select(
+                experiment_trials.c.experiment_id.label("experiment_id"),
+                experiment_trials.c.trial_id.label("trial_id"),
+            ).where(
+                experiment_trials.c.experiment_id.in_(experiment_ids),
+                experiment_trials.c.deleted_at.is_(None),
+            )
+        )
+        .subquery()
+    )
+    latest_trial_runner_query = (
+        select(
+            runner_member.c.experiment_id.label("experiment_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
+        )
+        .select_from(runner_member)
+        .join(TrialModel, TrialModel.id == runner_member.c.trial_id)
+        .where(TrialModel.superseded_by_trial_id.is_(None))
         .order_by(
-            TrialModel.experiment_id.asc(),
+            runner_member.c.experiment_id.asc(),
             TrialModel.created_at.desc(),
             TrialModel.id.desc(),
         )
-        .distinct(TrialModel.experiment_id)
+        .distinct(runner_member.c.experiment_id)
     )
     if org_id is not None:
         latest_trial_runner_query = latest_trial_runner_query.where(
