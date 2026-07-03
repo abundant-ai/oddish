@@ -107,6 +107,81 @@ async def test_single_sweep_core_takes_org_lock_before_payer_lock(monkeypatch):
     assert events == [("org", "org-1"), ("payer", "org-1", "amy")]
 
 
+# --- doomed (unattributed-under-ENFORCE) submissions take NO locks ---------------
+
+
+@pytest.mark.asyncio
+async def test_single_sweep_core_unattributed_enforce_rejects_before_any_lock(
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.setattr(settings, "default_org_daily_quota_usd", Decimal("50"))
+    events: list[tuple] = []
+    _install_lock_spies(monkeypatch, events)
+    _stop_after_locks(monkeypatch)
+
+    with pytest.raises(HTTPException) as raised:
+        await create_task_sweep_core(
+            _FakeSession(),
+            submission=SimpleNamespace(harbor=None),
+            org_id="org-1",
+            billed_user_id=None,
+        )
+
+    # 403 Unattributed, raised BEFORE the org/payer locks (and before harbor
+    # resolution -- _stop_after_locks' 422 was never reached).
+    assert raised.value.status_code == 403
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_batch_unattributed_items_pre_fail_without_org_lock(monkeypatch):
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.setattr(settings, "default_org_daily_quota_usd", Decimal("50"))
+    events: list[tuple] = []
+    _install_lock_spies(monkeypatch, events)
+    _stop_after_locks(monkeypatch)
+    monkeypatch.setattr(sweeps_mod, "validate_sweep_submission", lambda _s: None)
+
+    async def resolve_none(session, submission):
+        return None
+
+    # All items unattributed -> every item pre-fails 403 and the batch never
+    # takes the org lock at all.
+    submissions = [SimpleNamespace(harbor=None) for _ in range(2)]
+    results = await create_task_sweep_batch_core(
+        _FakeSession(),
+        submissions=submissions,
+        org_id="org-1",
+        resolve_billed_user_id=resolve_none,
+    )
+    assert [r.status_code for r in results] == [403, 403]
+    assert events == []
+
+    # Mixed batch: the unattributed item pre-fails 403 without contributing to
+    # lock acquisition; the attributed item still locks org -> payer.
+    submissions = [SimpleNamespace(harbor=None) for _ in range(2)]
+    payers = {id(submissions[0]): None, id(submissions[1]): "amy"}
+
+    async def resolve_mixed(session, submission):
+        return payers[id(submission)]
+
+    results = await create_task_sweep_batch_core(
+        _FakeSession(),
+        submissions=submissions,
+        org_id="org-1",
+        resolve_billed_user_id=resolve_mixed,
+    )
+    assert [r.status_code for r in results] == [403, 422]
+    assert events == [
+        ("org", "org-1"),
+        ("payer", "org-1", "amy"),
+        # Per-item (via create_task_sweep_core) for the surviving item only.
+        ("org", "org-1"),
+        ("payer", "org-1", "amy"),
+    ]
+
+
 # --- batch core: org lock first, sorted payers, then per-item org -> payer -------
 
 
@@ -285,6 +360,47 @@ async def test_retry_takes_org_lock_then_payer_lock_before_supersede(monkeypatch
     assert lock_events == [("org", "org-1"), ("payer", "org-1", "amy")]
     names = [e[0] for e in events]
     assert names.index("org") < names.index("payer") < names.index("supersede")
+
+
+@pytest.mark.asyncio
+async def test_retry_null_billed_still_admits_against_org_cap(monkeypatch):
+    """A NULL-billed (legacy) retry must run admission: no Unattributed 403
+    (the allow_unattributed carve-out), no payer lock (no payer), but the org
+    lock IS taken and the org-wide check runs before the supersede."""
+    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
+    monkeypatch.setattr(settings, "default_org_daily_quota_usd", Decimal("1000"))
+
+    events: list[tuple] = []
+    _install_lock_spies(monkeypatch, events)
+
+    trial = _RecordingTrial(events, billed_user_id=None)
+    task = SimpleNamespace(
+        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    result = await endpoints.retry_trial_core(
+        session, trial_id=trial.id, org_id="org-1"
+    )
+
+    assert result["trial_id"] == "task-1-1"
+    lock_events = [e for e in events if e[0] in ("org", "payer")]
+    assert lock_events == [("org", "org-1")]  # org lock yes, payer lock no
+    names = [e[0] for e in events]
+    assert names.index("org") < names.index("supersede")
 
 
 # --- SQL level: real acquire fns on a recording session --------------------------

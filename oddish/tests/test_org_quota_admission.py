@@ -199,6 +199,39 @@ async def test_unattributed_enforce_raises_before_org_check(cleanup_task_ids):
             await admit_trials(session, org_id, None, count=1)
 
 
+# --- legacy-retry carve-out: allow_unattributed skips the 403, NOT the org cap ---
+
+
+@pytest.mark.asyncio
+async def test_allow_unattributed_still_hits_org_cap_in_enforce(cleanup_task_ids):
+    # A NULL-billed legacy retry is exempt from the linkage 403, but its spend
+    # counts toward the org total -- so an over-cap org must still 402 it.
+    org_id = f"orgJ-{_RUN}-{uuid.uuid4().hex[:6]}"
+    task_id = await _make_billed_task(
+        cleanup_task_ids, n_trials=1, billed_user=None, org_id=org_id
+    )
+    await _settle(task_id, 0, 5.00)  # NULL-billed spend over the 0.30 cap
+
+    async with get_session() as session:
+        with pytest.raises(OrgQuotaExceeded):
+            await admit_trials(
+                session, org_id, None, count=1, allow_unattributed=True
+            )
+
+
+@pytest.mark.asyncio
+async def test_allow_unattributed_admits_when_org_under_cap(cleanup_task_ids):
+    org_id = f"orgK-{_RUN}-{uuid.uuid4().hex[:6]}"
+    task_id = await _make_billed_task(
+        cleanup_task_ids, n_trials=1, billed_user=None, org_id=org_id
+    )
+    await _settle(task_id, 0, 0.10)  # under the 0.30 cap
+
+    async with get_session() as session:
+        # No Unattributed 403, no OrgQuotaExceeded 402.
+        await admit_trials(session, org_id, None, count=1, allow_unattributed=True)
+
+
 # --- per-user and org caps are independent ------------------------------------
 
 

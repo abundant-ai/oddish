@@ -161,14 +161,22 @@ async def retry_trial_core(
         reserve_next_trial_index,
     )
 
-    if old_trial.billed_user_id is not None:
-        from oddish.core.quota_admission import admit_trials
+    from oddish.core.quota_admission import admit_trials
 
-        # Admission deliberately precedes the supersede and counts the old
-        # attempt's reservation: the CAS below settles that cost (never
-        # refunds it), so this check equals post-retry exposure -- excluding
-        # the old row would let a capped user reset spend by retrying.
-        await admit_trials(session, org_id, old_trial.billed_user_id, count=1)
+    # Admission deliberately precedes the supersede and counts the old
+    # attempt's reservation: the CAS below settles that cost (never
+    # refunds it), so this check equals post-retry exposure -- excluding
+    # the old row would let a capped user reset spend by retrying.
+    # Runs for NULL-billed (legacy/imported) trials too: they're exempt from
+    # the linkage requirement (allow_unattributed), but their spend counts
+    # toward the ORG total, so the org-wide cap must still gate the retry.
+    await admit_trials(
+        session,
+        org_id,
+        old_trial.billed_user_id,
+        count=1,
+        allow_unattributed=True,
+    )
 
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     new_trial_id = f"{task.id}-{next_index}"

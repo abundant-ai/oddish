@@ -417,11 +417,21 @@ Layered on top of the per-user check, `admit_trials` also enforces an
 - **Over the cap:** `enforce` raises HTTP **402** ("organization … daily
   budget"); `shadow` logs `quota.would_block` with `reason=org_over_budget`.
   Unattributed submissions still hit the org check in shadow (they no longer
-  early-return) since their spend counts toward the org total.
+  early-return) since their spend counts toward the org total. A retry of a
+  NULL-billed (legacy/imported) trial is exempt from the linkage 403
+  (`allow_unattributed` in `admit_trials`) but is still gated by the org cap —
+  skipping admission entirely would let an over-cap org keep retrying forever.
 - **Locking:** under `enforce` with an org cap configured, admission takes the
   org advisory lock (`quota-org:{org_id}`) **before** the payer lock
   (`quota:{org_id}:{user_id}`), which precedes any row locks. Shadow/off take
-  no advisory locks. Pinned by `oddish/tests/test_quota_lock_ordering.py`.
+  no advisory locks, and a doomed unattributed submission is 403'd
+  **before** any lock (`reject_unattributed_if_enforced`) so it never holds
+  org-wide serialization through Harbor/S3 resolution — batch items pre-fail
+  the same way. Pinned by `oddish/tests/test_quota_lock_ordering.py`.
+- **Index:** the org-wide sums seek `(org_id, finished_at)` via
+  `idx_trials_org_finished_at` (oddish migration `org_quota_idx_001`); the
+  per-user index can't serve them (`finished_at` sits behind an unconstrained
+  `billed_user_id`).
 - **Admin API:** `GET /quotas` now also returns `org_limit_usd` /
   `org_used_usd` / `org_reserved_usd` / `org_default_limit_usd`, and
   `PUT /quotas/org` (`require_can_manage_quotas`, user-auth only) sets or —
