@@ -131,15 +131,21 @@ async def _enrich_experiment_authors(
             users_by_id[user.id] = user
 
     def _resolve(row: dict[str, Any], id_key: str, value_key: str) -> dict | None:
-        # Tiers 1+2: the internal user id, labeled name-then-handle.
+        # Tiers 1+2: the internal user id, labeled name-then-handle. An id is
+        # TERMINAL: it already identifies the person, so when it yields no
+        # promotable label (user unresolvable, or no name and no handle) we
+        # keep the core value rather than fall through to the string tier --
+        # the fallback string can name a *different* person (e.g. the task
+        # creator on an appended run) and relabeling it would silently swap
+        # who is displayed.
         user_id = row.get(id_key)
         if user_id:
             user = users_by_id.get(user_id)
-            if user is not None:
-                label = _member_label(user)
-                if label is not None:
-                    return label
-        # Tier 3: match the raw string label to exactly one active member.
+            if user is None:
+                return None
+            return _member_label(user)
+        # Tier 3 (no id at all): match the raw string label to exactly one
+        # active member.
         current = row.get(value_key)
         if isinstance(current, dict):
             key = _normalize_label_key(current.get("name"))

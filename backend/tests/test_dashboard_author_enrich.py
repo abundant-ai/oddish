@@ -172,6 +172,53 @@ async def test_enrich_leaves_author_when_no_name_or_handle() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_enrich_id_without_label_never_falls_to_string_tier() -> None:
+    """An id is terminal: when it resolves to a member with no promotable
+    label, the string tier must NOT run, even if the fallback string uniquely
+    matches a *different* member. Otherwise an appended run whose billed user
+    is email-only would be relabeled as the task's original creator."""
+    dashboard = {
+        "experiments": [
+            {
+                "id": "e1",
+                "owner_user_id": None,
+                # Latest trial billed to Charles (no name, no handle)...
+                "last_runner_user_id": "user_charles",
+                # ...but the task-based fallback string names Rishi.
+                "last_runner": {"name": "rishi@abundant.ai", "source": "api"},
+                "last_author": {"name": "rishi@abundant.ai", "source": "api"},
+            }
+        ]
+    }
+    session = _FakeSession(
+        [
+            [
+                _user(
+                    id="user_charles",
+                    name=None,
+                    github_username=None,
+                    email="charles@abundant.ai",
+                ),
+                _user(
+                    id="user_rishi",
+                    name="Rishi Desai",
+                    email="rishi@abundant.ai",
+                    github_username="RishiDesai",
+                ),
+            ]
+        ]
+    )
+
+    await _enrich_experiment_authors(session, dashboard, org_id="org_1")
+
+    # Must not swap the displayed person to Rishi.
+    assert dashboard["experiments"][0]["last_runner"] == {
+        "name": "rishi@abundant.ai",
+        "source": "api",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Tier 3: raw-string match against active org members (legacy NULL-id rows)
 # ---------------------------------------------------------------------------
