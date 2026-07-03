@@ -89,8 +89,8 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
     }
     assert session.delete_called is False
 
-    # statements[2] is the billable-settle SELECT (no active billable rows here).
-    write_statements = session.statements[3:]
+    # statements[0] task lookup, statements[1] trial lookup.
+    write_statements = session.statements[2:]
     # Soft delete emits in order:
     #   1. UPDATE worker_jobs ... WHERE subject_table='trials'  (text())
     #   2. UPDATE worker_jobs ... WHERE subject_table='tasks'   (text())

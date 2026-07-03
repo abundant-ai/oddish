@@ -24,7 +24,6 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 
 from harbor.trial.hooks import TrialEvent, TrialHookEvent
 from harbor.trial.trial import Trial
@@ -56,7 +55,6 @@ from oddish.worker.probe_staging import (
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
-from oddish.trial_cost import apply_settled_cost
 
 logger = logging.getLogger(__name__)
 
@@ -334,7 +332,6 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
             if trial is not None:
                 trial.status = TrialStatus.FAILED
                 trial.error_message = str(exc)
-                apply_settled_cost(trial)
                 trial.finished_at = datetime.now(timezone.utc)
         raise
 
@@ -345,8 +342,6 @@ async def run_trial_locally(trial_id: str, *, dry_run: bool = False) -> None:
                 f"Trial {trial_id} disappeared mid-run; cannot mark SUCCESS"
             )
         trial.status = TrialStatus.SUCCESS
-        if not dry_run:
-            apply_settled_cost(trial)
         trial.finished_at = datetime.now(timezone.utc)
         logger.info("local_runner: trial %s -> SUCCESS", trial_id)
 
@@ -660,21 +655,12 @@ async def _run_harbor_trial(trial_id: str) -> None:
         trial.result = _strip_nul(result_payload)
         agent_result = getattr(result, "agent_result", None) if result else None
         if agent_result is not None and not agent_result.is_empty():
-            # Through apply_settled_cost so floor/estimate/accumulation and the
-            # once-only gate hold on the local path too.
-            apply_settled_cost(
-                trial,
-                SimpleNamespace(
-                    input_tokens=agent_result.n_input_tokens,
-                    cache_tokens=agent_result.n_cache_tokens,
-                    cache_write_tokens=None,
-                    output_tokens=agent_result.n_output_tokens,
-                    total_steps=_trajectory_total_steps(trajectory),
-                    cost_usd=agent_result.cost_usd,
-                ),
-            )
-        else:
-            trial.total_steps = _trajectory_total_steps(trajectory)
+            trial.input_tokens = agent_result.n_input_tokens
+            trial.cache_tokens = agent_result.n_cache_tokens
+            trial.cache_write_tokens = None
+            trial.output_tokens = agent_result.n_output_tokens
+            trial.cost_usd = agent_result.cost_usd
+        trial.total_steps = _trajectory_total_steps(trajectory)
         trial.has_trajectory = trajectory is not None
         if analyzer_summary is not None:
             trial.analysis = _strip_nul(analyzer_summary)

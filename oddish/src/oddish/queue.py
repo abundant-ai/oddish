@@ -31,7 +31,6 @@ from oddish.experiment import generate_experiment_name
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
-from oddish.trial_cost import apply_settled_cost
 from oddish.workers.jobs.enqueue import (
     EnqueueRequest,
     bulk_enqueue_worker_jobs,
@@ -44,11 +43,6 @@ USER_CANCELLED_MESSAGE = "Cancelled by user"
 CANCELLED_HARBOR_STAGE = "cancelled"
 ACTIVE_TRIAL_STATUSES = (
     TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
-BILLABLE_CANCEL_TRIAL_STATUSES = (
     TrialStatus.QUEUED,
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
@@ -230,7 +224,6 @@ async def cancel_tasks_runs(
     for trial in trials:
         trial_updated = False
         if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
-            trial_consumed_billable_slot = trial.status in BILLABLE_CANCEL_TRIAL_STATUSES
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.
@@ -244,8 +237,6 @@ async def cancel_tasks_runs(
             trial.max_attempts = trial.attempts
             trial.current_worker_id = None
             trial.current_queue_slot = None
-            if trial_consumed_billable_slot:
-                apply_settled_cost(trial)
             trials_cancelled += 1
             trial_updated = True
         if (

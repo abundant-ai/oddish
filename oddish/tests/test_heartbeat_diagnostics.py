@@ -214,7 +214,6 @@ async def test_touch_trial_execution_flushes_pending_failure_metadata(monkeypatc
         last_heartbeat_error_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
     class _FakeSession:
@@ -272,7 +271,6 @@ async def test_touch_trial_execution_truncates_long_errors(monkeypatch):
         last_heartbeat_error_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
     class _FakeSession:

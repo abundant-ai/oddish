@@ -61,7 +61,6 @@ class _RecordingTrial:
         self.current_worker_id = None
         self.current_queue_slot = None
         self.cost_usd = None
-        self.cost_settled_attempt = 0
         self.deleted_at = None
         self.input_tokens = None
         self.cache_tokens = None
