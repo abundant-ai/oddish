@@ -1052,6 +1052,7 @@ async def load_dashboard_experiments(
         ExperimentModel.is_public.label("experiment_is_public"),
         ExperimentModel.last_activity_at.label("last_activity_at"),
         ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
         ExperimentModel.link.label("experiment_link"),
     )
     if org_id is not None:
@@ -1198,6 +1199,65 @@ async def load_dashboard_experiments(
     primary_task_by_id = {str(row["experiment_id"]): row for row in primary_task_rows}
     latest_task_by_id = {str(row["experiment_id"]): row for row in latest_task_rows}
 
+    # Latest trial's ``billed_user_id`` per experiment: the per-run identity for
+    # the "Last run" column. Task-level attribution strings (``tasks.user`` /
+    # the ``github_username`` tag) are stamped set-once at task creation, so an
+    # APPEND to a shared task never updates them and the latest-task fallback
+    # above shows the task's *original* creator. ``billed_user_id`` is stamped
+    # on every trial at submission time, so it is correct across appends. May
+    # be NULL for legacy/pre-quota trials -- the hosted layer only overrides
+    # ``last_runner`` when this id resolves to a named org member.
+    #
+    # Trial membership mirrors the aggregate semantics in
+    # ``_build_aggregates_for_experiment_ids``: a trial belongs to its home
+    # ``TrialModel.experiment_id`` OR to a collection via ``experiment_trials``
+    # (gathered trials keep their home experiment_id, so filtering on the home
+    # column alone would leave collections permanently unresolved), and
+    # superseded retry attempts are excluded so they can't drive the label.
+    runner_member = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.id.label("trial_id"),
+        )
+        .where(TrialModel.experiment_id.in_(experiment_ids))
+        .union(
+            select(
+                experiment_trials.c.experiment_id.label("experiment_id"),
+                experiment_trials.c.trial_id.label("trial_id"),
+            ).where(
+                experiment_trials.c.experiment_id.in_(experiment_ids),
+                experiment_trials.c.deleted_at.is_(None),
+            )
+        )
+        .subquery()
+    )
+    latest_trial_runner_query = (
+        select(
+            runner_member.c.experiment_id.label("experiment_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
+        )
+        .select_from(runner_member)
+        .join(TrialModel, TrialModel.id == runner_member.c.trial_id)
+        .where(TrialModel.superseded_by_trial_id.is_(None))
+        .order_by(
+            runner_member.c.experiment_id.asc(),
+            TrialModel.created_at.desc(),
+            TrialModel.id.desc(),
+        )
+        .distinct(runner_member.c.experiment_id)
+    )
+    if org_id is not None:
+        latest_trial_runner_query = latest_trial_runner_query.where(
+            TrialModel.org_id == org_id
+        )
+    latest_trial_runner_rows = (
+        (await session.execute(latest_trial_runner_query)).mappings().all()
+    )
+    last_runner_user_id_by_experiment = {
+        str(row["experiment_id"]): row["billed_user_id"]
+        for row in latest_trial_runner_rows
+    }
+
     # ------------------------------------------------------------------
     # Step 2: aggregate task / trial counts for just this page.
     # ------------------------------------------------------------------
@@ -1276,6 +1336,7 @@ async def load_dashboard_experiments(
             "experiment_name": page_row["experiment_name"],
             "experiment_is_public": page_row["experiment_is_public"],
             "experiment_owner": page_row["experiment_owner"],
+            "experiment_owner_user_id": page_row["experiment_owner_user_id"],
             "experiment_link": page_row["experiment_link"],
             "task_count": int(agg["task_count"]) if agg else 0,
             "analysis_tasks": int(agg["analysis_tasks"]) if agg else 0,
@@ -1361,6 +1422,15 @@ async def load_dashboard_experiments(
             user=merged["last_user"],
         )
 
+        # Expose the experiment's internal owner id so the hosted layer can
+        # enrich ``author`` with the org member's display name (see
+        # ``backend/api/routers/dashboard.py``). The ``__unattributed__``
+        # sentinel is an internal marker, not a real user id, so it must never
+        # leave the data layer -- None it out here too.
+        owner_user_id = merged["experiment_owner_user_id"]
+        if owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER:
+            owner_user_id = None
+
         # PR URL = the experiment's own link (stamped set-once). Fall back to the
         # latest task's github_meta.pr_url / link for experiments with no stamped
         # link. The number is parsed from whichever URL we end up using.
@@ -1397,7 +1467,9 @@ async def load_dashboard_experiments(
                     last_created_at.isoformat() if last_created_at else None
                 ),
                 "author": author,
+                "owner_user_id": owner_user_id,
                 "last_runner": last_runner,
+                "last_runner_user_id": last_runner_user_id_by_experiment.get(exp_id),
                 "last_author": last_runner,
                 "user_tags": merged.get("user_tags", []),
                 "last_pr_url": last_pr_url,
