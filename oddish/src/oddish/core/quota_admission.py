@@ -84,6 +84,25 @@ def _log_would_block(
     )
 
 
+def reject_unattributed_if_enforced(
+    org_id: str | None, billed_user_id: str | None
+) -> None:
+    """Raise ``Unattributed`` (403) for a doomed submission BEFORE any locks.
+
+    Under ENFORCE an unattributed submission can never be admitted, so callers
+    that take the org/payer locks up front (the sweep cores) must reject it
+    first -- otherwise a request that cannot succeed holds the org-wide
+    advisory lock through Harbor/S3 resolution and blocks every other
+    admission in the org. Mirrors the identical check inside ``admit_trials``.
+    """
+    if (
+        settings.quota_mode == QuotaMode.ENFORCE
+        and org_id is not None
+        and billed_user_id is None
+    ):
+        raise Unattributed()
+
+
 async def acquire_org_lock(session: AsyncSession, org_id: str | None) -> None:
     """Serialize org-wide quota admissions; released at commit.
 
@@ -137,6 +156,8 @@ async def admit_trials(
     org_id: str | None,
     billed_user_id: str | None,
     count: int,
+    *,
+    allow_unattributed: bool = False,
 ) -> None:
     mode = settings.quota_mode
     # OSS/self-hosted single-tenant (no org -> no payer) never enforces, even when
@@ -146,8 +167,12 @@ async def admit_trials(
 
     # Under ENFORCE an unattributed submission is rejected outright (as today),
     # before taking any lock. Under shadow it falls through so the org-wide check
-    # below still sees the NULL-billed spend.
-    if billed_user_id is None and mode == QuotaMode.ENFORCE:
+    # below still sees the NULL-billed spend. ``allow_unattributed`` is the
+    # legacy-retry carve-out: a retry of a pre-attribution (NULL-billed) trial
+    # is exempt from the linkage requirement but must still pass the ORG-wide
+    # cap below -- NULL-billed spend counts toward the org total, so skipping
+    # admission entirely would let an over-cap org keep retrying forever.
+    if billed_user_id is None and mode == QuotaMode.ENFORCE and not allow_unattributed:
         raise Unattributed()
 
     # LOCK ORDER: org lock BEFORE payer lock. No-op in shadow/off or when no org
@@ -155,7 +180,10 @@ async def admit_trials(
     await acquire_org_lock(session, org_id)
 
     if billed_user_id is None:
-        _log_would_block(org_id, None, None, None, None, reason="unattributed")
+        # Shadow-only signal: under ENFORCE this point is only reachable via
+        # the legacy-retry carve-out, which is permitted, not would-be-blocked.
+        if mode == QuotaMode.SHADOW:
+            _log_would_block(org_id, None, None, None, None, reason="unattributed")
     else:
         await acquire_payer_lock(session, org_id, billed_user_id)
 

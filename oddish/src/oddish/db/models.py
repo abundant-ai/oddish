@@ -925,6 +925,13 @@ class TrialModel(TimestampedMixin, Base):
             "billed_user_id",
             "finished_at",
         ),
+        # Org-wide quota SUMs: sum_org_cost_usd seeks (org_id, finished_at >=
+        # start_of_today) and org_inflight_reserved_usd seeks (org_id,
+        # finished_at IS NULL). The per-user index above can't serve either --
+        # finished_at sits behind an unconstrained billed_user_id. Not partial:
+        # the settled sum counts soft-deleted rows (must match
+        # org_quota_idx_001).
+        Index("idx_trials_org_finished_at", "org_id", "finished_at"),
         Index(
             "idx_trials_org_experiment_created_at",
             "org_id",
