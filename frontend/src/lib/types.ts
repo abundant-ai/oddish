@@ -344,6 +344,7 @@ export interface QueueStats {
     success: number;
     failed: number;
     retrying: number;
+    skipped: number;
     recommended_concurrency: number;
   };
 }

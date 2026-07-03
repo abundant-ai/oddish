@@ -2292,7 +2292,7 @@ def watch_task(
 
                 # Check if done
                 if trial_id_filter is not None or experiment_id:
-                    terminal = {"success", "failed", "cancelled"}
+                    terminal = {"success", "failed", "cancelled", "skipped"}
                     if all_trials and all(
                         t.get("status") in terminal for t in all_trials
                     ):
