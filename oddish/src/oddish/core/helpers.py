@@ -863,7 +863,10 @@ def _build_task_status_response(
         completed=completed,
         failed=failed,
         skipped=skipped,
-        progress=f"{completed}/{total} completed",
+        # A true done-ratio (success + failed + skipped are all terminal), so a
+        # finished task reads "5/5 finished" instead of "2/5 completed"; the
+        # pass count lives in the separate reward column.
+        progress=f"{completed + failed + skipped}/{total} finished",
         trials=trials,
         reward_success=formatted_reward_success,
         reward_sum=formatted_reward_sum,
