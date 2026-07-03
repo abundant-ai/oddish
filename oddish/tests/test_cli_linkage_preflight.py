@@ -107,6 +107,7 @@ def test_run_aborts_before_upload_when_unlinked(monkeypatch, tmp_path, capsys):
     assert spy.called is False
     err = capsys.readouterr().err
     assert "GitHub account 42 is not connected to an oddish user" in err
+    assert "account settings" in err
 
 
 def test_run_proceeds_to_upload_when_linked(monkeypatch, tmp_path):

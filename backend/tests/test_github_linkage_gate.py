@@ -728,8 +728,12 @@ async def test_gate_unlinked_github_id_raises_403(org_with_users):
                 session, _submission("alice", github_id="gid_unlinked"), _auth(org_id)
             )
     assert excinfo.value.status_code == 403
-    assert "gid_unlinked" in str(excinfo.value.detail)
-    assert "oddish.app" in str(excinfo.value.detail)
+    detail = str(excinfo.value.detail)
+    assert "gid_unlinked" in detail
+    assert "not connected" in detail
+    assert "account settings" in detail
+    # Default dashboard URL when ODDISH_DASHBOARD_URL is unset.
+    assert "oddish.app" in detail
 
 
 @requires_db

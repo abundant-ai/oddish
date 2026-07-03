@@ -644,9 +644,10 @@ def run(
     if github_id and github_id.strip() and github_id_is_unlinked(api_url, github_id):
         error_console.print(
             f"[red]GitHub account {github_id} is not connected to an oddish user "
-            "in this org. Sign in at https://oddish.app and link your GitHub "
-            "account, then rerun. If you linked your GitHub account recently, it "
-            "can take up to an hour to sync.[/red]"
+            f"in this org. Sign in at {get_dashboard_url(api_url)}, connect "
+            "GitHub under account settings, then rerun — linking normally takes "
+            "effect within seconds. If it still fails after that, sync can take "
+            "up to an hour.[/red]"
         )
         raise typer.Exit(1)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
@@ -205,13 +206,21 @@ async def require_connected_github_user(
             api_key.name if api_key else None,
             auth.user_id,
         )
+        # Timing expectations: linking fires a Clerk user.updated webhook that
+        # sets github_id immediately, so "seconds" is the normal case; "up to
+        # an hour" is the webhook-loss worst case (backfill TTL). Deliberately
+        # no "sign out and back in" advice — a fresh github_id_checked_at
+        # marker suppresses the login-path refresh for up to an hour, so that
+        # advice would fail exactly when users try it.
+        dashboard_url = os.getenv("ODDISH_DASHBOARD_URL", "https://oddish.app")
         raise HTTPException(
             status_code=403,
             detail=(
                 f"GitHub account {submission.github_id} is not connected to an "
-                "oddish user in this org. Sign in at https://oddish.app and link "
-                "your GitHub account, then rerun. If you linked your GitHub account "
-                "recently, it can take up to an hour to sync."
+                f"oddish user in this org. Sign in at {dashboard_url}, connect "
+                "GitHub under account settings, then rerun — linking normally "
+                "takes effect within seconds. If it still fails after that, "
+                "sync can take up to an hour."
             ),
         )
     return user
