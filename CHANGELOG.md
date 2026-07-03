@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-03]
+
+### Added
+
+- `oddish ls` CLI gains full filter parity with the Tasks page: CSV multiselects (status, priority, verdict, agent, model, agent·model, provider, environment, trial status, origin, analysis classification, experiment id, harbor SHA/stage), tri-state booleans (has-link/has-error/has-trajectory/trial-is-probe/run-analysis/run-probe), datetime bounds plus a `--created-within {24h,7d,30d}` rolling-window shorthand, per-trial and aggregate numeric ranges, `--sort`, agent/model `--compare-*` and `--top-*` blocks, and raw `--or-groups` JSON — all forwarded to the same `GET /tasks/browse` endpoint the dashboard uses, with no backend changes required. Compare/top flags are only sent when complete (matching the UI's `filterParams()` defaults) so a partial flag pair can't silently disable filtering. (#566)
+- `oddish collect` — a new CLI command (plus `task_ids` support on `POST /experiments/collections`) that builds a read-only, published-by-default collection experiment from the latest current-version terminal (SUCCESS/FAILED) trials of one or more tasks, composable with explicit trial IDs; it links trials via the existing `experiment_trials` reference primitive rather than copying trial rows/artifacts the way `combine` does, and the CLI exits non-zero if the default publish step fails (e.g. a TASKS-scoped key attempting a FULL-scoped publish). (#565)
+- Org members (not just admins) in the main Abundant org can now create API keys, scoped to `tasks` or `read` only (never `full`); member-created `tasks` keys can run/cancel task and trial workflows and read files but are blocked from tag, collection, document, skill, GitHub-webhook, and deletion mutations. The API key's creator role is stamped at mint time so a later role change or deleted creator row can't retroactively broaden it, and `GET /settings/api-keys/permissions` now reports the caller's allowed scopes so the settings UI can hide disallowed scopes and revoke controls it shouldn't show. (#563)
+- Admin Cost Breakdown dashboard now tracks and reports QA/analysis LLM spend (trajectory classification + per-task verdict synthesis) separately from trial execution: new nullable `trials.analysis_cost_usd` and `tasks.verdict_cost_usd` columns are populated by the QA workers going forward (native CLI/API cost when reported, token-estimate fallback otherwise), `GET /costs` gains a 3-way per-experiment split (real execution / probe execution / QA) plus matching totals (`cost_real_execution_usd`, `cost_probe_execution_usd`, `cost_qa_usd`, `cost_total_usd`), and the Cost Breakdown table shows Exec/Probe/QA/Total columns with a cosmetic $ / 🥗 unit toggle. `cost_usd` stays execution-only for backward compatibility, so over-time/per-user/per-model views are unchanged; pre-deployment analyses report $0 QA cost since there's no backfill. (#544)
+
+### Changed
+
+- Repo documentation (`AGENTS.md`, `CLAUDE.md`, `DOCS.md`, package READMEs) was audited against the current code and corrected across two passes: fixed the worker-job-kind and HTTP-endpoint tables, expanded the soft-delete model registry, replaced stale Modal env-var lists with pointers to source, corrected public-share route documentation, and trimmed several hundred lines of duplicated/stale content; `CLAUDE.md` is now a thin pointer to `AGENTS.md` instead of a partial duplicate of it. (#564, #569)
+- Facet-backed controls on the Tasks page filter sidebar (Agent·Model, `def.facet` multiselects, Compare, Top performer, and Tags) now render a loading skeleton and an inline Retry-on-error instead of flashing a misleading "No options" while `/api/tasks/browse/facets` or `/api/tags` is still fetching. The loading/error states only kick in when there's no cached data yet, so a background revalidation failure never blanks an already-loaded option list. (#567)
+
+### Removed
+
+- Confirmed-dead code deleted: the unused `oddish.host` adapter/port/registry abstraction (a Modal/uvicorn/Docker hosting seam that was never wired into the app, superseded by the active `dispatch`/`runtime` modules), the cc-chat `idle_reaper` and `restart_sweep` services (already dropped from the app lifespan in a prior change), and several stale `oddish` package exports (`run_queue_worker`, unused `oddish/queue.py` helpers, the sync `run_harbor_trial` wrapper). (#548, #568, #569)
+
+### Security
+
+- Public share access is now scoped end-to-end by share token: task, trial, log, result, trajectory, and file routes moved under `/public/experiments/{public_token}/...` and verify membership against that specific token instead of resolving tasks/trials by bare ID. Unpublishing an experiment now clears its `public_token`, so republishing mints a fresh link and old share URLs stop working. The legacy ID-only `get_public_task`/`get_public_trial` helpers and their `/public/tasks/{id}` / `/public/trials/{id}` routes were removed, and public file-listing failures no longer leak storage/backend exception details to share-link viewers — errors are sanitized to a generic message. (#560, #562)
+
+---
+
 ## [2026-07-02]
 
 ### Added
