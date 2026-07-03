@@ -1199,6 +1199,39 @@ async def load_dashboard_experiments(
     primary_task_by_id = {str(row["experiment_id"]): row for row in primary_task_rows}
     latest_task_by_id = {str(row["experiment_id"]): row for row in latest_task_rows}
 
+    # Latest trial's ``billed_user_id`` per experiment: the per-run identity for
+    # the "Last run" column. Task-level attribution strings (``tasks.user`` /
+    # the ``github_username`` tag) are stamped set-once at task creation, so an
+    # APPEND to a shared task never updates them and the latest-task fallback
+    # above shows the task's *original* creator. ``billed_user_id`` is stamped
+    # on every trial at submission time, so it is correct across appends. May
+    # be NULL for legacy/pre-quota trials -- the hosted layer only overrides
+    # ``last_runner`` when this id resolves to a named org member.
+    latest_trial_runner_query = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
+        )
+        .where(TrialModel.experiment_id.in_(experiment_ids))
+        .order_by(
+            TrialModel.experiment_id.asc(),
+            TrialModel.created_at.desc(),
+            TrialModel.id.desc(),
+        )
+        .distinct(TrialModel.experiment_id)
+    )
+    if org_id is not None:
+        latest_trial_runner_query = latest_trial_runner_query.where(
+            TrialModel.org_id == org_id
+        )
+    latest_trial_runner_rows = (
+        (await session.execute(latest_trial_runner_query)).mappings().all()
+    )
+    last_runner_user_id_by_experiment = {
+        str(row["experiment_id"]): row["billed_user_id"]
+        for row in latest_trial_runner_rows
+    }
+
     # ------------------------------------------------------------------
     # Step 2: aggregate task / trial counts for just this page.
     # ------------------------------------------------------------------
@@ -1410,6 +1443,7 @@ async def load_dashboard_experiments(
                 "author": author,
                 "owner_user_id": owner_user_id,
                 "last_runner": last_runner,
+                "last_runner_user_id": last_runner_user_id_by_experiment.get(exp_id),
                 "last_author": last_runner,
                 "user_tags": merged.get("user_tags", []),
                 "last_pr_url": last_pr_url,

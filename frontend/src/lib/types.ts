@@ -466,6 +466,11 @@ export interface DashboardExperiment {
    * normalized to null server-side.
    */
   owner_user_id?: string | null;
+  /**
+   * The latest trial's `billed_user_id` (per-run identity, correct across
+   * appends to shared tasks); the backend resolves it into `last_runner`.
+   */
+  last_runner_user_id?: string | null;
   author: DashboardExperimentAuthor | null;
   last_runner: DashboardExperimentAuthor | null;
   /** @deprecated Use `last_runner`; kept for older clients. */

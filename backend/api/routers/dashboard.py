@@ -19,21 +19,26 @@ router = APIRouter(tags=["Dashboard"])
 async def _enrich_experiment_authors(
     session: AsyncSession, dashboard: dict[str, Any]
 ) -> None:
-    """Promote each experiment's canonical org-member name into ``author``.
+    """Promote canonical org-member names into ``author`` and ``last_runner``.
 
     The ``oddish`` core layer can't import the cloud auth tables, so it emits
-    the experiments-list ``author`` from the handle/legacy-user strings plus a
-    raw internal ``owner_user_id``. Here we batch-resolve those owner ids to
-    ``UserModel`` rows and, when an owner has a non-empty display name, rewrite
-    ``author`` to ``{"name": <member name>, "source": "member"}`` so the Author
-    column matches the cost page's canonical name.
+    the experiments-list ``author`` / ``last_runner`` from handle/legacy-user
+    strings plus two raw internal user ids per row:
 
-    Precedence for the rendered label is therefore member name -> @github handle
-    -> raw owner/user string -> "—"; the last three tiers are already baked into
-    the ``author`` value the core computed, so we only override the top tier.
-    Owners with no resolvable name (or the sentinel, already None-d out in core)
-    keep the core value. ``include_deleted=True`` mirrors the cost path so a
-    historical owner who has since been deactivated still resolves. Email is
+    - ``owner_user_id``: the experiment's set-once owner. When it resolves to
+      a member with a non-empty display name, ``author`` becomes
+      ``{"name": <member name>, "source": "member"}`` so the Author column
+      matches the cost page's canonical name.
+    - ``last_runner_user_id``: the latest trial's ``billed_user_id`` (per-run
+      identity, correct across APPENDs to shared tasks). When it resolves to a
+      named member, ``last_runner`` is overridden the same way; otherwise the
+      core's task-based fallback (the task creator's handle/string) stands.
+
+    Both resolve through one batched ``UserModel`` load. Precedence for each
+    rendered label is member name -> @github handle -> raw owner/user string
+    -> "—"; the last three tiers are already baked into the values the core
+    computed, so we only override the top tier. ``include_deleted=True``
+    mirrors the cost path so a historical owner still resolves. Email is
     intentionally never promoted here (PII on a widely-visible page).
 
     The experiment row dicts are the *same objects* the core layer stores in
@@ -47,17 +52,19 @@ async def _enrich_experiment_authors(
     if not experiments:
         return
 
-    owner_ids = {
-        row["owner_user_id"]
+    user_ids = {
+        user_id
         for row in experiments
-        if isinstance(row, dict) and row.get("owner_user_id")
+        if isinstance(row, dict)
+        for user_id in (row.get("owner_user_id"), row.get("last_runner_user_id"))
+        if user_id
     }
-    if not owner_ids:
+    if not user_ids:
         return
 
     rows = await session.execute(
         select(UserModel)
-        .where(UserModel.id.in_(owner_ids))
+        .where(UserModel.id.in_(user_ids))
         .execution_options(include_deleted=True)
     )
     names: dict[str, str] = {}
@@ -70,11 +77,16 @@ async def _enrich_experiment_authors(
 
     enriched: list[Any] = []
     for row in experiments:
-        member_name = (
-            names.get(row.get("owner_user_id")) if isinstance(row, dict) else None
-        )
-        if member_name:
-            row = {**row, "author": {"name": member_name, "source": "member"}}
+        if isinstance(row, dict):
+            overrides: dict[str, Any] = {}
+            owner_name = names.get(row.get("owner_user_id"))
+            if owner_name:
+                overrides["author"] = {"name": owner_name, "source": "member"}
+            runner_name = names.get(row.get("last_runner_user_id"))
+            if runner_name:
+                overrides["last_runner"] = {"name": runner_name, "source": "member"}
+            if overrides:
+                row = {**row, **overrides}
         enriched.append(row)
     dashboard["experiments"] = enriched
 
