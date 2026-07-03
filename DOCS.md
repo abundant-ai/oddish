@@ -45,7 +45,7 @@ A typical run flows through these commands:
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
-`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. Tasks can be filtered by name and tags with `oddish ls --query` / `--tag`; there is no status or date filtering yet, so other IDs are typically discovered through the dashboard or `oddish status`.
+`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. Tasks can be filtered by name, tags, status, agent/model, created date, and many trial and aggregate attributes with `oddish ls` (see [List Tasks](#list-tasks)); other IDs are typically discovered through the dashboard or `oddish status`.
 
 ## Submit a Job
 
@@ -211,19 +211,95 @@ counts, reward summary, tags, last run time, and linked experiments.
 oddish ls
 oddish ls --query django
 oddish ls --tag benchmark --not-tag wip
+oddish ls --status COMPLETED --agent cursor-cli
+oddish ls --created-within 7d --avg-score-min 80 --sort avg_score_desc
+oddish ls --compare-by agent --compare-a cursor-cli --compare-b gemini-cli --compare-metric reward
 oddish ls --json
 ```
 
-Options
+`oddish ls` mirrors the full Tasks-page filter set: every filter available in the
+dashboard is exposed as a flag and forwarded to the same `/tasks/browse` endpoint.
+Filters are ANDed together. Run `oddish ls --help` for the authoritative,
+always-current list with per-flag descriptions and accepted values.
+
+Core options
 
 - `--query`, `-q TEXT` - Filter tasks by name
-- `--tag TEXT` - Require this tag (repeatable; AND semantics)
-- `--tag-any TEXT` - Match any of these tags (repeatable; OR semantics)
-- `--not-tag TEXT` - Exclude tasks carrying any of these tags (repeatable)
 - `--limit`, `-n INTEGER` - Maximum number of tasks to show (default 25, max 100)
 - `--offset INTEGER` - Number of tasks to skip
 - `--json` - Emit the raw task browser JSON response
 - `--api TEXT` - Override the API URL
+
+Tags
+
+- `--tag TEXT` - Require this tag (repeatable; AND semantics)
+- `--tag-any TEXT` - Match any of these tags (repeatable; OR semantics)
+- `--not-tag TEXT` - Exclude tasks carrying any of these tags (repeatable)
+
+Task-column filters
+
+- `--status TEXT` - Task status (repeatable)
+- `--priority TEXT` - Task priority (repeatable)
+- `--verdict-status TEXT` - Task verdict status (repeatable)
+- `--experiment-id TEXT` - Experiment id (repeatable)
+- `--has-link` / `--no-has-link` - Task has (or lacks) a source link
+- `--run-analysis` / `--no-run-analysis` - Task runs analysis
+- `--run-probe` / `--no-run-probe` - Task runs probe
+- `--created-after`, `--created-before` - Absolute created-time bounds (ISO datetime)
+- `--created-within TEXT` - Rolling window (`24h`, `7d`, or `30d`); resolved to `--created-after`
+
+Trial-level filters (task has ≥1 matching trial)
+
+- `--agent TEXT` - Trial agent (repeatable)
+- `--model TEXT` - Trial model (repeatable)
+- `--agent-model TEXT` - Agent+model pair as `agent:model` (repeatable)
+- `--provider TEXT` - Trial provider (repeatable)
+- `--environment TEXT` - Trial environment (repeatable)
+- `--trial-status TEXT` - Trial status (repeatable)
+- `--origin TEXT` - Trial origin (repeatable)
+- `--analysis-classification TEXT` - Trial analysis classification (repeatable)
+- `--harbor-sha TEXT`, `--harbor-stage TEXT` - Harbor SHA / stage (repeatable)
+- `--has-error` / `--no-has-error` - Trial has an error
+- `--has-trajectory` / `--no-has-trajectory` - Trial has a trajectory
+- `--trial-is-probe` / `--no-trial-is-probe` - Match probe trials
+- `--min-attempts`, `--min-tokens`, `--max-tokens`, `--min-steps`, `--max-steps INTEGER`
+- `--reward-min`, `--reward-max FLOAT` - Per-trial reward bounds (0.0–1.0)
+
+Task aggregate filters (computed on the fly over a task's trials)
+
+- `--avg-score-min`, `--avg-score-max FLOAT` - Average score percent (0–100)
+- `--pass-rate-min`, `--pass-rate-max FLOAT` - Pass rate percent (0–100)
+- `--total-tokens-min`, `--total-tokens-max INTEGER`
+- `--runtime-total-min`, `--runtime-total-max FLOAT` - Total run time (seconds)
+- `--runtime-avg-min`, `--runtime-avg-max FLOAT` - Avg run time per trial (seconds)
+- `--total-trials-min`, `--completed-trials-min`, `--failed-trials-min INTEGER`
+- `--pass-count-min`, `--partial-count-min`, `--fail-count-min`, `--harness-count-min INTEGER`
+
+Sort
+
+- `--sort TEXT` - `avg_score_(asc|desc)`, `total_tokens_(asc|desc)`, `runtime_total_(asc|desc)`, `runtime_avg_(asc|desc)`
+
+Agent/model comparison (keep tasks where A beats B on a metric)
+
+- `--compare-by TEXT` - Compare subject: `agent` or `model`
+- `--compare-a TEXT`, `--compare-b TEXT` - Subjects A and B
+- `--compare-metric TEXT` - `reward | runtime | tokens | steps | pass_rate`
+- `--compare-agg TEXT` - `best | avg | median`
+- `--compare-margin FLOAT`, `--compare-margin-unit TEXT` - Margin and unit (`pct` or `abs`)
+
+Top performer (best subject per task)
+
+- `--top-by TEXT` - Subject: `agent` or `model`
+- `--top-value TEXT` - Subject that must be the task's top performer
+- `--top-metric TEXT` - `reward | runtime | tokens | steps | pass_rate`
+
+Match-any (OR-groups)
+
+- `--or-groups TEXT` - Raw JSON list of condition dicts (same keys as the flat params); a task matches if it satisfies any group, ANDed with the flat filters
+
+> A `--compare` filter only applies when a distinct `--compare-a`/`--compare-b`
+> pair is given (missing `--compare-by`/`--compare-metric`/`--compare-agg` default
+> to `agent`/`reward`/`best`); `--top-*` applies only when `--top-value` is set.
 
 ## Check Progress
 
