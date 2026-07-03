@@ -98,16 +98,17 @@ async def get_worker_jobs(
 async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None:
     """Fill owner/org display names on a cost breakdown in place.
 
-    The core aggregation in ``oddish`` only knows ``owner_user_id`` /
-    ``org_id`` (the cloud auth tables it can't import). We resolve those to
-    names here. ``include_deleted=True`` keeps historical spend attributable
+    The core aggregation in ``oddish`` only knows user/org *ids* (the cloud
+    auth tables it can't import): ``billed_user_id`` on the by-user rollup,
+    ``owner_user_id`` on the experiments table. We resolve those to names
+    here. ``include_deleted=True`` keeps historical spend attributable
     to users/orgs that have since been deactivated.
     """
     user_ids: set[str] = set()
     org_ids: set[str] = set()
     for entry in result.by_user:
-        if entry.owner_user_id:
-            user_ids.add(entry.owner_user_id)
+        if entry.billed_user_id:
+            user_ids.add(entry.billed_user_id)
         if entry.org_id:
             org_ids.add(entry.org_id)
     for experiment in result.experiments:
@@ -115,7 +116,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             user_ids.add(experiment.owner_user_id)
         if experiment.org_id:
             org_ids.add(experiment.org_id)
-    # The by-user chart series keys are owner user ids too (plus the synthetic
+    # The by-user chart series keys are billed user ids too (plus the synthetic
     # "__other__" / "__unattributed__" keys, which carry their own labels).
     for series_key in result.series_by_user.keys:
         if series_key.key == series_key.label:  # unresolved -> a raw user id
@@ -144,7 +145,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             orgs[org_id] = org_name
 
     for entry in result.by_user:
-        user = users.get(entry.owner_user_id) if entry.owner_user_id else None
+        user = users.get(entry.billed_user_id) if entry.billed_user_id else None
         if user is not None:
             entry.name = user.name
             entry.email = user.email
@@ -207,9 +208,10 @@ async def get_user_costs(
 ) -> UserCostBreakdownResponse:
     """Per-user billed-spend drilldown for the admin cost dashboard.
 
-    Attributed via ``billed_user_id`` (the quota payer), so totals can diverge
-    from the ``/admin/costs`` by-user table (owner-basis). Settled trials only,
-    time axis is ``finished_at``; soft-deleted trials are included.
+    Attributed via ``billed_user_id`` (the quota payer), same basis as the
+    ``/admin/costs`` by-user table. Totals can still diverge from it: this view
+    is settled-only over ``finished_at`` and includes soft-deleted trials,
+    while the breakdown buckets on ``created_at`` and excludes deleted rows.
     """
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:

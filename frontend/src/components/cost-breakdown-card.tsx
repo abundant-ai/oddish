@@ -192,7 +192,7 @@ function ModelMix({ models }: { models: CostModelBreakdown[] }) {
 }
 
 function userLabel(user: CostUserBreakdown): string {
-  return user.name || user.email || user.owner_user_id || "Unattributed";
+  return user.name || user.email || user.billed_user_id || "Unattributed";
 }
 
 // Small inline marker shown next to a cost when part of it was estimated from
@@ -428,9 +428,11 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            Per-user figures attribute each experiment to its owner; per-model
-            and per-user are the same per-trial costs grouped differently, so
-            each view sums back to the same total.
+            Per-user figures attribute each trial to the user it was billed to
+            (the quota payer). Trials with no payer — including everything
+            predating the quotas rollout — show as Unattributed. Per-model and
+            per-user are the same per-trial costs grouped differently, so each
+            view sums back to the same total.
           </li>
           <li>Figures span all organizations.</li>
         </ul>
@@ -624,12 +626,12 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
       </TableHeader>
       <TableBody>
         {users.map((user) => (
-          <TableRow key={user.owner_user_id ?? "unattributed"}>
+          <TableRow key={user.billed_user_id ?? "unattributed"}>
             <TableCell>
               <div className="flex flex-col">
-                {user.owner_user_id ? (
+                {user.billed_user_id ? (
                   <Link
-                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}`}
+                    href={`/admin/users/${encodeURIComponent(user.billed_user_id)}`}
                     className="text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                   >
                     {userLabel(user)}

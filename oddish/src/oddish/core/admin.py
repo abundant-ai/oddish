@@ -1018,9 +1018,12 @@ async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadS
 # Cost breakdown
 #
 # A global (cross-org) spend view for the admin page: total cost over a set of
-# trailing windows, broken down per user (attributed via experiment
-# ownership) and a ranked table of the most expensive recent experiments with
-# their model mix.
+# trailing windows, broken down per user (attributed via ``billed_user_id``,
+# the quota payer stamped on each trial; trials with no payer -- including
+# everything predating the quotas rollout, which had no backfill -- fold into
+# an "Unattributed" bucket) and a ranked table of the most expensive recent
+# experiments with their model mix. The experiments table stays owner-basis
+# (an experiment's owner is who created it, regardless of who paid).
 #
 # Cost per trial follows the same resolution as the rest of the app
 # (``oddish.core.helpers._resolve_trial_cost``): each trial contributes
@@ -1070,7 +1073,7 @@ class CostModelBreakdown(BaseModel):
 
 
 class CostUserBreakdown(BaseModel):
-    owner_user_id: str | None
+    billed_user_id: str | None
     org_id: str | None
     # Enriched by the backend layer (names live in the cloud auth tables).
     name: str | None = None
@@ -1284,14 +1287,15 @@ async def _cost_time_series(
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Cost over time, returned three ways: stacked by agent, model, and user.
 
-    One scan groups by ``(bucket, agent, model, owner_user_id)``. Each group is
-    priced (native cost when present, else a per-model token estimate -- the
+    One scan groups by ``(bucket, agent, model, billed_user_id)``. Each group
+    is priced (native cost when present, else a per-model token estimate -- the
     estimate is per-model, so the model must stay in the grouping). The priced
     groups are then rolled up three ways, per ``(bucket, agent)``,
     ``(bucket, model)`` and ``(bucket, user)``, so the frontend can switch the
-    stack dimension without a refetch. Joins ``experiments`` so the soft-delete
-    filter drops trials of deleted experiments. ``date_trunc`` is Postgres-native
-    (the production DB).
+    stack dimension without a refetch. The user dimension keys off the trial's
+    ``billed_user_id`` (quota payer); NULL payers stack as "Unattributed".
+    Joins ``experiments`` so the soft-delete filter drops trials of deleted
+    experiments. ``date_trunc`` is Postgres-native (the production DB).
     """
     bucket_col = func.date_trunc(bucket, TrialModel.created_at)
     has_native = TrialModel.cost_usd.isnot(None)
@@ -1302,7 +1306,7 @@ async def _cost_time_series(
             bucket_col.label("bucket"),
             TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
-            ExperimentModel.owner_user_id.label("owner_user_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
@@ -1322,7 +1326,7 @@ async def _cost_time_series(
             bucket_col,
             TrialModel.agent,
             TrialModel.model,
-            ExperimentModel.owner_user_id,
+            TrialModel.billed_user_id,
         )
     )
     if since is not None:
@@ -1366,7 +1370,7 @@ async def _cost_time_series(
             user_per_bucket,
             user_totals,
             bstart,
-            row.owner_user_id or _SERIES_UNATTRIBUTED_KEY,
+            row.billed_user_id or _SERIES_UNATTRIBUTED_KEY,
             cost,
         )
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
@@ -1433,6 +1437,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.owner_user_id.label("owner_user_id"),
             ExperimentModel.created_at.label("exp_created_at"),
             ExperimentModel.last_activity_at.label("exp_last_activity_at"),
+            TrialModel.billed_user_id.label("billed_user_id"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
             func.count(TrialModel.id).label("trial_count"),
@@ -1484,6 +1489,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.owner_user_id,
             ExperimentModel.created_at,
             ExperimentModel.last_activity_at,
+            TrialModel.billed_user_id,
             TrialModel.model,
             TrialModel.provider,
         )
@@ -1577,10 +1583,10 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
-        user = by_user.get(row.owner_user_id)
+        user = by_user.get(row.billed_user_id)
         if user is None:
-            user = by_user[row.owner_user_id] = {
-                "owner_user_id": row.owner_user_id,
+            user = by_user[row.billed_user_id] = {
+                "billed_user_id": row.billed_user_id,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
                 "input_tokens": 0,
@@ -1615,7 +1621,7 @@ async def get_cost_breakdown_core(
     ]
     by_user_out = [
         CostUserBreakdown(
-            owner_user_id=u["owner_user_id"],
+            billed_user_id=u["billed_user_id"],
             org_id=u["org_id"],
             trial_count=int(u["trial_count"]),
             experiment_count=len(u["experiment_ids"]),
@@ -1683,8 +1689,9 @@ async def get_cost_breakdown_core(
 #
 # One user's billed spend for the admin drilldown: total, per-task breakdown,
 # and a stacked-by-model cost-over-time series. Attribution is billed_user_id
-# (the quota payer), not experiment ownership -- so the totals here can diverge
-# from the /admin/costs by_user table (owner-basis). Settled trials only
+# (the quota payer), same basis as the /admin/costs by_user table; totals can
+# still diverge from it because this view is settled-only over finished_at
+# while the breakdown buckets on created_at. Settled trials only
 # (finished_at IS NOT NULL), time axis is finished_at, soft-deleted trials
 # included (mirrors quota spend: deleting isn't a budget reset), estimates
 # split out the same way as the global breakdown.
