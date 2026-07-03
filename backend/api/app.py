@@ -70,6 +70,48 @@ def _get_cors_origins() -> list[str]:
     ]
 
 
+async def _assert_quota_schema_or_force_off() -> None:
+    from sqlalchemy import text
+
+    from oddish.config import QuotaMode
+    from oddish.db import get_session
+
+    if settings.quota_mode == QuotaMode.OFF:
+        return
+    try:
+        async with get_session() as session:
+            if await session.scalar(
+                text(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'trials'
+                          AND column_name = 'billed_user_id'
+                    ) AND EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'quotas'
+                    )
+                    """
+                )
+            ):
+                return
+    except Exception:
+        logger.warning(
+            "quota schema check skipped (DB unavailable at startup); "
+            "quota_mode=%s left as-is",
+            settings.quota_mode,
+        )
+        return
+    logger.error(
+        "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
+        "column or the backend quotas table is missing -- the oddish and "
+        "backend alembic trees migrate separately); forcing quota_mode=off to "
+        "avoid a fail-open SUM or a 500 on every admission",
+        settings.quota_mode,
+    )
+    settings.quota_mode = QuotaMode.OFF
+
+
 @asynccontextmanager
 async def lifespan(_api: FastAPI):
     """Prepare lightweight API container resources.
@@ -85,6 +127,7 @@ async def lifespan(_api: FastAPI):
     """
     with _otel_span("app.startup"):
         Path(settings.harbor_jobs_dir).mkdir(parents=True, exist_ok=True)
+        await _assert_quota_schema_or_force_off()
         role_defaults_task = asyncio.create_task(_apply_role_defaults_bg())
 
         # Route the dashboard's whole-``trials``-table queue/pipeline slice

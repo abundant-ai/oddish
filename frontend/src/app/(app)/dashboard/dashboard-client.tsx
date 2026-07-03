@@ -66,6 +66,7 @@ import {
 } from "@/lib/dashboard-request";
 import { badgeVariants } from "@/components/ui/badge";
 import { UsageSummaryCard } from "@/components/usage-overview";
+import { QuotaUsageCard } from "@/components/quota-usage-card";
 import {
   ArrowRight,
   Check,
@@ -901,6 +902,7 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
+      <QuotaUsageCard />
       <UsageSummaryCard />
       <RecentTasksCard
         experimentsPromise={experimentsPromise}

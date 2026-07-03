@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from decimal import Decimal
+
+from pydantic import BaseModel, Field
 
 
 # =============================================================================
@@ -34,6 +36,37 @@ class UserResponse(BaseModel):
     role: str
     org_id: str
     created_at: str
+
+
+class QuotaUsageResponse(BaseModel):
+    user_id: str
+    limit_usd: float
+    used_usd: float
+    # In-flight trial reservations; admission blocks when used + reserved >= limit.
+    reserved_usd: float = 0
+    # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
+    # enforce). False under off/shadow, so the UI must not claim runs are blocked.
+    enforced: bool = False
+
+
+class QuotaMemberItem(BaseModel):
+    user_id: str
+    email: str
+    name: str | None
+    github_username: str | None
+    role: str
+    limit_usd: float
+    used_usd: float
+
+
+class QuotaListResponse(BaseModel):
+    members: list[QuotaMemberItem]
+
+
+class QuotaUpdateRequest(BaseModel):
+    limit_usd: Decimal | None = Field(
+        None, gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+    )
 
 
 class InviteUserRequest(BaseModel):

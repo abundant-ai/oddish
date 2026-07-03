@@ -79,6 +79,7 @@ def _resolve_trial_cost(
         trial.input_tokens,
         trial.output_tokens,
         trial.cache_tokens,
+        trial.cache_write_tokens,
     )
     if estimated is None:
         return None, None
@@ -1323,6 +1324,39 @@ async def cancel_job_by_worker(
         return False
 
     return await backend.teardown(external_id)
+
+
+async def terminate_run_harvest(result: dict) -> int:
+    """Terminate the remote handles a cancel/delete core harvested.
+
+    Cores that cancel or tombstone runs RETURN ``modal_function_call_ids`` and
+    ``worker_targets`` instead of terminating in-transaction (a rollback must
+    never leave live rows pointing at destroyed containers). Callers -- routes
+    or OSS operators invoking cores directly -- run this exactly once AFTER
+    commit. Pops both keys from ``result`` so responses never leak raw handles;
+    returns the count of Modal function calls cancelled.
+    """
+    import asyncio
+
+    from oddish.dispatch.backends.modal import ModalDispatcher
+    from oddish.dispatch.ports import WorkerHandle
+
+    handles = [
+        WorkerHandle(provider=ModalDispatcher.name, queue_key="", id=fc_id)
+        for fc_id in result.pop("modal_function_call_ids", [])
+        if fc_id
+    ]
+    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
+
+    targets = result.pop("worker_targets", [])
+    if targets:
+        await asyncio.gather(
+            *(
+                cancel_job_by_worker(provider, external_id)
+                for provider, external_id in targets
+            )
+        )
+    return modal_cancelled
 
 
 def escape_like(needle: str) -> str:

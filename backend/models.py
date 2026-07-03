@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -131,6 +133,8 @@ class UserModel(TimestampedMixin, Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Immutable Clerk provider_user_id; survives github_username renames/recycles.
+    # Org-scoped unique (NULLs distinct in PG, so all-NULL legacy rows don't collide).
     github_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # When Clerk last definitively reported no GitHub account for this user;
     # treated as stale after GITHUB_ID_RECHECK_TTL so relinks self-heal.
@@ -165,6 +169,37 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
+    )
+
+
+class QuotaModel(TimestampedMixin, Base):
+    """Per-user daily dollar limit OVERRIDE.
+
+    Rows exist only to override the read-time default (DEFAULT_DAILY_QUOTA_USD);
+    a missing row means the member is enforced at that default. Keyed per
+    (org_id, user_id) membership -- the same human carries independent budgets
+    in different orgs.
+    """
+
+    __tablename__ = "quotas"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    limit_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),
     )
 
 
