@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
@@ -36,6 +36,22 @@ def _settled_cost_predicates(org_id: str | None, period_start: datetime) -> list
     ]
 
 
+def _settled_cost_expr():
+    """Per-trial settled cost for the budget SUM: an unpriced (NULL cost_usd)
+    finished trial counts as ``unpriced_trial_cost_usd`` so it is never billed
+    as free. A genuinely-$0 row (cost_usd = 0) is left as $0. The floor is gated
+    on ``started_at IS NOT NULL``: a never-started trial (cancelled while
+    PENDING/QUEUED, so it got finished_at but never claimed a worker) genuinely
+    cost $0 and can't be part of the start-then-cancel bypass, so it counts as $0."""
+    return func.coalesce(
+        TrialModel.cost_usd,
+        case(
+            (TrialModel.started_at.isnot(None), float(settings.unpriced_trial_cost_usd)),
+            else_=0.0,
+        ),
+    )
+
+
 async def sum_cost_usd(
     session: AsyncSession,
     org_id: str | None,
@@ -44,7 +60,7 @@ async def sum_cost_usd(
 ) -> Decimal:
     return to_money_decimal(
         await session.scalar(
-            select(func.coalesce(func.sum(TrialModel.cost_usd), 0))
+            select(func.coalesce(func.sum(_settled_cost_expr()), 0))
             .where(
                 *_settled_cost_predicates(org_id, period_start),
                 TrialModel.billed_user_id == user_id,
@@ -60,7 +76,7 @@ async def sum_cost_usd_by_user(
     rows = await session.execute(
         select(
             TrialModel.billed_user_id,
-            func.coalesce(func.sum(TrialModel.cost_usd), 0),
+            func.coalesce(func.sum(_settled_cost_expr()), 0),
         )
         .where(
             *_settled_cost_predicates(org_id, period_start),
