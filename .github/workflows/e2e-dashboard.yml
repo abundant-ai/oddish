@@ -64,7 +64,6 @@ jobs:
       E2E_CLERK_ORG_ID: ${{ secrets.E2E_CLERK_ORG_ID }}
       CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
-      CLERK_DOMAIN: ${{ secrets.CLERK_DOMAIN }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -82,13 +81,25 @@ jobs:
     steps:
       - name: Gate on Clerk secrets
         id: gate
+        env:
+          CLERK_DOMAIN_RAW: ${{ secrets.CLERK_DOMAIN }}
         run: |
           if [ -n "$E2E_CLERK_EMAIL" ] \
             && [ -n "$E2E_CLERK_ORG_ID" ] \
             && [ -n "$CLERK_SECRET_KEY" ] \
             && [ -n "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" ] \
-            && [ -n "$CLERK_DOMAIN" ]; then
+            && [ -n "$CLERK_DOMAIN_RAW" ]; then
             echo "have_clerk=true" >> "$GITHUB_OUTPUT"
+            # The backend builds https://$CLERK_DOMAIN/.well-known/jwks.json. A
+            # secret pasted with a scheme, path, or the trailing '$' from a
+            # base64-decoded publishable key produces an unresolvable hostname
+            # (JWT verification then 503s with "name resolution" errors), so
+            # normalize to the bare domain before handing it to the backend.
+            domain="${CLERK_DOMAIN_RAW#https://}"
+            domain="${domain#http://}"
+            domain="${domain%%/*}"
+            domain="${domain%\$}"
+            echo "CLERK_DOMAIN=$domain" >> "$GITHUB_ENV"
           else
             echo "have_clerk=false" >> "$GITHUB_OUTPUT"
             echo "E2E Dashboard skipped: Clerk dev-instance secrets are not all set (need E2E_CLERK_EMAIL, E2E_CLERK_ORG_ID, CLERK_SECRET_KEY, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_DOMAIN). This is by design so forks and unconfigured repos stay green." >> "$GITHUB_STEP_SUMMARY"
