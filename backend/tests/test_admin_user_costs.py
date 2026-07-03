@@ -347,6 +347,35 @@ async def test_zero_trial_user_returns_empty_200(costs_fixture):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_soft_deleted_user_still_resolvable(costs_fixture):
+    """Offboarded (soft-deleted) users keep historical billed trials and the
+    Costs tab still links them, so the drilldown must not 404 on them."""
+    f = costs_fixture
+    now = datetime.now(timezone.utc)
+    async with get_session() as session:
+        await session.execute(
+            UserModel.__table__.update()
+            .where(UserModel.id == f.target.id)
+            .values(deleted_at=now)
+        )
+    try:
+        resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 7})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["billed_user_id"] == f.target.id
+        assert body["name"] == f.target.name
+        assert body["totals"]["trial_count"] == 4
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.update()
+                .where(UserModel.id == f.target.id)
+                .values(deleted_at=None)
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_unknown_user_returns_404(costs_fixture):
     f = costs_fixture
     resp = await _get(f.org_id, f.admin.id, "user_does_not_exist_zzz")

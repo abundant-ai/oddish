@@ -213,7 +213,12 @@ async def get_user_costs(
     """
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
-        user = await session.get(UserModel, user_id)
+        # include_deleted: offboarded users keep historical billed trials
+        # (and the Costs tab still lists and links them), so the drilldown
+        # must stay reachable after the user row is tombstoned.
+        user = await session.get(
+            UserModel, user_id, execution_options={"include_deleted": True}
+        )
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
         result = await get_user_cost_breakdown_core(
