@@ -365,7 +365,20 @@ async def transfer(execute: bool, scope_pr: int | None, scope_run: str | None,
                     await sess.commit()
             except Exception as e:
                 created["errors"] += len(grp)
-                print(f"  GROUP ERROR task={task_id!r}: {e!r} ({len(grp)} trials not attempted)")
+                # Mirror the per-trial failure path: mark this group's trials
+                # 'failed' with the reason. Otherwise they stay 'discovered' —
+                # indistinguishable from never-attempted, with the cause lost —
+                # so the validator can't tell a group setup crash from pending
+                # work. Marking 'failed' keeps them visible, retryable via
+                # --retry-failed, and honestly counted by the completeness gate.
+                async with get_session() as sess:
+                    for r in grp:
+                        await sess.execute(text(
+                            "UPDATE leg_trial_ledger SET status='failed', error=:e "
+                            "WHERE s3_prefix=:p"),
+                            {"e": f"group setup failed: {e!r}"[:500], "p": r["s3_prefix"]})
+                    await sess.commit()
+                print(f"  GROUP ERROR task={task_id!r}: {e!r} ({len(grp)} trials marked failed)")
                 return
 
             # import this task's trials SEQUENTIALLY (preserves run-order index)

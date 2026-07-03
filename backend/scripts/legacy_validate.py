@@ -109,6 +109,15 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
     # trial's state, so we read that column directly — unlike comparing two
     # totals, a leftover row cannot hide behind a coincidentally-matching count.
     # (Run the transfer with --retry-failed to clear 'failed' rows first.)
+    #
+    # NOTE (intentionally strict; do not "scope" this to the migration tag):
+    # leg_trial_ledger IS the migration's own worklist — every row is a legacy
+    # trial that must move. There are no foreign/untagged rows to filter out;
+    # the only rows we deliberately don't move are the dedup mirrors, already
+    # marked 'skipped' and excluded below. So any in-scope row that is not
+    # 'transferred'/'skipped' is a genuine un-moved trial and SHOULD fail the
+    # gate. Validating a broader scope than you transferred will (correctly)
+    # report the untouched remainder as unfinished — that is the point.
     lwhere = "TRUE"
     largs: list = []
     if scope_base:
