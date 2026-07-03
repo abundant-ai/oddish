@@ -850,8 +850,14 @@ function DeleteAccountPanel() {
         throw new Error(data?.error || "Failed to delete account");
       }
       // The Clerk user is gone; end the (now orphaned) session and land on
-      // the public page.
-      await signOut({ redirectUrl: "/" });
+      // the public page. Deleting the user can invalidate the session before
+      // signOut runs, so a signOut failure must not strand the user on the
+      // page — hard-redirect instead.
+      try {
+        await signOut({ redirectUrl: "/" });
+      } catch {
+        window.location.assign("/");
+      }
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to delete account"

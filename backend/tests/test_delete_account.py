@@ -108,9 +108,6 @@ async def test_delete_account_deletes_clerk_then_tombstones_all_rows(
         deleted_clerk_ids.append(cid)
 
     monkeypatch.setattr(orgs_router, "_delete_clerk_user", fake_delete_clerk_user)
-    # Pre-existing shared helper, not under test here: its raw SQL compares
-    # role = 'OWNER', a label the userrole enum no longer carries on schemas
-    # that ran the drop_owner_userrole migration, so it errors locally.
     monkeypatch.setattr(orgs_router, "transfer_tag_ownership_to_admin", _noop_transfer)
 
     app = _app()
@@ -144,6 +141,55 @@ async def test_delete_account_deletes_clerk_then_tombstones_all_rows(
 
 @requires_db
 @pytest.mark.asyncio
+async def test_delete_account_tombstones_survive_transfer_failure(
+    monkeypatch, user_in_two_orgs
+):
+    """Once the Clerk user is deleted, local tombstoning must not be rolled
+    back by a tag-ownership transfer failure — that would strand a
+    Clerk-deleted user as active locally. The transfer is best-effort; the
+    hourly orphaned-owner sweep is the safety net."""
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+
+    async def fake_delete_clerk_user(cid: str) -> None:
+        return None
+
+    async def failing_transfer(session, *, org_id: str, deactivated_user_id: str):
+        raise RuntimeError("transfer blew up")
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", fake_delete_clerk_user)
+    monkeypatch.setattr(
+        orgs_router, "transfer_tag_ownership_to_admin", failing_transfer
+    )
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/users/me")
+
+    assert resp.status_code == 200
+
+    async with get_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    UserModel.__table__.select()
+                    .where(UserModel.id.in_([user_a.id, user_b.id]))
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(rows) == 2
+    for row in rows:
+        assert row["is_active"] is False
+        assert row["deleted_at"] is not None
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_delete_account_clerk_failure_leaves_rows_untouched(
     monkeypatch, user_in_two_orgs
 ):
@@ -156,7 +202,6 @@ async def test_delete_account_clerk_failure_leaves_rows_untouched(
         raise HTTPException(status_code=503, detail="Clerk unreachable")
 
     monkeypatch.setattr(orgs_router, "_delete_clerk_user", failing_delete)
-    monkeypatch.setattr(orgs_router, "transfer_tag_ownership_to_admin", _noop_transfer)
 
     app = _app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(

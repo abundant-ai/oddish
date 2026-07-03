@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Annotated
 
@@ -17,6 +18,8 @@ from auth import AuthContext, AuthMethod, require_admin, require_auth
 from models import UserModel, UserRole
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
+
+logger = logging.getLogger(__name__)
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 
@@ -205,20 +208,39 @@ async def delete_my_account(
     # a failure leaves the account fully intact rather than half-deleted.
     await _delete_clerk_user(clerk_user_id)
 
+    # The Clerk account is gone now, so local cleanup must not be able to
+    # abort: tombstone the rows in one transaction, then transfer tag
+    # ownership best-effort per org. A transfer failure must not roll back
+    # the tombstones (that would strand a Clerk-deleted user as active
+    # locally); the hourly ``sweep_orphaned_tag_owners`` sweep is the
+    # documented safety net for any tags this leaves orphaned.
+    tombstoned: list[tuple[str, str]] = []
     async with get_session() as session:
         result = await session.execute(
             select(UserModel)
             .where(UserModel.clerk_user_id == clerk_user_id)
             .where(UserModel.is_active == True)  # noqa: E712
         )
-        rows = list(result.scalars().all())
-        for row in rows:
+        for row in result.scalars().all():
             row.is_active = False
             row.deleted_at = utcnow()
-            await transfer_tag_ownership_to_admin(
-                session, org_id=row.org_id, deactivated_user_id=row.id
-            )
+            tombstoned.append((row.org_id, row.id))
         await session.commit()
+
+    for org_id, user_row_id in tombstoned:
+        try:
+            async with get_session() as session:
+                await transfer_tag_ownership_to_admin(
+                    session, org_id=org_id, deactivated_user_id=user_row_id
+                )
+                await session.commit()
+        except Exception:
+            logger.exception(
+                "Account deletion: tag ownership transfer failed for user %s "
+                "in org %s (tags left for the orphaned-owner sweep)",
+                user_row_id,
+                org_id,
+            )
 
     return {"status": "deleted", "clerk_user_id": clerk_user_id}
 
