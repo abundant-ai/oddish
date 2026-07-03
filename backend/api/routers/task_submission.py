@@ -180,6 +180,14 @@ async def require_connected_github_user(
     to an active org user or the sweep is rejected with 403 before any rows are
     written. Returns the resolved user (reusable for owner / created_by
     stamping), or None when no ``github_id`` was supplied (gate is a no-op).
+
+    Trust model: this gate is COOPERATIVE, not adversarial. It checks linkage
+    ("does this id map to a connected org user?"), not ownership — any caller
+    holding an org credential may omit ``github_id`` to skip the gate entirely,
+    or pass any linked member's id and have attribution/ownership credit that
+    member. Anti-spoofing is an explicit non-goal; do not build billing or
+    quota enforcement that assumes a hostile client cannot choose whose id it
+    sends.
     """
     if not (submission.github_id and submission.github_id.strip()):
         return None

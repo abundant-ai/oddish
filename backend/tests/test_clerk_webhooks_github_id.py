@@ -36,9 +36,10 @@ def _event(clerk_user_id: str, *, github: dict | None = None) -> dict:
     return {"id": clerk_user_id, "external_accounts": external_accounts}
 
 
-async def _sync(data: dict) -> None:
+async def _sync(data: dict, *, allow_unlink: bool = True) -> None:
+    """Default models user.updated (unlink-capable); pass False for user.created."""
     async with get_session() as session:
-        await _sync_github_id_from_user_event(session, data)
+        await _sync_github_id_from_user_event(session, data, allow_unlink=allow_unlink)
         await session.commit()
 
 
@@ -147,6 +148,52 @@ async def test_no_github_account_clears_stale_id_and_stamps_marker() -> None:
         assert row.github_id is None  # stale id cleared on unlink
         marker = (row.attribution_cache or {}).get("github_id_checked")
         assert isinstance(marker, str) and _marker_is_fresh(marker)
+    finally:
+        await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_stale_user_created_event_does_not_clear_linked_id() -> None:
+    """A retried/out-of-order user.created (pre-link snapshot, empty
+    external_accounts) must NOT unlink an already-linked row: Svix does not
+    guarantee delivery order, and user.created is by definition older than any
+    linked state we hold. Positive signals still apply; the clear does not."""
+    org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
+    clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    try:
+        await _add_org(org_id)
+        uid = await _add_user(
+            org_id, clerk, github_id="linked", github_username="octocat"
+        )
+
+        await _sync(_event(clerk, github=None), allow_unlink=False)
+
+        row = await _get(uid)
+        assert row.github_id == "linked"
+        assert "github_id_checked" not in (row.attribution_cache or {})
+    finally:
+        await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_payload_without_external_accounts_does_not_clear() -> None:
+    """A user.updated payload that omits the external_accounts key entirely is
+    a slimmed/partial payload, not evidence of absence — it must not unlink."""
+    org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
+    clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    try:
+        await _add_org(org_id)
+        uid = await _add_user(
+            org_id, clerk, github_id="linked", github_username="octocat"
+        )
+
+        await _sync({"id": clerk})  # no external_accounts key at all
+
+        row = await _get(uid)
+        assert row.github_id == "linked"
+        assert "github_id_checked" not in (row.attribution_cache or {})
     finally:
         await _purge([org_id])
 

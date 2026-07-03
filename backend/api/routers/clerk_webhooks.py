@@ -173,11 +173,20 @@ async def _upsert_user(
     return user
 
 
-async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None:
+async def _sync_github_id_from_user_event(
+    session, data: dict[str, Any], *, allow_unlink: bool
+) -> None:
     clerk_user_id = data.get("id")
     if not clerk_user_id:
         return
     identity = _github_account_from_clerk_payload(data)
+    # A no-github answer is only trusted as an UNLINK when (a) the event kind
+    # may carry one (user.updated; a retried stale user.created is by
+    # definition older than any linked state we already hold) and (b) the
+    # payload affirmatively enumerated external_accounts — an absent key is a
+    # slimmed/partial payload, not evidence of absence. Positive signals
+    # (id/username present) are always applied regardless.
+    trust_no_github = allow_unlink and "external_accounts" in data
     result = await session.execute(
         select(UserModel)
         .where(UserModel.clerk_user_id == clerk_user_id)
@@ -194,7 +203,7 @@ async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None
                     github_username=identity.username or user.github_username,
                     github_email=identity.email,
                 )
-            if not identity.github_id and not identity.username:
+            if not identity.github_id and not identity.username and trust_no_github:
                 # Definitive no-github: Clerk unlinked GitHub. Drop any stale id
                 # so the gate stops trusting it, then stamp the checked marker. A
                 # reported username with a missing id is only a partial answer —
@@ -236,7 +245,9 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
 
     async with get_session() as session:
         if event_type in {"user.created", "user.updated"}:
-            await _sync_github_id_from_user_event(session, data)
+            await _sync_github_id_from_user_event(
+                session, data, allow_unlink=event_type == "user.updated"
+            )
             await session.commit()
             return {"status": "ok"}
 
