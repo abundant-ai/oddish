@@ -498,6 +498,12 @@ async def cleanup_orphaned_queue_state(
                     committed_trial_id = await _mirror_stale_job_to_domain_row(
                         session, row
                     )
+                    # Flush this job's mirror WITHIN its own savepoint so the unit
+                    # is explicitly atomic and independent of ``begin_nested``'s
+                    # autoflush-on-enter timing (which, if it ever changed, could
+                    # let a later ``_DomainRowLocked`` rollback revert an
+                    # already-terminal job's domain mirror).
+                    await session.flush()
             except _DomainRowLocked:
                 console.print(
                     f"metric=worker_job_stale_reap_deferred id={stale_job_id} "
