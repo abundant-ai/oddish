@@ -862,6 +862,7 @@ def _build_task_status_response(
         total=total,
         completed=completed,
         failed=failed,
+        skipped=skipped,
         progress=f"{completed}/{total} completed",
         trials=trials,
         reward_success=formatted_reward_success,
