@@ -24,10 +24,12 @@ class _FakeResult:
         rows: list[Any] | None = None,
         mappings_rows: list[dict[str, Any]] | None = None,
         rowcount: int = 0,
+        scalar: Any = None,
     ) -> None:
         self._rows = rows or []
         self._mappings_rows = mappings_rows or []
         self.rowcount = rowcount
+        self._scalar = scalar
 
     def all(self) -> list[Any]:
         if self._mappings_rows:
@@ -37,14 +39,33 @@ class _FakeResult:
     def mappings(self) -> "_FakeResult":
         return self
 
+    def one_or_none(self) -> Any:
+        return self._mappings_rows[0] if self._mappings_rows else None
+
+    def scalar_one_or_none(self) -> Any:
+        return self._scalar
+
+
+class _FakeSavepoint:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
 
 class _FakeSession:
     def __init__(self, trial: SimpleNamespace) -> None:
         self.trial = trial
         self.worker_job_retry_updates: list[dict[str, Any]] = []
 
+    def begin_nested(self):
+        return _FakeSavepoint()
+
     async def execute(self, statement, params: dict[str, Any] | None = None):
         sql = str(statement)
+        if sql.lstrip().startswith("SELECT id FROM worker_jobs"):
+            return _FakeResult(rows=[("wj-1",)])
         if "UPDATE worker_jobs" in sql and "SET    status = CASE" in sql:
             return _FakeResult(
                 mappings_rows=[
@@ -63,12 +84,15 @@ class _FakeSession:
         if "UPDATE worker_jobs" in sql and "available_after = :retry_at" in sql:
             self.worker_job_retry_updates.append(params or {})
             return _FakeResult(rowcount=1)
+        if sql.lstrip().startswith("SELECT") and "FROM trials" in sql:
+            # The mirror's FOR UPDATE SKIP LOCKED trial load.
+            return _FakeResult(scalar=self.trial)
         return _FakeResult()
 
     async def scalar(self, *args, **kwargs):
         return None
 
-    async def get(self, model, object_id: str):
+    async def get(self, model, object_id: str, **kwargs):
         if model is TrialModel and object_id == self.trial.id:
             return self.trial
         return None

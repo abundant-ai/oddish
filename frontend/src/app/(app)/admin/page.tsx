@@ -31,6 +31,7 @@ import type {
 import { fetcher } from "@/lib/api";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { TagAdminPolicyForm } from "@/components/tag-admin-policy-form";
+import { QuotaAdminForm } from "@/components/quota-admin-form";
 import { WorkerJobsCard } from "@/components/worker-jobs-card";
 import { QueueHealthOverviewCard } from "@/components/queue-health-overview-card";
 import { CostBreakdownCard } from "@/components/cost-breakdown-card";
@@ -665,6 +666,7 @@ export default function AdminPage() {
           <TabsTrigger value="worker-jobs">Worker Jobs</TabsTrigger>
           <TabsTrigger value="concurrency">Concurrency</TabsTrigger>
           <TabsTrigger value="tags">Tag Policy</TabsTrigger>
+          <TabsTrigger value="quotas">Quotas</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
@@ -692,6 +694,17 @@ export default function AdminPage() {
             </CardHeader>
             <CardContent>
               <TagAdminPolicyForm />
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="quotas" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>User quotas</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <QuotaAdminForm />
             </CardContent>
           </Card>
         </TabsContent>

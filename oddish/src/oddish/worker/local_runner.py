@@ -732,6 +732,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         if agent_result is not None and not agent_result.is_empty():
             trial.input_tokens = agent_result.n_input_tokens
             trial.cache_tokens = agent_result.n_cache_tokens
+            trial.cache_write_tokens = None
             trial.output_tokens = agent_result.n_output_tokens
             trial.cost_usd = agent_result.cost_usd
         trial.total_steps = _trajectory_total_steps(trajectory)

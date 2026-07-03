@@ -811,7 +811,7 @@ function ProfilePanel() {
           title="Personal account"
           description="Managed by Clerk — update your name, email, password, and connected accounts."
         />
-        <div className="pt-4">
+        <div className="space-y-4 pt-4">
           <UserProfile routing="hash" appearance={clerkEmbeddedAppearance} />
         </div>
       </Panel>

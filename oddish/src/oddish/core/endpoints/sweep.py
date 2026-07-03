@@ -89,11 +89,66 @@ def _stamp_experiment_provenance(
         experiment.link = submission.link
 
 
+async def _finalize_sweep(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    new_trials: list[TrialModel],
+    experiment: ExperimentModel | None,
+    is_append: bool,
+    org_id: str | None,
+    billed_user_id: str | None,
+    registry_auth,
+    reservation: Reservation | None,
+    idempotency_store: IdempotencyStore | None,
+) -> None:
+    """Shared finalize tail for the append and create sweep branches.
+
+    Behavior-identical for both branches: local-mode dispatch, auto-probe
+    enqueue, and idempotency completion. ``is_append`` only selects the
+    response shape stored for replay.
+    """
+    from oddish.config import settings
+    from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
+
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+    # to the in-process runner instead of going through the Modal queue.
+    if settings.local_mode:
+        import asyncio
+        from oddish.worker.local_runner import run_trial_locally
+
+        for trial in new_trials:
+            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+    if task.run_probe:
+        await maybe_enqueue_auto_probe(
+            session,
+            task=task,
+            experiment=experiment,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            registry_auth=registry_auth,
+        )
+    if reservation is not None and idempotency_store is not None and org_id is not None:
+        # Flush so trial ids / timestamps are populated, then store the
+        # response for replay alongside the trials in this transaction.
+        await session.flush()
+        await idempotency_store.complete(
+            org_id,
+            SWEEP_ROUTE,
+            reservation.key_hash,
+            build_task_sweep_response(
+                task, new_trials, is_append, experiment
+            ).model_dump(mode="json"),
+        )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
     submission: TaskSweepSubmission,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -133,7 +188,11 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
+    from oddish.core.quota_admission import acquire_payer_lock, admit_trials
+
+    # Payer lock FIRST -- before the idempotency insert, the task refresh
+    # FOR UPDATE (append), and any trial inserts (see acquire_payer_lock).
+    await acquire_payer_lock(session, org_id, billed_user_id)
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
     # from the caller's raw pre-mutation snapshot when supplied (the backend
@@ -313,50 +372,29 @@ async def create_task_sweep_core(
         expanded = build_task_submission_from_sweep(
             append_submission, task_path=task.task_path, trials=trials
         )
+        await admit_trials(
+            session, org_id, billed_user_id, count=len(expanded.trials)
+        )
         new_trials = await append_trials_to_task(
             session,
             task=task,
             submission=expanded,
             experiment_id=new_experiment_id,
+            billed_user_id=billed_user_id,
         )
 
-        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each new trial to the
-        # in-process runner instead of the Modal queue. Gated (BLOCKED) LLM
-        # trials self-skip via the runner's atomic claim and are dispatched
-        # later, once the baseline gate releases them.
-        from oddish.config import settings
-
-        if settings.local_mode:
-            import asyncio
-            from oddish.worker.local_runner import run_trial_locally
-
-            for trial in new_trials:
-                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
-
-        if task.run_probe:
-            await maybe_enqueue_auto_probe(
-                session,
-                task=task,
-                experiment=experiment,
-                org_id=org_id,
-                registry_auth=submission.registry_auth,
-            )
-        if (
-            reservation is not None
-            and idempotency_store is not None
-            and org_id is not None
-        ):
-            # Flush so trial ids / timestamps are populated, then store the
-            # response for replay alongside the trials in this transaction.
-            await session.flush()
-            await idempotency_store.complete(
-                org_id,
-                SWEEP_ROUTE,
-                reservation.key_hash,
-                build_task_sweep_response(
-                    task, new_trials, True, experiment
-                ).model_dump(mode="json"),
-            )
+        await _finalize_sweep(
+            session,
+            task=task,
+            new_trials=new_trials,
+            experiment=experiment,
+            is_append=True,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            registry_auth=submission.registry_auth,
+            reservation=reservation,
+            idempotency_store=idempotency_store,
+        )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -380,9 +418,15 @@ async def create_task_sweep_core(
         submission, task_path=task_path, trials=trials
     )
 
+    await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
+
     try:
         task = await create_task(
-            session, expanded, task_id=submission.task_id, org_id=org_id
+            session,
+            expanded,
+            task_id=submission.task_id,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
         )
     except TaskTimeoutValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -399,37 +443,18 @@ async def create_task_sweep_core(
 
     new_trials = list(task.trials)
 
-    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
-    # to the in-process runner instead of going through the Modal queue.
-    from oddish.config import settings
-
-    if settings.local_mode:
-        import asyncio
-        from oddish.worker.local_runner import run_trial_locally
-
-        for trial in new_trials:
-            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
-
-    if task.run_probe:
-        await maybe_enqueue_auto_probe(
-            session,
-            task=task,
-            experiment=experiment,
-            org_id=org_id,
-            registry_auth=submission.registry_auth,
-        )
-    if reservation is not None and idempotency_store is not None and org_id is not None:
-        # Flush so trial ids / timestamps are populated, then store the
-        # response for replay alongside the trials in this transaction.
-        await session.flush()
-        await idempotency_store.complete(
-            org_id,
-            SWEEP_ROUTE,
-            reservation.key_hash,
-            build_task_sweep_response(task, new_trials, False, experiment).model_dump(
-                mode="json"
-            ),
-        )
+    await _finalize_sweep(
+        session,
+        task=task,
+        new_trials=new_trials,
+        experiment=experiment,
+        is_append=False,
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+        registry_auth=submission.registry_auth,
+        reservation=reservation,
+        idempotency_store=idempotency_store,
+    )
     return task, new_trials, False, experiment
 
 
@@ -457,6 +482,9 @@ async def create_task_sweep_batch_core(
         ]
         | None
     ) = None,
+    resolve_billed_user_id: (
+        Callable[[AsyncSession, TaskSweepSubmission], Awaitable[str | None]] | None
+    ) = None,
 ) -> list[TaskSweepBatchItemResult]:
     """Create several task sweeps in one transaction, best-effort.
 
@@ -471,58 +499,87 @@ async def create_task_sweep_batch_core(
     ``oddish.queue._bulk_insert_trials`` / ``bulk_enqueue_worker_jobs``) is used
     here as on the single-sweep path.
 
-    ``prepare`` (optional) runs inside each item's savepoint before creation and
-    returns the default environment for that submission; it is where a caller
-    performs per-item, auth-aware setup (identity resolution, attribution).
-    ``finalize`` (optional) runs inside the savepoint after creation for
-    post-create stamping. Keeping both inside the savepoint preserves per-item
-    atomicity -- a failure in either rolls back just that item.
+    A read-only PRE-LOOP pass runs first, per item: ``prepare`` (caller's
+    identity resolution + attribution + default environment -- the same
+    identity->attribution->owner order as the single route), then
+    ``resolve_billed_user_id``. A failure there becomes that item's failure
+    result; the item is excluded from lock acquisition and creation. The
+    distinct payer advisory locks are then taken in SORTED order before any
+    item runs -- two batches acquiring in item order would deadlock ABBA --
+    and held for the whole batch transaction (accepted for MVP).
+
+    Each surviving submission then runs inside its own SAVEPOINT: a failure
+    rolls back only that item. ``finalize`` (optional) runs inside the
+    savepoint after creation for post-create stamping.
 
     Per-item idempotency-key replay is intentionally out of scope: this path
     calls :func:`create_task_sweep_core` without idempotency arguments, so batch
     items are not deduplicated server-side the way the single ``/tasks/sweep``
     route is.
     """
+    from oddish.core.quota_admission import acquire_payer_lock
     from oddish.core.sweeps import validate_sweep_submission
+
+    def _failure(index: int, exc: Exception) -> TaskSweepBatchItemResult:
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+            error = (
+                detail["message"]
+                if isinstance(detail, dict) and "message" in detail
+                else str(detail)
+            )
+            return TaskSweepBatchItemResult(
+                index=index, success=False, status_code=exc.status_code, error=error
+            )
+        return TaskSweepBatchItemResult(
+            index=index, success=False, status_code=400, error=str(exc)
+        )
+
+    pre_failures: dict[int, TaskSweepBatchItemResult] = {}
+    item_envs: list[EnvironmentType | None] = [default_environment] * len(submissions)
+    billed_user_ids: list[str | None] = [None] * len(submissions)
+    for index, submission in enumerate(submissions):
+        try:
+            if prepare is not None:
+                item_envs[index] = await prepare(session, submission)
+            if resolve_billed_user_id is not None:
+                billed_user_ids[index] = await resolve_billed_user_id(
+                    session, submission
+                )
+        except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
+            pre_failures[index] = _failure(index, exc)
+
+    for payer in sorted(
+        {
+            b
+            for index, b in enumerate(billed_user_ids)
+            if b is not None and index not in pre_failures
+        }
+    ):
+        await acquire_payer_lock(session, org_id, payer)
 
     results: list[TaskSweepBatchItemResult] = []
     for index, submission in enumerate(submissions):
+        if index in pre_failures:
+            results.append(pre_failures[index])
+            continue
         try:
             async with session.begin_nested():
                 validate_sweep_submission(submission)
-                item_default_env = default_environment
-                if prepare is not None:
-                    item_default_env = await prepare(session, submission)
                 task, new_trials, is_append, experiment = await create_task_sweep_core(
                     session,
                     submission=submission,
                     org_id=org_id,
-                    default_environment=item_default_env,
+                    billed_user_id=billed_user_ids[index],
+                    default_environment=item_envs[index],
                     allowed_environments=allowed_environments,
                 )
                 if finalize is not None:
                     await finalize(session, submission, task, is_append, experiment)
-        except HTTPException as exc:
-            # Expected validation/lookup failures (e.g. missing task -> 404).
-            results.append(
-                TaskSweepBatchItemResult(
-                    index=index,
-                    success=False,
-                    status_code=exc.status_code,
-                    error=str(exc.detail),
-                )
-            )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
-            # Any other error is contained to this item; the savepoint has been
-            # rolled back, so the session stays usable for the remaining items.
-            results.append(
-                TaskSweepBatchItemResult(
-                    index=index,
-                    success=False,
-                    status_code=400,
-                    error=str(exc),
-                )
-            )
+            # The savepoint has been rolled back, so the session stays usable
+            # for the remaining items.
+            results.append(_failure(index, exc))
         else:
             results.append(
                 TaskSweepBatchItemResult(

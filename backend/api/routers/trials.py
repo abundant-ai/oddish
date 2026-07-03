@@ -168,13 +168,18 @@ async def retry_trial(
     auth.require_scope(APIKeyScope.TASKS)
 
     async with get_session() as session:
-        return await retry_trial_core(
+        result = await retry_trial_core(
             session,
             trial_id=trial_id,
             org_id=auth.org_id,
             registry_auth=(payload.registry_auth if payload else None),
             gate_baselines=(payload.gate_baselines if payload else True),
         )
+
+    from oddish.core.helpers import terminate_run_harvest
+
+    modal_cancelled = await terminate_run_harvest(result)
+    return result | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.delete("/trials/{trial_id}")
@@ -193,6 +198,10 @@ async def delete_trial(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
+    from oddish.core.helpers import terminate_run_harvest
+
+    modal_cancelled = await terminate_run_harvest(result)
+
     s3_prefixes = result.get("s3_prefixes", []) or []
     s3_keys_deleted = 0
     if s3_prefixes:
@@ -209,6 +218,7 @@ async def delete_trial(
         "deleted": result.get("deleted", {"trial_id": trial_id}),
         "s3_prefixes": s3_prefixes,
         "s3_keys_deleted": s3_keys_deleted,
+        "modal_calls_cancelled": modal_cancelled,
     }
 
 
