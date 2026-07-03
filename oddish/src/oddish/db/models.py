@@ -856,11 +856,6 @@ class TrialModel(TimestampedMixin, Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Last attempt whose outcome settled cost_usd; gates at-least-once outcome
-    # redelivery so accumulation never double-bills an attempt.
-    cost_settled_attempt: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False, server_default="0"
-    )
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

@@ -22,49 +22,6 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import ExperimentCombineResponse
-from oddish.trial_cost import apply_settled_cost
-
-
-async def _settle_active_billable_trials(
-    session: AsyncSession, trial_ids: Collection[str], *, reason: str
-) -> None:
-    """Cancel parity for soft-deletes (mirrors queue.py cancel).
-
-    An active billable trial must settle (floored cost + finished_at) BEFORE it
-    is tombstoned, or its spend and its reservation both vanish from the
-    payer's quota. Runs before any worker_jobs cancel so trial-row locks are
-    taken first (same order as retry; the reaper skip-locks trials).
-    """
-    if not trial_ids:
-        return
-    # Lazy: oddish.queue transitively imports the worker stack.
-    from oddish.queue import BILLABLE_CANCEL_TRIAL_STATUSES
-
-    trials = (
-        (
-            await session.execute(
-                select(TrialModel)
-                .where(
-                    TrialModel.id.in_(list(trial_ids)),
-                    TrialModel.billed_user_id.is_not(None),
-                    TrialModel.finished_at.is_(None),
-                    TrialModel.status.in_(BILLABLE_CANCEL_TRIAL_STATUSES),
-                )
-                .order_by(TrialModel.id)  # stable lock order, delete-vs-delete
-                .with_for_update()
-            )
-        )
-        .scalars()
-        .all()
-    )
-    now = utcnow()
-    for trial in trials:
-        trial.status = TrialStatus.FAILED
-        trial.error_message = reason
-        trial.finished_at = now
-        trial.current_worker_id = None
-        trial.current_queue_slot = None
-        apply_settled_cost(trial)
 
 
 def _task_has_active_analysis(task: TaskModel) -> bool:
@@ -169,9 +126,6 @@ async def delete_task_core(
 
         harvest = _CancelHarvest()
         if scoped_trial_ids:
-            await _settle_active_billable_trials(
-                session, scoped_trial_ids, reason="Task deleted by user"
-            )
             await _cancel_worker_jobs_for_trials(
                 session,
                 trial_ids=scoped_trial_ids,
@@ -239,9 +193,6 @@ async def delete_task_core(
     # Cancel live worker_jobs for those trials so workers release slots.
     harvest = _CancelHarvest()
     if scoped_trial_ids:
-        await _settle_active_billable_trials(
-            session, scoped_trial_ids, reason="Task deleted by user"
-        )
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
@@ -407,9 +358,6 @@ async def unlink_task_from_experiment_core(
     ]
     harvest = _CancelHarvest()
     if scoped_trial_ids:
-        await _settle_active_billable_trials(
-            session, scoped_trial_ids, reason="Task removed from experiment by user"
-        )
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
@@ -643,8 +591,7 @@ async def delete_experiment_core(
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
 
-    # Trials scoped to this experiment. Settled BEFORE any worker_jobs cancel
-    # so trial-row locks come first (see _settle_active_billable_trials).
+    # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
     if org_id is not None:
         trial_where.append(
@@ -657,9 +604,6 @@ async def delete_experiment_core(
             await session.execute(select(TrialModel.id).where(*trial_where))
         ).all()
     ]
-    await _settle_active_billable_trials(
-        session, scoped_trial_ids, reason="Experiment deleted by user"
-    )
 
     # Task-level QA/VERDICT jobs are cancelled in the survival loop below,
     # ONLY for tasks that actually die with this experiment -- a task alive
@@ -1046,10 +990,6 @@ async def delete_trial_core(
     containers leak until provider TTL.
     """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
-
-    await _settle_active_billable_trials(
-        session, [trial_id], reason="Trial deleted by user"
-    )
 
     # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
     # ANALYSIS jobs) so workers stop heart-beating and release slots

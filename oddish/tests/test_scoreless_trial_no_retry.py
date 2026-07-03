@@ -47,7 +47,6 @@ def _trial(**overrides):
         heartbeat_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
         analysis=None,
         analysis_status=None,
         analysis_error=None,

@@ -27,7 +27,6 @@ from oddish.db import (
     TrialModel,
     TrialStatus,
 )
-from oddish.config import settings
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
 
@@ -203,14 +202,7 @@ async def retry_trial_core(
                        THEN NULL ELSE current_worker_id END,
                    current_queue_slot = CASE
                        WHEN status::text NOT IN ('FAILED', 'SUCCESS')
-                       THEN NULL ELSE current_queue_slot END,
-                   -- Floor the cost of a stuck non-terminal trial we're
-                   -- superseding so the daily quota SUM never undercounts it
-                   -- (cost-completeness; a killed row otherwise keeps NULL cost).
-                   cost_usd = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
-                            AND cost_usd IS NULL
-                       THEN :floor_usd ELSE cost_usd END
+                       THEN NULL ELSE current_queue_slot END
             WHERE  id = :old_trial_id
               AND  superseded_by_trial_id IS NULL
               AND  deleted_at IS NULL
@@ -219,7 +211,6 @@ async def retry_trial_core(
         {
             "new_trial_id": new_trial_id,
             "old_trial_id": old_trial.id,
-            "floor_usd": float(settings.pending_trial_reservation_usd),
         },
     )
     if cast(Any, cas).rowcount == 0:

@@ -45,7 +45,6 @@ from oddish.workers.queue.worker_job_single_job import (
     classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
-from oddish.trial_cost import apply_settled_cost
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -308,7 +307,6 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.stale_reaped_at = utcnow()
-        apply_settled_cost(trial)
         if trial.harbor_stage not in {"completed", "cancelled"}:
             trial.harbor_stage = "cancelled"
 
