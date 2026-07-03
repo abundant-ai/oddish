@@ -108,6 +108,18 @@ def test_single_task_comment_advances_past_running_with_skipped():
     assert "0/2 classified" in comment  # analyzable = 4 total - 2 skipped
 
 
-def test_single_task_all_skipped_not_stuck_running():
+def test_single_task_all_skipped_shows_terminal_not_analyzing():
+    # Every trial skipped -> nothing analyzable. Must NOT show a stuck
+    # "Analyzing Results... (0/0 classified)"; show a terminal all-skipped state.
     comment = _task_comment(_task([_trial(0, "skipped"), _trial(1, "skipped")]))
     assert "🔄 Running" not in comment
+    assert "Analyzing Results" not in comment
+    assert "0/0" not in comment
+    assert "All 2 trials skipped" in comment
+
+
+def test_all_skipped_experiment_shows_terminal_not_analyzing():
+    comment = _comment(_task([_trial(0, "skipped"), _trial(1, "skipped")]))
+    assert "Analyzing results" not in comment
+    assert "0/0" not in comment
+    assert "All 2 trials skipped" in comment

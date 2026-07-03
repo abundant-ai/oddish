@@ -172,6 +172,10 @@ def format_task_comment(
             lines.append(f"> {task.verdict['primary_issue']}")
     elif task.verdict_status == "running":
         lines.append("### \U0001f504 Computing Verdict...")
+    elif analyzable == 0 and completed == total and total > 0:
+        # Every trial terminal but nothing analyzable (all gate-skipped) \u2014 show
+        # a terminal state, not a stuck "Analyzing Results... (0/0 classified)".
+        lines.append(f"### \u2298 All {total} trials skipped (baseline gate)")
     elif analyzable > 0 and analyzed == analyzable:
         lines.append(
             f"### \u23f3 Computing Verdict... ({analyzed}/{analyzable} analyses done)"
@@ -307,6 +311,15 @@ def format_experiment_comment(
             lines.append(
                 f"### \u26a0\ufe0f {good_tasks}/{total_tasks} tasks passed validation"
             )
+    elif (
+        analyzable_trials == 0
+        and completed_trials == total_trials
+        and total_trials > 0
+    ):
+        # Every trial is terminal but none are analyzable (all gate-skipped),
+        # so there's nothing to analyze or verdict \u2014 show a terminal state
+        # instead of a stuck "Analyzing results... (0/0 classified)".
+        lines.append(f"### \u2298 All {total_trials} trials skipped (baseline gate)")
     elif analyzable_trials > 0 and analyzed_trials == analyzable_trials:
         lines.append(
             f"### \u23f3 Computing verdicts... ({analyzed_trials}/{analyzable_trials} analyses done)"
