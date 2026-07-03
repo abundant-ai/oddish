@@ -263,13 +263,22 @@ async def resolve_billed_user_id(
     auth: AuthContext,
     owner_user_id: str | None = None,
 ) -> str | None:
+    # The payer must be ACTIVE or None: unlike created_by (provenance, which
+    # keeps the real author even once offboarded), a tombstoned billed_user_id
+    # is invisible to the active-scoped admin quota list and un-overridable. The
+    # owner/created-by rungs still fall through raw ``auth.user_id`` (= an API
+    # key's offboarded creator), so re-check here; None → Unattributed 403 under
+    # enforce (correct fail-closed — never bill someone who no longer enforces).
     if owner_user_id is None:
         owner_user_id = await resolve_experiment_owner_user_id(
             session, submission, auth
         )
-    if owner_user_id is not None:
-        return owner_user_id
-    return await resolve_created_by_user_id(session, submission, auth)
+    billed = (
+        owner_user_id
+        if owner_user_id is not None
+        else await resolve_created_by_user_id(session, submission, auth)
+    )
+    return await _active_user_id(session, billed)
 
 
 def stamp_experiment_owner(
