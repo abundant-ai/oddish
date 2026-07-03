@@ -84,7 +84,11 @@ async def _enrich_experiment_authors(
                 overrides["author"] = {"name": owner_name, "source": "member"}
             runner_name = names.get(row.get("last_runner_user_id"))
             if runner_name:
-                overrides["last_runner"] = {"name": runner_name, "source": "member"}
+                runner = {"name": runner_name, "source": "member"}
+                overrides["last_runner"] = runner
+                # The core emits ``last_author`` as a mirror of ``last_runner``
+                # (deprecated fallback the FE still renders); keep them in sync.
+                overrides["last_author"] = runner
             if overrides:
                 row = {**row, **overrides}
         enriched.append(row)

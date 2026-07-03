@@ -143,6 +143,7 @@ async def test_enrich_overrides_last_runner_from_billed_user() -> None:
         "last_runner_user_id": "user_charles",
         "author": {"name": "rishi@abundant.ai", "source": "api"},
         "last_runner": {"name": "RishiDesai", "source": "github"},
+        "last_author": {"name": "RishiDesai", "source": "github"},
     }
     dashboard = {"experiments": [original_row]}
     session = _FakeSession([_user(id="user_charles", name="Charles Huang")])
@@ -151,6 +152,9 @@ async def test_enrich_overrides_last_runner_from_billed_user() -> None:
 
     row = dashboard["experiments"][0]
     assert row["last_runner"] == {"name": "Charles Huang", "source": "member"}
+    # ``last_author`` is the core's deprecated mirror of ``last_runner`` and the
+    # FE's Author-column fallback -- it must stay in sync with the override.
+    assert row["last_author"] == {"name": "Charles Huang", "source": "member"}
     # Author had no owner id to resolve, so the core value stands.
     assert row["author"] == {"name": "rishi@abundant.ai", "source": "api"}
     # Cached row object untouched.
