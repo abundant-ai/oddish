@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -81,9 +80,13 @@ async def cancel_tasks_runs(
 
     The cancel path walks ``worker_jobs`` (single UPDATE covers trial /
     analysis / verdict kinds uniformly) and then mirrors the terminal
-    state back onto the domain rows for live-UI visibility. Modal
-    function call ids are harvested from the cancelled rows so callers
-    can terminate the remote containers.
+    state back onto the domain rows for live-UI visibility.
+
+    POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` and
+    ``worker_targets`` are RETURNED, not terminated here -- a rollback must
+    never leave live rows pointing at destroyed containers. The caller
+    (route or OSS operator invoking this directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit.
     """
     requested_task_ids = list(dict.fromkeys(task_ids))
     if not requested_task_ids:
@@ -94,6 +97,7 @@ async def cancel_tasks_runs(
             "tasks_cancelled": 0,
             "trials_cancelled": 0,
             "modal_function_call_ids": [],
+            "worker_targets": [],
         }
 
     query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
@@ -272,16 +276,6 @@ async def cancel_tasks_runs(
 
     await session.flush()
 
-    sandboxes_terminated = 0
-    if worker_targets:
-        results = await asyncio.gather(
-            *(
-                cancel_job_by_worker(provider, external_id)
-                for provider, external_id in worker_targets
-            )
-        )
-        sandboxes_terminated = sum(1 for ok in results if ok)
-
     return {
         "task_ids": found_task_ids,
         "not_found_task_ids": not_found_task_ids,
@@ -289,7 +283,7 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
-        "sandboxes_terminated": sandboxes_terminated,
+        "worker_targets": sorted(worker_targets),
     }
 
 
@@ -586,14 +580,14 @@ _TRIAL_BULK_INSERT_SQL = text(
     """
     INSERT INTO trials
         (id, name, task_id, task_version_id, experiment_id, org_id,
-         agent, provider, queue_key, model, timeout_minutes, environment,
-         harbor_config, harbor_sha, is_probe, max_attempts, status, attempts,
-         created_at, updated_at)
+         billed_user_id, agent, provider, queue_key, model, timeout_minutes,
+         environment, harbor_config, harbor_sha, is_probe, max_attempts, status,
+         attempts, created_at, updated_at)
     SELECT
         t.id, t.name, t.task_id, t.task_version_id, t.experiment_id, t.org_id,
-        t.agent, t.provider, t.queue_key, t.model, t.timeout_minutes,
-        t.environment, t.harbor_config::jsonb, t.harbor_sha, t.is_probe,
-        t.max_attempts, 'QUEUED'::jobstatus, 0, NOW(), NOW()
+        t.billed_user_id, t.agent, t.provider, t.queue_key, t.model,
+        t.timeout_minutes, t.environment, t.harbor_config::jsonb, t.harbor_sha,
+        t.is_probe, t.max_attempts, 'QUEUED'::jobstatus, 0, NOW(), NOW()
     FROM unnest(
         CAST(:id AS text[]),
         CAST(:name AS text[]),
@@ -610,11 +604,12 @@ _TRIAL_BULK_INSERT_SQL = text(
         CAST(:harbor_config AS text[]),
         CAST(:harbor_sha AS text[]),
         CAST(:is_probe AS boolean[]),
-        CAST(:max_attempts AS int[])
+        CAST(:max_attempts AS int[]),
+        CAST(:billed_user_id AS text[])
     ) WITH ORDINALITY AS t(
         id, name, task_id, task_version_id, experiment_id, org_id,
         agent, provider, queue_key, model, timeout_minutes, environment,
-        harbor_config, harbor_sha, is_probe, max_attempts, ord
+        harbor_config, harbor_sha, is_probe, max_attempts, billed_user_id, ord
     )
     """
 )
@@ -651,6 +646,7 @@ async def _bulk_insert_trials(
         "harbor_sha": [t["harbor_sha"] for t in trials],
         "is_probe": [t["is_probe"] for t in trials],
         "max_attempts": [t["max_attempts"] for t in trials],
+        "billed_user_id": [t.get("billed_user_id") for t in trials],
     }
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
 
@@ -691,6 +687,7 @@ async def create_task(
     submission: TaskSubmission,
     task_id: str | None = None,
     org_id: str | None = None,
+    billed_user_id: str | None = None,
 ) -> TaskModel:
     """Create a task with its trials.
 
@@ -827,6 +824,7 @@ async def create_task(
                 "task_version_id": version_id,
                 "experiment_id": experiment.id,
                 "org_id": org_id,
+                "billed_user_id": billed_user_id,
                 "agent": spec.agent,
                 "provider": provider,
                 "queue_key": queue_key,
@@ -1014,6 +1012,7 @@ async def append_trials_to_task(
     task: TaskModel,
     submission: TaskSubmission,
     experiment_id: str | None = None,
+    billed_user_id: str | None = None,
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
@@ -1070,6 +1069,7 @@ async def append_trials_to_task(
                 "task_version_id": current_version_id,
                 "experiment_id": trial_experiment_id,
                 "org_id": task.org_id,
+                "billed_user_id": billed_user_id,
                 "agent": spec.agent,
                 "provider": provider,
                 "queue_key": queue_key,

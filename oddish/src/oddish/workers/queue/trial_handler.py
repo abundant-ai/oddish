@@ -459,6 +459,7 @@ async def _prepare_trial_run(
         trial.result = None
         trial.input_tokens = None
         trial.cache_tokens = None
+        trial.cache_write_tokens = None
         trial.output_tokens = None
         trial.total_steps = None
         trial.cost_usd = None
@@ -680,6 +681,7 @@ async def _store_trial_results(
 
             trial.input_tokens = outcome.input_tokens
             trial.cache_tokens = outcome.cache_tokens
+            trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
             trial.cost_usd = outcome.cost_usd

@@ -18,6 +18,12 @@ class _FakeRowsResult:
     def all(self):
         return self._rows
 
+    def scalars(self):
+        return self
+
+    def __iter__(self):
+        return iter(self._rows)
+
     def one_or_none(self):
         if not self._rows:
             return None
@@ -78,9 +84,12 @@ async def test_delete_task_core_soft_deletes_task_and_trials():
     assert result == {
         "s3_prefixes": [],
         "deleted": {"task_id": "task-123"},
+        "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
 
+    # statements[0] task lookup, statements[1] trial lookup.
     write_statements = session.statements[2:]
     # Soft delete emits in order:
     #   1. UPDATE worker_jobs ... WHERE subject_table='trials'  (text())

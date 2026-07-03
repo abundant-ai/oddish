@@ -2,21 +2,41 @@ from __future__ import annotations
 
 import logging
 import os
+from decimal import Decimal
 from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    QuotaListResponse,
+    QuotaMemberItem,
+    QuotaUpdateRequest,
+    QuotaUsageResponse,
     UserResponse,
 )
-from auth import AuthContext, AuthMethod, require_admin, require_auth
+from auth import (
+    AuthContext,
+    AuthMethod,
+    require_admin,
+    require_auth,
+    require_can_manage_quotas,
+)
 from auth.verification import invalidate_cached_clerk_auth
-from models import UserModel, UserRole
+from oddish.config import QuotaMode, settings
+from models import QuotaModel, UserModel, UserRole, generate_id
+from oddish.core.quotas import (
+    get_effective_limit,
+    inflight_reserved_usd,
+    start_of_today_utc,
+    sum_cost_usd,
+    sum_cost_usd_by_user,
+)
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
 
@@ -116,6 +136,146 @@ async def list_users(
             )
             for u in users
         ]
+
+
+@router.get("/quotas/me", response_model=QuotaUsageResponse)
+async def get_my_quota_usage(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> QuotaUsageResponse:
+    used_today = Decimal(0)
+    reserved = Decimal(0)
+    effective_limit_usd = settings.default_daily_quota_usd
+    if auth.user_id:
+        async with get_session() as session:
+            used_today = await sum_cost_usd(
+                session, auth.org_id, auth.user_id, start_of_today_utc()
+            )
+            effective_limit_usd = await get_effective_limit(
+                session, auth.org_id, auth.user_id
+            )
+            reserved = await inflight_reserved_usd(
+                session, auth.org_id, auth.user_id
+            )
+    return QuotaUsageResponse(
+        user_id=auth.user_id or "",
+        limit_usd=float(effective_limit_usd),
+        used_usd=float(used_today),
+        reserved_usd=float(reserved),
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+    )
+
+
+def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem:
+    return QuotaMemberItem(
+        user_id=member.id,
+        email=member.email,
+        name=member.name,
+        github_username=member.github_username,
+        role=member.role.value,
+        limit_usd=float(effective_limit_usd),
+        used_usd=float(used_usd),
+    )
+
+
+@router.get("/quotas", response_model=QuotaListResponse)
+async def list_member_quotas(
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> QuotaListResponse:
+    period_start = start_of_today_utc()
+    default_limit_usd = settings.default_daily_quota_usd
+
+    async with get_session() as session:
+        members = (
+            (
+                await session.execute(
+                    select(UserModel)
+                    .where(UserModel.org_id == auth.org_id)
+                    .order_by(UserModel.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        used_usd_by_user_id = await sum_cost_usd_by_user(
+            session, auth.org_id, period_start
+        )
+
+        override_rows = await session.execute(
+            select(QuotaModel.user_id, QuotaModel.limit_usd).where(
+                QuotaModel.org_id == auth.org_id,
+                QuotaModel.deleted_at.is_(None),
+            )
+        )
+        override_limit_by_user_id = dict(override_rows.all())
+
+    return QuotaListResponse(
+        members=[
+            _quota_member_item(
+                member,
+                override_limit_by_user_id.get(member.id, default_limit_usd),
+                used_usd_by_user_id.get(member.id, Decimal(0)),
+            )
+            for member in members
+        ]
+    )
+
+
+@router.put("/quotas/{user_id}", response_model=QuotaMemberItem)
+async def set_member_quota(
+    user_id: str,
+    payload: QuotaUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> QuotaMemberItem:
+    async with get_session() as session:
+        member = (
+            await session.execute(
+                select(UserModel).where(
+                    UserModel.id == user_id, UserModel.org_id == auth.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if member is None:
+            raise HTTPException(
+                status_code=404, detail=f"User {user_id} not found in this org"
+            )
+
+        if payload.limit_usd is None:
+            await session.execute(
+                QuotaModel.__table__.delete().where(
+                    QuotaModel.org_id == auth.org_id,
+                    QuotaModel.user_id == user_id,
+                )
+            )
+        else:
+            await session.execute(
+                pg_insert(QuotaModel)
+                .values(
+                    id=generate_id(),
+                    org_id=auth.org_id,
+                    user_id=user_id,
+                    limit_usd=payload.limit_usd,
+                )
+                .on_conflict_do_update(
+                    index_elements=["org_id", "user_id"],
+                    # Clear deleted_at too: get_effective_limit / the admin list
+                    # only read live rows, so a PUT over a tombstoned override
+                    # must revive it or the new limit would store but never
+                    # enforce (the (org_id,user_id) unique index spans all rows).
+                    set_={
+                        "limit_usd": payload.limit_usd,
+                        "updated_at": utcnow(),
+                        "deleted_at": None,
+                    },
+                )
+            )
+
+        used_today = await sum_cost_usd(
+            session, auth.org_id, user_id, start_of_today_utc()
+        )
+        effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
+
+    return _quota_member_item(member, effective_limit_usd, used_today)
 
 
 @router.post("/users", response_model=InviteUserResponse)

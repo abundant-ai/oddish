@@ -108,8 +108,14 @@ async def retry_trial_core(
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
     gate_baselines: bool = True,
-) -> dict[str, str]:
+) -> dict:
     """Create a new trial that replaces an old one.
+
+    POST-COMMIT CONTRACT: the superseded run's remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller must run ``oddish.core.helpers.terminate_run_harvest(result)``
+    after commit or the containers leak until provider TTL (the worker's
+    superseded-branch harvest and the reaper remain backstops).
 
     ``gate_baselines`` is a fresh, per-retry decision (the opt-out does not
     persist from the original run): when True (default) a retried LLM trial
@@ -155,6 +161,15 @@ async def retry_trial_core(
         reserve_next_trial_index,
     )
 
+    if old_trial.billed_user_id is not None:
+        from oddish.core.quota_admission import admit_trials
+
+        # Admission deliberately precedes the supersede and counts the old
+        # attempt's reservation: the CAS below settles that cost (never
+        # refunds it), so this check equals post-retry exposure -- excluding
+        # the old row would let a capped user reset spend by retrying.
+        await admit_trials(session, org_id, old_trial.billed_user_id, count=1)
+
     next_index = await reserve_next_trial_index(session, task_id=task.id)
     new_trial_id = f"{task.id}-{next_index}"
     new_trial_name = f"{task.name}-{next_index}"
@@ -166,6 +181,7 @@ async def retry_trial_core(
         task_version_id=old_trial.task_version_id,
         experiment_id=old_trial.experiment_id,
         org_id=old_trial.org_id,
+        billed_user_id=old_trial.billed_user_id,
         agent=old_trial.agent,
         provider=old_trial.provider,
         queue_key=old_trial.queue_key,
@@ -203,16 +219,20 @@ async def retry_trial_core(
                        THEN NULL ELSE current_queue_slot END
             WHERE  id = :old_trial_id
               AND  superseded_by_trial_id IS NULL
+              AND  deleted_at IS NULL
             """
         ),
-        {"new_trial_id": new_trial_id, "old_trial_id": old_trial.id},
+        {
+            "new_trial_id": new_trial_id,
+            "old_trial_id": old_trial.id,
+        },
     )
     if cast(Any, cas).rowcount == 0:
         raise HTTPException(
             status_code=409,
             detail=(
-                "This trial was just superseded by another retry; "
-                "retry the new trial instead"
+                "This trial was just superseded by another retry or deleted; "
+                "not re-queued"
             ),
         )
     session.expire(old_trial)
@@ -244,10 +264,19 @@ async def retry_trial_core(
             {"trial_id": trial_id},
         )
 
-    await session.execute(
+    cancelled_jobs = await session.execute(
         text(
             """
-            UPDATE worker_jobs
+            WITH to_cancel AS (
+                SELECT id, modal_function_call_id, provider, external_id
+                FROM   worker_jobs
+                WHERE  subject_table = 'trials'
+                  AND  subject_id = :trial_id
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs w
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
                    error_message = 'Superseded by user retry',
@@ -255,13 +284,22 @@ async def retry_trial_core(
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL,
                    payload = payload - 'registry_auth_enc'
-            WHERE  subject_table = 'trials'
-              AND  subject_id = :trial_id
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"trial_id": trial_id},
     )
+    modal_fc_ids: list[str] = []
+    worker_targets: set[tuple[str, str]] = set()
+    for fc, provider, external_id in cancelled_jobs:
+        if fc:
+            modal_fc_ids.append(str(fc))
+        if provider and external_id:
+            worker_targets.add((str(provider), str(external_id)))
 
     if task.status in (
         TaskStatus.ANALYZING,
@@ -290,6 +328,19 @@ async def retry_trial_core(
         ),
         {"task_id": task.id},
     )
+
+    # Task deleted while we worked (its tombstone won the row-lock interleaving
+    # the old-trial CAS guard doesn't cover): the new trial would be
+    # unclaimable yet counted inflight forever. Bail before enqueue.
+    task_deleted_at = await session.scalar(
+        text("SELECT deleted_at FROM tasks WHERE id = :task_id"),
+        {"task_id": task.id},
+    )
+    if task_deleted_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="This trial's task was just deleted; not re-queued",
+        )
 
     await enqueue_trial_worker_job(
         session,
@@ -337,6 +388,8 @@ async def retry_trial_core(
         "status": status_label,
         "trial_id": new_trial_id,
         "superseded_trial_id": trial_id,
+        "modal_function_call_ids": modal_fc_ids,
+        "worker_targets": sorted(worker_targets),
     }
 
 
