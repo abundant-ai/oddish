@@ -1587,7 +1587,12 @@ async def get_cost_breakdown_core(
         if user is None:
             user = by_user[row.billed_user_id] = {
                 "billed_user_id": row.billed_user_id,
-                "org_id": row.exp_org_id,
+                # A billed user is org-scoped, so first-seen org is fine for a
+                # real payer (enrichment re-resolves it from the user row
+                # anyway). The NULL-payer bucket spans orgs -- pinning it to
+                # whichever org happened to come first would mislabel it, so
+                # leave it org-less.
+                "org_id": row.exp_org_id if row.billed_user_id else None,
                 "trial_count": 0,
                 "input_tokens": 0,
                 "cache_tokens": 0,

@@ -55,19 +55,17 @@ tables, columns, or migrations.
 5. **Preset windows only** (1/7/30/90/all days), `window_days=0` = all-time,
    same `Query(7, ge=0, le=3650)` semantics as `/admin/costs`.
 6. **Task is the leaf.** Group by `task_id`; no per-trial rows in this view.
-7. **Attribution-basis mismatch with the Costs tab is accepted.** The Costs
-   tab `by_user` table is keyed by `owner_user_id`; the drilldown is billed-
-   basis. Linking from that table can land on a page whose totals differ for
-   API-key/impersonated submissions. The drilldown header carries an explicit
-   "billed-user attribution" caption. Migrating `/admin/costs` to billed
-   attribution is a follow-up, not this change.
-   > **Update (follow-up landed):** `/admin/costs` `by_user` and
-   > `series_by_user` are now billed-basis too (`billed_user_id`, wire field
-   > renamed accordingly). Pre-rollout trials have no payer (no backfill) and
-   > fold into "Unattributed" on longer windows. The experiments table stays
-   > owner-basis. Remaining drilldown-vs-Costs-tab divergence is the time
-   > axis: settled-only `finished_at` (deleted included) here vs `created_at`
-   > buckets (deleted excluded) there.
+7. **Attribution basis matches the Costs tab.** Originally the Costs tab
+   `by_user` table was keyed by `owner_user_id` while the drilldown was
+   billed-basis; that mismatch was accepted for the first cut and the
+   migration deferred. The follow-up has since landed: `/admin/costs`
+   `by_user` and `series_by_user` are billed-basis too (`billed_user_id`,
+   wire field renamed accordingly). Pre-rollout trials have no payer (no
+   backfill) and fold into "Unattributed" on longer windows, and the
+   unattributed row carries no org (it spans orgs). The experiments table
+   stays owner-basis. Remaining drilldown-vs-Costs-tab divergence is the
+   time axis: settled-only `finished_at` (deleted included) here vs
+   `created_at` buckets (deleted excluded) there.
 
 ## Backend
 
@@ -157,7 +155,7 @@ other `/api/admin/*` routes.
 
 - Calendar date ranges; CSV export; per-trial drilldown; org switcher.
 - Reserved/in-flight cost in this view.
-- An "unattributed" (NULL `billed_user_id`) bucket.
-- Migrating `/admin/costs` `by_user` from `owner_user_id` to `billed_user_id`.
+- An "unattributed" (NULL `billed_user_id`) bucket *in the drilldown* (the
+  Costs tab's by-user table does keep its "Unattributed" row; see Decision 7).
 - Any change to quota admission/enforcement behavior — the quotas MVP's edge
   cases are deliberate; this feature is read-only over its data.
