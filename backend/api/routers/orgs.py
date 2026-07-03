@@ -6,7 +6,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from api.schemas import (
     InviteUserRequest,
@@ -15,6 +15,7 @@ from api.schemas import (
     UserResponse,
 )
 from auth import AuthContext, AuthMethod, require_admin, require_auth
+from auth.verification import invalidate_cached_clerk_auth
 from models import UserModel, UserRole
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
@@ -178,16 +179,47 @@ async def _delete_clerk_user(clerk_user_id: str) -> None:
         )
 
 
+async def _require_no_stranded_org(session, rows: list[UserModel]) -> None:
+    """Reject self-deletion that would leave a *shared* org without any
+    admin. Orgs where the deleter is the only active member (e.g. personal
+    orgs) are exempt — otherwise personal-org users could never delete."""
+    for row in rows:
+        if row.role != UserRole.ADMIN:
+            continue
+        others = (
+            (
+                await session.execute(
+                    select(UserModel.id, UserModel.role)
+                    .where(UserModel.org_id == row.org_id)
+                    .where(UserModel.id != row.id)
+                    .where(UserModel.is_active == True)  # noqa: E712
+                )
+            )
+            .all()
+        )
+        if others and not any(role == UserRole.ADMIN for _, role in others):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "You are the last admin of a workspace with other "
+                    "members. Promote another admin before deleting your "
+                    "account."
+                ),
+            )
+
+
 @router.delete("/users/me")
 async def delete_my_account(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict:
     """Delete the calling user's account.
 
-    Deletes the user in Clerk first (the authoritative identity store), then
-    soft-deletes every local user row linked to that Clerk user across orgs.
-    Requires interactive Clerk auth — an API key must not be able to destroy
-    the account that minted it.
+    Soft-deletes the local user rows first (committed before Clerk is
+    touched), then deletes the Clerk user. If Clerk deletion fails the local
+    rows are restored, so the account is never left in a state the user
+    cannot retry from: a local failure aborts before Clerk is called, and a
+    Clerk failure rolls the tombstones back. Requires interactive Clerk
+    auth — an API key must not be able to destroy the account that minted it.
     """
     if auth.method != AuthMethod.CLERK_JWT:
         raise HTTPException(
@@ -195,6 +227,7 @@ async def delete_my_account(
             detail="Account deletion requires signing in (API keys not allowed)",
         )
 
+    tombstoned: list[tuple[str, str]] = []
     async with get_session() as session:
         result = await session.execute(
             select(UserModel).where(UserModel.id == auth.user_id)
@@ -204,29 +237,46 @@ async def delete_my_account(
             raise HTTPException(status_code=404, detail="User not found")
         clerk_user_id = user.clerk_user_id
 
-    # Clerk deletion is the critical step; it happens before local cleanup so
-    # a failure leaves the account fully intact rather than half-deleted.
-    await _delete_clerk_user(clerk_user_id)
-
-    # The Clerk account is gone now, so local cleanup must not be able to
-    # abort: tombstone the rows in one transaction, then transfer tag
-    # ownership best-effort per org. A transfer failure must not roll back
-    # the tombstones (that would strand a Clerk-deleted user as active
-    # locally); the hourly ``sweep_orphaned_tag_owners`` sweep is the
-    # documented safety net for any tags this leaves orphaned.
-    tombstoned: list[tuple[str, str]] = []
-    async with get_session() as session:
-        result = await session.execute(
+        rows_result = await session.execute(
             select(UserModel)
             .where(UserModel.clerk_user_id == clerk_user_id)
             .where(UserModel.is_active == True)  # noqa: E712
         )
-        for row in result.scalars().all():
+        rows = list(rows_result.scalars().all())
+        await _require_no_stranded_org(session, rows)
+
+        for row in rows:
             row.is_active = False
             row.deleted_at = utcnow()
             tombstoned.append((row.org_id, row.id))
         await session.commit()
 
+    try:
+        await _delete_clerk_user(clerk_user_id)
+    except Exception:
+        # Clerk still has the account, so undo the tombstones: the user keeps
+        # a working account and can simply retry.
+        async with get_session() as session:
+            await session.execute(
+                update(UserModel)
+                .where(UserModel.id.in_([row_id for _, row_id in tombstoned]))
+                .values(is_active=True, deleted_at=None)
+                .execution_options(include_deleted=True)
+            )
+            await session.commit()
+        raise
+
+    # Drop this container's cached auth contexts so the deleted user's JWT
+    # stops resolving immediately here. Other containers age out within the
+    # 60s cache TTL, and the Clerk sessions themselves were revoked by the
+    # deletion above; the ``user.deleted`` webhook is the cross-container
+    # safety net that re-tombstones any row a stale JWT may have revived.
+    invalidate_cached_clerk_auth(clerk_user_id)
+
+    # Tag ownership transfer runs best-effort per org, after the point of no
+    # return. A failure must not surface as a deletion error (the Clerk
+    # account is already gone); the hourly ``sweep_orphaned_tag_owners``
+    # sweep is the documented safety net for any tags this leaves orphaned.
     for org_id, user_row_id in tombstoned:
         try:
             async with get_session() as session:

@@ -1,8 +1,10 @@
 """DELETE /users/me — self-serve account deletion.
 
-The critical contract: the Clerk user is deleted first (authoritative identity
-store), then every local user row for that Clerk user is soft-deleted. API-key
-auth must be rejected so a key cannot destroy the account that minted it.
+The critical contract: local rows are tombstoned first, then the Clerk user is
+deleted; a Clerk failure restores the rows so the flow is always retryable and
+never leaves a Clerk-deleted user active locally. API-key auth must be
+rejected so a key cannot destroy the account that minted it, and a sole admin
+of a shared org must promote a replacement before self-deleting.
 """
 
 from __future__ import annotations
@@ -190,10 +192,11 @@ async def test_delete_account_tombstones_survive_transfer_failure(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_delete_account_clerk_failure_leaves_rows_untouched(
+async def test_delete_account_clerk_failure_restores_rows(
     monkeypatch, user_in_two_orgs
 ):
-    """If Clerk deletion fails, no local row is tombstoned."""
+    """If Clerk deletion fails, the pre-committed tombstones are rolled back
+    so the user keeps a working account and can retry."""
     from fastapi import HTTPException
 
     clerk_user_id, user_a, user_b = user_in_two_orgs
@@ -228,3 +231,162 @@ async def test_delete_account_clerk_failure_leaves_rows_untouched(
     for row in rows:
         assert row["is_active"] is True
         assert row["deleted_at"] is None
+
+
+@pytest_asyncio.fixture
+async def sole_admin_of_shared_org():
+    """An admin whose org has one other active member and no other admin."""
+    suffix = uuid.uuid4().hex[:8]
+    clerk_user_id = f"clerk_adm_{suffix}"
+    org = OrganizationModel(
+        id=f"org_c_{suffix}", name=f"org_c_{suffix}", slug=f"org-c-{suffix}"
+    )
+    admin = UserModel(
+        id=f"admin_{suffix}",
+        org_id=org.id,
+        email=f"admin_{suffix}@example.com",
+        clerk_user_id=clerk_user_id,
+        role="admin",
+        is_active=True,
+    )
+    member = UserModel(
+        id=f"member_{suffix}",
+        org_id=org.id,
+        email=f"member_{suffix}@example.com",
+        clerk_user_id=f"clerk_other_{suffix}",
+        role="member",
+        is_active=True,
+    )
+    async with get_session() as session:
+        session.add(org)
+        await session.flush()
+        session.add_all([admin, member])
+
+    try:
+        yield clerk_user_id, admin, member
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                UserModel.__table__.delete().where(
+                    UserModel.id.in_([admin.id, member.id])
+                )
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org.id
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_blocks_sole_admin_of_shared_org(
+    monkeypatch, sole_admin_of_shared_org
+):
+    """A sole admin of an org with other members must promote a replacement
+    first; the Clerk user must not be deleted."""
+    clerk_user_id, admin, member = sole_admin_of_shared_org
+
+    deleted_clerk_ids: list[str] = []
+
+    async def fake_delete_clerk_user(cid: str) -> None:
+        deleted_clerk_ids.append(cid)
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", fake_delete_clerk_user)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=admin.org_id, user_id=admin.id
+    )
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/users/me")
+
+    assert resp.status_code == 400
+    assert "last admin" in resp.json()["detail"]
+    assert deleted_clerk_ids == []
+
+    async with get_session() as session:
+        row = (
+            (
+                await session.execute(
+                    UserModel.__table__.select().where(UserModel.id == admin.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["is_active"] is True
+    assert row["deleted_at"] is None
+
+
+def test_invalidate_cached_clerk_auth_drops_all_org_variants():
+    from auth.verification import (
+        CachedAuthData,
+        get_cached_auth,
+        invalidate_cached_clerk_auth,
+        set_cached_auth,
+    )
+    from models import APIKeyScope
+
+    def _data() -> CachedAuthData:
+        return CachedAuthData(
+            method=AuthMethod.CLERK_JWT,
+            org_id="org_1",
+            org_slug="org-1",
+            user_id="user_1",
+            user_email="u@example.com",
+            user_role=None,
+            scope=APIKeyScope.FULL,
+        )
+
+    set_cached_auth("clerk:user_del:org_1", _data())
+    set_cached_auth("clerk:user_del:no-org", _data())
+    set_cached_auth("clerk:user_keep:org_1", _data())
+
+    assert invalidate_cached_clerk_auth("user_del") == 2
+    assert get_cached_auth("clerk:user_del:org_1") is None
+    assert get_cached_auth("clerk:user_del:no-org") is None
+    assert get_cached_auth("clerk:user_keep:org_1") is not None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_user_deleted_webhook_tombstones_all_rows(
+    monkeypatch, user_in_two_orgs
+):
+    """The Clerk ``user.deleted`` webhook is the cross-container safety net:
+    it tombstones every active row for the deleted Clerk user."""
+    from api.routers import clerk_webhooks
+
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+
+    def fake_verify(payload: bytes, headers: dict) -> dict:
+        return {"type": "user.deleted", "data": {"id": clerk_user_id}}
+
+    monkeypatch.setattr(clerk_webhooks, "_verify_clerk_webhook", fake_verify)
+
+    app = FastAPI()
+    app.include_router(clerk_webhooks.router)
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/webhooks/clerk", json={})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+    async with get_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    UserModel.__table__.select()
+                    .where(UserModel.id.in_([user_a.id, user_b.id]))
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(rows) == 2
+    for row in rows:
+        assert row["is_active"] is False
+        assert row["deleted_at"] is not None
