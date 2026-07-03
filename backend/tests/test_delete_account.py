@@ -195,8 +195,9 @@ async def test_delete_account_tombstones_survive_transfer_failure(
 async def test_delete_account_clerk_failure_restores_rows(
     monkeypatch, user_in_two_orgs
 ):
-    """If Clerk deletion fails, the pre-committed tombstones are rolled back
-    so the user keeps a working account and can retry."""
+    """If Clerk deletion fails and the user is confirmed still alive in
+    Clerk, the pre-committed tombstones are rolled back so the user keeps a
+    working account and can retry."""
     from fastapi import HTTPException
 
     clerk_user_id, user_a, user_b = user_in_two_orgs
@@ -204,7 +205,11 @@ async def test_delete_account_clerk_failure_restores_rows(
     async def failing_delete(cid: str) -> None:
         raise HTTPException(status_code=503, detail="Clerk unreachable")
 
+    async def clerk_alive(cid: str) -> bool | None:
+        return True
+
     monkeypatch.setattr(orgs_router, "_delete_clerk_user", failing_delete)
+    monkeypatch.setattr(orgs_router, "_clerk_user_exists", clerk_alive)
 
     app = _app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(
@@ -323,7 +328,11 @@ async def test_delete_account_clerk_failure_restore_tombstones_revived_rows(
         dup_holder["id"] = await _insert_duplicate_row(cid, user_a.org_id)
         raise HTTPException(status_code=503, detail="Clerk unreachable")
 
+    async def clerk_alive(cid: str) -> bool | None:
+        return True
+
     monkeypatch.setattr(orgs_router, "_delete_clerk_user", revive_then_fail)
+    monkeypatch.setattr(orgs_router, "_clerk_user_exists", clerk_alive)
 
     app = _app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(
@@ -366,6 +375,141 @@ async def test_delete_account_clerk_failure_restore_tombstones_revived_rows(
                         UserModel.id == dup_holder["id"]
                     )
                 )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_clerk_error_but_user_gone_treated_as_success(
+    monkeypatch, user_in_two_orgs
+):
+    """A Clerk delete that errors (e.g. timeout after the delete landed, or a
+    parallel deletion winning) must NOT restore local rows when the Clerk
+    user is confirmed gone — that would resurrect an account with no sign-in."""
+    from fastapi import HTTPException
+
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+
+    async def failing_delete(cid: str) -> None:
+        raise HTTPException(status_code=503, detail="Clerk unreachable")
+
+    async def clerk_gone(cid: str) -> bool | None:
+        return False
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", failing_delete)
+    monkeypatch.setattr(orgs_router, "_clerk_user_exists", clerk_gone)
+    monkeypatch.setattr(orgs_router, "transfer_tag_ownership_to_admin", _noop_transfer)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/users/me")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "deleted", "clerk_user_id": clerk_user_id}
+
+    async with get_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    UserModel.__table__.select()
+                    .where(UserModel.id.in_([user_a.id, user_b.id]))
+                )
+            )
+            .mappings()
+            .all()
+        )
+    for row in rows:
+        assert row["is_active"] is False
+        assert row["deleted_at"] is not None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_clerk_unknown_state_keeps_tombstones(
+    monkeypatch, user_in_two_orgs
+):
+    """When neither the delete nor the existence probe reaches Clerk, the
+    tombstones are kept (fail-closed) and the user is told to retry."""
+    from fastapi import HTTPException
+
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+
+    async def failing_delete(cid: str) -> None:
+        raise HTTPException(status_code=503, detail="Clerk unreachable")
+
+    async def clerk_unknown(cid: str) -> bool | None:
+        return None
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", failing_delete)
+    monkeypatch.setattr(orgs_router, "_clerk_user_exists", clerk_unknown)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/users/me")
+
+    assert resp.status_code == 503
+    assert "retry" in resp.json()["detail"].lower()
+
+    async with get_session() as session:
+        rows = (
+            (
+                await session.execute(
+                    UserModel.__table__.select()
+                    .where(UserModel.id.in_([user_a.id, user_b.id]))
+                )
+            )
+            .mappings()
+            .all()
+        )
+    for row in rows:
+        assert row["is_active"] is False
+        assert row["deleted_at"] is not None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_post_clerk_sweep_failure_still_succeeds(
+    monkeypatch, user_in_two_orgs
+):
+    """After Clerk deletion, a failing revived-row sweep must not turn the
+    response into an error — the deletion already happened."""
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+
+    async def ok_delete(cid: str) -> None:
+        return None
+
+    real_get_session = orgs_router.get_session
+    calls = {"n": 0}
+
+    def flaky_get_session():
+        calls["n"] += 1
+        # Session 1: initial lookup + tombstone commit. Session 2: the
+        # post-Clerk revived-row sweep — make it blow up.
+        if calls["n"] == 2:
+            raise RuntimeError("db blip during sweep")
+        return real_get_session()
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", ok_delete)
+    monkeypatch.setattr(orgs_router, "transfer_tag_ownership_to_admin", _noop_transfer)
+    monkeypatch.setattr(orgs_router, "get_session", flaky_get_session)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.delete("/users/me")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "deleted", "clerk_user_id": clerk_user_id}
 
 
 @pytest_asyncio.fixture

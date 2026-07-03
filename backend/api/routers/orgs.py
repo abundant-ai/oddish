@@ -208,6 +208,30 @@ async def _require_no_stranded_org(session, rows: list[UserModel]) -> None:
             )
 
 
+async def _clerk_user_exists(clerk_user_id: str) -> bool | None:
+    """Best-effort existence probe used when a Clerk delete errors.
+
+    Returns True/False on a definitive answer, None when Clerk cannot be
+    reached (or no secret is configured) — callers must treat None as
+    "unknown", not as either definitive state.
+    """
+    if not CLERK_SECRET_KEY:
+        return None
+
+    url = f"https://api.clerk.com/v1/users/{clerk_user_id}"
+    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(url, headers=headers)
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        return True
+    except httpx.HTTPError:
+        return None
+
+
 @router.delete("/users/me")
 async def delete_my_account(
     auth: Annotated[AuthContext, Depends(require_auth)],
@@ -215,11 +239,13 @@ async def delete_my_account(
     """Delete the calling user's account.
 
     Soft-deletes the local user rows first (committed before Clerk is
-    touched), then deletes the Clerk user. If Clerk deletion fails the local
-    rows are restored, so the account is never left in a state the user
-    cannot retry from: a local failure aborts before Clerk is called, and a
-    Clerk failure rolls the tombstones back. Requires interactive Clerk
-    auth — an API key must not be able to destroy the account that minted it.
+    touched), then deletes the Clerk user. If the Clerk delete errors, the
+    tombstones are rolled back only when Clerk confirms the account still
+    exists; a confirmed-gone answer proceeds as success and an unknown answer
+    keeps the tombstones and asks the user to retry. Every outcome is
+    retryable and none leaves a Clerk-deleted identity active locally.
+    Requires interactive Clerk auth — an API key must not be able to destroy
+    the account that minted it.
     """
     if auth.method != AuthMethod.CLERK_JWT:
         raise HTTPException(
@@ -260,46 +286,78 @@ async def delete_my_account(
     try:
         await _delete_clerk_user(clerk_user_id)
     except Exception:
-        # Clerk still has the account, so undo the tombstones: the user keeps
-        # a working account and can simply retry. A concurrent request with a
-        # still-valid JWT may have JIT-provisioned fresh rows for this Clerk
-        # user during the window — tombstone those first so the restore can't
-        # leave duplicate active rows for one identity.
+        # Before undoing anything, check whether the Clerk account actually
+        # survived: the delete may have succeeded before a timeout/network
+        # error, or a parallel DELETE /users/me may have won. Restoring local
+        # rows for a Clerk identity that no longer exists would let JWT
+        # provisioning resurrect a usable account for a deleted sign-in, so
+        # only a *confirmed-alive* answer restores; a definitive "gone"
+        # proceeds as success, and "unknown" keeps the tombstones (the flow
+        # is idempotent — retrying completes either way, and the
+        # ``user.deleted`` webhook re-tombstones if deletion did land).
+        clerk_alive = await _clerk_user_exists(clerk_user_id)
+        if clerk_alive is True:
+            # A concurrent request with a still-valid JWT may have
+            # JIT-provisioned fresh rows during the window — tombstone those
+            # first so the restore can't leave duplicate active rows.
+            async with get_session() as session:
+                await session.execute(
+                    update(UserModel)
+                    .where(UserModel.clerk_user_id == clerk_user_id)
+                    .where(UserModel.id.notin_(original_row_ids))
+                    .where(UserModel.is_active == True)  # noqa: E712
+                    .values(is_active=False, deleted_at=utcnow())
+                )
+                await session.execute(
+                    update(UserModel)
+                    .where(UserModel.id.in_(original_row_ids))
+                    .values(is_active=True, deleted_at=None)
+                    .execution_options(include_deleted=True)
+                )
+                await session.commit()
+            # Contexts cached during the window may point at the
+            # now-tombstoned duplicate rows; drop them so the next request
+            # resolves the restored originals.
+            invalidate_cached_clerk_auth(clerk_user_id)
+            raise
+        if clerk_alive is None:
+            invalidate_cached_clerk_auth(clerk_user_id)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not confirm account deletion with the identity "
+                    "provider. Please retry."
+                ),
+            )
+        logger.warning(
+            "Clerk delete for %s errored but the user is already gone; "
+            "treating as success",
+            clerk_user_id,
+        )
+
+    # Point of no return: the Clerk account is gone. Nothing past here may
+    # fail the request — the UI must not report failure for a deletion that
+    # already happened. Sweep any rows a concurrent JIT provisioning revived
+    # between the tombstone commit and Clerk deletion, then drop contexts
+    # cached during that window. Other containers' caches age out within the
+    # 60s TTL, Clerk revoked the user's sessions above, and the
+    # ``user.deleted`` webhook is the cross-container safety net that
+    # re-tombstones any later revival.
+    try:
         async with get_session() as session:
             await session.execute(
                 update(UserModel)
                 .where(UserModel.clerk_user_id == clerk_user_id)
-                .where(UserModel.id.notin_(original_row_ids))
                 .where(UserModel.is_active == True)  # noqa: E712
                 .values(is_active=False, deleted_at=utcnow())
             )
-            await session.execute(
-                update(UserModel)
-                .where(UserModel.id.in_(original_row_ids))
-                .values(is_active=True, deleted_at=None)
-                .execution_options(include_deleted=True)
-            )
             await session.commit()
-        # Contexts cached during the window may point at the now-tombstoned
-        # duplicate rows; drop them so the next request resolves the
-        # restored originals.
-        invalidate_cached_clerk_auth(clerk_user_id)
-        raise
-
-    # Point of no return: the Clerk account is gone. Sweep any rows a
-    # concurrent JIT provisioning revived between the tombstone commit and
-    # Clerk deletion, then drop contexts cached during that window. Other
-    # containers' caches age out within the 60s TTL, Clerk revoked the
-    # user's sessions above, and the ``user.deleted`` webhook is the
-    # cross-container safety net that re-tombstones any later revival.
-    async with get_session() as session:
-        await session.execute(
-            update(UserModel)
-            .where(UserModel.clerk_user_id == clerk_user_id)
-            .where(UserModel.is_active == True)  # noqa: E712
-            .values(is_active=False, deleted_at=utcnow())
+    except Exception:
+        logger.exception(
+            "Account deletion: post-Clerk revived-row sweep failed for %s "
+            "(user.deleted webhook is the safety net)",
+            clerk_user_id,
         )
-        await session.commit()
     invalidate_cached_clerk_auth(clerk_user_id)
 
     # Tag ownership transfer runs best-effort per org, after the point of no
