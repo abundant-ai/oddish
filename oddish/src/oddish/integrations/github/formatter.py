@@ -335,7 +335,14 @@ def format_experiment_comment(
 
         for task in tasks:
             task_total = len(task.trials)
-            task_done = sum(1 for t in task.trials if t.status in ("success", "failed"))
+            # Skipped is terminal (counts as done), matching the header progress
+            # line — otherwise this table reads as still-running for a done,
+            # gate-skipped task.
+            task_done = sum(
+                1
+                for t in task.trials
+                if t.status in ("success", "failed", "skipped")
+            )
 
             if task.verdict_status == "success" and task.verdict:
                 verdict_emoji = (
