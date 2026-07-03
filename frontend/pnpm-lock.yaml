@@ -10,7 +10,7 @@ importers:
     dependencies:
       '@clerk/nextjs':
         specifier: 7.2.5
-        version: 7.2.5(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 7.2.5(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@lobehub/icons':
         specifier: 5.5.4
         version: 5.5.4(@lobehub/ui@4.38.4)(@types/react@19.2.14)(antd@6.3.1(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -67,7 +67,7 @@ importers:
         version: 2.1.2(@opentelemetry/api-logs@0.218.0)(@opentelemetry/api@1.9.1)(@opentelemetry/instrumentation@0.218.0(@opentelemetry/api@1.9.1))(@opentelemetry/resources@2.7.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-logs@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-metrics@2.7.1(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))
       '@vercel/speed-insights':
         specifier: ^2.0.0
-        version: 2.0.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
+        version: 2.0.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -85,7 +85,7 @@ importers:
         version: 1.12.0
       next:
         specifier: 16.2.6
-        version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+        version: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       prism-react-renderer:
         specifier: 2.4.1
         version: 2.4.1(react@19.2.5)
@@ -126,9 +126,15 @@ importers:
         specifier: 0.18.5
         version: 0.18.5
     devDependencies:
+      '@clerk/testing':
+        specifier: 2.2.2
+        version: 2.2.2(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@eslint/js':
         specifier: 9.39.2
         version: 9.39.2
+      '@playwright/test':
+        specifier: 1.61.1
+        version: 1.61.1
       '@tailwindcss/postcss':
         specifier: 4.2.4
         version: 4.2.4
@@ -347,6 +353,10 @@ packages:
   '@chevrotain/utils@12.0.0':
     resolution: {integrity: sha512-lB59uJoaGIfOOL9knQqQRfhl9g7x8/wqFkp13zTdkRu1huG9kg6IJs1O8hqj9rs6h7orGxHJUKb+mX3rPbWGhA==}
 
+  '@clerk/backend@3.10.0':
+    resolution: {integrity: sha512-+No8bg+3SQ76zfu199l4lwpi3z+RqmO8N33CDXPkAnhXt6cAZu4HPT0WvZ/GDpbi7ZqpDmmP9yXpCQNGwEd0+g==}
+    engines: {node: '>=20.9.0'}
+
   '@clerk/backend@3.3.0':
     resolution: {integrity: sha512-6KuOaIig4CQPSn23I7xExkGKKi2rE2PEH3mvhnA41fktv3LqtPSifRb0xjmJEAwSZwJ8QY6uzk/jDccNof2eUA==}
     engines: {node: '>=20.9.0'}
@@ -366,6 +376,18 @@ packages:
       react: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
       react-dom: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
 
+  '@clerk/shared@4.23.0':
+    resolution: {integrity: sha512-v4roxB9AwEVq56luLc9MtQ+RkVR66XZJGAfTbQXD0ArdW+fs1P/FhlKwm6OQfvDFNiCCVZA6GoP648t9dGtfrw==}
+    engines: {node: '>=20.9.0'}
+    peerDependencies:
+      react: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
+      react-dom: ^18.0.0 || ~19.0.3 || ~19.1.4 || ~19.2.3 || ~19.3.0-0
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+
   '@clerk/shared@4.8.3':
     resolution: {integrity: sha512-HZViZBCTfOR2OreSBDMXcIRPgYiiYCE+GCCPrpjq/ZPcA6OsGiRCIQgUoGgGdAoFgr6Hk0TT00hnVK7g0qRKqQ==}
     engines: {node: '>=20.9.0'}
@@ -376,6 +398,18 @@ packages:
       react:
         optional: true
       react-dom:
+        optional: true
+
+  '@clerk/testing@2.2.2':
+    resolution: {integrity: sha512-QrPBMMzncjj2zxnMYyUkLqPrwGQMoZCH3tobr66b1OgCc0LKQnGrBj98aXugvXMMeZAGKc10sdbwZpiG513cfQ==}
+    engines: {node: '>=20.9.0'}
+    peerDependencies:
+      '@playwright/test': ^1
+      cypress: ^13 || ^14 || ^15
+    peerDependenciesMeta:
+      '@playwright/test':
+        optional: true
+      cypress:
         optional: true
 
   '@dnd-kit/accessibility@3.1.1':
@@ -1179,6 +1213,11 @@ packages:
   '@pierre/theme@0.0.28':
     resolution: {integrity: sha512-1j/H/fECBuc9dEvntdWI+l435HZapw+RCJTlqCA6BboQ5TjlnE005j/ROWutXIs8aq5OAc82JI2Kwk4A1WWBgw==}
     engines: {vscode: ^1.0.0}
+
+  '@playwright/test@1.61.1':
+    resolution: {integrity: sha512-8nKv6+0RJSL9FE4jYOEGXnPeM/Hg12qZpmqzZjRh3qM0Y7c3z1mrOTfFLids72RDQYVh9WpLEfR5WdpNX4fkig==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   '@primer/octicons@19.24.1':
     resolution: {integrity: sha512-vgtSHq8IIf3oo/HjPGj0B7NkeatSyyw5mupMjXByPI1gY6uRZ/UQdv7uSJnSOCJYQJF3lVDUwiwp9wM71MYIgA==}
@@ -2336,6 +2375,9 @@ packages:
   '@tailwindcss/postcss@4.2.4':
     resolution: {integrity: sha512-wgAVj6nUWAolAu8YFvzT2cTBIElWHkjZwFYovF+xsqKsW2ADxM/X2opxj5NsF/qVccAOjRNe8X2IdPzMsWyHTg==}
 
+  '@tanstack/query-core@5.101.2':
+    resolution: {integrity: sha512-hH5MLoJhF7KaIGd7q3xTXGXvslI+GYlM1Z/35aSHHWaCJWB7XvTSHYuV3eM7tw+aE0mT/xMro4M4Q9rCGHT0lw==}
+
   '@tanstack/query-core@5.90.16':
     resolution: {integrity: sha512-MvtWckSVufs/ja463/K4PyJeqT+HMlJWtw6PrCpywznd2NSgO3m4KwO9RqbFqGg6iDE8vVMFWMeQI4Io3eEYww==}
 
@@ -3140,6 +3182,10 @@ packages:
   dompurify@3.4.1:
     resolution: {integrity: sha512-JahakDAIg1gyOm7dlgWSDjV4n7Ip2PKR55NIT6jrMfIgLFgWo81vdr1/QGqWtFNRqXP9UV71oVePtjqS2ebnPw==}
 
+  dotenv@17.2.2:
+    resolution: {integrity: sha512-Sf2LSQP+bOlhKWWyhFsn0UsfdK/kCWRv1iuA2gXAwt3dyNabr6QSj00I2V10pidqz69soatm9ZwZvpQMTIOd5Q==}
+    engines: {node: '>=12'}
+
   duck@0.1.12:
     resolution: {integrity: sha512-wkctla1O6VfP89gQ+J/yDesM0S7B7XLXjKGzXxMDVFg7uEn706niAtyYovKbyq1oT9YwDcly721/iUWoc8MVRg==}
 
@@ -3393,6 +3439,11 @@ packages:
         optional: true
       react-dom:
         optional: true
+
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
 
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
@@ -3763,6 +3814,10 @@ packages:
   js-cookie@3.0.5:
     resolution: {integrity: sha512-cEiJEAEoIbWfCZYKWhVwFuvPX1gETRYPw6LlaTKoxD3s2AkXzkCjnp6h0V77ozyqj0jakteJ4YqDJT830+lVGw==}
     engines: {node: '>=14'}
+
+  js-cookie@3.0.7:
+    resolution: {integrity: sha512-z/wZZgDrkNV1eA0ULjM/F9/50Ya8fbzgKneSpoPsXSGd0KnpdtHfOZWK+GcwLk+EZbS4F9RBhU+K2RgzuDaItw==}
+    engines: {node: '>=20'}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -4406,6 +4461,16 @@ packages:
 
   pkg-types@1.3.1:
     resolution: {integrity: sha512-/Jm5M4RvtBFVkKWRu2BLUTNP8/M2a+UwuAX+ae4770q1qVGtfjG+WTCupoZixokjmHiry8uI+dlY8KXYV5HVVQ==}
+
+  playwright-core@1.61.1:
+    resolution: {integrity: sha512-h7Qlt6m4REp25qvIdvbDtVmD4LqVXfpRxhORv9L0jzETM05p4fuPJ3dKyuSXQxDSbXnmS79HAgi9589lGSpLkg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  playwright@1.61.1:
+    resolution: {integrity: sha512-DWnY5o3YbLWK4GovuAVwpqL+1VwGNdUGrRr++8j8PtQQzvAVZUIMjKQ90fY689sEJZJBbZVw1rXaOKSTitkzPQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   points-on-curve@0.2.0:
     resolution: {integrity: sha512-0mYKnYYe9ZcqMCWhUjItv/oHjvgEsfKvnUTg8sAtnHr3GVy7rGkXCb6d5cSyqrWqL4k81b9CPg3urd+T7aop3A==}
@@ -5669,6 +5734,15 @@ snapshots:
 
   '@chevrotain/utils@12.0.0': {}
 
+  '@clerk/backend@3.10.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+    dependencies:
+      '@clerk/shared': 4.23.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      standardwebhooks: 1.0.0
+      tslib: 2.8.1
+    transitivePeerDependencies:
+      - react
+      - react-dom
+
   '@clerk/backend@3.3.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@clerk/shared': 4.8.3(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -5678,12 +5752,12 @@ snapshots:
       - react
       - react-dom
 
-  '@clerk/nextjs@7.2.5(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+  '@clerk/nextjs@7.2.5(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@clerk/backend': 3.3.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@clerk/react': 6.4.3(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       '@clerk/shared': 4.8.3(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
-      next: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      next: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
       server-only: 0.0.1
@@ -5696,6 +5770,16 @@ snapshots:
       react-dom: 19.2.5(react@19.2.5)
       tslib: 2.8.1
 
+  '@clerk/shared@4.23.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+    dependencies:
+      '@tanstack/query-core': 5.101.2
+      dequal: 2.0.3
+      glob-to-regexp: 0.4.1
+      js-cookie: 3.0.7
+    optionalDependencies:
+      react: 19.2.5
+      react-dom: 19.2.5(react@19.2.5)
+
   '@clerk/shared@4.8.3(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
     dependencies:
       '@tanstack/query-core': 5.90.16
@@ -5706,6 +5790,17 @@ snapshots:
     optionalDependencies:
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
+
+  '@clerk/testing@2.2.2(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
+    dependencies:
+      '@clerk/backend': 3.10.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      '@clerk/shared': 4.23.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      dotenv: 17.2.2
+    optionalDependencies:
+      '@playwright/test': 1.61.1
+    transitivePeerDependencies:
+      - react
+      - react-dom
 
   '@dnd-kit/accessibility@3.1.1(react@19.2.5)':
     dependencies:
@@ -6558,6 +6653,10 @@ snapshots:
       shiki: 3.23.0
 
   '@pierre/theme@0.0.28': {}
+
+  '@playwright/test@1.61.1':
+    dependencies:
+      playwright: 1.61.1
 
   '@primer/octicons@19.24.1':
     dependencies:
@@ -7784,6 +7883,8 @@ snapshots:
       postcss: 8.5.10
       tailwindcss: 4.2.4
 
+  '@tanstack/query-core@5.101.2': {}
+
   '@tanstack/query-core@5.90.16': {}
 
   '@tanstack/react-virtual@3.13.24(react-dom@19.2.5(react@19.2.5))(react@19.2.5)':
@@ -8087,9 +8188,9 @@ snapshots:
       '@opentelemetry/sdk-metrics': 2.7.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base': 2.7.1(@opentelemetry/api@1.9.1)
 
-  '@vercel/speed-insights@2.0.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)':
+  '@vercel/speed-insights@2.0.0(next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5))(react@19.2.5)':
     optionalDependencies:
-      next: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
+      next: 16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       react: 19.2.5
 
   '@xmldom/xmldom@0.8.13': {}
@@ -8112,7 +8213,7 @@ snapshots:
       '@types/js-cookie': 3.0.6
       dayjs: 1.11.20
       intersection-observer: 0.12.2
-      js-cookie: 3.0.5
+      js-cookie: 3.0.7
       lodash: 4.18.1
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
@@ -8710,6 +8811,8 @@ snapshots:
     optionalDependencies:
       '@types/trusted-types': 2.0.7
 
+  dotenv@17.2.2: {}
+
   duck@0.1.12:
     dependencies:
       underscore: 1.13.8
@@ -9070,6 +9173,9 @@ snapshots:
       '@emotion/is-prop-valid': 1.4.0
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
+
+  fsevents@2.3.2:
+    optional: true
 
   function-bind@1.1.2: {}
 
@@ -9521,6 +9627,8 @@ snapshots:
   jiti@2.6.1: {}
 
   js-cookie@3.0.5: {}
+
+  js-cookie@3.0.7: {}
 
   js-tokens@4.0.0: {}
 
@@ -10333,7 +10441,7 @@ snapshots:
 
   natural-compare@1.4.0: {}
 
-  next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5):
+  next@16.2.6(@babel/core@7.29.0)(@opentelemetry/api@1.9.1)(@playwright/test@1.61.1)(react-dom@19.2.5(react@19.2.5))(react@19.2.5):
     dependencies:
       '@next/env': 16.2.6
       '@swc/helpers': 0.5.15
@@ -10353,6 +10461,7 @@ snapshots:
       '@next/swc-win32-arm64-msvc': 16.2.6
       '@next/swc-win32-x64-msvc': 16.2.6
       '@opentelemetry/api': 1.9.1
+      '@playwright/test': 1.61.1
       sharp: 0.34.5
     transitivePeerDependencies:
       - '@babel/core'
@@ -10542,6 +10651,14 @@ snapshots:
       confbox: 0.1.8
       mlly: 1.8.2
       pathe: 2.0.3
+
+  playwright-core@1.61.1: {}
+
+  playwright@1.61.1:
+    dependencies:
+      playwright-core: 1.61.1
+    optionalDependencies:
+      fsevents: 2.3.2
 
   points-on-curve@0.2.0: {}
 
