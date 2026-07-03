@@ -50,15 +50,12 @@ class _FakeSession:
 
 @pytest.mark.asyncio
 async def test_enrich_promotes_member_name() -> None:
-    dashboard = {
-        "experiments": [
-            {
-                "id": "e1",
-                "owner_user_id": "user_1",
-                "author": {"name": "charlesyhuang", "source": "github"},
-            }
-        ]
+    original_row = {
+        "id": "e1",
+        "owner_user_id": "user_1",
+        "author": {"name": "charlesyhuang", "source": "github"},
     }
+    dashboard = {"experiments": [original_row]}
     session = _FakeSession([_user(id="user_1", name="Charles Huang")])
 
     await _enrich_experiment_authors(session, dashboard)
@@ -67,6 +64,11 @@ async def test_enrich_promotes_member_name() -> None:
         "name": "Charles Huang",
         "source": "member",
     }
+    # The original row object (shared with the core's experiments cache) must
+    # NOT be mutated: enrichment replaces rows with shallow copies so the
+    # cached github/api fallback survives for later requests in the TTL.
+    assert original_row["author"] == {"name": "charlesyhuang", "source": "github"}
+    assert dashboard["experiments"][0] is not original_row
 
 
 @pytest.mark.asyncio

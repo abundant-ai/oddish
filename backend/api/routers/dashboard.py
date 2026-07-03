@@ -35,6 +35,13 @@ async def _enrich_experiment_authors(
     keep the core value. ``include_deleted=True`` mirrors the cost path so a
     historical owner who has since been deactivated still resolves. Email is
     intentionally never promoted here (PII on a widely-visible page).
+
+    The experiment row dicts are the *same objects* the core layer stores in
+    its module-level experiments cache, so this function must never mutate
+    them: doing so would destroy the cached github/api fallback for the rest
+    of the cache TTL (and race concurrent requests sharing the cached list).
+    Enriched rows are shallow copies; the top-level ``dashboard`` dict is a
+    fresh per-request merge, so reassigning its ``experiments`` key is safe.
     """
     experiments = dashboard.get("experiments")
     if not experiments:
@@ -61,13 +68,15 @@ async def _enrich_experiment_authors(
     if not names:
         return
 
+    enriched: list[Any] = []
     for row in experiments:
-        if not isinstance(row, dict):
-            continue
-        owner_id = row.get("owner_user_id")
-        member_name = names.get(owner_id) if owner_id else None
+        member_name = (
+            names.get(row.get("owner_user_id")) if isinstance(row, dict) else None
+        )
         if member_name:
-            row["author"] = {"name": member_name, "source": "member"}
+            row = {**row, "author": {"name": member_name, "source": "member"}}
+        enriched.append(row)
+    dashboard["experiments"] = enriched
 
 
 def _make_timing_recorder(request: Request) -> TimingRecorder:
@@ -179,9 +188,9 @@ async def get_dashboard(
             record_timing=_make_timing_recorder(request),
         )
         # Resolve canonical member names for the Author column. Runs on every
-        # request (cache hit or miss) so cached and fresh responses agree; the
-        # core layer stores the pre-enrichment value plus ``owner_user_id``, and
-        # this override is idempotent.
+        # request (cache hit or miss) so cached and fresh responses agree. The
+        # enrichment copies rows rather than mutating them, so the core's
+        # cached github/api fallback values survive intact.
         if include_experiments:
             enrich_started_at = now()
             await _enrich_experiment_authors(session, dashboard)
