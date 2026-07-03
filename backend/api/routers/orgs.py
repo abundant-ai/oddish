@@ -228,7 +228,12 @@ async def _clerk_user_exists(clerk_user_id: str) -> bool | None:
             return False
         response.raise_for_status()
         return True
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        logger.warning(
+            "Clerk existence probe for %s failed (treating as unknown): %s",
+            clerk_user_id,
+            exc,
+        )
         return None
 
 
@@ -285,18 +290,32 @@ async def delete_my_account(
     original_row_ids = [row_id for _, row_id in tombstoned]
     try:
         await _delete_clerk_user(clerk_user_id)
-    except Exception:
-        # Before undoing anything, check whether the Clerk account actually
-        # survived: the delete may have succeeded before a timeout/network
-        # error, or a parallel DELETE /users/me may have won. Restoring local
-        # rows for a Clerk identity that no longer exists would let JWT
-        # provisioning resurrect a usable account for a deleted sign-in, so
-        # only a *confirmed-alive* answer restores; a definitive "gone"
-        # proceeds as success, and "unknown" keeps the tombstones (the flow
-        # is idempotent — retrying completes either way, and the
-        # ``user.deleted`` webhook re-tombstones if deletion did land).
+    except Exception as delete_exc:
+        logger.warning(
+            "Account deletion: Clerk delete for %s failed: %s",
+            clerk_user_id,
+            delete_exc,
+        )
+        # Check whether the Clerk account actually survived: the delete may
+        # have succeeded before a timeout/network error, or a parallel
+        # DELETE /users/me may have won.
         clerk_alive = await _clerk_user_exists(clerk_user_id)
-        if clerk_alive is True:
+        if clerk_alive is False:
+            logger.warning(
+                "Clerk delete for %s errored but the user is already gone; "
+                "treating as success",
+                clerk_user_id,
+            )
+        else:
+            # Confirmed alive OR unknown: restore the tombstones and surface
+            # the real error. Keeping tombstones on "unknown" would brick the
+            # account whenever Clerk is persistently unreachable or the
+            # secret is misconfigured (both calls fail identically): locally
+            # deactivated, Clerk sign-in still alive. The opposite mistake —
+            # restoring rows for an identity whose deletion actually landed —
+            # is recoverable: the sign-in is gone, no new JWT can use the
+            # rows, and the ``user.deleted`` webhook re-tombstones them.
+            #
             # A concurrent request with a still-valid JWT may have
             # JIT-provisioned fresh rows during the window — tombstone those
             # first so the restore can't leave duplicate active rows.
@@ -319,21 +338,14 @@ async def delete_my_account(
             # now-tombstoned duplicate rows; drop them so the next request
             # resolves the restored originals.
             invalidate_cached_clerk_auth(clerk_user_id)
-            raise
-        if clerk_alive is None:
-            invalidate_cached_clerk_auth(clerk_user_id)
+            # Propagate the underlying failure so the dialog shows an
+            # actionable reason instead of a generic retry message.
+            if isinstance(delete_exc, HTTPException):
+                raise delete_exc
             raise HTTPException(
                 status_code=503,
-                detail=(
-                    "Could not confirm account deletion with the identity "
-                    "provider. Please retry."
-                ),
-            )
-        logger.warning(
-            "Clerk delete for %s errored but the user is already gone; "
-            "treating as success",
-            clerk_user_id,
-        )
+                detail=f"Could not delete your sign-in account: {delete_exc}",
+            ) from delete_exc
 
     # Point of no return: the Clerk account is gone. Nothing past here may
     # fail the request — the UI must not report failure for a deletion that
