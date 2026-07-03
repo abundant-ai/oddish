@@ -12,8 +12,24 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
+from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.db import ExperimentModel, TrialModel, utcnow
 from oddish.model_pricing import estimate_cost_usd
+
+
+def _normalize_owner_user_id(owner_user_id: str | None) -> str | None:
+    """Collapse the ``__unattributed__`` sentinel owner to ``None``.
+
+    The cloud sweep stamps ``EXPERIMENTS_UNATTRIBUTED_OWNER`` onto experiments
+    no org member claims so the dashboard Mine filter can use the indexed
+    ``owner_user_id`` fast path. That sentinel is an internal string and must
+    never surface as a cost-breakdown owner id: normalizing it to ``None`` here
+    merges the spend into the existing unattributed bucket (``by_user`` /
+    experiment owner fields / the by-user series).
+    """
+    if owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER:
+        return None
+    return owner_user_id
 
 
 # ---------------------------------------------------------------------------
@@ -1366,7 +1382,7 @@ async def _cost_time_series(
             user_per_bucket,
             user_totals,
             bstart,
-            row.owner_user_id or _SERIES_UNATTRIBUTED_KEY,
+            _normalize_owner_user_id(row.owner_user_id) or _SERIES_UNATTRIBUTED_KEY,
             cost,
         )
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
@@ -1505,6 +1521,7 @@ async def get_cost_breakdown_core(
     total_estimated = 0.0
 
     for row in rows:
+        owner_user_id = _normalize_owner_user_id(row.owner_user_id)
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
@@ -1548,7 +1565,7 @@ async def get_cost_breakdown_core(
                 "experiment_id": row.experiment_id,
                 "name": row.exp_name,
                 "org_id": row.exp_org_id,
-                "owner_user_id": row.owner_user_id,
+                "owner_user_id": owner_user_id,
                 "created_at": row.exp_created_at,
                 "last_activity_at": row.exp_last_activity_at,
                 "trial_count": 0,
@@ -1577,10 +1594,10 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
-        user = by_user.get(row.owner_user_id)
+        user = by_user.get(owner_user_id)
         if user is None:
-            user = by_user[row.owner_user_id] = {
-                "owner_user_id": row.owner_user_id,
+            user = by_user[owner_user_id] = {
+                "owner_user_id": owner_user_id,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
                 "input_tokens": 0,
