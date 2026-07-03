@@ -33,6 +33,7 @@ import pytest_asyncio
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.admin import get_cost_breakdown_core  # noqa: E402
+from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER  # noqa: E402
 from oddish.db import (  # noqa: E402
     ExperimentModel,
     TaskModel,
@@ -59,6 +60,8 @@ E1 = f"costexp-1-{_RUN}"
 E2 = f"costexp-2-{_RUN}"
 E3 = f"costexp-3-{_RUN}"
 E4 = f"costexp-deleted-{_RUN}"
+# Owned by the ``__unattributed__`` sentinel: must normalize to the None owner.
+E5 = f"costexp-sentinel-{_RUN}"
 
 
 def _approx(a: float | None, b: float | None, tol: float = 1e-6) -> bool:
@@ -113,9 +116,23 @@ async def seeded_cost_data():
                     last_activity_at=recent,
                     deleted_at=now,
                 ),
+                ExperimentModel(
+                    id=E5,
+                    name="cost-exp-sentinel",
+                    org_id=ORG_2,
+                    owner_user_id=EXPERIMENTS_UNATTRIBUTED_OWNER,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
             ]
         )
-        for exp_id, org_id in ((E1, ORG_1), (E2, ORG_1), (E3, ORG_2), (E4, ORG_1)):
+        for exp_id, org_id in (
+            (E1, ORG_1),
+            (E2, ORG_1),
+            (E3, ORG_2),
+            (E4, ORG_1),
+            (E5, ORG_2),
+        ):
             session.add(
                 TaskModel(
                     id=f"{exp_id}-task",
@@ -160,13 +177,16 @@ async def seeded_cost_data():
                 ),
                 # Old trial in E1: out of the 7d window, in all-time.
                 _trial(E1, 3, model="claude-opus-4-8", cost_usd=7.0, created_at=old),
+                # Sentinel-owned experiment: its spend must merge into the
+                # unattributed (None) owner bucket, never surface the sentinel.
+                _trial(E5, 0, model="claude-opus-4-8", cost_usd=4.0, created_at=recent),
             ]
         )
 
     yield
 
     async with get_session() as session:
-        for exp_id in (E1, E2, E3, E4):
+        for exp_id in (E1, E2, E3, E4, E5):
             await session.execute(
                 TrialModel.__table__.delete().where(TrialModel.experiment_id == exp_id)
             )
@@ -288,6 +308,53 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
     assert "__unattributed__" in user_keys
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_sentinel_owner_normalized_to_unattributed(
+    seeded_cost_data,
+):
+    """The ``__unattributed__`` sentinel owner never leaks to the cost UI.
+
+    A sentinel-owned experiment (E5) must (1) report a ``None`` owner on its
+    experiment row and (2) fold its spend into the same unattributed bucket as
+    the genuinely-null-owner experiment (E3), rather than minting a distinct
+    ``__unattributed__`` owner row.
+    """
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(
+            session, window_days=7, experiment_limit=500, user_limit=500
+        )
+
+    exps = {e.experiment_id: e for e in result.experiments}
+
+    # Both the sentinel-owned (E5) and the genuinely-null-owner (E3) experiment
+    # report a None owner on their rows -- the sentinel is normalized away.
+    assert exps[E5].owner_user_id is None, exps[E5].owner_user_id
+    assert _approx(exps[E5].cost_usd, 4.0)
+    assert exps[E3].owner_user_id is None, exps[E3].owner_user_id
+
+    # No experiment / by-user row anywhere carries the raw sentinel string
+    # (the assertion that most directly proves the leak is fixed).
+    assert all(e.owner_user_id != EXPERIMENTS_UNATTRIBUTED_OWNER for e in exps.values())
+    owner_ids = {u.owner_user_id for u in result.by_user}
+    assert EXPERIMENTS_UNATTRIBUTED_OWNER not in owner_ids
+
+    # E3 (null owner) and E5 (sentinel owner) merge into the one unattributed
+    # (None) by-user row. Assert lower bounds only: the aggregation is global,
+    # so a shared DB may carry other unattributed spend/experiments.
+    by_user = {u.owner_user_id: u for u in result.by_user}
+    assert None in by_user
+    assert by_user[None].cost_usd >= 1.5 + 4.0 - 1e-6, by_user[None].cost_usd
+    assert by_user[None].trial_count >= 2
+    assert by_user[None].experiment_count >= 2
+
+    # The by-user series still buckets both under the "Unattributed" label and
+    # never exposes a real sentinel-keyed series.
+    unattributed_keys = [
+        k for k in result.series_by_user.keys if k.key == "__unattributed__"
+    ]
+    assert unattributed_keys and unattributed_keys[0].label == "Unattributed"
 
 
 @pytest.mark.asyncio
