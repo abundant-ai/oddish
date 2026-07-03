@@ -275,6 +275,8 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert _approx(by_user[USER_B].cost_usd, _EXPECTED_EST + 0.25)
     assert by_user[USER_B].experiment_count == 2
     assert _approx(by_user[None].cost_usd, 1.5)
+    # The unattributed bucket spans orgs, so it must not claim one.
+    assert by_user[None].org_id is None
 
     # Experiments are ranked by descending cost.
     costs = [e.cost_usd for e in result.experiments]
