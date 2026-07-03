@@ -113,8 +113,14 @@ async def _get_quota_snapshot(
     *,
     org_id: str | None,
     task_ids: list[str],
+    experiment_id: str,
 ) -> QuotaSnapshot | None:
     """Best-effort daily quota usage for the run's billed user.
+
+    The payer lookup is scoped to trials of the experiment being rendered
+    (mirroring _build_task_summary): a shared task can also have trials in
+    *other* experiments billed to a different user, and those must not
+    supply the quota shown on this PR.
 
     Returns None whenever quotas aren't in play: quota_mode off (the hosted
     backend forces it off when the quotas schema is missing, and self-hosted
@@ -130,6 +136,7 @@ async def _get_quota_snapshot(
             select(TrialModel.billed_user_id)
             .where(
                 TrialModel.task_id.in_(task_ids),
+                TrialModel.experiment_id == experiment_id,
                 TrialModel.billed_user_id.is_not(None),
             )
             .limit(1)
@@ -240,6 +247,7 @@ async def _update_pr_comment_for_task(
                 session,
                 org_id=task.org_id,
                 task_ids=[t.id for t in experiment_tasks],
+                experiment_id=resolved_experiment_id,
             )
             comment_body = format_experiment_comment(
                 tasks=task_summaries,
@@ -250,7 +258,10 @@ async def _update_pr_comment_for_task(
             )
         else:
             quota = await _get_quota_snapshot(
-                session, org_id=task.org_id, task_ids=[task.id]
+                session,
+                org_id=task.org_id,
+                task_ids=[task.id],
+                experiment_id=resolved_experiment_id,
             )
             comment_body = format_task_comment(
                 task=task_summary,

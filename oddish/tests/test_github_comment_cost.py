@@ -112,9 +112,11 @@ class _FakeSession:
     def __init__(self, billed_user_id):
         self._billed_user_id = billed_user_id
         self.scalar_calls = 0
+        self.last_stmt = None
 
-    async def scalar(self, _stmt):
+    async def scalar(self, stmt):
         self.scalar_calls += 1
+        self.last_stmt = stmt
         return self._billed_user_id
 
 
@@ -124,7 +126,9 @@ def test_quota_snapshot_none_when_mode_off(monkeypatch):
     )
     session = _FakeSession("user-1")
     result = asyncio.run(
-        notifier._get_quota_snapshot(session, org_id="org-1", task_ids=["task-1"])
+        notifier._get_quota_snapshot(
+            session, org_id="org-1", task_ids=["task-1"], experiment_id="exp-1"
+        )
     )
     assert result is None
     assert session.scalar_calls == 0  # never touches the DB when off
@@ -137,7 +141,10 @@ def test_quota_snapshot_none_without_org_or_billed_user(monkeypatch):
     assert (
         asyncio.run(
             notifier._get_quota_snapshot(
-                _FakeSession("user-1"), org_id=None, task_ids=["task-1"]
+                _FakeSession("user-1"),
+                org_id=None,
+                task_ids=["task-1"],
+                experiment_id="exp-1",
             )
         )
         is None
@@ -145,7 +152,10 @@ def test_quota_snapshot_none_without_org_or_billed_user(monkeypatch):
     assert (
         asyncio.run(
             notifier._get_quota_snapshot(
-                _FakeSession(None), org_id="org-1", task_ids=["task-1"]
+                _FakeSession(None),
+                org_id="org-1",
+                task_ids=["task-1"],
+                experiment_id="exp-1",
             )
         )
         is None
@@ -167,12 +177,16 @@ def test_quota_snapshot_reads_usage_and_limit(monkeypatch):
     monkeypatch.setattr(notifier, "sum_cost_usd", fake_sum)
     monkeypatch.setattr(notifier, "get_effective_limit", fake_limit)
 
+    session = _FakeSession("user-1")
     result = asyncio.run(
         notifier._get_quota_snapshot(
-            _FakeSession("user-1"), org_id="org-1", task_ids=["task-1"]
+            session, org_id="org-1", task_ids=["task-1"], experiment_id="exp-1"
         )
     )
     assert result == QuotaSnapshot(used_usd=41.2, limit_usd=100.0)
+    # The payer lookup must be scoped to the rendered experiment: a shared
+    # task's trials in other experiments (other payers) must not leak in.
+    assert "experiment_id" in str(session.last_stmt)
 
 
 def test_quota_snapshot_swallows_query_errors(monkeypatch):
@@ -186,7 +200,7 @@ def test_quota_snapshot_swallows_query_errors(monkeypatch):
 
     result = asyncio.run(
         notifier._get_quota_snapshot(
-            _BoomSession(), org_id="org-1", task_ids=["task-1"]
+            _BoomSession(), org_id="org-1", task_ids=["task-1"], experiment_id="exp-1"
         )
     )
     assert result is None
