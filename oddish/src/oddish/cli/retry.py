@@ -82,13 +82,22 @@ def _post(api_url: str, path: str, payload: dict | None = None) -> httpx.Respons
         return client.post(f"{api_url}{path}", json=payload)
 
 
-def _failed_trial_ids(task: dict) -> list[str]:
-    """Live, failed trial ids for a task summary payload."""
+def _failed_trial_ids(task: dict, *, include_skipped: bool = False) -> list[str]:
+    """Live, retryable trial ids for a task summary payload.
+
+    Bulk retry targets FAILED trials. Gate-``skipped`` trials are excluded by
+    default (they were intentionally gated out; re-running would just re-skip
+    them); pass ``include_skipped=True`` (from ``--no-baseline-gate``) to
+    re-run them ungated too.
+    """
+    statuses = set(_RETRYABLE_BULK_STATUSES)
+    if include_skipped:
+        statuses.add("skipped")
     ids: list[str] = []
     for trial in task.get("trials", []) or []:
         if trial.get("superseded_by_trial_id"):
             continue
-        if str(trial.get("status", "")).lower() in _RETRYABLE_BULK_STATUSES:
+        if str(trial.get("status", "")).lower() in statuses:
             tid = trial.get("id")
             if tid:
                 ids.append(tid)
@@ -221,7 +230,7 @@ def _run_trial_retries(
         task = get_task_summary(api_url, target_id)
         if task is None:
             raise typer.BadParameter(f"Task '{target_id}' not found.")
-        trial_ids = _failed_trial_ids(task)
+        trial_ids = _failed_trial_ids(task, include_skipped=not gate_baselines)
         if not trial_ids:
             return {
                 "kind": "trials",
@@ -247,7 +256,7 @@ def _run_trial_retries(
     tasks = get_experiment_tasks(api_url, target_id) or []
     trial_ids = []
     for task in tasks:
-        trial_ids.extend(_failed_trial_ids(task))
+        trial_ids.extend(_failed_trial_ids(task, include_skipped=not gate_baselines))
     if not trial_ids:
         return {
             "kind": "trials",

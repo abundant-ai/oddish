@@ -136,7 +136,11 @@ async def retry_trial_core(
             ),
         )
 
-    terminal_states = {TrialStatus.FAILED, TrialStatus.SUCCESS}
+    terminal_states = {
+        TrialStatus.FAILED,
+        TrialStatus.SUCCESS,
+        TrialStatus.SKIPPED,
+    }
     is_stuck = old_trial.status in {
         TrialStatus.RUNNING,
         TrialStatus.RETRYING,

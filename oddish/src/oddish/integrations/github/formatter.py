@@ -87,6 +87,8 @@ def _trial_status_cell(trial: TrialSummary) -> str:
         return "\u23f3 Queued"
     if trial.status == "running":
         return "\U0001f504 Running"
+    if trial.status == "skipped":
+        return "\u2298 Skipped"
     if trial.status == "failed":
         return f"\u274c Failed ({_format_duration(trial.duration_seconds)})"
     return f"\u2705 Done ({_format_duration(trial.duration_seconds)})"

@@ -1889,6 +1889,12 @@ def format_trial_status_detail(trial: dict[str, Any]) -> str:
     if error_message_lower in {"cancelled by user", "canceled by user"}:
         return "[yellow]cancelled by user[/yellow]"
 
+    # Gate-skipped trials carry harbor_stage='cancelled'; show "skipped" (with
+    # its reason) rather than a bare "cancelled".
+    if status == "skipped":
+        detail = escape(_format_status_detail_text(error_message or "skipped"))
+        return f"[dim]{detail}[/dim]"
+
     if harbor_stage_lower in {"cancelled", "canceled"}:
         return "[yellow]cancelled[/yellow]"
 

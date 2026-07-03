@@ -338,6 +338,7 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     trialCount: v.trial_count,
     completed: v.completed_count,
     failed: v.failed_count,
+    skipped: 0,
     passCount: v.pass_count,
     partialCount: v.partial_count,
     failCount: v.fail_count,

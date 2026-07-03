@@ -930,6 +930,9 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Gate-skipped trials never ran -> exclude from all metrics (counts,
+        # pass-rate denominator, buckets) so they don't deflate the numbers.
+        TrialModel.status != TrialStatus.SKIPPED,
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -1075,6 +1078,9 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # Gate-skipped trials never ran -> exclude from all metrics (counts,
+        # pass-rate denominator, buckets) so they don't deflate the numbers.
+        TrialModel.status != TrialStatus.SKIPPED,
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)

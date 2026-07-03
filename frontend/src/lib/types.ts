@@ -11,7 +11,13 @@ type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "retrying"
+  | "skipped";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
