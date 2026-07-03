@@ -111,10 +111,15 @@ async def inflight_reserved_usd(
 async def get_effective_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:
+    # ``deleted_at IS NULL`` matches the soft-delete convention + the S5 rollout
+    # docs. Override removal is currently a hard DELETE (orgs.py), so there are
+    # no soft-deleted rows today, but this keeps a removed override from ever
+    # enforcing an old limit if a soft-delete path is later introduced.
     override_limit_usd = await session.scalar(
         text(
             "SELECT limit_usd FROM quotas "
-            "WHERE org_id = :org_id AND user_id = :user_id"
+            "WHERE org_id = :org_id AND user_id = :user_id "
+            "AND deleted_at IS NULL"
         ),
         {"org_id": org_id, "user_id": user_id},
     )

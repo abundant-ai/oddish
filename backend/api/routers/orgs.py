@@ -199,6 +199,7 @@ async def list_member_quotas(
         override_rows = await session.execute(
             select(QuotaModel.user_id, QuotaModel.limit_usd).where(
                 QuotaModel.org_id == auth.org_id,
+                QuotaModel.deleted_at.is_(None),
             )
         )
         override_limit_by_user_id = dict(override_rows.all())

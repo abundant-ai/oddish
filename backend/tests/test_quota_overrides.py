@@ -248,3 +248,41 @@ async def test_put_quota_rejects_full_api_key(org_with_full_key):
             headers={"Authorization": f"Bearer {raw_key}"},
         )
     assert response.status_code == 403
+
+
+# --- soft-deleted overrides never enforce ---------------------------------------
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_effective_limit_ignores_soft_deleted_override(org_with_member):
+    """A soft-deleted override row must not enforce a stale limit: the payer
+    falls back to the default, and reviving the row restores the override."""
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from models import QuotaModel
+    from oddish.config import settings
+    from oddish.core.quotas import get_effective_limit
+
+    org_id, _admin, member_a = org_with_member
+    async with get_session() as session:
+        override = QuotaModel(
+            org_id=org_id,
+            user_id=member_a.id,
+            limit_usd=Decimal("3.00"),
+            deleted_at=datetime.now(timezone.utc),
+        )
+        session.add(override)
+        await session.flush()
+
+        # Tombstoned override is invisible -> configured default, never the 3.00.
+        soft_deleted = await get_effective_limit(session, org_id, member_a.id)
+        assert soft_deleted == settings.default_daily_quota_usd
+        assert soft_deleted != Decimal("3.00")
+
+        # Reviving the same row (clearing the tombstone) restores the override.
+        override.deleted_at = None
+        await session.flush()
+        revived = await get_effective_limit(session, org_id, member_a.id)
+        assert revived == Decimal("3.00")
