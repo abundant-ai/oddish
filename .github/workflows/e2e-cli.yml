@@ -1,0 +1,79 @@
+name: E2E CLI Smoke
+
+# Runs the opt-in end-to-end CLI suite (backend/tests/e2e) against a real
+# uvicorn server, the real oddish CLI subprocess, and a real Postgres. This is
+# the repo's only pytest job in CI: the ASGITransport unit tests never boot a
+# socket or exercise the CLI, so a bug in wire framing, the uvicorn lifespan, or
+# how `oddish run` builds its payload is invisible to them and to every other
+# workflow here. See docs/e2e-test-plan.md for what each path proves.
+#
+# The job runs directly on ubuntu-latest (NOT in a job container) on purpose:
+# the e2e conftest hard-refuses any non-localhost DB host, and a job container
+# would reach the postgres service under the hostname `postgres`, tripping that
+# guard. With the service ports mapped to the host, the DB is reachable at
+# 127.0.0.1:5432 and the localhost guard stays intact.
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "oddish/src/**"
+      - "oddish/pyproject.toml"
+      - "oddish/uv.lock"
+      - ".github/workflows/e2e-cli.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/**"
+      - "oddish/src/**"
+      - "oddish/pyproject.toml"
+      - "oddish/uv.lock"
+      - ".github/workflows/e2e-cli.yml"
+
+concurrency:
+  group: e2e-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Backend e2e CLI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oddish
+          POSTGRES_PASSWORD: oddish
+          POSTGRES_DB: oddish
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U oddish -d oddish"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Run e2e CLI suite
+        env:
+          ODDISH_E2E: "1"
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+        run: uv run pytest tests/e2e -v
