@@ -486,10 +486,12 @@ async def test_stale_marker_still_no_github_restamped(monkeypatch) -> None:
 
 @requires_db
 @pytest.mark.asyncio
-async def test_clerk_404_user_stamped_skipped_and_excluded(monkeypatch) -> None:
-    """A gone Clerk user (404) is a DEFINITIVE no-github: run 1 stamps the marker
-    and counts it skipped (NOT failed); run 2 no longer selects it — no permanent
-    starvation, no re-fetch every sweep."""
+async def test_clerk_404_user_failed_not_stamped_rescanned(monkeypatch) -> None:
+    """A Clerk 404 is NON-definitive (indistinguishable from a wrong-instance
+    CLERK_SECRET_KEY): run 1 counts it failed, stamps NO marker, and leaves
+    github_id untouched; the row is re-selected on the next run. Genuinely
+    deleted Clerk users are soft-deleted by the membership webhook, so the
+    retry cost is bounded."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
     user = _user(org_id)
     _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
@@ -498,14 +500,13 @@ async def test_clerk_404_user_stamped_skipped_and_excluded(monkeypatch) -> None:
             session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
             session.add(user)
         first = await job.backfill_github_id(delay_seconds=0.0)
-        assert first.skipped >= 1
-        assert first.failed == 0
+        assert first.failed >= 1
+        assert first.skipped == 0
+        assert await _github_id_of(user.id) is None
         cache = await _cache_of(user.id)
-        assert isinstance(cache, dict) and isinstance(
-            cache.get("github_id_checked"), str
-        )
+        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
         second = await job.backfill_github_id(delay_seconds=0.0)
-        assert second.scanned == 0
+        assert second.scanned >= 1  # re-scanned, not excluded
     finally:
         await _purge(org_id)
 

@@ -67,14 +67,19 @@ def _mock_clerk_http(monkeypatch, handler) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["no_secret", "http_500", "transport_error"])
+@pytest.mark.parametrize("mode", ["no_secret", "http_404", "http_500", "transport_error"])
 async def test_fetch_returns_none_for_nondefinitive_errors(monkeypatch, mode) -> None:
-    """Non-definitive Clerk failures return None so callers retry later."""
+    """Non-definitive Clerk failures return None so callers retry later. A 404 is
+    deliberately in this bucket: it is indistinguishable from a misconfigured
+    CLERK_SECRET_KEY (wrong Clerk instance 404s for every user), so it must never
+    read as a definitive no-github answer."""
     if mode == "no_secret":
         monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "")
     else:
         monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
-        if mode == "http_500":
+        if mode == "http_404":
+            _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
+        elif mode == "http_500":
             _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(500))
         else:
             def _boom(_req):
@@ -82,17 +87,6 @@ async def test_fetch_returns_none_for_nondefinitive_errors(monkeypatch, mode) ->
 
             _mock_clerk_http(monkeypatch, _boom)
     assert await fetch_github_identity_from_clerk("clerk_1") is None
-
-
-@pytest.mark.asyncio
-async def test_fetch_404_is_definitive_absent(monkeypatch) -> None:
-    """Real error contract: a Clerk 404 means the user is gone — a DEFINITIVE
-    no-github answer (empty identity that stamps the marker), not the None
-    couldn't-verify sentinel that would re-fetch forever."""
-    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
-    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
-    identity = await fetch_github_identity_from_clerk("clerk_gone")
-    assert identity == ClerkGithubIdentity(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -184,6 +178,21 @@ async def test_refresh_clears_stale_id_on_definitive_no_github(monkeypatch) -> N
     await _refresh_user_github_identity(user)
     assert user.github_id is None
     assert isinstance(user.attribution_cache.get("github_id_checked"), str)
+
+
+@pytest.mark.asyncio
+async def test_refresh_404_never_clears_existing_id(monkeypatch) -> None:
+    """Misconfig guard: a Clerk 404 (real HTTP path) against a user with an
+    existing github_id must leave the id UNCHANGED and stamp no marker — a
+    wrong-instance CLERK_SECRET_KEY 404s for every user, and treating that as
+    definitive would mass-unlink the org as users log in."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+    _mock_clerk_http(monkeypatch, lambda _req: httpx.Response(404))
+    user = _user(github_id="existing", github_username=None)
+    await _refresh_user_github_identity(user)
+    assert user.github_id == "existing"
+    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
+    assert "github_id_checked" not in cache
 
 
 @pytest.mark.asyncio

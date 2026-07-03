@@ -91,13 +91,13 @@ async def fetch_github_identity_from_clerk(
             response = await client.get(url, headers=headers)
             response.raise_for_status()
             data = response.json()
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            # Gone Clerk user: definitive no-github, not a transient error.
-            return ClerkGithubIdentity(None, None, None)
-        logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
-        return None
     except httpx.HTTPError as exc:
+        # Any HTTP failure — including 404 — is non-definitive. A 404 is
+        # indistinguishable from a misconfigured CLERK_SECRET_KEY (wrong Clerk
+        # instance 404s for EVERY user), so treating it as "definitive
+        # no-github" would let a misconfig silently mass-unlink existing
+        # github_ids. Genuinely deleted Clerk users are soft-deleted via the
+        # membership webhook, so retrying them here is a bounded cost.
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
         return None
 
