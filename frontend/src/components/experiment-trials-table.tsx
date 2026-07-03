@@ -86,10 +86,12 @@ import {
   ArrowUpRight,
   ChevronDown,
   Copy,
+  DollarSign,
   OctagonX,
   Search,
   Trash2,
 } from "lucide-react";
+import { formatCostUsd } from "@/lib/format";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
 
@@ -443,6 +445,109 @@ function getTrialTitle(trial: Trial, status: MatrixStatus) {
   return `${STATUS_CONFIG[status].shortLabel} • ${trial.status} • ${reward}${error}${queue}`;
 }
 
+// =============================================================================
+// Cost view
+// -----------------------------------------------------------------------------
+// The matrix can be flipped from trial outcomes to trial spend. Each cell is a
+// (task, agent) group of trials; in cost mode it shows that group's spend, with
+// per-task (row) and per-agent (column) roll-ups plus an experiment-wide
+// summary. Every grid trial already carries `cost_usd` / `cost_is_estimated`
+// (resolved server-side: native runtime cost when reported, otherwise a
+// per-model token estimate — the same figure the dashboard cost breakdown and
+// the experiment "Cost" KPI tile use), so this is a pure front-end view.
+//
+// Baseline agents (nop / oracle) and the probe column are excluded from the
+// roll-ups: they don't incur agent spend and would only dilute the averages —
+// consistent with how scores are aggregated elsewhere.
+// =============================================================================
+
+type TableViewMode = "results" | "cost";
+
+type CostAgg = {
+  /** Summed `cost_usd` over trials that carried a cost. */
+  total: number;
+  /** Portion of `total` that was token-estimated (no native runtime cost). */
+  estimatedTotal: number;
+  /** Trials that contributed a cost. */
+  count: number;
+  hasEstimated: boolean;
+  hasNative: boolean;
+};
+
+type CostCell = CostAgg & {
+  /** Per-trial spend in column order, for the hover breakdown. */
+  trials: Array<{ id: string; cost: number; estimated: boolean }>;
+};
+
+const EMPTY_COST_AGG: CostAgg = {
+  total: 0,
+  estimatedTotal: 0,
+  count: 0,
+  hasEstimated: false,
+  hasNative: false,
+};
+
+function newCostAgg(): CostAgg {
+  return { ...EMPTY_COST_AGG };
+}
+
+function summarizeGroupCost(trials: readonly Trial[]): CostCell {
+  const agg: CostCell = { ...EMPTY_COST_AGG, trials: [] };
+  for (const trial of trials) {
+    if (trial.cost_usd == null || !(trial.cost_usd > 0)) continue;
+    const estimated = trial.cost_is_estimated === true;
+    agg.total += trial.cost_usd;
+    agg.count += 1;
+    if (estimated) {
+      agg.estimatedTotal += trial.cost_usd;
+      agg.hasEstimated = true;
+    } else {
+      agg.hasNative = true;
+    }
+    agg.trials.push({ id: trial.id, cost: trial.cost_usd, estimated });
+  }
+  return agg;
+}
+
+function mergeCostAgg(target: CostAgg, source: CostAgg): void {
+  target.total += source.total;
+  target.estimatedTotal += source.estimatedTotal;
+  target.count += source.count;
+  target.hasEstimated = target.hasEstimated || source.hasEstimated;
+  target.hasNative = target.hasNative || source.hasNative;
+}
+
+function costAvg(agg: CostAgg): number {
+  return agg.count > 0 ? agg.total / agg.count : 0;
+}
+
+/**
+ * `~` when every contributing trial was estimated, `*` when the figure mixes
+ * native + estimated trials, nothing when it's fully native. Mirrors the
+ * experiment "Cost" KPI tile so the two read the same.
+ */
+function costEstimateMark(agg: CostAgg): "~" | "*" | "" {
+  if (agg.hasEstimated && !agg.hasNative) return "~";
+  if (agg.hasEstimated && agg.hasNative) return "*";
+  return "";
+}
+
+/**
+ * Subtle sequential amber tint scaled by a cell's spend relative to the
+ * busiest cell. Spend isn't good-or-bad, so a single neutral hue (not the
+ * pass/fail palette) reads on both the light and dark paper surfaces without
+ * hurting text contrast.
+ */
+function costHeatStyle(
+  value: number,
+  max: number,
+): React.CSSProperties | undefined {
+  if (value <= 0 || max <= 0) return undefined;
+  const intensity = Math.min(1, value / max);
+  const alpha = 0.05 + intensity * 0.22;
+  return { backgroundColor: `rgba(202, 138, 4, ${alpha.toFixed(3)})` };
+}
+
 export function ExperimentTrialsTable({
   tasks,
   agentSummaries,
@@ -479,6 +584,8 @@ export function ExperimentTrialsTable({
     Set<AnalysisLegendKey>
   >(new Set());
   const [rowFilterMode, setRowFilterMode] = useState<RowFilterMode>("none");
+  const [viewMode, setViewMode] = useState<TableViewMode>("results");
+  const showCostView = viewMode === "cost";
   const [selectedTasks, setSelectedTasks] = useState<Set<string>>(new Set());
   const [copiedTaskNameId, setCopiedTaskNameId] = useState<string | null>(null);
   const [copiedAgentNameKey, setCopiedAgentNameKey] = useState<string | null>(
@@ -528,6 +635,7 @@ export function ExperimentTrialsTable({
     dim: "",
     analysis: "",
     rowFilter: "",
+    view: "",
     taskSearch: "",
   });
   const isFirstFilterSync = useRef(true);
@@ -537,6 +645,7 @@ export function ExperimentTrialsTable({
     const urlDim = searchParams.get("dim") || "";
     const urlAnalysis = searchParams.get("analysis") || "";
     const urlRowFilter = searchParams.get("rowFilter") || "";
+    const urlView = searchParams.get("view") || "";
     const urlTaskSearch = searchParams.get("taskSearch") || "";
 
     if (urlHide !== prevUrlRef.current.hide) {
@@ -587,6 +696,11 @@ export function ExperimentTrialsTable({
           : "none";
       setRowFilterMode(next);
       prevUrlRef.current.rowFilter = urlRowFilter;
+    }
+
+    if (urlView !== prevUrlRef.current.view) {
+      setViewMode(urlView === "cost" ? "cost" : "results");
+      prevUrlRef.current.view = urlView;
     }
 
     if (urlTaskSearch !== prevUrlRef.current.taskSearch) {
@@ -641,6 +755,12 @@ export function ExperimentTrialsTable({
         params.delete("rowFilter");
       }
 
+      if (viewMode === "cost") {
+        params.set("view", "cost");
+      } else {
+        params.delete("view");
+      }
+
       if (deferredTaskSearch.trim()) {
         params.set("taskSearch", deferredTaskSearch.trim());
       } else {
@@ -664,6 +784,7 @@ export function ExperimentTrialsTable({
     dimmedStatuses,
     dimmedAnalysisKeys,
     rowFilterMode,
+    viewMode,
     deferredTaskSearch,
     searchParams,
   ]);
@@ -875,6 +996,53 @@ export function ExperimentTrialsTable({
     };
   }, [visibleAgents, modelScopedAgents]);
 
+  // Cost roll-ups for the cost view: per (task, agent) cell, per-agent column
+  // totals, per-task row totals, and the experiment-wide grand total. Baseline
+  // and probe columns are skipped (they don't incur agent spend). `maxCellAvg`
+  // scales the per-cell heat tint. Computed only while the cost view is active.
+  const costModel = useMemo(() => {
+    if (!showCostView) return null;
+    const costAgents = visibleAgents.filter(
+      (agent) =>
+        !isBaselineAgentName(agent.agent) && agent.key !== PROBE_AGENT_KEY,
+    );
+    const cellByTask = new Map<string, Map<string, CostCell>>();
+    const perAgent = new Map<string, CostAgg>();
+    const perTask = new Map<string, CostAgg>();
+    const grand = newCostAgg();
+    let maxCellAvg = 0;
+    for (const agent of costAgents) perAgent.set(agent.key, newCostAgg());
+
+    for (const task of filteredTasks) {
+      const grouped =
+        getTaskContext(task).groupedTrialsByAgent ?? EMPTY_TRIAL_MAP;
+      const cellMap = new Map<string, CostCell>();
+      const taskAgg = newCostAgg();
+      for (const agent of costAgents) {
+        const trials = grouped.get(agent.key) ?? EMPTY_TRIALS;
+        const cell = summarizeGroupCost(trials);
+        cellMap.set(agent.key, cell);
+        mergeCostAgg(perAgent.get(agent.key)!, cell);
+        mergeCostAgg(taskAgg, cell);
+        const avg = costAvg(cell);
+        if (avg > maxCellAvg) maxCellAvg = avg;
+      }
+      cellByTask.set(task.id, cellMap);
+      perTask.set(task.id, taskAgg);
+      mergeCostAgg(grand, taskAgg);
+    }
+
+    return {
+      costAgents,
+      cellByTask,
+      perAgent,
+      perTask,
+      grand,
+      maxCellAvg,
+      hasData: grand.count > 0,
+    };
+  }, [showCostView, visibleAgents, filteredTasks, getTaskContext]);
+
   const selectedTaskList = useMemo(
     () => tasks.filter((task) => selectedTasks.has(task.id)),
     [tasks, selectedTasks],
@@ -1021,6 +1189,48 @@ export function ExperimentTrialsTable({
   };
 
   const handleCopyTableAsTSV = async () => {
+    // Cost view exports the per-cell average $/trial, a trailing per-task total,
+    // and a final per-agent totals row — matching what the grid shows.
+    if (showCostView && costModel) {
+      const { costAgents, cellByTask, perAgent, perTask, grand } = costModel;
+      const headers = [
+        "Task",
+        ...costAgents.map((agent) => agent.label),
+        "Task total ($)",
+      ];
+      const rows: string[] = [headers.join("\t")];
+      for (const task of filteredTasks) {
+        const cellMap = cellByTask.get(task.id);
+        const cells = costAgents.map((agent) => {
+          const cell = cellMap?.get(agent.key);
+          return cell && cell.count > 0 ? costAvg(cell).toFixed(4) : "";
+        });
+        const taskAgg = perTask.get(task.id);
+        rows.push(
+          [
+            task.name,
+            ...cells,
+            taskAgg && taskAgg.count > 0 ? taskAgg.total.toFixed(4) : "",
+          ].join("\t"),
+        );
+      }
+      const totalsRow = [
+        "Total",
+        ...costAgents.map((agent) => {
+          const agg = perAgent.get(agent.key);
+          return agg && agg.count > 0 ? agg.total.toFixed(4) : "";
+        }),
+        grand.count > 0 ? grand.total.toFixed(4) : "",
+      ];
+      rows.push(totalsRow.join("\t"));
+      await navigator.clipboard.writeText(rows.join("\n"));
+      setCopiedTable(true);
+      setTimeout(() => {
+        setCopiedTable(false);
+      }, 2000);
+      return;
+    }
+
     // Generate TSV header
     const headers = ["Task", ...visibleAgents.map((agent) => agent.label)];
     const rows: string[] = [headers.join("\t")];
@@ -1746,6 +1956,195 @@ export function ExperimentTrialsTable({
     );
   };
 
+  // Segmented Results ⇄ Cost toggle. Flips the matrix cells between trial
+  // outcomes and trial spend; URL-synced via `?view=cost`.
+  const renderViewModeControl = () => {
+    const modes: Array<{
+      value: TableViewMode;
+      label: string;
+      icon?: React.ReactNode;
+      description: string;
+    }> = [
+      {
+        value: "results",
+        label: "Results",
+        description: "Show each trial's pass/fail outcome",
+      },
+      {
+        value: "cost",
+        label: "Cost",
+        icon: <DollarSign className="h-3 w-3" />,
+        description:
+          "Show each trial's cost, with per-task and per-agent totals",
+      },
+    ];
+    return (
+      <div
+        role="group"
+        aria-label="Table view"
+        className="inline-flex items-center rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-0.5"
+      >
+        {modes.map((mode) => {
+          const active = viewMode === mode.value;
+          return (
+            <Tooltip key={mode.value}>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setViewMode(mode.value)}
+                  aria-pressed={active}
+                  className={`h-auto gap-1 rounded-[5px] px-2.5 py-1.5 text-[11px] leading-none font-medium whitespace-nowrap transition-colors ${
+                    active
+                      ? "bg-[color:var(--paper-surface-2)] text-[color:var(--paper-ink)] shadow-[inset_0_0_0_1px_var(--paper-line-2)]"
+                      : "text-[color:var(--paper-ink-3)] hover:bg-[color:var(--paper-surface)] hover:text-[color:var(--paper-ink)]"
+                  }`}
+                >
+                  {mode.icon}
+                  {mode.label}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{mode.description}</TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    );
+  };
+
+  // Experiment-wide spend strip shown in place of the outcome legend while the
+  // cost view is active. Mirrors the dashboard cost breakdown's summary badges.
+  const renderCostSummary = () => {
+    if (!costModel) return null;
+    const pill =
+      "inline-flex items-center gap-1 rounded-[6px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2 py-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]";
+    if (!costModel.hasData) {
+      return (
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1.5 text-[11px] text-[color:var(--paper-ink-3)] sm:ml-auto sm:w-fit">
+          <DollarSign className="h-3.5 w-3.5" />
+          No trial spend recorded yet for the visible agents.
+        </div>
+      );
+    }
+    const { grand } = costModel;
+    const nativeTotal = Math.max(0, grand.total - grand.estimatedTotal);
+    return (
+      <div className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1.5 sm:ml-auto sm:w-fit sm:flex-nowrap">
+        <span
+          className={`${pill} border-transparent bg-transparent text-[12px] font-semibold text-[color:var(--paper-ink)]`}
+        >
+          <DollarSign className="h-3.5 w-3.5 text-[color:var(--paper-ink-2)]" />
+          {formatCostUsd(grand.total)}
+          <span className="text-[color:var(--paper-ink-3)]">total</span>
+        </span>
+        {grand.hasNative && (
+          <span className={pill}>
+            {formatCostUsd(nativeTotal)}
+            <span className="text-[color:var(--paper-ink-3)]">native</span>
+          </span>
+        )}
+        {grand.hasEstimated && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className={`${pill} cursor-help`}>
+                ~{formatCostUsd(grand.estimatedTotal)}
+                <span className="text-[color:var(--paper-ink-3)]">est.</span>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-[260px]">
+              Estimated from token counts × static per-model pricing (no native
+              cost reported by the runtime). The rest is runtime-reported.
+            </TooltipContent>
+          </Tooltip>
+        )}
+        <span className={pill}>
+          {grand.count.toLocaleString()}
+          <span className="text-[color:var(--paper-ink-3)]">trials</span>
+        </span>
+        <span className={pill}>
+          {formatCostUsd(costAvg(grand))}
+          <span className="text-[color:var(--paper-ink-3)]">/ trial</span>
+        </span>
+      </div>
+    );
+  };
+
+  // One cost cell — the (task, agent) group's spend. Primary figure is the
+  // average $/trial (comparable across the grid); the total and per-trial
+  // breakdown live in the tooltip. Heat-tinted by spend, clickable to open the
+  // group's first trial.
+  const renderCostCell = (cell: CostCell, trials: Trial[], task: Task) => {
+    const avg = costAvg(cell);
+    const mark = costEstimateMark(cell);
+    const first = trials[0];
+    const open = () => {
+      if (!first) return;
+      if (first.is_probe) {
+        onProbeSelect?.(first, task);
+        return;
+      }
+      const ctx = getTaskContext(task);
+      onTrialSelect?.(first, task, {
+        orderedTrials: ctx.orderedTrials,
+        trialIndex: ctx.trialIndexById.get(first.id) ?? 0,
+        trialGroups: ctx.trialGroups,
+      });
+    };
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="unstyled"
+            onClick={open}
+            className="mx-auto flex w-full max-w-[128px] flex-col items-center gap-0 rounded-[5px] px-1.5 py-1 leading-none transition hover:brightness-95"
+            style={costHeatStyle(avg, costModel?.maxCellAvg ?? 0)}
+          >
+            <span className="flex items-baseline font-mono text-[12px] font-semibold tabular-nums text-[color:var(--paper-ink)]">
+              {formatCostUsd(avg)}
+              {mark && (
+                <span className="ml-0.5 text-[color:var(--paper-ink-3)]">
+                  {mark}
+                </span>
+              )}
+            </span>
+            {cell.count > 1 && (
+              <span className="mt-0.5 font-mono text-[9.5px] text-[color:var(--paper-ink-3)]">
+                {cell.count}× · {formatCostUsd(cell.total)}
+              </span>
+            )}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-[240px]">
+          <div className="space-y-1">
+            <div className="font-medium">
+              {formatCostUsd(avg)} avg/trial over {cell.count} trial
+              {cell.count === 1 ? "" : "s"} · {formatCostUsd(cell.total)} total
+            </div>
+            <div className="space-y-0.5 font-mono text-[11px]">
+              {cell.trials.map((t, i) => (
+                <div key={t.id} className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">#{i + 1}</span>
+                  <span>
+                    {formatCostUsd(t.cost)}
+                    {t.estimated ? " ~est." : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {cell.hasEstimated && (
+              <div className="text-muted-foreground text-[10px]">
+                ~est. = estimated from token counts; the rest is
+                runtime-reported.
+              </div>
+            )}
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
   const renderLegendBlock = () => (
     <div className="flex min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1 sm:ml-auto sm:w-fit sm:flex-nowrap">
       {renderLegendAnatomy()}
@@ -1836,7 +2235,9 @@ export function ExperimentTrialsTable({
                   />
                 </div>
               </div>
-              <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
+              <div className="min-w-0 flex-1">
+                {showCostView ? renderCostSummary() : renderLegendBlock()}
+              </div>
             </div>
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
@@ -1967,6 +2368,7 @@ export function ExperimentTrialsTable({
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-end gap-1.5">
+                {renderViewModeControl()}
                 {renderRowFilterControl()}
                 {renderAgentFilterMenu()}
                 <Tooltip>
@@ -2335,11 +2737,79 @@ export function ExperimentTrialsTable({
                                 <TooltipContent>Open task page</TooltipContent>
                               </Tooltip>
                             )}
+                            {showCostView &&
+                              (() => {
+                                const agg = costModel?.perTask.get(task.id);
+                                if (!agg || agg.count === 0) {
+                                  return (
+                                    <span className="ml-auto shrink-0 font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                                      —
+                                    </span>
+                                  );
+                                }
+                                const mark = costEstimateMark(agg);
+                                return (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <span className="ml-auto flex shrink-0 cursor-help items-baseline gap-1 font-mono text-[10px]">
+                                        <span className="font-semibold text-[color:var(--paper-ink)]">
+                                          {formatCostUsd(agg.total)}
+                                          {mark && (
+                                            <span className="text-[color:var(--paper-ink-3)]">
+                                              {mark}
+                                            </span>
+                                          )}
+                                        </span>
+                                        <span className="text-[color:var(--paper-ink-3)]">
+                                          {formatCostUsd(costAvg(agg))}/tr
+                                        </span>
+                                      </span>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      Task spend across non-baseline agents:{" "}
+                                      {formatCostUsd(agg.total)} over {agg.count}{" "}
+                                      trial{agg.count === 1 ? "" : "s"} ·{" "}
+                                      {formatCostUsd(costAvg(agg))}/trial
+                                    </TooltipContent>
+                                  </Tooltip>
+                                );
+                              })()}
                           </div>
                         </div>
                       </TableCell>
                       {renderedAgents.map((agent) => {
                         const trials = grouped.get(agent.key) ?? EMPTY_TRIALS;
+                        if (showCostView) {
+                          const isExcluded =
+                            isBaselineAgentName(agent.agent) ||
+                            agent.key === PROBE_AGENT_KEY;
+                          const cell = costModel?.cellByTask
+                            .get(task.id)
+                            ?.get(agent.key);
+                          return (
+                            <TableCell
+                              key={`${task.id}-${agent.key}`}
+                              className="border-r border-b border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2 py-2 text-center last:border-r-0"
+                              style={{
+                                width: getDisplayedWidth(agent.key),
+                              }}
+                            >
+                              {isExcluded ? (
+                                <span className="text-muted-foreground text-xs">
+                                  —
+                                </span>
+                              ) : isTrialDataPending ? (
+                                <Skeleton className="mx-auto h-5 w-14" />
+                              ) : !cell || cell.count === 0 ? (
+                                <span className="text-muted-foreground text-xs">
+                                  —
+                                </span>
+                              ) : (
+                                renderCostCell(cell, trials, task)
+                              )}
+                            </TableCell>
+                          );
+                        }
                         return (
                           <TableCell
                             key={`${task.id}-${agent.key}`}
@@ -2476,6 +2946,69 @@ export function ExperimentTrialsTable({
                   </TableRow>
                 )}
               </TableBody>
+              {showCostView && costModel && costModel.hasData && (
+                <tfoot className="sticky bottom-0 z-20">
+                  <TableRow className="border-t border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface-2)] hover:bg-transparent [&_td]:hover:!bg-[color:var(--paper-surface-2)]">
+                    <TableCell
+                      className="sticky left-0 z-30 border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-3.5 py-2 font-mono text-[color:var(--paper-ink)]"
+                      style={{ width: getDisplayedWidth("task") }}
+                    >
+                      <div className="flex flex-col">
+                        <span className="flex items-baseline gap-1 text-[11.5px] font-semibold">
+                          <DollarSign className="h-3 w-3 shrink-0 self-center text-[color:var(--paper-ink-2)]" />
+                          {formatCostUsd(costModel.grand.total)}
+                          {(() => {
+                            const mark = costEstimateMark(costModel.grand);
+                            return mark ? (
+                              <span className="text-[color:var(--paper-ink-3)]">
+                                {mark}
+                              </span>
+                            ) : null;
+                          })()}
+                          <span className="text-[9.5px] font-normal text-[color:var(--paper-ink-3)]">
+                            total
+                          </span>
+                        </span>
+                        <span className="pl-4 text-[9.5px] text-[color:var(--paper-ink-3)]">
+                          {costModel.grand.count} trials ·{" "}
+                          {formatCostUsd(costAvg(costModel.grand))}/trial
+                        </span>
+                      </div>
+                    </TableCell>
+                    {renderedAgents.map((agent) => {
+                      const agg = costModel.perAgent.get(agent.key);
+                      const mark = agg ? costEstimateMark(agg) : "";
+                      return (
+                        <TableCell
+                          key={`foot-${agent.key}`}
+                          className="border-r border-[color:var(--paper-line)] bg-[color:var(--paper-surface-2)] px-2 py-2 text-center font-mono last:border-r-0"
+                          style={{ width: getDisplayedWidth(agent.key) }}
+                        >
+                          {!agg || agg.count === 0 ? (
+                            <span className="text-muted-foreground text-[11px]">
+                              —
+                            </span>
+                          ) : (
+                            <div className="flex flex-col items-center">
+                              <span className="flex items-baseline text-[11.5px] font-semibold text-[color:var(--paper-ink)]">
+                                {formatCostUsd(agg.total)}
+                                {mark && (
+                                  <span className="ml-0.5 text-[color:var(--paper-ink-3)]">
+                                    {mark}
+                                  </span>
+                                )}
+                              </span>
+                              <span className="text-[9.5px] text-[color:var(--paper-ink-3)]">
+                                {formatCostUsd(costAvg(agg))}/trial
+                              </span>
+                            </div>
+                          )}
+                        </TableCell>
+                      );
+                    })}
+                  </TableRow>
+                </tfoot>
+              )}
             </table>
           </div>
         </div>
