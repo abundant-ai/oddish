@@ -16,30 +16,62 @@ from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, 
 router = APIRouter(tags=["Dashboard"])
 
 
+def _member_label(user: UserModel) -> dict[str, str] | None:
+    """Canonical label for a resolved member: name beats handle, else nothing.
+
+    Email is deliberately not a fallback -- it must never be *promoted* into a
+    dashboard label (PII on a widely-visible page).
+    """
+    if user.name:
+        return {"name": user.name, "source": "member"}
+    if user.github_username:
+        return {"name": user.github_username, "source": "github"}
+    return None
+
+
+def _normalize_label_key(value: Any) -> str | None:
+    """Normalize a raw author/runner string for member lookup."""
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if stripped.startswith("@"):
+        stripped = stripped[1:]
+    return stripped.lower() or None
+
+
 async def _enrich_experiment_authors(
-    session: AsyncSession, dashboard: dict[str, Any]
+    session: AsyncSession, dashboard: dict[str, Any], *, org_id: str | None
 ) -> None:
-    """Promote canonical org-member names into ``author`` and ``last_runner``.
+    """Promote canonical org-member labels into ``author`` and ``last_runner``.
 
     The ``oddish`` core layer can't import the cloud auth tables, so it emits
     the experiments-list ``author`` / ``last_runner`` from handle/legacy-user
-    strings plus two raw internal user ids per row:
+    strings plus two raw internal user ids per row: ``owner_user_id`` (the
+    experiment's set-once owner) and ``last_runner_user_id`` (the latest
+    trial's ``billed_user_id`` -- per-run identity, correct across APPENDs to
+    shared tasks). Each field is resolved through three tiers, preserving the
+    agreed precedence member name -> @github handle -> raw string -> "—":
 
-    - ``owner_user_id``: the experiment's set-once owner. When it resolves to
-      a member with a non-empty display name, ``author`` becomes
-      ``{"name": <member name>, "source": "member"}`` so the Author column
-      matches the cost page's canonical name.
-    - ``last_runner_user_id``: the latest trial's ``billed_user_id`` (per-run
-      identity, correct across APPENDs to shared tasks). When it resolves to a
-      named member, ``last_runner`` is overridden the same way; otherwise the
-      core's task-based fallback (the task creator's handle/string) stands.
+    1. **Id -> name**: the row's user id resolves to a member with a non-empty
+       ``name`` -> ``{"name": <name>, "source": "member"}``.
+    2. **Id -> handle**: the id resolves but the member has no display name
+       (the JWT provisioning path creates users without one); fall back to
+       their ``github_username`` -> ``{"name": <handle>, "source": "github"}``
+       so at least the label is canonical.
+    3. **String match**: rows with no resolvable id (legacy experiments with
+       NULL ``owner_user_id`` / legacy trials with NULL ``billed_user_id``)
+       carry a raw task string -- an email, ``@handle``, or the
+       ``{clerk_id}@clerk.user`` sentinel. If that string is exactly one
+       active org member's email or github handle (ambiguous handles/emails
+       are skipped), re-label it via the same name-then-handle precedence.
+       This never changes *which person* is displayed -- it only canonicalizes
+       a string that already identifies that member.
 
-    Both resolve through one batched ``UserModel`` load. Precedence for each
-    rendered label is member name -> @github handle -> raw owner/user string
-    -> "—"; the last three tiers are already baked into the values the core
-    computed, so we only override the top tier. ``include_deleted=True``
-    mirrors the cost path so a historical owner still resolves. Email is
-    intentionally never promoted here (PII on a widely-visible page).
+    Email is never promoted into a label; this only ever replaces an email
+    with a name/handle, never the reverse. At most two queries per request:
+    the org's active users, plus one ``include_deleted=True`` id lookup for
+    referenced ids not found among them (historical/deactivated owners --
+    mirrors the cost path).
 
     The experiment row dicts are the *same objects* the core layer stores in
     its module-level experiments cache, so this function must never mutate
@@ -47,48 +79,89 @@ async def _enrich_experiment_authors(
     of the cache TTL (and race concurrent requests sharing the cached list).
     Enriched rows are shallow copies; the top-level ``dashboard`` dict is a
     fresh per-request merge, so reassigning its ``experiments`` key is safe.
+    ``last_author`` (deprecated mirror of ``last_runner``) is kept in sync.
     """
     experiments = dashboard.get("experiments")
     if not experiments:
         return
 
-    user_ids = {
+    referenced_ids = {
         user_id
         for row in experiments
         if isinstance(row, dict)
         for user_id in (row.get("owner_user_id"), row.get("last_runner_user_id"))
         if user_id
     }
-    if not user_ids:
-        return
 
-    rows = await session.execute(
-        select(UserModel)
-        .where(UserModel.id.in_(user_ids))
-        .execution_options(include_deleted=True)
-    )
-    names: dict[str, str] = {}
-    for user in rows.scalars():
-        if user.name:
-            names[user.id] = user.name
+    users_by_id: dict[str, UserModel] = {}
+    by_email: dict[str, UserModel] = {}
+    by_handle: dict[str, UserModel] = {}
 
-    if not names:
-        return
+    if org_id:
+        rows = await session.execute(
+            select(UserModel).where(
+                UserModel.org_id == org_id,
+                UserModel.is_active.is_(True),
+            )
+        )
+        email_buckets: dict[str, list[UserModel]] = {}
+        handle_buckets: dict[str, list[UserModel]] = {}
+        for user in rows.scalars():
+            users_by_id[user.id] = user
+            if user.email:
+                email_buckets.setdefault(user.email.strip().lower(), []).append(user)
+            if user.github_username:
+                handle_buckets.setdefault(
+                    user.github_username.strip().lower(), []
+                ).append(user)
+        # Exactly-one semantics (mirrors ``lookup_users_by_github_username`` on
+        # the submission path): a handle -- or, defensively, an email -- shared
+        # by two active members is ambiguous and must not resolve.
+        by_email = {k: v[0] for k, v in email_buckets.items() if len(v) == 1}
+        by_handle = {k: v[0] for k, v in handle_buckets.items() if len(v) == 1}
+
+    missing_ids = {i for i in referenced_ids if i not in users_by_id}
+    if missing_ids:
+        rows = await session.execute(
+            select(UserModel)
+            .where(UserModel.id.in_(missing_ids))
+            .execution_options(include_deleted=True)
+        )
+        for user in rows.scalars():
+            users_by_id[user.id] = user
+
+    def _resolve(row: dict[str, Any], id_key: str, value_key: str) -> dict | None:
+        # Tiers 1+2: the internal user id, labeled name-then-handle.
+        user_id = row.get(id_key)
+        if user_id:
+            user = users_by_id.get(user_id)
+            if user is not None:
+                label = _member_label(user)
+                if label is not None:
+                    return label
+        # Tier 3: match the raw string label to exactly one active member.
+        current = row.get(value_key)
+        if isinstance(current, dict):
+            key = _normalize_label_key(current.get("name"))
+            if key:
+                match = by_email.get(key) or by_handle.get(key)
+                if match is not None:
+                    return _member_label(match)
+        return None
 
     enriched: list[Any] = []
     for row in experiments:
         if isinstance(row, dict):
             overrides: dict[str, Any] = {}
-            owner_name = names.get(row.get("owner_user_id"))
-            if owner_name:
-                overrides["author"] = {"name": owner_name, "source": "member"}
-            runner_name = names.get(row.get("last_runner_user_id"))
-            if runner_name:
-                runner = {"name": runner_name, "source": "member"}
-                overrides["last_runner"] = runner
+            author_label = _resolve(row, "owner_user_id", "author")
+            if author_label and author_label != row.get("author"):
+                overrides["author"] = author_label
+            runner_label = _resolve(row, "last_runner_user_id", "last_runner")
+            if runner_label and runner_label != row.get("last_runner"):
+                overrides["last_runner"] = runner_label
                 # The core emits ``last_author`` as a mirror of ``last_runner``
                 # (deprecated fallback the FE still renders); keep them in sync.
-                overrides["last_author"] = runner
+                overrides["last_author"] = runner_label
             if overrides:
                 row = {**row, **overrides}
         enriched.append(row)
@@ -209,7 +282,7 @@ async def get_dashboard(
         # cached github/api fallback values survive intact.
         if include_experiments:
             enrich_started_at = now()
-            await _enrich_experiment_authors(session, dashboard)
+            await _enrich_experiment_authors(session, dashboard, org_id=auth.org_id)
             add_server_timing_metric(
                 request,
                 "dashboard_author_enrich",
