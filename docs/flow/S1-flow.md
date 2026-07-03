@@ -8,20 +8,29 @@
 
 ## Current behavior
 
-`trials.cost_usd` is the **provider-reported** native cost and nothing else. It
-stays `NULL` when the provider reports no cost — there is **no** synthesized
-floor or token-based estimate written at settlement, and a retried trial shows
-its **last** attempt's cost (no accumulation). This is the pre-S1 last-value
-assignment: terminal writers set `trial.cost_usd = outcome.cost_usd` (or leave
-it `NULL`).
+**At the row**, `trials.cost_usd` is the **provider-reported** native cost and
+nothing else. It stays `NULL` when the provider reports no cost — there is **no**
+synthesized floor or token-based estimate written at settlement, and a retried
+trial shows its **last** attempt's cost (no accumulation). This is the pre-S1
+last-value assignment: terminal writers set `trial.cost_usd = outcome.cost_usd`
+(or leave it `NULL`).
 
-Consequences (accepted):
+**At read time**, the budget is protected without touching the row: the quota
+sums (`sum_cost_usd` / `sum_cost_usd_by_user`, `oddish/core/quotas.py`) score
+each trial via `_settled_cost_expr()` =
+`COALESCE(cost_usd, CASE WHEN started_at IS NOT NULL THEN $10 ELSE 0 END)`. So:
 
-- The daily-spend `SUM(cost_usd)` skips `NULL` rows, so a cancelled or
-  no-native-cost trial contributes `0` to *settled* spend, and a
-  start-then-cancel loop can undercount.
-- Enforcement is not fully bypassable in real time, because in-flight work is
-  still charged via the **reservation** side (below), not the settled sum.
+- priced trial → its real `cost_usd`;
+- **unpriced but started** (finished with a `started_at`, e.g. cancel / reap /
+  retry-supersede / estimate-only) → `unpriced_trial_cost_usd` (`$10`, env
+  `ODDISH_UNPRICED_TRIAL_COST_USD`) — a start-then-cancel loop is **not** free;
+- unpriced and **never started** (cancelled while PENDING/QUEUED) → `$0`, since
+  it did no billable work;
+- a genuine `$0` row → `$0`.
+
+The trial row itself keeps `cost_usd = NULL`; only the SUMs floor it. Known gap:
+delete-*while-running* tombstones a row without `finished_at`, so it isn't
+counted (would need a settle-on-delete if desired).
 
 ## What remains (not part of the revert)
 
@@ -41,5 +50,7 @@ Cost completeness changed `cost_usd` semantics for **every** deployment
 (settled cancelled/failed/no-native-cost trials went from `NULL` → estimate or
 `$0.50`), regardless of `quota_mode` — i.e. it did not "ship dark," and it
 shifted every `SUM(cost_usd)` dashboard. The MVP keeps `cost_usd` as the raw
-provider figure; quota enforcement relies on the in-flight reservation for
-real-time protection and accepts settled-sum undercounting for cancelled work.
+provider figure and instead handles the "invisible spend" concern in the **read
+layer** (the `$10` unpriced-but-started floor above) plus the in-flight
+reservation — so no settlement write ever changes `cost_usd`, yet a
+start-then-cancel loop still can't run real compute for free.

@@ -207,7 +207,10 @@ The two prod-breakers from §17 are **designed away, not patched**: "backfill do
 > ⚠️ **Reverted — see `docs/flow/S1-flow.md`.** The cost-synthesis machinery
 > below (native→estimate→floor settlement, accumulation, `cost_settled_attempt`)
 > was removed: `cost_usd` now stays the raw provider value (NULL when unreported).
-> The `pending_trial_reservation_usd` floor survives only as the S5 *in-flight*
+> The "invisible spend" concern is handled in the **read layer** instead — the
+> quota sums score an unpriced *started* finished trial at `unpriced_trial_cost_usd`
+> (`$10`) via `_settled_cost_expr()`, never touching the row. The
+> `pending_trial_reservation_usd` floor survives only as the S5 *in-flight*
 > reservation, and `estimate_cost_usd` survives only as a read-side display
 > estimate. The rest of this section is a historical planning record.
 
