@@ -11,6 +11,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.config import settings  # noqa: E402
 from oddish.core.quotas import (  # noqa: E402
     start_of_today_utc,
     sum_cost_usd,
@@ -123,3 +124,50 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
 
     assert settled_today == Decimal("9.30")
     assert grouped[billed_user] == Decimal("9.30")
+
+
+@pytest.mark.asyncio
+async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
+    """A FINISHED trial that reported no price (cost_usd NULL) must count toward
+    the budget at ``unpriced_trial_cost_usd`` (not $0), so a cancelled/reaped/
+    unpriced run can't be billed as free. A genuine $0 stays $0."""
+    task_id = f"quota-unpriced-{_RUN}"
+    cleanup_task_ids.append(task_id)
+    org_id = f"org-quota-unpriced-{_RUN}"
+    billed_user = f"user-unpriced-{_RUN}"
+    now = datetime.now(timezone.utc)
+    floor = settings.unpriced_trial_cost_usd
+
+    async with get_session() as session:
+        await create_task(
+            session,
+            _submission("quota-unpriced", n_trials=3),
+            task_id=task_id,
+            org_id=org_id,
+            billed_user_id=billed_user,
+        )
+        await session.flush()
+
+        # Finished but unpriced (cost_usd stays NULL) -> floored to the unpriced cost.
+        unpriced = await session.get(TrialModel, f"{task_id}-0")
+        unpriced.finished_at = now
+        unpriced.cost_usd = None
+
+        # Finished with a real price -> counts as-is.
+        priced = await session.get(TrialModel, f"{task_id}-1")
+        priced.finished_at = now
+        priced.cost_usd = 0.25
+
+        # Finished but genuinely free (explicit 0) -> stays 0, NOT floored.
+        free = await session.get(TrialModel, f"{task_id}-2")
+        free.finished_at = now
+        free.cost_usd = 0.0
+
+        await session.flush()
+
+        settled = await sum_cost_usd(session, org_id, billed_user, start_of_today_utc(now))
+        grouped = await sum_cost_usd_by_user(session, org_id, start_of_today_utc(now))
+
+    expected = floor + Decimal("0.25")  # unpriced floored + priced + 0 free
+    assert settled == expected
+    assert grouped[billed_user] == expected
