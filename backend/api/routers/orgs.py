@@ -13,7 +13,7 @@ from api.schemas import (
     OrganizationResponse,
     UserResponse,
 )
-from auth import AuthContext, require_admin, require_auth
+from auth import AuthContext, AuthMethod, require_admin, require_auth
 from models import UserModel, UserRole
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
@@ -146,6 +146,81 @@ async def invite_user(
         role=invitation.get("role", _clerk_invite_role(role)),
         status=invitation.get("status", "pending"),
     )
+
+
+async def _delete_clerk_user(clerk_user_id: str) -> None:
+    """Delete the user in Clerk. A 404 means the Clerk user is already gone,
+    which is fine — we still proceed with local cleanup."""
+    if not CLERK_SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="CLERK_SECRET_KEY not configured",
+        )
+
+    url = f"https://api.clerk.com/v1/users/{clerk_user_id}"
+    headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.delete(url, headers=headers)
+            if response.status_code == 404:
+                return
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = exc.response.text or "Failed to delete Clerk user"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail)
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"Failed to reach Clerk: {str(exc)}"
+        )
+
+
+@router.delete("/users/me")
+async def delete_my_account(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> dict:
+    """Delete the calling user's account.
+
+    Deletes the user in Clerk first (the authoritative identity store), then
+    soft-deletes every local user row linked to that Clerk user across orgs.
+    Requires interactive Clerk auth — an API key must not be able to destroy
+    the account that minted it.
+    """
+    if auth.method != AuthMethod.CLERK_JWT:
+        raise HTTPException(
+            status_code=403,
+            detail="Account deletion requires signing in (API keys not allowed)",
+        )
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserModel).where(UserModel.id == auth.user_id)
+        )
+        user = result.scalar_one_or_none()
+        if not user or not user.clerk_user_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        clerk_user_id = user.clerk_user_id
+
+    # Clerk deletion is the critical step; it happens before local cleanup so
+    # a failure leaves the account fully intact rather than half-deleted.
+    await _delete_clerk_user(clerk_user_id)
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(UserModel)
+            .where(UserModel.clerk_user_id == clerk_user_id)
+            .where(UserModel.is_active == True)  # noqa: E712
+        )
+        rows = list(result.scalars().all())
+        for row in rows:
+            row.is_active = False
+            row.deleted_at = utcnow()
+            await transfer_tag_ownership_to_admin(
+                session, org_id=row.org_id, deactivated_user_id=row.id
+            )
+        await session.commit()
+
+    return {"status": "deleted", "clerk_user_id": clerk_user_id}
 
 
 @router.delete("/users/{user_id}")
