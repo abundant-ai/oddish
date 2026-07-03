@@ -204,6 +204,24 @@ def span(name: str, /, **attributes):
     return nullcontext()
 
 
+def log_exception(message: str, **attributes) -> None:
+    """Emit an error-level record with the active exception + traceback.
+
+    Call from inside an ``except`` block. Sends to Logfire when configured
+    (mirroring :func:`span`); otherwise falls back to standard logging so the
+    traceback is never silently dropped. Best-effort: never raises.
+    """
+    if _configured:
+        try:
+            import logfire
+
+            logfire.exception(message, **attributes)
+            return
+        except Exception:
+            logger.warning("logfire.exception(%r) failed", message, exc_info=True)
+    logger.exception(message)
+
+
 def instrument_fastapi(app: "FastAPI") -> None:
     """Attach Logfire's FastAPI middleware if logfire is active.
 

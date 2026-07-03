@@ -746,8 +746,12 @@ async def _store_trial_results(
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            from oddish.queue import maybe_start_qa_stage
+            from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
 
+            # Resolve the baseline gate first: a faulty-task cancel drops the
+            # LLM trials from the pending set so the task can advance below; a
+            # release adds them back so QA correctly waits for them.
+            await maybe_gate_llm_trials(session, trial_id)
             started = await maybe_start_qa_stage(session, trial_id)
             if started:
                 console.print(

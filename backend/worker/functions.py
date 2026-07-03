@@ -28,7 +28,7 @@ import modal
 # ``configure_logfire`` runs in ``worker/__init__.py`` (so auto-tracing
 # can patch our modules before they're imported); we just need the
 # ``span`` helper here to wrap entry points.
-from observability import span as _otel_span
+from observability import log_exception, span as _otel_span
 
 from modal_app import (
     CLEANUP_INTERVAL_SECONDS,
@@ -58,6 +58,7 @@ from modal_app import (
     runtime_secrets,
     worker_volumes,
 )
+from backfill_github_id import backfill_github_id
 from dashboard_owner_backfill import backfill_experiment_owners
 from oddish.config import settings
 from oddish.db import close_database_connections, get_session, WorkerJobKind
@@ -359,6 +360,7 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"stale_slot_cleanup: {e}")
+            log_exception("reconcile phase failed", phase="stale_slot_cleanup")
             console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
 
         try:
@@ -381,6 +383,7 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"orphaned_state: {e}")
+            log_exception("reconcile phase failed", phase="orphaned_state")
             console.print(
                 f"[yellow]Orphaned-state reconciliation skipped: {e}[/yellow]"
             )
@@ -397,7 +400,25 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"owner_backfill: {e}")
+            log_exception("reconcile phase failed", phase="owner_backfill")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
+
+        try:
+            # Bounded so the first-run backlog spreads across reconciles, and
+            # wall-clock-capped so a slow Clerk can't push this best-effort phase
+            # toward the reconciler's hard SIGKILL ceiling.
+            gid_counts = (
+                await backfill_github_id(max_users=200, time_budget_seconds=60.0)
+            ).as_dict()
+            summary.update({k: int(v) for k, v in gid_counts.items()})
+            if any(gid_counts.values()):
+                console.print(
+                    "metric=github_id_backfill "
+                    + " ".join(f"{key}={value}" for key, value in gid_counts.items())
+                )
+        except Exception as e:  # noqa: BLE001 - best-effort phase
+            phase_errors.append(f"github_id_backfill: {e}")
+            console.print(f"[yellow]github_id backfill skipped: {e}[/yellow]")
 
         # Recompute the self-tuning per-model concurrency advisory (default off).
         # A defensive phase like the others: a failure logs and is swallowed so

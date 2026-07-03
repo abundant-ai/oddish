@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import (
     APIRouter,
@@ -59,7 +59,12 @@ from oddish.core.sharing.helpers import (
     get_task_file_content_s3,
     list_task_files_s3,
 )
-from oddish.core.idempotency import IdempotencyReplay, compute_request_hash
+from oddish.core.idempotency import (
+    IdempotencyReplay,
+    SWEEP_ROUTE,
+    compute_request_hash,
+    probe_completed_replay,
+)
 from idempotency_store import SubmissionIdempotencyStore
 from api.schemas import (
     ExperimentShareResponse,
@@ -70,6 +75,7 @@ from auth import APIKeyScope, AuthContext, require_admin, require_auth
 from api.routers.task_submission import (
     apply_github_attribution,
     maybe_publish_experiment,
+    require_connected_github_user,
     require_experiment_publish_scope,
     resolve_actor_user_string,
     resolve_created_by_user_id,
@@ -86,6 +92,7 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     get_session,
+    utcnow,
 )
 from oddish.timing import TimingRecorder, add_server_timing_metric, elapsed_ms, now
 from oddish.queue import (
@@ -115,6 +122,9 @@ from oddish.schemas import (
     TrialCollectionResponse,
     UploadResponse,
 )
+
+if TYPE_CHECKING:
+    from models import UserModel
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
@@ -224,8 +234,30 @@ async def create_task_sweep(
     request_hash = compute_request_hash(submission)
 
     async with get_session() as session:
+        # A COMPLETED, hash-matched, unexpired idempotency record must replay the
+        # stored response BEFORE the linkage gate: a faithful retry of an
+        # already-created sweep must not 403 just because the linked user was
+        # deactivated (or lost their github_id) in between. Every other case (no
+        # record, in-progress, hash mismatch, expired) returns None and falls
+        # through to the unchanged gate-then-core path below.
+        if idempotency_key:
+            replay_json = await probe_completed_replay(
+                SubmissionIdempotencyStore(session),
+                org_id=auth.org_id,
+                route=SWEEP_ROUTE,
+                raw_key=idempotency_key,
+                request_hash=request_hash,
+                now=utcnow(),
+            )
+            if replay_json is not None:
+                return TaskResponse.model_validate(replay_json)
+
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)
+
+        # Unconditional linkage gate: a truthy github_id that resolves to no
+        # active org user is rejected here, before any rows are written.
+        connected_user = await require_connected_github_user(session, submission, auth)
 
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
@@ -244,13 +276,13 @@ async def create_task_sweep(
             return TaskResponse.model_validate(replay.response_json)
 
         owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
+            session, submission, auth, connected_user
         )
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
             created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth
+                session, submission, auth, connected_user
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
@@ -290,6 +322,8 @@ async def create_task_sweep_batch(
             status_code=400, detail="Must specify at least one submission"
         )
 
+    connected_users: dict[int, UserModel | None] = {}
+
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
     ) -> EnvironmentType | None:
@@ -297,6 +331,12 @@ async def create_task_sweep_batch(
         # failure here rolls back only this item (mirrors the single-sweep route).
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)
+        # Unconditional linkage gate: a truthy github_id resolving to no active
+        # org user raises 403 here; the batch core catches it and fails only
+        # this item (rolling back its savepoint) before any rows are written.
+        connected_users[id(submission)] = await require_connected_github_user(
+            session, submission, auth
+        )
         return get_default_cloud_environment(submission)
 
     async def _finalize(
@@ -307,13 +347,14 @@ async def create_task_sweep_batch(
         experiment: ExperimentModel | None,
     ) -> None:
         # Post-create stamping, inside the savepoint (mirrors the single route).
+        connected_user = connected_users.get(id(submission))
         owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth
+            session, submission, auth, connected_user
         )
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
             created_by_user_id = await resolve_created_by_user_id(
-                session, submission, auth
+                session, submission, auth, connected_user
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id

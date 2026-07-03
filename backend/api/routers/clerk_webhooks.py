@@ -10,6 +10,13 @@ from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 from svix import Webhook, WebhookVerificationError
 
+from auth.provisioning import (
+    _apply_github_id,
+    _github_account_from_clerk_payload,
+    _mark_github_id_checked,
+    _refresh_user_github_identity,
+    _seed_attribution_cache_from_github,
+)
 from models import OrganizationModel, UserModel, UserRole, generate_id
 from oddish.db import get_session, utcnow
 
@@ -166,6 +173,51 @@ async def _upsert_user(
     return user
 
 
+async def _sync_github_id_from_user_event(
+    session, data: dict[str, Any], *, allow_unlink: bool
+) -> None:
+    clerk_user_id = data.get("id")
+    if not clerk_user_id:
+        return
+    identity = _github_account_from_clerk_payload(data)
+    # A no-github answer is only trusted as an UNLINK when (a) the event kind
+    # may carry one (user.updated; a retried stale user.created is by
+    # definition older than any linked state we already hold) and (b) the
+    # payload affirmatively enumerated external_accounts — an absent key is a
+    # slimmed/partial payload, not evidence of absence. Positive signals
+    # (id/username present) are always applied regardless.
+    trust_no_github = allow_unlink and "external_accounts" in data
+    result = await session.execute(
+        select(UserModel)
+        .where(UserModel.clerk_user_id == clerk_user_id)
+        .where(UserModel.is_active == True)  # noqa: E712
+    )
+    for user in result.scalars().all():
+        try:
+            if identity.username and identity.username != user.github_username:
+                user.github_username = identity.username
+            await _apply_github_id(session, user, identity.github_id)
+            if identity.username or identity.email:
+                _seed_attribution_cache_from_github(
+                    user,
+                    github_username=identity.username or user.github_username,
+                    github_email=identity.email,
+                )
+            if not identity.github_id and not identity.username and trust_no_github:
+                # Definitive no-github: Clerk unlinked GitHub. Drop any stale id
+                # so the gate stops trusting it, then stamp the checked marker. A
+                # reported username with a missing id is only a partial answer —
+                # leave both untouched so a later event retries.
+                user.github_id = None
+                _mark_github_id_checked(user)
+        except Exception:
+            logger.exception(
+                "Failed to sync github_id for user %s (clerk %s)",
+                user.id,
+                clerk_user_id,
+            )
+
+
 def _verify_clerk_webhook(payload: bytes, headers: dict[str, Any]) -> dict[str, Any]:
     if not CLERK_WEBHOOK_SECRET:
         raise HTTPException(
@@ -192,6 +244,33 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
     data = event.get("data") or {}
 
     async with get_session() as session:
+        if event_type in {"user.created", "user.updated"}:
+            await _sync_github_id_from_user_event(
+                session, data, allow_unlink=event_type == "user.updated"
+            )
+            await session.commit()
+            return {"status": "ok"}
+
+        if event_type == "user.deleted":
+            # The Clerk user is gone (self-serve account deletion or a Clerk
+            # dashboard delete). Tombstone every org row for that identity.
+            # This is also the safety net for the account-deletion race: a
+            # cached/still-valid JWT on another container can briefly revive
+            # a row after DELETE /users/me; this event re-tombstones it.
+            clerk_user_id = data.get("id")
+            if not clerk_user_id:
+                raise HTTPException(status_code=400, detail="Missing user id")
+            result = await session.execute(
+                select(UserModel)
+                .where(UserModel.clerk_user_id == clerk_user_id)
+                .where(UserModel.is_active == True)  # noqa: E712
+            )
+            for user in result.scalars().all():
+                user.is_active = False
+                user.deleted_at = utcnow()
+            await session.commit()
+            return {"status": "ok"}
+
         if event_type in {"organization.created", "organization.updated"}:
             clerk_org_id = data.get("id")
             if not clerk_org_id:
@@ -219,7 +298,7 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                 name=(data.get("organization") or {}).get("name"),
                 slug=(data.get("organization") or {}).get("slug"),
             )
-            await _upsert_user(
+            user = await _upsert_user(
                 session,
                 org=org,
                 clerk_user_id=clerk_user_id,
@@ -227,6 +306,9 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
                 name=_resolve_user_name(data),
                 role=_map_role(data.get("role")),
             )
+            # Membership payload carries no external_accounts; fetch from Clerk so
+            # new members land with github_id like login-time JIT provisioning.
+            await _refresh_user_github_identity(user, session)
             await session.commit()
             return {"status": "ok"}
 

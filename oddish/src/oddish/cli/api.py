@@ -933,7 +933,9 @@ def build_sweep_payload(
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     run_probe: bool = False,
+    gate_baselines: bool = True,
     github_username: str | None = None,
+    github_id: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
     disable_verification: bool = False,
@@ -1002,6 +1004,7 @@ def build_sweep_payload(
         "priority": priority,
         "run_analysis": run_analysis,
         "run_probe": run_probe,
+        "gate_baselines": gate_baselines,
     }
     if user:
         payload["user"] = user
@@ -1014,6 +1017,8 @@ def build_sweep_payload(
 
     if github_username:
         payload["github_username"] = github_username
+    if github_id:
+        payload["github_id"] = github_id
     if tags:
         payload["tags"] = tags
     payload["publish_experiment"] = publish_experiment
@@ -1035,6 +1040,21 @@ def build_sweep_payload(
         payload["registry_auth"] = registry_auth
 
     return payload
+
+
+def _extract_error_detail(response: httpx.Response) -> str:
+    """Prefer a FastAPI ``{"detail": ...}`` message over the raw JSON body.
+
+    Server rejections (e.g. the 403 GitHub-linkage gate) carry a human-readable
+    string in ``detail``; surface that plainly instead of the wrapped JSON.
+    """
+    try:
+        detail = response.json().get("detail")
+    except (ValueError, AttributeError):
+        return response.text
+    if isinstance(detail, str) and detail:
+        return detail
+    return response.text
 
 
 def post_sweep_payload(api_url: str, payload: dict) -> dict:
@@ -1066,7 +1086,9 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
     report_advertised_ceiling_from_response(response)
 
     if response.status_code != 200:
-        error_console.print(f"[red]Failed to submit task:[/red] {response.text}")
+        error_console.print(
+            f"[red]Failed to submit task:[/red] {_extract_error_detail(response)}"
+        )
         raise typer.Exit(1)
 
     result: dict = response.json()
@@ -1084,7 +1106,9 @@ def submit_sweep(
     max_trial_attempts: int | None = None,
     run_analysis: bool = False,
     run_probe: bool = False,
+    gate_baselines: bool = True,
     github_username: str | None = None,
+    github_id: str | None = None,
     tags: dict[str, str] | None = None,
     publish_experiment: bool | None = False,
     disable_verification: bool = False,
@@ -1116,7 +1140,9 @@ def submit_sweep(
         max_trial_attempts=max_trial_attempts,
         run_analysis=run_analysis,
         run_probe=run_probe,
+        gate_baselines=gate_baselines,
         github_username=github_username,
+        github_id=github_id,
         tags=tags,
         publish_experiment=publish_experiment,
         disable_verification=disable_verification,
@@ -1316,6 +1342,32 @@ def get_experiment_share(api_url: str, experiment_id: str) -> dict | None:
     if response.status_code != 200:
         return None
     return cast(dict, response.json())
+
+
+def github_id_is_unlinked(api_url: str, github_id: str) -> bool:
+    """Pre-flight the server's linkage gate for a supplied ``github_id``.
+
+    Returns True ONLY on an authoritative ``{"linked": false}`` from
+    ``GET /github/linkage`` (HTTP 200) -- the one signal that lets the CLI
+    fail fast before uploading. Every other outcome fails open (returns
+    False) so the pre-flight can never block a legitimate run: network /
+    timeout errors, any non-200 (including a scope 403 for a key that
+    doesn't satisfy READ), an unparseable body, or ``linked`` missing/true.
+    The server gate on ``/tasks/sweep`` remains the authority.
+    """
+    try:
+        with httpx.Client(timeout=30.0, headers=get_auth_headers()) as client:
+            response = client.get(
+                f"{api_url}/github/linkage", params={"actor_id": github_id}
+            )
+    except httpx.HTTPError:
+        return False
+    if response.status_code != 200:
+        return False
+    try:
+        return response.json().get("linked") is False
+    except (ValueError, AttributeError):
+        return False
 
 
 # =============================================================================
