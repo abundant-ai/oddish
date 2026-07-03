@@ -241,7 +241,14 @@ function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
     ) {
       hasError = true;
     }
-    if (trial.status !== "success" && trial.status !== "failed") continue;
+    // Skipped is terminal (a non-pass): count it so an all-skipped agent reads
+    // as done (and "failed" for row filters), not still-running.
+    if (
+      trial.status !== "success" &&
+      trial.status !== "failed" &&
+      trial.status !== "skipped"
+    )
+      continue;
     hasTerminal = true;
     // Any positive reward — full or partial — disqualifies the agent
     // from counting as "failed" on this task.

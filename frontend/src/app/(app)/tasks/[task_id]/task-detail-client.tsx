@@ -896,7 +896,11 @@ export function TaskDetailClient({
           </KpiTile>
           <KpiTile
             label="Trials"
-            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed`}
+            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed${
+              versionSummary.skipped > 0
+                ? ` · ${versionSummary.skipped} skipped`
+                : ""
+            }`}
           >
             <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
               {versionSummary.trialCount}

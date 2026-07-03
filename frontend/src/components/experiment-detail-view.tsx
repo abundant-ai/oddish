@@ -139,6 +139,7 @@ type ExperimentSummary = {
   totalTrials: number;
   completedTrials: number;
   failedTrials: number;
+  skippedTrials: number;
   passCount: number;
   partialCount: number;
   failCount: number;
@@ -158,6 +159,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let totalTrialsFallback = 0;
   let completedFallback = 0;
   let failedFallback = 0;
+  let skippedFallback = 0;
   let rewardSumFallback = 0;
   let rewardTotalFallback = 0;
   // Per-task mean reward over scored trials (baselines excluded); the avg
@@ -190,6 +192,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
       totalTrialsFallback += task.total;
       completedFallback += task.completed;
       failedFallback += task.failed;
+      skippedFallback += task.skipped ?? 0;
     }
   }
 
@@ -201,6 +204,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     totalTrials: acc.trialCount + totalTrialsFallback,
     completedTrials: acc.completed + completedFallback,
     failedTrials: acc.failed + failedFallback,
+    skippedTrials: acc.skipped + skippedFallback,
     passCount: acc.passCount,
     partialCount: acc.partialCount,
     failCount: acc.failCount,
@@ -566,6 +570,11 @@ function ExperimentSummaryBar({
         </span>
         <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
           {completionPct.toFixed(0)}%
+          {summary.skippedTrials > 0 && (
+            <span className="ml-1.5 text-[color:var(--paper-ink-3)]">
+              · {summary.skippedTrials} skipped
+            </span>
+          )}
           {summary.failedTrials > 0 && (
             <span className="ml-1.5 text-[color:var(--paper-fail)]">
               · {summary.failedTrials} failing

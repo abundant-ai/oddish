@@ -1632,6 +1632,9 @@ _VALID_QUEUE_STATUSES = {
     "success",
     "failed",
     "retrying",
+    # Gate-skipped trials are terminal; count them (like success/failed) so they
+    # don't vanish from a queue's per-status trial pipeline totals.
+    "skipped",
 }
 
 
@@ -1644,6 +1647,7 @@ def _empty_queue_counts() -> dict[str, int]:
         "success": 0,
         "failed": 0,
         "retrying": 0,
+        "skipped": 0,
     }
 
 
