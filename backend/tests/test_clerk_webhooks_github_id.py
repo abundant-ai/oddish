@@ -130,8 +130,9 @@ async def test_org_scoped_collision_skips_only_that_org() -> None:
 
 @requires_db
 @pytest.mark.asyncio
-async def test_no_github_account_stamps_marker_and_keeps_existing_id() -> None:
-    """A no-GitHub payload stamps the marker without clearing an existing id."""
+async def test_no_github_account_clears_stale_id_and_stamps_marker() -> None:
+    """A definitive no-GitHub payload (Clerk unlinked GitHub) drops the stale id
+    so the linkage gate stops trusting it, and stamps the checked marker."""
     org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
     clerk = f"clerk_{uuid.uuid4().hex[:8]}"
     try:
@@ -143,9 +144,55 @@ async def test_no_github_account_stamps_marker_and_keeps_existing_id() -> None:
         await _sync(_event(clerk, github=None))
 
         row = await _get(uid)
-        assert row.github_id == "preexisting"  # not cleared
+        assert row.github_id is None  # stale id cleared on unlink
         marker = (row.attribution_cache or {}).get("github_id_checked")
         assert isinstance(marker, str) and _marker_is_fresh(marker)
+    finally:
+        await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_relink_replaces_changed_github_id() -> None:
+    """Clerk reporting a different github_id (user linked a new GitHub account)
+    replaces the stale id instead of keeping the old one."""
+    org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
+    clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    try:
+        await _add_org(org_id)
+        uid = await _add_user(
+            org_id, clerk, github_id="old-id", github_username="oldcat"
+        )
+
+        await _sync(
+            _event(clerk, github={"provider_user_id": "new-id", "username": "newcat"})
+        )
+
+        row = await _get(uid)
+        assert row.github_id == "new-id"
+        assert row.github_username == "newcat"
+    finally:
+        await _purge([org_id])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_partial_answer_keeps_existing_id() -> None:
+    """A partial payload (username present, provider_user_id null) is NOT a
+    definitive no-github answer, so it must not clear an already-linked id."""
+    org_id = f"org_wh_{uuid.uuid4().hex[:8]}"
+    clerk = f"clerk_{uuid.uuid4().hex[:8]}"
+    try:
+        await _add_org(org_id)
+        uid = await _add_user(
+            org_id, clerk, github_id="keep-me", github_username="octocat"
+        )
+
+        await _sync(_event(clerk, github={"provider_user_id": None}))
+
+        row = await _get(uid)
+        assert row.github_id == "keep-me"  # partial answer must not clear
+        assert "github_id_checked" not in (row.attribution_cache or {})
     finally:
         await _purge([org_id])
 

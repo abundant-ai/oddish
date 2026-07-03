@@ -176,6 +176,31 @@ async def test_refresh_does_not_overwrite_differing_github_id(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_refresh_clears_stale_id_on_definitive_no_github(monkeypatch) -> None:
+    """A user with a github_id but no username re-fetches; a definitive no-github
+    answer (Clerk unlinked) drops the stale id and stamps the checked marker."""
+    _mock_clerk(monkeypatch, ClerkGithubIdentity(None, None, None))
+    user = _user(github_id="stale", github_username=None)
+    await _refresh_user_github_identity(user)
+    assert user.github_id is None
+    assert isinstance(user.attribution_cache.get("github_id_checked"), str)
+
+
+@pytest.mark.asyncio
+async def test_refresh_relinks_changed_id_when_username_absent(monkeypatch) -> None:
+    """A user with a github_id but no username re-fetches; a different Clerk id
+    (relinked account) replaces the stale one via reconcile."""
+    _mock_clerk(
+        monkeypatch,
+        ClerkGithubIdentity(username="octocat", email=None, github_id="new"),
+    )
+    user = _user(github_id="old", github_username=None)
+    await _refresh_user_github_identity(user)
+    assert user.github_id == "new"
+    assert user.github_username == "octocat"
+
+
+@pytest.mark.asyncio
 async def test_refresh_no_clerk_call_once_github_id_known(monkeypatch) -> None:
     """Hot-path guard: a user with a github_username AND a known github_id (either
     the column is set or the checked marker is stamped) must NOT trigger a Clerk

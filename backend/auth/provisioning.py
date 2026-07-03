@@ -155,6 +155,23 @@ async def _set_github_id_if_absent(
     user.github_id = github_id
 
 
+async def _apply_github_id(
+    session: AsyncSession | None, user: UserModel, github_id: str | None
+) -> None:
+    """Reconcile ``user.github_id`` toward an authoritative Clerk id.
+
+    Unlike ``_set_github_id_if_absent`` (first-write only), this also relinks a
+    changed id: a truthy id that differs from the stored one drops the stale
+    value before reclaiming it through the same clash / savepoint machinery, so
+    the gate never keeps trusting an id Clerk no longer reports for this user.
+    Clearing on a definitive no-github answer is the caller's job.
+    """
+    if not github_id or user.github_id == github_id:
+        return
+    user.github_id = None
+    await _set_github_id_if_absent(session, user, github_id)
+
+
 def _seed_attribution_cache_from_github(
     user: UserModel,
     *,
@@ -247,7 +264,7 @@ async def _refresh_user_github_identity(
         return
     if identity.username and not user.github_username:
         user.github_username = identity.username
-    await _set_github_id_if_absent(session, user, identity.github_id)
+    await _apply_github_id(session, user, identity.github_id)
     if identity.username or identity.email:
         _seed_attribution_cache_from_github(
             user,
@@ -259,6 +276,8 @@ async def _refresh_user_github_identity(
     # username with the id still absent (partial answer), leave it unstamped so
     # the backfill/refresh retries once the id is claimable.
     if not identity.github_id and not identity.username:
+        # Clerk unlinked GitHub: drop any stale id so the gate stops trusting it.
+        user.github_id = None
         _mark_github_id_checked(user)
 
 

@@ -292,16 +292,24 @@ def require_experiment_publish_scope(auth: AuthContext) -> None:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
 
+def _should_auto_publish(submission: TaskSweepSubmission, auth: AuthContext) -> bool:
+    if submission.publish_experiment is not None:
+        return submission.publish_experiment
+    # Attribution and the linkage gate now key off github_id, so a CI run that
+    # passes --github-id alone (no handle) must auto-publish like a handle-based
+    # run did. github_id is schema-normalized (blank -> None).
+    return bool(
+        (submission.github_username or submission.github_id) and auth.api_key_id
+    )
+
+
 async def maybe_publish_experiment(
     session: AsyncSession,
     task: TaskModel,
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> None:
-    should_publish = submission.publish_experiment
-    if should_publish is None:
-        should_publish = bool(submission.github_username and auth.api_key_id)
-    if not should_publish:
+    if not _should_auto_publish(submission, auth):
         return
 
     require_experiment_publish_scope(auth)

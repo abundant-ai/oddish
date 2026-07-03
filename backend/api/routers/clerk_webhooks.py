@@ -11,11 +11,11 @@ from sqlalchemy import select
 from svix import Webhook, WebhookVerificationError
 
 from auth.provisioning import (
+    _apply_github_id,
     _github_account_from_clerk_payload,
     _mark_github_id_checked,
     _refresh_user_github_identity,
     _seed_attribution_cache_from_github,
-    _set_github_id_if_absent,
 )
 from models import OrganizationModel, UserModel, UserRole, generate_id
 from oddish.db import get_session, utcnow
@@ -187,7 +187,7 @@ async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None
         try:
             if identity.username and identity.username != user.github_username:
                 user.github_username = identity.username
-            await _set_github_id_if_absent(session, user, identity.github_id)
+            await _apply_github_id(session, user, identity.github_id)
             if identity.username or identity.email:
                 _seed_attribution_cache_from_github(
                     user,
@@ -195,9 +195,11 @@ async def _sync_github_id_from_user_event(session, data: dict[str, Any]) -> None
                     github_email=identity.email,
                 )
             if not identity.github_id and not identity.username:
-                # Only a definitive no-github answer stamps. A reported username
-                # with a missing id is a partial answer — leave it unstamped so
-                # a later event retries once Clerk reports the id.
+                # Definitive no-github: Clerk unlinked GitHub. Drop any stale id
+                # so the gate stops trusting it, then stamp the checked marker. A
+                # reported username with a missing id is only a partial answer —
+                # leave both untouched so a later event retries.
+                user.github_id = None
                 _mark_github_id_checked(user)
         except Exception:
             logger.exception(
