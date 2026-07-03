@@ -1589,6 +1589,10 @@ async def maybe_advance_legacy_analyzing_task(
             and_(
                 TrialModel.task_id == task_id,
                 TrialModel.superseded_by_trial_id.is_(None),
+                # SKIPPED trials are never analyzed (analysis_status stays NULL),
+                # so they must not count as pending or the task would never
+                # advance out of ANALYZING.
+                TrialModel.status != TrialStatus.SKIPPED,
                 or_(
                     TrialModel.analysis_status.is_(None),
                     TrialModel.analysis_status.in_(

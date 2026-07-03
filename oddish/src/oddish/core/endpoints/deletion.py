@@ -883,6 +883,11 @@ async def combine_experiments_core(
     trials_skipped = 0
 
     for source in source_trials:
+        if source.status == TrialStatus.SKIPPED:
+            # Terminal, but the trial never ran, so there are no artifacts or
+            # reward to copy. Omit it silently rather than counting it under
+            # ``trials_skipped`` ("not finished at combine time"), which it isn't.
+            continue
         if source.status not in terminal_states:
             trials_skipped += 1
             continue

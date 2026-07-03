@@ -206,20 +206,20 @@ async def retry_trial_core(
             UPDATE trials
             SET    superseded_by_trial_id = :new_trial_id,
                    status = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS', 'SKIPPED')
                        THEN 'FAILED'::jobstatus ELSE status END,
                    error_message = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS', 'SKIPPED')
                        THEN COALESCE(error_message, 'Superseded by user retry')
                        ELSE error_message END,
                    finished_at = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS', 'SKIPPED')
                        THEN COALESCE(finished_at, NOW()) ELSE finished_at END,
                    current_worker_id = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS', 'SKIPPED')
                        THEN NULL ELSE current_worker_id END,
                    current_queue_slot = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
+                       WHEN status::text NOT IN ('FAILED', 'SUCCESS', 'SKIPPED')
                        THEN NULL ELSE current_queue_slot END
             WHERE  id = :old_trial_id
               AND  superseded_by_trial_id IS NULL

@@ -263,10 +263,20 @@ def format_experiment_comment(
         "",
     ]
 
-    total_trials = sum(len(t.trials) for t in tasks)
-    completed_trials = sum(
-        1 for t in tasks for trial in t.trials if trial.status in ("success", "failed")
+    # SKIPPED is terminal but never ran: it counts as "done" for trial progress
+    # (so the comment advances past "🔄 Progress"), but it's NOT analyzable, so
+    # the analysis stages use a skipped-excluding denominator (analyzable_trials).
+    total_trials = sum(1 for t in tasks for trial in t.trials)
+    skipped_trials = sum(
+        1 for t in tasks for trial in t.trials if trial.status == "skipped"
     )
+    completed_trials = sum(
+        1
+        for t in tasks
+        for trial in t.trials
+        if trial.status in ("success", "failed", "skipped")
+    )
+    analyzable_trials = total_trials - skipped_trials
     analyzed_trials = sum(
         1
         for t in tasks
@@ -287,13 +297,13 @@ def format_experiment_comment(
             lines.append(
                 f"### \u26a0\ufe0f {good_tasks}/{total_tasks} tasks passed validation"
             )
-    elif analyzed_trials == total_trials and total_trials > 0:
+    elif analyzable_trials > 0 and analyzed_trials == analyzable_trials:
         lines.append(
-            f"### \u23f3 Computing verdicts... ({analyzed_trials}/{total_trials} analyses done)"
+            f"### \u23f3 Computing verdicts... ({analyzed_trials}/{analyzable_trials} analyses done)"
         )
     elif completed_trials == total_trials and total_trials > 0:
         lines.append(
-            f"### \u23f3 Analyzing results... ({analyzed_trials}/{total_trials} classified)"
+            f"### \u23f3 Analyzing results... ({analyzed_trials}/{analyzable_trials} classified)"
         )
     elif completed_trials > 0:
         lines.append(
