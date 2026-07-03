@@ -105,6 +105,7 @@ async def list_users(
                 email=u.email,
                 name=u.name,
                 github_username=u.github_username,
+                github_id=u.github_id,
                 role=u.role.value,
                 org_id=u.org_id,
                 created_at=u.created_at.isoformat(),
