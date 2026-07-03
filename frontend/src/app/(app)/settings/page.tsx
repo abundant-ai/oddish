@@ -5,6 +5,7 @@ import useSWR, { mutate } from "swr";
 import {
   OrganizationProfile,
   UserProfile,
+  useClerk,
   useOrganization,
 } from "@clerk/nextjs";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -803,15 +804,146 @@ function APIKeysPanel() {
 
 function ProfilePanel() {
   return (
-    <Panel>
+    <div className="space-y-6">
+      <Panel>
+        <PanelHeader
+          icon={UserIcon}
+          title="Personal account"
+          description="Managed by Clerk — update your name, email, password, and connected accounts."
+        />
+        <div className="pt-4">
+          <UserProfile routing="hash" appearance={clerkEmbeddedAppearance} />
+        </div>
+      </Panel>
+      <DeleteAccountPanel />
+    </div>
+  );
+}
+
+const DELETE_CONFIRM_PHRASE = "DELETE";
+
+function DeleteAccountPanel() {
+  const { signOut } = useClerk();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [confirmText, setConfirmText] = useState("");
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const confirmed = confirmText.trim() === DELETE_CONFIRM_PHRASE;
+
+  const closeDialog = () => {
+    if (isDeleting) return;
+    setDialogOpen(false);
+    setConfirmText("");
+    setError(null);
+  };
+
+  const handleDelete = async () => {
+    if (!confirmed || isDeleting) return;
+    setIsDeleting(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`/api/settings/account`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || "Failed to delete account");
+      }
+      // The Clerk user is gone; end the (now orphaned) session and land on
+      // the public page. Deleting the user can invalidate the session before
+      // signOut runs, so a signOut failure must not strand the user on the
+      // page — hard-redirect instead.
+      try {
+        await signOut({ redirectUrl: "/" });
+      } catch {
+        window.location.assign("/");
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to delete account"
+      );
+      setIsDeleting(false);
+    }
+  };
+
+  return (
+    <Panel className="border-destructive/40">
       <PanelHeader
-        icon={UserIcon}
-        title="Personal account"
-        description="Managed by Clerk — update your name, email, password, and connected accounts."
+        icon={Trash2}
+        title="Delete account"
+        description="Permanently delete your account and sign-in credentials. This cannot be undone."
+        action={
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-destructive/50 text-destructive hover:bg-destructive hover:text-destructive-foreground"
+            onClick={() => setDialogOpen(true)}
+          >
+            <Trash2 className="mr-1 h-3.5 w-3.5" />
+            Delete account
+          </Button>
+        }
       />
       <div className="pt-4">
-        <UserProfile routing="hash" appearance={clerkEmbeddedAppearance} />
+        <p className="text-muted-foreground text-sm leading-relaxed">
+          Deleting your account removes your sign-in (Clerk) account and
+          deactivates your Oddish user in every workspace. Your workspaces and
+          their data are not deleted.
+        </p>
       </div>
+
+      <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete your account?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes your sign-in account and cannot be
+              undone. Type{" "}
+              <span className="text-foreground font-mono font-semibold">
+                {DELETE_CONFIRM_PHRASE}
+              </span>{" "}
+              to confirm.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="delete-account-confirm">Confirmation</Label>
+            <Input
+              id="delete-account-confirm"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              placeholder={DELETE_CONFIRM_PHRASE}
+              autoComplete="off"
+              disabled={isDeleting}
+            />
+          </div>
+
+          {error ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={closeDialog}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={!confirmed || isDeleting}
+            >
+              {isDeleting ? "Deleting…" : "Delete account"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Panel>
   );
 }

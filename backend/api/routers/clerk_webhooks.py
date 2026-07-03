@@ -251,6 +251,26 @@ async def handle_clerk_webhook(request: Request) -> dict[str, str]:
             await session.commit()
             return {"status": "ok"}
 
+        if event_type == "user.deleted":
+            # The Clerk user is gone (self-serve account deletion or a Clerk
+            # dashboard delete). Tombstone every org row for that identity.
+            # This is also the safety net for the account-deletion race: a
+            # cached/still-valid JWT on another container can briefly revive
+            # a row after DELETE /users/me; this event re-tombstones it.
+            clerk_user_id = data.get("id")
+            if not clerk_user_id:
+                raise HTTPException(status_code=400, detail="Missing user id")
+            result = await session.execute(
+                select(UserModel)
+                .where(UserModel.clerk_user_id == clerk_user_id)
+                .where(UserModel.is_active == True)  # noqa: E712
+            )
+            for user in result.scalars().all():
+                user.is_active = False
+                user.deleted_at = utcnow()
+            await session.commit()
+            return {"status": "ok"}
+
         if event_type in {"organization.created", "organization.updated"}:
             clerk_org_id = data.get("id")
             if not clerk_org_id:

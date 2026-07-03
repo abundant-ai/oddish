@@ -98,6 +98,12 @@ class _TTLCache:
         while len(self._data) > self._max_size:
             self._data.popitem(last=False)
 
+    def invalidate_prefix(self, prefix: str) -> int:
+        keys = [k for k in self._data if k.startswith(prefix)]
+        for k in keys:
+            self._data.pop(k, None)
+        return len(keys)
+
 
 _auth_cache = _TTLCache(AUTH_CACHE_TTL, _AUTH_CACHE_MAX_SIZE)
 
@@ -110,6 +116,16 @@ def get_cached_auth(cache_key: str) -> CachedAuthData | None:
 def set_cached_auth(cache_key: str, data: CachedAuthData) -> None:
     """Cache auth data with current timestamp."""
     _auth_cache.set(cache_key, data)
+
+
+def invalidate_cached_clerk_auth(clerk_user_id: str) -> int:
+    """Drop every cached auth context for a Clerk user (all org variants).
+
+    Only clears this process's in-memory cache; other containers hold their
+    own entries until the 60s TTL lapses. Used on account deletion so the
+    deleting container stops honoring the user immediately.
+    """
+    return _auth_cache.invalidate_prefix(f"clerk:{clerk_user_id}:")
 
 
 # =============================================================================
