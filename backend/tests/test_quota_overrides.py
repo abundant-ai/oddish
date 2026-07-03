@@ -286,3 +286,43 @@ async def test_effective_limit_ignores_soft_deleted_override(org_with_member):
         await session.flush()
         revived = await get_effective_limit(session, org_id, member_a.id)
         assert revived == Decimal("3.00")
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_put_revives_soft_deleted_override(org_with_member):
+    """A PUT over a tombstoned override must revive it: the (org_id, user_id)
+    unique index spans all rows, so the upsert conflicts with the dead row and
+    must clear deleted_at or the new limit stores but never enforces."""
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from models import QuotaModel
+
+    org_id, admin_user, member_a = org_with_member
+    async with get_session() as session:
+        session.add(
+            QuotaModel(
+                org_id=org_id,
+                user_id=member_a.id,
+                limit_usd=Decimal("1.00"),
+                deleted_at=datetime.now(timezone.utc),
+            )
+        )
+        await session.flush()
+
+    app = create_app()
+    try:
+        async with _admin_client(app, org_id, admin_user) as client:
+            put_response = await client.put(
+                f"/quotas/{member_a.id}", json={"limit_usd": "4.00"}
+            )
+            assert put_response.status_code == 200
+            # Enforced (revived), not the tombstoned 1.00 nor the 10.00 default.
+            assert put_response.json()["limit_usd"] == pytest.approx(4.0)
+            list_response = await client.get("/quotas")
+    finally:
+        app.dependency_overrides.clear()
+
+    members_by_id = {m["user_id"]: m for m in list_response.json()["members"]}
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(4.0)
