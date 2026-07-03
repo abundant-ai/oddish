@@ -253,7 +253,15 @@ async def set_member_quota(
                 )
                 .on_conflict_do_update(
                     index_elements=["org_id", "user_id"],
-                    set_={"limit_usd": payload.limit_usd, "updated_at": utcnow()},
+                    # Clear deleted_at too: get_effective_limit / the admin list
+                    # only read live rows, so a PUT over a tombstoned override
+                    # must revive it or the new limit would store but never
+                    # enforce (the (org_id,user_id) unique index spans all rows).
+                    set_={
+                        "limit_usd": payload.limit_usd,
+                        "updated_at": utcnow(),
+                        "deleted_at": None,
+                    },
                 )
             )
 
