@@ -940,7 +940,7 @@ class Settings(BaseSettings):
     # loop bypass the cap). The trial row itself keeps cost_usd NULL; only the
     # quota SUMs floor it. A genuinely-$0 row (cost_usd = 0) is left untouched.
     unpriced_trial_cost_usd: Decimal = Decimal("10.00")
-    quota_mode: QuotaMode = QuotaMode.OFF
+    quota_mode: QuotaMode = QuotaMode.SHADOW
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
     # (model key for the job's provider only + an S3 write prefix), replacing the
