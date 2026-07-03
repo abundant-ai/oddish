@@ -39,8 +39,8 @@ def _current_prior_head() -> str:
         Config(str(MIGRATIONS.parent.parent / "alembic.ini"))
     )
     heads = tuple(script.get_heads())
-    assert heads == (REVISION,), (
-        f"oddish migrations must have a single head {REVISION!r}; got {heads}. "
+    assert len(heads) == 1, (
+        f"oddish migrations must have a single head; got {heads}. "
         "A stale or mis-chained down_revision forks the graph."
     )
     down = script.get_revision(REVISION).down_revision
@@ -73,13 +73,15 @@ def test_downgrade_drops_table():
 
 
 def test_adding_migration_keeps_single_head():
-    # No other migration may chain onto this revision (it must be the new head),
-    # and exactly one migration may chain onto the prior head (this one).
-    down_revisions = []
-    for path in MIGRATIONS.glob("*.py"):
-        down_revisions.append(_down_revision_of(path.read_text()))
-    assert REVISION not in down_revisions, "another migration already chains onto mca01"
-    assert down_revisions.count(DOWN) == 1, (
-        f"expected exactly one migration to chain onto {DOWN}; the prior head "
-        "must not have grown a second child"
+    # The enduring invariant is a single head. mca01 need not be the head (later
+    # revisions legitimately chain onto it), and the graph may fork-then-merge
+    # (exp_owner_link_001, mca01's parent, has multiple children healed by a
+    # merge revision) -- what must never happen is the graph ending on >1 head,
+    # which would strand prod's alembic pointer.
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(
+        Config(str(MIGRATIONS.parent.parent / "alembic.ini"))
     )
+    assert len(script.get_heads()) == 1, "oddish migrations forked into >1 head"

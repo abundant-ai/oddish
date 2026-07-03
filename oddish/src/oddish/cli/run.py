@@ -109,18 +109,21 @@ def _default_cloud_environment_for_task(
 def _map_batch_sweep_results(
     batch_results: list,
     submit_targets: list,
-) -> tuple[list[dict | None], int, list[str]]:
+) -> tuple[list[dict | None], int, list[str], bool]:
     """Map per-item batch sweep results onto the submitted task order.
 
-    Returns ``(results_by_index, total_trials, failed_target_ids)``: each
-    successful item's task payload is placed at its request index, and failures
-    are reported by task id (best-effort). A malformed (non-dict) item raises
-    ``typer.Exit(1)`` -- the batch may already have committed, so surface the bad
-    response rather than crash or guess.
+    Returns ``(results_by_index, total_trials, failed_target_ids, quota_blocked)``:
+    each successful item's task payload is placed at its request index, and
+    failures are reported by task id (best-effort). ``quota_blocked`` is True when
+    any item failed with 402 (quota) or 403 (unattributed) so CI fails even when
+    other items succeeded. A malformed (non-dict) item raises ``typer.Exit(1)`` --
+    the batch may already have committed, so surface the bad response rather than
+    crash or guess.
     """
     results_by_index: list[dict | None] = [None] * len(submit_targets)
     total_trials = 0
     failed_targets: list[str] = []
+    quota_blocked = False
     for item in batch_results:
         if not isinstance(item, dict):
             error_console.print(
@@ -137,11 +140,13 @@ def _map_batch_sweep_results(
             total_trials += task_resp.get("trials_count", 0)
         else:
             failed_targets.append(submit_targets[idx][0])
+            if item.get("status_code") in (402, 403):
+                quota_blocked = True
             error_console.print(
                 f"[red]Failed to submit task {submit_targets[idx][0]}:[/red] "
                 f"{item.get('error')}"
             )
-    return results_by_index, total_trials, failed_targets
+    return results_by_index, total_trials, failed_targets, quota_blocked
 
 
 def run(
@@ -304,7 +309,7 @@ def run(
         Optional[str],
         typer.Option(
             "--github-id",
-            help="Immutable GitHub user id for attribution.",
+            help="GitHub user id (immutable) to attribute this task to. Survives handle renames.",
         ),
     ] = None,
     github_meta: Annotated[
@@ -956,13 +961,13 @@ def run(
             if batch_results is not None:
                 # Best-effort: each item is independent. Surface failures by
                 # task id; keep the tasks that succeeded.
-                results_by_index, batch_trials, failed_targets = (
+                results_by_index, batch_trials, failed_targets, quota_blocked = (
                     _map_batch_sweep_results(batch_results, submit_targets)
                 )
                 total_trials_submitted += batch_trials
                 submit_progress.update(progress_task, advance=len(submit_targets))
                 all_results = [r for r in results_by_index if r is not None]
-                if failed_targets and not all_results:
+                if quota_blocked or (failed_targets and not all_results):
                     raise typer.Exit(1)
             else:
                 # submit_sweep_batch only returns None for HTTP 404/405 -- an

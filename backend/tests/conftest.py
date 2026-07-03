@@ -9,6 +9,39 @@ inside the test process to keep the contract explicit.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import ForeignKeyConstraint
+
+# The OSS schema deliberately omits model-level FKs on ``api_keys``
+# (oddish/db/models.py: "In Cloud: FK constraints are added via migration"), so
+# ``api_keys.org_id`` / ``api_keys.created_by_user_id`` carry no ForeignKey in
+# the SQLAlchemy metadata. Mapper configuration of ``OrganizationModel.api_keys``
+# and ``UserModel.api_keys`` then cannot determine a join condition, and every
+# backend DB test errors with NoForeignKeysError before it runs. Re-add exactly
+# the constraints the cloud migration installs to the in-memory table metadata
+# (test process only; no product code or live schema is touched) so those
+# relationships resolve.
+import models  # noqa: E402,F401  registers org/user/api_key tables on shared Base
+from models import APIKeyModel  # noqa: E402
+
+_api_keys_table = APIKeyModel.__table__
+if not _api_keys_table.c.org_id.foreign_keys:
+    _api_keys_table.append_constraint(
+        ForeignKeyConstraint(
+            ["org_id"],
+            ["organizations.id"],
+            name="fk_api_keys_org_id",
+            ondelete="CASCADE",
+        )
+    )
+if not _api_keys_table.c.created_by_user_id.foreign_keys:
+    _api_keys_table.append_constraint(
+        ForeignKeyConstraint(
+            ["created_by_user_id"],
+            ["users.id"],
+            name="fk_api_keys_created_by_user_id",
+            ondelete="SET NULL",
+        )
+    )
 
 
 # pytest-asyncio strict mode is fine: tests opt in with @pytest.mark.asyncio.
