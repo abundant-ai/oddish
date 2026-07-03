@@ -428,17 +428,21 @@ async def test_delete_account_clerk_error_but_user_gone_treated_as_success(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_delete_account_clerk_unknown_state_keeps_tombstones(
+async def test_delete_account_clerk_unknown_state_restores_rows(
     monkeypatch, user_in_two_orgs
 ):
-    """When neither the delete nor the existence probe reaches Clerk, the
-    tombstones are kept (fail-closed) and the user is told to retry."""
+    """When neither the delete nor the existence probe reaches Clerk (outage,
+    misconfigured secret), the tombstones must be RESTORED and the real error
+    surfaced. Keeping them would brick the account: locally deactivated while
+    the Clerk sign-in still works. The false-negative direction (deletion
+    actually landed) is recoverable — the sign-in is gone and the
+    ``user.deleted`` webhook re-tombstones."""
     from fastapi import HTTPException
 
     clerk_user_id, user_a, user_b = user_in_two_orgs
 
     async def failing_delete(cid: str) -> None:
-        raise HTTPException(status_code=503, detail="Clerk unreachable")
+        raise HTTPException(status_code=503, detail="Failed to reach Clerk: boom")
 
     async def clerk_unknown(cid: str) -> bool | None:
         return None
@@ -455,7 +459,8 @@ async def test_delete_account_clerk_unknown_state_keeps_tombstones(
         resp = await client.delete("/users/me")
 
     assert resp.status_code == 503
-    assert "retry" in resp.json()["detail"].lower()
+    # The underlying Clerk error is surfaced, not a generic retry message.
+    assert "Clerk" in resp.json()["detail"]
 
     async with get_session() as session:
         rows = (
@@ -469,8 +474,8 @@ async def test_delete_account_clerk_unknown_state_keeps_tombstones(
             .all()
         )
     for row in rows:
-        assert row["is_active"] is False
-        assert row["deleted_at"] is not None
+        assert row["is_active"] is True
+        assert row["deleted_at"] is None
 
 
 @requires_db
