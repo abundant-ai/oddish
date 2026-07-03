@@ -51,10 +51,22 @@ function errorMessage(body: unknown): string | undefined {
   return undefined;
 }
 
+// Returns the payload for one dirty row, or an error string if invalid.
+function buildPayload(raw: string): QuotaUpdate | string {
+  if (raw.trim() === "") return { limit_usd: null };
+  // Validate the 2dp value actually sent, not the raw parse (e.g. 0.001
+  // parses > 0 but rounds to "0.00", which the backend rejects).
+  const rounded = Number(Number(raw).toFixed(2));
+  if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
+    return "Enter an amount greater than 0, or leave empty to reset.";
+  }
+  return { limit_usd: rounded.toFixed(2) };
+}
+
 export function QuotaAdminForm() {
   const { data, mutate, error } = useSWR<QuotaList>("/api/quotas", fetcher);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [savingId, setSavingId] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<Record<string, string>>({});
 
   if (error) {
@@ -86,59 +98,61 @@ export function QuotaAdminForm() {
       (draft === "" ? true : Number(draft) !== member.limit_usd)
     );
   };
+  const dirtyMembers = members.filter(isDirty);
 
   const setDraft = (userId: string, value: string) => {
     setRowError(({ [userId]: _drop, ...rest }) => rest);
     setDrafts((d) => ({ ...d, [userId]: value }));
   };
+  const revertDraft = (userId: string) => {
+    setDrafts(({ [userId]: _drop, ...rest }) => rest);
+    setRowError(({ [userId]: _drop, ...rest }) => rest);
+  };
 
-  async function save(member: QuotaMember) {
-    const raw = draftValue(member).trim();
-    const id = member.user_id;
-    let payload: QuotaUpdate;
+  async function saveAll() {
+    if (saving || dirtyMembers.length === 0) return;
 
-    if (raw === "") {
-      payload = { limit_usd: null };
-    } else {
-      // Validate the 2dp value actually sent, not the raw parse (e.g. 0.001
-      // parses > 0 but rounds to "0.00", which the backend rejects).
-      const rounded = Number(Number(raw).toFixed(2));
-      if (
-        !Number.isFinite(rounded) ||
-        rounded <= 0 ||
-        rounded > MAX_LIMIT_USD
-      ) {
-        setRowError((e) => ({
-          ...e,
-          [id]: "Enter an amount greater than 0, or leave empty to reset.",
-        }));
-        return;
-      }
-      payload = { limit_usd: rounded.toFixed(2) };
+    // Validate every dirty row before sending anything.
+    const payloads = new Map<string, QuotaUpdate>();
+    const errors: Record<string, string> = {};
+    for (const member of dirtyMembers) {
+      const result = buildPayload(draftValue(member));
+      if (typeof result === "string") errors[member.user_id] = result;
+      else payloads.set(member.user_id, result);
     }
+    setRowError(errors);
+    if (Object.keys(errors).length > 0) return;
 
-    setSavingId(id);
-    setRowError(({ [id]: _drop, ...rest }) => rest);
-    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
-    setSavingId(null);
+    setSaving(true);
+    const results = await Promise.all(
+      [...payloads.entries()].map(async ([id, payload]) => {
+        const res = await fetch(`/api/quotas/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch(() => null);
+        if (res?.ok) return { id, error: null };
+        const body: unknown = await res?.json().catch(() => null);
+        const message =
+          res?.status === 403
+            ? "Admins only."
+            : res?.status === 404
+              ? "Member not found."
+              : (errorMessage(body) ?? "Could not save limit.");
+        return { id, error: message };
+      })
+    );
+    setSaving(false);
 
-    if (!res || !res.ok) {
-      const body: unknown = await res?.json().catch(() => null);
-      const message =
-        res?.status === 403
-          ? "Admins only."
-          : res?.status === 404
-            ? "Member not found."
-            : (errorMessage(body) ?? "Could not save limit.");
-      setRowError((e) => ({ ...e, [id]: message }));
-      return;
+    const failed: Record<string, string> = {};
+    for (const { id, error: err } of results) {
+      if (err) failed[id] = err;
     }
-
-    setDrafts(({ [id]: _drop, ...rest }) => rest);
+    setRowError(failed);
+    // Keep only failed drafts so successful rows show fresh server values.
+    setDrafts((d) =>
+      Object.fromEntries(Object.entries(d).filter(([id]) => id in failed))
+    );
     void mutate();
   }
 
@@ -150,14 +164,11 @@ export function QuotaAdminForm() {
             <TableRow className="bg-muted/40 hover:bg-muted/40">
               <TableHead className="h-9 text-xs">Member</TableHead>
               <TableHead className="h-9 w-24 text-xs">Role</TableHead>
-              <TableHead className="h-9 w-40 text-right text-xs">
+              <TableHead className="h-9 w-44 text-right text-xs">
                 Used today
               </TableHead>
               <TableHead className="h-9 w-36 text-right text-xs">
                 Daily limit
-              </TableHead>
-              <TableHead className="h-9 w-24 text-xs">
-                <span className="sr-only">Actions</span>
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -170,7 +181,6 @@ export function QuotaAdminForm() {
                 member.limit_usd > 0
                   ? Math.min(1, member.used_usd / member.limit_usd)
                   : 0;
-              const saving = savingId === id;
               const dirty = isDirty(member);
               const err = rowError[id];
               return (
@@ -237,13 +247,8 @@ export function QuotaAdminForm() {
                         disabled={saving}
                         onChange={(e) => setDraft(id, e.target.value)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" && dirty && !saving) {
-                            void save(member);
-                          }
-                          if (e.key === "Escape") {
-                            setDrafts(({ [id]: _drop, ...rest }) => rest);
-                            setRowError(({ [id]: _drop, ...rest }) => rest);
-                          }
+                          if (e.key === "Enter") void saveAll();
+                          if (e.key === "Escape") revertDraft(id);
                         }}
                       />
                       {err ? (
@@ -253,32 +258,37 @@ export function QuotaAdminForm() {
                       ) : null}
                     </div>
                   </TableCell>
-                  <TableCell className="py-2.5">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="w-[72px]"
-                      disabled={saving || !dirty}
-                      onClick={() => save(member)}
-                    >
-                      {saving ? (
-                        <Loader2 className="animate-spin" aria-label="Saving" />
-                      ) : (
-                        "Save"
-                      )}
-                    </Button>
-                  </TableCell>
                 </TableRow>
               );
             })}
           </TableBody>
         </Table>
       </div>
-      <p className="text-muted-foreground text-xs">
-        Effective daily limit per member. Leave a limit empty and save to clear
-        the override — that member reverts to the workspace default. Press Enter
-        to save, Escape to revert an edit.
-      </p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-muted-foreground text-xs">
+          Leave a limit empty to revert that member to the workspace default.
+        </p>
+        <div className="flex shrink-0 items-center gap-3">
+          {dirtyMembers.length > 0 && !saving ? (
+            <span className="text-muted-foreground text-xs">
+              {dirtyMembers.length} unsaved{" "}
+              {dirtyMembers.length === 1 ? "change" : "changes"}
+            </span>
+          ) : null}
+          <Button
+            size="sm"
+            className="w-[110px]"
+            disabled={saving || dirtyMembers.length === 0}
+            onClick={() => saveAll()}
+          >
+            {saving ? (
+              <Loader2 className="animate-spin" aria-label="Saving" />
+            ) : (
+              "Save changes"
+            )}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
