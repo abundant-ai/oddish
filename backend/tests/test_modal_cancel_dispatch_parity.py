@@ -23,7 +23,7 @@ def _install_fake_modal(monkeypatch) -> list[tuple[str, bool]]:
         return types.SimpleNamespace(cancel=types.SimpleNamespace(aio=_cancel_aio))
 
     fake_modal = types.ModuleType("modal")
-    fake_modal.FunctionCall = types.SimpleNamespace(from_id=_from_id)
+    fake_modal.FunctionCall = types.SimpleNamespace(from_id=_from_id)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     return cancelled
 
@@ -53,7 +53,7 @@ def test_cancel_modal_function_calls_swallows_errors(monkeypatch) -> None:
         return types.SimpleNamespace(cancel=types.SimpleNamespace(aio=_boom))
 
     fake_modal = types.ModuleType("modal")
-    fake_modal.FunctionCall = types.SimpleNamespace(from_id=_from_id)
+    fake_modal.FunctionCall = types.SimpleNamespace(from_id=_from_id)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "modal", fake_modal)
     from api.routers.tasks import _cancel_modal_function_calls
 

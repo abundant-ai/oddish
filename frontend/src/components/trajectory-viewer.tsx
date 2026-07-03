@@ -13,7 +13,14 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Route, ChevronRight, Download, ImageOff, Search, X } from "lucide-react";
+import {
+  Route,
+  ChevronRight,
+  Download,
+  ImageOff,
+  Search,
+  X,
+} from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
 import {
   Tooltip,

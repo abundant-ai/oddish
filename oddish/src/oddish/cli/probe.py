@@ -102,9 +102,7 @@ def probe(
     if ctx.invoked_subcommand is not None:
         return
     if not task_id:
-        error_console.print(
-            "[red]--task is required to queue a probe.[/red]"
-        )
+        error_console.print("[red]--task is required to queue a probe.[/red]")
         raise typer.Exit(1)
     if not api_url:
         api_url = get_api_url()
@@ -184,7 +182,9 @@ def _parse_skill_meta(skill_md: str) -> tuple[str, str]:
     text = skill_md.lstrip()
     parts = text.split("---", 2)
     if not text.startswith("---") or len(parts) < 3:
-        error_console.print("[red]SKILL.md must start with closed YAML frontmatter (---).[/red]")
+        error_console.print(
+            "[red]SKILL.md must start with closed YAML frontmatter (---).[/red]"
+        )
         raise typer.Exit(1)
     try:
         meta = yaml.safe_load(parts[1]) or {}
@@ -238,9 +238,7 @@ def skill_add(
     files = _collect_skill_files(directory)
     skill_md = next((f for f in files if f["relative_path"] == "SKILL.md"), None)
     if skill_md is None:
-        error_console.print(
-            "[red]No SKILL.md found in the skill directory root.[/red]"
-        )
+        error_console.print("[red]No SKILL.md found in the skill directory root.[/red]")
         raise typer.Exit(1)
     name, description = _parse_skill_meta(skill_md["content"])
 

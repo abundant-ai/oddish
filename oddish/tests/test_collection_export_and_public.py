@@ -12,17 +12,30 @@ or not.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 import uuid
 
 import pytest
+from fastapi import HTTPException
 
+from oddish.core.sharing import helpers as sharing_helpers
 from oddish.core.endpoints.collections import create_trial_collection_core
 from oddish.core.sharing.helpers import (
     ensure_experiment_public,
-    get_public_trial,
+    generate_public_token,
+    get_public_experiment,
+    get_public_task_for_experiment,
+    get_public_trial_for_experiment,
+    list_task_trials_for_public_experiment,
     list_experiment_trials_for_org,
+    list_task_files_s3,
+    list_trial_files_s3,
 )
-from oddish.core.sharing.public import list_public_experiment_tasks
+from oddish.core.sharing.public import (
+    get_public_task_status,
+    list_public_experiment_tasks,
+    list_public_experiments,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -38,6 +51,47 @@ from sqlalchemy import select
 
 def _unique(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
+def test_generate_public_token_uses_256_bit_urlsafe_secret():
+    token = generate_public_token()
+
+    assert len(token) == 43
+    assert token.replace("-", "").replace("_", "").isalnum()
+
+
+@pytest.mark.asyncio
+async def test_public_file_list_errors_are_sanitized(monkeypatch):
+    class BrokenStorage:
+        async def list_task_files(self, **kwargs):
+            raise RuntimeError("s3-secret-bucket-name")
+
+        async def list_trial_files(self, **kwargs):
+            raise RuntimeError("s3-secret-bucket-name")
+
+    monkeypatch.setattr(sharing_helpers, "get_storage_client", lambda: BrokenStorage())
+
+    with pytest.raises(HTTPException) as task_exc:
+        await list_task_files_s3(
+            task_id="task",
+            prefix=None,
+            recursive=True,
+            limit=1000,
+            cursor=None,
+            presign=True,
+        )
+    assert task_exc.value.detail == "Failed to list files"
+
+    with pytest.raises(HTTPException) as trial_exc:
+        await list_trial_files_s3(
+            SimpleNamespace(id="trial", trial_s3_key=None),
+            prefix=None,
+            recursive=True,
+            limit=1000,
+            cursor=None,
+            presign=True,
+        )
+    assert trial_exc.value.detail == "Failed to list trial files"
 
 
 def _task(name: str, *, org_id: str = "org1") -> TaskModel:
@@ -105,6 +159,9 @@ async def _cleanup(
                 )
             )
             await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id.in_(task_ids))
+            )
+            await session.execute(
                 TaskModel.__table__.delete().where(TaskModel.id.in_(task_ids))
             )
         if experiment_ids:
@@ -138,6 +195,154 @@ async def test_export_lists_gathered_trials(session):
 
     trials = await list_experiment_trials_for_org(session, coll.id, org_id="org1")
     assert t1.id in {t.id for t in trials}
+
+
+@pytest.mark.asyncio
+async def test_public_experiments_list_does_not_enumerate_share_tokens():
+    exp_id: str | None = None
+    exp_name: str | None = None
+    token: str | None = None
+    try:
+        async with get_session() as setup:
+            exp = _experiment(_unique("private-link"), org_id=None)
+            setup.add(exp)
+            await setup.flush()
+
+            await ensure_experiment_public(setup, exp)
+            await setup.flush()
+            exp_id = exp.id
+            exp_name = exp.name
+            token = exp.public_token
+            assert token
+
+        listed = await list_public_experiments()
+        assert listed == []
+
+        async with get_session() as verify:
+            resolved = await get_public_experiment(verify, token)
+            assert resolved is not None
+            assert resolved.public_token == token
+            assert resolved.name == exp_name
+    finally:
+        if exp_id:
+            await _cleanup(experiment_ids=[exp_id])
+
+
+@pytest.mark.asyncio
+async def test_republish_after_unpublish_generates_fresh_public_token(session):
+    exp = _experiment(_unique("rotating-link"), org_id=None)
+    session.add(exp)
+    await session.flush()
+
+    await ensure_experiment_public(session, exp)
+    old_token = exp.public_token
+    assert old_token
+
+    exp.is_public = False
+    exp.public_token = None
+    await session.flush()
+    assert await get_public_experiment(session, old_token) is None
+
+    await ensure_experiment_public(session, exp)
+    new_token = exp.public_token
+
+    assert new_token
+    assert new_token != old_token
+    assert await get_public_experiment(session, old_token) is None
+    assert await get_public_experiment(session, new_token) is not None
+
+
+@pytest.mark.asyncio
+async def test_public_trial_access_is_scoped_to_share_token(session):
+    task = _task(_unique("scoped-public-task"), org_id=None)
+    session.add(task)
+    await session.flush()
+
+    exp_a = _experiment(_unique("scoped-public-a"), org_id=None)
+    exp_b = _experiment(_unique("scoped-public-b"), org_id=None)
+    session.add_all([exp_a, exp_b])
+    await session.flush()
+    await session.execute(
+        task_experiments.insert(),
+        [
+            {"task_id": task.id, "experiment_id": exp_a.id},
+            {"task_id": task.id, "experiment_id": exp_b.id},
+        ],
+    )
+
+    trial = _trial(task, exp_a, org_id=None, is_probe=False)
+    session.add(trial)
+    await session.flush()
+
+    await ensure_experiment_public(session, exp_a)
+    await ensure_experiment_public(session, exp_b)
+    await session.flush()
+    token_a = exp_a.public_token
+    token_b = exp_b.public_token
+    assert token_a and token_b
+
+    assert await get_public_task_for_experiment(session, token_a, task.id) is not None
+    assert await get_public_task_for_experiment(session, token_b, task.id) is not None
+
+    visible = await get_public_trial_for_experiment(session, token_a, trial.id)
+    assert visible is not None
+    assert visible.id == trial.id
+    assert await get_public_trial_for_experiment(session, token_b, trial.id) is None
+
+    trials_a = await list_task_trials_for_public_experiment(session, token_a, task.id)
+    trials_b = await list_task_trials_for_public_experiment(session, token_b, task.id)
+    assert trials_a is not None and [row.id for row in trials_a] == [trial.id]
+    assert trials_b == []
+
+
+@pytest.mark.asyncio
+async def test_public_task_status_uses_share_experiment_context():
+    task_id: str | None = None
+    exp_ids: list[str] = []
+    token: str | None = None
+    trial_id: str | None = None
+    try:
+        async with get_session() as setup:
+            task = _task(_unique("scoped-public-status-task"), org_id=None)
+            setup.add(task)
+            await setup.flush()
+            task_id = task.id
+
+            exp = _experiment(_unique("scoped-public-status-exp"), org_id=None)
+            setup.add(exp)
+            await setup.flush()
+            exp_ids.append(exp.id)
+            await setup.execute(
+                task_experiments.insert(),
+                {"task_id": task.id, "experiment_id": exp.id},
+            )
+
+            trial = _trial(task, exp, org_id=None, is_probe=False)
+            setup.add(trial)
+            await setup.flush()
+            trial_id = trial.id
+
+            await ensure_experiment_public(setup, exp)
+            await setup.flush()
+            token = exp.public_token
+            assert token
+
+        assert task_id is not None
+        assert token is not None
+        task_status = await get_public_task_status(token, task_id)
+        assert task_status.experiment_id == exp_ids[0]
+        assert [row.id for row in task_status.trials] == [trial_id]
+
+        summary = await get_public_task_status(token, task_id, include_trials=False)
+        assert summary.experiment_id == exp_ids[0]
+        assert summary.trials is None
+        assert summary.total == 1
+    finally:
+        if task_id or exp_ids:
+            await _cleanup(
+                task_ids=[task_id] if task_id else None,
+                experiment_ids=exp_ids or None,
+            )
 
 
 @pytest.mark.asyncio
@@ -303,25 +508,23 @@ async def test_public_view_surfaces_gathered_old_version_trial():
 
 
 @pytest.mark.asyncio
-async def test_get_public_trial_resolves_gathered_non_probe(session):
-    """Fix 2: ``get_public_trial`` must admit a trial whose HOME experiment is
-    private but whose GATHERED (collection) experiment is public -- otherwise
-    the per-trial detail/logs/files/result endpoints 404 for trials that
-    render fine in the collection's public grid."""
-    task = _task(_unique("public-trial-task"))
+async def test_get_public_trial_for_experiment_resolves_gathered_non_probe(session):
+    """A token-scoped public trial lookup admits a private-home trial gathered
+    into that public collection."""
+    task = _task(_unique("public-trial-task"), org_id=None)
     session.add(task)
     await session.flush()
 
-    home = _experiment(_unique("public-trial-home"))  # stays private
+    home = _experiment(_unique("public-trial-home"), org_id=None)  # stays private
     session.add(home)
     await session.flush()
 
-    t1 = _trial(task, home, org_id="org1", is_probe=False)
+    t1 = _trial(task, home, org_id=None, is_probe=False)
     session.add(t1)
     await session.flush()
 
     coll = await create_trial_collection_core(
-        session, name=_unique("coll"), trial_ids=[t1.id], org_id="org1"
+        session, name=_unique("coll"), trial_ids=[t1.id], org_id=None
     )
     await session.flush()
 
@@ -332,59 +535,61 @@ async def test_get_public_trial_resolves_gathered_non_probe(session):
     ).scalar_one()
     await ensure_experiment_public(session, coll_exp)
     await session.flush()
+    public_token = coll_exp.public_token
+    assert public_token
 
     assert home.is_public is False  # home experiment never published
 
-    resolved = await get_public_trial(session, t1.id)
+    resolved = await get_public_trial_for_experiment(session, public_token, t1.id)
     assert resolved is not None
     assert resolved.id == t1.id
 
 
 @pytest.mark.asyncio
-async def test_get_public_trial_resolves_home_public(session):
-    """Fix B: a trial homed directly in a public experiment (never gathered
-    into any collection) must still resolve via ``get_public_trial``."""
-    task = _task(_unique("public-trial-home-task"))
+async def test_get_public_trial_for_experiment_resolves_home_public(session):
+    """A trial homed directly in a public experiment resolves through that token."""
+    task = _task(_unique("public-trial-home-task"), org_id=None)
     session.add(task)
     await session.flush()
 
-    home = _experiment(_unique("public-trial-home-only"))
+    home = _experiment(_unique("public-trial-home-only"), org_id=None)
     session.add(home)
     await session.flush()
 
-    t1 = _trial(task, home, org_id="org1", is_probe=False)
+    t1 = _trial(task, home, org_id=None, is_probe=False)
     session.add(t1)
     await session.flush()
 
     await ensure_experiment_public(session, home)
     await session.flush()
+    public_token = home.public_token
+    assert public_token
 
     assert home.is_public is True
 
-    resolved = await get_public_trial(session, t1.id)
+    resolved = await get_public_trial_for_experiment(session, public_token, t1.id)
     assert resolved is not None
     assert resolved.id == t1.id
 
 
 @pytest.mark.asyncio
-async def test_get_public_trial_excludes_gathered_probe(session):
+async def test_get_public_trial_for_experiment_excludes_gathered_probe(session):
     """Anti-leak: even once gathered into a PUBLIC collection, a probe trial
-    must never resolve via ``get_public_trial``. Probes are internal-only and
-    must never appear on any public surface."""
-    task = _task(_unique("public-probe-trial-task"))
+    must never resolve through token-scoped public trial access."""
+    task = _task(_unique("public-probe-trial-task"), org_id=None)
     session.add(task)
     await session.flush()
 
-    home = _experiment(_unique("public-probe-trial-home"))
+    home = _experiment(_unique("public-probe-trial-home"), org_id=None)
     session.add(home)
     await session.flush()
 
-    probe = _trial(task, home, org_id="org1", is_probe=True)
+    probe = _trial(task, home, org_id=None, is_probe=True)
     session.add(probe)
     await session.flush()
 
     coll = await create_trial_collection_core(
-        session, name=_unique("coll"), trial_ids=[probe.id], org_id="org1"
+        session, name=_unique("coll"), trial_ids=[probe.id], org_id=None
     )
     await session.flush()
 
@@ -395,6 +600,8 @@ async def test_get_public_trial_excludes_gathered_probe(session):
     ).scalar_one()
     await ensure_experiment_public(session, coll_exp)
     await session.flush()
+    public_token = coll_exp.public_token
+    assert public_token
 
-    resolved = await get_public_trial(session, probe.id)
+    resolved = await get_public_trial_for_experiment(session, public_token, probe.id)
     assert resolved is None

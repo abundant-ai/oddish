@@ -47,7 +47,9 @@ def test_rewrite_skill_name_updates_frontmatter_only():
     assert "description: does a thing" in skill_md.content  # untouched
     assert "# Body\nkeep me" in skill_md.content  # body untouched
     # other files pass through unchanged
-    assert next(f for f in out if f.relative_path == "scripts/run.sh").content == "echo hi"
+    assert (
+        next(f for f in out if f.relative_path == "scripts/run.sh").content == "echo hi"
+    )
 
 
 @pytest_asyncio.fixture

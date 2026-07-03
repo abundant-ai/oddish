@@ -22,12 +22,15 @@ export ODDISH_API_KEY="ok_..."
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
-- `oddish cancel` - stop in-flight task runs, analysis, or verdict jobs
+- `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
-- `oddish delete` - delete task data
+- `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
+- `oddish experiment create` - build a collection experiment from explicit trial IDs
+- `oddish delete` - delete task data (trial delete works on hosted Oddish; task/experiment delete is self-host only)
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
+- `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 
 Every command accepts `--json` for machine-readable output (CI / scripts / agents).
 
@@ -42,7 +45,7 @@ A typical run flows through these commands:
 5. `oddish cancel` / `oddish delete` — stop in-flight work or remove data when you're done.
 6. `oddish publish` — share an experiment publicly (read-only) and get a link.
 
-Both read commands accept a trial, task, or experiment ID and auto-detect which kind it is. The CLI does not yet support listing or filtering trials/tasks/experiments by status, name, or date — IDs are typically discovered through the dashboard or `oddish status`.
+`oddish pull` accepts a trial, task, or experiment ID and auto-detects which kind it is; `oddish status` takes a task ID (falling back to experiment lookup) or `--experiment`. Tasks can be filtered by name and tags with `oddish ls --query` / `--tag`; there is no status or date filtering yet, so other IDs are typically discovered through the dashboard or `oddish status`.
 
 ## Submit a Job
 
@@ -67,6 +70,7 @@ Options
 - `--config`, `-c PATH` - YAML or JSON config for multi-agent sweeps
 - `--agent`, `-a TEXT` - Agent name for simple single-agent runs (defaults to `claude-code`)
 - `--model`, `-m TEXT` - Model override for the selected agent
+- `--harbor TEXT` - Override the Harbor source/ref for this run (`main`, a tag/SHA, `org/repo@ref`, or a git URL@ref); defaults to the locked fork commit (env: `ODDISH_HARBOR`)
 - `--n-trials INTEGER` - Number of trials per task
 - `--max-trial-attempts INTEGER` - Override the maximum Oddish attempts per trial, including the initial run
 - `--task-name`, `-t TEXT` - Include task glob filter; can be passed multiple times
@@ -79,12 +83,15 @@ Options
 - `--github-user`, `-G TEXT` - GitHub user attribution for CI metadata. When omitted, the backend auto-fills this from the authenticated user's Clerk-linked GitHub username (if any) so CI-style attribution still works.
 - `--github-meta TEXT` - JSON metadata blob to attach to the task
 - `--link TEXT` - Associate URL with the task.
-- `--publish` - Publish the experiment for public read-only access
+- `--publish/--no-publish` - Publish the experiment for public read-only access (off by default)
 - `--watch/--no-watch`, `-w` - Watch progress after submission; enabled by default
 - `--background`, `--async`, `-b` - Submit and return immediately
 - `--quiet`, `-q` - Suppress startup logs
 - `--run-analysis` - Run task-level QA (classify every trial's trajectory and compute the task verdict)
-- `--disable-verification` - Skip task verification or tests
+- `--run-probe` - Auto-enqueue a probe trial for the task version (off by default)
+- `--disable-verification/--enable-verification` - Skip task verification or tests
+- `--force-new-version` - Allocate a new task version even when the content is unchanged
+- `--submit-concurrency INTEGER` - Max parallel task uploads/submissions (default: adaptive)
 - `--override-cpus INTEGER` - Override environment CPU count
 - `--override-memory-mb INTEGER` - Override environment memory
 - `--override-gpus INTEGER` - Override environment GPU count
@@ -164,22 +171,56 @@ harbor:
 per trial, including the initial run. When omitted, Oddish keeps its default
 retry behavior.
 
+## Upload Without Running
+
+Use `oddish upload` to register a task (or dataset of tasks) without submitting
+trials, or to import existing off-oddish Harbor trial results. Re-uploading
+unchanged task content is idempotent (no new version).
+
+```bash
+# Register a task or dataset
+oddish upload ./my-task
+oddish upload -d swebench@1.0
+
+# Import Harbor job results into an existing task
+oddish upload ./jobs --task <task_id>
+
+# Upload the task, then import trials against it
+oddish upload ./jobs --path ./my-task
+```
+
+Options
+
+- `PATH` - Task dir, dataset dir, a Harbor job dir (with `result.json`), or a parent dir of job dirs
+- `--path`, `-p PATH` / `--dataset`, `-d TEXT` - Task or dataset to register
+- `--task-name`, `-t` / `--exclude-task-name`, `-x` / `--n-tasks`, `-l` - Task filters for dataset uploads
+- `--task TEXT` - Import mode: target task ID for the imported trials
+- `--experiment`, `-E TEXT` - Import mode: experiment to attach trials to (auto-generated if omitted)
+- `--skip-artifacts` - Import mode: import metadata without logs/trajectories
+- `--priority`, `-P TEXT` - Task row priority (default `low`)
+- `--message`, `-M TEXT` - Task version description
+- `--user`, `-u TEXT` - Author override
+- `--quiet`, `-q` / `--json` / `--api TEXT`
+
 ## List Tasks
 
 Use `oddish ls` to browse uploaded tasks with their latest version, trial
-counts, reward summary, last run time, and linked experiments.
+counts, reward summary, tags, last run time, and linked experiments.
 
 ```bash
 oddish ls
 oddish ls --query django
-oddish ls --limit 50
+oddish ls --tag benchmark --not-tag wip
 oddish ls --json
 ```
 
 Options
 
 - `--query`, `-q TEXT` - Filter tasks by name
-- `--limit`, `-n INTEGER` - Maximum number of tasks to show
+- `--tag TEXT` - Require this tag (repeatable; AND semantics)
+- `--tag-any TEXT` - Match any of these tags (repeatable; OR semantics)
+- `--not-tag TEXT` - Exclude tasks carrying any of these tags (repeatable)
+- `--limit`, `-n INTEGER` - Maximum number of tasks to show (default 25, max 100)
 - `--offset INTEGER` - Number of tasks to skip
 - `--json` - Emit the raw task browser JSON response
 - `--api TEXT` - Override the API URL
@@ -211,6 +252,7 @@ Options
 - `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
 - `--watch`, `-w` - Poll until the task or experiment finishes
+- `--verbose`, `-v` - Extra detail in the system overview
 - `--api TEXT` - Override the API URL
 - `--json` - Emit a single JSON snapshot (no live watch)
 
@@ -344,13 +386,52 @@ Options
 - `--json` - Print the raw JSON response
 - `--api-url`, `-u TEXT` - Override the API URL
 
+## Collect Trials into a Shared Collection
+
+Use `oddish collect` to gather trials — from whole tasks and/or explicit trial
+IDs — into a new read-only **collection experiment**, and (by default) publish
+it with a public share link. Source tasks and trials are referenced, not
+copied.
+
+```bash
+# Collect the current-version trials of two tasks and publish
+oddish collect --task <task_a> --task <task_b> --name my-collection
+
+# Mix tasks and individual trials; keep it private
+oddish collect <trial_id> --task <task_id> --no-publish
+
+# Machine-readable output (includes public_token / public_url when published)
+oddish collect --task <task_id> --json
+```
+
+Options
+
+- `TRIAL_ID...` - Optional trial IDs to include (combine freely with `--task`)
+- `--task`, `-t TEXT` - Task ID or name whose current-version trials are linked (repeatable)
+- `--name`, `-n TEXT` - Collection name (default `collection`)
+- `--publish/--no-publish` - Create a public read-only share link (default: publish). Publishing requires a full-scope API key.
+- `--json` - Print the raw JSON response
+- `--api-url`, `-u TEXT` - Override the API URL
+
+`oddish experiment create` is the lower-level sibling: it builds a collection
+from explicit trial IDs only, never publishes, and requires `--name`:
+
+```bash
+oddish experiment create --name my-set <trial_id_1> <trial_id_2>
+```
+
 ## Delete Data
 
-Use `oddish delete` to delete experiments or trials.
+Use `oddish delete` to delete tasks, experiments, or trials. Against hosted
+Oddish (oddish.app), only trial deletion (`--trial`) is available; whole-task
+and whole-experiment deletion require a self-hosted instance.
 
 ```bash
 # Delete an experiment
 oddish delete --experiment <experiment_id>
+
+# Delete a task
+oddish delete <task_id>
 
 # Delete one or more trials and emit a JSON result
 oddish delete --trial <trial_id> --json
@@ -358,8 +439,8 @@ oddish delete --trial <trial_id> --json
 
 Options
 
-- `TASK_ID` - Task ID to delete when not using `--experiment`
-- `--experiment`, `-e TEXT` - Delete an experiment instead of a task
+- `TASK_ID` - Task ID to delete when not using `--experiment` (self-host only)
+- `--experiment`, `-e TEXT` - Delete an experiment instead of a task (self-host only)
 - `--trial`, `-t TEXT` - Delete one or more trials (repeatable); works against hosted Oddish
 - `--yes`, `-y` - Skip confirmation prompts
 - `--api-url`, `-u TEXT` - Override the API URL

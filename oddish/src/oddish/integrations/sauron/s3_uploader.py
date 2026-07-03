@@ -33,7 +33,8 @@ from pathlib import Path
 from typing import Any
 
 import aioboto3
-from botocore.config import Config
+from botocore.config import Config  # type: ignore[import-untyped]
+from harbor.viewer.scanner import JobScanner
 
 from oddish.config import settings
 from oddish.integrations.github.client import GitHubMeta
@@ -177,9 +178,17 @@ class SauronS3Uploader:
 
     @staticmethod
     def _find_trial_subdir(harbor_job_dir: Path) -> Path | None:
-        """Find the trial subdirectory (task-name__hash/) inside job_dir."""
+        """Find the single Harbor trial directory inside job_dir."""
         if not harbor_job_dir.exists():
             return None
+
+        scanner = JobScanner(harbor_job_dir.parent)
+        trial_names = scanner.list_trials(harbor_job_dir.name)
+        if len(trial_names) == 1:
+            trial_dir = harbor_job_dir / trial_names[0]
+            if trial_dir.is_dir():
+                return Path(trial_dir)
+
         subdirs = [d for d in harbor_job_dir.iterdir() if d.is_dir()]
         trial_dirs = [d for d in subdirs if "__" in d.name]
         if len(trial_dirs) == 1:

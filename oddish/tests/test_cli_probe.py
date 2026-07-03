@@ -22,7 +22,14 @@ def test_probe_without_subcommand_still_runs_probe(monkeypatch):
     with patch("oddish.cli.probe.submit_sweep", _fake_submit_sweep):
         result = CliRunner().invoke(
             app,
-            ["probe", "--task", "task_123", "--instructions", "look at flakiness", "--background"],
+            [
+                "probe",
+                "--task",
+                "task_123",
+                "--instructions",
+                "look at flakiness",
+                "--background",
+            ],
         )
 
     assert result.exit_code == 0, result.output
@@ -33,8 +40,6 @@ def test_probe_without_subcommand_still_runs_probe(monkeypatch):
 
 def test_probe_requires_task(monkeypatch):
     _set_env(monkeypatch)
-    result = CliRunner().invoke(
-        app, ["probe", "--instructions", "x", "--background"]
-    )
+    result = CliRunner().invoke(app, ["probe", "--instructions", "x", "--background"])
     assert result.exit_code == 1
     assert "task" in result.output.lower()

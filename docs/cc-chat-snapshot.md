@@ -12,10 +12,12 @@ tool that's already present), cutting provisioning to a few seconds.
 ## What the snapshot must contain
 
 The runtime checks for these exact paths/imports and only skips the install
-when they're satisfied (see `claude_code_runtime.py`):
+when they're satisfied (see `backend/api/services/cc_chat/claude_code_runtime.py`):
 
 - `test -x /home/daytona/.npm-global/bin/claude` succeeds, **and**
-- `python -c 'import harbor'` succeeds (harbor `0.5.0`).
+- `python -c 'import harbor'` succeeds. The harbor version is not hardcoded:
+  the runtime installs the pin from `_pinned_harbor_requirement()` (the same
+  git-resolved fork commit the orchestrator itself runs), best-effort.
 
 So the install must run as the `daytona` user with the same npm prefix the
 runtime uses (`/home/daytona/.npm-global`).
@@ -33,7 +35,7 @@ ENV NPM_PREFIX=/home/daytona/.npm-global
 RUN mkdir -p "$NPM_PREFIX" \
  && npm config set prefix "$NPM_PREFIX" \
  && npm install -g @anthropic-ai/claude-code \
- && pip install --user --quiet harbor==0.5.0
+ && pip install --user --quiet "harbor @ git+<source>@<sha>"  # match the deployed pin
 ```
 
 Create the named snapshot from it (Daytona CLI):
@@ -64,4 +66,5 @@ tools already exist. Unset the var to fall back to the default image + install.
 
 Bump the snapshot name (`-v2`, …) and update the env var whenever claude-code
 or harbor needs upgrading; old chats are ephemeral so nothing pins the old one.
-Keep the harbor version here in sync with `claude_code_runtime.py`.
+Even if the snapshot's harbor drifts, the runtime re-installs the correct pin
+at provision time (best-effort) — the snapshot only saves install time.

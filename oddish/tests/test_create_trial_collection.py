@@ -27,7 +27,9 @@ def _experiment(name: str, *, org_id: str = "org1") -> ExperimentModel:
     return ExperimentModel(name=name, org_id=org_id)
 
 
-def _trial(task: TaskModel, home_experiment: ExperimentModel, *, org_id: str = "org1") -> TrialModel:
+def _trial(
+    task: TaskModel, home_experiment: ExperimentModel, *, org_id: str = "org1"
+) -> TrialModel:
     trial_id = generate_id()
     return TrialModel(
         id=trial_id,
@@ -71,21 +73,29 @@ async def test_creates_collection_links_trials_and_tasks(session):
     assert exp.org_id == "org1"
 
     linked = (
-        await session.execute(
-            select(experiment_trials.c.trial_id).where(
-                experiment_trials.c.experiment_id == resp.id
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == resp.id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert set(linked) == {t1.id, t2.id}
 
     tasks = (
-        await session.execute(
-            select(task_experiments.c.task_id).where(
-                task_experiments.c.experiment_id == resp.id
+        (
+            await session.execute(
+                select(task_experiments.c.task_id).where(
+                    task_experiments.c.experiment_id == resp.id
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     assert set(tasks) == {task.id}
     assert resp.trials_linked == 2
     assert resp.tasks_linked == 1
@@ -131,3 +141,169 @@ async def test_rejects_cross_org_trial(session):
             session, name="c", trial_ids=[other.id], org_id="org1"
         )
     assert exc.value.status_code == 404
+
+
+from oddish.db.models import TaskVersionModel, TrialStatus
+
+
+def _version(task, n: int) -> TaskVersionModel:
+    return TaskVersionModel(
+        id=f"{task.id}-v{n}",
+        task_id=task.id,
+        version=n,
+        task_path=f"s3://t/{task.id}/v{n}",
+    )
+
+
+def _ver_trial(
+    task,
+    home,
+    version_id,
+    *,
+    status=TrialStatus.SUCCESS,
+    is_probe=False,
+    superseded=None,
+    org_id="org1",
+) -> TrialModel:
+    t = _trial(task, home, org_id=org_id)
+    t.task_version_id = version_id
+    t.status = status
+    t.is_probe = is_probe
+    t.superseded_by_trial_id = superseded
+    return t
+
+
+@pytest.mark.asyncio
+async def test_task_mode_links_only_current_version_terminal_trials(session):
+    task = _task("cbt-task")
+    session.add(task)
+    await session.flush()
+    v1, v2 = _version(task, 1), _version(task, 2)
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+    await session.flush()
+
+    home = _experiment("home")
+    session.add(home)
+    await session.flush()
+
+    keep_a = _ver_trial(task, home, v2.id, status=TrialStatus.SUCCESS)
+    keep_b = _ver_trial(task, home, v2.id, status=TrialStatus.FAILED)
+    old = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)  # old version
+    pending = _ver_trial(task, home, v2.id, status=TrialStatus.PENDING)  # not terminal
+    probe = _ver_trial(task, home, v2.id, is_probe=True)  # probe
+    sup = _ver_trial(task, home, v2.id, superseded=keep_a.id)  # superseded
+    session.add_all([keep_a, keep_b, old, pending, probe, sup])
+    await session.flush()
+
+    resp = await create_trial_collection_core(
+        session, name="c", task_ids=[task.name], org_id="org1"
+    )
+    await session.flush()
+
+    linked = set(
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == resp.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert linked == {keep_a.id, keep_b.id}
+    assert resp.trials_linked == 2
+    assert resp.trials_from_tasks == 2
+
+
+@pytest.mark.asyncio
+async def test_task_not_found_raises_404(session):
+    with pytest.raises(HTTPException) as ei:
+        await create_trial_collection_core(
+            session, name="c", task_ids=["nope"], org_id="org1"
+        )
+    assert ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_empty_task_is_skipped_and_counted(session):
+    task = _task("empty-task")
+    session.add(task)
+    await session.flush()
+    v1 = _version(task, 1)
+    session.add(v1)
+    await session.flush()
+    task.current_version_id = v1.id
+    await session.flush()
+    # no trials for v1 -> whole set empty -> 400
+    with pytest.raises(HTTPException) as ei:
+        await create_trial_collection_core(
+            session, name="c", task_ids=[task.name], org_id="org1"
+        )
+    assert ei.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_overlap_between_trial_ids_and_task_ids_dedupes(session):
+    task = _task("overlap-task")
+    session.add(task)
+    await session.flush()
+    v1 = _version(task, 1)
+    session.add(v1)
+    await session.flush()
+    task.current_version_id = v1.id
+    await session.flush()
+    home = _experiment("home-overlap")
+    session.add(home)
+    await session.flush()
+    t1 = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)
+    t2 = _ver_trial(task, home, v1.id, status=TrialStatus.SUCCESS)
+    session.add_all([t1, t2])
+    await session.flush()
+    resp = await create_trial_collection_core(
+        session, name="c", trial_ids=[t1.id], task_ids=[task.name], org_id="org1"
+    )
+    await session.flush()
+    linked = set(
+        (
+            await session.execute(
+                select(experiment_trials.c.trial_id).where(
+                    experiment_trials.c.experiment_id == resp.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert linked == {t1.id, t2.id}  # no duplicate row
+    assert resp.trials_linked == 2
+    assert resp.trials_from_tasks == 1  # t2 only; t1 counted as explicit
+
+
+@pytest.mark.asyncio
+async def test_tasks_skipped_empty_counted_on_success(session):
+    good = _task("good-task")
+    empty = _task("empty-task")
+    session.add_all([good, empty])
+    await session.flush()
+    gv = _version(good, 1)
+    ev = _version(empty, 1)
+    session.add_all([gv, ev])
+    await session.flush()
+    good.current_version_id = gv.id
+    empty.current_version_id = ev.id
+    await session.flush()
+    home = _experiment("home-skip")
+    session.add(home)
+    await session.flush()
+    keep = _ver_trial(good, home, gv.id, status=TrialStatus.SUCCESS)
+    session.add(keep)
+    await session.flush()
+    resp = await create_trial_collection_core(
+        session, name="c", task_ids=[good.name, empty.name], org_id="org1"
+    )
+    await session.flush()
+    assert resp.trials_linked == 1
+    assert resp.tasks_skipped_empty == 1  # empty task counted, good task not
