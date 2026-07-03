@@ -15,6 +15,12 @@ Usage:
     modal run backend/scripts/legacy_validate.py                                   # all imports
     modal run backend/scripts/legacy_validate.py --scope-base abundant-ai/anthropic
     modal run backend/scripts/legacy_validate.py --scope-run 19205653200 --sample 100
+    modal run backend/scripts/legacy_validate.py --scope-pr 509    # one legacy pr-N chunk
+
+Scope flags mirror legacy_transfer.py so a chunk moved with a given scope can be
+validated with the same scope. The production migration runs in chunks (by repo,
+run, or legacy pr-N), and each chunk is validated in isolation with the matching
+flag; without --scope-pr, a pr-sized chunk could not be checked on its own.
 """
 
 from __future__ import annotations
@@ -45,7 +51,8 @@ RENDER_CRITICAL = ["experiment_id", "task_id", "status", "provider", "queue_key"
 
 
 @app.function(image=image, secrets=[secret, aws_secret], timeout=3600)
-async def validate(scope_base: str | None, scope_run: str | None, sample: int) -> bool:
+async def validate(scope_base: str | None, scope_run: str | None,
+                   scope_pr: int | None, sample: int) -> bool:
     import random
 
     import aioboto3
@@ -73,6 +80,10 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
     if scope_run:
         args.append(scope_run)
         where += f" AND harbor_config->>'legacy_run_id' = ${len(args)}"
+    if scope_pr is not None:
+        # legacy_pr_number is stored as a JSON number; ->> extracts it as text.
+        args.append(str(scope_pr))
+        where += f" AND harbor_config->>'legacy_pr_number' = ${len(args)}"
 
     total = await conn.fetchval(f"SELECT count(*) FROM trials WHERE {where}", *args)
     check("imported trials present", total > 0, f"count={total}")
@@ -124,6 +135,8 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
         largs.append(scope_base); lwhere += f" AND s3_base = ${len(largs)}"
     if scope_run:
         largs.append(scope_run); lwhere += f" AND run_id = ${len(largs)}"
+    if scope_pr is not None:
+        largs.append(scope_pr); lwhere += f" AND pr_number = ${len(largs)}"
     ledger_n = await conn.fetchval(f"SELECT count(*) FROM leg_trial_ledger WHERE {lwhere}", *largs)
     unfinished = await conn.fetch(
         f"SELECT status, count(*) AS n FROM leg_trial_ledger "
@@ -262,7 +275,9 @@ async def validate(scope_base: str | None, scope_run: str | None, sample: int) -
 
 
 @app.local_entrypoint()
-def main(scope_base: str | None = None, scope_run: str | None = None, sample: int = 50) -> None:
-    ok = validate.remote(scope_base=scope_base, scope_run=scope_run, sample=sample)
+def main(scope_base: str | None = None, scope_run: str | None = None,
+         scope_pr: int | None = None, sample: int = 50) -> None:
+    ok = validate.remote(scope_base=scope_base, scope_run=scope_run,
+                         scope_pr=scope_pr, sample=sample)
     if not ok:
         raise SystemExit(1)
