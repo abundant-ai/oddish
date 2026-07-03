@@ -90,6 +90,12 @@ async def delete_task_core(
     matches are tombstoned and the ``(task_id, experiment_id)`` join row
     is tombstoned. The task itself is only tombstoned if no live trials
     and no other live experiment links remain.
+
+    POST-COMMIT CONTRACT: active runs' remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller (route or OSS operator invoking this core directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit or the
+    containers leak until provider TTL.
     """
     task_query = select(
         TaskModel.id,
@@ -118,17 +124,20 @@ async def delete_task_core(
             ).all()
         ]
 
+        harvest = _CancelHarvest()
         if scoped_trial_ids:
             await _cancel_worker_jobs_for_trials(
                 session,
                 trial_ids=scoped_trial_ids,
                 reason="Task deleted by user",
+                harvest=harvest,
             )
 
         await _cancel_worker_jobs_for_task(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
+            harvest=harvest,
         )
 
         await session.execute(
@@ -151,6 +160,7 @@ async def delete_task_core(
             # remains stable; the empty list makes that cleanup a no-op.
             "s3_prefixes": [],
             "deleted": {"task_id": task_id},
+            **harvest.response_keys(),
         }
 
     # Scoped delete: only this experiment's trials + the join row.
@@ -181,11 +191,13 @@ async def delete_task_core(
         )
 
     # Cancel live worker_jobs for those trials so workers release slots.
+    harvest = _CancelHarvest()
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Task deleted by user",
+            harvest=harvest,
         )
 
         await session.execute(
@@ -236,6 +248,7 @@ async def delete_task_core(
             session,
             task_id=resolved_task_id,
             reason="Task deleted by user",
+            harvest=harvest,
         )
         await session.execute(
             update(TaskModel)
@@ -257,6 +270,7 @@ async def delete_task_core(
             "trials_deleted": len(scoped_trial_ids),
             "task_removed": task_removed,
         },
+        **harvest.response_keys(),
     }
 
 
@@ -294,6 +308,12 @@ async def unlink_task_from_experiment_core(
     membership leaves it with no experiments -- that is the whole point of
     the operation. Callers who want the entire task gone use
     :func:`delete_task_core`.
+
+    POST-COMMIT CONTRACT: active runs' remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller (route or OSS operator invoking this core directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit or the
+    containers leak until provider TTL.
     """
     from oddish.db import task_experiments
 
@@ -336,11 +356,13 @@ async def unlink_task_from_experiment_core(
             )
         ).all()
     ]
+    harvest = _CancelHarvest()
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Task removed from experiment by user",
+            harvest=harvest,
         )
         await session.execute(
             update(TrialModel)
@@ -400,7 +422,35 @@ async def unlink_task_from_experiment_core(
             "task_removed": False,
         },
         "unlinked": True,
+        **harvest.response_keys(),
     }
+
+
+class _CancelHarvest:
+    """Remote-execution handles collected from cancelled worker_jobs rows.
+
+    Both Modal function-call ids and sandbox worker targets go back to the
+    caller, who terminates them AFTER commit via
+    ``oddish.core.helpers.terminate_run_harvest`` -- a rolled-back delete must
+    never leave live rows pointing at containers we already destroyed.
+    """
+
+    def __init__(self) -> None:
+        self.modal_fc_ids: list[str] = []
+        self.worker_targets: set[tuple[str, str]] = set()
+
+    def add(self, rows) -> None:
+        for fc, provider, external_id in rows:
+            if fc:
+                self.modal_fc_ids.append(str(fc))
+            if provider and external_id:
+                self.worker_targets.add((str(provider), str(external_id)))
+
+    def response_keys(self) -> dict:
+        return {
+            "modal_function_call_ids": self.modal_fc_ids,
+            "worker_targets": sorted(self.worker_targets),
+        }
 
 
 async def _cancel_worker_jobs_for_trials(
@@ -408,6 +458,7 @@ async def _cancel_worker_jobs_for_trials(
     *,
     trial_ids: Collection[str],
     reason: str,
+    harvest: _CancelHarvest,
 ) -> None:
     """Cancel live worker_jobs whose subject is one of these trials.
 
@@ -418,11 +469,22 @@ async def _cancel_worker_jobs_for_trials(
     worker would keep holding a queue slot. Issued as raw SQL because
     ``worker_jobs.status`` is a Postgres enum and the cast keeps the
     statement portable across asyncpg / SQLAlchemy boundaries.
+
+    Modal FC ids + sandbox targets are harvested via CTE before nulling.
     """
-    await session.execute(
+    rows = await session.execute(
         text(
             """
-            UPDATE worker_jobs
+            WITH to_cancel AS (
+                SELECT id, modal_function_call_id, provider, external_id
+                FROM   worker_jobs
+                WHERE  subject_table = 'trials'
+                  AND  subject_id = ANY(:trial_ids)
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs w
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
                    error_message = :reason,
@@ -430,13 +492,16 @@ async def _cancel_worker_jobs_for_trials(
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL,
                    payload = payload - 'registry_auth_enc'
-            WHERE  subject_table = 'trials'
-              AND  subject_id = ANY(:trial_ids)
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"trial_ids": list(trial_ids), "reason": reason},
     )
+    harvest.add(rows)
 
 
 async def _cancel_worker_jobs_for_task(
@@ -444,25 +509,38 @@ async def _cancel_worker_jobs_for_task(
     *,
     task_id: str,
     reason: str,
+    harvest: _CancelHarvest,
 ) -> None:
     """Cancel live worker_jobs whose subject is this task (e.g. VERDICT)."""
-    await session.execute(
+    rows = await session.execute(
         text(
             """
-            UPDATE worker_jobs
+            WITH to_cancel AS (
+                SELECT id, modal_function_call_id, provider, external_id
+                FROM   worker_jobs
+                WHERE  subject_table = 'tasks'
+                  AND  subject_id = :task_id
+                  AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
+                FOR UPDATE
+            )
+            UPDATE worker_jobs w
             SET    status = 'CANCELLED',
                    finished_at = NOW(),
                    error_message = :reason,
                    current_worker_id = NULL,
                    current_queue_slot = NULL,
                    modal_function_call_id = NULL
-            WHERE  subject_table = 'tasks'
-              AND  subject_id = :task_id
-              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            FROM   to_cancel
+            WHERE  w.id = to_cancel.id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"task_id": task_id, "reason": reason},
     )
+    harvest.add(rows)
 
 
 async def delete_experiment_core(
@@ -478,6 +556,12 @@ async def delete_experiment_core(
     artifacts are preserved. ``task_experiments`` link rows that pointed
     at this experiment are tombstoned so list views immediately stop
     surfacing the membership while keeping enough history for restore.
+
+    POST-COMMIT CONTRACT: active runs' remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller (route or OSS operator invoking this core directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit or the
+    containers leak until provider TTL.
     """
     from oddish.db import task_experiments
 
@@ -507,14 +591,6 @@ async def delete_experiment_core(
     ).all()
     linked_task_ids = [row[0] for row in linked_task_rows]
 
-    if linked_task_ids:
-        for tid in linked_task_ids:
-            await _cancel_worker_jobs_for_task(
-                session,
-                task_id=tid,
-                reason="Experiment deleted by user",
-            )
-
     # Trials scoped to this experiment.
     trial_where = [TrialModel.experiment_id == experiment_id]
     if org_id is not None:
@@ -529,11 +605,16 @@ async def delete_experiment_core(
         ).all()
     ]
 
+    # Task-level QA/VERDICT jobs are cancelled in the survival loop below,
+    # ONLY for tasks that actually die with this experiment -- a task alive
+    # via another experiment keeps its jobs.
+    harvest = _CancelHarvest()
     if scoped_trial_ids:
         await _cancel_worker_jobs_for_trials(
             session,
             trial_ids=scoped_trial_ids,
             reason="Experiment deleted by user",
+            harvest=harvest,
         )
 
         trials_upd = await session.execute(
@@ -597,6 +678,7 @@ async def delete_experiment_core(
                 session,
                 task_id=tid,
                 reason="Experiment deleted by user",
+                harvest=harvest,
             )
             task_upd_result = await session.execute(
                 update(TaskModel)
@@ -623,6 +705,7 @@ async def delete_experiment_core(
             "tasks": deleted_tasks,
             "experiments": deleted_experiments,
         },
+        **harvest.response_keys(),
     }
 
 
@@ -899,16 +982,24 @@ async def delete_trial_core(
     queryable via ``include_deleted=True`` for audit / restore flows.
     The parent task's cached verdict is invalidated so dashboards stop
     aggregating numbers from the now-hidden trial.
+
+    POST-COMMIT CONTRACT: active runs' remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller (route or OSS operator invoking this core directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit or the
+    containers leak until provider TTL.
     """
     trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
 
     # Cancel any live worker_jobs belonging to this trial (TRIAL runs and
     # ANALYSIS jobs) so workers stop heart-beating and release slots
     # before the domain row goes invisible under them.
+    harvest = _CancelHarvest()
     await _cancel_worker_jobs_for_trials(
         session,
         trial_ids=[trial_id],
         reason="Trial deleted by user",
+        harvest=harvest,
     )
 
     task_id = trial.task_id
@@ -933,4 +1024,5 @@ async def delete_trial_core(
     return {
         "s3_prefixes": [],
         "deleted": {"trial_id": trial_id, "task_id": task_id},
+        **harvest.response_keys(),
     }

@@ -85,26 +85,31 @@ async def _relation_exists(name: str) -> bool:
         await engine.dispose()
 
 
-def test_migration_applies_and_downgrades_cleanly() -> None:
-    """``downgrade -1`` drops the table + unique index, and re-applying recreates
-    them cleanly (the migration's real up/down SQL run via Alembic).
+# The submission_idempotency migration and the revision immediately below it.
+# Target them explicitly rather than "head"/"-1": once another migration stacks
+# on top (e.g. g1h2i3j4k5l6 adds users.github_id), "-1" would reverse THAT
+# migration instead of this one.
+_IDEMPOTENCY_REVISION = "s5t6u7v8w9x0"
+_IDEMPOTENCY_PARENT = "r4s5t6u7v8w9"
 
-    Pinned to this migration's revision (not head) so later migrations on the
-    branch don't change which step ``-1`` reverses."""
-    revision = "s5t6u7v8w9x0"
+
+def test_migration_applies_and_downgrades_cleanly() -> None:
+    """Downgrading past the submission_idempotency revision drops the table +
+    unique index, and re-applying recreates them cleanly (the migration's real
+    up/down SQL run via Alembic)."""
     cfg = _alembic_config()
     asyncio.run(_reset_and_create_all())
-    command.stamp(cfg, revision)
+    command.stamp(cfg, _IDEMPOTENCY_REVISION)
 
-    # downgrade -1 runs this migration's downgrade().
-    command.downgrade(cfg, "-1")
+    # Reverse exactly this migration by targeting its parent revision.
+    command.downgrade(cfg, _IDEMPOTENCY_PARENT)
     assert not asyncio.run(_relation_exists("submission_idempotency"))
     assert not asyncio.run(_relation_exists("uq_submission_idempotency_org_route_key"))
     # Reversing one step leaves the preceding schema intact.
     assert asyncio.run(_relation_exists("organizations"))
 
-    # upgrading back to this revision runs upgrade() -> table + unique index back.
-    command.upgrade(cfg, revision)
+    # Re-applying this migration recreates the table + unique index.
+    command.upgrade(cfg, _IDEMPOTENCY_REVISION)
     assert asyncio.run(_relation_exists("submission_idempotency"))
     assert asyncio.run(_relation_exists("uq_submission_idempotency_org_route_key"))
 

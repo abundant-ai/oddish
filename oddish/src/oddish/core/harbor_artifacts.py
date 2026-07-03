@@ -11,6 +11,7 @@ class HarborTrajectoryMetrics:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
     total_steps: int | None = None
     cost_usd: float | None = None
 
@@ -53,6 +54,46 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+_CACHE_WRITE_KEYS = (
+    "cache_creation_input_tokens",
+    "input_cache_creation",
+    "cacheWriteTokens",
+    "cache_write_tokens",
+)
+
+
+def _sum_cache_write_from_steps(steps: list) -> int | None:
+    total = 0
+    found = False
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        metrics = step.get("metrics") or {}
+        extra = metrics.get("extra") or {} if isinstance(metrics, dict) else {}
+        if not isinstance(extra, dict):
+            continue
+        for key in _CACHE_WRITE_KEYS:
+            val = extra.get(key)
+            if val is not None:
+                n = _as_int(val)
+                if n is not None:
+                    total += n
+                    found = True
+                break
+    return total if found else None
+
+
+def _cache_write_from_final_metrics(fm: dict) -> int | None:
+    extra = fm.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    for key in _CACHE_WRITE_KEYS:
+        val = extra.get(key)
+        if val is not None:
+            return _as_int(val)
+    return None
+
+
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
     """Read token, step, and cost metrics from ATIF trajectory data."""
     if not path or not path.exists():
@@ -77,6 +118,12 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
         if total_steps is None and isinstance(steps, list):
             total_steps = len(steps)
 
+        cache_write_tokens: int | None = None
+        if isinstance(steps, list):
+            cache_write_tokens = _sum_cache_write_from_steps(steps)
+        if cache_write_tokens is None and isinstance(final_metrics, dict):
+            cache_write_tokens = _cache_write_from_final_metrics(final_metrics)
+
         return HarborTrajectoryMetrics(
             input_tokens=(
                 _as_int(final_metrics.get("total_prompt_tokens"))
@@ -93,6 +140,7 @@ def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
                 if isinstance(final_metrics, dict)
                 else None
             ),
+            cache_write_tokens=cache_write_tokens,
             total_steps=total_steps,
             cost_usd=(
                 _as_float(final_metrics.get("total_cost_usd"))

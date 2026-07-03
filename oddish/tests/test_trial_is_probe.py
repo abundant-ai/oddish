@@ -89,6 +89,7 @@ def test_trial_response_exposes_is_probe():
         provider="local",
         queue_key="nop",
         model=None,
+        environment=None,
         status="queued",
         origin="oddish",
         attempts=0,
@@ -102,6 +103,7 @@ def test_trial_response_exposes_is_probe():
         is_probe=True,
         input_tokens=None,
         cache_tokens=None,
+        cache_write_tokens=None,
         output_tokens=None,
         total_steps=None,
         cost_usd=None,
@@ -178,12 +180,16 @@ async def test_retry_preserves_is_probe(monkeypatch):
     from oddish.db import TaskStatus, TrialStatus
 
     class _Result:
-        def __init__(self, scalar=None, rowcount=0):
+        def __init__(self, scalar=None, rowcount=0, rows=()):
             self._scalar = scalar
             self.rowcount = rowcount
+            self._rows = list(rows)
 
         def scalar_one_or_none(self):
             return self._scalar
+
+        def __iter__(self):
+            return iter(self._rows)
 
     class _ProbeTrial:
         """A probe trial stub — is_probe=True."""
@@ -196,6 +202,7 @@ async def test_retry_preserves_is_probe(monkeypatch):
             self.task_version_id = "task-probe-v1"
             self.experiment_id = "exp-probe"
             self.org_id = None
+            self.billed_user_id = None
             self.agent = "nop"
             self.provider = "local"
             self.queue_key = "nop"
