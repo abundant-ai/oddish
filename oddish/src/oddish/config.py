@@ -908,7 +908,7 @@ class Settings(BaseSettings):
     auto_start_workers: bool = True
 
     pending_trial_reservation_usd: Decimal = Decimal("0.50")
-    default_daily_quota_usd: Decimal = Decimal("10.00")
+    default_daily_quota_usd: Decimal = Decimal("100.00")
     quota_mode: QuotaMode = QuotaMode.OFF
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim

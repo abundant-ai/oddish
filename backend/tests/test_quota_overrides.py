@@ -143,14 +143,14 @@ async def test_put_null_clears_override_back_to_default(org_with_member):
                 f"/quotas/{member_a.id}", json={"limit_usd": None}
             )
             assert clear_response.status_code == 200
-            assert clear_response.json()["limit_usd"] == pytest.approx(10.0)
+            assert clear_response.json()["limit_usd"] == pytest.approx(100.0)
 
             list_response = await client.get("/quotas")
     finally:
         app.dependency_overrides.clear()
 
     members_by_id = {m["user_id"]: m for m in list_response.json()["members"]}
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(10.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(100.0)
 
 
 # --- S4-T4: cross-org PUT 404s; a FULL-scope API key is rejected -----------------
@@ -318,7 +318,7 @@ async def test_put_revives_soft_deleted_override(org_with_member):
                 f"/quotas/{member_a.id}", json={"limit_usd": "4.00"}
             )
             assert put_response.status_code == 200
-            # Enforced (revived), not the tombstoned 1.00 nor the 10.00 default.
+            # Enforced (revived), not the tombstoned 1.00 nor the 100.00 default.
             assert put_response.json()["limit_usd"] == pytest.approx(4.0)
             list_response = await client.get("/quotas")
     finally:
