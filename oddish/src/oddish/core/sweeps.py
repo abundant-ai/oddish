@@ -94,6 +94,7 @@ def build_task_submission_from_sweep(
         tags=submission.tags,
         run_analysis=submission.run_analysis,
         run_probe=submission.run_probe,
+        gate_baselines=submission.gate_baselines,
         github_username=submission.github_username,
         harbor=submission.harbor,
         content_hash=submission.content_hash,

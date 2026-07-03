@@ -320,8 +320,10 @@ async def create_task_sweep_core(
             experiment_id=new_experiment_id,
         )
 
-        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
-        # to the in-process runner instead of going through the Modal queue.
+        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each new trial to the
+        # in-process runner instead of the Modal queue. Gated (BLOCKED) LLM
+        # trials self-skip via the runner's atomic claim and are dispatched
+        # later, once the baseline gate releases them.
         from oddish.config import settings
 
         if settings.local_mode:
