@@ -16,7 +16,7 @@ def test_converts_preset_to_skill_with_synthesized_skill_md():
     }
     skill, skill_md = preset_row_to_skill(preset)
 
-    assert skill["id"] == "cheat-detector"          # id preserved
+    assert skill["id"] == "cheat-detector"  # id preserved
     assert skill["name"] == "Cheat detector"
     assert skill["operator_prompt"] == preset["operator_prompt"]
     assert skill["result_focus"] == "Did a cheat succeed?"
@@ -34,11 +34,16 @@ def test_converts_preset_to_skill_with_synthesized_skill_md():
 
 def test_description_truncated_to_255():
     preset = {
-        "id": "x", "org_id": None, "name": "Long",
-        "operator_prompt": "A" * 400, "result_focus": None,
-        "evaluation_metric": None, "is_seed": False,
+        "id": "x",
+        "org_id": None,
+        "name": "Long",
+        "operator_prompt": "A" * 400,
+        "result_focus": None,
+        "evaluation_metric": None,
+        "is_seed": False,
         "created_at": "2026-04-30T00:00:00+00:00",
-        "updated_at": "2026-04-30T00:00:00+00:00", "deleted_at": None,
+        "updated_at": "2026-04-30T00:00:00+00:00",
+        "deleted_at": None,
     }
     skill, _ = preset_row_to_skill(preset)
     assert len(skill["description"]) <= 255

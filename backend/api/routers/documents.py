@@ -60,7 +60,7 @@ async def create_document(
     data: DocumentCreate,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> DocumentResponse:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         doc = await create_document_core(
             session, data=data, org_id=auth.org_id, user_id=auth.user_id
@@ -75,7 +75,7 @@ async def update_document(
     data: DocumentUpdate,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> DocumentResponse:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         doc = await update_document_core(
             session, document_id, data=data, org_id=auth.org_id
@@ -89,7 +89,7 @@ async def delete_document(
     document_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> dict[str, bool]:
-    auth.require_scope(APIKeyScope.TASKS)
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
     async with get_session() as session:
         await delete_document_core(session, document_id, org_id=auth.org_id)
         await session.commit()

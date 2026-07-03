@@ -235,10 +235,12 @@ function normalizeSandboxBackend(
 }
 
 function getSandboxBackend(trial: Trial): SandboxBackend | null {
+  const trialBackendId = normalizeSandboxBackend(trial.environment);
   const sandboxJob = trial.jobs?.find((job) =>
     Boolean(normalizeSandboxBackend(job.provider)),
   );
-  const backendId = normalizeSandboxBackend(sandboxJob?.provider);
+  const backendId =
+    trialBackendId ?? normalizeSandboxBackend(sandboxJob?.provider);
   if (!backendId) return null;
 
   const backend = SANDBOX_BACKENDS[backendId];

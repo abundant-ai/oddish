@@ -44,7 +44,7 @@ const TAG_PARAM_KEYS = ["tags", "tags_any", "tags_none"] as const;
 // Snapshot every browse param (filters + extra backend keys) except tags,
 // which are persisted separately as stable ids.
 const STRUCTURED_KEYS = BROWSE_FORWARD_KEYS.filter(
-  (k) => !TAG_PARAM_KEYS.includes(k as (typeof TAG_PARAM_KEYS)[number])
+  (k) => !TAG_PARAM_KEYS.includes(k as (typeof TAG_PARAM_KEYS)[number]),
 );
 
 function tagToken(tag: Pick<TagSummary, "key" | "value">): string {
@@ -80,12 +80,12 @@ export function SavedFiltersMenu() {
   } = useSWR<SavedFilterListResponse>(
     open ? "/api/tag-filters" : null,
     fetcher,
-    { revalidateOnFocus: false }
+    { revalidateOnFocus: false },
   );
   const { data: tagData } = useSWR<TagListResponse>(
     open ? "/api/tags" : null,
     fetcher,
-    { revalidateOnFocus: false }
+    { revalidateOnFocus: false },
   );
 
   const tags = tagData?.items ?? [];
@@ -117,7 +117,7 @@ export function SavedFiltersMenu() {
     const ast = filter.filter_ast as SavedBlobV2 & LegacyBlob;
     const params = new URLSearchParams();
     const setTags = (
-      tagIds: { all?: string[]; any?: string[]; none?: string[] } | undefined
+      tagIds: { all?: string[]; any?: string[]; none?: string[] } | undefined,
     ) => {
       const all = toTokens(tagIds?.all ?? []);
       const any = toTokens(tagIds?.any ?? []);
@@ -192,7 +192,7 @@ export function SavedFiltersMenu() {
         async () => {
           const res = await fetch(
             `/api/tag-filters/${encodeURIComponent(filterId)}`,
-            { method: "DELETE" }
+            { method: "DELETE" },
           );
           if (!res.ok && res.status !== 404) {
             throw new Error(`Delete failed: ${res.status}`);
@@ -204,7 +204,7 @@ export function SavedFiltersMenu() {
           populateCache: (_res, current) => withoutFilter(current),
           rollbackOnError: true,
           revalidate: false,
-        }
+        },
       );
     } catch {
       setError("Could not delete filter.");
@@ -214,7 +214,7 @@ export function SavedFiltersMenu() {
   function renderSection(
     label: string,
     section: SavedFilterItem[],
-    deletable: boolean
+    deletable: boolean,
   ) {
     if (section.length === 0) return null;
     return (
@@ -312,7 +312,7 @@ export function SavedFiltersMenu() {
                         "rounded-md border px-2 py-0.5 text-[11px]",
                         visibility === v
                           ? "border-foreground/40 bg-accent"
-                          : "text-muted-foreground hover:bg-accent/50 border-transparent"
+                          : "text-muted-foreground hover:bg-accent/50 border-transparent",
                       )}
                       onClick={() => setVisibility(v)}
                     >

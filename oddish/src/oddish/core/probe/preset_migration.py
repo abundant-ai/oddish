@@ -20,7 +20,9 @@ def _description_from_prompt(prompt: str) -> str:
     return first[:255]
 
 
-def preset_row_to_skill(preset: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def preset_row_to_skill(
+    preset: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     description = _description_from_prompt(preset.get("operator_prompt", ""))
     frontmatter = yaml.safe_dump(
         {"name": preset["name"], "description": description},

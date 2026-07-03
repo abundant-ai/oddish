@@ -49,7 +49,11 @@ from oddish.worker.probe_analysis import (
     run_probe_analyzer,
 )
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR, QUERY_CLI_CONTAINER_PATH
-from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount, stage_org_skills
+from oddish.worker.probe_staging import (
+    apply_probe_overlay,
+    stage_cli_mount,
+    stage_org_skills,
+)
 from oddish.worker.local_offline_policy import enable_local_internet, task_is_offline
 from oddish.worker.probe_creds import mint_probe_creds
 from oddish.task_timeouts import PROBE_AGENT_TIMEOUT_SEC
@@ -557,9 +561,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
     # requires real creds, so let ProbeCredsError propagate and fail loudly.
     if extra_instructions:
         enable_local_internet(actual_task_path)
-        _, probe_env = await mint_probe_creds(
-            org_id=trial_org_id, trial_id=trial_id
-        )
+        _, probe_env = await mint_probe_creds(org_id=trial_org_id, trial_id=trial_id)
         # Pin the subagent model to the main agent's so the probe's Task-tool
         # subagents have a model (mirrors the cloud path in agent_config.py);
         # setdefault so an explicit config value still wins.
@@ -593,7 +595,9 @@ async def _run_harbor_trial(trial_id: str) -> None:
         try:
             stage_cli_mount(harness_mount)
         except Exception:
-            logger.exception("probe: building CLI harness mount failed for %s", trial_id)
+            logger.exception(
+                "probe: building CLI harness mount failed for %s", trial_id
+            )
 
         async def _upload_task_dir(event: TrialHookEvent) -> None:
             env = getattr(event, "environment", None)
@@ -606,16 +610,30 @@ async def _run_harbor_trial(trial_id: str) -> None:
                 return
             # Only the CLI → the advertised /probe-harness mount.
             try:
-                await env.upload_dir(source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR)
-                logger.info("probe: uploaded CLI to %s for trial %s", PROBE_HARNESS_DIR, trial_id)
+                await env.upload_dir(
+                    source_dir=harness_mount, target_dir=PROBE_HARNESS_DIR
+                )
+                logger.info(
+                    "probe: uploaded CLI to %s for trial %s",
+                    PROBE_HARNESS_DIR,
+                    trial_id,
+                )
             except Exception:
-                logger.exception("probe: uploading CLI to %s failed for %s", PROBE_HARNESS_DIR, trial_id)
+                logger.exception(
+                    "probe: uploading CLI to %s failed for %s",
+                    PROBE_HARNESS_DIR,
+                    trial_id,
+                )
             try:
                 check = await env.exec(f"test -x {QUERY_CLI_CONTAINER_PATH}")
                 if check.return_code != 0:
-                    logger.error("probe: CLI not executable in container for %s", trial_id)
+                    logger.error(
+                        "probe: CLI not executable in container for %s", trial_id
+                    )
             except Exception:
-                logger.exception("probe: verifying CLI presence failed for %s", trial_id)
+                logger.exception(
+                    "probe: verifying CLI presence failed for %s", trial_id
+                )
 
         harbor_trial.add_hook(TrialEvent.AGENT_START, _upload_task_dir)
 

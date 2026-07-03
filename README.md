@@ -74,7 +74,7 @@ oddish status
 ## Documentation
 
 - [CLI docs](DOCS.md)
-- [Core library](oddish/README.md)
+- [CLI package quick start](oddish/README.md)
 - [Web dashboard](frontend/README.md)
 - [Cloud backend](backend/README.md)
 - [Self-hosting](SELF_HOSTING.md)

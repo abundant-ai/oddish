@@ -91,9 +91,8 @@ def _has_fetchable_trajectory(trial: TrialModel) -> bool:
     # Older Grok Build trials uploaded agent/grok-build.json, not ATIF
     # trajectory.json. The trajectory endpoint can synthesize ATIF from it.
     return (
-        (trial.agent or "").strip().lower() == "grok-build"
-        and trial.finished_at is not None
-    )
+        trial.agent or ""
+    ).strip().lower() == "grok-build" and trial.finished_at is not None
 
 
 _ANALYSIS_SUMMARY_UNSET = object()
@@ -437,6 +436,7 @@ def build_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
         attempts=trial.attempts,
@@ -509,6 +509,7 @@ def build_compact_trial_response(
         provider=trial.provider,
         queue_key=settings.normalize_queue_key(trial.queue_key),
         model=normalized_model,
+        environment=trial.environment,
         status=trial.status,
         origin=trial.origin,
         attempts=trial.attempts,
@@ -874,6 +875,7 @@ def build_task_status_response(
     task: TaskModel,
     *,
     include_empty_rewards: bool = True,
+    include_trials: bool = True,
     queue_info_by_trial_id: dict[str, TrialQueueInfo] | None = None,
     jobs_by_subject: dict[tuple[str, str], list[VisibleWorkerJob]] | None = None,
     experiment_context_id: str | None = None,
@@ -905,23 +907,27 @@ def build_task_status_response(
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
-    trials = [
-        build_trial_response(
-            t,
-            task.task_path,
-            queue_info=(
-                queue_info_by_trial_id.get(t.id)
-                if queue_info_by_trial_id is not None
-                else None
-            ),
-            jobs=(
-                jobs_by_subject.get(("trials", t.id), [])
-                if jobs_by_subject is not None
-                else None
-            ),
-        )
-        for t in task_trials
-    ]
+    trials = (
+        [
+            build_trial_response(
+                t,
+                task.task_path,
+                queue_info=(
+                    queue_info_by_trial_id.get(t.id)
+                    if queue_info_by_trial_id is not None
+                    else None
+                ),
+                jobs=(
+                    jobs_by_subject.get(("trials", t.id), [])
+                    if jobs_by_subject is not None
+                    else None
+                ),
+            )
+            for t in task_trials
+        ]
+        if include_trials
+        else None
+    )
     task_jobs = []
     if jobs_by_subject is not None:
         task_jobs.extend(jobs_by_subject.get(("tasks", task.id), []))

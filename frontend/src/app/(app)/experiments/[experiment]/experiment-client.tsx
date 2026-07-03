@@ -561,8 +561,7 @@ export function ExperimentClientPage({
                 description={experimentShare?.description ?? null}
                 onSaved={(next) =>
                   void mutateExperimentShare(
-                    (prev) =>
-                      prev ? { ...prev, description: next } : prev,
+                    (prev) => (prev ? { ...prev, description: next } : prev),
                     { revalidate: false },
                   )
                 }

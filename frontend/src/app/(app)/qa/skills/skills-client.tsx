@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Table,
   TableBody,
@@ -165,12 +166,12 @@ function ExtraFileRow({ index, file, onChange, onRemove }: ExtraFileRowProps) {
           ×
         </Button>
       </div>
-      <textarea
+      <Textarea
         value={file.content}
         onChange={(e) => onChange(index, { ...file, content: e.target.value })}
         rows={4}
         placeholder="File content…"
-        className="w-full rounded border border-[#6f88b4]/20 bg-background px-2 py-1.5 font-mono text-xs resize-y"
+        className="resize-y border-[#6f88b4]/20 font-mono text-xs"
       />
     </div>
   );
@@ -374,13 +375,13 @@ function SkillForm({ editingSkill, onSaved, onCancel }: SkillFormProps) {
             SKILL.md body{" "}
             <span className="text-muted-foreground">(after frontmatter)</span>
           </Label>
-          <textarea
+          <Textarea
             id="skill-body"
             value={skillMdBody}
             onChange={(e) => setSkillMdBody(e.target.value)}
             rows={10}
             placeholder="Describe what this skill does, how to trigger it, any constraints…"
-            className="w-full rounded-md border border-[#6f88b4]/20 bg-background px-3 py-2 font-mono text-sm resize-y focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="resize-y border-[#6f88b4]/20 font-mono"
           />
         </div>
 

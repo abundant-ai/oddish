@@ -219,17 +219,11 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -371,17 +365,11 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -946,8 +934,7 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
 
     assert agent_config.name is None
     assert (
-        agent_config.import_path
-        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+        agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/redacted-model"
     assert "XAI_API_KEY" not in (agent_config.env or {})
@@ -966,8 +953,7 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
 
     assert agent_config.name is None
     assert (
-        agent_config.import_path
-        == "oddish.workers.agents.grok_build:OddishGrokBuild"
+        agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/redacted-model"
 
@@ -1077,7 +1063,9 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
     assert len(trajectory["steps"]) == 3
     assert trajectory["steps"][0]["reasoning_content"] == "Need to inspect files."
     assert trajectory["steps"][0]["tool_calls"][0]["function_name"] == "shell"
-    assert trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    assert (
+        trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
+    )
     assert trajectory["steps"][2]["message"] == "Done."
     assert trajectory["final_metrics"]["total_steps"] == 3
 
@@ -1587,17 +1575,11 @@ def _install_retry_decision_session_fakes(monkeypatch, trial):
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
-    async def _fake_enqueue_analysis_worker_job(*args, **kwargs) -> None:
-        return None
-
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
-    )
-    monkeypatch.setattr(
-        queue_module, "enqueue_analysis_worker_job", _fake_enqueue_analysis_worker_job
     )
 
 
@@ -1832,6 +1814,117 @@ def test_extract_outcome_from_job_result_counts_steps_when_agent_context_exists(
     assert outcome.input_tokens == 10
     assert outcome.output_tokens == 6
     assert outcome.total_steps == 2
+
+
+def test_extract_outcome_from_job_result_prefers_later_agent_context_over_trajectory(
+    tmp_path,
+):
+    traj_dir = tmp_path / "first-trial" / "agent"
+    traj_dir.mkdir(parents=True)
+    (traj_dir / "trajectory.json").write_text(
+        json.dumps(
+            {
+                "final_metrics": {
+                    "total_prompt_tokens": 1,
+                    "total_completion_tokens": 2,
+                    "total_cached_tokens": 3,
+                    "total_steps": 4,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    agent_context = SimpleNamespace(
+        is_empty=lambda: False,
+        n_input_tokens=10,
+        n_cache_tokens=4,
+        n_output_tokens=6,
+        cost_usd=None,
+    )
+    first_trial = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=None,
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    second_trial = SimpleNamespace(
+        exception_info=None,
+        agent_result=agent_context,
+        verifier_result=SimpleNamespace(rewards={"reward": 1.0}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[first_trial, second_trial],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=tmp_path / "result.json",
+        job_dir=tmp_path,
+        duration_sec=1.0,
+    )
+
+    assert outcome.input_tokens == 10
+    assert outcome.output_tokens == 6
+    assert outcome.cache_tokens == 4
+    assert outcome.total_steps == 4
+
+
+def test_extract_outcome_from_job_result_uses_single_non_reward_metric():
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"score": 0.5}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.reward == 0.5
+
+
+def test_extract_outcome_from_job_result_ignores_non_numeric_reward():
+    trial_result = SimpleNamespace(
+        exception_info=None,
+        agent_result=None,
+        verifier_result=SimpleNamespace(rewards={"reward": "not-a-number"}),
+        environment_setup=None,
+        agent_setup=None,
+        agent_execution=None,
+        verifier=None,
+    )
+    job_result = SimpleNamespace(
+        trial_results=[trial_result],
+        stats=SimpleNamespace(evals={}),
+    )
+
+    outcome = harbor_runner._extract_outcome_from_job_result(
+        job_result=job_result,
+        job_result_path=Path("/tmp/result.json"),
+        job_dir=Path("/tmp"),
+        duration_sec=1.0,
+    )
+
+    assert outcome.reward is None
 
 
 def test_extract_outcome_from_job_result_exception_type_none_when_no_exc():

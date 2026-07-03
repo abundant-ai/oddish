@@ -41,12 +41,18 @@ async def archive_native_session(
             sandbox,
             command=f"find {shlex.quote(CLAUDE_HOME)}/projects -name {shlex.quote(claude_session_id + '.jsonl')} 2>/dev/null | head -1",
         )
-        path = out.strip().splitlines()[0].strip() if out.strip() else _native_path(claude_session_id)
+        path = (
+            out.strip().splitlines()[0].strip()
+            if out.strip()
+            else _native_path(claude_session_id)
+        )
         data = await client.download_file(sandbox, src_path=path)
         if not data:
             return False
         await blob.upload_bytes(
-            data, native_session_blob_key(session_id), content_type="application/x-ndjson"
+            data,
+            native_session_blob_key(session_id),
+            content_type="application/x-ndjson",
         )
         return True
     except Exception:
@@ -82,6 +88,8 @@ async def restore_native_session(
     # message), whereas a write failure against a freshly-provisioned sandbox is a
     # real infra error the caller (resume()) should see and clean up after.
     dest = _native_path(claude_session_id)
-    await client.exec_sync(sandbox, command=f"mkdir -p {shlex.quote(dest.rsplit('/', 1)[0])}")
+    await client.exec_sync(
+        sandbox, command=f"mkdir -p {shlex.quote(dest.rsplit('/', 1)[0])}"
+    )
     await client.upload_file(sandbox, dest_path=dest, content=data)
     return True

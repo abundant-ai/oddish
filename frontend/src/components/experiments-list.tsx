@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
@@ -7,7 +8,7 @@ import {
 } from "@/components/ui/popover";
 import { cn, encodeExperimentRouteParam } from "@/lib/utils";
 
-export type ExperimentRef = { id: string; name: string };
+type ExperimentRef = { id: string; name: string };
 
 /**
  * Renders the experiments a task belongs to. Shows the first `maxVisible`
@@ -47,12 +48,13 @@ export function ExperimentsList({
     overflowCount > 0 ? (
       <Popover>
         <PopoverTrigger asChild>
-          <button
+          <Button
             type="button"
+            variant="link"
             className="text-muted-foreground hover:text-foreground rounded text-left underline-offset-2 hover:underline"
           >
             +{overflowCount} more
-          </button>
+          </Button>
         </PopoverTrigger>
         <PopoverContent
           align="start"
@@ -83,7 +85,7 @@ export function ExperimentsList({
             href={`/experiments/${encodeExperimentRouteParam(exp.id)}`}
             className={cn(
               "truncate underline-offset-2 hover:underline",
-              linkClassName
+              linkClassName,
             )}
             title={exp.name}
           >
@@ -99,7 +101,7 @@ export function ExperimentsList({
     <span
       className={cn(
         "inline-flex flex-wrap items-center gap-x-2 gap-y-1",
-        className
+        className,
       )}
     >
       {visible.map((exp, i) => (

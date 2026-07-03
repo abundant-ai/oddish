@@ -95,11 +95,20 @@ def test_off_modal_run_records_verdict_without_modal() -> None:
     subprocess.run(["docker", "rm", "-f", container], capture_output=True)
     run = subprocess.run(
         [
-            "docker", "run", "-d", "--rm", "--name", container,
-            "-e", "POSTGRES_USER=oddish",
-            "-e", "POSTGRES_PASSWORD=oddish",
-            "-e", "POSTGRES_DB=oddish",
-            "-p", "127.0.0.1::5432",
+            "docker",
+            "run",
+            "-d",
+            "--rm",
+            "--name",
+            container,
+            "-e",
+            "POSTGRES_USER=oddish",
+            "-e",
+            "POSTGRES_PASSWORD=oddish",
+            "-e",
+            "POSTGRES_DB=oddish",
+            "-p",
+            "127.0.0.1::5432",
             "postgres:16-alpine",
         ],
         capture_output=True,
@@ -126,9 +135,9 @@ def test_off_modal_run_records_verdict_without_modal() -> None:
             text=True,
             env=env,
         )
-        assert proof.returncode == 0, (
-            f"proof failed\nstdout:\n{proof.stdout}\nstderr:\n{proof.stderr}"
-        )
+        assert (
+            proof.returncode == 0
+        ), f"proof failed\nstdout:\n{proof.stdout}\nstderr:\n{proof.stderr}"
         assert "STATUS=SUCCESS" in proof.stdout, proof.stdout
         assert "MODAL_IMPORTED=False" in proof.stdout, proof.stdout
     finally:
