@@ -84,3 +84,30 @@ def test_skipped_count_as_done_but_stay_in_total_while_a_trial_runs():
         )
     )
     assert "3/4 trials complete" in comment
+
+
+def _task_comment(task: TaskSummary) -> str:
+    return formatter.format_task_comment(task, "exp-1", "https://example/exp-1")
+
+
+def test_single_task_comment_advances_past_running_with_skipped():
+    # format_task_comment (single-task path) must also count skipped as done and
+    # exclude it from the analysis denominator, not stay stuck on "🔄 Running".
+    comment = _task_comment(
+        _task(
+            [
+                _trial(0, "success", reward=1.0),
+                _trial(1, "failed"),
+                _trial(2, "skipped"),
+                _trial(3, "skipped"),
+            ]
+        )
+    )
+    assert "🔄 Running" not in comment
+    assert "Analyzing Results" in comment
+    assert "0/2 classified" in comment  # analyzable = 4 total - 2 skipped
+
+
+def test_single_task_all_skipped_not_stuck_running():
+    comment = _task_comment(_task([_trial(0, "skipped"), _trial(1, "skipped")]))
+    assert "🔄 Running" not in comment

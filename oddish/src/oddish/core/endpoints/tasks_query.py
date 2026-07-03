@@ -740,11 +740,16 @@ _AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
 
 
 def _trial_bucket_label() -> Any:
-    """SQL bucket (``pass``/``partial``/``fail``/``harness``/``scoreless``/``other``)
-    for one trial, mirroring the frontend ``getMatrixStatus``
-    (oddish/frontend/src/lib/status-config.ts) EXACTLY so the browser's
-    Pass/Partial/Fail/Harness count filters agree with the card chips:
+    """SQL bucket (``skipped``/``pass``/``partial``/``fail``/``harness``/
+    ``scoreless``/``other``) for one trial, mirroring the frontend
+    ``getMatrixStatus`` (oddish/frontend/src/lib/status-config.ts) EXACTLY so the
+    browser's Pass/Partial/Fail/Harness count filters agree with the card chips:
 
+      * ``SKIPPED`` status is ``skipped`` — checked FIRST, before the
+        error-message rule, because a gate-skipped trial carries
+        ``GATE_SKIP_MESSAGE`` and must not be miscounted as ``harness`` (matches
+        ``getMatrixStatus``, which returns "skipped" before its error-message
+        short-circuit);
       * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
         that still produced a reward (then it scores normally);
       * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
@@ -766,6 +771,9 @@ def _trial_bucket_label() -> Any:
         else_="partial",
     )
     return case(
+        # Checked before the error-message rule: a gate-skipped trial carries an
+        # error_message but is its own bucket, not a harness error.
+        (TrialModel.status == TrialStatus.SKIPPED, "skipped"),
         (
             and_(
                 TrialModel.error_message.isnot(None),
