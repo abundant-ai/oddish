@@ -150,8 +150,16 @@ def format_task_comment(
         "",
     ]
 
+    # SKIPPED is terminal but never ran: it counts as "done" (so the comment
+    # advances past "\ud83d\udd04 Running"), but it's NOT analyzable, so the analysis
+    # stages use a skipped-excluding denominator (analyzable). Mirrors
+    # format_experiment_comment.
     total = len(task.trials)
-    completed = sum(1 for t in task.trials if t.status in ("success", "failed"))
+    skipped = sum(1 for t in task.trials if t.status == "skipped")
+    completed = sum(
+        1 for t in task.trials if t.status in ("success", "failed", "skipped")
+    )
+    analyzable = total - skipped
     analyzed = sum(
         1 for t in task.trials if t.analysis_status == "success" and t.classification
     )
@@ -164,12 +172,14 @@ def format_task_comment(
             lines.append(f"> {task.verdict['primary_issue']}")
     elif task.verdict_status == "running":
         lines.append("### \U0001f504 Computing Verdict...")
-    elif analyzed == total and total > 0:
+    elif analyzable > 0 and analyzed == analyzable:
         lines.append(
-            f"### \u23f3 Computing Verdict... ({analyzed}/{total} analyses done)"
+            f"### \u23f3 Computing Verdict... ({analyzed}/{analyzable} analyses done)"
         )
     elif completed == total and total > 0:
-        lines.append(f"### \u23f3 Analyzing Results... ({analyzed}/{total} classified)")
+        lines.append(
+            f"### \u23f3 Analyzing Results... ({analyzed}/{analyzable} classified)"
+        )
     elif completed > 0:
         lines.append(
             f"### \U0001f504 Running \u2014 {completed}/{total} trials complete "
