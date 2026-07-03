@@ -1414,12 +1414,12 @@ async def _unblock_worker_jobs_for_trials(
 async def _cancel_gated_llm_trials(
     session: AsyncSession, trial_ids: list[str], reason: str
 ) -> None:
-    """Cancel BLOCKED LLM worker_jobs and mark their trials terminal.
+    """Cancel BLOCKED LLM worker_jobs and mark their trials SKIPPED.
 
-    Gated trials never ran, so there is no sandbox to tear down. They are
-    recorded as FAILED with *reason* on the trial row; this is the single place
-    that decides that representation, so introducing a dedicated SKIPPED status
-    later is a localized change here.
+    Gated trials never ran, so there is no sandbox to tear down. The trial row
+    is marked ``SKIPPED`` (a terminal, non-failure status) with *reason* on it;
+    this is the single place that decides that representation. SKIPPED is
+    excluded from failure/pass metrics and rendered distinctly in the UI.
     """
     if not trial_ids:
         return
@@ -1451,7 +1451,7 @@ async def _cancel_gated_llm_trials(
             )
         )
         .values(
-            status=TrialStatus.FAILED,
+            status=TrialStatus.SKIPPED,
             error_message=reason,
             finished_at=utcnow(),
             harbor_stage=CANCELLED_HARBOR_STAGE,

@@ -902,7 +902,7 @@ def build_task_status_response(
             gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = len(task_trials)
+    total = sum(1 for t in task_trials if t.status != TrialStatus.SKIPPED)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)
@@ -974,7 +974,7 @@ def build_task_status_response_compact(
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     real_trials = [t for t in task_trials if not t.is_probe]
-    total = len(real_trials)
+    total = sum(1 for t in real_trials if t.status != TrialStatus.SKIPPED)
     completed = sum(1 for t in real_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in real_trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in real_trials if t.reward == 1)
@@ -1103,7 +1103,7 @@ def build_slim_task_status_response(
             gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = len(task_trials)
+    total = sum(1 for t in task_trials if t.status != TrialStatus.SKIPPED)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)

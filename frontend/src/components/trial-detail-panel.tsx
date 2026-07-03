@@ -136,6 +136,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   fail: "border-red-500/30 bg-red-500/10",
   "harness-error": "border-yellow-500/30 bg-yellow-500/10",
   scoreless: "border-slate-500/30 bg-slate-500/10",
+  skipped: "border-slate-500/25 bg-slate-500/5",
   pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
