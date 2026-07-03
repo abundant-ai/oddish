@@ -3,6 +3,8 @@
 import { useState } from "react";
 import useSWR from "swr";
 
+import { Loader2 } from "lucide-react";
+
 import {
   Table,
   TableBody,
@@ -101,7 +103,11 @@ export function QuotaAdminForm() {
       // Validate the 2dp value actually sent, not the raw parse (e.g. 0.001
       // parses > 0 but rounds to "0.00", which the backend rejects).
       const rounded = Number(Number(raw).toFixed(2));
-      if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
+      if (
+        !Number.isFinite(rounded) ||
+        rounded <= 0 ||
+        rounded > MAX_LIMIT_USD
+      ) {
         setRowError((e) => ({
           ...e,
           [id]: "Enter an amount greater than 0, or leave empty to reset.",
@@ -139,25 +145,33 @@ export function QuotaAdminForm() {
   return (
     <div className="space-y-3">
       <div className="border-border overflow-hidden rounded-lg border">
-        <Table>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow className="bg-muted/40 hover:bg-muted/40">
               <TableHead className="h-9 text-xs">Member</TableHead>
-              <TableHead className="h-9 text-xs">Role</TableHead>
-              <TableHead className="h-9 text-right text-xs">
+              <TableHead className="h-9 w-24 text-xs">Role</TableHead>
+              <TableHead className="h-9 w-40 text-right text-xs">
                 Used today
               </TableHead>
-              <TableHead className="h-9 text-right text-xs">
+              <TableHead className="h-9 w-36 text-right text-xs">
                 Daily limit
               </TableHead>
-              <TableHead className="h-9 text-xs"></TableHead>
+              <TableHead className="h-9 w-24 text-xs">
+                <span className="sr-only">Actions</span>
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {members.map((member) => {
               const id = member.user_id;
-              const over = member.limit_usd > 0 && member.used_usd >= member.limit_usd;
+              const over =
+                member.limit_usd > 0 && member.used_usd >= member.limit_usd;
+              const usedFraction =
+                member.limit_usd > 0
+                  ? Math.min(1, member.used_usd / member.limit_usd)
+                  : 0;
               const saving = savingId === id;
+              const dirty = isDirty(member);
               const err = rowError[id];
               return (
                 <TableRow key={id} className="border-border/70">
@@ -176,10 +190,32 @@ export function QuotaAdminForm() {
                       {member.role.replace(/^org:/, "")}
                     </Badge>
                   </TableCell>
-                  <TableCell className="py-2.5 text-right font-mono text-xs">
-                    <span className={over ? "text-destructive" : undefined}>
-                      {formatDollars(member.used_usd)}
-                    </span>
+                  <TableCell className="py-2.5 text-right">
+                    <div className="flex flex-col items-end gap-1.5">
+                      <span
+                        className={`font-mono text-xs ${
+                          over ? "text-destructive font-medium" : ""
+                        }`}
+                      >
+                        {formatDollars(member.used_usd)}
+                        <span className="text-muted-foreground font-normal">
+                          {" / "}
+                          {formatDollars(member.limit_usd)}
+                        </span>
+                      </span>
+                      <div className="bg-muted-foreground/15 h-1 w-24 overflow-hidden rounded-full">
+                        <div
+                          className={`h-full rounded-full ${
+                            over
+                              ? "bg-destructive"
+                              : usedFraction >= 0.8
+                                ? "bg-amber-500"
+                                : "bg-primary/60"
+                          }`}
+                          style={{ width: `${usedFraction * 100}%` }}
+                        />
+                      </div>
+                    </div>
                   </TableCell>
                   <TableCell className="py-2.5 text-right">
                     <div className="flex flex-col items-end gap-1">
@@ -188,12 +224,32 @@ export function QuotaAdminForm() {
                         min={0}
                         step="0.01"
                         inputMode="decimal"
-                        className="h-8 w-28 text-right font-mono text-xs"
+                        aria-label={`Daily limit for ${memberLabel(member)}`}
+                        aria-invalid={err ? true : undefined}
+                        className={`h-8 w-28 text-right font-mono text-xs ${
+                          err
+                            ? "border-destructive focus-visible:ring-destructive"
+                            : dirty
+                              ? "border-primary/50"
+                              : ""
+                        }`}
                         value={draftValue(member)}
+                        disabled={saving}
                         onChange={(e) => setDraft(id, e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && dirty && !saving) {
+                            void save(member);
+                          }
+                          if (e.key === "Escape") {
+                            setDrafts(({ [id]: _drop, ...rest }) => rest);
+                            setRowError(({ [id]: _drop, ...rest }) => rest);
+                          }
+                        }}
                       />
                       {err ? (
-                        <p className="text-destructive text-[11px]">{err}</p>
+                        <p className="text-destructive text-right text-[11px]">
+                          {err}
+                        </p>
                       ) : null}
                     </div>
                   </TableCell>
@@ -201,10 +257,15 @@ export function QuotaAdminForm() {
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={saving || !isDirty(member)}
+                      className="w-[72px]"
+                      disabled={saving || !dirty}
                       onClick={() => save(member)}
                     >
-                      {saving ? "Saving…" : "Save"}
+                      {saving ? (
+                        <Loader2 className="animate-spin" aria-label="Saving" />
+                      ) : (
+                        "Save"
+                      )}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -215,7 +276,8 @@ export function QuotaAdminForm() {
       </div>
       <p className="text-muted-foreground text-xs">
         Effective daily limit per member. Leave a limit empty and save to clear
-        the override — that member reverts to the workspace default.
+        the override — that member reverts to the workspace default. Press Enter
+        to save, Escape to revert an edit.
       </p>
     </div>
   );
