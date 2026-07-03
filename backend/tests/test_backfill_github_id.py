@@ -111,10 +111,10 @@ async def _github_id_of(user_id: str) -> str | None:
         return row.github_id if row else None
 
 
-async def _cache_of(user_id: str) -> dict | None:
+async def _checked_at_of(user_id: str) -> datetime | None:
     async with get_session() as session:
         row = await session.get(UserModel, user_id)
-        return row.attribution_cache if row else None
+        return row.github_id_checked_at if row else None
 
 
 @requires_db
@@ -359,10 +359,7 @@ async def test_full_head_batch_stamped_then_tail_reached_next_run(
     assert first.scanned == 3
     assert await _github_id_of(tail.id) is None
     for u in head:
-        cache = await _cache_of(u.id)
-        assert isinstance(cache, dict) and isinstance(
-            cache.get("github_id_checked"), str
-        )
+        assert isinstance(await _checked_at_of(u.id), datetime)
 
     second = await job.backfill_github_id(
         batch_size=3, max_users=3, delay_seconds=0.0
@@ -431,13 +428,12 @@ async def test_exception_failure_still_logs_exception(monkeypatch, caplog) -> No
         await _purge(org_id)
 
 
-def _stale_marker() -> str:
-    stale = datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
-    return stale.isoformat()
+def _stale_marker() -> datetime:
+    return datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
 
 
-def _fresh_marker() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _fresh_marker() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 @requires_db
@@ -446,7 +442,7 @@ async def test_stale_marker_rows_reenter_scan_and_fill(monkeypatch) -> None:
     """Self-heal: a row stamped checked-absent longer ago than the TTL re-enters the
     scan and gets its github_id filled once Clerk now returns one."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
-    user = _user(org_id, attribution_cache={"github_id_checked": _stale_marker()})
+    user = _user(org_id, github_id_checked_at=_stale_marker())
     _mock_clerk(
         monkeypatch,
         {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "healed")},
@@ -469,7 +465,7 @@ async def test_stale_marker_still_no_github_restamped(monkeypatch) -> None:
     and is re-stamped with a fresh timestamp."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
     old = _stale_marker()
-    user = _user(org_id, attribution_cache={"github_id_checked": old})
+    user = _user(org_id, github_id_checked_at=old)
     _mock_clerk(monkeypatch, {user.clerk_user_id: ClerkGithubIdentity(None, None, None)})
     try:
         async with get_session() as session:
@@ -477,9 +473,8 @@ async def test_stale_marker_still_no_github_restamped(monkeypatch) -> None:
             session.add(user)
         summary = await job.backfill_github_id(delay_seconds=0.0)
         assert summary.scanned >= 1
-        cache = await _cache_of(user.id)
-        assert isinstance(cache, dict)
-        assert cache.get("github_id_checked") > old
+        checked_at = await _checked_at_of(user.id)
+        assert checked_at is not None and checked_at > old
     finally:
         await _purge(org_id)
 
@@ -503,8 +498,7 @@ async def test_clerk_404_user_failed_not_stamped_rescanned(monkeypatch) -> None:
         assert first.failed >= 1
         assert first.skipped == 0
         assert await _github_id_of(user.id) is None
-        cache = await _cache_of(user.id)
-        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        assert await _checked_at_of(user.id) is None
         second = await job.backfill_github_id(delay_seconds=0.0)
         assert second.scanned >= 1  # re-scanned, not excluded
     finally:
@@ -526,8 +520,7 @@ async def test_clerk_500_user_failed_not_stamped_rescanned(monkeypatch) -> None:
         first = await job.backfill_github_id(delay_seconds=0.0)
         assert first.failed >= 1
         assert first.skipped == 0
-        cache = await _cache_of(user.id)
-        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        assert await _checked_at_of(user.id) is None
         _mock_clerk(
             monkeypatch,
             {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
@@ -558,8 +551,7 @@ async def test_username_no_id_not_stamped_rescanned_then_filled(monkeypatch) -> 
         first = await job.backfill_github_id(delay_seconds=0.0)
         assert first.skipped >= 1
         assert await _github_id_of(user.id) is None
-        cache = await _cache_of(user.id)
-        assert not (isinstance(cache, dict) and "github_id_checked" in cache)
+        assert await _checked_at_of(user.id) is None
         _mock_clerk(
             monkeypatch,
             {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "laterid")},
@@ -803,7 +795,7 @@ async def test_fresh_marker_rows_excluded_from_scan(monkeypatch) -> None:
     """A row stamped checked-absent within the TTL stays excluded from the scan."""
     org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
     fresh = _fresh_marker()
-    user = _user(org_id, attribution_cache={"github_id_checked": fresh})
+    user = _user(org_id, github_id_checked_at=fresh)
     _mock_clerk(
         monkeypatch,
         {user.clerk_user_id: ClerkGithubIdentity("octocat", None, "shouldnotfill")},
@@ -815,7 +807,6 @@ async def test_fresh_marker_rows_excluded_from_scan(monkeypatch) -> None:
         summary = await job.backfill_github_id(delay_seconds=0.0)
         assert summary.scanned == 0
         assert await _github_id_of(user.id) is None
-        cache = await _cache_of(user.id)
-        assert isinstance(cache, dict) and cache.get("github_id_checked") == fresh
+        assert await _checked_at_of(user.id) == fresh
     finally:
         await _purge(org_id)

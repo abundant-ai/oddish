@@ -13,7 +13,7 @@ from auth.provisioning import (
     _marker_is_fresh,
     _set_github_id_if_absent,
     fetch_github_identity_from_clerk,
-    github_id_recheck_cutoff_iso,
+    github_id_recheck_cutoff,
 )
 from models import UserModel
 from oddish.db import get_session
@@ -78,7 +78,7 @@ async def backfill_github_id(
     start = time.monotonic()
     semaphore = asyncio.Semaphore(max(1, concurrency))
     after_id: str | None = None
-    cutoff_iso = github_id_recheck_cutoff_iso()
+    cutoff = github_id_recheck_cutoff()
     failure_warnings_logged = 0
 
     async def _fetch(clerk_user_id: str):
@@ -106,12 +106,8 @@ async def backfill_github_id(
                 .where(UserModel.is_active == True)  # noqa: E712
                 .where(
                     or_(
-                        UserModel.attribution_cache.is_(None),
-                        ~UserModel.attribution_cache.has_key("github_id_checked"),
-                        # String < is chronological only because every marker is
-                        # UTC-normalized fixed-width ISO via _github_id_checked_iso.
-                        UserModel.attribution_cache["github_id_checked"].astext
-                        < cutoff_iso,
+                        UserModel.github_id_checked_at.is_(None),
+                        UserModel.github_id_checked_at < cutoff,
                     )
                 )
             )
@@ -199,18 +195,13 @@ async def backfill_github_id(
                 # been freshly stamped checked-absent by a login refresh /
                 # webhook (a newer definitive no-github signal that must not be
                 # overwritten with the older Phase B answer).
-                raw_cache = (
-                    user.attribution_cache
-                    if user is not None and isinstance(user.attribution_cache, dict)
-                    else {}
-                )
                 if (
                     user is None
                     or not user.is_active
                     or user.deleted_at is not None
                     or user.github_id
                     or user.clerk_user_id != clerk_user_id
-                    or _marker_is_fresh(raw_cache.get("github_id_checked"))
+                    or _marker_is_fresh(user.github_id_checked_at)
                 ):
                     summary.skipped += 1
                     continue

@@ -132,6 +132,11 @@ class UserModel(TimestampedMixin, Base):
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     github_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When Clerk last definitively reported no GitHub account for this user;
+    # treated as stale after GITHUB_ID_RECHECK_TTL so relinks self-heal.
+    github_id_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
     attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 

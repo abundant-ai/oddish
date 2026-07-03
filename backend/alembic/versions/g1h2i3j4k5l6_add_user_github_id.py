@@ -12,6 +12,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT")
+    op.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id_checked_at TIMESTAMPTZ"
+    )
     # The unique constraint below already backs (org_id, github_id) lookups with
     # its own index, so a separate non-unique index is pure write overhead. The
     # DROP is a no-op on fresh databases; it only fires where this statement runs
@@ -37,4 +40,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_org_github_id")
+    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS github_id_checked_at")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS github_id")

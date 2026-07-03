@@ -177,7 +177,7 @@ async def test_refresh_clears_stale_id_on_definitive_no_github(monkeypatch) -> N
     user = _user(github_id="stale", github_username=None)
     await _refresh_user_github_identity(user)
     assert user.github_id is None
-    assert isinstance(user.attribution_cache.get("github_id_checked"), str)
+    assert user.github_id_checked_at is not None
 
 
 @pytest.mark.asyncio
@@ -191,8 +191,7 @@ async def test_refresh_404_never_clears_existing_id(monkeypatch) -> None:
     user = _user(github_id="existing", github_username=None)
     await _refresh_user_github_identity(user)
     assert user.github_id == "existing"
-    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    assert "github_id_checked" not in cache
+    assert user.github_id_checked_at is None
 
 
 @pytest.mark.asyncio
@@ -272,7 +271,7 @@ async def test_refresh_stamps_marker_and_skips_second_fetch(monkeypatch) -> None
     user = _user(github_username="octocat", github_id=None)
     await _refresh_user_github_identity(user)
     assert calls == 1
-    assert isinstance(user.attribution_cache.get("github_id_checked"), str)
+    assert user.github_id_checked_at is not None
     await _refresh_user_github_identity(user)
     assert calls == 1  # marker short-circuits the second refresh
     assert user.github_id is None
@@ -280,16 +279,15 @@ async def test_refresh_stamps_marker_and_skips_second_fetch(monkeypatch) -> None
     handleless = _user(
         github_username=None,
         github_id=None,
-        attribution_cache={"github_id_checked": datetime.now(timezone.utc).isoformat()},
+        github_id_checked_at=datetime.now(timezone.utc),
     )
     await _refresh_user_github_identity(handleless)
     assert calls == 1
     assert handleless.github_id is None
 
 
-def _stale_marker() -> str:
-    stale = datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
-    return stale.isoformat()
+def _stale_marker() -> datetime:
+    return datetime.now(timezone.utc) - GITHUB_ID_RECHECK_TTL - timedelta(minutes=5)
 
 
 @pytest.mark.asyncio
@@ -306,7 +304,7 @@ async def test_refresh_stale_marker_refetches_and_claims_github_id(monkeypatch) 
     user = _user(
         github_username="octocat",
         github_id=None,
-        attribution_cache={"github_id_checked": _stale_marker()},
+        github_id_checked_at=_stale_marker(),
     )
     await _refresh_user_github_identity(user)
     assert called is True
@@ -325,12 +323,12 @@ async def test_refresh_stale_marker_still_no_github_restamps(monkeypatch) -> Non
     user = _user(
         github_username="octocat",
         github_id=None,
-        attribution_cache={"github_id_checked": old},
+        github_id_checked_at=old,
     )
     await _refresh_user_github_identity(user)
     assert user.github_id is None
-    new = user.attribution_cache.get("github_id_checked")
-    assert isinstance(new, str) and new > old
+    new = user.github_id_checked_at
+    assert new is not None and new > old
     # The fresh restamp short-circuits a subsequent refresh.
     assert prov._marker_is_fresh(new)
 
@@ -347,8 +345,7 @@ async def test_refresh_none_answer_stamps_nothing_then_fills_later(monkeypatch) 
     monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
     user = _user(github_username="octocat", github_id=None)
     await _refresh_user_github_identity(user)
-    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    assert "github_id_checked" not in cache
+    assert user.github_id_checked_at is None
     assert user.github_id is None
 
     result = ClerkGithubIdentity(username="octocat", email=None, github_id="888")
@@ -369,8 +366,7 @@ async def test_refresh_username_no_id_stamps_nothing_then_fills_later(monkeypatc
     monkeypatch.setattr(prov, "fetch_github_identity_from_clerk", _fetch)
     user = _user(github_username=None, github_id=None)
     await _refresh_user_github_identity(user)
-    cache = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    assert "github_id_checked" not in cache
+    assert user.github_id_checked_at is None
     assert user.github_id is None
     assert user.github_username == "octocat"
 
@@ -394,7 +390,7 @@ async def test_refresh_handleless_stale_marker_refetches_and_claims(monkeypatch)
     user = _user(
         github_username=None,
         github_id=None,
-        attribution_cache={"github_id_checked": _stale_marker()},
+        github_id_checked_at=_stale_marker(),
     )
     await _refresh_user_github_identity(user)
     assert called is True
@@ -418,7 +414,7 @@ async def test_refresh_id_without_username_still_fetches(monkeypatch) -> None:
     user = _user(
         github_username=None,
         github_id="already",
-        attribution_cache={"github_id_checked": datetime.now(timezone.utc).isoformat()},
+        github_id_checked_at=datetime.now(timezone.utc),
     )
     await _refresh_user_github_identity(user)
     assert called is True
@@ -592,8 +588,7 @@ async def test_provisioning_active_clash_does_not_stamp_marker(
             session, new_clerk, org, "new@e.com", "member", UserRole.MEMBER
         )
         assert user.github_id is None
-        cache = user.attribution_cache or {}
-        assert "github_id_checked" not in cache
+        assert user.github_id_checked_at is None
 
 
 @requires_db

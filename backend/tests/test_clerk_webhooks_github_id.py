@@ -146,8 +146,7 @@ async def test_no_github_account_clears_stale_id_and_stamps_marker() -> None:
 
         row = await _get(uid)
         assert row.github_id is None  # stale id cleared on unlink
-        marker = (row.attribution_cache or {}).get("github_id_checked")
-        assert isinstance(marker, str) and _marker_is_fresh(marker)
+        assert _marker_is_fresh(row.github_id_checked_at)
     finally:
         await _purge([org_id])
 
@@ -171,7 +170,7 @@ async def test_stale_user_created_event_does_not_clear_linked_id() -> None:
 
         row = await _get(uid)
         assert row.github_id == "linked"
-        assert "github_id_checked" not in (row.attribution_cache or {})
+        assert row.github_id_checked_at is None
     finally:
         await _purge([org_id])
 
@@ -193,7 +192,7 @@ async def test_payload_without_external_accounts_does_not_clear() -> None:
 
         row = await _get(uid)
         assert row.github_id == "linked"
-        assert "github_id_checked" not in (row.attribution_cache or {})
+        assert row.github_id_checked_at is None
     finally:
         await _purge([org_id])
 
@@ -239,7 +238,7 @@ async def test_partial_answer_keeps_existing_id() -> None:
 
         row = await _get(uid)
         assert row.github_id == "keep-me"  # partial answer must not clear
-        assert "github_id_checked" not in (row.attribution_cache or {})
+        assert row.github_id_checked_at is None
     finally:
         await _purge([org_id])
 
@@ -258,7 +257,7 @@ async def test_truthy_id_does_not_stamp_marker() -> None:
 
         row = await _get(uid)
         assert row.github_id == "583231"
-        assert "github_id_checked" not in (row.attribution_cache or {})
+        assert row.github_id_checked_at is None
     finally:
         await _purge([org_id])
 
@@ -280,7 +279,7 @@ async def test_username_no_id_does_not_stamp_marker() -> None:
         row = await _get(uid)
         assert row.github_id is None
         assert row.github_username == "octocat"
-        assert "github_id_checked" not in (row.attribution_cache or {})
+        assert row.github_id_checked_at is None
     finally:
         await _purge([org_id])
 
@@ -395,9 +394,7 @@ async def test_checked_absent_user_then_linked_gets_id() -> None:
             org_id,
             clerk,
             github_username="octocat",
-            attribution_cache={
-                "github_id_checked": datetime.now(timezone.utc).isoformat()
-            },
+            github_id_checked_at=datetime.now(timezone.utc),
         )
 
         await _sync(_event(clerk, github={}))

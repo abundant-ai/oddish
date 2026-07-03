@@ -22,26 +22,17 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
 GITHUB_ID_RECHECK_TTL = timedelta(hours=1)
 
 
-def _github_id_checked_iso(now: datetime | None = None) -> str:
-    return (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
-
-
-def github_id_recheck_cutoff_iso(now: datetime | None = None) -> str:
+def github_id_recheck_cutoff(now: datetime | None = None) -> datetime:
     reference = now or datetime.now(timezone.utc)
-    return _github_id_checked_iso(reference - GITHUB_ID_RECHECK_TTL)
+    return reference - GITHUB_ID_RECHECK_TTL
 
 
-def _marker_is_fresh(marker: object, now: datetime | None = None) -> bool:
-    if not isinstance(marker, str):
+def _marker_is_fresh(checked_at: datetime | None, now: datetime | None = None) -> bool:
+    if checked_at is None:
         return False
-    try:
-        stamped = datetime.fromisoformat(marker)
-    except ValueError:
-        return False
-    if stamped.tzinfo is None:
-        stamped = stamped.replace(tzinfo=timezone.utc)
-    reference = now or datetime.now(timezone.utc)
-    return stamped > reference - GITHUB_ID_RECHECK_TTL
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    return checked_at > github_id_recheck_cutoff(now)
 
 
 # In preview Modal apps the seeded org is throwaway — let JIT-provisioned
@@ -226,17 +217,11 @@ def _seed_attribution_cache_from_github(
     if isinstance(prior_refreshed, str):
         # Preserve discovery timestamps; only _persist_profile sets a new one.
         cache["refreshed_at"] = prior_refreshed
-    prior_checked = raw.get("github_id_checked")
-    if isinstance(prior_checked, str):
-        cache["github_id_checked"] = prior_checked
     user.attribution_cache = cache
 
 
 def _mark_github_id_checked(user: UserModel) -> None:
-    raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    cache = dict(raw)
-    cache["github_id_checked"] = _github_id_checked_iso()
-    user.attribution_cache = cache
+    user.github_id_checked_at = datetime.now(timezone.utc)
 
 
 async def _refresh_user_github_identity(
@@ -246,7 +231,7 @@ async def _refresh_user_github_identity(
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
     github_id_known = bool(user.github_id) or _marker_is_fresh(
-        raw.get("github_id_checked")
+        user.github_id_checked_at
     )
     if github_id_known:
         if user.github_username:
