@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oddish.config import settings
+from oddish.core.baseline_gate import GATE_SKIP_PREFIX
 from oddish.db import (
     AnalysisStatus,
     TaskModel,
@@ -123,6 +124,12 @@ async def _load_live_trials_for_classification(
                 ).where(
                     TrialModel.task_id == task_id,
                     TrialModel.superseded_by_trial_id.is_(None),
+                    # Gate-skipped trials never ran (no logs to classify); a
+                    # classifier run on them would emit phantom failures and
+                    # pollute the verdict + the agent's pass/fail metrics.
+                    func.coalesce(TrialModel.error_message, "").notlike(
+                        f"{GATE_SKIP_PREFIX}%"
+                    ),
                 )
             )
         ).all()
