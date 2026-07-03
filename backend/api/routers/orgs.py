@@ -208,6 +208,14 @@ async def _require_no_stranded_org(session, rows: list[UserModel]) -> None:
             )
 
 
+def _account_deletion_disabled() -> bool:
+    """Preview apps (oddish-pr-*) deploy with the production Modal secret
+    environment, so their CLERK_SECRET_KEY points at the PRODUCTION Clerk
+    instance — a preview 'delete account' would destroy the user's real
+    sign-in identity while only tombstoning preview-DB rows. Block it."""
+    return os.environ.get("MODAL_APP_NAME", "").startswith("oddish-pr-")
+
+
 async def _clerk_user_exists(clerk_user_id: str) -> bool | None:
     """Best-effort existence probe used when a Clerk delete errors.
 
@@ -251,6 +259,15 @@ async def delete_my_account(
         raise HTTPException(
             status_code=403,
             detail="Account deletion requires signing in (API keys not allowed)",
+        )
+    if _account_deletion_disabled():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Account deletion is disabled on preview deployments: the "
+                "preview shares the production sign-in system, so it would "
+                "delete your real account."
+            ),
         )
 
     tombstoned: list[tuple[str, str]] = []
