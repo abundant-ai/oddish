@@ -77,7 +77,7 @@ async def schema() -> None:
 
 
 @pytest.fixture(scope="session")
-def live_server(schema) -> str:
+def live_server(schema, tmp_path_factory) -> str:
     port = _free_port()
     env = {
         **_clean_env(),
@@ -86,16 +86,21 @@ def live_server(schema) -> str:
         "CLERK_DOMAIN": "dummy",
         "PORT": str(port),
     }
-    proc = subprocess.Popen(
-        [sys.executable, "serve.py"],
-        cwd=str(_BACKEND_DIR),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    # Server output goes to a file, never a PIPE: nothing drains a pipe while
+    # the server runs, so enough log volume would fill the buffer and block
+    # the child mid-test.
+    log_path = tmp_path_factory.mktemp("e2e-server") / "server.log"
+    with log_path.open("wb") as log_handle:
+        proc = subprocess.Popen(
+            [sys.executable, "serve.py"],
+            cwd=str(_BACKEND_DIR),
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+        )
     base = f"http://127.0.0.1:{port}"
     try:
-        _wait_ready(proc, base)
+        _wait_ready(proc, base, log_path)
         yield base
     finally:
         proc.terminate()
@@ -106,12 +111,12 @@ def live_server(schema) -> str:
             proc.wait()
 
 
-def _wait_ready(proc: subprocess.Popen, base: str) -> None:
+def _wait_ready(proc: subprocess.Popen, base: str, log_path: Path) -> None:
     deadline = time.monotonic() + 30
     last = ""
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            out = proc.stdout.read().decode() if proc.stdout else ""
+            out = log_path.read_text(errors="replace")
             raise RuntimeError(f"server exited early (code {proc.returncode}):\n{out}")
         try:
             r = httpx.get(f"{base}/public/experiments", timeout=2.0)
@@ -121,7 +126,10 @@ def _wait_ready(proc: subprocess.Popen, base: str) -> None:
         except httpx.HTTPError as exc:
             last = str(exc)
         time.sleep(0.3)
-    raise RuntimeError(f"server not ready at {base} within 30s (last: {last})")
+    out = log_path.read_text(errors="replace")
+    raise RuntimeError(
+        f"server not ready at {base} within 30s (last: {last})\nserver log:\n{out}"
+    )
 
 
 @pytest_asyncio.fixture
