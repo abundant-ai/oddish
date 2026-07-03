@@ -59,7 +59,7 @@ reference. The main commands are:
 
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results.
-- `oddish ls` / `oddish status` — browse tasks (name/tag filters) and inspect progress.
+- `oddish ls` / `oddish status` — browse and filter tasks (name, tags, status, agent/model, dates, aggregates, and more) and inspect progress.
 - `oddish cancel` — cancel active runs or task-level QA.
 - `oddish pull` — download logs, results, trajectories, and artifacts.
 - `oddish combine` — merge finished trials from multiple experiments.
