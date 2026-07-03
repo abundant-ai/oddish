@@ -1,9 +1,13 @@
 from fastapi import HTTPException
 
 from auth.permissions import allowed_api_key_scopes, can_create_api_keys
-from api.routers.task_submission import require_experiment_publish_scope
+from api.routers.task_submission import (
+    _should_auto_publish,
+    require_experiment_publish_scope,
+)
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, UserRole
+from oddish.schemas import AgentModelPair, TaskSweepSubmission
 
 
 def _clerk_auth(
@@ -197,3 +201,57 @@ def test_admin_created_task_key_can_publish_experiment():
     )
 
     require_experiment_publish_scope(auth)
+
+
+def _publish_submission(**overrides) -> TaskSweepSubmission:
+    data = dict(
+        task_id="task_pub",
+        configs=[
+            AgentModelPair(
+                agent="claude-code", model="anthropic/claude-sonnet-4-6", n_trials=1
+            )
+        ],
+        user=None,
+    )
+    data.update(overrides)
+    return TaskSweepSubmission(**data)
+
+
+def _api_key_auth() -> AuthContext:
+    return AuthContext(
+        method=AuthMethod.API_KEY,
+        org_id="org_1",
+        api_key_id="key_1",
+        user_role=UserRole.MEMBER,
+        scope=APIKeyScope.TASKS,
+    )
+
+
+def test_auto_publish_defaults_on_for_github_id_only():
+    # A CI run passing --github-id alone (no handle) must auto-publish like a
+    # handle-based run, since attribution/linkage now key off github_id.
+    assert _should_auto_publish(_publish_submission(github_id="583231"), _api_key_auth())
+
+
+def test_auto_publish_defaults_on_for_github_username_only():
+    assert _should_auto_publish(
+        _publish_submission(github_username="octocat"), _api_key_auth()
+    )
+
+
+def test_auto_publish_defaults_off_without_github_or_api_key():
+    assert not _should_auto_publish(_publish_submission(), _api_key_auth())
+    assert not _should_auto_publish(
+        _publish_submission(github_id="583231"),
+        _clerk_auth(role=UserRole.MEMBER),  # no api_key_id
+    )
+
+
+def test_auto_publish_explicit_flag_overrides_default():
+    auth = _api_key_auth()
+    assert not _should_auto_publish(
+        _publish_submission(github_id="583231", publish_experiment=False), auth
+    )
+    assert _should_auto_publish(
+        _publish_submission(publish_experiment=True), auth
+    )

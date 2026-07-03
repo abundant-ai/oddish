@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+import os
+
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,11 +14,16 @@ from oddish.core.sharing.helpers import ensure_experiment_public
 from oddish.db import ExperimentModel, TaskModel
 from oddish.schemas import TaskSweepSubmission
 
+logger = logging.getLogger(__name__)
+
 
 def apply_github_attribution(submission: TaskSweepSubmission) -> None:
     if submission.github_username:
         submission.tags = submission.tags or {}
         submission.tags.setdefault("github_username", submission.github_username)
+    if submission.github_id:
+        submission.tags = submission.tags or {}
+        submission.tags.setdefault("github_id", submission.github_id)
 
 
 async def _resolve_actor_user(
@@ -94,17 +103,10 @@ async def _lookup_user_by_github_username(
     github_username: str,
     org_id: str,
 ) -> UserModel | None:
-    normalized = (github_username or "").strip().lstrip("@")
-    if not normalized:
-        return None
-    user_result = await session.execute(
-        select(UserModel).where(
-            func.lower(UserModel.github_username) == normalized.lower(),
-            UserModel.org_id == org_id,
-            UserModel.is_active == True,  # noqa: E712
-        )
+    users = await lookup_users_by_github_username(
+        session, github_username=github_username, org_id=org_id
     )
-    return user_result.scalar_one_or_none()
+    return users[0] if len(users) == 1 else None
 
 
 async def lookup_users_by_github_username(
@@ -131,10 +133,104 @@ async def lookup_users_by_github_username(
     return list(result.scalars().all())
 
 
+async def _lookup_user_by_github_id(
+    session: AsyncSession,
+    *,
+    github_id: str,
+    org_id: str,
+) -> UserModel | None:
+    result = await session.execute(
+        select(UserModel).where(
+            UserModel.github_id == github_id,
+            UserModel.org_id == org_id,
+            UserModel.is_active == True,  # noqa: E712
+        )
+    )
+    return result.scalars().first()
+
+
+async def resolve_connected_user(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    github_id: str | None,
+    github_username: str | None,
+) -> UserModel | None:
+    # A blank id is an absent id on every transport (schema-normalized
+    # submissions and raw query params alike).
+    github_id = (github_id or "").strip() or None
+    if github_id:
+        return await _lookup_user_by_github_id(
+            session, github_id=github_id, org_id=org_id
+        )
+    if github_username:
+        return await _lookup_user_by_github_username(
+            session, github_username=github_username, org_id=org_id
+        )
+    return None
+
+
+async def require_connected_github_user(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> UserModel | None:
+    """Gate a sweep on GitHub linkage, quota-independent.
+
+    A submission carrying a truthy ``github_id`` must strict-resolve (id-only)
+    to an active org user or the sweep is rejected with 403 before any rows are
+    written. Returns the resolved user (reusable for owner / created_by
+    stamping), or None when no ``github_id`` was supplied (gate is a no-op).
+
+    Trust model: this gate is COOPERATIVE, not adversarial. It checks linkage
+    ("does this id map to a connected org user?"), not ownership — any caller
+    holding an org credential may omit ``github_id`` to skip the gate entirely,
+    or pass any linked member's id and have attribution/ownership credit that
+    member. Anti-spoofing is an explicit non-goal; do not build billing or
+    quota enforcement that assumes a hostile client cannot choose whose id it
+    sends.
+    """
+    if not (submission.github_id and submission.github_id.strip()):
+        return None
+    user = await _lookup_user_by_github_id(
+        session, github_id=submission.github_id, org_id=auth.org_id
+    )
+    if user is None:
+        api_key = auth.api_key
+        logger.info(
+            "linkage gate rejected github_id=%s org=%s api_key_id=%s "
+            "api_key_name=%s user_id=%s",
+            submission.github_id,
+            auth.org_id,
+            auth.api_key_id,
+            api_key.name if api_key else None,
+            auth.user_id,
+        )
+        # Timing expectations: linking fires a Clerk user.updated webhook that
+        # sets github_id immediately, so "seconds" is the normal case; "up to
+        # an hour" is the webhook-loss worst case (backfill TTL). Deliberately
+        # no "sign out and back in" advice — a fresh github_id_checked_at
+        # marker suppresses the login-path refresh for up to an hour, so that
+        # advice would fail exactly when users try it.
+        dashboard_url = os.getenv("ODDISH_DASHBOARD_URL", "https://oddish.app")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"GitHub account {submission.github_id} is not connected to an "
+                f"oddish user in this org. Sign in at {dashboard_url}, connect "
+                "GitHub under account settings, then rerun — linking normally "
+                "takes effect within seconds. If it still fails after that, "
+                "sync can take up to an hour."
+            ),
+        )
+    return user
+
+
 async def resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
     """Who submitted the task. API key owner wins for CI/service accounts."""
     if auth.api_key_id:
@@ -144,11 +240,12 @@ async def resolve_created_by_user_id(
         if api_key and api_key.created_by_user_id:
             return api_key.created_by_user_id
 
-    if submission.github_username:
-        user = await _lookup_user_by_github_username(
+    if submission.github_id is not None or submission.github_username:
+        user = connected_user or await resolve_connected_user(
             session,
-            github_username=submission.github_username,
             org_id=auth.org_id,
+            github_id=submission.github_id,
+            github_username=submission.github_username,
         )
         if user:
             return user.id
@@ -163,18 +260,18 @@ async def resolve_experiment_owner_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
     """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
-    if submission.github_username:
-        user = await _lookup_user_by_github_username(
+    if submission.github_id is not None or submission.github_username:
+        user = connected_user or await resolve_connected_user(
             session,
-            github_username=submission.github_username,
             org_id=auth.org_id,
+            github_id=submission.github_id,
+            github_username=submission.github_username,
         )
         if user:
             return user.id
-        # Explicit --github-user with no linked org member: leave owner unset so
-        # the legacy primary-task Mine filter can match the github tag.
         return None
 
     if auth.user_id:
@@ -212,16 +309,24 @@ def require_experiment_publish_scope(auth: AuthContext) -> None:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
 
+def _should_auto_publish(submission: TaskSweepSubmission, auth: AuthContext) -> bool:
+    if submission.publish_experiment is not None:
+        return submission.publish_experiment
+    # Attribution and the linkage gate now key off github_id, so a CI run that
+    # passes --github-id alone (no handle) must auto-publish like a handle-based
+    # run did. github_id is schema-normalized (blank -> None).
+    return bool(
+        (submission.github_username or submission.github_id) and auth.api_key_id
+    )
+
+
 async def maybe_publish_experiment(
     session: AsyncSession,
     task: TaskModel,
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> None:
-    should_publish = submission.publish_experiment
-    if should_publish is None:
-        should_publish = bool(submission.github_username and auth.api_key_id)
-    if not should_publish:
+    if not _should_auto_publish(submission, auth):
         return
 
     require_experiment_publish_scope(auth)

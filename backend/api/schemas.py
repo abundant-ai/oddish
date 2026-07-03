@@ -30,6 +30,7 @@ class UserResponse(BaseModel):
     email: str
     name: str | None
     github_username: str | None
+    github_id: str | None = None
     role: str
     org_id: str
     created_at: str

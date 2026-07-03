@@ -29,6 +29,7 @@ from oddish.cli.api import (
     build_sweep_payload,
     get_experiment_share,
     get_task_summary,
+    github_id_is_unlinked,
     load_sweep_config,
     post_sweep_payload,
     print_final_results,
@@ -297,6 +298,13 @@ def run(
             "--github-user",
             "-G",
             help="GitHub username to attribute this task to. Used for CI attribution.",
+        ),
+    ] = None,
+    github_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--github-id",
+            help="Immutable GitHub user id for attribution.",
         ),
     ] = None,
     github_meta: Annotated[
@@ -629,6 +637,20 @@ def run(
         error_console.print("[red]--qa requires --retry.[/red]")
         raise typer.Exit(1)
 
+    # Pre-flight the linkage gate before any upload so an unlinked github_id
+    # fails in milliseconds instead of after uploading. Fail-open: only an
+    # authoritative linked=false aborts; the /tasks/sweep gate stays the
+    # authority.
+    if github_id and github_id.strip() and github_id_is_unlinked(api_url, github_id):
+        error_console.print(
+            f"[red]GitHub account {github_id} is not connected to an oddish user "
+            f"in this org. Sign in at {get_dashboard_url(api_url)}, connect "
+            "GitHub under account settings, then rerun — linking normally takes "
+            "effect within seconds. If it still fails after that, sync can take "
+            "up to an hour.[/red]"
+        )
+        raise typer.Exit(1)
+
     # Handle config file vs CLI mode for agent configs
     if config:
         # Config file mode - load agents from file
@@ -796,6 +818,7 @@ def run(
             run_probe=run_probe,
             gate_baselines=gate_baselines,
             github_username=github_user,
+            github_id=github_id,
             tags=tags or None,
             publish_experiment=publish,
             disable_verification=disable_verification,

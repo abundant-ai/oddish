@@ -87,10 +87,14 @@ async def _relation_exists(name: str) -> bool:
 
 def test_migration_applies_and_downgrades_cleanly() -> None:
     """``downgrade -1`` drops the table + unique index, and re-applying recreates
-    them cleanly (the migration's real up/down SQL run via Alembic)."""
+    them cleanly (the migration's real up/down SQL run via Alembic).
+
+    Pinned to this migration's revision (not head) so later migrations on the
+    branch don't change which step ``-1`` reverses."""
+    revision = "s5t6u7v8w9x0"
     cfg = _alembic_config()
     asyncio.run(_reset_and_create_all())
-    command.stamp(cfg, "head")
+    command.stamp(cfg, revision)
 
     # downgrade -1 runs this migration's downgrade().
     command.downgrade(cfg, "-1")
@@ -99,8 +103,8 @@ def test_migration_applies_and_downgrades_cleanly() -> None:
     # Reversing one step leaves the preceding schema intact.
     assert asyncio.run(_relation_exists("organizations"))
 
-    # upgrade head runs this migration's upgrade() -> table + unique index back.
-    command.upgrade(cfg, "head")
+    # upgrading back to this revision runs upgrade() -> table + unique index back.
+    command.upgrade(cfg, revision)
     assert asyncio.run(_relation_exists("submission_idempotency"))
     assert asyncio.run(_relation_exists("uq_submission_idempotency_org_route_key"))
 

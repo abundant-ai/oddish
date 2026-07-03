@@ -30,6 +30,7 @@ class _AttrStub:
 
 class _UserStub:
     github_username = _AttrStub()
+    github_id = _AttrStub()
     org_id = _AttrStub()
     is_active = _AttrStub()
 
@@ -38,6 +39,7 @@ class _UserStub:
         *,
         id: str = "user-1",
         github_username: str | None = None,
+        github_id: str | None = None,
         name: str | None = None,
         email: str | None = None,
         org_id: str | None = None,
@@ -45,6 +47,7 @@ class _UserStub:
     ) -> None:
         self.id = id
         self.github_username = github_username
+        self.github_id = github_id
         self.name = name
         self.email = email
         self.org_id = org_id
@@ -67,6 +70,31 @@ class _AuthStub:
     org_id: str = "org-1"
 
 
+def _execute_result(users: list[Any]) -> Any:
+    """Mimic the AsyncSession result surface the resolution helpers now consume.
+
+    The exact-one predicate reads ``scalars().all()`` (plural handle lookup) and
+    ``scalars().first()`` (github_id lookup), not ``scalar_one_or_none()``. Tests
+    pass the rows a query should return; the exact-one caller decides ambiguity.
+    """
+
+    class _Scalars:
+        def all(self) -> list[Any]:
+            return list(users)
+
+        def first(self) -> Any:
+            return users[0] if users else None
+
+    class _Result:
+        def scalars(self) -> _Scalars:
+            return _Scalars()
+
+        def scalar_one_or_none(self) -> Any:
+            return users[0] if len(users) == 1 else None
+
+    return _Result()
+
+
 @dataclass
 class _SessionStub:
     objects: dict[tuple[type, str], Any] = field(default_factory=dict)
@@ -75,11 +103,7 @@ class _SessionStub:
         return self.objects.get((model, key))
 
     async def execute(self, _stmt: Any) -> Any:
-        class _Result:
-            def scalar_one_or_none(self) -> None:
-                return None
-
-        return _Result()
+        return _execute_result([])
 
 
 def _load_helpers() -> dict[str, Any]:
@@ -91,7 +115,8 @@ def _load_helpers() -> dict[str, Any]:
     from FastAPI/Clerk/Modal imports.
     """
     router_path = (
-        Path(__file__).resolve().parents[2] / "backend" / "api" / "routers" / "tasks.py"
+        Path(__file__).resolve().parents[2]
+        / "backend" / "api" / "routers" / "task_submission.py"
     )
     source = router_path.read_text(encoding="utf-8")
 
@@ -105,10 +130,13 @@ def _load_helpers() -> dict[str, Any]:
         _slice(needle)
         for needle in (
             "async def _resolve_actor_user(",
-            "async def _resolve_actor_user_string(",
+            "async def resolve_actor_user_string(",
             "async def _lookup_user_by_github_username(",
-            "async def _resolve_created_by_user_id(",
-            "async def _resolve_experiment_owner_user_id(",
+            "async def lookup_users_by_github_username(",
+            "async def _lookup_user_by_github_id(",
+            "async def resolve_connected_user(",
+            "async def resolve_created_by_user_id(",
+            "async def resolve_experiment_owner_user_id(",
         )
     )
 
@@ -137,9 +165,9 @@ def _load_helpers() -> dict[str, Any]:
 
 _HELPERS = _load_helpers()
 _resolve_actor_user = _HELPERS["_resolve_actor_user"]
-_resolve_actor_user_string = _HELPERS["_resolve_actor_user_string"]
-_resolve_created_by_user_id = _HELPERS["_resolve_created_by_user_id"]
-_resolve_experiment_owner_user_id = _HELPERS["_resolve_experiment_owner_user_id"]
+_resolve_actor_user_string = _HELPERS["resolve_actor_user_string"]
+_resolve_created_by_user_id = _HELPERS["resolve_created_by_user_id"]
+_resolve_experiment_owner_user_id = _HELPERS["resolve_experiment_owner_user_id"]
 
 
 def _run(coro):
@@ -283,6 +311,7 @@ def test_resolve_actor_user_returns_none_when_unauthenticated():
 @dataclass
 class _SubmissionStub:
     github_username: str | None = None
+    github_id: str | None = None
 
 
 def test_created_by_user_id_prefers_api_key_owner():
@@ -301,11 +330,7 @@ def test_created_by_user_id_resolves_github_username_to_user():
     session = _SessionStub()
 
     async def _fake_execute(stmt):
-        class _Result:
-            def scalar_one_or_none(self):
-                return user
-
-        return _Result()
+        return _execute_result([user])
 
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="octocat")
@@ -322,18 +347,13 @@ def test_created_by_user_id_falls_back_to_auth_user_id():
 
 
 def test_experiment_owner_prefers_github_user_over_api_key_owner():
-    api_user = _UserStub(id="u-ci", github_username=None)
     gh_user = _UserStub(id="u-gh", github_username="praxs")
     api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
     auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
     session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
 
     async def _fake_execute(stmt):
-        class _Result:
-            def scalar_one_or_none(self):
-                return gh_user
-
-        return _Result()
+        return _execute_result([gh_user])
 
     session.execute = _fake_execute  # type: ignore[attr-defined]
     submission = _SubmissionStub(github_username="praxs")
@@ -363,3 +383,61 @@ def test_experiment_owner_falls_back_to_api_key_without_github_username():
 
     owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
     assert owner == "u-ci"
+
+
+def _split_result(*, by_id, by_handle):
+    """A result that answers the github_id lookup (``scalars().first()``) and the
+    handle lookup (``scalars().all()``) DIFFERENTLY, so a test can prove which
+    branch of ``resolve_connected_user`` actually resolved the owner."""
+
+    class _Result:
+        def scalars(self):
+            class _S:
+                def first(self):
+                    return by_id
+
+                def all(self):
+                    return [by_handle] if by_handle is not None else []
+
+            return _S()
+
+    return _Result()
+
+
+def test_experiment_owner_prefers_github_id_over_handle():
+    # github_id wins over the mutable handle: with both present, resolution must
+    # take the github_id branch (.first()) — the handle branch (.all()) returns a
+    # DIFFERENT user, so asserting the github_id user proves precedence, not luck.
+    id_user = _UserStub(id="u-id", github_id="12345", github_username="renamed")
+    handle_user = _UserStub(id="u-handle", github_username="stale")
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+
+    async def _fake_execute(stmt):
+        return _split_result(by_id=id_user, by_handle=handle_user)
+
+    session.execute = _fake_execute  # type: ignore[attr-defined]
+    submission = _SubmissionStub(github_id="12345", github_username="stale")
+
+    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    assert owner == "u-id"
+
+
+def test_experiment_owner_strict_id_unmatched_does_not_fall_back_to_handle():
+    # github_id supplied but unlinked (.first() → None): strict resolution returns
+    # None — it must NOT fall back to the handle lookup (.all()) even though a
+    # DIFFERENT user carries that handle. This is the linkage gate's predicate.
+    handle_user = _UserStub(id="u-handle", github_username="octocat")
+    api_key = _APIKeyStub(id="k1", created_by_user_id="u-ci")
+    auth = _AuthStub(api_key_id="k1", api_key=api_key, org_id="org-1")
+    session = _SessionStub(objects={(_APIKeyStub, "k1"): api_key})
+
+    async def _fake_execute(stmt):
+        return _split_result(by_id=None, by_handle=handle_user)
+
+    session.execute = _fake_execute  # type: ignore[attr-defined]
+    submission = _SubmissionStub(github_id="99999", github_username="octocat")
+
+    owner = _run(_resolve_experiment_owner_user_id(session, submission, auth))
+    assert owner is None
