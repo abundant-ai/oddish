@@ -68,6 +68,7 @@ harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 # gitignored jobs/ runtime cache, dist/, __pycache__/, etc.).
 [tool.setuptools]
 py-modules = [
+    "backfill_github_id",
     "cloud_policy",
     "dashboard_attribution",
     "dashboard_owner_backfill",
