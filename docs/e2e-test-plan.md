@@ -151,23 +151,45 @@ page's stable "Agents" heading is visible). On development instances,
 `+clerk_test` emails verify with the universal OTP `424242`, so the test user
 needs no real mailbox.
 
-So what's actually left, given the scaffold is written? Not code — inputs and a
-real run. To flip this from *skipped* to *proven green* you need:
+So what's actually left, given both the scaffold *and* the CI wiring now exist?
+Not code. `.github/workflows/e2e-dashboard.yml` boots the whole stack in one
+runner — the postgres service, `serve.py`, and `pnpm dev` — seeds the org +
+task through `backend/tests/e2e/seed_dashboard.py`, and runs this spec against
+it. So the two prerequisites an earlier draft called out by hand — "a dev stack
+already running at `E2E_BASE_URL`" and "a seeded `OrganizationModel` row" — are
+now handled by CI; the seed even hands its task id to `E2E_TASK_ID` so the spec
+jumps straight to the detail page.
 
-- `E2E_CLERK_EMAIL` — a dev-instance Clerk user whose email is a `+clerk_test`
-  address and who belongs to an org.
-- `CLERK_SECRET_KEY` — the dev-instance (`sk_test`) secret; `clerkSetup()` mints
-  the Testing Token from it, and the spec's env gate keys off it.
-- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — the matching dev-instance `pk_test` the
-  running dev server boots Clerk with.
-- a seeded backend `OrganizationModel` row whose id matches that user's org —
-  the backend returns task data only for a known org, and the JWT template
-  `oddish` carries `org_id`/`org_role` (`SELF_HOSTING.md`).
-- a dev stack already running at `E2E_BASE_URL` (default
-  `http://localhost:3000`). The Playwright config deliberately omits a
-  `webServer` block (see why below), so nothing boots the app for you.
-- optionally `E2E_TASK_ID` to jump straight to one task's detail page instead of
-  clicking through the list.
+What remains is two human inputs: five repo secrets, and a one-time Clerk
+dev-instance setup (a test user with a `+clerk_test` email in an org, plus an
+`oddish` JWT template carrying `org_id`/`org_role` claims — see
+`SELF_HOSTING.md`). The five secrets:
+
+- `E2E_CLERK_EMAIL` — the `+clerk_test` user's address.
+- `E2E_CLERK_ORG_ID` — that user's Clerk org id; the seed writes it as *both*
+  `OrganizationModel.id` and `clerk_org_id` (see the provisioning note below).
+- `CLERK_SECRET_KEY` — the dev-instance `sk_test`; `clerkSetup()` mints the
+  Testing Token from it and the spec's env gate keys off it.
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — the matching `pk_test` the dev server
+  boots Clerk with.
+- `CLERK_DOMAIN` — the backend's Clerk domain (unused on the auth path this
+  test exercises, but the gate requires it so the boot never runs half-configured).
+
+On org auto-provisioning: it does *not* happen for an unknown org. A Clerk JWT
+whose `org_id` has no local row resolves through `get_org_from_clerk_id`
+(`backend/auth/provisioning.py`, keyed on `clerk_org_id`), which returns `None`
+and the request is rejected — nothing is minted. That is why the seed is
+explicit *and* why it sets `clerk_org_id`, not just `id`, to `E2E_CLERK_ORG_ID`.
+The task row is needed regardless so the detail page has data — but an empty
+task (zero trials) still renders the "Agents" heading (it shows "No trials for
+this version yet."), so no trial row is seeded.
+
+Absent the secrets the CI job is a *designed* no-op: a first gate step flips
+`have_clerk=false` and every later step skips, so forks and unconfigured repos
+stay green. And it is still **unverified against a real Clerk instance** until
+those secrets exist — treat "typechecks (`pnpm run typecheck:e2e`) and skips" as
+today's bar, "green in e2e-dashboard.yml" as the bar once the dev instance is
+wired. `E2E_BASE_URL`/`E2E_TASK_ID` remain the knobs for a manual local run.
 
 Why no `webServer`? Because Playwright starts it *before* it evaluates any
 `test.skip`, so a credential-less run — the whole point of the skip path — would
@@ -343,5 +365,6 @@ same command signs in and asserts the task-detail page renders.
 - [x] P4: Playwright + `@clerk/testing` scaffolded in `frontend/e2e/`; skips
       cleanly without CLERK env
 - [ ] P4 (unverified): run green against a dev-instance test user + seeded org
-      row (needs `E2E_CLERK_EMAIL`, `CLERK_SECRET_KEY`,
-      `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`)
+      row (needs all five repo secrets: `E2E_CLERK_EMAIL`, `E2E_CLERK_ORG_ID`,
+      `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_DOMAIN` —
+      the `e2e-dashboard.yml` gate requires all of them)
