@@ -1,18 +1,6 @@
-"""G6: GET /users surfaces github_id alongside github_username.
+"""GET /users surfaces github_id alongside github_username.
 
-Exercises the real endpoint over ASGI with a FULL-scope org API key
-(`require_admin` authorizes FULL keys by scope, auth/__init__.py:305-307), so
-the full `select(UserModel)` query + `UserResponse` serialization run end to end.
-
-`list_users` uses a plain `select(UserModel)` with NO `load_only`, so the
-`MissingGreenlet` deferred-column trap (CLAUDE.md) does not apply here — reading
-`u.github_id` in the builder is safe. github_id is a USERS column and is not
-surfaced through any compact task/trial/experiment response.
-
-Run with your backend env sourced:
-
-    export ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish
-    uv run pytest tests/test_users_endpoint_github_id.py -q
+The endpoint test exercises the ASGI route and response serialization.
 """
 
 from __future__ import annotations
@@ -25,7 +13,6 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from api.schemas import UserResponse
 from models import APIKeyScope, OrganizationModel, UserModel
 from oddish.core.api_keys import create_api_key
 from oddish.db import get_session
@@ -114,29 +101,3 @@ async def test_list_users_surfaces_github_id(org_with_full_key):
     assert by_id[with_id.id]["github_id"] == "9999001"
     # unset github_id serializes as null, not absent
     assert by_id[no_id.id]["github_id"] is None
-
-
-def test_user_response_serializes_github_id():
-    """Unit-level guard (no DB): UserResponse carries github_id, defaulting None."""
-    payload = UserResponse(
-        id="user_x",
-        email="x@example.com",
-        name=None,
-        github_username="octocat",
-        github_id="583231",
-        role="member",
-        org_id="org_x",
-        created_at="2026-01-01T00:00:00+00:00",
-    ).model_dump()
-    assert payload["github_id"] == "583231"
-
-    defaulted = UserResponse(
-        id="user_y",
-        email="y@example.com",
-        name=None,
-        github_username=None,
-        role="member",
-        org_id="org_y",
-        created_at="2026-01-01T00:00:00+00:00",
-    ).model_dump()
-    assert defaulted["github_id"] is None

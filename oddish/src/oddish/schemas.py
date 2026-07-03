@@ -242,6 +242,14 @@ class RegistryAuth(BaseModel):
 
 class TrialRetryRequest(BaseModel):
     registry_auth: list[RegistryAuth] | None = Field(None)
+    gate_baselines: bool = Field(
+        True,
+        description=(
+            "If True (default), a retried LLM trial re-consults its scope's "
+            "baselines (fresh per-retry decision). Set False (--no-baseline-gate) "
+            "to re-run it ungated. The original run's opt-out does not persist."
+        ),
+    )
 
 
 class TaskSubmission(BaseModel):
@@ -275,6 +283,15 @@ class TaskSubmission(BaseModel):
     run_probe: bool = Field(
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
+    )
+    gate_baselines: bool = Field(
+        True,
+        description=(
+            "If True (default) and the global baseline gate is enabled, hold this "
+            "submission's LLM trials until its nop/oracle baselines validate the "
+            "task. Set False to run the LLM trials immediately without gating "
+            "(baselines still run). Per submission; not inherited by retries."
+        ),
     )
     github_username: str | None = Field(
         None,
@@ -453,6 +470,15 @@ class TaskSweepSubmission(BaseModel):
         False,
         description="If True, auto-enqueue a probe trial for this task's version on submit. Opt-in (off by default).",
     )
+    gate_baselines: bool = Field(
+        True,
+        description=(
+            "If True (default) and the global baseline gate is enabled, hold this "
+            "submission's LLM trials until its nop/oracle baselines validate the "
+            "task. Set False to run the LLM trials immediately without gating "
+            "(baselines still run). Per submission; not inherited by retries."
+        ),
+    )
     github_username: str | None = Field(
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
@@ -478,6 +504,13 @@ class TaskSweepSubmission(BaseModel):
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
     registry_auth: list[RegistryAuth] | None = Field(None)
+
+    @field_validator("github_id", mode="before")
+    @classmethod
+    def _normalize_github_id(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
 
     @model_validator(mode="after")
     def require_models(self):

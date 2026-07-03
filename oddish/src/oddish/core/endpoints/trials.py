@@ -26,6 +26,9 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
 )
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
@@ -104,6 +107,7 @@ async def retry_trial_core(
     trial_id: str,
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
+    gate_baselines: bool = True,
 ) -> dict:
     """Create a new trial that replaces an old one.
 
@@ -112,6 +116,11 @@ async def retry_trial_core(
     The caller must run ``oddish.core.helpers.terminate_run_harvest(result)``
     after commit or the containers leak until provider TTL (the worker's
     superseded-branch harvest and the reaper remain backstops).
+
+    ``gate_baselines`` is a fresh, per-retry decision (the opt-out does not
+    persist from the original run): when True (default) a retried LLM trial
+    re-consults its scope's baselines; ``--no-baseline-gate`` sets it False to
+    re-run the trial ungated.
     """
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     old_trial = await session.get(TrialModel, old_trial.id)
@@ -145,7 +154,12 @@ async def retry_trial_core(
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
+    from oddish.config import is_nop_oracle_agent, settings
+    from oddish.queue import (
+        apply_baseline_gate_to_new_llm_trials,
+        enqueue_trial_worker_job,
+        reserve_next_trial_index,
+    )
 
     if old_trial.billed_user_id is not None:
         from oddish.core.quota_admission import admit_trials
@@ -339,9 +353,39 @@ async def retry_trial_core(
         registry_auth_enc=registry_auth_enc,
     )
 
+    # Retrying an LLM trial re-arms the gate: a retried agent trial consults its
+    # scope's baselines just like a fresh one, so it can't bypass a faulty task.
+    # The gate may leave it BLOCKED (baselines still running) or CANCELLED
+    # (faulty baselines), so report its real state rather than always "queued".
+    status_label = "queued"
+    if (
+        settings.gate_llm_on_baselines
+        and gate_baselines
+        and not is_nop_oracle_agent(new_trial.agent)
+    ):
+        await apply_baseline_gate_to_new_llm_trials(
+            session,
+            task_id=new_trial.task_id,
+            task_version_id=new_trial.task_version_id,
+            experiment_id=new_trial.experiment_id,
+            llm_trial_ids=[new_trial_id],
+        )
+        final_status = await session.scalar(
+            select(WorkerJobModel.status).where(
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id == new_trial_id,
+            )
+        )
+        status_label = {
+            WorkerJobStatus.QUEUED: "queued",
+            WorkerJobStatus.BLOCKED: "blocked",
+            WorkerJobStatus.CANCELLED: "skipped",
+        }.get(final_status, "queued")
+
     await session.commit()
     return {
-        "status": "queued",
+        "status": status_label,
         "trial_id": new_trial_id,
         "superseded_trial_id": trial_id,
         "modal_function_call_ids": modal_fc_ids,

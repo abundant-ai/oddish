@@ -672,6 +672,7 @@ async def retry_trial(
             session,
             trial_id=trial_id,
             registry_auth=(payload.registry_auth if payload else None),
+            gate_baselines=(payload.gate_baselines if payload else True),
         )
     # Post-commit: terminate the superseded run's harvested handles.
     from oddish.core.helpers import terminate_run_harvest

@@ -1,21 +1,11 @@
-"""add users.github_id
-
-Adds the immutable Clerk ``provider_user_id`` (TEXT) so owner resolution can
-survive ``github_username`` renames/recycles. Org-scoped unique + index for the
-lookup; NULLs are distinct in Postgres, so existing all-NULL rows never collide
-(no global unique). Idempotent so a create_all-built preview replays cleanly.
-
-Revision ID: g1h2i3j4k5l6
-Revises: s5t6u7v8w9x0
-Create Date: 2026-06-30 00:00:00.000000
-"""
+"""add users.github_id"""
 
 from typing import Sequence, Union
 
 from alembic import op
 
 revision: str = "g1h2i3j4k5l6"
-down_revision: Union[str, Sequence[str], None] = "s5t6u7v8w9x0"
+down_revision: Union[str, Sequence[str], None] = "t6u7v8w9x0y1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -23,9 +13,16 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id TEXT")
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_org_github_id "
-        "ON users (org_id, github_id)"
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS github_id_checked_at TIMESTAMPTZ"
     )
+    # The unique constraint below already backs (org_id, github_id) lookups with
+    # its own index, so a separate non-unique index is pure write overhead. The
+    # DROP is a no-op on fresh databases; it only fires where this statement runs
+    # against a DB that got the index some other way (e.g. a create_all-built
+    # preview from the old model). Note Alembic does NOT re-run this revision on
+    # DBs that already applied its earlier version — those previews keep the
+    # redundant index until rebuilt, which per-PR preview DBs routinely are.
+    op.execute("DROP INDEX IF EXISTS idx_users_org_github_id")
     op.execute(
         """
         DO $$
@@ -42,8 +39,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_org_github_id"
-    )
-    op.execute("DROP INDEX IF EXISTS idx_users_org_github_id")
+    op.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_org_github_id")
+    op.execute("ALTER TABLE users DROP COLUMN IF EXISTS github_id_checked_at")
     op.execute("ALTER TABLE users DROP COLUMN IF EXISTS github_id")
