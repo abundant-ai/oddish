@@ -100,10 +100,13 @@ def _retry_trial_ids(
     trial_ids: list[str],
     *,
     registry_auth: list[dict] | None = None,
+    gate_baselines: bool = True,
 ) -> list[dict]:
     """Retry each trial id, returning a per-trial result record."""
     results: list[dict] = []
-    payload = {"registry_auth": registry_auth} if registry_auth else None
+    payload: dict = {"gate_baselines": gate_baselines}
+    if registry_auth:
+        payload["registry_auth"] = registry_auth
     for trial_id in trial_ids:
         response = _post(api_url, f"/trials/{trial_id}/retry", payload)
         ok = response.status_code == 200
@@ -145,6 +148,7 @@ def run_retry(
     yes: bool,
     json_output: bool,
     registry_auth: list[dict] | None = None,
+    gate_baselines: bool = True,
 ) -> None:
     """Re-run trials, or the task-level QA job, for an existing target.
 
@@ -169,6 +173,7 @@ def run_retry(
             yes=yes,
             json_output=json_output,
             registry_auth=registry_auth,
+            gate_baselines=gate_baselines,
         )
     else:
         results = _run_task_level_retries(
@@ -198,11 +203,13 @@ def _run_trial_retries(
     yes: bool,
     json_output: bool,
     registry_auth: list[dict] | None,
+    gate_baselines: bool = True,
 ) -> dict:
     if target_type == "trial":
         _confirm(f"Retry trial {target_id}?", yes=yes, json_output=json_output)
         trial_results = _retry_trial_ids(
-            api_url, [target_id], registry_auth=registry_auth
+            api_url, [target_id], registry_auth=registry_auth,
+            gate_baselines=gate_baselines,
         )
         return {
             "kind": "trials",
@@ -230,7 +237,10 @@ def _run_trial_retries(
         return {
             "kind": "trials",
             "target": {"type": "task", "id": target_id},
-            "trials": _retry_trial_ids(api_url, trial_ids, registry_auth=registry_auth),
+            "trials": _retry_trial_ids(
+                api_url, trial_ids, registry_auth=registry_auth,
+                gate_baselines=gate_baselines,
+            ),
         }
 
     # experiment
@@ -253,7 +263,10 @@ def _run_trial_retries(
     return {
         "kind": "trials",
         "target": {"type": "experiment", "id": target_id},
-        "trials": _retry_trial_ids(api_url, trial_ids, registry_auth=registry_auth),
+        "trials": _retry_trial_ids(
+            api_url, trial_ids, registry_auth=registry_auth,
+            gate_baselines=gate_baselines,
+        ),
     }
 
 

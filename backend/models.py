@@ -106,10 +106,10 @@ class UserModel(TimestampedMixin, Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
 
     # Clerk Auth integration
-    # This is the Clerk user ID (e.g., "user_xxx"). NOT globally unique: one
-    # human is one row per org (provisioning upserts on (clerk_user_id, org_id)),
-    # matching the migrated head which dropped the unique index. Declaring
-    # unique=True here would let create_all-built previews re-impose it.
+    # Clerk user ID (e.g., "user_xxx"). NOT globally unique: one human is one row
+    # per org (provisioning upserts on (clerk_user_id, org_id)), matching the
+    # migrated head which dropped the unique index. Declaring unique=True here
+    # would let create_all-built previews re-impose it.
     clerk_user_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True
     )
@@ -136,6 +136,11 @@ class UserModel(TimestampedMixin, Base):
     # Immutable Clerk provider_user_id; survives github_username renames/recycles.
     # Org-scoped unique (NULLs distinct in PG, so all-NULL legacy rows don't collide).
     github_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When Clerk last definitively reported no GitHub account for this user;
+    # treated as stale after GITHUB_ID_RECHECK_TTL so relinks self-heal.
+    github_id_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Cached dashboard Mine aliases (handles + legacy emails); refreshed lazily.
     attribution_cache: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
@@ -164,7 +169,6 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
-        Index("idx_users_org_github_id", "org_id", "github_id"),
     )
 
 

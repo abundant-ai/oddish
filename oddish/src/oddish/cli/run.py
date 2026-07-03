@@ -29,6 +29,7 @@ from oddish.cli.api import (
     build_sweep_payload,
     get_experiment_share,
     get_task_summary,
+    github_id_is_unlinked,
     load_sweep_config,
     post_sweep_payload,
     print_final_results,
@@ -371,6 +372,17 @@ def run(
             help="Auto-enqueue a probe trial for this task's version (off by default)",
         ),
     ] = False,
+    gate_baselines: Annotated[
+        bool,
+        typer.Option(
+            "--baseline-gate/--no-baseline-gate",
+            help=(
+                "Hold LLM trials until this task's nop/oracle baselines validate "
+                "it (default). --no-baseline-gate runs them immediately, ungated "
+                "(baselines still run). Per run; retries decide gating afresh."
+            ),
+        ),
+    ] = True,
     disable_verification: Annotated[
         bool,
         typer.Option(
@@ -623,10 +635,25 @@ def run(
             yes=yes,
             json_output=json_output,
             registry_auth=registry_auth,
+            gate_baselines=gate_baselines,
         )
         return
     if retry_qa:
         error_console.print("[red]--qa requires --retry.[/red]")
+        raise typer.Exit(1)
+
+    # Pre-flight the linkage gate before any upload so an unlinked github_id
+    # fails in milliseconds instead of after uploading. Fail-open: only an
+    # authoritative linked=false aborts; the /tasks/sweep gate stays the
+    # authority.
+    if github_id and github_id.strip() and github_id_is_unlinked(api_url, github_id):
+        error_console.print(
+            f"[red]GitHub account {github_id} is not connected to an oddish user "
+            f"in this org. Sign in at {get_dashboard_url(api_url)}, connect "
+            "GitHub under account settings, then rerun — linking normally takes "
+            "effect within seconds. If it still fails after that, sync can take "
+            "up to an hour.[/red]"
+        )
         raise typer.Exit(1)
 
     # Handle config file vs CLI mode for agent configs
@@ -662,6 +689,9 @@ def run(
         # Config can enable auto-probe
         if "run_probe" in sweep_config:
             run_probe = sweep_config["run_probe"]
+        # Config can opt out of the baseline gate
+        if "gate_baselines" in sweep_config:
+            gate_baselines = sweep_config["gate_baselines"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -791,6 +821,7 @@ def run(
             max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
             run_probe=run_probe,
+            gate_baselines=gate_baselines,
             github_username=github_user,
             github_id=github_id,
             tags=tags or None,
