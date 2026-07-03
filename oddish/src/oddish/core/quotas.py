@@ -70,24 +70,6 @@ async def sum_cost_usd(
     )
 
 
-async def sum_org_cost_usd(
-    session: AsyncSession,
-    org_id: str | None,
-    period_start: datetime,
-) -> Decimal:
-    """Settled spend for the WHOLE org today: same predicates/unpriced floor as
-    ``sum_cost_usd`` but with no ``billed_user_id`` filter, so unattributed
-    (NULL-billed) trials DO count toward the org total. Bypasses the soft-delete
-    filter (``include_deleted=True``): deleting is not a budget reset."""
-    return to_money_decimal(
-        await session.scalar(
-            select(func.coalesce(func.sum(_settled_cost_expr()), 0))
-            .where(*_settled_cost_predicates(org_id, period_start))
-            .execution_options(include_deleted=True)
-        )
-    )
-
-
 async def sum_cost_usd_by_user(
     session: AsyncSession, org_id: str | None, period_start: datetime
 ) -> dict[str, Decimal]:
@@ -140,60 +122,6 @@ async def inflight_reserved_usd(
             .where(*_inflight_predicates(org_id, billed_user_id))
         )
     )
-
-
-def _org_inflight_predicates(org_id: str | None) -> list:
-    return [
-        TrialModel.org_id == org_id,
-        TrialModel.finished_at.is_(None),
-        TrialModel.deleted_at.is_(None),
-        TrialModel.superseded_by_trial_id.is_(None),
-        TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
-    ]
-
-
-async def org_inflight_reserved_usd(
-    session: AsyncSession, org_id: str | None
-) -> Decimal:
-    """Org-wide in-flight reservation: same per-trial expression as
-    ``inflight_reserved_usd`` (accumulated cost floored at the pending
-    reservation) but summed across every payer in the org, with no
-    ``billed_user_id`` predicate."""
-    return to_money_decimal(
-        await session.scalar(
-            select(
-                func.coalesce(
-                    func.sum(
-                        func.greatest(
-                            func.coalesce(TrialModel.cost_usd, 0),
-                            float(settings.pending_trial_reservation_usd),
-                        )
-                    ),
-                    0,
-                )
-            )
-            .select_from(TrialModel)
-            .where(*_org_inflight_predicates(org_id))
-        )
-    )
-
-
-async def get_effective_org_limit(
-    session: AsyncSession, org_id: str | None
-) -> Decimal | None:
-    """Effective org-wide daily cap: a live override row wins, else the
-    configured default, else ``None`` (= no org cap). Read via raw ``text()``
-    SQL so oddish core never imports the backend-only ``OrgQuotaModel``."""
-    override_limit_usd = await session.scalar(
-        text(
-            "SELECT limit_usd FROM org_quotas "
-            "WHERE org_id = :org_id AND deleted_at IS NULL"
-        ),
-        {"org_id": org_id},
-    )
-    if override_limit_usd is not None:
-        return Decimal(str(override_limit_usd))
-    return settings.default_org_daily_quota_usd
 
 
 async def get_effective_limit(
