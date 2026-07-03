@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -248,6 +249,49 @@ async def test_collision_with_soft_deleted_holder_is_skipped(monkeypatch) -> Non
         summary = await job.backfill_github_id(delay_seconds=0.0)
         assert await _github_id_of(target.id) is None
         assert summary.skipped >= 1
+    finally:
+        await _purge(org_id)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_no_db_session_held_during_clerk_fetch(monkeypatch) -> None:
+    """The Clerk fan-out must run with NO pooled DB connection held: holding one
+    across the batch's HTTP pins a scarce pooler slot (worker-runtime invariant).
+    Instrument get_session with an open-count and assert it is 0 at fetch time."""
+    org_id = f"org_bf_{uuid.uuid4().hex[:8]}"
+    user = _user(org_id)
+
+    open_sessions = {"n": 0}
+    real_get_session = job.get_session
+
+    @asynccontextmanager
+    async def _counting_get_session():
+        async with real_get_session() as session:
+            open_sessions["n"] += 1
+            try:
+                yield session
+            finally:
+                open_sessions["n"] -= 1
+
+    open_at_fetch: list[int] = []
+
+    async def _fetch(clerk_user_id: str) -> ClerkGithubIdentity:
+        open_at_fetch.append(open_sessions["n"])
+        return ClerkGithubIdentity("octocat", None, "999")
+
+    # Patch only the backfill's session/fetch; the test's own seed/purge use the
+    # test-module get_session and are unaffected.
+    monkeypatch.setattr(job, "get_session", _counting_get_session)
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+    try:
+        async with get_session() as session:
+            session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+            session.add(user)
+        summary = await job.backfill_github_id(delay_seconds=0.0)
+        assert open_at_fetch == [0]  # zero sessions held during the Clerk GET
+        assert summary.set == 1
+        assert await _github_id_of(user.id) == "999"
     finally:
         await _purge(org_id)
 

@@ -92,17 +92,17 @@ async def backfill_github_id(
     semaphore = asyncio.Semaphore(max(1, concurrency))
     after_id: str | None = None
 
-    async def _fetch(user: UserModel):
-        # Clerk GETs run concurrently (semaphore-capped); returns the identity or
-        # the escaping error. DB writes are applied sequentially by the caller —
-        # an AsyncSession is not safe for concurrent operations.
+    async def _fetch(user_id: str, clerk_user_id: str):
+        # Clerk GETs run concurrently (semaphore-capped) while NO DB session is
+        # held (see the three-phase loop below); returns the identity or the
+        # escaping error. Keyed by user_id so the write phase reloads the row.
         async with semaphore:
             if delay_seconds:
                 await asyncio.sleep(delay_seconds)
             try:
-                return user, await fetch_github_identity_from_clerk(user.clerk_user_id), None
+                return user_id, await fetch_github_identity_from_clerk(clerk_user_id), None
             except Exception as exc:  # fail-open: unexpected escaping error
-                return user, None, exc
+                return user_id, None, exc
 
     while max_users is None or summary.scanned < max_users:
         remaining = (
@@ -111,6 +111,11 @@ async def backfill_github_id(
         if remaining <= 0:
             break
 
+        # Phase 1 (short read session): grab a page of candidate (id, clerk_id)
+        # pairs, then RELEASE the pooled connection before any HTTP. Holding an
+        # API DB connection across the Clerk fan-out would pin a scarce pooler
+        # slot for the whole batch's I/O — the anti-pattern github_linkage's
+        # miss path avoids and the worker-runtime invariant forbids.
         async with get_session() as session:
             users = list(
                 (
@@ -123,35 +128,47 @@ async def backfill_github_id(
             )
             if not users:
                 break
+            targets = [(u.id, u.clerk_user_id) for u in users]
             # Advance the cursor past this page up front, so a page of all-skips
             # still moves forward (guarantees termination + reaches later rows).
-            after_id = users[-1].id
+            after_id = targets[-1][0]
 
-            fetched = await asyncio.gather(*(_fetch(u) for u in users))
-            for user, identity, exc in fetched:
+        # Phase 2 (no session held): concurrent, throttled Clerk fetches.
+        fetched = await asyncio.gather(
+            *(_fetch(uid, clerk_id) for uid, clerk_id in targets)
+        )
+
+        # Phase 3 (short write session): reload each row fresh and apply writes
+        # sequentially (an AsyncSession is not safe for concurrent ops). A row
+        # that was set/deactivated/removed since phase 1 is a benign skip.
+        async with get_session() as session:
+            for user_id, identity, exc in fetched:
                 if exc is not None:
                     summary.failed += 1
                     logger.warning(
                         "github_id backfill: Clerk fetch failed for user %s: %s",
-                        user.id,
+                        user_id,
                         exc,
                     )
                     continue
-                if not identity.github_id:
+                if identity is None or not identity.github_id:
                     summary.skipped += 1
                     continue
-                before = user.github_id
+                user = await session.get(UserModel, user_id)
+                if user is None or not user.is_active or user.github_id is not None:
+                    summary.skipped += 1
+                    continue
                 # Collision-safe (org-unique, include_deleted): never overwrites
                 # a differing id; skips a value already claimed in-org.
                 await _set_github_id_if_absent(session, user, identity.github_id)
-                if user.github_id != before:
+                if user.github_id is not None:
                     summary.set += 1
                 else:
                     summary.skipped += 1
 
-        summary.scanned += len(users)
+        summary.scanned += len(targets)
         # A short batch means the candidate pool is drained for this run.
-        if len(users) < remaining:
+        if len(targets) < remaining:
             break
 
     if summary.set or summary.failed:
