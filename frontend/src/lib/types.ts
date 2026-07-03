@@ -424,13 +424,21 @@ export interface QuotaMember extends QuotaUsage {
   role: string;
 }
 
+// Org-wide aggregate daily cap, returned alongside the member list on the admin
+// GET /api/quotas. `org_limit_usd` is the effective cap (override or configured
+// default); `null` means no org cap. `org_default_limit_usd` is the configured
+// default (`null` when unset).
 export interface QuotaList {
   members: QuotaMember[];
+  org_limit_usd?: number | null;
+  org_used_usd?: number;
+  org_reserved_usd?: number;
+  org_default_limit_usd?: number | null;
 }
 
-// Body for the admin PUT /api/quotas/{user_id} override. A string value sets an
-// override (e.g. "5.00"); `null` CLEARS it so the member reverts to the
-// workspace default.
+// Body for the admin PUT /api/quotas/{user_id} override AND PUT /api/quotas/org.
+// A string value sets an override (e.g. "5.00"); `null` CLEARS it so the member
+// (or org) reverts to the workspace default.
 export interface QuotaUpdate {
   limit_usd: string | null;
 }

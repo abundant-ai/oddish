@@ -89,6 +89,23 @@ column:
   with the PUT response. Now only exact `<= 4`-decimal values reach the column,
   so **PUT == GET**.
 
+## Org-level analog (`org_quotas` / `PUT /quotas/org`)
+
+The org-level daily cap reuses this exact override-only design one level up: an
+`org_quotas` row (at most one live row per org, partial unique index on
+`org_id WHERE deleted_at IS NULL`) overrides
+`settings.default_org_daily_quota_usd`, which defaults to `None` — so with no
+row and no configured default there is **no org cap at all**, unlike the
+per-user default which is always `$100`. `PUT /quotas/org`
+(`require_can_manage_quotas`, declared **before** `PUT /quotas/{user_id}` so
+`"org"` isn't captured as a user id) upserts against that partial index; a
+`null` body clears via hard DELETE. `GET /quotas` carries the org fields
+(`org_limit_usd` / `org_used_usd` / `org_reserved_usd` /
+`org_default_limit_usd`) alongside the member list. The org spend sum counts
+all org trials — unattributed and soft-deleted included — with the same
+unpriced-trial floor; see `backend/README.md` for admission and lock-ordering
+semantics.
+
 ## `GET /quotas` — COALESCE per member
 
 `list_member_quotas` still does S3's single grouped spend query, and now **also**

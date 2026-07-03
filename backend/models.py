@@ -203,6 +203,46 @@ class QuotaModel(TimestampedMixin, Base):
     )
 
 
+class OrgQuotaModel(TimestampedMixin, Base):
+    """Org-level aggregate daily dollar cap OVERRIDE.
+
+    A row overrides the read-time default (``default_org_daily_quota_usd``,
+    which is ``None`` = no org cap by default); a missing row means the org is
+    capped at that default. One LIVE row per org -- enforced by a partial unique
+    index (``WHERE deleted_at IS NULL``). This is deliberately a separate table
+    from ``quotas`` (per-user overrides): reusing ``quotas`` with a NULL
+    ``user_id`` would not collide under its ``(org_id, user_id)`` unique index
+    (PG treats NULLs as distinct), so an org could accumulate duplicate rows.
+    """
+
+    __tablename__ = "org_quotas"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    limit_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    # CHECK-constrained varchar (mirrors trials.origin), NOT a native PG enum, so
+    # the migration stays cleanly reversible. Write-frozen to 'daily' today.
+    period_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="daily"
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_org_quotas_org",
+            "org_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "period_kind IN ('daily')", name="ck_org_quotas_period_kind"
+        ),
+    )
+
+
 # =============================================================================
 # Chat models
 # =============================================================================
