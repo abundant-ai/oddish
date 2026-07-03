@@ -120,8 +120,13 @@ export function QuotaAdminForm() {
       if (typeof result === "string") errors[member.user_id] = result;
       else payloads.set(member.user_id, result);
     }
-    setRowError(errors);
-    if (Object.keys(errors).length > 0) return;
+    if (Object.keys(errors).length > 0) {
+      // Merge instead of replace so a row that failed its last save keeps
+      // its error while an unrelated row fails validation.
+      setRowError((prev) => ({ ...prev, ...errors }));
+      return;
+    }
+    setRowError({});
 
     setSaving(true);
     const results = await Promise.all(
