@@ -202,6 +202,14 @@ jobs:
           CLERK_JWT_TEMPLATE: oddish
         run: pnpm exec playwright test
 
+      - name: Show server logs on failure
+        if: ${{ failure() && steps.gate.outputs.have_clerk == 'true' }}
+        run: |
+          echo "===== backend log (tail) ====="
+          tail -n 200 /tmp/backend.log || true
+          echo "===== frontend log (tail) ====="
+          tail -n 200 /tmp/frontend.log || true
+
       - name: Upload Playwright artifacts
         if: ${{ always() && steps.gate.outputs.have_clerk == 'true' }}
         uses: actions/upload-artifact@v4
@@ -210,6 +218,8 @@ jobs:
           path: |
             frontend/playwright-report/
             frontend/test-results/
+            /tmp/backend.log
+            /tmp/frontend.log
           retention-days: 7
           if-no-files-found: ignore
 
