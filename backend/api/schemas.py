@@ -61,19 +61,6 @@ class QuotaMemberItem(BaseModel):
 
 class QuotaListResponse(BaseModel):
     members: list[QuotaMemberItem]
-    # Org-wide aggregate daily cap. ``org_limit_usd`` is the effective cap
-    # (override row or configured default); ``None`` means no org cap.
-    org_limit_usd: float | None = None
-    org_used_usd: float = 0
-    org_reserved_usd: float = 0
-    org_default_limit_usd: float | None = None
-
-
-class OrgQuotaResponse(BaseModel):
-    org_limit_usd: float | None = None
-    org_used_usd: float = 0
-    org_reserved_usd: float = 0
-    org_default_limit_usd: float | None = None
 
 
 class QuotaUpdateRequest(BaseModel):
