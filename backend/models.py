@@ -160,7 +160,6 @@ class UserModel(TimestampedMixin, Base):
         Index("idx_users_org_id", "org_id"),
         Index("idx_users_email", "email"),
         Index("idx_users_github_username", "github_username"),
-        Index("idx_users_org_github_id", "org_id", "github_id"),
     )
 
 

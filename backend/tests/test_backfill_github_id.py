@@ -20,6 +20,14 @@ DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
 
 
+@pytest.fixture(autouse=True)
+def _clerk_secret_set(monkeypatch):
+    """The backfill now short-circuits when CLERK_SECRET_KEY is unset. Every test
+    that exercises the fetch path needs a secret present; the secret-unset test
+    overrides this in its own body."""
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "sk_test")
+
+
 def _mock_clerk_http(monkeypatch, handler) -> None:
     """Drive the REAL fetch_github_identity_from_clerk through a mocked HTTP
     transport so the backfill exercises the 404/500 status contract, not just the
@@ -560,6 +568,232 @@ async def test_username_no_id_not_stamped_rescanned_then_filled(monkeypatch) -> 
         assert await _github_id_of(user.id) == "laterid"
     finally:
         await _purge(org_id)
+
+
+@pytest.mark.asyncio
+async def test_secret_unset_short_circuits(monkeypatch, caplog) -> None:
+    """When CLERK_SECRET_KEY is unset the run returns an empty summary without
+    querying the DB or attempting any Clerk fetch — no per-row failure logs."""
+    import logging
+
+    monkeypatch.setattr(prov, "CLERK_SECRET_KEY", "")
+    calls = 0
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity:
+        nonlocal calls
+        calls += 1
+        return ClerkGithubIdentity("octocat", None, "555")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+    with caplog.at_level(logging.WARNING, logger="backfill_github_id"):
+        summary = await job.backfill_github_id(delay_seconds=0.0)
+    assert summary.scanned == 0
+    assert summary.set == 0
+    assert summary.failed == 0
+    assert calls == 0
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_exhausted_time_budget_stops_before_first_batch(
+    monkeypatch, org_with_users
+) -> None:
+    """The loop-top budget check: an already-exhausted budget stops the run
+    before any batch is selected or fetched — nothing scanned, nothing written."""
+    org_id, add = org_with_users
+    users = [await add(id=f"user_bf_a{i}") for i in range(3)]
+    calls = 0
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        nonlocal calls
+        calls += 1
+        return ClerkGithubIdentity("h", None, "should-not-apply")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+    summary = await asyncio.wait_for(
+        job.backfill_github_id(delay_seconds=0.0, time_budget_seconds=0.0),
+        timeout=15,
+    )
+    assert summary.scanned == 0
+    assert calls == 0
+    for u in users:
+        assert await _github_id_of(u.id) is None
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_all_failed_batch_stops_run_early(monkeypatch, org_with_users) -> None:
+    """A full batch of failing fetches (>= floor) aborts the run: batch 2 is never
+    scanned even though more eligible rows exist."""
+    org_id, add = org_with_users
+    users = [await add(id=f"user_bf_{i:03d}") for i in range(15)]
+    assert job.ALL_FAILED_ABORT_FLOOR <= 10
+
+    async def _fail(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        return None
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fail)
+    summary = await asyncio.wait_for(
+        job.backfill_github_id(batch_size=10, delay_seconds=0.0),
+        timeout=15,
+    )
+    # Only the first batch of 10 was scanned; the run stopped before batch 2.
+    assert summary.scanned == 10
+    assert summary.failed == 10
+    assert summary.set == 0
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_all_failed_batch_below_floor_does_not_stop(
+    monkeypatch, org_with_users
+) -> None:
+    """A tiny all-failed batch (< floor) must NOT trip the early stop, so a single
+    flaky tail user cannot abort the whole scan."""
+    org_id, add = org_with_users
+    users = [await add(id=f"user_bf_{i:03d}") for i in range(6)]
+
+    async def _fail(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        return None
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fail)
+    summary = await asyncio.wait_for(
+        job.backfill_github_id(batch_size=3, delay_seconds=0.0),
+        timeout=15,
+    )
+    # Batch size 3 < floor 10, so it keeps paging through every eligible row.
+    assert summary.scanned == 6
+    assert summary.failed == 6
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_phase_c_skips_row_filled_between_select_and_write(
+    monkeypatch, org_with_users
+) -> None:
+    """Phase-C precondition re-check: if a row's github_id is set between the
+    Phase-A select and the Phase-B fetch, Phase C must skip it (never overwrite)
+    even though Clerk returned a DIFFERENT id."""
+    org_id, add = org_with_users
+    user = await add()
+    fetch_started = asyncio.Event()
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        # Signal that Phase A has completed and we're mid-fetch, then race a
+        # concurrent write that fills github_id before Phase C runs.
+        fetch_started.set()
+        await asyncio.sleep(0.1)
+        return ClerkGithubIdentity("octocat", None, "clerk-different")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+
+    async def _fill_concurrently() -> None:
+        await fetch_started.wait()
+        async with get_session() as session:
+            row = await session.get(UserModel, user.id)
+            row.github_id = "already-set"
+
+    run = asyncio.create_task(job.backfill_github_id(delay_seconds=0.0))
+    await asyncio.wait_for(_fill_concurrently(), timeout=15)
+    summary = await asyncio.wait_for(run, timeout=15)
+
+    assert await _github_id_of(user.id) == "already-set"
+    assert summary.set == 0
+    assert summary.skipped >= 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_phase_c_skips_row_stamped_checked_between_phases(
+    monkeypatch, org_with_users
+) -> None:
+    """Phase-C precondition re-check: a definitive no-github stamp landing
+    between phases (login refresh / webhook unlink) is a NEWER signal than the
+    Phase-B fetch — the older fetched id must not be written over it."""
+    org_id, add = org_with_users
+    user = await add()
+    fetch_started = asyncio.Event()
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        fetch_started.set()
+        await asyncio.sleep(0.1)
+        return ClerkGithubIdentity("octocat", None, "stale-answer")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+
+    async def _stamp_concurrently() -> None:
+        await fetch_started.wait()
+        async with get_session() as session:
+            row = await session.get(UserModel, user.id)
+            prov._mark_github_id_checked(row)
+
+    run = asyncio.create_task(job.backfill_github_id(delay_seconds=0.0))
+    await asyncio.wait_for(_stamp_concurrently(), timeout=15)
+    summary = await asyncio.wait_for(run, timeout=15)
+
+    assert await _github_id_of(user.id) is None
+    assert summary.set == 0
+    assert summary.skipped >= 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_phase_c_skips_row_relinked_to_other_clerk_user(
+    monkeypatch, org_with_users
+) -> None:
+    """Phase-C precondition re-check: if the row's clerk_user_id changed between
+    phases (email-based provisioning can rewrite it), the fetched identity
+    belongs to someone else and must not be applied."""
+    org_id, add = org_with_users
+    user = await add()
+    fetch_started = asyncio.Event()
+
+    async def _fetch(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        fetch_started.set()
+        await asyncio.sleep(0.1)
+        return ClerkGithubIdentity("octocat", None, "old-clerk-users-id")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _fetch)
+
+    async def _relink_concurrently() -> None:
+        await fetch_started.wait()
+        async with get_session() as session:
+            row = await session.get(UserModel, user.id)
+            row.clerk_user_id = f"clerk_other_{uuid.uuid4().hex[:8]}"
+
+    run = asyncio.create_task(job.backfill_github_id(delay_seconds=0.0))
+    await asyncio.wait_for(_relink_concurrently(), timeout=15)
+    summary = await asyncio.wait_for(run, timeout=15)
+
+    assert await _github_id_of(user.id) is None
+    assert summary.set == 0
+    assert summary.skipped >= 1
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_time_budget_cancels_mid_batch(monkeypatch, org_with_users) -> None:
+    """The budget is enforced INSIDE a batch, not just between batches: slow
+    fetches are cancelled once the remaining budget elapses, the batch's results
+    are dropped (nothing written), and the run ends."""
+    org_id, add = org_with_users
+    users = [await add(id=f"user_bf_{i}") for i in range(4)]
+
+    async def _hang(_clerk_user_id: str) -> ClerkGithubIdentity | None:
+        await asyncio.sleep(30)
+        return ClerkGithubIdentity("octocat", None, "never-applied")
+
+    monkeypatch.setattr(job, "fetch_github_identity_from_clerk", _hang)
+    summary = await asyncio.wait_for(
+        job.backfill_github_id(
+            batch_size=4, delay_seconds=0.0, time_budget_seconds=0.3
+        ),
+        timeout=10,
+    )
+    assert summary.set == 0
+    for u in users:
+        assert await _github_id_of(u.id) is None
 
 
 @requires_db

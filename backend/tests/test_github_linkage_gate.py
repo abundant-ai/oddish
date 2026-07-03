@@ -533,15 +533,19 @@ def test_preview_fingerprint_covers_unique_constraint_change():
 
 
 def test_user_model_github_id_org_scoped_unique_and_indexed():
-    """github_id is org-scoped unique and indexed for lookup."""
+    """github_id is org-scoped unique; the constraint's backing index serves lookups.
+
+    Deliberately NO separate Index over (org_id, github_id): the unique
+    constraint already creates one, and a duplicate is pure write overhead.
+    """
     cols = {"org_id", "github_id"}
     assert any(
         isinstance(c, sa.UniqueConstraint) and {col.name for col in c.columns} == cols
         for c in UserModel.__table__.constraints
     ), "missing UniqueConstraint over (org_id, github_id)"
-    assert any(
+    assert not any(
         {col.name for col in idx.columns} == cols for idx in UserModel.__table__.indexes
-    ), "missing index over (org_id, github_id)"
+    ), "redundant separate index over (org_id, github_id); the unique constraint backs lookups"
 
 
 def test_submission_github_id_round_trips_through_serialization():
