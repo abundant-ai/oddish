@@ -28,6 +28,7 @@ import {
   FileText,
   FolderOpen,
   AlertCircle,
+  CircleSlash,
   ChevronDown,
   ChevronUp,
   ChevronLeft,
@@ -1010,8 +1011,24 @@ export function TrialDetailPanel({
                 compact
               />
 
+              {/* Skip reason — a skipped trial carries its reason in
+                  error_message, but it never ran, so render it as a neutral
+                  note (CircleSlash + slate) rather than a red error card. */}
+              {trial.error_message && trialStatus === "skipped" && (
+                <Card className="border-slate-500/25 bg-slate-500/5">
+                  <CardContent className="px-4 py-3">
+                    <div className="flex items-start gap-2">
+                      <CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+                      <pre className="min-w-0 flex-1 font-mono text-sm wrap-break-word whitespace-pre-wrap text-slate-600 dark:text-slate-400">
+                        {trial.error_message}
+                      </pre>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Error Card */}
-              {trial.error_message && (
+              {trial.error_message && trialStatus !== "skipped" && (
                 <Card className="border-red-500/30 bg-red-500/5">
                   <CardContent className="px-4 py-3">
                     <div className="flex items-start gap-2">

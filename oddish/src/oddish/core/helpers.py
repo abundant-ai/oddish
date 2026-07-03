@@ -544,10 +544,16 @@ def build_compact_trial_response(
 
 
 def resolve_task_status(
-    task: TaskModel, *, total: int, completed: int, failed: int
+    task: TaskModel, *, total: int, completed: int, failed: int, skipped: int = 0
 ) -> TaskStatus:
-    """Determine effective task status based on trial counts."""
-    if total > 0 and completed + failed >= total:
+    """Determine effective task status based on trial counts.
+
+    ``total`` includes skipped trials (they count toward the denominator like a
+    non-pass). SKIPPED is terminal — the trial never ran — so it counts toward
+    "done" alongside completed/failed; otherwise a task with gate-skipped trials
+    would never resolve to COMPLETED.
+    """
+    if total > 0 and completed + failed + skipped >= total:
         return TaskStatus.COMPLETED
     return task.status
 
@@ -793,6 +799,7 @@ def _build_task_status_response(
     total: int,
     completed: int,
     failed: int,
+    skipped: int = 0,
     reward_success: int,
     reward_sum: float,
     reward_total: int,
@@ -828,7 +835,7 @@ def _build_task_status_response(
         id=task.id,
         name=task.name,
         status=resolve_task_status(
-            task, total=total, completed=completed, failed=failed
+            task, total=total, completed=completed, failed=failed, skipped=skipped
         ),
         priority=task.priority,
         user=task.user,
@@ -902,9 +909,10 @@ def build_task_status_response(
             gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = sum(1 for t in task_trials if t.status != TrialStatus.SKIPPED)
+    total = len(task_trials)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    skipped = sum(1 for t in task_trials if t.status == TrialStatus.SKIPPED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
@@ -940,6 +948,7 @@ def build_task_status_response(
         total=total,
         completed=completed,
         failed=failed,
+        skipped=skipped,
         reward_success=reward_success,
         reward_sum=reward_sum,
         reward_total=reward_total,
@@ -974,9 +983,10 @@ def build_task_status_response_compact(
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
     real_trials = [t for t in task_trials if not t.is_probe]
-    total = sum(1 for t in real_trials if t.status != TrialStatus.SKIPPED)
+    total = len(real_trials)
     completed = sum(1 for t in real_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in real_trials if t.status == TrialStatus.FAILED)
+    skipped = sum(1 for t in real_trials if t.status == TrialStatus.SKIPPED)
     reward_success = sum(1 for t in real_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in real_trials if t.reward is not None)
     reward_total = sum(1 for t in real_trials if t.reward is not None)
@@ -1013,6 +1023,7 @@ def build_task_status_response_compact(
         total=total,
         completed=completed,
         failed=failed,
+        skipped=skipped,
         reward_success=reward_success,
         reward_sum=reward_sum,
         reward_total=reward_total,
@@ -1103,9 +1114,10 @@ def build_slim_task_status_response(
             gathered_trial_ids=gathered_trial_ids,
         )
     task_trials = get_task_status_trials(task, version_id=effective_version_id)
-    total = sum(1 for t in task_trials if t.status != TrialStatus.SKIPPED)
+    total = len(task_trials)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
+    skipped = sum(1 for t in task_trials if t.status == TrialStatus.SKIPPED)
     reward_success = sum(1 for t in task_trials if t.reward == 1)
     reward_sum = sum(t.reward for t in task_trials if t.reward is not None)
     reward_total = sum(1 for t in task_trials if t.reward is not None)
@@ -1116,6 +1128,7 @@ def build_slim_task_status_response(
         total=total,
         completed=completed,
         failed=failed,
+        skipped=skipped,
         reward_success=reward_success,
         reward_sum=reward_sum,
         reward_total=reward_total,
@@ -1218,12 +1231,19 @@ async def build_task_status_responses_from_counts(
     stats_query = (
         select(
             TrialModel.task_id,
+            # ``total`` counts every trial (incl. SKIPPED): skipped is a non-pass
+            # in the denominator, like a harness error. It's terminal though, so
+            # it's threaded to resolve_task_status as ``skipped`` to count toward
+            # "done".
             func.count(TrialModel.id).label("total"),
             func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
                 "completed"
             ),
             func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
                 "failed"
+            ),
+            func.count(case((TrialModel.status == TrialStatus.SKIPPED, 1))).label(
+                "skipped"
             ),
             func.count(case((TrialModel.reward == 1, 1))).label("reward_success"),
             func.sum(TrialModel.reward).label("reward_sum"),
@@ -1265,6 +1285,7 @@ async def build_task_status_responses_from_counts(
             total=int(stats_map[task.id].total) if task.id in stats_map else 0,
             completed=int(stats_map[task.id].completed) if task.id in stats_map else 0,
             failed=int(stats_map[task.id].failed) if task.id in stats_map else 0,
+            skipped=int(stats_map[task.id].skipped) if task.id in stats_map else 0,
             reward_success=(
                 int(stats_map[task.id].reward_success) if task.id in stats_map else 0
             ),

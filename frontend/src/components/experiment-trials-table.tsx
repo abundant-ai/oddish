@@ -921,7 +921,10 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) =>
+            trial.status === "failed" ||
+            trial.status === "success" ||
+            trial.status === "skipped",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
           isActivePipelineStatus(trial.analysis_status),
