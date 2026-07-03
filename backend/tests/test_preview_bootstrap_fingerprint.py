@@ -126,6 +126,23 @@ def test_libpq_url_strips_asyncpg_driver():
     assert mod._libpq_url("postgresql://u:p@h:5432/db") == "postgresql://u:p@h:5432/db"
 
 
+def test_session_pooler_url_reroutes_transaction_pooler():
+    # pg_dump/psql set session-level state; on the shared transaction pooler
+    # (6543) that poisons pooled backends for later clients, so they must go
+    # through the session pooler (5432) instead.
+    mod = _load_bootstrap()
+    assert (
+        mod._session_pooler_url("postgresql+asyncpg://u:p@pooler.host:6543/postgres")
+        == "postgresql://u:p@pooler.host:5432/postgres"
+    )
+    # Already-session or port-less URLs pass through untouched.
+    assert (
+        mod._session_pooler_url("postgresql://u:p@pooler.host:5432/postgres")
+        == "postgresql://u:p@pooler.host:5432/postgres"
+    )
+    assert mod._session_pooler_url("postgresql://u:p@h/db") == "postgresql://u:p@h/db"
+
+
 def test_filter_schema_sql_drops_only_create_schema_public():
     mod = _load_bootstrap()
     sql = (
@@ -141,9 +158,9 @@ def test_filter_schema_sql_drops_only_create_schema_public():
     assert filtered.endswith("\n")
 
 
-def test_pg_dump_cmd_is_schema_only_public_and_libpq():
+def test_pg_dump_cmd_is_schema_only_public_and_session_pooler():
     mod = _load_bootstrap()
-    cmd = mod._pg_dump_schema_cmd("postgresql+asyncpg://u:p@h/db")
+    cmd = mod._pg_dump_schema_cmd("postgresql+asyncpg://u:p@h:6543/db")
     assert cmd[0] == "pg_dump"
     for flag in (
         "--schema-only",
@@ -153,18 +170,18 @@ def test_pg_dump_cmd_is_schema_only_public_and_libpq():
         "--schema=public",
     ):
         assert flag in cmd
-    assert cmd[-1] == "postgresql://u:p@h/db"
+    assert cmd[-1] == "postgresql://u:p@h:5432/db"
 
 
-def test_psql_restore_cmd_is_single_transaction_and_libpq():
+def test_psql_restore_cmd_is_single_transaction_and_session_pooler():
     mod = _load_bootstrap()
-    cmd = mod._psql_restore_cmd("postgresql+asyncpg://u:p@h/db")
+    cmd = mod._psql_restore_cmd("postgresql+asyncpg://u:p@h:6543/db")
     assert cmd[0] == "psql"
     for flag in ("--no-psqlrc", "--quiet", "--single-transaction"):
         assert flag in cmd
     assert "ON_ERROR_STOP=1" in cmd
     assert cmd[cmd.index("ON_ERROR_STOP=1") - 1] == "-v"
-    assert cmd[-1] == "postgresql://u:p@h/db"
+    assert cmd[-1] == "postgresql://u:p@h:5432/db"
 
 
 def test_source_db_url_required_and_normalized(monkeypatch):

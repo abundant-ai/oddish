@@ -60,6 +60,20 @@ def _libpq_url(url: str) -> str:
     return url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
+def _session_pooler_url(url: str) -> str:
+    """Route pg_dump/psql through the SESSION pooler (port 5432).
+
+    They set session-level state -- pg_dump hardens its connection with
+    ``set_config('search_path', '', false)`` -- and on the transaction pooler
+    (port 6543) that state sticks to a SHARED pooled backend after disconnect,
+    poisoning later clients: their unqualified queries then fail with
+    ``relation ... does not exist`` (observed on prod for ~7 minutes after the
+    first snapshot dump). Session mode dedicates the backend to this one
+    connection and discards its state on disconnect. Same host, same auth.
+    """
+    return _libpq_url(url).replace(":6543/", ":5432/", 1)
+
+
 def _engine(url: str):
     return create_async_engine(
         url, connect_args={"statement_cache_size": 0}, poolclass=pool.NullPool
@@ -189,7 +203,7 @@ def _pg_dump_schema_cmd(source_url: str) -> list[str]:
         "--no-privileges",
         "--no-comments",
         "--schema=public",
-        _libpq_url(source_url),
+        _session_pooler_url(source_url),
     ]
 
 
@@ -204,7 +218,7 @@ def _psql_restore_cmd(branch_url: str) -> list[str]:
         "-v",
         "ON_ERROR_STOP=1",
         "--single-transaction",
-        _libpq_url(branch_url),
+        _session_pooler_url(branch_url),
     ]
 
 
