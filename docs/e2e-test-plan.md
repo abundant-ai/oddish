@@ -112,21 +112,22 @@ readiness probe? `GET /public/experiments`
 the shape: it returns a bare JSON list `[]`, not `{"items": []}`. That is the
 readiness signal the server subprocess is polled against.
 
-**P1 — CLI read.** `oddish ls --json` exercises the auth header over the wire and
-`GET /tasks/browse`. Assert the seeded task id appears in the response's `items`
-list.
-
 **P2 — CLI submit.** `oddish run --task <id> --agent nop --n-trials 1
 --background --json` exits 0. Then assert directly in the DB: one `trials` row
 for the task, and one `QUEUED` `worker_jobs` row (`subject_table='trials'`)
 pointing at that trial.
 
-**P3 — CLI task detail.** `oddish status <task_id> --json` hits `GET
-/tasks/{id}` and prints a `TaskStatusResponse`; assert its `trials` list has the
-queued trial.
-
-**P4 — browser task menu (the dashboard `/tasks/[task_id]` page) — plan-only,
-but tractable.** Start with what the wall actually is: `frontend/src/
+**P4 — browser task menu (the dashboard `/tasks/[task_id]` page) — scaffolded,
+unverified against a real Clerk instance.** The runnable skeleton now lives in
+`frontend/e2e/` (`global-setup.ts`, `tasks-view.spec.ts`) plus
+`frontend/playwright.config.ts` at the package root, `@playwright/test` +
+`@clerk/testing` are installed, and the spec skips itself until its env gate is
+satisfied — so a credential-less `pnpm exec playwright test` reports it SKIPPED
+and exits 0. What it has *not* done is run green against a live Clerk dev
+instance; nobody in this environment has the secrets or a test user, so treat
+"it typechecks (`pnpm run typecheck:e2e`) and skips" as the current bar, not
+"it passes."
+Start with what the wall actually is: `frontend/src/
 middleware.ts` calls `auth.protect()` on every non-public route, and the
 `(app)` layout adds a client-side `RedirectToSignIn`. So what does that
 middleware actually check — and what does Clerk give you to satisfy it without
@@ -143,19 +144,57 @@ await page.goto(`/tasks/${taskId}`);
 
 signs in programmatically — a server-side token that bypasses all verification
 including MFA, no UI flow. It needs `CLERK_SECRET_KEY` set and one visit to an
-unprotected page that loads Clerk first. On development instances,
+unprotected page that loads Clerk first — which is exactly what
+`e2e/tasks-view.spec.ts` does (`setupClerkTestingToken` → `goto("/")` →
+`clerk.signIn` → `goto("/tasks")` → click the first task → assert the detail
+page's stable "Agents" heading is visible). On development instances,
 `+clerk_test` emails verify with the universal OTP `424242`, so the test user
-needs no real mailbox. The honest remaining costs — why this is a Level-2
-follow-up rather than part of the minimal suite: Playwright and
-`@clerk/testing` are new installs into a frontend with zero test tooling (pnpm
-v10); you need a dev-instance (`pk_test`/`sk_test`) Clerk user with a
-`+clerk_test` email that belongs to an org; and the backend only returns data
-if a seeded `OrganizationModel` row matches that org — the JWT template
-`oddish` carries `org_id`/`org_role` (`SELF_HOSTING.md`). Until then, the
-interim cheap browser smoke (**B0**): `/datasets` renders its empty state from
-the unauthenticated `/api/public/experiments` proxy with only
-`NEXT_PUBLIC_API_URL` set (a public route in the middleware matcher), and `/`
-is pure static.
+needs no real mailbox.
+
+So what's actually left, given the scaffold is written? Not code — inputs and a
+real run. To flip this from *skipped* to *proven green* you need:
+
+- `E2E_CLERK_EMAIL` — a dev-instance Clerk user whose email is a `+clerk_test`
+  address and who belongs to an org.
+- `CLERK_SECRET_KEY` — the dev-instance (`sk_test`) secret; `clerkSetup()` mints
+  the Testing Token from it, and the spec's env gate keys off it.
+- `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — the matching dev-instance `pk_test` the
+  running dev server boots Clerk with.
+- a seeded backend `OrganizationModel` row whose id matches that user's org —
+  the backend returns task data only for a known org, and the JWT template
+  `oddish` carries `org_id`/`org_role` (`SELF_HOSTING.md`).
+- a dev stack already running at `E2E_BASE_URL` (default
+  `http://localhost:3000`). The Playwright config deliberately omits a
+  `webServer` block (see why below), so nothing boots the app for you.
+- optionally `E2E_TASK_ID` to jump straight to one task's detail page instead of
+  clicking through the list.
+
+Why no `webServer`? Because Playwright starts it *before* it evaluates any
+`test.skip`, so a credential-less run — the whole point of the skip path — would
+still try to spin up `pnpm dev`. Omitting it keeps the skip run instant and
+side-effect-free; the cost is that a real run assumes you've started the stack
+yourself. Until all of the above exists, the interim cheap browser smoke
+(**B0**): `/datasets` renders its empty state from the unauthenticated
+`/api/public/experiments` proxy with only `NEXT_PUBLIC_API_URL` set (a public
+route in the middleware matcher), and `/` is pure static.
+
+### What we deliberately did *not* test here (and why)
+
+An earlier draft carried two more CLI paths — a read (`oddish ls --json` sees
+the seeded task via `GET /tasks/browse`) and a task-detail readback (`oddish
+status <id> --json` reads the queued trial via `GET /tasks/{id}`). They're gone.
+So ask the sharp question: if they're cheap and they pass, why cut them?
+
+Because they don't earn their keep. Both are thin CLI wrappers over endpoints
+the in-process `ASGITransport` suite already covers (`backend/tests/`), so what
+they add on top of P0 + P2 is *only* the wire-and-subprocess plumbing — and P0
+already proves the socket boots and P2 already drives the CLI subprocess through
+a real submit. A green `ls`/`status` past that point re-covers query logic
+that's tested faster elsewhere; its marginal signal is ~zero. So the rule we're
+applying: an end-to-end test justifies its cost only by the *layer it uniquely
+exercises*, not by the endpoint it happens to hit. P1 and P3 fail that test, so
+they're the first candidates to cut the moment they cause maintenance friction —
+which is now.
 
 ## Gotchas
 
@@ -182,9 +221,15 @@ is pure static.
   in `conftest.py` does not gate the tests that import it; the skip must be
   declared in `test_cli_smoke.py` so its fixtures never run when the switches are
   off.
-- **No CI runs pytest today.** None of the workflows in `.github/workflows/`
-  invoke pytest. An e2e CI job would be a *new* workflow with a `services:
-  postgres` block — named here as future work, not built.
+- **This is the only pytest job in CI.** No other workflow in
+  `.github/workflows/` invokes pytest, so `.github/workflows/e2e-cli.yml` is the
+  first. It runs the trimmed suite on PRs and pushes to main against a `services:
+  postgres` container. One subtlety worth internalizing: the job runs *directly*
+  on `ubuntu-latest`, not inside a `container:` image, because a job container
+  would reach the service under the hostname `postgres` — and the conftest's
+  localhost guard would (correctly) refuse it. Mapping the service port to the
+  host keeps the DB at `127.0.0.1:5432` so the guard passes without being
+  weakened.
 
 ## Deliberately out (and when you'd add it back)
 
@@ -194,9 +239,66 @@ is pure static.
   budget and want to watch a trial reach a terminal state.
 - **Modal dispatch** — add it when you're testing the hosted deploy, not the
   vanilla server.
-- **Authenticated browser flows (P4)** — tractable via `@clerk/testing` +
-  Playwright (see P4); add it when you're ready to install both, create the
-  dev-instance test user, and seed its matching org row.
+- **Authenticated browser flows (P4)** — scaffolded via `@clerk/testing` +
+  Playwright in `frontend/e2e/` (see P4), but skipped until it's given a
+  dev-instance test user, a matching seeded org row, and the CLERK secrets.
+  It's unverified against a real Clerk instance until then.
+
+## What should we test next?
+
+A recon of the existing test suites — a couple hundred files across
+`oddish/tests/` and `backend/tests/` — turns up a surprise: the "obvious" scary
+areas are already well covered. Queue-key canonicalization has 30+ cases
+(`test_config_queue_keys.py`), sweep idempotency has 11 real-DB tests
+(`test_sweep_idempotency.py`), dispatcher fair-share has 20
+(`test_worker_job_dispatcher.py`), and share-token revocation plus probe
+filtering in public views are both exercised
+(`test_collection_export_and_public.py`). So the productive question is not
+"what looks untested?" — it's "where does the existing suite only *pretend* to
+cover?" Look for the monkeypatch seams: places where a test stubs out the very
+code whose behavior is the risk. Ranked:
+
+1. **The stale-heartbeat flip** (highest risk). The cleanup SQL in
+   `oddish/src/oddish/workers/queue/cleanup.py` that selects RUNNING
+   `worker_jobs` with `heartbeat_at` older than `STALE_HEARTBEAT_MINUTES` (15)
+   and flips them to RETRYING has zero coverage. We test the mirror-back SQL
+   shape (`test_worker_jobs_runner.py` — monkeypatched) and the heartbeat
+   *writer* (`test_heartbeat_diagnostics.py`) — but never the detector. Why does
+   that matter more than most gaps? Both failure directions are incidents: too
+   eager double-runs a live trial (the incident that forced 10→15 min); too lazy
+   strands crashed trials forever. Shape: seed a RUNNING job with a backdated
+   `heartbeat_at` → run the sweep → assert the flip; seed a fresh one → assert
+   untouched. Real Postgres, no server needed.
+2. **Orphaned-slot reclaim.** The per-slot `queue_slots.locked_by ==
+   worker_jobs.current_worker_id` reclaim in `cleanup.py` (gated by
+   `ORPHANED_SLOT_GRACE_MINUTES` = 2) is the fix for the 12h queue-starvation
+   incident — and no test runs its real SQL; `test_assigned_queue_worker.py`
+   monkeypatches acquire/release away. A refactor could silently reintroduce the
+   per-queue-key variant AGENTS.md warns about, with green tests. Shape: seed a
+   leaked lease with no matching RUNNING job → assert released; seed a live
+   pairing → assert kept.
+3. **Task re-upload identity.** AGENTS.md calls "same name → same task row +
+   new `task_versions` row" load-bearing, yet nothing exercises upload/complete
+   against a pre-existing name. It's also the natural next e2e increment: add a
+   MinIO service container to `e2e-cli.yml` and this suite can cover the real
+   presigned-PUT upload path P2 deliberately skips (see "Deliberately out").
+4. **Route-level scope enforcement.** The `require_scope` primitive
+   (member-created `tasks` keys blocked from org mutations) is well unit-tested
+   (`test_api_key_permissions.py`, 11 tests) — but nothing verifies routes
+   actually *call* it. A new mutation endpoint that forgets the dependency ships
+   a privilege escalation with green tests. Shape: one parametrized
+   ASGITransport test iterating every mutation route with a member-created
+   `tasks` key, asserting 403.
+5. **Tier-3, briefer.** A soft-delete negative test: prove a plain ORM select
+   cannot see a tombstoned row without `include_deleted`, and that the
+   dispatcher claim path's hand-written `deleted_at IS NULL` guard holds. And
+   once P4's Playwright runs for real, a public share-page browser test
+   asserting a seeded probe trial never reaches the DOM — defense-in-depth over
+   the data-layer filtering tests that already exist.
+
+And the anti-goal, so this list doesn't invite padding: do not add tests to the
+already-thorough areas at the top. Duplicated coverage is maintenance without
+protection — the same rule that cut P1 and P3.
 
 ## Running it
 
@@ -211,18 +313,35 @@ ODDISH_DATABASE_URL=postgresql+asyncpg://oddish:oddish@localhost:5432/oddish \
 uv run pytest tests/e2e/ -v
 
 # confirm it skips cleanly with the switches off
-uv run pytest tests/e2e/ -v      # -> 4 skipped
+uv run pytest tests/e2e/ -v      # -> 2 skipped
 ```
+
+In CI, `.github/workflows/e2e-cli.yml` runs the same command on PRs and pushes
+to main against a `postgres:16-alpine` service container reachable at
+`127.0.0.1:5432`.
+
+The P4 scaffold lives under `frontend/`. Without CLERK env it skips:
+
+```
+# from frontend/
+pnpm install
+pnpm exec playwright install chromium
+pnpm exec playwright test      # -> 1 skipped (no CLERK env)
+```
+
+With the dev stack running and the P4 env vars set (see the P4 section), the
+same command signs in and asserts the task-detail page renders.
 
 ## Checklist
 
 - [ ] P0: `GET /public/experiments` -> 200 `[]` unauthenticated
-- [ ] P1: `oddish ls --json` lists the seeded task id
 - [ ] P2: `oddish run --task … --agent nop --background --json` -> exit 0; DB has
       1 trial + 1 QUEUED worker_job
-- [ ] P3: `oddish status <task_id> --json` shows the queued trial
 - [ ] Suite skips cleanly with `ODDISH_E2E` unset
 - [ ] Seeded rows are cleaned up (no `org_e2e_%` / `task_e2e_%` left behind)
 - [ ] B0 (optional): `/datasets` renders its empty state unauthenticated
-- [ ] P4: needs Playwright + `@clerk/testing` + dev-instance test user + seeded
-      org row
+- [x] P4: Playwright + `@clerk/testing` scaffolded in `frontend/e2e/`; skips
+      cleanly without CLERK env
+- [ ] P4 (unverified): run green against a dev-instance test user + seeded org
+      row (needs `E2E_CLERK_EMAIL`, `CLERK_SECRET_KEY`,
+      `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`)

@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "dead-code": "knip",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json,css,md}\"",
+    "test:e2e": "playwright test",
+    "typecheck:e2e": "tsc -p e2e/tsconfig.json --noEmit"
   },
   "//": [
     "All dependencies pinned to exact versions for supply-chain security. Upgrade via `pnpm up <pkg>@<version>` and commit the regenerated pnpm-lock.yaml. CI + Dockerfile use `pnpm install --frozen-lockfile` to reject drift.",
@@ -58,7 +60,9 @@
     "xlsx": "0.18.5"
   },
   "devDependencies": {
+    "@clerk/testing": "2.2.2",
     "@eslint/js": "9.39.2",
+    "@playwright/test": "1.61.1",
     "@tailwindcss/postcss": "4.2.4",
     "@types/node": "22.19.5",
     "@types/react": "19.2.14",
