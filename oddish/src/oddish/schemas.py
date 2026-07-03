@@ -483,6 +483,10 @@ class TaskSweepSubmission(BaseModel):
         None,
         description="GitHub username to attribute this task to (recorded as metadata)",
     )
+    github_id: str | None = Field(
+        None,
+        description="Immutable GitHub user id for attribution",
+    )
     publish_experiment: bool | None = Field(
         None,
         description="If true, publish the experiment for public read-only access",
@@ -500,6 +504,13 @@ class TaskSweepSubmission(BaseModel):
         description="URL to associate with this task (e.g. PR, issue, CI run)",
     )
     registry_auth: list[RegistryAuth] | None = Field(None)
+
+    @field_validator("github_id", mode="before")
+    @classmethod
+    def _normalize_github_id(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
 
     @model_validator(mode="after")
     def require_models(self):
