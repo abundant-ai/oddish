@@ -269,6 +269,9 @@ ENV_VARS = {
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
 }
+# NOTE: trigger commit — forces a preview backend redeploy so CI re-points the
+# PR-574 Vercel frontend at the preview backend (a frontend-only push had let
+# NEXT_PUBLIC_API_URL fall back to prod). Drop before merge if not squashing.
 
 
 def _lookup_env(name: str) -> str | None:
