@@ -82,24 +82,30 @@ async def _seed(org_id: str) -> str:
     from oddish.db import get_session
 
     async with get_session() as session:
+        # Match on either column: clerk_org_id is unique, so an org that was
+        # auto-provisioned with a generated primary id but the same Clerk org
+        # must be reused, not re-inserted (which would hit the constraint).
         existing = await session.execute(
-            select(OrganizationModel).where(OrganizationModel.id == org_id)
-        )
-        org = existing.scalar_one_or_none()
-        if org is None:
-            session.add(
-                OrganizationModel(
-                    id=org_id,
-                    name=org_id,
-                    slug=org_id,
-                    clerk_org_id=org_id,
-                )
+            select(OrganizationModel).where(
+                (OrganizationModel.id == org_id)
+                | (OrganizationModel.clerk_org_id == org_id)
             )
+        )
+        org = existing.scalars().first()
+        if org is None:
+            org = OrganizationModel(
+                id=org_id,
+                name=org_id,
+                slug=org_id,
+                clerk_org_id=org_id,
+            )
+            session.add(org)
         else:
             # A stale row (seeded before clerk_org_id mattered, or by an older
             # script version) would break JWT org resolution — repair it.
             org.clerk_org_id = org_id
         await session.flush()
+        owner_org_id = org.id
 
         # Same column set as the conftest `seeded` fixture's raw task INSERT.
         # The upsert rebinds org_id and clears deleted_at so a stale row from a
@@ -116,7 +122,7 @@ async def _seed(org_id: str) -> str:
                 "on conflict (id) do update set "
                 "org_id = excluded.org_id, deleted_at = null, updated_at = now()"
             ),
-            {"id": TASK_ID, "name": TASK_NAME, "org": org_id},
+            {"id": TASK_ID, "name": TASK_NAME, "org": owner_org_id},
         )
 
     return TASK_ID
