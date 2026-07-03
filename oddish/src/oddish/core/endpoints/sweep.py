@@ -188,10 +188,16 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.quota_admission import acquire_payer_lock, admit_trials
+    from oddish.core.quota_admission import (
+        acquire_org_lock,
+        acquire_payer_lock,
+        admit_trials,
+    )
 
-    # Payer lock FIRST -- before the idempotency insert, the task refresh
-    # FOR UPDATE (append), and any trial inserts (see acquire_payer_lock).
+    # Quota locks FIRST -- before the idempotency insert, the task refresh
+    # FOR UPDATE (append), and any trial inserts. Org lock precedes the payer
+    # lock (see acquire_payer_lock LOCK ORDER).
+    await acquire_org_lock(session, org_id)
     await acquire_payer_lock(session, org_id, billed_user_id)
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
@@ -517,7 +523,7 @@ async def create_task_sweep_batch_core(
     items are not deduplicated server-side the way the single ``/tasks/sweep``
     route is.
     """
-    from oddish.core.quota_admission import acquire_payer_lock
+    from oddish.core.quota_admission import acquire_org_lock, acquire_payer_lock
     from oddish.core.sweeps import validate_sweep_submission
 
     def _failure(index: int, exc: Exception) -> TaskSweepBatchItemResult:
@@ -549,6 +555,9 @@ async def create_task_sweep_batch_core(
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
             pre_failures[index] = _failure(index, exc)
 
+    # Org lock (once for the whole batch) BEFORE the per-payer locks, held for
+    # the batch transaction. Preserves the org -> payer -> row lock order.
+    await acquire_org_lock(session, org_id)
     for payer in sorted(
         {
             b

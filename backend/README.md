@@ -394,7 +394,36 @@ redeploy of code:
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
-API startup verifies `trials.billed_user_id` and the `quotas` table exist and
-otherwise forces `off` (fail-safe, never a silent SUM fail-open). Tune
-`ODDISH_DEFAULT_DAILY_QUOTA_USD` and `ODDISH_PENDING_TRIAL_RESERVATION_USD`
-without a code change.
+API startup verifies `trials.billed_user_id` and the `quotas` **and
+`org_quotas`** tables exist and otherwise forces `off` (fail-safe, never a
+silent SUM fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
+`ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
+
+### Org-level aggregate daily cap
+
+Layered on top of the per-user check, `admit_trials` also enforces an
+**org-wide** daily spend cap in both `shadow` and `enforce`:
+
+- **Effective org limit:** live `org_quotas` override row (`deleted_at IS
+  NULL`) → `ODDISH_DEFAULT_ORG_DAILY_QUOTA_USD` (default unset) → `None` = no
+  org cap. Resolved by `get_effective_org_limit` in
+  `oddish/src/oddish/core/quotas.py` via raw SQL, so `oddish` core never
+  imports the backend-only `OrgQuotaModel`.
+- **Org spend sum** (`sum_org_cost_usd`) counts **all** org trials for the day:
+  unattributed (`billed_user_id IS NULL`) and soft-deleted trials included,
+  with the same `ODDISH_UNPRICED_TRIAL_COST_USD` floor as the per-user sum.
+  The in-flight reservation (`org_inflight_reserved_usd` plus
+  `count × ODDISH_PENDING_TRIAL_RESERVATION_USD`) applies on the org side too.
+- **Over the cap:** `enforce` raises HTTP **402** ("organization … daily
+  budget"); `shadow` logs `quota.would_block` with `reason=org_over_budget`.
+  Unattributed submissions still hit the org check in shadow (they no longer
+  early-return) since their spend counts toward the org total.
+- **Locking:** under `enforce` with an org cap configured, admission takes the
+  org advisory lock (`quota-org:{org_id}`) **before** the payer lock
+  (`quota:{org_id}:{user_id}`), which precedes any row locks. Shadow/off take
+  no advisory locks. Pinned by `oddish/tests/test_quota_lock_ordering.py`.
+- **Admin API:** `GET /quotas` now also returns `org_limit_usd` /
+  `org_used_usd` / `org_reserved_usd` / `org_default_limit_usd`, and
+  `PUT /quotas/org` (`require_can_manage_quotas`, user-auth only) sets or —
+  with a `null` `limit_usd` — clears the org override. The route is declared
+  before `PUT /quotas/{user_id}` so `"org"` is never captured as a user id.
