@@ -80,6 +80,13 @@ def _patch_session(monkeypatch, trial):
 
     monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _fake_qa)
 
+    # The baseline gate resolves before the QA stage in ``_store_trial_results``;
+    # stub it too so the fake (session-less) trial session doesn't hit the DB.
+    async def _fake_gate(session, trial_id):
+        return False
+
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _fake_gate)
+
 
 @pytest.mark.parametrize(
     ("trial", "expected"),

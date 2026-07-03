@@ -12,6 +12,7 @@ from dashboard_attribution import (
     _db_cache_profile,
     _memory_get,
     _memory_set,
+    _persist_profile,
     _row_has_strong_attribution_match,
     _schedule_profile_refresh,
     invalidate_attribution_cache,
@@ -51,6 +52,28 @@ def test_baseline_profile_blocks_other_member_handles() -> None:
         blocked_emails=set(),
     )
     assert profile.github_handles == ("praxs",)
+
+
+@pytest.mark.asyncio
+async def test_persist_profile_ignores_github_id_checked_at() -> None:
+    """The checked-absent marker lives in its own column now, so a profile
+    rewrite needs no key-preservation logic: the cache is replaced wholesale
+    and github_id_checked_at is untouched."""
+    checked_at = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    user = _user(
+        id="user_persist",
+        attribution_cache={"github_handles": [], "legacy_emails": []},
+        github_id_checked_at=checked_at,
+    )
+    await _persist_profile(
+        None,
+        user,
+        AttributionProfile(github_handles=("praxs",), legacy_emails=()),
+    )
+    assert user.github_id_checked_at == checked_at
+    assert user.attribution_cache["github_handles"] == ["praxs"]
+    assert "github_id_checked" not in user.attribution_cache
+    invalidate_attribution_cache(org_id="org_1", user_id="user_persist")
 
 
 def test_memory_cache_round_trip() -> None:

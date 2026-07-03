@@ -26,6 +26,8 @@ jobs:
       MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
       MODAL_ENVIRONMENT: main
+      # Hold LLM trials until a task's nop/oracle baselines validate it.
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op
