@@ -47,6 +47,7 @@ from oddish.core.endpoints import (
     rerun_task_qa_core,
     unlink_task_from_experiment_core,
 )
+from oddish.core.helpers import terminate_run_harvest
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -78,6 +79,7 @@ from api.routers.task_submission import (
     require_connected_github_user,
     require_experiment_publish_scope,
     resolve_actor_user_string,
+    resolve_billed_user_id,
     resolve_created_by_user_id,
     resolve_experiment_owner_user_id,
     resolve_submission_identity,
@@ -155,6 +157,7 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
         if fc_id
     ]
     return await ModalDispatcher().cancel(handles)
+
 
 
 # =============================================================================
@@ -259,11 +262,22 @@ async def create_task_sweep(
         # active org user is rejected here, before any rows are written.
         connected_user = await require_connected_github_user(session, submission, auth)
 
+        # Billing follows the resolved owner (submitted github_id/github_username,
+        # github_id first), else the API-key owner / submitter. Reuse the
+        # linkage-gate user so we don't re-query it.
+        owner_user_id = await resolve_experiment_owner_user_id(
+            session, submission, auth, connected_user
+        )
+        billed_user_id = await resolve_billed_user_id(
+            session, submission, auth, owner_user_id=owner_user_id
+        )
+
         try:
             task, new_trials, is_append, experiment = await create_task_sweep_core(
                 session,
                 submission=submission,
                 org_id=auth.org_id,
+                billed_user_id=billed_user_id,
                 default_environment=get_default_cloud_environment(submission),
                 allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
                 idempotency_key=idempotency_key,
@@ -275,9 +289,6 @@ async def create_task_sweep(
             # skip the owner-stamping / publish side effects below.
             return TaskResponse.model_validate(replay.response_json)
 
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth, connected_user
-        )
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
         if not is_append:
@@ -327,8 +338,9 @@ async def create_task_sweep_batch(
     async def _prepare(
         session: AsyncSession, submission: TaskSweepSubmission
     ) -> EnvironmentType | None:
-        # Per-item, auth-aware setup. Runs inside the item's savepoint so a
-        # failure here rolls back only this item (mirrors the single-sweep route).
+        # Per-item, auth-aware setup. Runs in the batch core's read-only
+        # pre-loop (identity -> attribution -> billed, same order as the single
+        # route); a failure fails only this item.
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)
         # Unconditional linkage gate: a truthy github_id resolving to no active
@@ -339,6 +351,21 @@ async def create_task_sweep_batch(
         )
         return get_default_cloud_environment(submission)
 
+    # Owner resolved once in the pre-loop (inside _resolve_billed) and reused
+    # by _finalize -- same single-resolution shape as the single route.
+    owners: dict[int, str | None] = {}
+
+    async def _resolve_billed(
+        session: AsyncSession, submission: TaskSweepSubmission
+    ) -> str | None:
+        owner_user_id = await resolve_experiment_owner_user_id(
+            session, submission, auth
+        )
+        owners[id(submission)] = owner_user_id
+        return await resolve_billed_user_id(
+            session, submission, auth, owner_user_id=owner_user_id
+        )
+
     async def _finalize(
         session: AsyncSession,
         submission: TaskSweepSubmission,
@@ -347,10 +374,10 @@ async def create_task_sweep_batch(
         experiment: ExperimentModel | None,
     ) -> None:
         # Post-create stamping, inside the savepoint (mirrors the single route).
+        # Owner was resolved once in _resolve_billed; connected_user (linkage
+        # gate) is reused for created_by resolution below.
         connected_user = connected_users.get(id(submission))
-        owner_user_id = await resolve_experiment_owner_user_id(
-            session, submission, auth, connected_user
-        )
+        owner_user_id = owners.get(id(submission))
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
         if not is_append:
             created_by_user_id = await resolve_created_by_user_id(
@@ -371,6 +398,7 @@ async def create_task_sweep_batch(
             allowed_environments=ALLOWED_CLOUD_ENVIRONMENTS,
             prepare=_prepare,
             finalize=_finalize,
+            resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
 
@@ -945,7 +973,8 @@ async def delete_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    return result
+    modal_cancelled = await terminate_run_harvest(result)
+    return result | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.delete("/experiments/{experiment_id}/tasks/{task_id}")
@@ -974,7 +1003,8 @@ async def unlink_task_from_experiment(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    return result
+    modal_cancelled = await terminate_run_harvest(result)
+    return result | {"modal_calls_cancelled": modal_cancelled}
 
 
 @router.post(
@@ -1122,9 +1152,8 @@ async def cancel_tasks(
             detail="Couldn't cancel right now (database error). Please retry.",
         ) from exc
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.get("modal_function_call_ids", [])
-    )
+    # Post-commit: terminate the harvested FC ids + sandbox targets.
+    modal_cancelled = await terminate_run_harvest(result)
 
     return {
         "status": "cancelled",

@@ -186,6 +186,7 @@ def test_format_exception_message_includes_exception_group_children():
 def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatch):
     trial = SimpleNamespace(
         task_id="task-1",
+        model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=1,
         max_attempts=6,
@@ -204,6 +205,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
     )
 
     class _Session:
@@ -253,6 +255,7 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
 def test_store_trial_results_persists_total_steps(monkeypatch):
     trial = SimpleNamespace(
         task_id="task-1",
+        model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=1,
         max_attempts=1,
@@ -272,6 +275,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
     )
 
     class _Session:
@@ -286,11 +290,17 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
+    async def _fake_maybe_gate_llm_trials(session, trial_id: str) -> bool:
+        return False
+
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
+    )
+    monkeypatch.setattr(
+        queue_module, "maybe_gate_llm_trials", _fake_maybe_gate_llm_trials
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -329,6 +339,7 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
 def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeypatch):
     trial = SimpleNamespace(
         task_id="task-1",
+        model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
         attempts=1,
         max_attempts=6,
@@ -350,6 +361,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
         current_queue_slot=0,
         heartbeat_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
     )
 
     class _Session:
@@ -399,6 +411,7 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
 def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
     trial = SimpleNamespace(
         task_id="task-1",
+        model="gpt-5",
         status=trial_handler.TrialStatus.FAILED,
         attempts=1,
         max_attempts=1,
@@ -418,6 +431,7 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         heartbeat_at=None,
         finished_at=object(),
         superseded_by_trial_id=None,
+        deleted_at=None,
     )
     original_finished_at = trial.finished_at
 
@@ -1539,6 +1553,7 @@ def test_cleanup_trial_wrapper_dirs_skips_missing_base(monkeypatch, tmp_path):
 def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
     return SimpleNamespace(
         task_id="task-retry-gate",
+        model="gpt-5",
         status=trial_handler.TrialStatus.RUNNING,
         attempts=attempts,
         max_attempts=max_attempts,
@@ -1558,6 +1573,7 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
         heartbeat_at=None,
         finished_at=None,
         superseded_by_trial_id=None,
+        deleted_at=None,
     )
 
 

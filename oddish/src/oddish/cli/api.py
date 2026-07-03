@@ -1086,6 +1086,20 @@ def post_sweep_payload(api_url: str, payload: dict) -> dict:
     report_advertised_ceiling_from_response(response)
 
     if response.status_code != 200:
+        if response.status_code in (402, 403):
+            # New servers wrap the detail dict ({"detail": {...}}); old servers
+            # returned it flat. Read the message from either shape.
+            try:
+                body = response.json()
+                detail = body.get("detail")
+                over_budget_message = body.get("message") or (
+                    detail.get("message") if isinstance(detail, dict) else None
+                )
+            except Exception:
+                over_budget_message = None
+            if over_budget_message:
+                error_console.print(f"[red]{over_budget_message}[/red]")
+                raise typer.Exit(1)
         error_console.print(
             f"[red]Failed to submit task:[/red] {_extract_error_detail(response)}"
         )

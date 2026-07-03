@@ -396,6 +396,45 @@ export interface OrgUser {
   created_at: string;
 }
 
+// =============================================================================
+// User Quotas
+// =============================================================================
+
+// Caller-scoped usage-vs-limit, as returned by GET /api/quotas/me. `limit_usd`
+// is the effective daily limit (COALESCE of the override row and the default);
+// `used_usd` is today's settled spend billed to the caller.
+export interface QuotaUsage {
+  user_id: string;
+  limit_usd: number;
+  used_usd: number;
+  // In-flight reservations; admission blocks when used + reserved >= limit.
+  // Absent on the admin member list.
+  reserved_usd?: number;
+  // True only when quota_mode == enforce, i.e. exceeding the limit actually
+  // blocks new billable runs. Absent on the admin member list.
+  enforced?: boolean;
+}
+
+// A single member row in the admin GET /api/quotas list. Extends QuotaUsage
+// with the member's identity/role.
+export interface QuotaMember extends QuotaUsage {
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+}
+
+export interface QuotaList {
+  members: QuotaMember[];
+}
+
+// Body for the admin PUT /api/quotas/{user_id} override. A string value sets an
+// override (e.g. "5.00"); `null` CLEARS it so the member reverts to the
+// workspace default.
+export interface QuotaUpdate {
+  limit_usd: string | null;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;

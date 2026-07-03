@@ -372,3 +372,29 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/tasks" | jq
 # dashboard queue overview
 curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq '.queues'
 ```
+
+## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
+
+Per-user daily dollar budgets are enforced at trial-admission time. The operator
+toggle is `shadow` (default) → `enforce` via the `ODDISH_QUOTA_MODE` env var; each
+stage is a config flip, no redeploy of code (`off` stays available as a full
+no-op opt-out, and is also the schema-guard fail-safe below):
+
+1. **`shadow`** (default) — compute the check and emit a structured
+   `quota.would_block` event (`metric=quota.would_block reason=… org_id=…
+   billed_user_id=… used=… limit=…`) but never raise. Scrape those logs to
+   enumerate who *would* be blocked and which submissions have an unresolved
+   payer (`billed_user_id` None — an unlinked GitHub author); notify those users
+   to link at oddish.app. `billed_user_id` is stamped at trial creation, so the
+   usage data accrues before any enforcement.
+2. **`enforce`** — over-budget submissions get HTTP **402** with
+   `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
+   unattributable run gets **403**.
+
+There is **no seed/coverage pre-step**: stamping is already live from the
+attribution slice, and a member with no `quotas` override row is enforced at
+`ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
+API startup verifies `trials.billed_user_id` and the `quotas` table exist and
+otherwise forces `off` (fail-safe, never a silent SUM fail-open). Tune
+`ODDISH_DEFAULT_DAILY_QUOTA_USD` and `ODDISH_PENDING_TRIAL_RESERVATION_USD`
+without a code change.

@@ -56,3 +56,14 @@ def allowed_api_key_scopes(auth: AuthContext) -> list[APIKeyScope]:
     if role == UserRole.ADMIN:
         return [APIKeyScope.FULL, APIKeyScope.TASKS, APIKeyScope.READ]
     return [APIKeyScope.TASKS, APIKeyScope.READ]
+
+
+def can_manage_quotas(auth: AuthContext) -> bool:
+    """Return whether this user may view/set org member quotas.
+
+    Any org ADMIN qualifies (self-service for every org, NOT @abundant-gated,
+    unlike can_create_api_keys). API keys never qualify -- quota management is
+    user-auth-only, enforced by require_can_manage_quotas.
+    """
+    role = auth.user.role if auth.user else auth.user_role
+    return role == UserRole.ADMIN

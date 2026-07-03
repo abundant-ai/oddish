@@ -86,7 +86,7 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
         return None
 
     async def _noop_cancel_trials(*_args, **_kwargs):
-        return None
+        return []
 
     monkeypatch.setattr(_deletion, "_cancel_worker_jobs_for_task", _noop_cancel_task)
     monkeypatch.setattr(
@@ -108,6 +108,8 @@ async def test_delete_experiment_core_soft_deletes_domain_rows(monkeypatch):
             "tasks": 1,
             "experiments": 1,
         },
+        "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
 

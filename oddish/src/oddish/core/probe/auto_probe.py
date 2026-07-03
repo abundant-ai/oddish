@@ -56,6 +56,7 @@ async def maybe_enqueue_auto_probe(
     task: TaskModel,
     experiment: ExperimentModel | None,
     org_id: str | None,
+    billed_user_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
 ) -> None:
     try:
@@ -100,11 +101,13 @@ async def maybe_enqueue_auto_probe(
         expanded = build_task_submission_from_sweep(
             submission, task_path=task.task_path, trials=trials
         )
+        # Auto-probes always run; their cost still counts toward budget.
         new_trials = await append_trials_to_task(
             session,
             task=task,
             submission=expanded,
             experiment_id=submission.experiment_id,
+            billed_user_id=billed_user_id,
         )
 
         from oddish.config import settings

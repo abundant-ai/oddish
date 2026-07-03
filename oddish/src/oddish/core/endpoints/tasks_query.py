@@ -93,6 +93,7 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
         row["input_tokens"],
         row["output_tokens"],
         row["cache_tokens"],
+        row.get("cache_write_tokens"),
     )
     if estimated is None:
         return None, False
@@ -221,6 +222,7 @@ async def list_tasks_core(
                 TrialModel.analysis,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
+                TrialModel.cache_write_tokens,
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
                 TrialModel.cost_usd,
@@ -2076,6 +2078,7 @@ async def browse_tasks_core(
                 TrialModel.input_tokens.label("input_tokens"),
                 TrialModel.output_tokens.label("output_tokens"),
                 TrialModel.cache_tokens.label("cache_tokens"),
+                TrialModel.cache_write_tokens.label("cache_write_tokens"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
