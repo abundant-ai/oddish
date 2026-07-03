@@ -28,7 +28,7 @@ import modal
 # ``configure_logfire`` runs in ``worker/__init__.py`` (so auto-tracing
 # can patch our modules before they're imported); we just need the
 # ``span`` helper here to wrap entry points.
-from observability import span as _otel_span
+from observability import log_exception, span as _otel_span
 
 from modal_app import (
     CLEANUP_INTERVAL_SECONDS,
@@ -360,6 +360,7 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"stale_slot_cleanup: {e}")
+            log_exception("reconcile phase failed", phase="stale_slot_cleanup")
             console.print(f"[yellow]Stale slot cleanup skipped: {e}[/yellow]")
 
         try:
@@ -382,6 +383,7 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"orphaned_state: {e}")
+            log_exception("reconcile phase failed", phase="orphaned_state")
             console.print(
                 f"[yellow]Orphaned-state reconciliation skipped: {e}[/yellow]"
             )
@@ -398,6 +400,7 @@ async def reconcile_queue_state():
                 )
         except Exception as e:  # noqa: BLE001 - best-effort phase
             phase_errors.append(f"owner_backfill: {e}")
+            log_exception("reconcile phase failed", phase="owner_backfill")
             console.print(f"[yellow]Experiment owner backfill skipped: {e}[/yellow]")
 
         try:

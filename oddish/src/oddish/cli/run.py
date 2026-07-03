@@ -367,6 +367,17 @@ def run(
             help="Auto-enqueue a probe trial for this task's version (off by default)",
         ),
     ] = False,
+    gate_baselines: Annotated[
+        bool,
+        typer.Option(
+            "--baseline-gate/--no-baseline-gate",
+            help=(
+                "Hold LLM trials until this task's nop/oracle baselines validate "
+                "it (default). --no-baseline-gate runs them immediately, ungated "
+                "(baselines still run). Per run; retries decide gating afresh."
+            ),
+        ),
+    ] = True,
     disable_verification: Annotated[
         bool,
         typer.Option(
@@ -619,6 +630,7 @@ def run(
             yes=yes,
             json_output=json_output,
             registry_auth=registry_auth,
+            gate_baselines=gate_baselines,
         )
         return
     if retry_qa:
@@ -671,6 +683,9 @@ def run(
         # Config can enable auto-probe
         if "run_probe" in sweep_config:
             run_probe = sweep_config["run_probe"]
+        # Config can opt out of the baseline gate
+        if "gate_baselines" in sweep_config:
+            gate_baselines = sweep_config["gate_baselines"]
         # Config can set Harbor passthrough options
         if "disable_verification" in sweep_config:
             disable_verification = sweep_config["disable_verification"]
@@ -800,6 +815,7 @@ def run(
             max_trial_attempts=max_trial_attempts,
             run_analysis=run_analysis,
             run_probe=run_probe,
+            gate_baselines=gate_baselines,
             github_username=github_user,
             github_id=github_id,
             tags=tags or None,
