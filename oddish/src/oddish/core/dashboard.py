@@ -1052,6 +1052,7 @@ async def load_dashboard_experiments(
         ExperimentModel.is_public.label("experiment_is_public"),
         ExperimentModel.last_activity_at.label("last_activity_at"),
         ExperimentModel.owner.label("experiment_owner"),
+        ExperimentModel.owner_user_id.label("experiment_owner_user_id"),
         ExperimentModel.link.label("experiment_link"),
     )
     if org_id is not None:
@@ -1276,6 +1277,7 @@ async def load_dashboard_experiments(
             "experiment_name": page_row["experiment_name"],
             "experiment_is_public": page_row["experiment_is_public"],
             "experiment_owner": page_row["experiment_owner"],
+            "experiment_owner_user_id": page_row["experiment_owner_user_id"],
             "experiment_link": page_row["experiment_link"],
             "task_count": int(agg["task_count"]) if agg else 0,
             "analysis_tasks": int(agg["analysis_tasks"]) if agg else 0,
@@ -1361,6 +1363,15 @@ async def load_dashboard_experiments(
             user=merged["last_user"],
         )
 
+        # Expose the experiment's internal owner id so the hosted layer can
+        # enrich ``author`` with the org member's display name (see
+        # ``backend/api/routers/dashboard.py``). The ``__unattributed__``
+        # sentinel is an internal marker, not a real user id, so it must never
+        # leave the data layer -- None it out here too.
+        owner_user_id = merged["experiment_owner_user_id"]
+        if owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER:
+            owner_user_id = None
+
         # PR URL = the experiment's own link (stamped set-once). Fall back to the
         # latest task's github_meta.pr_url / link for experiments with no stamped
         # link. The number is parsed from whichever URL we end up using.
@@ -1397,6 +1408,7 @@ async def load_dashboard_experiments(
                     last_created_at.isoformat() if last_created_at else None
                 ),
                 "author": author,
+                "owner_user_id": owner_user_id,
                 "last_runner": last_runner,
                 "last_author": last_runner,
                 "user_tags": merged.get("user_tags", []),

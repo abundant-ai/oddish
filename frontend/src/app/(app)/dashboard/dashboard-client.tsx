@@ -110,6 +110,12 @@ export type ExperimentsResult = {
 
 function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
   if (!author) return "—";
+  // Precedence: canonical org-member name (plain, no "@") -> @github handle ->
+  // raw owner/user string. "member" is resolved by the backend from the
+  // experiment's owner_user_id and matches the name shown on the cost page.
+  if (author.source === "member") {
+    return author.name;
+  }
   if (author.source === "github") {
     return `@${author.name.replace(/^@/, "")}`;
   }

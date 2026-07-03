@@ -380,7 +380,7 @@ export interface JobUsage {
 
 export interface DashboardExperimentAuthor {
   name: string;
-  source: "github" | "api";
+  source: "github" | "api" | "member";
 }
 
 // Organization member, as returned by GET /api/users. Used to populate
@@ -460,6 +460,12 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
+  /**
+   * Internal owner id (Clerk / API-key user) used by the backend to resolve the
+   * canonical member name into `author`. The `__unattributed__` sentinel is
+   * normalized to null server-side.
+   */
+  owner_user_id?: string | null;
   author: DashboardExperimentAuthor | null;
   last_runner: DashboardExperimentAuthor | null;
   /** @deprecated Use `last_runner`; kept for older clients. */
