@@ -227,9 +227,12 @@ export function ExperimentClientPage({
   const refreshIntervalMs = useMemo(() => {
     if (tasksForExperiment.length === 0) return 5000;
     const hasActiveTasks = tasksForExperiment.some((task) => {
+      // Subtract skipped: skipped trials are terminal (never ran), so they must
+      // not read as "active" — otherwise a done, gate-skipped task would poll at
+      // the fast interval forever.
       const activeTrials = Math.max(
         0,
-        task.total - task.completed - task.failed,
+        task.total - task.completed - task.failed - (task.skipped ?? 0),
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });

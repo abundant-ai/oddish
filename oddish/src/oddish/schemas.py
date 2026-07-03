@@ -758,6 +758,7 @@ class TaskVersionSummary(BaseModel):
     trial_count: int = 0
     completed_count: int = 0
     failed_count: int = 0
+    skipped_count: int = 0
     pass_count: int = 0
     partial_count: int = 0
     fail_count: int = 0
@@ -1201,6 +1202,11 @@ class TaskStatusResponse(BaseModel):
     total: int
     completed: int
     failed: int
+    # SKIPPED trials are terminal non-passes: included in ``total`` but not in
+    # ``completed``/``failed``. Exposed so clients can compute
+    # ``active = total - completed - failed - skipped`` instead of treating
+    # skipped as still-running.
+    skipped: int = 0
     progress: str  # e.g., "5/10 completed"
     reward_success: int | None = None
     reward_sum: float | None = None

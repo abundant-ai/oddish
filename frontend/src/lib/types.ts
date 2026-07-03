@@ -221,6 +221,7 @@ export interface Task {
   total: number;
   completed: number;
   failed: number;
+  skipped?: number;
   progress?: string;
   reward_success?: number | null;
   reward_sum?: number | null;
@@ -304,6 +305,7 @@ export interface TaskVersionSummary {
   trial_count: number;
   completed_count: number;
   failed_count: number;
+  skipped_count: number;
   pass_count: number;
   partial_count: number;
   fail_count: number;
