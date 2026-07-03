@@ -141,15 +141,16 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
     async with get_session() as session:
         await create_task(
             session,
-            _submission("quota-unpriced", n_trials=3),
+            _submission("quota-unpriced", n_trials=4),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=billed_user,
         )
         await session.flush()
 
-        # Finished but unpriced (cost_usd stays NULL) -> floored to the unpriced cost.
+        # Ran (started_at set) but unpriced (cost_usd stays NULL) -> floored.
         unpriced = await session.get(TrialModel, f"{task_id}-0")
+        unpriced.started_at = now
         unpriced.finished_at = now
         unpriced.cost_usd = None
 
@@ -163,11 +164,19 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
         free.finished_at = now
         free.cost_usd = 0.0
 
+        # Cancelled while never-started (finished_at set, started_at NULL, unpriced)
+        # -> genuinely $0, NOT floored (never ran, can't be a start-then-cancel bypass).
+        never_started = await session.get(TrialModel, f"{task_id}-3")
+        never_started.started_at = None
+        never_started.finished_at = now
+        never_started.cost_usd = None
+
         await session.flush()
 
         settled = await sum_cost_usd(session, org_id, billed_user, start_of_today_utc(now))
         grouped = await sum_cost_usd_by_user(session, org_id, start_of_today_utc(now))
 
-    expected = floor + Decimal("0.25")  # unpriced floored + priced + 0 free
+    # floored(started+unpriced) + priced + 0(explicit-zero) + 0(never-started)
+    expected = floor + Decimal("0.25")
     assert settled == expected
     assert grouped[billed_user] == expected

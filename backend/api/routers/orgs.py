@@ -13,6 +13,7 @@ from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    OrgQuotaResponse,
     QuotaListResponse,
     QuotaMemberItem,
     QuotaUpdateRequest,
@@ -26,13 +27,16 @@ from auth import (
     require_can_manage_quotas,
 )
 from oddish.config import QuotaMode, settings
-from models import QuotaModel, UserModel, UserRole, generate_id
+from models import OrgQuotaModel, QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import (
     get_effective_limit,
+    get_effective_org_limit,
     inflight_reserved_usd,
+    org_inflight_reserved_usd,
     start_of_today_utc,
     sum_cost_usd,
     sum_cost_usd_by_user,
+    sum_org_cost_usd,
 )
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
@@ -172,6 +176,27 @@ def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem
     )
 
 
+def _as_float_or_none(value) -> float | None:
+    return None if value is None else float(value)
+
+
+async def _org_quota_fields(session, org_id, period_start) -> dict:
+    """Effective org-wide cap, today's org-wide settled spend, in-flight
+    reservation, and the configured default -- shared by GET /quotas and
+    PUT /quotas/org so both agree."""
+    effective_org_limit = await get_effective_org_limit(session, org_id)
+    org_used = await sum_org_cost_usd(session, org_id, period_start)
+    org_reserved = await org_inflight_reserved_usd(session, org_id)
+    return {
+        "org_limit_usd": _as_float_or_none(effective_org_limit),
+        "org_used_usd": float(org_used),
+        "org_reserved_usd": float(org_reserved),
+        "org_default_limit_usd": _as_float_or_none(
+            settings.default_org_daily_quota_usd
+        ),
+    }
+
+
 @router.get("/quotas", response_model=QuotaListResponse)
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
@@ -204,6 +229,8 @@ async def list_member_quotas(
         )
         override_limit_by_user_id = dict(override_rows.all())
 
+        org_fields = await _org_quota_fields(session, auth.org_id, period_start)
+
     return QuotaListResponse(
         members=[
             _quota_member_item(
@@ -212,8 +239,55 @@ async def list_member_quotas(
                 used_usd_by_user_id.get(member.id, Decimal(0)),
             )
             for member in members
-        ]
+        ],
+        **org_fields,
     )
+
+
+@router.put("/quotas/org", response_model=OrgQuotaResponse)
+async def set_org_quota(
+    payload: QuotaUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> OrgQuotaResponse:
+    """Set or clear the org-wide aggregate daily cap override.
+
+    A null ``limit_usd`` clears the override (hard DELETE, like the per-user
+    path) so the org reverts to the configured default. The effective cap is
+    re-read after the write so PUT and GET agree even under a concurrent write.
+    """
+    async with get_session() as session:
+        if payload.limit_usd is None:
+            await session.execute(
+                OrgQuotaModel.__table__.delete().where(
+                    OrgQuotaModel.org_id == auth.org_id
+                )
+            )
+        else:
+            await session.execute(
+                pg_insert(OrgQuotaModel)
+                .values(
+                    id=generate_id(),
+                    org_id=auth.org_id,
+                    limit_usd=payload.limit_usd,
+                    period_kind="daily",
+                )
+                .on_conflict_do_update(
+                    index_elements=["org_id"],
+                    index_where=OrgQuotaModel.deleted_at.is_(None),
+                    set_={
+                        "limit_usd": payload.limit_usd,
+                        "period_kind": "daily",
+                        "updated_at": utcnow(),
+                        "deleted_at": None,
+                    },
+                )
+            )
+
+        org_fields = await _org_quota_fields(
+            session, auth.org_id, start_of_today_utc()
+        )
+
+    return OrgQuotaResponse(**org_fields)
 
 
 @router.put("/quotas/{user_id}", response_model=QuotaMemberItem)
