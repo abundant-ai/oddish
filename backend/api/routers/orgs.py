@@ -9,6 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import ProgrammingError
 
 from api.schemas import (
     InviteUserRequest,
@@ -202,6 +203,35 @@ async def _org_quota_fields(session, org_id, period_start) -> dict:
     }
 
 
+async def _org_quota_fields_or_unavailable(org_id, period_start) -> dict:
+    """GET /quotas resilience for the deploy-before-migrate window.
+
+    The backend can boot before ``add_org_quotas_001`` has run: the startup
+    guard forces ``quota_mode=off`` (protecting admissions) but does not take
+    this read path down, so a missing ``org_quotas`` table must degrade to
+    no-org-cap display fields instead of 500ing the whole admin quotas page.
+    Runs in its OWN session so the aborted transaction cannot poison the
+    caller's member query. PUT /quotas/org stays strict -- writing an org cap
+    without the table is a real error.
+    """
+    try:
+        async with get_session() as session:
+            return await _org_quota_fields(session, org_id, period_start)
+    except ProgrammingError:
+        logger.warning(
+            "GET /quotas org fields unavailable (org_quotas schema not "
+            "migrated yet?); degrading to configured-default display fields",
+            exc_info=True,
+        )
+        default = _as_float_or_none(settings.default_org_daily_quota_usd)
+        return {
+            "org_limit_usd": default,
+            "org_used_usd": 0.0,
+            "org_reserved_usd": 0.0,
+            "org_default_limit_usd": default,
+        }
+
+
 @router.get("/quotas", response_model=QuotaListResponse)
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
@@ -234,7 +264,7 @@ async def list_member_quotas(
         )
         override_limit_by_user_id = dict(override_rows.all())
 
-        org_fields = await _org_quota_fields(session, auth.org_id, period_start)
+    org_fields = await _org_quota_fields_or_unavailable(auth.org_id, period_start)
 
     return QuotaListResponse(
         members=[

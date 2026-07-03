@@ -133,6 +133,46 @@ async def test_put_org_override_reflects_in_get(org_with_member):
     assert "org_reserved_usd" in body
 
 
+# --- GET /quotas survives a missing org_quotas table (deploy-before-migrate) ----
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_get_quotas_degrades_when_org_quotas_schema_missing(
+    org_with_member, monkeypatch
+):
+    """Deploy-before-migrate window: the startup guard forces quota_mode=off
+    but GET /quotas must not 500 -- it degrades to no-org-cap display fields
+    while the member list still renders."""
+    from sqlalchemy.exc import ProgrammingError
+
+    import api.routers.orgs as orgs_mod
+
+    async def raise_undefined_table(session, org_id):
+        raise ProgrammingError(
+            "SELECT limit_usd FROM org_quotas", {}, Exception("UndefinedTableError")
+        )
+
+    monkeypatch.setattr(orgs_mod, "get_effective_org_limit", raise_undefined_table)
+    monkeypatch.setattr(settings, "default_org_daily_quota_usd", None)
+
+    org_id, admin_user, member_a = org_with_member
+    app = create_app()
+    try:
+        async with _admin_client(app, org_id, admin_user) as client:
+            response = await client.get("/quotas")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {m["user_id"] for m in body["members"]} == {admin_user.id, member_a.id}
+    assert body["org_limit_usd"] is None
+    assert body["org_used_usd"] == pytest.approx(0.0)
+    assert body["org_reserved_usd"] == pytest.approx(0.0)
+    assert body["org_default_limit_usd"] is None
+
+
 # --- upsert: a second PUT overwrites the existing override (one live row) -------
 
 
