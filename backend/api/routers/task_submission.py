@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+import os
+
+from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +13,8 @@ from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.sharing.helpers import ensure_experiment_public
 from oddish.db import ExperimentModel, TaskModel
 from oddish.schemas import TaskSweepSubmission
+
+logger = logging.getLogger(__name__)
 
 
 def apply_github_attribution(submission: TaskSweepSubmission) -> None:
@@ -75,11 +81,10 @@ async def resolve_submission_identity(
     """Fill submission.user and submission.github_username from the actor.
 
     ``github_username`` is only auto-filled from ``UserModel.github_username`` so
-    the dashboard's ``source: "github"`` attribution stays meaningful. An
-    explicit github_id suppresses the auto-fill so it can't fall back to the
-    actor. Mutates ``submission`` in place.
+    the dashboard's ``source: "github"`` attribution stays meaningful. Mutates
+    ``submission`` in place.
     """
-    if not submission.github_username and not submission.github_id:
+    if not submission.github_username:
         actor = await _resolve_actor_user(session, auth)
         if actor and actor.github_username:
             submission.github_username = actor.github_username
@@ -92,15 +97,12 @@ async def resolve_submission_identity(
     )
 
 
-async def lookup_user_by_github_username(
+async def _lookup_user_by_github_username(
     session: AsyncSession,
     *,
     github_username: str,
     org_id: str,
 ) -> UserModel | None:
-    """Exact-one connection predicate shared by owner resolution and the linkage
-    endpoint: a handle resolves only when a single active org member carries it;
-    zero or 2+ matches resolve to None (graceful no-owner, never an error)."""
     users = await lookup_users_by_github_username(
         session, github_username=github_username, org_id=org_id
     )
@@ -131,23 +133,15 @@ async def lookup_users_by_github_username(
     return list(result.scalars().all())
 
 
-async def lookup_user_by_github_id(
+async def _lookup_user_by_github_id(
     session: AsyncSession,
     *,
     github_id: str,
     org_id: str,
 ) -> UserModel | None:
-    """Exact-one, org-scoped, active-only lookup by immutable github_id.
-
-    Org-unique (``uq_users_org_github_id``) so at most one active match. No
-    ``@``-strip / case-fold — github_id is an exact id, not a handle.
-    """
-    normalized = (github_id or "").strip()
-    if not normalized:
-        return None
     result = await session.execute(
         select(UserModel).where(
-            UserModel.github_id == normalized,
+            UserModel.github_id == github_id,
             UserModel.org_id == org_id,
             UserModel.is_active == True,  # noqa: E712
         )
@@ -162,57 +156,92 @@ async def resolve_connected_user(
     github_id: str | None,
     github_username: str | None,
 ) -> UserModel | None:
-    """Shared connection predicate for owner resolution AND the linkage endpoint
-    (predicate parity): the immutable github_id wins over the mutable handle;
-    fall back to the exact-one handle lookup only when github_id is absent or
-    unmatched. Both call sites MUST route through here.
-    """
+    # A blank id is an absent id on every transport (schema-normalized
+    # submissions and raw query params alike).
+    github_id = (github_id or "").strip() or None
     if github_id:
-        user = await lookup_user_by_github_id(
+        return await _lookup_user_by_github_id(
             session, github_id=github_id, org_id=org_id
         )
-        if user is not None:
-            return user
     if github_username:
-        return await lookup_user_by_github_username(
+        return await _lookup_user_by_github_username(
             session, github_username=github_username, org_id=org_id
         )
     return None
 
 
-async def _active_user_id(session: AsyncSession, user_id: str | None) -> str | None:
-    if not user_id:
+async def require_connected_github_user(
+    session: AsyncSession,
+    submission: TaskSweepSubmission,
+    auth: AuthContext,
+) -> UserModel | None:
+    """Gate a sweep on GitHub linkage, quota-independent.
+
+    A submission carrying a truthy ``github_id`` must strict-resolve (id-only)
+    to an active org user or the sweep is rejected with 403 before any rows are
+    written. Returns the resolved user (reusable for owner / created_by
+    stamping), or None when no ``github_id`` was supplied (gate is a no-op).
+
+    Trust model: this gate is COOPERATIVE, not adversarial. It checks linkage
+    ("does this id map to a connected org user?"), not ownership — any caller
+    holding an org credential may omit ``github_id`` to skip the gate entirely,
+    or pass any linked member's id and have attribution/ownership credit that
+    member. Anti-spoofing is an explicit non-goal; do not build billing or
+    quota enforcement that assumes a hostile client cannot choose whose id it
+    sends.
+    """
+    if not (submission.github_id and submission.github_id.strip()):
         return None
-    user = await session.get(UserModel, user_id)
-    if user is not None and user.is_active and user.deleted_at is None:
-        return user.id
-    return None
-
-
-async def _api_key_owner_user_id(
-    session: AsyncSession, auth: AuthContext
-) -> str | None:
-    api_key = auth.api_key
-    if api_key is None:
-        api_key = await session.get(APIKeyModel, auth.api_key_id)
-    # An offboarded owner must not become a tombstoned billed_user_id that
-    # admins can't see or override; fall through to the next candidate.
-    return await _active_user_id(session, api_key.created_by_user_id if api_key else None)
+    user = await _lookup_user_by_github_id(
+        session, github_id=submission.github_id, org_id=auth.org_id
+    )
+    if user is None:
+        api_key = auth.api_key
+        logger.info(
+            "linkage gate rejected github_id=%s org=%s api_key_id=%s "
+            "api_key_name=%s user_id=%s",
+            submission.github_id,
+            auth.org_id,
+            auth.api_key_id,
+            api_key.name if api_key else None,
+            auth.user_id,
+        )
+        # Timing expectations: linking fires a Clerk user.updated webhook that
+        # sets github_id immediately, so "seconds" is the normal case; "up to
+        # an hour" is the webhook-loss worst case (backfill TTL). Deliberately
+        # no "sign out and back in" advice — a fresh github_id_checked_at
+        # marker suppresses the login-path refresh for up to an hour, so that
+        # advice would fail exactly when users try it.
+        dashboard_url = os.getenv("ODDISH_DASHBOARD_URL", "https://oddish.app")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"GitHub account {submission.github_id} is not connected to an "
+                f"oddish user in this org. Sign in at {dashboard_url}, connect "
+                "GitHub under account settings, then rerun — linking normally "
+                "takes effect within seconds. If it still fails after that, "
+                "sync can take up to an hour."
+            ),
+        )
+    return user
 
 
 async def resolve_created_by_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
-    """Who submitted the task (API key owner wins for CI/service accounts)."""
+    """Who submitted the task. API key owner wins for CI/service accounts."""
     if auth.api_key_id:
-        owner_id = await _api_key_owner_user_id(session, auth)
-        if owner_id:
-            return owner_id
+        api_key = auth.api_key
+        if api_key is None:
+            api_key = await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return api_key.created_by_user_id
 
-    if submission.github_id or submission.github_username:
-        user = await resolve_connected_user(
+    if submission.github_id is not None or submission.github_username:
+        user = connected_user or await resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
@@ -231,10 +260,11 @@ async def resolve_experiment_owner_user_id(
     session: AsyncSession,
     submission: TaskSweepSubmission,
     auth: AuthContext,
+    connected_user: UserModel | None = None,
 ) -> str | None:
-    """Primary experiment owner for dashboard Mine (GitHub author beats submitter)."""
-    if submission.github_id or submission.github_username:
-        user = await resolve_connected_user(
+    """Primary experiment owner for dashboard Mine. GitHub author beats submitter."""
+    if submission.github_id is not None or submission.github_username:
+        user = connected_user or await resolve_connected_user(
             session,
             org_id=auth.org_id,
             github_id=submission.github_id,
@@ -242,18 +272,27 @@ async def resolve_experiment_owner_user_id(
         )
         if user:
             return user.id
-        # Explicit github identity with no linked org member: leave owner unset so
-        # the legacy primary-task Mine filter can match the github tag.
         return None
 
     if auth.user_id:
         return auth.user_id
 
     if auth.api_key_id:
-        owner_id = await _api_key_owner_user_id(session, auth)
-        if owner_id:
-            return owner_id
+        api_key = auth.api_key
+        if api_key is None:
+            api_key = await session.get(APIKeyModel, auth.api_key_id)
+        if api_key and api_key.created_by_user_id:
+            return api_key.created_by_user_id
 
+    return None
+
+
+async def _active_user_id(session: AsyncSession, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    user = await session.get(UserModel, user_id)
+    if user is not None and user.is_active and user.deleted_at is None:
+        return user.id
     return None
 
 
@@ -287,14 +326,7 @@ def stamp_experiment_owner(
     *,
     claim_unowned: bool = True,
 ) -> None:
-    """Stamp the dashboard Mine owner on an experiment.
-
-    ``claim_unowned=False`` (append/rerun path) replaces only the sweep's
-    ``__unattributed__`` sentinel: a NULL owner means the sweep has not yet
-    attributed the experiment's primary task, and the appender is not
-    necessarily that author — claiming NULL here would race the sweep's
-    precedence-correct claim and hide the experiment from its real owner.
-    """
+    """Stamp the dashboard Mine owner on an experiment."""
     if experiment is None or not owner_user_id:
         return
     claimable = (
@@ -310,20 +342,24 @@ def require_experiment_publish_scope(auth: AuthContext) -> None:
     auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
 
+def _should_auto_publish(submission: TaskSweepSubmission, auth: AuthContext) -> bool:
+    if submission.publish_experiment is not None:
+        return submission.publish_experiment
+    # Attribution and the linkage gate now key off github_id, so a CI run that
+    # passes --github-id alone (no handle) must auto-publish like a handle-based
+    # run did. github_id is schema-normalized (blank -> None).
+    return bool(
+        (submission.github_username or submission.github_id) and auth.api_key_id
+    )
+
+
 async def maybe_publish_experiment(
     session: AsyncSession,
     task: TaskModel,
     submission: TaskSweepSubmission,
     auth: AuthContext,
 ) -> None:
-    should_publish = submission.publish_experiment
-    if should_publish is None:
-        # Either github identity counts: github_id-only submissions no longer
-        # auto-fill a handle (explicit github_id suppresses the autofill).
-        should_publish = bool(
-            (submission.github_username or submission.github_id) and auth.api_key_id
-        )
-    if not should_publish:
+    if not _should_auto_publish(submission, auth):
         return
 
     require_experiment_publish_scope(auth)

@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import OrganizationModel, UserModel, UserRole, generate_id
@@ -14,6 +16,24 @@ logger = logging.getLogger(__name__)
 
 # Clerk secret key for API access
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY", "")
+
+# A checked-absent marker older than this is treated as UNchecked everywhere so a
+# user who links GitHub after being stamped self-heals on the next refresh/backfill.
+GITHUB_ID_RECHECK_TTL = timedelta(hours=1)
+
+
+def github_id_recheck_cutoff(now: datetime | None = None) -> datetime:
+    reference = now or datetime.now(timezone.utc)
+    return reference - GITHUB_ID_RECHECK_TTL
+
+
+def _marker_is_fresh(checked_at: datetime | None, now: datetime | None = None) -> bool:
+    if checked_at is None:
+        return False
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=timezone.utc)
+    return checked_at > github_id_recheck_cutoff(now)
+
 
 # In preview Modal apps the seeded org is throwaway — let JIT-provisioned
 # users land as ADMIN so they can manage users etc. Prod stays MEMBER.
@@ -26,8 +46,6 @@ _DEFAULT_JIT_ROLE = (
 
 @dataclass(frozen=True)
 class ClerkGithubIdentity:
-    # github_id = Clerk provider_user_id (immutable numeric id as a STRING);
-    # survives github_username renames/recycles.
     username: str | None
     email: str | None
     github_id: str | None
@@ -38,23 +56,23 @@ def _github_account_from_clerk_payload(data: dict) -> ClerkGithubIdentity:
     for account in external_accounts:
         if account.get("provider") != "oauth_github":
             continue
-        username = account.get("username") or None
-        email = (
-            account.get("email_address")
-            or account.get("email")
-            or account.get("primary_email_address")
+        return ClerkGithubIdentity(
+            username=account.get("username") or None,
+            email=(
+                account.get("email_address")
+                or account.get("email")
+                or account.get("primary_email_address")
+            ),
+            github_id=account.get("provider_user_id") or None,
         )
-        github_id = account.get("provider_user_id") or None
-        return ClerkGithubIdentity(username=username, email=email, github_id=github_id)
     return ClerkGithubIdentity(None, None, None)
 
 
 async def fetch_github_identity_from_clerk(
     clerk_user_id: str,
-) -> ClerkGithubIdentity:
-    """Return the GitHub identity (username, email, github_id) from Clerk."""
+) -> ClerkGithubIdentity | None:
     if not CLERK_SECRET_KEY:
-        return ClerkGithubIdentity(None, None, None)
+        return None
 
     url = f"https://api.clerk.com/v1/users/{clerk_user_id}"
     headers = {"Authorization": f"Bearer {CLERK_SECRET_KEY}"}
@@ -65,50 +83,84 @@ async def fetch_github_identity_from_clerk(
             response.raise_for_status()
             data = response.json()
     except httpx.HTTPError as exc:
+        # Any HTTP failure — including 404 — is non-definitive. A 404 is
+        # indistinguishable from a misconfigured CLERK_SECRET_KEY (wrong Clerk
+        # instance 404s for EVERY user), so treating it as "definitive
+        # no-github" would let a misconfig silently mass-unlink existing
+        # github_ids. Genuinely deleted Clerk users are soft-deleted via the
+        # membership webhook, so retrying them here is a bounded cost.
         logger.warning("Failed to fetch Clerk user %s: %s", clerk_user_id, exc)
-        return ClerkGithubIdentity(None, None, None)
+        return None
 
     return _github_account_from_clerk_payload(data)
 
 
 async def fetch_github_username_from_clerk(clerk_user_id: str) -> str | None:
-    return (await fetch_github_identity_from_clerk(clerk_user_id)).username
+    identity = await fetch_github_identity_from_clerk(clerk_user_id)
+    return identity.username if identity else None
 
 
 async def _set_github_id_if_absent(
     session: AsyncSession | None, user: UserModel, github_id: str | None
 ) -> None:
-    """Set user.github_id from Clerk only when currently None. Never overwrite a
-    differing existing id. Collision-safe: github_id is org-unique
-    (uq_users_org_github_id); a value already claimed by another org member is
-    skipped (fail-open), never crashes provisioning."""
     if not github_id or user.github_id:
         return
     if session is not None:
-        # Match the constraint scope exactly: uq_users_org_github_id spans EVERY
-        # row in the org — active or not, AND soft-deleted. UserModel is
-        # soft-delete-registered, so an ordinary ORM query auto-filters
-        # `deleted_at IS NULL`; include_deleted=True lifts that so a tombstoned
-        # holder is still detected (else it IntegrityErrors at commit). Residual:
-        # a concurrent provisioning of the same github_id can still race past this
-        # pre-check — accepted (near-impossible: needs one GitHub account on two
-        # Clerk users in one org; robust reject is deferred to plan Q19).
+        # Match uq_users_org_github_id scope, including soft-deleted rows.
         clash = await session.execute(
-            select(UserModel.id)
+            select(UserModel)
             .where(UserModel.org_id == user.org_id)
             .where(UserModel.github_id == github_id)
             .where(UserModel.id != user.id)
             .execution_options(include_deleted=True)
         )
-        if clash.first() is not None:
+        for other in clash.scalars().all():
+            if other.deleted_at is None and other.is_active:
+                logger.warning(
+                    "Skipping github_id %s for user %s: already claimed in org %s",
+                    github_id,
+                    user.id,
+                    user.org_id,
+                )
+                return
+            # Soft-deleted / deactivated holder: release the id so a rejoining
+            # user can relink instead of being gated forever.
+            other.github_id = None
+        await session.flush()
+        # Claim inside a SAVEPOINT: the assignment + flush must live under the
+        # savepoint so a concurrent claim that raced past the clash query trips
+        # uq_users_org_github_id here instead of poisoning the whole transaction.
+        try:
+            async with session.begin_nested():
+                user.github_id = github_id
+                await session.flush()
+        except IntegrityError:
+            user.github_id = None
             logger.warning(
-                "Skipping github_id %s for user %s: already claimed in org %s",
+                "Lost concurrent race claiming github_id %s for user %s in org %s",
                 github_id,
                 user.id,
                 user.org_id,
             )
-            return
+        return
     user.github_id = github_id
+
+
+async def _apply_github_id(
+    session: AsyncSession | None, user: UserModel, github_id: str | None
+) -> None:
+    """Reconcile ``user.github_id`` toward an authoritative Clerk id.
+
+    Unlike ``_set_github_id_if_absent`` (first-write only), this also relinks a
+    changed id: a truthy id that differs from the stored one drops the stale
+    value before reclaiming it through the same clash / savepoint machinery, so
+    the gate never keeps trusting an id Clerk no longer reports for this user.
+    Clearing on a definitive no-github answer is the caller's job.
+    """
+    if not github_id or user.github_id == github_id:
+        return
+    user.github_id = None
+    await _set_github_id_if_absent(session, user, github_id)
 
 
 def _seed_attribution_cache_from_github(
@@ -168,47 +220,60 @@ def _seed_attribution_cache_from_github(
     user.attribution_cache = cache
 
 
+def _mark_github_id_checked(user: UserModel) -> None:
+    user.github_id_checked_at = datetime.now(timezone.utc)
+
+
 async def _refresh_user_github_identity(
     user: UserModel, session: AsyncSession | None = None
 ) -> None:
     if not user.clerk_user_id:
         return
     raw = user.attribution_cache if isinstance(user.attribution_cache, dict) else {}
-    # Skip the Clerk call whenever the handle is already known — do NOT add a
-    # hot-path Clerk GET just to backfill github_id (that would storm Clerk on
-    # every login of an un-backfilled user). github_id is captured opportunistically
-    # below only when we already fetch (new / handle-less users); G5 is the durable
-    # batch backfill for existing handle-having users.
-    if user.github_username and isinstance(raw.get("refreshed_at"), str):
-        return
-    if user.github_username:
-        _seed_attribution_cache_from_github(
-            user,
-            github_username=user.github_username,
-            github_email=None,
-        )
-        return
+    github_id_known = bool(user.github_id) or _marker_is_fresh(
+        user.github_id_checked_at
+    )
+    if github_id_known:
+        if user.github_username:
+            if not isinstance(raw.get("refreshed_at"), str):
+                _seed_attribution_cache_from_github(
+                    user,
+                    github_username=user.github_username,
+                    github_email=None,
+                )
+            return
+        if not user.github_id:
+            return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
+    if identity is None:
+        return
     if identity.username and not user.github_username:
         user.github_username = identity.username
-    await _set_github_id_if_absent(session, user, identity.github_id)
+    await _apply_github_id(session, user, identity.github_id)
     if identity.username or identity.email:
         _seed_attribution_cache_from_github(
             user,
             github_username=identity.username or user.github_username,
             github_email=identity.email,
         )
+    # Only a definitive no-github answer stamps the marker. If Clerk returned a
+    # github_id we couldn't claim (active clash / lost race), or reported a
+    # username with the id still absent (partial answer), leave it unstamped so
+    # the backfill/refresh retries once the id is claimable.
+    if not identity.github_id and not identity.username:
+        # Clerk unlinked GitHub: drop any stale id so the gate stops trusting it.
+        user.github_id = None
+        _mark_github_id_checked(user)
 
 
 async def ensure_user_github_identity(
     session: AsyncSession,
     user: UserModel,
 ) -> None:
-    """Refresh ``github_username`` from Clerk when missing (one API call)."""
     if not user.clerk_user_id or user.github_username:
         return
     identity = await fetch_github_identity_from_clerk(user.clerk_user_id)
-    if identity.username:
+    if identity and identity.username:
         user.github_username = identity.username
         await _set_github_id_if_absent(session, user, identity.github_id)
         await session.flush()
