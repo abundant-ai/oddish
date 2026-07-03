@@ -25,8 +25,19 @@ export async function DELETE() {
     if (!res.ok) {
       const errorText = await res.text();
       console.error(`[account] Backend error: ${res.status} - ${errorText}`);
+      // Surface the backend's `detail` (e.g. the last-admin rejection) so the
+      // dialog shows an actionable reason instead of a generic failure.
+      let message = "Failed to delete account";
+      try {
+        const parsed = JSON.parse(errorText);
+        if (typeof parsed?.detail === "string" && parsed.detail) {
+          message = parsed.detail;
+        }
+      } catch {
+        // Non-JSON backend error; keep the generic message.
+      }
       return NextResponse.json(
-        { error: "Failed to delete account", details: errorText },
+        { error: message, details: errorText },
         { status: res.status },
       );
     }

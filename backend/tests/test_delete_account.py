@@ -233,6 +233,141 @@ async def test_delete_account_clerk_failure_restores_rows(
         assert row["deleted_at"] is None
 
 
+async def _insert_duplicate_row(clerk_user_id: str, org_id: str) -> str:
+    """Simulate a concurrent JIT provisioning reviving the identity."""
+    dup_id = f"user_dup_{uuid.uuid4().hex[:8]}"
+    async with get_session() as session:
+        session.add(
+            UserModel(
+                id=dup_id,
+                org_id=org_id,
+                email=f"{dup_id}@example.com",
+                clerk_user_id=clerk_user_id,
+                role="member",
+                is_active=True,
+            )
+        )
+    return dup_id
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_sweeps_rows_revived_during_clerk_call(
+    monkeypatch, user_in_two_orgs
+):
+    """A row JIT-provisioned between the tombstone commit and Clerk deletion
+    must not survive as an active orphan."""
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+    dup_holder: dict[str, str] = {}
+
+    async def delete_and_revive(cid: str) -> None:
+        # While the "Clerk call" is in flight, a concurrent request revives
+        # the identity with a fresh row.
+        dup_holder["id"] = await _insert_duplicate_row(cid, user_a.org_id)
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", delete_and_revive)
+    monkeypatch.setattr(orgs_router, "transfer_tag_ownership_to_admin", _noop_transfer)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.delete("/users/me")
+
+        assert resp.status_code == 200
+
+        async with get_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        UserModel.__table__.select().where(
+                            UserModel.clerk_user_id == clerk_user_id
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(rows) == 3
+        for row in rows:
+            assert row["is_active"] is False
+            assert row["deleted_at"] is not None
+    finally:
+        if "id" in dup_holder:
+            async with get_session() as session:
+                await session.execute(
+                    UserModel.__table__.delete().where(
+                        UserModel.id == dup_holder["id"]
+                    )
+                )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_delete_account_clerk_failure_restore_tombstones_revived_rows(
+    monkeypatch, user_in_two_orgs
+):
+    """On Clerk failure the originals are restored and any row revived during
+    the window is tombstoned, so one identity never has duplicate active rows."""
+    from fastapi import HTTPException
+
+    clerk_user_id, user_a, user_b = user_in_two_orgs
+    dup_holder: dict[str, str] = {}
+
+    async def revive_then_fail(cid: str) -> None:
+        dup_holder["id"] = await _insert_duplicate_row(cid, user_a.org_id)
+        raise HTTPException(status_code=503, detail="Clerk unreachable")
+
+    monkeypatch.setattr(orgs_router, "_delete_clerk_user", revive_then_fail)
+
+    app = _app()
+    app.dependency_overrides[require_auth] = lambda: AuthContext(
+        method=AuthMethod.CLERK_JWT, org_id=user_a.org_id, user_id=user_a.id
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            resp = await client.delete("/users/me")
+
+        assert resp.status_code == 503
+
+        async with get_session() as session:
+            rows = (
+                (
+                    await session.execute(
+                        UserModel.__table__.select().where(
+                            UserModel.clerk_user_id == clerk_user_id
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        by_id = {row["id"]: row for row in rows}
+        assert by_id[user_a.id]["is_active"] is True
+        assert by_id[user_a.id]["deleted_at"] is None
+        assert by_id[user_b.id]["is_active"] is True
+        assert by_id[user_b.id]["deleted_at"] is None
+        dup = by_id[dup_holder["id"]]
+        assert dup["is_active"] is False
+        assert dup["deleted_at"] is not None
+    finally:
+        if "id" in dup_holder:
+            async with get_session() as session:
+                await session.execute(
+                    UserModel.__table__.delete().where(
+                        UserModel.id == dup_holder["id"]
+                    )
+                )
+
+
 @pytest_asyncio.fixture
 async def sole_admin_of_shared_org():
     """An admin whose org has one other active member and no other admin."""

@@ -251,26 +251,55 @@ async def delete_my_account(
             tombstoned.append((row.org_id, row.id))
         await session.commit()
 
+    # Drop this container's cached auth contexts as soon as the rows are
+    # tombstoned, so a cached JWT context can't keep acting as a locally
+    # deactivated user while the Clerk call below is in flight.
+    invalidate_cached_clerk_auth(clerk_user_id)
+
+    original_row_ids = [row_id for _, row_id in tombstoned]
     try:
         await _delete_clerk_user(clerk_user_id)
     except Exception:
         # Clerk still has the account, so undo the tombstones: the user keeps
-        # a working account and can simply retry.
+        # a working account and can simply retry. A concurrent request with a
+        # still-valid JWT may have JIT-provisioned fresh rows for this Clerk
+        # user during the window — tombstone those first so the restore can't
+        # leave duplicate active rows for one identity.
         async with get_session() as session:
             await session.execute(
                 update(UserModel)
-                .where(UserModel.id.in_([row_id for _, row_id in tombstoned]))
+                .where(UserModel.clerk_user_id == clerk_user_id)
+                .where(UserModel.id.notin_(original_row_ids))
+                .where(UserModel.is_active == True)  # noqa: E712
+                .values(is_active=False, deleted_at=utcnow())
+            )
+            await session.execute(
+                update(UserModel)
+                .where(UserModel.id.in_(original_row_ids))
                 .values(is_active=True, deleted_at=None)
                 .execution_options(include_deleted=True)
             )
             await session.commit()
+        # Contexts cached during the window may point at the now-tombstoned
+        # duplicate rows; drop them so the next request resolves the
+        # restored originals.
+        invalidate_cached_clerk_auth(clerk_user_id)
         raise
 
-    # Drop this container's cached auth contexts so the deleted user's JWT
-    # stops resolving immediately here. Other containers age out within the
-    # 60s cache TTL, and the Clerk sessions themselves were revoked by the
-    # deletion above; the ``user.deleted`` webhook is the cross-container
-    # safety net that re-tombstones any row a stale JWT may have revived.
+    # Point of no return: the Clerk account is gone. Sweep any rows a
+    # concurrent JIT provisioning revived between the tombstone commit and
+    # Clerk deletion, then drop contexts cached during that window. Other
+    # containers' caches age out within the 60s TTL, Clerk revoked the
+    # user's sessions above, and the ``user.deleted`` webhook is the
+    # cross-container safety net that re-tombstones any later revival.
+    async with get_session() as session:
+        await session.execute(
+            update(UserModel)
+            .where(UserModel.clerk_user_id == clerk_user_id)
+            .where(UserModel.is_active == True)  # noqa: E712
+            .values(is_active=False, deleted_at=utcnow())
+        )
+        await session.commit()
     invalidate_cached_clerk_auth(clerk_user_id)
 
     # Tag ownership transfer runs best-effort per org, after the point of no
