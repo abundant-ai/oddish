@@ -20,7 +20,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "ixdrift01_add_model_indexes"
-down_revision = "cost_settle_001"
+down_revision = "skip01_add_skipped"
 branch_labels = None
 depends_on = None
 
