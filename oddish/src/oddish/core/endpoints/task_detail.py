@@ -18,6 +18,7 @@ from oddish.core.tags.projection import (
 )
 from oddish.db import TaskModel, TaskVersionModel, TrialStatus
 from oddish.schemas import (
+    TaskBrowseExperiment,
     TaskCostTotals,
     TaskDetailResponse,
     TaskVersionResponse,
@@ -128,6 +129,14 @@ async def get_task_detail_core(
         current_version_id=task_status.current_version_id,
     )
 
+    # Version-scoped experiment membership (which experiments ran non-probe
+    # trials against each version), distinct from the task-level all-time list.
+    experiments_by_version = _experiments_by_version(
+        all_trial_models, task.experiments
+    )
+    for summary in versions_sorted:
+        summary.experiments = experiments_by_version.get(summary.id, [])
+
     # Hydrate effective user tags so the detail page renders the same
     # chips the browse list does.
     user_tags_by_task = await list_effective_user_tags_for_task_versions(
@@ -170,6 +179,35 @@ async def get_task_detail_core(
         versions=versions_sorted,
         totals=totals,
     )
+
+
+def _experiments_by_version(
+    trials, experiments
+) -> dict[str, list[TaskBrowseExperiment]]:
+    """Map version_id -> experiments that ran a non-probe trial against it.
+
+    Names come from ``experiments`` (the task's all-time membership), keyed by
+    the ``experiment_id`` on each trial. Trials that are probes, lack an
+    experiment link, or reference an experiment not in the membership set are
+    ignored. Each version's list is sorted by name for a stable UI order.
+    """
+    exp_name_by_id = {e.id: e.name for e in experiments}
+    ids_by_version: dict[str, set[str]] = {}
+    for t in trials:
+        if getattr(t, "is_probe", False):
+            continue
+        if t.experiment_id is None or t.task_version_id is None:
+            continue
+        if t.experiment_id not in exp_name_by_id:
+            continue
+        ids_by_version.setdefault(t.task_version_id, set()).add(t.experiment_id)
+    return {
+        vid: [
+            TaskBrowseExperiment(id=eid, name=exp_name_by_id[eid])
+            for eid in sorted(ids, key=lambda eid: (exp_name_by_id[eid], eid))
+        ]
+        for vid, ids in ids_by_version.items()
+    }
 
 
 def _aggregate_task_detail_rollups(
