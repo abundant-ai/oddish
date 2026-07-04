@@ -8,7 +8,10 @@ from oddish.db import ExperimentModel, TrialModel, experiment_trials, utcnow
 from oddish.db.models import TaskModel, TrialStatus
 from oddish.schemas import TrialCollectionResponse
 
-_TERMINAL = (TrialStatus.SUCCESS, TrialStatus.FAILED)
+# Terminal statuses gathered into a collection. Includes SKIPPED so gate-skipped
+# trials are preserved in the collection (like failed/errored trials), not
+# dropped — they render as their own ⊘ state.
+_TERMINAL = (TrialStatus.SUCCESS, TrialStatus.FAILED, TrialStatus.SKIPPED)
 
 
 async def create_trial_collection_core(

@@ -11,6 +11,7 @@ from oddish.db import (
     TaskModel,
     TaskStatus,
     TrialModel,
+    TrialStatus,
     VerdictStatus,
     WorkerJobModel,
     WorkerJobStatus,
@@ -126,7 +127,11 @@ async def _load_live_trials_for_classification(
                     TrialModel.superseded_by_trial_id.is_(None),
                     # Gate-skipped trials never ran (no logs to classify); a
                     # classifier run on them would emit phantom failures and
-                    # pollute the verdict + the agent's pass/fail metrics.
+                    # pollute the verdict + the agent's pass/fail metrics. New
+                    # skipped trials carry status=SKIPPED; the legacy prefix
+                    # check still excludes pre-SKIPPED rows (marked FAILED +
+                    # the old sentinel message, since we don't backfill).
+                    TrialModel.status != TrialStatus.SKIPPED,
                     func.coalesce(TrialModel.error_message, "").notlike(
                         f"{GATE_SKIP_PREFIX}%"
                     ),

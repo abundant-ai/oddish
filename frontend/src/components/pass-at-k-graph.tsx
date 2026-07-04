@@ -84,6 +84,8 @@ function buildAgentStats(
     for (const task of tasks) {
       const trials = taskAgentTrials[task.id]?.[summary.key] ?? [];
       if (trials.length === 0) continue;
+      // Skipped trials count as failed attempts: they're in `n` but never in `c`
+      // (reward !== 1), so pass@k treats them like any other non-passing attempt.
       const c = trials.filter((t) => t.reward === 1).length;
       taskResults.push({ task: task.id, n: trials.length, c });
     }
