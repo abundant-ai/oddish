@@ -107,7 +107,14 @@ def _index_descriptor(index) -> str:
 
 
 def _fingerprint_metadata(metadata) -> str:
-    """Stable short hash of a metadata's table + column + index names."""
+    """Stable short hash of a metadata's table + column + index names.
+
+    Constraints are deliberately not fingerprinted: the branch schema derives
+    from the prod snapshot + migration files (never from this metadata), so a
+    constraint-only model edit with no migration changes nothing anywhere —
+    preview and prod stay identical, which is the contract. The marker's only
+    job is to notice inputs that would change the rebuilt schema or the assert.
+    """
     parts = []
     for table in sorted(metadata.tables.values(), key=lambda t: t.name):
         cols = ",".join(sorted(col.name for col in table.columns))
@@ -355,12 +362,37 @@ async def _mark_trusted(url: str) -> None:
         await engine.dispose()
 
 
+def _snapshot_prod() -> tuple[str, dict[str, str]]:
+    """Dump prod's schema and Alembic pointers as a CONSISTENT pair.
+
+    The pointers are read before and after the dump: a mismatch means prod
+    applied a migration mid-snapshot, and pairing the older schema with the
+    newer pointers would make ``upgrade head`` silently skip that migration's
+    DDL on the branch. Equal brackets mean no migration committed during the
+    dump. One retry, then fail loudly.
+    """
+    for _attempt in range(2):
+        before = asyncio.run(_fetch_prod_alembic_versions())
+        schema_sql = _dump_prod_schema()
+        after = asyncio.run(_fetch_prod_alembic_versions())
+        if before == after:
+            return schema_sql, after
+        print(
+            "bootstrap_preview_db: prod applied a migration mid-snapshot; "
+            "retrying with a fresh dump",
+            file=sys.stderr,
+        )
+    raise RuntimeError(
+        "bootstrap_preview_db: prod migrated during two consecutive schema "
+        "snapshots; re-run once prod's migration workflow settles"
+    )
+
+
 def _rebuild(url: str) -> None:
     """Snapshot prod, restore it into the branch, seed, then upgrade to head."""
-    # Snapshot before touching the branch: if prod is unreachable, the branch
-    # is left exactly as it was.
-    schema_sql = _dump_prod_schema()
-    versions = asyncio.run(_fetch_prod_alembic_versions())
+    # Snapshot (consistent schema + pointer pair) before touching the branch:
+    # if prod is unreachable or mid-migration, the branch is left as it was.
+    schema_sql, versions = _snapshot_prod()
     asyncio.run(_reset_schema(url))
     _restore_schema(url, schema_sql)
     asyncio.run(_write_alembic_versions(url, versions))

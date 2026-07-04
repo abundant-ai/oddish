@@ -292,18 +292,22 @@ def test_rebuild_failure_propagates_without_second_heal(monkeypatch, tmp_path):
     assert not sentinel.exists()
 
 
-def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
-    # The step order is the safety property: dump + pointer fetch happen before
-    # any branch write, the seed runs before the upgrade (migrations execute
-    # against data), and the trust marker is written last.
+def _rebuild_mod(monkeypatch, version_sequence):
+    """Load the bootstrap with _rebuild's collaborators stubbed as recorders.
+
+    ``version_sequence`` = successive results of the prod pointer reads, so the
+    snapshot consistency bracket (read -> dump -> read) can be driven through
+    match, retry, and give-up shapes.
+    """
     mod = _load_bootstrap()
     calls: list[str] = []
+    versions = iter(version_sequence)
 
     monkeypatch.setattr(mod, "_dump_prod_schema", lambda: calls.append("dump") or "sql")
 
     async def _fetch():
         calls.append("fetch_versions")
-        return {"alembic_version_oddish": "x", "alembic_version_backend": "y"}
+        return next(versions)
 
     async def _reset(url):
         calls.append("reset")
@@ -327,9 +331,22 @@ def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
     )
     monkeypatch.setattr(mod, "_assert_model_schema", _assert_ok)
     monkeypatch.setattr(mod, "_mark_trusted", _trust)
+    return mod, calls
 
+
+V1 = {"alembic_version_oddish": "x", "alembic_version_backend": "y"}
+V2 = {"alembic_version_oddish": "z", "alembic_version_backend": "y"}
+V3 = {"alembic_version_oddish": "w", "alembic_version_backend": "y"}
+
+
+def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
+    # The step order is the safety property: the pointer bracket + dump happen
+    # before any branch write, the seed runs before the upgrade (migrations
+    # execute against data), and the trust marker is written last.
+    mod, calls = _rebuild_mod(monkeypatch, [V1, V1])
     mod._rebuild("postgresql://stub")
     assert calls == [
+        "fetch_versions",
         "dump",
         "fetch_versions",
         "reset",
@@ -341,6 +358,35 @@ def test_rebuild_snapshots_prod_before_touching_the_branch(monkeypatch):
         "assert",
         "trust",
     ]
+
+
+def test_rebuild_retries_snapshot_when_prod_migrates_mid_dump(monkeypatch):
+    # Pointers moved during the first dump (older schema + newer pointers
+    # would make upgrade head silently skip a migration) -> fresh dump, whose
+    # bracket matches -> proceed.
+    mod, calls = _rebuild_mod(monkeypatch, [V1, V2, V2, V2])
+    mod._rebuild("postgresql://stub")
+    assert calls[:6] == [
+        "fetch_versions",
+        "dump",
+        "fetch_versions",
+        "fetch_versions",
+        "dump",
+        "fetch_versions",
+    ]
+    assert calls[6] == "reset"
+    assert calls[-1] == "trust"
+
+
+def test_rebuild_fails_loud_when_prod_keeps_migrating(monkeypatch):
+    # Both snapshot attempts bracket a pointer change -> loud failure with the
+    # branch untouched (no reset/restore/seed ever recorded).
+    mod, calls = _rebuild_mod(monkeypatch, [V1, V2, V2, V3])
+    with pytest.raises(RuntimeError, match="migrated during two consecutive"):
+        mod._rebuild("postgresql://stub")
+    assert "reset" not in calls
+    assert "restore" not in calls
+    assert "seed" not in calls
 
 
 def test_orchestration_helpers_are_asyncio_run_compatible():
