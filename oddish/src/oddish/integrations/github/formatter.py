@@ -150,10 +150,8 @@ def format_task_comment(
         "",
     ]
 
-    # SKIPPED is terminal but never ran: it counts as "done" (so the comment
-    # advances past "\ud83d\udd04 Running"), but it's NOT analyzable, so the analysis
-    # stages use a skipped-excluding denominator (analyzable). Mirrors
-    # format_experiment_comment.
+    # Skipped counts as "done" (terminal) but isn't analyzable (never ran), so
+    # progress and analysis use different denominators. See format_experiment_comment.
     total = len(task.trials)
     skipped = sum(1 for t in task.trials if t.status == "skipped")
     completed = sum(
@@ -277,9 +275,8 @@ def format_experiment_comment(
         "",
     ]
 
-    # SKIPPED is terminal but never ran: it counts as "done" for trial progress
-    # (so the comment advances past "🔄 Progress"), but it's NOT analyzable, so
-    # the analysis stages use a skipped-excluding denominator (analyzable_trials).
+    # Skipped counts as "done" (terminal) but isn't analyzable (never ran):
+    # progress counts it, analysis stages use analyzable_trials (skipped-excluding).
     total_trials = sum(1 for t in tasks for trial in t.trials)
     skipped_trials = sum(
         1 for t in tasks for trial in t.trials if trial.status == "skipped"

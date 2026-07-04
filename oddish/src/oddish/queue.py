@@ -1417,9 +1417,9 @@ async def _cancel_gated_llm_trials(
     """Cancel BLOCKED LLM worker_jobs and mark their trials SKIPPED.
 
     Gated trials never ran, so there is no sandbox to tear down. The trial row
-    is marked ``SKIPPED`` (a terminal, non-failure status) with *reason* on it;
-    this is the single place that decides that representation. SKIPPED is
-    excluded from failure/pass metrics and rendered distinctly in the UI.
+    is marked ``SKIPPED`` (terminal, its own bucket — not a failure) with
+    *reason* on it; this is the single place that decides that representation.
+    SKIPPED counts as a non-pass toward metrics/done and renders distinctly (⊘).
     """
     if not trial_ids:
         return
