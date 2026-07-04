@@ -653,3 +653,5 @@ async def _cleanup_legacy_fixture_rows(md: MetaData, conn, ordered) -> None:
                 )
         except (IntegrityError, DBAPIError):
             _warn("legacy cleanup skipped for anonymized users (referenced)")
+
+# Temporary no-op comment for a Preview Reset recovery drill (PR closes after).
