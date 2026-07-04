@@ -259,6 +259,9 @@ def status(
                         completed_trials = sum(
                             t.get("completed", 0) or 0 for t in exp_tasks
                         )
+                        skipped_trials = sum(
+                            t.get("skipped", 0) or 0 for t in exp_tasks
+                        )
                         reward_success = sum(
                             t.get("reward_success", 0) or 0 for t in exp_tasks
                         )
@@ -266,11 +269,12 @@ def status(
                             t.get("reward_total", 0) or 0 for t in exp_tasks
                         )
 
-                        trials_display = (
-                            f"{completed_trials}/{total_trials}"
-                            if total_trials
-                            else "-"
-                        )
+                        if total_trials:
+                            trials_display = f"{completed_trials}/{total_trials}"
+                            if skipped_trials:
+                                trials_display += f" ({skipped_trials}S)"
+                        else:
+                            trials_display = "-"
                         rewards_display = (
                             f"{reward_success}/{reward_total}" if reward_total else "-"
                         )

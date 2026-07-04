@@ -2245,6 +2245,7 @@ def watch_task(
                 total = len(all_trials)
                 completed = sum(1 for t in all_trials if t.get("status") == "success")
                 failed = sum(1 for t in all_trials if t.get("status") == "failed")
+                skipped = sum(1 for t in all_trials if t.get("status") == "skipped")
 
                 rewards = [
                     float(t["reward"])
@@ -2256,9 +2257,15 @@ def watch_task(
                 reward_partial = sum(1 for reward in rewards if 0 < reward < 1)
 
                 table.add_section()
-                summary_parts = [f"[bold]{completed}/{total}[/bold] done"]
+                # "done" = terminal trials (success + failed + skipped), matching
+                # the server progress string; breakdown shown as annotations.
+                summary_parts = [
+                    f"[bold]{completed + failed + skipped}/{total}[/bold] done"
+                ]
                 if failed > 0:
                     summary_parts.append(f"[red]{failed} failed[/red]")
+                if skipped > 0:
+                    summary_parts.append(f"[dim]{skipped} skipped[/dim]")
                 if rewards:
                     summary_parts.append(
                         f"avg [cyan]{sum(rewards) / len(rewards):.2f}[/cyan]"
