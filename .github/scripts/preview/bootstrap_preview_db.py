@@ -391,7 +391,9 @@ def _snapshot_prod() -> tuple[str, dict[str, str]]:
 def _rebuild(url: str) -> None:
     """Snapshot prod, restore it into the branch, seed, then upgrade to head."""
     # Snapshot (consistent schema + pointer pair) before touching the branch:
-    # if prod is unreachable or mid-migration, the branch is left as it was.
+    # if prod is unreachable or mid-migration, the branch is left as it was. A branch whose tree dropped a migration
+    # (e.g. a reverted PR commit) is also healed here: the rebuild never
+    # consults the branch's old pointer.
     schema_sql, versions = _snapshot_prod()
     asyncio.run(_reset_schema(url))
     _restore_schema(url, schema_sql)
