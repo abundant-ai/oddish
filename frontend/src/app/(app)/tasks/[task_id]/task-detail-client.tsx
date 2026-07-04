@@ -969,6 +969,19 @@ export function TaskDetailClient({
                 onMutate={() => mutate()}
               />
             ) : null}
+            {selectedVersion?.experiments?.length ? (
+              <div
+                className="flex min-w-0 items-center gap-x-2 font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+                title="Experiments that ran trials against this version"
+              >
+                <span className="shrink-0">in</span>
+                <ExperimentsList
+                  experiments={selectedVersion.experiments}
+                  maxVisible={2}
+                  linkClassName="text-[color:var(--paper-ink-2)]"
+                />
+              </div>
+            ) : null}
           </div>
         </div>
 
