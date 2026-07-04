@@ -195,7 +195,7 @@ async def clear_terminal_trial_runtime_refs(
                             WITH victims AS (
                                 SELECT id
                                 FROM   trials
-                                WHERE  status::text IN ('SUCCESS', 'FAILED')
+                                WHERE  status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
                                   AND  deleted_at IS NULL
                                   AND  (
                                       current_worker_id IS NOT NULL

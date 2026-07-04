@@ -1455,6 +1455,9 @@ async def _cancel_gated_llm_trials(
             error_message=reason,
             finished_at=utcnow(),
             harbor_stage=CANCELLED_HARBOR_STAGE,
+            # Terminal now — drop any runtime refs so no worker/slot lingers.
+            current_worker_id=None,
+            current_queue_slot=None,
         )
     )
 
