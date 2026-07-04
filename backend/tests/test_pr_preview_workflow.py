@@ -411,6 +411,9 @@ def test_reset_guard_runs_before_checkout():
         i for i, s in enumerate(steps) if "actions/checkout" in s.get("uses", "")
     )
     assert guard_idx < checkout_idx
+    # Container jobs default to sh (dash); the guard's `set -euo pipefail`
+    # needs bash (its absence failed the first live dispatch closed).
+    assert steps[guard_idx].get("shell") == "bash"
     ref = steps[checkout_idx]["with"]["ref"]
     assert "refs/pull/" in ref and "/merge" in ref
 
