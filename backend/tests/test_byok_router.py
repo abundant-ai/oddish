@@ -153,6 +153,15 @@ async def test_put_empty_key_rejected(client_user_auth):
     assert resp.status_code == 400
 
 
+async def test_put_without_enc_key_returns_503(client_user_auth, monkeypatch):
+    monkeypatch.delenv("ODDISH_CRED_ENC_KEY", raising=False)
+    crypto.reset_key_cache()
+    resp = await client_user_auth.put(
+        "/byok/keys/anthropic", json={"key": "sk-ant-whatever"}
+    )
+    assert resp.status_code == 503
+
+
 async def test_delete_no_key_is_404(client_user_auth, monkeypatch):
     _install_fake_get_session(monkeypatch, FakeSession(query_rows=[]))
     assert (await client_user_auth.delete("/byok/keys/anthropic")).status_code == 404

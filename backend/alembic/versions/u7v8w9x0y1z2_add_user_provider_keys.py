@@ -30,15 +30,11 @@ def upgrade() -> None:
             ciphertext BYTEA NOT NULL,
             key_version INTEGER NOT NULL DEFAULT 1,
             key_hint VARCHAR(8) NOT NULL DEFAULT '',
-            status VARCHAR(16) NOT NULL DEFAULT 'active',
-            last_validated_at TIMESTAMPTZ,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             deleted_at TIMESTAMPTZ,
             CONSTRAINT ck_user_provider_keys_vendor
-                CHECK (vendor IN ('anthropic', 'openai')),
-            CONSTRAINT ck_user_provider_keys_status
-                CHECK (status IN ('active', 'invalid'))
+                CHECK (vendor IN ('anthropic', 'openai'))
         )
         """
     )

@@ -73,7 +73,15 @@ async def put_byok_key(
     if not key:
         raise HTTPException(status_code=400, detail="key must not be empty")
 
-    ciphertext, key_version = crypto.encrypt_secret(key)
+    try:
+        ciphertext, key_version = crypto.encrypt_secret(key)
+    except crypto.CredentialKeyMissingError as exc:
+        # The environment isn't set up for BYOK (no encryption key). Surface a
+        # clear "unavailable" instead of a raw 500.
+        raise HTTPException(
+            status_code=503,
+            detail="BYOK storage is not configured on this environment",
+        ) from exc
     now = utcnow()
     try:
         async with get_session() as session:

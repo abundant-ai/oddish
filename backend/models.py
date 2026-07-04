@@ -401,10 +401,6 @@ class UserProviderKeyModel(TimestampedMixin, Base):
             "vendor IN ('anthropic', 'openai')",
             name="ck_user_provider_keys_vendor",
         ),
-        CheckConstraint(
-            "status IN ('active', 'invalid')",
-            name="ck_user_provider_keys_status",
-        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -414,10 +410,6 @@ class UserProviderKeyModel(TimestampedMixin, Base):
     ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     key_hint: Mapped[str] = mapped_column(String(8), nullable=False, default="")
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
-    last_validated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
 
 
 # ---------------------------------------------------------------------------
