@@ -195,7 +195,7 @@ async def clear_terminal_trial_runtime_refs(
                             WITH victims AS (
                                 SELECT id
                                 FROM   trials
-                                WHERE  status::text IN ('SUCCESS', 'FAILED')
+                                WHERE  status::text IN ('SUCCESS', 'FAILED', 'SKIPPED')
                                   AND  deleted_at IS NULL
                                   AND  (
                                       current_worker_id IS NOT NULL
@@ -787,8 +787,9 @@ async def _advance_legacy_analyzing_tasks(session) -> int:
                   AND tr.superseded_by_trial_id IS NULL
                 GROUP BY t.id
                 HAVING COUNT(*) FILTER (
-                    WHERE tr.analysis_status IS NULL
-                       OR tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                    WHERE tr.status <> 'SKIPPED'
+                      AND (tr.analysis_status IS NULL
+                           OR tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING'))
                 ) = 0
                 """
             )
@@ -935,6 +936,7 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
                       AND  deleted_at IS NULL
                       AND  superseded_by_trial_id IS NULL
                       AND  analysis_status IS NULL
+                      AND  status <> 'SKIPPED'
                     """
                 ),
                 {"reason": STUCK_ANALYZING_REASON, "task_ids": stuck_task_ids},
