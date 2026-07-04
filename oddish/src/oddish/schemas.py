@@ -969,11 +969,6 @@ class UserTagRef(BaseModel):
     older: bool = False
 
 
-# TaskVersionSummary forward-references UserTagRef (defined above) and
-# TaskBrowseExperiment (defined below); model_rebuild() is deferred until
-# after TaskBrowseExperiment so both names resolve.
-
-
 class TaskResponse(BaseModel):
     id: str
     name: str
