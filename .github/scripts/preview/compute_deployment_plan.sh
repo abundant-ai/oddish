@@ -64,6 +64,13 @@ else
   fi
 fi
 
+# A migrated schema must be boot-tested by the preview backend, and the branch
+# DB password rotated by wait_for_supabase_branch.sh must be re-published to
+# the Modal secret -- so any migration run also redeploys the backend.
+if [ "$run_migrations" = "true" ]; then
+  deploy_backend=true
+fi
+
 any_change=false
 if [ "$deploy_backend" = "true" ] ||
   [ "$run_migrations" = "true" ] ||
