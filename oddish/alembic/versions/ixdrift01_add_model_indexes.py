@@ -80,7 +80,14 @@ def _drop_invalid(name: str) -> None:
 
 def upgrade() -> None:
     # Session-level; persists across the autocommit steps on this connection.
-    _autocommit("SET lock_timeout = '8s'")
+    # CONCURRENTLY's lock waits (ShareUpdateExclusive + old-snapshot virtual
+    # xid waits) never block DML, so waiting patiently is safe -- prod's first
+    # run showed 8s systematically loses the race against routine worker
+    # transactions on experiments/trials (both the CREATE and the INVALID-
+    # leftover DROP timed out). statement_timeout is cleared so a slow wait
+    # or build is not killed midway.
+    _autocommit("SET lock_timeout = '300s'")
+    _autocommit("SET statement_timeout = '0'")
     for name, table, column, unique in INDEXES:
         if not _table_exists(table):
             continue
@@ -93,6 +100,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    _autocommit("SET lock_timeout = '8s'")
+    _autocommit("SET lock_timeout = '300s'")
+    _autocommit("SET statement_timeout = '0'")
     for name, _table, _column, _unique in INDEXES:
         _autocommit(f'DROP INDEX CONCURRENTLY IF EXISTS "{name}"')
