@@ -465,6 +465,12 @@ function ExperimentsTableBody({
                           ({experiment.failed_trials}F)
                         </span>
                       )}
+                      {experiment.skipped_trials > 0 && (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          ({experiment.skipped_trials}S)
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {avgScorePct === null ? (

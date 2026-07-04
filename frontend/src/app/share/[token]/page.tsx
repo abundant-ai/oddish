@@ -45,6 +45,7 @@ export default function PublicExperimentPage() {
         if (filtered.length === trials.length) return task;
         const completed = filtered.filter((t) => t.status === "success").length;
         const failed = filtered.filter((t) => t.status === "failed").length;
+        const skipped = filtered.filter((t) => t.status === "skipped").length;
         const rewardSuccess = filtered.filter((t) => t.reward === 1).length;
         const rewardSum = filtered.reduce(
           (sum, trial) => sum + (trial.reward ?? 0),
@@ -57,6 +58,7 @@ export default function PublicExperimentPage() {
           total: filtered.length,
           completed,
           failed,
+          skipped,
           reward_success: rewardTotal > 0 ? rewardSuccess : null,
           reward_sum: rewardTotal > 0 ? rewardSum : null,
           reward_total: rewardTotal > 0 ? rewardTotal : null,
