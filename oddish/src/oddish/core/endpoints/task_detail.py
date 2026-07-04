@@ -16,7 +16,7 @@ from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
 )
-from oddish.db import TaskModel, TaskVersionModel, TrialStatus
+from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
 from oddish.schemas import (
     TaskBrowseExperiment,
     TaskCostTotals,
@@ -129,10 +129,29 @@ async def get_task_detail_core(
         current_version_id=task_status.current_version_id,
     )
 
-    # Version-scoped experiment membership (which experiments ran non-probe
-    # trials against each version), distinct from the task-level all-time list.
+    # Version-scoped experiments: which experiments ran non-probe trials
+    # against each version (distinct from the task-level all-time list). Names
+    # are resolved straight from the experiments table by the ids the trials
+    # reference, so this doesn't depend on task_experiments membership being
+    # complete (a soft-deleted or unseeded link would otherwise drop a run).
+    referenced_exp_ids = {
+        t.experiment_id
+        for t in all_trial_models
+        if not t.is_probe and t.experiment_id is not None
+    }
+    exp_name_by_id: dict[str, str] = {}
+    if referenced_exp_ids:
+        name_query = select(ExperimentModel.id, ExperimentModel.name).where(
+            ExperimentModel.id.in_(referenced_exp_ids)
+        )
+        if org_id is not None:
+            name_query = name_query.where(ExperimentModel.org_id == org_id)
+        exp_name_by_id = {
+            row.id: row.name
+            for row in (await session.execute(name_query)).all()
+        }
     experiments_by_version = _experiments_by_version(
-        all_trial_models, task.experiments
+        all_trial_models, exp_name_by_id
     )
     for summary in versions_sorted:
         summary.experiments = experiments_by_version.get(summary.id, [])
@@ -182,16 +201,15 @@ async def get_task_detail_core(
 
 
 def _experiments_by_version(
-    trials, experiments
+    trials, exp_name_by_id: dict[str, str]
 ) -> dict[str, list[TaskBrowseExperiment]]:
     """Map version_id -> experiments that ran a non-probe trial against it.
 
-    Names come from ``experiments`` (the task's all-time membership), keyed by
-    the ``experiment_id`` on each trial. Trials that are probes, lack an
-    experiment link, or reference an experiment not in the membership set are
-    ignored. Each version's list is sorted by name for a stable UI order.
+    ``exp_name_by_id`` maps experiment_id -> name for every experiment the
+    trials may reference. Trials that are probes, lack an experiment link, or
+    reference an id missing from the map are ignored. Each version's list is
+    sorted by name for a stable UI order.
     """
-    exp_name_by_id = {e.id: e.name for e in experiments}
     ids_by_version: dict[str, set[str]] = {}
     for t in trials:
         if getattr(t, "is_probe", False):
