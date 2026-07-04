@@ -970,6 +970,23 @@ export function TaskDetailClient({
               />
             ) : null}
           </div>
+          {selectedVersion?.experiments?.length ? (
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+              title="Experiments that ran trials against this version"
+            >
+              <span className="shrink-0">
+                {selectedVersion.experiments.length > 1
+                  ? "experiments"
+                  : "experiment"}
+              </span>
+              <ExperimentsList
+                experiments={selectedVersion.experiments}
+                maxVisible={2}
+                linkClassName="text-[color:var(--paper-ink-2)]"
+              />
+            </div>
+          ) : null}
         </div>
 
         <TaskProbeRunCard
