@@ -452,7 +452,13 @@ function ExperimentsTableBody({
                     </TableCell>
                     <TableCell>{experiment.task_count}</TableCell>
                     <TableCell className="whitespace-nowrap font-mono text-xs">
-                      {experiment.completed_trials}/{experiment.total_trials}
+                      {/* done = terminal (success + failed + skipped), so a
+                          finished experiment reads N/N, not "2/5". The (R)/(F)/(S)
+                          suffixes break down the composition. */}
+                      {experiment.completed_trials +
+                        experiment.failed_trials +
+                        experiment.skipped_trials}
+                      /{experiment.total_trials}
                       {retryingTrials > 0 && (
                         <span className="text-amber-500 dark:text-amber-300">
                           {" "}

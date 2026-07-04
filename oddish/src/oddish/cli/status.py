@@ -262,6 +262,9 @@ def status(
                         skipped_trials = sum(
                             t.get("skipped", 0) or 0 for t in exp_tasks
                         )
+                        failed_trials = sum(
+                            t.get("failed", 0) or 0 for t in exp_tasks
+                        )
                         reward_success = sum(
                             t.get("reward_success", 0) or 0 for t in exp_tasks
                         )
@@ -269,8 +272,11 @@ def status(
                             t.get("reward_total", 0) or 0 for t in exp_tasks
                         )
 
+                        # done = terminal (success + failed + skipped), matching
+                        # the watch summary and server progress field.
+                        done_trials = completed_trials + failed_trials + skipped_trials
                         if total_trials:
-                            trials_display = f"{completed_trials}/{total_trials}"
+                            trials_display = f"{done_trials}/{total_trials}"
                             if skipped_trials:
                                 trials_display += f" ({skipped_trials}S)"
                         else:
