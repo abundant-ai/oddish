@@ -381,7 +381,10 @@ function VersionSwitcher({
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[320px] font-mono">
+      <DropdownMenuContent
+        align="start"
+        className="max-h-[min(60vh,var(--radix-dropdown-menu-content-available-height))] w-[320px] overflow-y-auto font-mono"
+      >
         {versions.map((v) => {
           const label = v.is_current
             ? `v${v.version} · current`
