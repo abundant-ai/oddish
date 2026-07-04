@@ -2,7 +2,8 @@
 
 Baseline-gate-cancelled trials become a first-class ``SKIPPED`` status instead
 of ``FAILED`` + a sentinel error_message, so the UI shows "Skipped" (not an
-error) and they're excluded from failure/pass metrics (they never ran).
+error). Skipped is terminal and a non-pass: it counts toward "done" and stays
+in pass-rate/completion denominators (like a harness error), never as a pass.
 
 The ``jobstatus`` PG enum uses the enum *member names* (uppercase) as labels
 (PENDING/QUEUED/.../FAILED/RETRYING), so we add ``'SKIPPED'``. No backfill:
@@ -12,7 +13,7 @@ pre-existing gate-cancelled rows stay ``FAILED`` + the legacy sentinel message.
 MUST NOT be used in the same migration. Mirrors qa01 / TASK_EXPAND precedents.
 
 Revision ID: skip01_add_skipped
-Revises: api_key_creator_role_001
+Revises: cost_settle_001
 Create Date: 2026-07-03 00:00:00.000000
 """
 

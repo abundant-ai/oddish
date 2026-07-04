@@ -120,8 +120,9 @@ class JobStatus(str, Enum):
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
     RETRYING = "retrying"  # Only used by trials
     # Trials only: the trial never ran because the baseline gate cancelled it
-    # (its nop/oracle baselines didn't validate the task). Terminal, and NOT a
-    # failure -- excluded from failure/pass metrics since it never executed.
+    # (its nop/oracle baselines didn't validate the task). Terminal and its own
+    # bucket (not a failure), but counted as a non-pass in pass-rate denominators
+    # and toward "done", like a harness error.
     SKIPPED = "skipped"
 
 
