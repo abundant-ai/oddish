@@ -213,6 +213,8 @@ def _aggregate_task_detail_rollups(
             bucket.completed_count += 1
         elif trial.status == TrialStatus.FAILED:
             bucket.failed_count += 1
+        elif trial.status == TrialStatus.SKIPPED:
+            bucket.skipped_count += 1
 
         if trial.status == TrialStatus.SUCCESS and trial.reward is not None:
             bucket.reward_sum += trial.reward
@@ -223,7 +225,10 @@ def _aggregate_task_detail_rollups(
                 bucket.fail_count += 1
             else:
                 bucket.partial_count += 1
-        elif trial.status != TrialStatus.FAILED:
+        elif trial.status not in (TrialStatus.FAILED, TrialStatus.SKIPPED):
+            # SKIPPED is terminal, not pending — it never ran, so it must not
+            # count as still-in-flight (which would inflate pending_count and
+            # keep the task looking "active").
             bucket.pending_count += 1
 
         if trial.cost_usd is not None:

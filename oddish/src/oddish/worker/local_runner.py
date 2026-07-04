@@ -391,7 +391,7 @@ async def _local_post_trial_hooks(trial_id: str, *, dry_run: bool) -> None:
     Called once ``trial_id`` reaches a terminal state. ``maybe_gate_llm_trials``
     resolves the scope's baseline gate when this was the last baseline: VALID
     releases the BLOCKED LLM trials (BLOCKED -> QUEUED), FAULTY cancels them
-    (-> FAILED). When something was resolved we dispatch the task's now-QUEUED
+    (-> SKIPPED). When something was resolved we dispatch the task's now-QUEUED
     trials to the in-process runner; their atomic self-claim makes this safe
     even if siblings are still gated in another scope (they self-skip).
     """

@@ -11,7 +11,13 @@ type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "retrying"
+  | "skipped";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
@@ -215,6 +221,7 @@ export interface Task {
   total: number;
   completed: number;
   failed: number;
+  skipped?: number;
   progress?: string;
   reward_success?: number | null;
   reward_sum?: number | null;
@@ -298,6 +305,7 @@ export interface TaskVersionSummary {
   trial_count: number;
   completed_count: number;
   failed_count: number;
+  skipped_count: number;
   pass_count: number;
   partial_count: number;
   fail_count: number;
@@ -336,6 +344,7 @@ export interface QueueStats {
     success: number;
     failed: number;
     retrying: number;
+    skipped: number;
     recommended_concurrency: number;
   };
 }
@@ -444,6 +453,7 @@ export interface DashboardExperiment {
   total_trials: number;
   completed_trials: number;
   failed_trials: number;
+  skipped_trials: number;
   retrying_trials: number;
   active_trials: number;
   reward_success: number;

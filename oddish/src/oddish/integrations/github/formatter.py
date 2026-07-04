@@ -87,6 +87,8 @@ def _trial_status_cell(trial: TrialSummary) -> str:
         return "\u23f3 Queued"
     if trial.status == "running":
         return "\U0001f504 Running"
+    if trial.status == "skipped":
+        return "\u2298 Skipped"
     if trial.status == "failed":
         return f"\u274c Failed ({_format_duration(trial.duration_seconds)})"
     return f"\u2705 Done ({_format_duration(trial.duration_seconds)})"
@@ -148,8 +150,14 @@ def format_task_comment(
         "",
     ]
 
+    # Skipped counts as "done" (terminal) but isn't analyzable (never ran), so
+    # progress and analysis use different denominators. See format_experiment_comment.
     total = len(task.trials)
-    completed = sum(1 for t in task.trials if t.status in ("success", "failed"))
+    skipped = sum(1 for t in task.trials if t.status == "skipped")
+    completed = sum(
+        1 for t in task.trials if t.status in ("success", "failed", "skipped")
+    )
+    analyzable = total - skipped
     analyzed = sum(
         1 for t in task.trials if t.analysis_status == "success" and t.classification
     )
@@ -162,12 +170,18 @@ def format_task_comment(
             lines.append(f"> {task.verdict['primary_issue']}")
     elif task.verdict_status == "running":
         lines.append("### \U0001f504 Computing Verdict...")
-    elif analyzed == total and total > 0:
+    elif analyzable == 0 and completed == total and total > 0:
+        # Every trial terminal but nothing analyzable (all gate-skipped) \u2014 show
+        # a terminal state, not a stuck "Analyzing Results... (0/0 classified)".
+        lines.append(f"### \u2298 All {total} trials skipped (baseline gate)")
+    elif analyzable > 0 and analyzed == analyzable:
         lines.append(
-            f"### \u23f3 Computing Verdict... ({analyzed}/{total} analyses done)"
+            f"### \u23f3 Computing Verdict... ({analyzed}/{analyzable} analyses done)"
         )
     elif completed == total and total > 0:
-        lines.append(f"### \u23f3 Analyzing Results... ({analyzed}/{total} classified)")
+        lines.append(
+            f"### \u23f3 Analyzing Results... ({analyzed}/{analyzable} classified)"
+        )
     elif completed > 0:
         lines.append(
             f"### \U0001f504 Running \u2014 {completed}/{total} trials complete "
@@ -261,10 +275,19 @@ def format_experiment_comment(
         "",
     ]
 
-    total_trials = sum(len(t.trials) for t in tasks)
-    completed_trials = sum(
-        1 for t in tasks for trial in t.trials if trial.status in ("success", "failed")
+    # Skipped counts as "done" (terminal) but isn't analyzable (never ran):
+    # progress counts it, analysis stages use analyzable_trials (skipped-excluding).
+    total_trials = sum(1 for t in tasks for trial in t.trials)
+    skipped_trials = sum(
+        1 for t in tasks for trial in t.trials if trial.status == "skipped"
     )
+    completed_trials = sum(
+        1
+        for t in tasks
+        for trial in t.trials
+        if trial.status in ("success", "failed", "skipped")
+    )
+    analyzable_trials = total_trials - skipped_trials
     analyzed_trials = sum(
         1
         for t in tasks
@@ -285,13 +308,22 @@ def format_experiment_comment(
             lines.append(
                 f"### \u26a0\ufe0f {good_tasks}/{total_tasks} tasks passed validation"
             )
-    elif analyzed_trials == total_trials and total_trials > 0:
+    elif (
+        analyzable_trials == 0
+        and completed_trials == total_trials
+        and total_trials > 0
+    ):
+        # Every trial is terminal but none are analyzable (all gate-skipped),
+        # so there's nothing to analyze or verdict \u2014 show a terminal state
+        # instead of a stuck "Analyzing results... (0/0 classified)".
+        lines.append(f"### \u2298 All {total_trials} trials skipped (baseline gate)")
+    elif analyzable_trials > 0 and analyzed_trials == analyzable_trials:
         lines.append(
-            f"### \u23f3 Computing verdicts... ({analyzed_trials}/{total_trials} analyses done)"
+            f"### \u23f3 Computing verdicts... ({analyzed_trials}/{analyzable_trials} analyses done)"
         )
     elif completed_trials == total_trials and total_trials > 0:
         lines.append(
-            f"### \u23f3 Analyzing results... ({analyzed_trials}/{total_trials} classified)"
+            f"### \u23f3 Analyzing results... ({analyzed_trials}/{analyzable_trials} classified)"
         )
     elif completed_trials > 0:
         lines.append(
@@ -313,7 +345,14 @@ def format_experiment_comment(
 
         for task in tasks:
             task_total = len(task.trials)
-            task_done = sum(1 for t in task.trials if t.status in ("success", "failed"))
+            # Skipped is terminal (counts as done), matching the header progress
+            # line — otherwise this table reads as still-running for a done,
+            # gate-skipped task.
+            task_done = sum(
+                1
+                for t in task.trials
+                if t.status in ("success", "failed", "skipped")
+            )
 
             if task.verdict_status == "success" and task.verdict:
                 verdict_emoji = (

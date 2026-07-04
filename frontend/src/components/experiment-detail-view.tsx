@@ -139,6 +139,7 @@ type ExperimentSummary = {
   totalTrials: number;
   completedTrials: number;
   failedTrials: number;
+  skippedTrials: number;
   passCount: number;
   partialCount: number;
   failCount: number;
@@ -158,6 +159,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   let totalTrialsFallback = 0;
   let completedFallback = 0;
   let failedFallback = 0;
+  let skippedFallback = 0;
   let rewardSumFallback = 0;
   let rewardTotalFallback = 0;
   // Per-task mean reward over scored trials (baselines excluded); the avg
@@ -190,6 +192,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
       totalTrialsFallback += task.total;
       completedFallback += task.completed;
       failedFallback += task.failed;
+      skippedFallback += task.skipped ?? 0;
     }
   }
 
@@ -201,6 +204,7 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     totalTrials: acc.trialCount + totalTrialsFallback,
     completedTrials: acc.completed + completedFallback,
     failedTrials: acc.failed + failedFallback,
+    skippedTrials: acc.skipped + skippedFallback,
     passCount: acc.passCount,
     partialCount: acc.partialCount,
     failCount: acc.failCount,
@@ -520,15 +524,23 @@ function ExperimentSummaryBar({
   }
 
   const scorePct = summary.avgScore != null ? summary.avgScore * 100 : null;
+  // "Completion" is how many trials have finished — success, failed, AND
+  // skipped are all terminal — matching the backend's done count
+  // (resolve_task_status). The pass count lives in the Avg-score tile.
+  const doneTrials =
+    summary.completedTrials + summary.failedTrials + summary.skippedTrials;
   const completionPct =
-    summary.totalTrials > 0
-      ? (summary.completedTrials / summary.totalTrials) * 100
-      : 0;
+    summary.totalTrials > 0 ? (doneTrials / summary.totalTrials) * 100 : 0;
+  // Skipped is a terminal non-pass (its own bucket), so it belongs in the
+  // outcome distribution alongside pass/partial/fail/harness — otherwise the
+  // bar's percentages disagree with the pass metrics (e.g. 2 pass + 3 skipped
+  // would read as 100% pass here while the pass rate is 2/5).
   const outcomeTotal =
     summary.passCount +
     summary.partialCount +
     summary.failCount +
-    summary.harnessErrorCount;
+    summary.harnessErrorCount +
+    summary.skippedTrials;
   const passPct = outcomeTotal ? (summary.passCount / outcomeTotal) * 100 : 0;
   const partialPct = outcomeTotal
     ? (summary.partialCount / outcomeTotal) * 100
@@ -536,6 +548,9 @@ function ExperimentSummaryBar({
   const failPct = outcomeTotal ? (summary.failCount / outcomeTotal) * 100 : 0;
   const errPct = outcomeTotal
     ? (summary.harnessErrorCount / outcomeTotal) * 100
+    : 0;
+  const skippedPct = outcomeTotal
+    ? (summary.skippedTrials / outcomeTotal) * 100
     : 0;
 
   return (
@@ -559,13 +574,18 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile label="Completion">
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {summary.completedTrials}
+          {doneTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             / {summary.totalTrials} trials
           </span>
         </span>
         <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
           {completionPct.toFixed(0)}%
+          {summary.skippedTrials > 0 && (
+            <span className="ml-1.5 text-[color:var(--paper-ink-3)]">
+              · {summary.skippedTrials} skipped
+            </span>
+          )}
           {summary.failedTrials > 0 && (
             <span className="ml-1.5 text-[color:var(--paper-fail)]">
               · {summary.failedTrials} failing
@@ -637,6 +657,12 @@ function ExperimentSummaryBar({
           <span
             style={{ width: `${errPct}%`, background: "var(--paper-error)" }}
           />
+          <span
+            style={{
+              width: `${skippedPct}%`,
+              background: "var(--paper-ink-3)",
+            }}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-2)]">
           <span className="inline-flex items-center gap-1.5">
@@ -661,6 +687,13 @@ function ExperimentSummaryBar({
               <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-error)]" />
               {summary.harnessErrorCount}
               <span className="text-[color:var(--paper-ink-3)]">error</span>
+            </span>
+          )}
+          {summary.skippedTrials > 0 && (
+            <span className="inline-flex items-center gap-1.5">
+              <i className="inline-block h-2 w-2 rounded-[2px] bg-[color:var(--paper-ink-3)]" />
+              {summary.skippedTrials}
+              <span className="text-[color:var(--paper-ink-3)]">skipped</span>
             </span>
           )}
         </div>
