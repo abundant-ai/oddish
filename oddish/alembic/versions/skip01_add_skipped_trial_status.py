@@ -22,7 +22,7 @@ from alembic import op
 
 
 revision: str = "skip01_add_skipped"
-down_revision: Union[str, Sequence[str], None] = "api_key_creator_role_001"
+down_revision: Union[str, Sequence[str], None] = "cost_settle_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

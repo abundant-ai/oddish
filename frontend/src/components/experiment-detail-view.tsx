@@ -524,10 +524,13 @@ function ExperimentSummaryBar({
   }
 
   const scorePct = summary.avgScore != null ? summary.avgScore * 100 : null;
+  // "Completion" is how many trials have finished — success, failed, AND
+  // skipped are all terminal — matching the backend's done count
+  // (resolve_task_status). The pass count lives in the Avg-score tile.
+  const doneTrials =
+    summary.completedTrials + summary.failedTrials + summary.skippedTrials;
   const completionPct =
-    summary.totalTrials > 0
-      ? (summary.completedTrials / summary.totalTrials) * 100
-      : 0;
+    summary.totalTrials > 0 ? (doneTrials / summary.totalTrials) * 100 : 0;
   // Skipped is a terminal non-pass (its own bucket), so it belongs in the
   // outcome distribution alongside pass/partial/fail/harness — otherwise the
   // bar's percentages disagree with the pass metrics (e.g. 2 pass + 3 skipped
@@ -571,7 +574,7 @@ function ExperimentSummaryBar({
       </KpiTile>
       <KpiTile label="Completion">
         <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
-          {summary.completedTrials}
+          {doneTrials}
           <span className="font-mono text-xs font-normal text-[color:var(--paper-ink-3)]">
             / {summary.totalTrials} trials
           </span>
