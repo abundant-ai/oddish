@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-04]
+
+### Added
+
+- User Quotas MVP: per-user daily USD budgets enforced at trial-admission time (`oddish run`, retries, dashboard submissions, auto-probe), rolling out `off → shadow → enforce` via `ODDISH_QUOTA_MODE`. Every billable trial is stamped with `billed_user_id` at creation (owner precedence: github_id → handle → submitter → API-key owner, active users only); over-budget submissions get HTTP 402, unattributed ones get 403. New `quotas` override table plus `GET /quotas/me` and admin `GET`/`PUT /quotas` endpoints, backed by a dashboard usage card and an admin quota-editing UI. In-flight trials reserve `GREATEST(cost_usd, $0.50)`, an unpriced-but-started trial floors at $10 in the daily sum, and `enforce` mode serializes admission per payer via a Postgres advisory lock; a startup guard forces `quota_mode=off` if the quota schema is missing. (#542)
+- GitHub ↔ Oddish account linking: `users.github_id` (org-unique) lets a GitHub identity resolve to the correct billed Oddish account at submission time (`--github-id` CLI flag), synced from Clerk on login/webhooks and a throttled reconciler backfill; a new `GET /github/linkage` endpoint plus a server-side 403 gate block sweep submission when a supplied github_id has no linked active org user. The gate is cooperative rather than adversarial — verifying linkage, not ownership — so a caller can still pass any linked member's id. (#559)
+- Self-serve account deletion: `DELETE /users/me` deletes the Clerk user first, then soft-deletes and transfers tag ownership for every local row linked to that Clerk identity across orgs; Settings → Account gains a "Delete account" danger-zone panel with a typed-`DELETE` confirmation dialog. Requires interactive Clerk-JWT auth — API keys get 403 so a key can't destroy the account that minted it. (#575)
+- GitHub PR comments now include a per-trial Cost column and a run-level footer (`Run cost: $X (so far) • Daily quota: $Y of $Z used`), sourced from the same admission-gate primitives used for quota enforcement so the comment always agrees with what's enforced; the block is omitted entirely when nothing is priced and no quota applies. (#583)
+- Baseline gate: when a sweep mixes `nop`/`oracle` baselines with LLM agents, LLM trials are held (`BLOCKED`) until the baselines validate the task — every oracle run must score exactly 1.0 and every nop run exactly 0.0, with any error counting against the task. A faulty baseline set cancels the LLM trials instead of running them, saving queue capacity on broken tasks. Off by default (`ODDISH_GATE_LLM_ON_BASELINES`), with a per-run `--no-baseline-gate` opt-out; enforced consistently on create, append, retry, a reconciler backstop, and local-mode dispatch. (#496)
+- E2E test suite: an opt-in `backend/tests/e2e` CLI smoke suite (gated on `ODDISH_E2E=1`) boots a real backend and submits a zero-cost trial through the real `oddish` CLI, now running in its own CI workflow; a Playwright scaffold drives the authenticated dashboard task view via Clerk testing tokens, gated on five repo secrets so it's an inert no-op until configured. (#581)
+
+### Changed
+
+- Dashboard experiments list now resolves the displayed author/last-runner the same way everywhere: a member's display name beats their `@github_handle`, which beats the raw owner string — matching the precedence already used on the admin cost page. Email is never promoted into the label. (#578)
+
+### Fixed
+
+- The internal `__unattributed__` owner sentinel (used for the dashboard's "Mine" filter fast path) no longer leaks into the admin cost breakdown UI as a raw owner row; sentinel-owned spend now folds into the existing "Unattributed" bucket in the by-user table, experiment owner fields, and the by-user time series. (#578)
+- Admin Quotas tab no longer shifts its layout while saving: a single fixed-width "Save changes" button (with a spinner) replaces the per-row Save buttons, and table columns use fixed widths. "Used today" now renders as a progress bar against the effective limit (amber at 80%, red over limit), and edits can be saved with Enter or reverted with Escape. (#584)
+- Self-serve account deletion no longer bricks the account when Clerk is unreachable or misconfigured: the account used to stay locally deactivated while the Clerk sign-in still worked (re-loginable with no backend access) because the old fail-closed behavior kept local rows tombstoned on any unconfirmed Clerk outcome. The unknown-outcome case now restores the local rows and surfaces the real Clerk error instead of a generic retry message. (#579)
+- Worker/dispatcher/reconciler containers no longer crash on startup with `ModuleNotFoundError: No module named 'backfill_github_id'`, which had silently stopped all queue dispatch and reconciliation (0 runners, growing backlog) while the API stayed up and looked healthy; the module is now bundled into the Modal worker image alongside its sibling `dashboard_owner_backfill`. (#582)
+
+---
+
 ## [2026-07-02]
 
 ### Added
