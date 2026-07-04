@@ -46,7 +46,7 @@ from oddish.workers.queue.trial_failures import (
     MODAL_IMAGE_BUILD_FAILED_STAGE,
     is_modal_image_build_failure,
 )
-from oddish.workers.queue import job_tokens
+from oddish.workers.queue import byok, job_tokens
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 TRIAL_HEARTBEAT_INTERVAL_SECONDS = 30
@@ -155,6 +155,9 @@ class PreparedTrialRun:
     task_tags: dict | None = None
     # Owning org, used to stage that org's shared skills into the probe sandbox.
     org_id: str | None = None
+    # Trial owner for BYOK resolution: the task submitter, falling back to the
+    # experiment owner. None means BYOK never applies.
+    created_by_user_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -481,10 +484,12 @@ async def _prepare_trial_run(
 
         experiment_id = trial.experiment_id or ""
         experiment_name: str | None = None
+        experiment_owner_user_id: str | None = None
         if experiment_id:
             experiment = await session.get(ExperimentModel, experiment_id)
             if experiment:
                 experiment_name = experiment.name
+                experiment_owner_user_id = experiment.owner_user_id
 
         task_path: str | None = None
         task_s3_key: str | None = None
@@ -533,6 +538,9 @@ async def _prepare_trial_run(
             attempt_number=_extract_trial_index(trial_id, task_id) + 1,  # 1-indexed
             task_tags=task_tags,
             org_id=trial.org_id,
+            created_by_user_id=(
+                (task.created_by_user_id if task else None) or experiment_owner_user_id
+            ),
         )
 
 
@@ -1170,6 +1178,19 @@ async def run_trial_job(
 
     should_upload_to_s3 = bool(resolved_task_s3_key)
 
+    # Per-user BYOK: when the owner has a stored key and the Statsig gate is on,
+    # layer it under any probe creds. Fully fail-open -- resolve_byok returns
+    # None (so the trial keeps the platform key) on anything unexpected.
+    byok_resolution = None
+    if byok.byok_resolver_registered():
+        byok_resolution = await byok.resolve_byok(
+            owner_user_id=prepared_trial.created_by_user_id,
+            org_id=prepared_trial.org_id,
+            experiment_name=prepared_trial.experiment_name,
+            model=prepared_trial.trial_model,
+            agent=prepared_trial.trial_agent,
+        )
+
     try:
         # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
         # write prefix) and inject its scoped model env into the agent, replacing
@@ -1193,7 +1214,11 @@ async def run_trial_job(
             queue_slot=queue_slot,
             worker_job_id=worker_job_id,
             extra_agent_env=job_tokens.merge_agent_env(
-                job_scoped_bundle, probe_agent_env
+                job_scoped_bundle,
+                byok.merge_byok_env(
+                    byok_resolution.env if byok_resolution else None,
+                    probe_agent_env,
+                ),
             ),
         )
 
