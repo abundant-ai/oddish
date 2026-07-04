@@ -14,6 +14,7 @@ branch_was_created=""
 published_modal_secret=false
 schema_upgraded=false
 schema_rebuilt=false
+schema_healed=false
 
 read_output_value() {
   local file="$1"
@@ -41,7 +42,8 @@ summarize_database_phase() {
     echo "- Branch created: \`${branch_was_created:-unknown}\`"
     echo "- Migrations requested: \`$RUN_MIGRATIONS\`"
     echo "- Schema upgraded to head: \`$schema_upgraded\`"
-    echo "- Schema rebuilt from base: \`$schema_rebuilt\`"
+    echo "- Schema rebuilt from prod snapshot: \`$schema_rebuilt\`"
+    echo "- Auto-healed after a failed incremental upgrade: \`$schema_healed\`"
     echo "- Modal DB secret published: \`$published_modal_secret\`"
   } >> "$GITHUB_STEP_SUMMARY"
 }
@@ -72,11 +74,15 @@ if [ "$DEPLOY_BACKEND" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branc
   schema_upgraded=true
 fi
 
-[ -s "$schema_rebuilt_file" ] && schema_rebuilt=true
+if [ -s "$schema_rebuilt_file" ]; then
+  schema_rebuilt=true
+  [ "$(cat "$schema_rebuilt_file")" = "healed" ] && schema_healed=true
+fi
 
-# Seed is expensive: only when fresh, on an explicit migration run, or after a
-# rebuild dropped the branch's data.
-if [ "$schema_rebuilt" = "true" ] || [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; then
+# The bootstrap seeds internally when it rebuilds -- before the PR's migrations
+# run, so they execute against realistic data. Here we only converge the sample
+# on a reused, trusted branch (fresh branches always rebuild).
+if [ "$schema_rebuilt" != "true" ] && { [ "$RUN_MIGRATIONS" = "true" ] || [ "$branch_was_created" = "true" ]; }; then
   ( cd "$GITHUB_WORKSPACE/backend" && uv run python "$script_dir/seed_preview_db.py" )
 fi
 
