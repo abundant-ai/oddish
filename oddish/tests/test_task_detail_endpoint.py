@@ -392,12 +392,8 @@ def _exp_trial(*, version_id, experiment_id, is_probe=False):
 
 def test_experiments_by_version_scopes_and_sorts():
     """Each version lists only the experiments whose non-probe trials ran
-    against it, named from the task's all-time membership, sorted by name."""
-    experiments = [
-        SimpleNamespace(id="exp-b", name="Beta"),
-        SimpleNamespace(id="exp-a", name="Alpha"),
-        SimpleNamespace(id="exp-c", name="Gamma"),
-    ]
+    against it, named from the id->name map, sorted by name."""
+    exp_name_by_id = {"exp-b": "Beta", "exp-a": "Alpha", "exp-c": "Gamma"}
     trials = [
         # v1: two distinct experiments (one linked twice -> deduped).
         _exp_trial(version_id="v1", experiment_id="exp-b"),
@@ -412,7 +408,7 @@ def test_experiments_by_version_scopes_and_sorts():
         _exp_trial(version_id="v1", experiment_id="exp-gone"),
     ]
 
-    by_version = _task_detail._experiments_by_version(trials, experiments)
+    by_version = _task_detail._experiments_by_version(trials, exp_name_by_id)
 
     # v1: sorted by name (Alpha before Beta), deduped, probe/unknown excluded.
     assert [(e.id, e.name) for e in by_version["v1"]] == [
