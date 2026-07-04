@@ -773,6 +773,10 @@ class TaskVersionSummary(BaseModel):
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
+    # Experiments that ran trials against THIS version (version-scoped, unlike
+    # the task-level all-time list). Forward ref — TaskBrowseExperiment is
+    # defined further below; the model_rebuild() below resolves it.
+    experiments: list["TaskBrowseExperiment"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -965,10 +969,6 @@ class UserTagRef(BaseModel):
     older: bool = False
 
 
-# TaskVersionSummary forward-references UserTagRef (defined above only now).
-TaskVersionSummary.model_rebuild()
-
-
 class TaskResponse(BaseModel):
     id: str
     name: str
@@ -1107,6 +1107,11 @@ class TrialCollectionResponse(BaseModel):
 class TaskBrowseExperiment(BaseModel):
     id: str
     name: str
+
+
+# Deferred rebuild: resolves TaskVersionSummary's forward refs to UserTagRef
+# and TaskBrowseExperiment now that both are defined.
+TaskVersionSummary.model_rebuild()
 
 
 class TaskBrowseTrial(BaseModel):

@@ -319,6 +319,8 @@ export interface TaskVersionSummary {
   last_run_at?: string | null;
   // Direct VERSION-scope tags on this version.
   user_tags?: UserTagRef[];
+  // Experiments that ran trials against this version (version-scoped).
+  experiments?: { id: string; name: string }[];
 }
 
 interface TaskCostTotals {
