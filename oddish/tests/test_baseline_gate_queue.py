@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX  # noqa: E402
+from oddish.core.baseline_gate import GATE_SKIP_MESSAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TaskStatus,
@@ -199,8 +199,8 @@ async def test_faulty_baselines_cancel_llm(monkeypatch, cleanup_task_ids):
                 )
             )
         ).scalar_one()
-    assert llm_trial.status == TrialStatus.FAILED
-    assert GATE_SKIP_PREFIX in (llm_trial.error_message or "")
+    assert llm_trial.status == TrialStatus.SKIPPED
+    assert GATE_SKIP_MESSAGE in (llm_trial.error_message or "")
 
 
 def _baseline_submission(name: str) -> TaskSubmission:
@@ -440,8 +440,8 @@ async def test_agent_only_append_cancelled_when_baselines_faulty(
         tr = (
             await session.execute(select(TrialModel).where(TrialModel.id == kimi))
         ).scalar_one()
-    assert tr.status == TrialStatus.FAILED
-    assert GATE_SKIP_PREFIX in (tr.error_message or "")
+    assert tr.status == TrialStatus.SKIPPED
+    assert GATE_SKIP_MESSAGE in (tr.error_message or "")
 
 
 @pytest.mark.asyncio

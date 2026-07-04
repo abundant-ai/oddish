@@ -302,6 +302,39 @@ def test_aggregate_task_detail_rollups_totals_and_buckets():
     assert v2_summary.last_run_at == finished_late
 
 
+def test_aggregate_task_detail_rollups_buckets_skipped_separately_not_pending():
+    """SKIPPED trials are terminal: they get their own ``skipped_count`` and must
+    NOT inflate ``pending_count`` (which would keep the task looking active)."""
+    version_rows = [
+        TaskVersionResponse(
+            id="v1",
+            task_id="task-1",
+            version=1,
+            task_path="/tmp/demo",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
+    ]
+    trials = [
+        _trial(id_="a", version_id="v1", status=TrialStatus.SUCCESS, reward=1.0),
+        _trial(id_="b", version_id="v1", status=TrialStatus.FAILED, reward=None),
+        _trial(id_="c", version_id="v1", status=TrialStatus.SKIPPED, reward=None),
+        _trial(id_="d", version_id="v1", status=TrialStatus.SKIPPED, reward=None),
+        _trial(id_="e", version_id="v1", status=TrialStatus.RUNNING, reward=None),
+    ]
+
+    _, versions = endpoints._aggregate_task_detail_rollups(
+        trials=trials,
+        version_rows=version_rows,
+        current_version_id="v1",
+    )
+    s = versions[0]
+    assert s.trial_count == 5  # total counts skipped
+    assert s.completed_count == 1
+    assert s.failed_count == 1
+    assert s.skipped_count == 2  # skipped in their own bucket
+    assert s.pending_count == 1  # only the RUNNING trial, NOT the 2 skipped
+
+
 def test_aggregate_task_detail_rollups_skips_orphan_version_ids():
     """Trials pointing at a version we don't have don't crash; they just
     contribute to the task-wide totals but no per-version bucket."""
@@ -342,3 +375,45 @@ def test_aggregate_task_detail_rollups_skips_orphan_version_ids():
     assert len(versions) == 1
     # Only the trial whose version_id is present gets bucketed.
     assert versions[0].trial_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _experiments_by_version: version-scoped experiment membership
+# ---------------------------------------------------------------------------
+
+
+def _exp_trial(*, version_id, experiment_id, is_probe=False):
+    return SimpleNamespace(
+        task_version_id=version_id,
+        experiment_id=experiment_id,
+        is_probe=is_probe,
+    )
+
+
+def test_experiments_by_version_scopes_and_sorts():
+    """Each version lists only the experiments whose non-probe trials ran
+    against it, named from the id->name map, sorted by name."""
+    exp_name_by_id = {"exp-b": "Beta", "exp-a": "Alpha", "exp-c": "Gamma"}
+    trials = [
+        # v1: two distinct experiments (one linked twice -> deduped).
+        _exp_trial(version_id="v1", experiment_id="exp-b"),
+        _exp_trial(version_id="v1", experiment_id="exp-b"),
+        _exp_trial(version_id="v1", experiment_id="exp-a"),
+        # v2: a single experiment.
+        _exp_trial(version_id="v2", experiment_id="exp-c"),
+        # ignored: probe trial, no experiment link, no version, unknown exp.
+        _exp_trial(version_id="v2", experiment_id="exp-a", is_probe=True),
+        _exp_trial(version_id="v1", experiment_id=None),
+        _exp_trial(version_id=None, experiment_id="exp-a"),
+        _exp_trial(version_id="v1", experiment_id="exp-gone"),
+    ]
+
+    by_version = _task_detail._experiments_by_version(trials, exp_name_by_id)
+
+    # v1: sorted by name (Alpha before Beta), deduped, probe/unknown excluded.
+    assert [(e.id, e.name) for e in by_version["v1"]] == [
+        ("exp-a", "Alpha"),
+        ("exp-b", "Beta"),
+    ]
+    # v2: the probe-linked exp-a is excluded, only exp-c remains.
+    assert [(e.id, e.name) for e in by_version["v2"]] == [("exp-c", "Gamma")]

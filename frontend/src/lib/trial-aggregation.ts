@@ -4,6 +4,7 @@ export type TrialAggregate = {
   trialCount: number;
   completed: number;
   failed: number;
+  skipped: number;
   passCount: number;
   partialCount: number;
   failCount: number;
@@ -22,6 +23,7 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   trialCount: 0,
   completed: 0,
   failed: 0,
+  skipped: 0,
   passCount: 0,
   partialCount: 0,
   failCount: 0,
@@ -46,6 +48,7 @@ export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
   }
   if (trial.status === "success") acc.completed += 1;
   else if (trial.status === "failed") acc.failed += 1;
+  else if (trial.status === "skipped") acc.skipped += 1;
 
   if (trial.status === "success" && trial.reward != null) {
     acc.rewardSum += trial.reward;
@@ -55,6 +58,8 @@ export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
     else acc.partialCount += 1;
   } else if (trial.status === "failed") {
     acc.harnessErrorCount += 1;
+  } else if (trial.status === "skipped") {
+    // Never ran -> counted only as `skipped` above; not pending, not an error.
   } else if (trial.status !== "success") {
     acc.pendingCount += 1;
   }
