@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-05]
+
+### Added
+
+- Preview databases now execute a PR's Alembic migrations against a rehearsal snapshot of production's schema instead of stamping them: `bootstrap_preview_db.py` dumps prod's `public` schema and Alembic pointers via `pg_dump`/`psql` over the session pooler, restores them onto the preview branch (guarding against `DROP SCHEMA` ever targeting prod), seeds sample data, then runs `alembic upgrade head` for oddish and backend in the same order as the prod migration workflow, asserting every model table/column/index exists afterward; the schema trust marker now also hashes migration file contents so editing/adding a migration forces a fresh rebuild, and a trusted-path failure retries once before auto-healing via a full rebuild. A new `Preview Reset` `workflow_dispatch` workflow lets an operator rebuild a broken preview branch on a PR's current merge ref after verifying it's an open same-repo PR. Also adds the 14 model-declared indexes (on `trials`, `tasks`, `organizations`, `users`, tags, etc.) that prod never received, applied via idempotent `CREATE INDEX CONCURRENTLY` migration `ixdrift01_add_model_indexes` and caught by the new schema assert. (#585, #591, #593)
+- Task detail page now shows a version-scoped "experiments" line under the version dropdown, listing which experiments actually ran (non-probe) trials against the currently selected version — separate from the header's all-time task-level experiment list; backend adds a `_experiments_by_version` helper and a `TaskVersionSummary.experiments` field, with experiment names resolved directly from the experiments table so it doesn't depend on `task_experiments` membership being complete. (#588)
+- Baseline-gate-cancelled trials are now a first-class `SKIPPED` status instead of `FAILED` with a sentinel error: they render as a muted "⊘ Skipped" badge, count toward task completion/"done" (so a fully gate-skipped task reaches COMPLETED instead of hanging), are included as a non-pass in pass-rate/pass@1/pass@k/completion denominators, get their own matrix/browse bucket and skipped counts across `TaskStatusResponse`, `TaskVersionSummary`, the dashboard, and queue stats, are carried into combine/collections as records, and are treated as terminal by CLI waits, retry selection, and the GitHub PR progress comment. (#574)
+
+### Fixed
+
+- The version switcher dropdown on the task detail page no longer grows taller than the viewport on tasks with many versions; its `DropdownMenuContent` now caps height to `min(60vh, available-height)` and scrolls internally instead of being silently clipped. (#589)
+- The "+N more" overflow control in the experiments list (task header and version-scoped line) no longer renders with a large gap and oversized padding; a prior shadcn `Button` migration had left it with default `size="default"` chrome, now stripped with `h-auto p-0 text-[length:inherit] font-normal`. (#590)
+- Production index migration (`ixdrift01_add_model_indexes`) no longer times out partway through: its `lock_timeout` is raised from 8s to 300s (with `statement_timeout` cleared) for both `CREATE INDEX CONCURRENTLY` and the cleanup `DROP INDEX CONCURRENTLY` of INVALID leftovers, since `CONCURRENTLY`'s lock waits don't block DML and the prior 8s fail-fast — correct for exclusive `ALTER TABLE`-class migrations — was losing the race against routine worker transactions on `experiments`/`trials`. (#591)
+- `Preview Reset` workflow's inline guard step now runs under `bash` instead of the container job's default `sh` (dash), which rejected `set -o pipefail` and caused the first live dispatch to fail closed before any downstream step ran. (#593)
+
+---
+
 ## [2026-07-02]
 
 ### Added
