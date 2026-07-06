@@ -485,7 +485,7 @@ class TaskSweepSubmission(BaseModel):
     )
     github_id: str | None = Field(
         None,
-        description="Immutable GitHub user id for attribution",
+        description="GitHub user id (Clerk provider_user_id) to attribute this task to; immutable across handle renames",
     )
     publish_experiment: bool | None = Field(
         None,
@@ -758,6 +758,7 @@ class TaskVersionSummary(BaseModel):
     trial_count: int = 0
     completed_count: int = 0
     failed_count: int = 0
+    skipped_count: int = 0
     pass_count: int = 0
     partial_count: int = 0
     fail_count: int = 0
@@ -772,6 +773,10 @@ class TaskVersionSummary(BaseModel):
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
+    # Experiments that ran trials against THIS version (version-scoped, unlike
+    # the task-level all-time list). Forward ref — TaskBrowseExperiment is
+    # defined further below; the model_rebuild() below resolves it.
+    experiments: list["TaskBrowseExperiment"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -964,10 +969,6 @@ class UserTagRef(BaseModel):
     older: bool = False
 
 
-# TaskVersionSummary forward-references UserTagRef (defined above only now).
-TaskVersionSummary.model_rebuild()
-
-
 class TaskResponse(BaseModel):
     id: str
     name: str
@@ -1108,6 +1109,11 @@ class TaskBrowseExperiment(BaseModel):
     name: str
 
 
+# Deferred rebuild: resolves TaskVersionSummary's forward refs to UserTagRef
+# and TaskBrowseExperiment now that both are defined.
+TaskVersionSummary.model_rebuild()
+
+
 class TaskBrowseTrial(BaseModel):
     id: str
     name: str
@@ -1201,6 +1207,11 @@ class TaskStatusResponse(BaseModel):
     total: int
     completed: int
     failed: int
+    # SKIPPED trials are terminal non-passes: included in ``total`` but not in
+    # ``completed``/``failed``. Exposed so clients can compute
+    # ``active = total - completed - failed - skipped`` instead of treating
+    # skipped as still-running.
+    skipped: int = 0
     progress: str  # e.g., "5/10 completed"
     reward_success: int | None = None
     reward_sum: float | None = None

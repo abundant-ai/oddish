@@ -180,7 +180,10 @@ function getQueueTotalJobs(stats?: QueueStats[string]): number {
     (Number(stats.running) || 0) +
     (Number(stats.retrying) || 0) +
     (Number(stats.success) || 0) +
-    (Number(stats.failed) || 0)
+    (Number(stats.failed) || 0) +
+    // Gate-skipped trials are terminal and now land in their own queue bucket;
+    // include them or the queue's total job count drops by every skipped trial.
+    (Number(stats.skipped) || 0)
   );
 }
 

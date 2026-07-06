@@ -338,6 +338,7 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     trialCount: v.trial_count,
     completed: v.completed_count,
     failed: v.failed_count,
+    skipped: v.skipped_count,
     passCount: v.pass_count,
     partialCount: v.partial_count,
     failCount: v.fail_count,
@@ -380,7 +381,10 @@ function VersionSwitcher({
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[320px] font-mono">
+      <DropdownMenuContent
+        align="start"
+        className="max-h-[min(60vh,var(--radix-dropdown-menu-content-available-height))] w-[320px] overflow-y-auto font-mono"
+      >
         {versions.map((v) => {
           const label = v.is_current
             ? `v${v.version} · current`
@@ -895,7 +899,11 @@ export function TaskDetailClient({
           </KpiTile>
           <KpiTile
             label="Trials"
-            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed`}
+            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed${
+              versionSummary.skipped > 0
+                ? ` · ${versionSummary.skipped} skipped`
+                : ""
+            }`}
           >
             <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
               {versionSummary.trialCount}
@@ -965,6 +973,23 @@ export function TaskDetailClient({
               />
             ) : null}
           </div>
+          {selectedVersion?.experiments?.length ? (
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+              title="Experiments that ran trials against this version"
+            >
+              <span className="shrink-0">
+                {selectedVersion.experiments.length > 1
+                  ? "experiments"
+                  : "experiment"}
+              </span>
+              <ExperimentsList
+                experiments={selectedVersion.experiments}
+                maxVisible={2}
+                linkClassName="text-[color:var(--paper-ink-2)]"
+              />
+            </div>
+          ) : null}
         </div>
 
         <TaskProbeRunCard

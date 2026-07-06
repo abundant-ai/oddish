@@ -34,16 +34,17 @@ from harbor.models.agent.name import AgentName
 
 from oddish.config import nop_oracle_kind
 
-# Prefix shared by every error_message we stamp on a gated (skipped) trial, so
-# they are greppable and distinguishable from user cancellations.
+# Legacy sentinel: the prefix stamped on gate-cancelled trials BEFORE they
+# became a first-class SKIPPED status. Retained only so those pre-existing
+# (FAILED) rows are still excluded from QA classification -- new skipped trials
+# are matched by ``status == SKIPPED`` instead. Not used in new messages.
 GATE_SKIP_PREFIX = "Skipped by baseline gate"
-# A present baseline kind that didn't land cleanly on every run -- a wrong
-# verdict, partial credit, or an infra error (all disqualifying now).
-GATE_FAULTY_INVERTED_MSG = f"{GATE_SKIP_PREFIX}: baseline outcome not clean"
-# No nop/oracle baseline was present at all, so nothing validated the task.
-GATE_FAULTY_INCONCLUSIVE_MSG = (
-    f"{GATE_SKIP_PREFIX}: baselines inconclusive (no clean verdict)"
-)
+
+# Human-facing reason stamped on a skipped trial's ``error_message``. Uniform
+# across fault kinds (a wrong verdict, partial credit, an infra error, or no
+# baseline at all); QA and metrics key off the SKIPPED status rather than this
+# text, so it is free to read as a plain reason.
+GATE_SKIP_MESSAGE = "Trial skipped: nop/oracle validation failed"
 
 
 class GateOutcome(str, Enum):
@@ -72,28 +73,24 @@ def evaluate_baseline_gate(
 
     present = {kind: rs for kind, rs in rewards_by_kind.items() if rs}
     if not present:
-        return GateOutcome.FAULTY, GATE_FAULTY_INCONCLUSIVE_MSG
+        # No nop/oracle baseline present at all -> nothing validated the task.
+        return GateOutcome.FAULTY, GATE_SKIP_MESSAGE
 
-    faults: list[str] = []
     for kind, rewards in present.items():
         # Every run of a present baseline kind must land cleanly at its extreme.
         # An infra error (reward is None) is NOT ignored -- ``None == 1`` /
         # ``None == 0`` are both False, so any error fails the check just like a
         # wrong verdict does.
         if kind == AgentName.ORACLE.value and not all(r == 1 for r in rewards):
-            faults.append(f"oracle did not all pass (rewards={rewards})")
-        elif kind == AgentName.NOP.value and not all(r == 0 for r in rewards):
-            faults.append(f"nop did not all fail (rewards={rewards})")
+            return GateOutcome.FAULTY, GATE_SKIP_MESSAGE
+        if kind == AgentName.NOP.value and not all(r == 0 for r in rewards):
+            return GateOutcome.FAULTY, GATE_SKIP_MESSAGE
 
-    if faults:
-        detail = "; ".join(faults)
-        return GateOutcome.FAULTY, f"{GATE_FAULTY_INVERTED_MSG} — {detail}"
     return GateOutcome.VALID, "baselines validated (all oracle passed, all nop failed)"
 
 
 __all__ = [
-    "GATE_FAULTY_INCONCLUSIVE_MSG",
-    "GATE_FAULTY_INVERTED_MSG",
+    "GATE_SKIP_MESSAGE",
     "GATE_SKIP_PREFIX",
     "GateOutcome",
     "evaluate_baseline_gate",

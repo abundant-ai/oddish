@@ -397,6 +397,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
         .add_local_python_source(
             "api",
             "auth",
+            "backfill_github_id",
             "cloud_policy",
             "dashboard_attribution",
             "dashboard_owner_backfill",

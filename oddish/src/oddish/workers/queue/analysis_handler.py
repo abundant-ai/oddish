@@ -82,6 +82,11 @@ async def classify_trial_and_store(
     async with _trial_session(trial_id) as (session, trial):
         if not trial:
             raise RuntimeError(f"Trial {trial_id} not found in database")
+        if trial.deleted_at is not None:
+            console.print(
+                f"[dim]Trial {trial_id} was deleted, skipping analysis[/dim]"
+            )
+            return None
 
         # Skip if already analyzed
         if trial.analysis_status in (AnalysisStatus.SUCCESS, AnalysisStatus.FAILED):
@@ -236,6 +241,11 @@ async def classify_trial_and_store(
         nonlocal stored_status
         async with _trial_session(trial_id, allow_missing=True) as (session, trial):
             if not trial:
+                return
+            if trial.deleted_at is not None:
+                console.print(
+                    f"[dim]Analysis {trial_id} ignored; trial was deleted[/dim]"
+                )
                 return
             if should_store is not None and not await should_store(session):
                 console.print(

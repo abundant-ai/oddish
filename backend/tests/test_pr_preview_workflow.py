@@ -10,8 +10,10 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/pr-preview.yml"
+RESET_WORKFLOW = REPO / ".github/workflows/preview-reset.yml"
 PREVIEW = REPO / ".github/scripts/preview"
 PREPARE = PREVIEW / "prepare_preview_database.sh"
+COMPUTE_PLAN = PREVIEW / "compute_deployment_plan.sh"
 DEPLOY = PREVIEW / "deploy_preview_backend.sh"
 MODAL_APP = REPO / "backend/modal_app.py"
 
@@ -125,7 +127,14 @@ def test_prepare_stops_before_supabase_wait():
     assert s.index("stop_modal_preview_app.sh") < s.index("wait_for_supabase_branch.sh")
 
 
-def _run_prepare(extra_env, *, branch_was_created="false", stop_exit=0):
+def _run_prepare(
+    extra_env,
+    *,
+    branch_was_created="false",
+    stop_exit=0,
+    rebuild=False,
+    want_summary=False,
+):
     tmp = Path(tempfile.mkdtemp())
     pv = tmp / "preview"
     pv.mkdir()
@@ -149,7 +158,12 @@ def _run_prepare(extra_env, *, branch_was_created="false", stop_exit=0):
         f'echo "branch_was_created={branch_was_created}" >> "$GITHUB_OUTPUT"\n'
         'echo "ODDISH_DATABASE_URL=postgresql://x" >> "$GITHUB_ENV"',
     )
-    stub("run_preview_migrations.sh", f'echo migrate >> "{order}"')
+    # rebuild=True mimics the bootstrap taking the snapshot-rebuild path (it
+    # seeds internally and writes the sentinel prepare exports for it).
+    migrate_body = f'echo migrate >> "{order}"'
+    if rebuild:
+        migrate_body += '\nprintf 1 > "$SCHEMA_REBUILT_FILE"'
+    stub("run_preview_migrations.sh", migrate_body)
     stub("publish_modal_db_secret.sh", f'echo publish >> "{order}"')
     (pv / "seed_preview_db.py").write_text("")
     fake_uv = bins / "uv"
@@ -177,7 +191,10 @@ def _run_prepare(extra_env, *, branch_was_created="false", stop_exit=0):
         text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    return order.read_text().split()
+    order_list = order.read_text().split()
+    if want_summary:
+        return order_list, (tmp / "summary").read_text()
+    return order_list
 
 
 @needs_bash
@@ -280,3 +297,138 @@ def test_deploy_guard_fails_on_mismatch():
 @needs_bash
 def test_deploy_guard_skipped_when_expected_unset():
     assert _run_deploy("https://anything.modal.run").returncode == 0
+
+
+@needs_bash
+def test_rebuild_skips_shell_seed():
+    # A snapshot rebuild already seeded inside the bootstrap (before the PR's
+    # migrations ran), so the shell-level convergence seed must not re-run.
+    order, summary = _run_prepare(
+        {"DEPLOY_BACKEND": "true", "RUN_MIGRATIONS": "true"},
+        rebuild=True,
+        want_summary=True,
+    )
+    assert order == ["stop", "supabase", "migrate", "publish"]
+    assert "seed" not in order
+    assert "Schema rebuilt from prod snapshot: `true`" in summary
+
+
+@needs_bash
+def test_created_branch_rebuild_skips_shell_seed():
+    order = _run_prepare(
+        {"DEPLOY_BACKEND": "false", "RUN_MIGRATIONS": "false"},
+        branch_was_created="true",
+        rebuild=True,
+    )
+    assert order == ["supabase", "migrate", "publish"]
+
+
+def _run_compute_plan(extra_env):
+    tmp = Path(tempfile.mkdtemp())
+    for name in ("summary", "out"):
+        (tmp / name).write_text("")
+    env = {
+        **os.environ,
+        "GITHUB_STEP_SUMMARY": str(tmp / "summary"),
+        "GITHUB_OUTPUT": str(tmp / "out"),
+        "EVENT_ACTION": "synchronize",
+        "BACKEND_BASE": "abc123",
+        "MIGRATIONS_BASE": "abc123",
+        "BACKEND_CHANGED": "false",
+        "MIGRATIONS_CHANGED": "false",
+        "PR_BACKEND_CHANGED": "false",
+        "PR_MIGRATIONS_CHANGED": "false",
+        "PR_FRONTEND_CHANGED": "false",
+        "WORKFLOW_CHANGED": "false",
+        **extra_env,
+    }
+    proc = subprocess.run(
+        ["bash", str(COMPUTE_PLAN)],
+        env=env,
+        cwd=str(tmp),
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    outputs = {}
+    for line in (tmp / "out").read_text().splitlines():
+        key, _, value = line.partition("=")
+        outputs[key] = value
+    return outputs
+
+
+@needs_bash
+def test_migrations_imply_backend_deploy():
+    # A migrated schema must be boot-tested, and the rotated branch password
+    # re-published to the Modal secret -- migrations always redeploy the backend.
+    outputs = _run_compute_plan({"MIGRATIONS_CHANGED": "true"})
+    assert outputs["run_migrations"] == "true"
+    assert outputs["deploy_backend"] == "true"
+    assert outputs["deploy_frontend"] == "true"
+    assert outputs["any_change"] == "true"
+
+
+@needs_bash
+def test_no_migrations_no_backend_implication():
+    outputs = _run_compute_plan({})
+    assert outputs["deploy_backend"] == "false"
+    assert outputs["run_migrations"] == "false"
+    assert outputs["deploy_frontend"] == "false"
+    assert outputs["any_change"] == "false"
+
+
+def _reset_wf():
+    return yaml.safe_load(RESET_WORKFLOW.read_text())
+
+
+def _on(wf):
+    # pyyaml parses a bare `on:` key as boolean True.
+    return wf.get("on", wf.get(True))
+
+
+def test_reset_workflow_dispatch_input():
+    wf = _reset_wf()
+    inputs = _on(wf)["workflow_dispatch"]["inputs"]
+    assert inputs["pr_number"]["required"] is True
+
+
+def test_reset_shares_preview_concurrency_group():
+    reset = _reset_wf()
+    preview = _wf()
+    assert str(reset["concurrency"]["group"]).startswith("pr-preview-")
+    assert str(preview["concurrency"]["group"]).startswith("pr-preview-")
+    assert reset["concurrency"]["cancel-in-progress"] is False
+
+
+def test_reset_guard_runs_before_checkout():
+    # The reset runs PR code with secrets: the same-repo/open guard must reject
+    # fork PRs BEFORE any PR code is checked out.
+    steps = _reset_wf()["jobs"]["reset"]["steps"]
+    guard_idx = next(
+        i for i, s in enumerate(steps) if ".head.repo.full_name" in s.get("run", "")
+    )
+    checkout_idx = next(
+        i for i, s in enumerate(steps) if "actions/checkout" in s.get("uses", "")
+    )
+    assert guard_idx < checkout_idx
+    # Container jobs default to sh (dash); the guard's `set -euo pipefail`
+    # needs bash (its absence failed the first live dispatch closed).
+    assert steps[guard_idx].get("shell") == "bash"
+    ref = steps[checkout_idx]["with"]["ref"]
+    assert "refs/pull/" in ref and "/merge" in ref
+
+
+def test_reset_reuses_preview_scripts():
+    steps = _reset_wf()["jobs"]["reset"]["steps"]
+    runs = "\n".join(s.get("run", "") for s in steps)
+    for script in (
+        "reset_preview_branch.sh",
+        "prepare_preview_database.sh",
+        "deploy_preview_backend.sh",
+    ):
+        assert script in runs, f"{script} not invoked by preview-reset.yml"
+    prepare_step = next(
+        s for s in steps if "prepare_preview_database.sh" in s.get("run", "")
+    )
+    assert prepare_step["env"]["DEPLOY_BACKEND"] == "true"
+    assert prepare_step["env"]["RUN_MIGRATIONS"] == "true"

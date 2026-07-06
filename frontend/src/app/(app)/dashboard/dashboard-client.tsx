@@ -66,6 +66,7 @@ import {
 } from "@/lib/dashboard-request";
 import { badgeVariants } from "@/components/ui/badge";
 import { UsageSummaryCard } from "@/components/usage-overview";
+import { QuotaUsageCard } from "@/components/quota-usage-card";
 import {
   ArrowRight,
   Check,
@@ -109,6 +110,12 @@ export type ExperimentsResult = {
 
 function formatTaskAuthor(author: DashboardExperimentAuthor | null): string {
   if (!author) return "—";
+  // Precedence: canonical org-member name (plain, no "@") -> @github handle ->
+  // raw owner/user string. "member" is resolved by the backend from the
+  // experiment's owner_user_id and matches the name shown on the cost page.
+  if (author.source === "member") {
+    return author.name;
+  }
   if (author.source === "github") {
     return `@${author.name.replace(/^@/, "")}`;
   }
@@ -445,7 +452,13 @@ function ExperimentsTableBody({
                     </TableCell>
                     <TableCell>{experiment.task_count}</TableCell>
                     <TableCell className="whitespace-nowrap font-mono text-xs">
-                      {experiment.completed_trials}/{experiment.total_trials}
+                      {/* done = terminal (success + failed + skipped), so a
+                          finished experiment reads N/N, not "2/5". The (R)/(F)/(S)
+                          suffixes break down the composition. */}
+                      {experiment.completed_trials +
+                        experiment.failed_trials +
+                        experiment.skipped_trials}
+                      /{experiment.total_trials}
                       {retryingTrials > 0 && (
                         <span className="text-amber-500 dark:text-amber-300">
                           {" "}
@@ -456,6 +469,12 @@ function ExperimentsTableBody({
                         <span className="text-rose-400">
                           {" "}
                           ({experiment.failed_trials}F)
+                        </span>
+                      )}
+                      {experiment.skipped_trials > 0 && (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          ({experiment.skipped_trials}S)
                         </span>
                       )}
                     </TableCell>
@@ -901,6 +920,7 @@ export function DashboardClient({
 
   return (
     <div className="space-y-4">
+      <QuotaUsageCard />
       <UsageSummaryCard />
       <RecentTasksCard
         experimentsPromise={experimentsPromise}

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Ensure the PR's Supabase preview branch (data-less) exists and is
-# healthy, and emit its DB URL. The branch starts empty; Alembic applies
-# the full schema (bootstrap_preview_db.py) and a curated seed
-# (seed_preview_db.py) populates it. On later pushes the branch is reused;
-# the seed is idempotent + convergent so re-running is safe.
+# healthy, and emit its DB URL. The branch starts empty;
+# bootstrap_preview_db.py restores prod's schema snapshot, seeds a curated
+# prod sample (seed_preview_db.py), and runs the PR's migrations on it. On
+# later pushes the branch is reused; the seed is idempotent + convergent so
+# re-running is safe.
 #
 # If a branch lands in a terminal-failed state (status MIGRATIONS_FAILED /
 # FUNCTIONS_FAILED, or preview_project_status INIT_FAILED / PAUSE_FAILED)

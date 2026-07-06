@@ -11,7 +11,13 @@ type TaskStatus =
 // - "failed": Trial encountered an execution error (harness/infrastructure failure)
 // - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "retrying"
+  | "skipped";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
@@ -215,6 +221,7 @@ export interface Task {
   total: number;
   completed: number;
   failed: number;
+  skipped?: number;
   progress?: string;
   reward_success?: number | null;
   reward_sum?: number | null;
@@ -298,6 +305,7 @@ export interface TaskVersionSummary {
   trial_count: number;
   completed_count: number;
   failed_count: number;
+  skipped_count: number;
   pass_count: number;
   partial_count: number;
   fail_count: number;
@@ -311,6 +319,8 @@ export interface TaskVersionSummary {
   last_run_at?: string | null;
   // Direct VERSION-scope tags on this version.
   user_tags?: UserTagRef[];
+  // Experiments that ran trials against this version (version-scoped).
+  experiments?: { id: string; name: string }[];
 }
 
 interface TaskCostTotals {
@@ -336,6 +346,7 @@ export interface QueueStats {
     success: number;
     failed: number;
     retrying: number;
+    skipped: number;
     recommended_concurrency: number;
   };
 }
@@ -380,7 +391,7 @@ export interface JobUsage {
 
 export interface DashboardExperimentAuthor {
   name: string;
-  source: "github" | "api";
+  source: "github" | "api" | "member";
 }
 
 // Organization member, as returned by GET /api/users. Used to populate
@@ -396,6 +407,45 @@ export interface OrgUser {
   created_at: string;
 }
 
+// =============================================================================
+// User Quotas
+// =============================================================================
+
+// Caller-scoped usage-vs-limit, as returned by GET /api/quotas/me. `limit_usd`
+// is the effective daily limit (COALESCE of the override row and the default);
+// `used_usd` is today's settled spend billed to the caller.
+export interface QuotaUsage {
+  user_id: string;
+  limit_usd: number;
+  used_usd: number;
+  // In-flight reservations; admission blocks when used + reserved >= limit.
+  // Absent on the admin member list.
+  reserved_usd?: number;
+  // True only when quota_mode == enforce, i.e. exceeding the limit actually
+  // blocks new billable runs. Absent on the admin member list.
+  enforced?: boolean;
+}
+
+// A single member row in the admin GET /api/quotas list. Extends QuotaUsage
+// with the member's identity/role.
+export interface QuotaMember extends QuotaUsage {
+  email: string;
+  name: string | null;
+  github_username: string | null;
+  role: string;
+}
+
+export interface QuotaList {
+  members: QuotaMember[];
+}
+
+// Body for the admin PUT /api/quotas/{user_id} override. A string value sets an
+// override (e.g. "5.00"); `null` CLEARS it so the member reverts to the
+// workspace default.
+export interface QuotaUpdate {
+  limit_usd: string | null;
+}
+
 export interface DashboardExperiment {
   id: string;
   name: string;
@@ -405,6 +455,7 @@ export interface DashboardExperiment {
   total_trials: number;
   completed_trials: number;
   failed_trials: number;
+  skipped_trials: number;
   retrying_trials: number;
   active_trials: number;
   reward_success: number;
@@ -421,6 +472,17 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
+  /**
+   * Internal owner id (Clerk / API-key user) used by the backend to resolve the
+   * canonical member name into `author`. The `__unattributed__` sentinel is
+   * normalized to null server-side.
+   */
+  owner_user_id?: string | null;
+  /**
+   * The latest trial's `billed_user_id` (per-run identity, correct across
+   * appends to shared tasks); the backend resolves it into `last_runner`.
+   */
+  last_runner_user_id?: string | null;
   author: DashboardExperimentAuthor | null;
   last_runner: DashboardExperimentAuthor | null;
   /** @deprecated Use `last_runner`; kept for older clients. */

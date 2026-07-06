@@ -23,6 +23,7 @@ def _trial(**overrides):
         id="trial-1",
         task_id="task-1",
         agent="codex",
+        model="gpt-5",
         harbor_config=None,
         status=TrialStatus.RUNNING,
         error_message=None,
@@ -35,6 +36,7 @@ def _trial(**overrides):
         trial_s3_key=None,
         input_tokens=None,
         cache_tokens=None,
+        cache_write_tokens=None,
         output_tokens=None,
         total_steps=None,
         cost_usd=None,
@@ -43,6 +45,8 @@ def _trial(**overrides):
         current_worker_id="w-1",
         current_queue_slot=0,
         heartbeat_at=None,
+        superseded_by_trial_id=None,
+        deleted_at=None,
         analysis=None,
         analysis_status=None,
         analysis_error=None,
@@ -66,7 +70,7 @@ def _outcome(reward=None, error=None):
 
 def _patch_session(monkeypatch, trial):
     @asynccontextmanager
-    async def _fake_trial_session(trial_id, *, allow_missing=False):
+    async def _fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
         yield object(), trial
 
     monkeypatch.setattr(th, "_trial_session", _fake_trial_session)
@@ -75,6 +79,13 @@ def _patch_session(monkeypatch, trial):
         return False
 
     monkeypatch.setattr("oddish.queue.maybe_start_qa_stage", _fake_qa)
+
+    # The baseline gate resolves before the QA stage in ``_store_trial_results``;
+    # stub it too so the fake (session-less) trial session doesn't hit the DB.
+    async def _fake_gate(session, trial_id):
+        return False
+
+    monkeypatch.setattr("oddish.queue.maybe_gate_llm_trials", _fake_gate)
 
 
 @pytest.mark.parametrize(

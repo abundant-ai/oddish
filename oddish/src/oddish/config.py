@@ -1,6 +1,8 @@
 import json
 import os
 import re
+from decimal import Decimal
+from enum import Enum
 from typing import ClassVar
 
 from pydantic import Field, model_validator
@@ -904,6 +906,12 @@ def api_base_url_for_modal_app(app_name: str | None = None) -> str:
     return DEFAULT_API_URL
 
 
+class QuotaMode(str, Enum):
+    OFF = "off"
+    SHADOW = "shadow"
+    ENFORCE = "enforce"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         # Load .env first, then layer .env.local over it (later file wins on
@@ -923,6 +931,16 @@ class Settings(BaseSettings):
 
     # Worker behavior
     auto_start_workers: bool = True
+
+    pending_trial_reservation_usd: Decimal = Decimal("1.00")
+    default_daily_quota_usd: Decimal = Decimal("100.00")
+    # Budget stand-in for a FINISHED trial that reported no price (cost_usd NULL):
+    # counted toward the daily quota so an unpriced/cancelled/reaped run is never
+    # treated as free (an "unknown cost = $0" row would let a start-then-cancel
+    # loop bypass the cap). The trial row itself keeps cost_usd NULL; only the
+    # quota SUMs floor it. A genuinely-$0 row (cost_usd = 0) is left untouched.
+    unpriced_trial_cost_usd: Decimal = Decimal("1.00")
+    quota_mode: QuotaMode = QuotaMode.SHADOW
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
     # (model key for the job's provider only + an S3 write prefix), replacing the

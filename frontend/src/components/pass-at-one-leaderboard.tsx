@@ -26,6 +26,8 @@ type LeaderboardRow = {
 };
 
 function getPassAtOneValue(trials: Trial[]): number | null {
+  // Skipped trials are counted as non-passes in the denominator (like a harness
+  // error): a skipped trial did not pass, so it lowers pass@1 accordingly.
   if (trials.length === 0) return null;
   const passing = trials.filter((trial) => trial.reward === 1).length;
   return passing / trials.length;

@@ -34,6 +34,7 @@ class HarborOutcome:
     # Token usage, steps & cost (from Harbor's AgentContext / ATIF final_metrics)
     input_tokens: int | None = None
     cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
     cost_usd: float | None = None
@@ -59,20 +60,6 @@ def _detect_trajectory(job_dir: Path) -> bool:
     return detect_trajectory(job_dir)
 
 
-def _extract_metrics_from_trajectory(
-    job_dir: Path,
-) -> tuple[int | None, int | None, int | None, int | None, float | None]:
-    """Backward-compatible wrapper for tests/imports."""
-    metrics = extract_trajectory_metrics(job_dir)
-    return (
-        metrics.input_tokens,
-        metrics.output_tokens,
-        metrics.cache_tokens,
-        metrics.total_steps,
-        metrics.cost_usd,
-    )
-
-
 def _extract_outcome_from_job_result(
     job_result: JobResult,
     job_result_path: Path,
@@ -84,6 +71,7 @@ def _extract_outcome_from_job_result(
     exception_type: str | None = None
     input_tokens: int | None = None
     cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
     output_tokens: int | None = None
     total_steps: int | None = None
     cost_usd: float | None = None
@@ -117,6 +105,7 @@ def _extract_outcome_from_job_result(
         input_tokens = trajectory.input_tokens
         output_tokens = trajectory.output_tokens
         cache_tokens = trajectory.cache_tokens
+    cache_write_tokens = trajectory.cache_write_tokens
     total_steps = trajectory.total_steps
     if cost_usd is None:
         cost_usd = trajectory.cost_usd
@@ -133,6 +122,7 @@ def _extract_outcome_from_job_result(
             job_dir=job_dir,
             input_tokens=input_tokens,
             cache_tokens=cache_tokens,
+            cache_write_tokens=cache_write_tokens,
             output_tokens=output_tokens,
             total_steps=total_steps,
             cost_usd=cost_usd,

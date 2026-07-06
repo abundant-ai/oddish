@@ -1,0 +1,106 @@
+name: Preview Reset
+
+# Manual recovery for a broken preview database: deletes the PR's Supabase
+# branch and rebuilds it from the prod schema snapshot on the PR's CURRENT
+# merge ref, then redeploys the preview backend.
+#
+# Why not `gh run rerun` on the last PR Preview run: reruns pin the original
+# (stale) merge SHA, and find_last_deploys.py re-queries the live last
+# successful deploys -- so rerunning a run that already SUCCEEDED computes
+# "nothing changed" and skips the database job entirely. This workflow does
+# the reset itself instead, on a fresh checkout of refs/pull/<N>/merge.
+#
+# Shares pr-preview's per-PR concurrency group so a reset never races a
+# preview run; cancel-in-progress stays false so a reset queues behind an
+# in-flight run (a new push may still cancel a queued reset -- correct
+# precedence, the push rebuilds anyway).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number whose Supabase preview branch is deleted and rebuilt"
+        required: true
+
+concurrency:
+  group: pr-preview-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  reset:
+    name: Reset preview database
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/abundant-ai/oddish-ci-base:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      MODAL_ENVIRONMENT: preview
+      MODAL_APP_NAME: oddish-pr-${{ inputs.pr_number }}
+      MODAL_SECRET_ENVIRONMENT: main
+      EXPECTED_MODAL_API_URL: https://abundant-ai-preview--oddish-pr-${{ inputs.pr_number }}-api.modal.run
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      UV_PROJECT_ENVIRONMENT: /opt/venvs/backend
+      # Read-only source of the schema snapshot, Alembic pointers, and seed
+      # sample (see pr-preview.yml for why it is not ODDISH_DATABASE_URL).
+      PREVIEW_SAMPLE_SOURCE_DB_URL: ${{ secrets.ODDISH_DATABASE_URL }}
+      ODDISH_MODAL_API_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_API_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_API_MAX_CONTAINERS: "2"
+      ODDISH_MODAL_WORKER_MIN_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_BUFFER_CONTAINERS: "0"
+      ODDISH_MODAL_WORKER_MAX_CONTAINERS: "2"
+      ODDISH_GATE_LLM_ON_BASELINES: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ inputs.pr_number }}
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # SECURITY: this workflow checks out and runs PR code with repo secrets,
+      # so it must enforce the same same-repo guard as pr-preview.yml BEFORE
+      # any PR code is fetched. Fork PRs and closed PRs are rejected here.
+      - name: Require an open same-repo PR
+        working-directory: ${{ github.workspace }}
+        # Container jobs default to sh (dash), which rejects `set -o pipefail`.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_json=$(curl -sSf \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/$PR_NUMBER")
+          state=$(printf '%s' "$pr_json" | jq -r '.state')
+          head_repo=$(printf '%s' "$pr_json" | jq -r '.head.repo.full_name')
+          if [ "$state" != "open" ] || [ "$head_repo" != "${{ github.repository }}" ]; then
+            echo "::error::PR #$PR_NUMBER is not an open same-repo PR (state=$state, head=$head_repo); refusing to reset."
+            exit 1
+          fi
+
+      - name: Checkout PR merge ref
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/merge
+
+      - name: Sync backend dependencies
+        run: uv sync --frozen
+
+      - name: Delete Supabase preview branch
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/reset_preview_branch.sh"
+
+      - name: Rebuild preview database
+        env:
+          DEPLOY_BACKEND: "true"
+          RUN_MIGRATIONS: "true"
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/prepare_preview_database.sh"
+
+      - name: Deploy preview backend
+        run: "$GITHUB_WORKSPACE/.github/scripts/preview/deploy_preview_backend.sh"

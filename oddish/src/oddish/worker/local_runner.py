@@ -391,7 +391,7 @@ async def _local_post_trial_hooks(trial_id: str, *, dry_run: bool) -> None:
     Called once ``trial_id`` reaches a terminal state. ``maybe_gate_llm_trials``
     resolves the scope's baseline gate when this was the last baseline: VALID
     releases the BLOCKED LLM trials (BLOCKED -> QUEUED), FAULTY cancels them
-    (-> FAILED). When something was resolved we dispatch the task's now-QUEUED
+    (-> SKIPPED). When something was resolved we dispatch the task's now-QUEUED
     trials to the in-process runner; their atomic self-claim makes this safe
     even if siblings are still gated in another scope (they self-skip).
     """
@@ -732,6 +732,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
         if agent_result is not None and not agent_result.is_empty():
             trial.input_tokens = agent_result.n_input_tokens
             trial.cache_tokens = agent_result.n_cache_tokens
+            trial.cache_write_tokens = None
             trial.output_tokens = agent_result.n_output_tokens
             trial.cost_usd = agent_result.cost_usd
         trial.total_steps = _trajectory_total_steps(trajectory)

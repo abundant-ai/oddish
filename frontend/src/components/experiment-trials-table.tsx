@@ -173,6 +173,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "fail",
   "harness-error",
   "scoreless",
+  "skipped",
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
@@ -240,7 +241,14 @@ function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
     ) {
       hasError = true;
     }
-    if (trial.status !== "success" && trial.status !== "failed") continue;
+    // Skipped is terminal (a non-pass): count it so an all-skipped agent reads
+    // as done (and "failed" for row filters), not still-running.
+    if (
+      trial.status !== "success" &&
+      trial.status !== "failed" &&
+      trial.status !== "skipped"
+    )
+      continue;
     hasTerminal = true;
     // Any positive reward — full or partial — disqualifies the agent
     // from counting as "failed" on this task.
@@ -555,6 +563,7 @@ export function ExperimentTrialsTable({
               value === "fail" ||
               value === "harness-error" ||
               value === "scoreless" ||
+              value === "skipped" ||
               value === "queued" ||
               value === "running",
           ),
@@ -919,7 +928,10 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) =>
+            trial.status === "failed" ||
+            trial.status === "success" ||
+            trial.status === "skipped",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
           isActivePipelineStatus(trial.analysis_status),

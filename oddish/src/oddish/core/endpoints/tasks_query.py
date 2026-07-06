@@ -93,6 +93,7 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
         row["input_tokens"],
         row["output_tokens"],
         row["cache_tokens"],
+        row.get("cache_write_tokens"),
     )
     if estimated is None:
         return None, False
@@ -221,6 +222,7 @@ async def list_tasks_core(
                 TrialModel.analysis,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
+                TrialModel.cache_write_tokens,
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
                 TrialModel.cost_usd,
@@ -738,11 +740,16 @@ _AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
 
 
 def _trial_bucket_label() -> Any:
-    """SQL bucket (``pass``/``partial``/``fail``/``harness``/``scoreless``/``other``)
-    for one trial, mirroring the frontend ``getMatrixStatus``
-    (oddish/frontend/src/lib/status-config.ts) EXACTLY so the browser's
-    Pass/Partial/Fail/Harness count filters agree with the card chips:
+    """SQL bucket (``skipped``/``pass``/``partial``/``fail``/``harness``/
+    ``scoreless``/``other``) for one trial, mirroring the frontend
+    ``getMatrixStatus`` (oddish/frontend/src/lib/status-config.ts) EXACTLY so the
+    browser's Pass/Partial/Fail/Harness count filters agree with the card chips:
 
+      * ``SKIPPED`` status is ``skipped`` — checked FIRST, before the
+        error-message rule, because a gate-skipped trial carries
+        ``GATE_SKIP_MESSAGE`` and must not be miscounted as ``harness`` (matches
+        ``getMatrixStatus``, which returns "skipped" before its error-message
+        short-circuit);
       * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
         that still produced a reward (then it scores normally);
       * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
@@ -764,6 +771,9 @@ def _trial_bucket_label() -> Any:
         else_="partial",
     )
     return case(
+        # Checked before the error-message rule: a gate-skipped trial carries an
+        # error_message but is its own bucket, not a harness error.
+        (TrialModel.status == TrialStatus.SKIPPED, "skipped"),
         (
             and_(
                 TrialModel.error_message.isnot(None),
@@ -928,6 +938,8 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # NOTE: skipped trials are intentionally INCLUDED in metric denominators
+        # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -1073,6 +1085,8 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # NOTE: skipped trials are intentionally INCLUDED in metric denominators
+        # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -2076,6 +2090,7 @@ async def browse_tasks_core(
                 TrialModel.input_tokens.label("input_tokens"),
                 TrialModel.output_tokens.label("output_tokens"),
                 TrialModel.cache_tokens.label("cache_tokens"),
+                TrialModel.cache_write_tokens.label("cache_write_tokens"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
