@@ -350,6 +350,10 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    billedCostUsd: v.billed_cost_usd,
+    billedTrialCount: v.billed_trial_count,
+    billedHasEstimated: v.billed_has_estimated,
+    billedHasNative: v.billed_has_native,
     lastRunAt: v.last_run_at ?? null,
   };
 }
