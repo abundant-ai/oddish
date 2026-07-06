@@ -299,7 +299,13 @@ function ChartTooltip(
   );
 }
 
-function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
+export function CostChart({
+  series,
+  bucket,
+}: {
+  series: CostSeries;
+  bucket: string;
+}) {
   const labels = useMemo(() => {
     const map: Record<string, string> = {};
     series.keys.forEach((k) => (map[k.key] = k.label));
@@ -626,7 +632,16 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
           <TableRow key={user.owner_user_id ?? "unattributed"}>
             <TableCell>
               <div className="flex flex-col">
-                <span className="text-xs font-medium">{userLabel(user)}</span>
+                {user.owner_user_id ? (
+                  <Link
+                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}`}
+                    className="text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                  >
+                    {userLabel(user)}
+                  </Link>
+                ) : (
+                  <span className="text-xs font-medium">{userLabel(user)}</span>
+                )}
                 {user.email && user.email !== userLabel(user) && (
                   <span className="text-muted-foreground text-[10px]">
                     {user.email}
