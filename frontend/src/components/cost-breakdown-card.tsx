@@ -422,7 +422,7 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            Per-user figures attribute each experiment to its owner; per-model
+            Per-user figures attribute each trial to its billed user; per-model
             and per-user are the same per-trial costs grouped differently, so
             each view sums back to the same total.
           </li>
@@ -732,7 +732,7 @@ function ExperimentTable({
               </Link>
             </TableCell>
             <TableCell className="text-muted-foreground text-[11px]">
-              {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
+              {exp.owner_name ?? exp.owner_email ?? exp.owner_label ?? "—"}
             </TableCell>
             <CostCell cost={exp.cost_usd} estimated={exp.cost_estimated_usd} />
             <TableCell className="text-right font-mono text-xs">

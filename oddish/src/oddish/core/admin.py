@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TrialModel, utcnow
+from oddish.db import ExperimentModel, TaskModel, TrialModel, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -23,9 +23,8 @@ def _normalize_owner_user_id(owner_user_id: str | None) -> str | None:
     The cloud sweep stamps ``EXPERIMENTS_UNATTRIBUTED_OWNER`` onto experiments
     no org member claims so the dashboard Mine filter can use the indexed
     ``owner_user_id`` fast path. That sentinel is an internal string and must
-    never surface as a cost-breakdown owner id: normalizing it to ``None`` here
-    merges the spend into the existing unattributed bucket (``by_user`` /
-    experiment owner fields / the by-user series).
+    never surface as a cost-breakdown experiment owner id: normalizing it to
+    ``None`` here keeps top-experiment rows from leaking the sentinel.
     """
     if owner_user_id == EXPERIMENTS_UNATTRIBUTED_OWNER:
         return None
@@ -1034,9 +1033,8 @@ async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadS
 # Cost breakdown
 #
 # A global (cross-org) spend view for the admin page: total cost over a set of
-# trailing windows, broken down per user (attributed via experiment
-# ownership) and a ranked table of the most expensive recent experiments with
-# their model mix.
+# trailing windows, broken down per billed user and a ranked table of the most
+# expensive recent experiments with their model mix.
 #
 # Cost per trial follows the same resolution as the rest of the app
 # (``oddish.core.helpers._resolve_trial_cost``): each trial contributes
@@ -1086,6 +1084,7 @@ class CostModelBreakdown(BaseModel):
 
 
 class CostUserBreakdown(BaseModel):
+    # Historical API field name; this now carries ``trials.billed_user_id``.
     owner_user_id: str | None
     org_id: str | None
     # Enriched by the backend layer (names live in the cloud auth tables).
@@ -1109,6 +1108,10 @@ class CostExperimentBreakdown(BaseModel):
     owner_user_id: str | None
     owner_name: str | None = None
     owner_email: str | None = None
+    # Display fallback for when ``owner_user_id`` resolves to no known account:
+    # the experiment's stamped ``owner`` string, else its oldest task's author.
+    # Mirrors the Author shown on the experiment page this row links into.
+    owner_label: str | None = None
     org_name: str | None = None
     created_at: datetime | None
     last_activity_at: datetime | None
@@ -1300,7 +1303,7 @@ async def _cost_time_series(
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
     """Cost over time, returned three ways: stacked by agent, model, and user.
 
-    One scan groups by ``(bucket, agent, model, owner_user_id)``. Each group is
+    One scan groups by ``(bucket, agent, model, billed_user_id)``. Each group is
     priced (native cost when present, else a per-model token estimate -- the
     estimate is per-model, so the model must stay in the grouping). The priced
     groups are then rolled up three ways, per ``(bucket, agent)``,
@@ -1318,7 +1321,7 @@ async def _cost_time_series(
             bucket_col.label("bucket"),
             TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
-            ExperimentModel.owner_user_id.label("owner_user_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
@@ -1338,7 +1341,7 @@ async def _cost_time_series(
             bucket_col,
             TrialModel.agent,
             TrialModel.model,
-            ExperimentModel.owner_user_id,
+            TrialModel.billed_user_id,
         )
     )
     if since is not None:
@@ -1382,7 +1385,7 @@ async def _cost_time_series(
             user_per_bucket,
             user_totals,
             bstart,
-            _normalize_owner_user_id(row.owner_user_id) or _SERIES_UNATTRIBUTED_KEY,
+            row.billed_user_id or _SERIES_UNATTRIBUTED_KEY,
             cost,
         )
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
@@ -1418,6 +1421,44 @@ async def _cost_time_series(
     return by_agent, by_model, by_user
 
 
+async def _primary_task_authors(
+    session: AsyncSession, experiment_ids: list[str]
+) -> dict[str, str]:
+    """Oldest task's author (``github_username`` tag, else legacy ``user``) per
+    experiment.
+
+    Mirrors the dashboard's primary-task Author fallback (``DISTINCT ON`` the
+    experiment, oldest task first) so the cost table's Owner column shows the
+    same person the experiment page does when no account owner resolves.
+    """
+    if not experiment_ids:
+        return {}
+    github_tag = TaskModel.tags["github_username"].astext
+    rows = (
+        await session.execute(
+            select(
+                TrialModel.experiment_id.label("experiment_id"),
+                github_tag.label("github_username"),
+                TaskModel.user.label("user"),
+            )
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .where(TrialModel.experiment_id.in_(experiment_ids))
+            .order_by(
+                TrialModel.experiment_id.asc(),
+                TaskModel.created_at.asc(),
+                TaskModel.id.asc(),
+            )
+            .distinct(TrialModel.experiment_id)
+        )
+    ).all()
+    authors: dict[str, str] = {}
+    for row in rows:
+        name = row.github_username or row.user
+        if name:
+            authors[str(row.experiment_id)] = name
+    return authors
+
+
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
@@ -1429,8 +1470,8 @@ async def get_cost_breakdown_core(
 
     ``window_days`` bounds every rollup (series / per-user / per-model /
     per-experiment) to trials created in the trailing window (``None`` ==
-    all-time). Returns IDs only for owners/orgs; the backend layer enriches
-    them with names from the cloud auth tables.
+    all-time). Returns IDs only for billed users / owners / orgs; the backend
+    layer enriches them with names from the cloud auth tables.
     """
     now = datetime.now(timezone.utc)
 
@@ -1447,6 +1488,8 @@ async def get_cost_breakdown_core(
             ExperimentModel.name.label("exp_name"),
             ExperimentModel.org_id.label("exp_org_id"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
+            ExperimentModel.owner.label("exp_owner"),
+            TrialModel.billed_user_id.label("billed_user_id"),
             ExperimentModel.created_at.label("exp_created_at"),
             ExperimentModel.last_activity_at.label("exp_last_activity_at"),
             TrialModel.model.label("model"),
@@ -1498,6 +1541,8 @@ async def get_cost_breakdown_core(
             ExperimentModel.name,
             ExperimentModel.org_id,
             ExperimentModel.owner_user_id,
+            ExperimentModel.owner,
+            TrialModel.billed_user_id,
             ExperimentModel.created_at,
             ExperimentModel.last_activity_at,
             TrialModel.model,
@@ -1522,6 +1567,7 @@ async def get_cost_breakdown_core(
 
     for row in rows:
         owner_user_id = _normalize_owner_user_id(row.owner_user_id)
+        billed_user_id = row.billed_user_id
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
@@ -1566,6 +1612,7 @@ async def get_cost_breakdown_core(
                 "name": row.exp_name,
                 "org_id": row.exp_org_id,
                 "owner_user_id": owner_user_id,
+                "owner": row.exp_owner,
                 "created_at": row.exp_created_at,
                 "last_activity_at": row.exp_last_activity_at,
                 "trial_count": 0,
@@ -1594,10 +1641,10 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
-        user = by_user.get(owner_user_id)
+        user = by_user.get(billed_user_id)
         if user is None:
-            user = by_user[owner_user_id] = {
-                "owner_user_id": owner_user_id,
+            user = by_user[billed_user_id] = {
+                "owner_user_id": billed_user_id,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
                 "input_tokens": 0,
@@ -1649,12 +1696,18 @@ async def get_cost_breakdown_core(
     experiment_rows = sorted(
         experiments.values(), key=lambda e: e["cost_usd"], reverse=True
     )[:experiment_limit]
+    # Only the ranked experiments need the task-author fallback, so this bounded
+    # lookup runs once over the top-N rather than every experiment in the window.
+    task_authors = await _primary_task_authors(
+        session, [str(e["experiment_id"]) for e in experiment_rows]
+    )
     experiments_out = [
         CostExperimentBreakdown(
             experiment_id=str(e["experiment_id"]),
             name=e["name"],
             org_id=e["org_id"],
             owner_user_id=e["owner_user_id"],
+            owner_label=e["owner"] or task_authors.get(str(e["experiment_id"])),
             created_at=e["created_at"],
             last_activity_at=e["last_activity_at"],
             trial_count=int(e["trial_count"]),
