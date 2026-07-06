@@ -113,7 +113,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             user_ids.add(experiment.owner_user_id)
         if experiment.org_id:
             org_ids.add(experiment.org_id)
-    # The by-user chart series keys are owner user ids too (plus the synthetic
+    # The by-user chart series keys are billed user ids too (plus the synthetic
     # "__other__" / "__unattributed__" keys, which carry their own labels).
     for series_key in result.series_by_user.keys:
         if series_key.key == series_key.label:  # unresolved -> a raw user id

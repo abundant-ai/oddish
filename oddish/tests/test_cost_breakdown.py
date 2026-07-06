@@ -11,8 +11,10 @@ Covered behaviors:
 
 * native ``cost_usd`` is summed, and trials lacking it are priced from token
   counts via the per-model estimate (the ``cost_estimated_usd`` split);
-* per-user attribution flows through ``experiments.owner_user_id`` (including
-  the unattributed ``None`` owner);
+* per-user attribution flows through ``trials.billed_user_id`` (including
+  the unattributed ``None`` billed user);
+* the experiment Owner label falls back to the stamped ``owner`` string, then
+  the oldest task's author, when no account owner resolves;
 * soft-deleted experiments (and soft-deleted trials) are excluded;
 * the trailing-window filter bounds the rollups;
 * model ids are normalized so spellings (case/whitespace) collapse onto one row;
@@ -96,6 +98,7 @@ async def seeded_cost_data():
                     name="cost-exp-two",
                     org_id=ORG_1,
                     owner_user_id=USER_B,
+                    owner="gh-octocat",
                     created_at=recent,
                     last_activity_at=recent,
                 ),
@@ -133,6 +136,9 @@ async def seeded_cost_data():
             (E4, ORG_1),
             (E5, ORG_2),
         ):
+            # E3's task carries a github_username tag so the owner-label fallback
+            # can prove the tag beats the legacy ``user`` string.
+            tags = {"github_username": "e3-gh"} if exp_id == E3 else None
             session.add(
                 TaskModel(
                     id=f"{exp_id}-task",
@@ -140,12 +146,29 @@ async def seeded_cost_data():
                     user="test",
                     org_id=org_id,
                     task_path="some/path",
+                    tags=tags,
                 )
             )
         session.add_all(
             [
-                _trial(E1, 0, model="claude-opus-4-8", cost_usd=2.0, created_at=recent),
-                _trial(E1, 1, model="claude-opus-4-8", cost_usd=3.0, created_at=recent),
+                _trial(
+                    E1,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=2.0,
+                    created_at=recent,
+                    billed_user_id=USER_A,
+                ),
+                # Same experiment owner as the previous trial, different payer:
+                # by-user cost must follow the trial, not the experiment.
+                _trial(
+                    E1,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=3.0,
+                    created_at=recent,
+                    billed_user_id=USER_B,
+                ),
                 # No native cost -> priced from tokens. Distinct agent so the
                 # by-agent series has more than one stack.
                 _trial(
@@ -159,6 +182,7 @@ async def seeded_cost_data():
                     output_tokens=_EST_OUT,
                     cache_tokens=_EST_CACHE,
                     created_at=recent,
+                    billed_user_id=USER_B,
                 ),
                 # Mixed-case model id -> must normalize to "claude-opus-4-8".
                 _trial(E3, 0, model="Claude-Opus-4-8", cost_usd=1.5, created_at=recent),
@@ -176,9 +200,17 @@ async def seeded_cost_data():
                     deleted_at=now,
                 ),
                 # Old trial in E1: out of the 7d window, in all-time.
-                _trial(E1, 3, model="claude-opus-4-8", cost_usd=7.0, created_at=old),
-                # Sentinel-owned experiment: its spend must merge into the
-                # unattributed (None) owner bucket, never surface the sentinel.
+                _trial(
+                    E1,
+                    3,
+                    model="claude-opus-4-8",
+                    cost_usd=7.0,
+                    created_at=old,
+                    billed_user_id=USER_A,
+                ),
+                # Sentinel-owned experiment: the experiment row should normalize
+                # the owner sentinel away; its unbilled trial spend lands in the
+                # unattributed (None) billed-user bucket.
                 _trial(E5, 0, model="claude-opus-4-8", cost_usd=4.0, created_at=recent),
             ]
         )
@@ -210,6 +242,7 @@ def _trial(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     cache_tokens: int | None = None,
+    billed_user_id: str | None = None,
     deleted_at=None,
 ) -> TrialModel:
     return TrialModel(
@@ -225,6 +258,7 @@ def _trial(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_tokens=cache_tokens,
+        billed_user_id=billed_user_id,
         cost_usd=cost_usd,
         created_at=created_at,
         deleted_at=deleted_at,
@@ -263,12 +297,23 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert _approx(exps[E3].cost_usd, 1.5)
     assert exps[E3].models[0].model == "claude-opus-4-8"
 
-    # Per-user attribution via experiment ownership.
+    # owner_label is the display fallback the Owner column shows when
+    # owner_user_id resolves to no account. Precedence mirrors the experiment
+    # page: the stamped ``owner`` string first, else the oldest task's author
+    # (github_username tag before the legacy ``user`` string).
+    assert exps[E2].owner_label == "gh-octocat", exps[E2].owner_label
+    assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
+    assert exps[E1].owner_label == "test", exps[E1].owner_label
+
+    # Per-user attribution follows the trial's billed user, not the experiment
+    # owner. E1 is owned by USER_A, but one of its recent trials is billed to
+    # USER_B.
     by_user = {u.owner_user_id: u for u in result.by_user}
-    assert _approx(by_user[USER_A].cost_usd, 5.0)
+    assert _approx(by_user[USER_A].cost_usd, 2.0)
     assert by_user[USER_A].experiment_count == 1
-    assert by_user[USER_A].trial_count == 2
-    assert _approx(by_user[USER_B].cost_usd, _EXPECTED_EST)
+    assert by_user[USER_A].trial_count == 1
+    assert _approx(by_user[USER_B].cost_usd, 3.0 + _EXPECTED_EST)
+    assert by_user[USER_B].experiment_count == 2
 
     # Experiments are ranked by descending cost.
     costs = [e.cost_usd for e in result.experiments]
@@ -304,7 +349,7 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert "claude-opus-4-8" in model_keys
     assert "Claude-Opus-4-8" not in model_keys
 
-    # by-user series carries both owners plus the unattributed (E3) bucket.
+    # by-user series carries both billed users plus the unattributed (E3) bucket.
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
     assert "__unattributed__" in user_keys
@@ -333,6 +378,10 @@ async def test_cost_breakdown_sentinel_owner_normalized_to_unattributed(
     assert exps[E5].owner_user_id is None, exps[E5].owner_user_id
     assert _approx(exps[E5].cost_usd, 4.0)
     assert exps[E3].owner_user_id is None, exps[E3].owner_user_id
+
+    # Even with the account owner normalized away, the Owner column still shows
+    # a person: the sentinel-owned experiment falls back to its task author.
+    assert exps[E5].owner_label == "test", exps[E5].owner_label
 
     # No experiment / by-user row anywhere carries the raw sentinel string
     # (the assertion that most directly proves the leak is fixed).
@@ -376,4 +425,4 @@ async def test_cost_breakdown_all_time_includes_old_trials(seeded_cost_data):
     assert e1_all.trial_count == 3
 
     user_a_all = {u.owner_user_id: u for u in all_time.by_user}[USER_A]
-    assert _approx(user_a_all.cost_usd, 12.0)
+    assert _approx(user_a_all.cost_usd, 9.0)
