@@ -22,8 +22,6 @@ export function QuotaUsageCard() {
   const pct =
     limit > 0 ? Math.min(100, ((used + reserved) / limit) * 100) : data ? 100 : 0;
   const over = limit <= 0 || used + reserved >= limit;
-  // Only enforcement actually blocks runs. Under off/shadow (the default ship
-  // state), being over is informational and the UI must not claim runs are blocked.
   const blocked = over && data?.enforced === true;
 
   return (

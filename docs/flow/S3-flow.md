@@ -18,22 +18,20 @@ The one query lives in `oddish/src/oddish/core/quotas.py`:
 SELECT COALESCE(SUM(cost_usd), 0) FROM trials
 WHERE org_id = :org_id
   AND billed_user_id = :user_id
-  AND finished_at >= :period_start   -- quota_window_start() = now - 24h
-  AND deleted_at IS NULL
+  AND finished_at > :period_start   -- quota_window_start() = now - 24h
 ```
 
 This is **settled spend in the trailing 24h, keyed on settlement time**. Read
-the four predicates as four deliberate exclusions:
+the predicates as deliberate exclusions:
 
-- `finished_at >= period_start` — only trials that reached a terminal state
+- `finished_at > period_start` — only trials that reached a terminal state
   *and* settled within the last 24 hours count. **In-flight trials
-  (`finished_at IS NULL`) are excluded** — SQL `>=` is false against `NULL`. So
+  (`finished_at IS NULL`) are excluded** — SQL `>` is false against `NULL`. So
   spend enters the window the moment it settles, not when it started, and ages
   out exactly 24h later.
 - `billed_user_id = :user_id` — only trials attributed to this payer (the S2
   invariant). **NULL-billed rows** (imported / combined — already-paid trials)
   never match and are excluded.
-- `deleted_at IS NULL` — **soft-deleted** trials drop out of the total.
 - `COALESCE(..., 0)` — a user with no settled trials in the window sums to
   `0`, not `NULL`.
 
@@ -86,11 +84,11 @@ Both live in `backend/api/routers/orgs.py`.
 - **`GET /quotas/me`** (`require_auth`) — caller-scoped. Calls `sum_cost_usd`
   with `auth.org_id` + `auth.user_id`, returns `QuotaUsageResponse`
   (`user_id`, `limit_usd`, `used_usd`). If the caller has no `user_id` (e.g. a
-  bare API key with no user), `used_today` stays `0`.
+  bare API key with no user), `used_usd` stays `0`.
 - **`GET /quotas`** (`require_can_manage_quotas`) — org-wide admin view. It does
   **one grouped query, not N+1**: it lists members once, then runs a single
   `SUM(cost_usd) ... GROUP BY billed_user_id` over the org's settled trials
-  (same four predicates as `sum_cost_usd`, minus the single-user filter, plus
+  (same predicates as `sum_cost_usd`, minus the single-user filter, plus
   `billed_user_id IS NOT NULL`). The results become a `{user_id: used}` dict,
   and each member row looks itself up with `.get(id, 0)`. Members with no spend
   correctly show `$0`. Returns `QuotaListResponse` (a list of `QuotaMemberItem`).

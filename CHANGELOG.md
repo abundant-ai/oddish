@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Per-user quota budgets now use a **rolling 24-hour window** instead of resetting at UTC calendar midnight: `quota_window_start()` (`now - 24h`) replaces `start_of_today_utc()` everywhere the budget is summed (admission gate, `/quotas/me`, admin `/quotas` list, quota PUT response), so settled spend counts against the cap until exactly 24h after the trial finished and then ages out continuously — there is no reset moment to burst around (previously a user could spend up to 2x the cap in a few hours by straddling midnight). The 402 message, dashboard usage card, and admin quota table copy now say "rolling 24h" / "last 24 hours" instead of "today". `ODDISH_DEFAULT_DAILY_QUOTA_USD` keeps its name and meaning ($ per 24h).
+- Per-user quotas now use a rolling 24-hour window instead of a UTC-midnight reset. `quota_window_start()` replaces `start_of_today_utc()` in admission and quota usage reads, while `ODDISH_DEFAULT_DAILY_QUOTA_USD` keeps its existing name and value.
 
 ---
 

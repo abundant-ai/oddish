@@ -153,9 +153,7 @@ async def get_my_quota_usage(
             effective_limit_usd = await get_effective_limit(
                 session, auth.org_id, auth.user_id
             )
-            reserved = await inflight_reserved_usd(
-                session, auth.org_id, auth.user_id
-            )
+            reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
         limit_usd=float(effective_limit_usd),
@@ -347,16 +345,13 @@ async def _require_no_stranded_org(session, rows: list[UserModel]) -> None:
         if row.role != UserRole.ADMIN:
             continue
         others = (
-            (
-                await session.execute(
-                    select(UserModel.id, UserModel.role)
-                    .where(UserModel.org_id == row.org_id)
-                    .where(UserModel.id != row.id)
-                    .where(UserModel.is_active == True)  # noqa: E712
-                )
+            await session.execute(
+                select(UserModel.id, UserModel.role)
+                .where(UserModel.org_id == row.org_id)
+                .where(UserModel.id != row.id)
+                .where(UserModel.is_active == True)  # noqa: E712
             )
-            .all()
-        )
+        ).all()
         if others and not any(role == UserRole.ADMIN for _, role in others):
             raise HTTPException(
                 status_code=400,

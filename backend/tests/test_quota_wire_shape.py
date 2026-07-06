@@ -29,9 +29,7 @@ async def test_sweep_route_renders_402_wrapped_in_detail(monkeypatch):
 
     import api.routers.tasks as tasks_router
 
-    monkeypatch.setattr(
-        tasks_router, "create_task_sweep_core", raise_quota_exceeded
-    )
+    monkeypatch.setattr(tasks_router, "create_task_sweep_core", raise_quota_exceeded)
 
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: AuthContext(
@@ -60,5 +58,5 @@ async def test_sweep_route_renders_402_wrapped_in_detail(monkeypatch):
     assert detail["used_usd"] == pytest.approx(3.0)
     assert detail["reserved_usd"] == pytest.approx(1.0)
     assert detail["limit_usd"] == pytest.approx(2.0)
-    assert "Over your budget" in detail["message"]
-    assert "rolling 24h" in detail["message"]
+    assert "Over your 24h budget" in detail["message"]
+    assert "Spend frees 24h" in detail["message"]

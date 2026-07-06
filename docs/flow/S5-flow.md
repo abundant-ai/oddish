@@ -25,7 +25,7 @@ raises an `HTTPException` subclass (block). The decision, in order:
 3. **Budget check.** Otherwise compute three exact `Decimal` values and compare:
    - `effective_limit = get_effective_limit(...)` — the S4 limit (see below).
    - `used = sum_cost_usd(...)` — the payer's spend settled in the trailing
-     24h (`SUM(cost_usd)` over `finished_at >= quota_window_start()`), the S3
+     24h (`SUM(cost_usd)` over `finished_at > quota_window_start()`), the S3
      read.
    - `reserved = (inflight_count(...) + count) * pending_trial_reservation_usd`
      — a **pessimistic hold** for work that hasn't settled a cost yet. It counts

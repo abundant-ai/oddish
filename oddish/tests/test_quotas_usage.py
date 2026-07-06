@@ -57,10 +57,10 @@ def test_quota_window_start_is_a_rolling_24h_boundary():
     now = datetime(2026, 6, 30, 15, 30, 45, 123000, tzinfo=timezone.utc)
 
     window_start = quota_window_start(now)
-    assert window_start == datetime(2026, 6, 29, 15, 30, 45, 123000, tzinfo=timezone.utc)
+    assert window_start == datetime(
+        2026, 6, 29, 15, 30, 45, 123000, tzinfo=timezone.utc
+    )
     assert window_start.tzinfo is not None
-    # The window slides continuously: there is no shared calendar boundary —
-    # one second later, the window start is one second later too.
     assert quota_window_start(now + timedelta(seconds=1)) == window_start + timedelta(
         seconds=1
     )
@@ -76,9 +76,7 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
     billed_user = f"user-A-{_RUN}"
 
     now = datetime.now(timezone.utc)
-    # Strictly older than the rolling 24h window (now - 24h exactly would
-    # still match the inclusive >= window-start predicate).
-    aged_out = now - timedelta(hours=25)
+    aged_out = now - timedelta(hours=24)
 
     async with get_session() as session:
         await create_task(
@@ -90,19 +88,18 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
         )
         await session.flush()
 
-        counted_today_one = await session.get(TrialModel, f"{task_id}-0")
-        counted_today_one.finished_at = now
-        counted_today_one.cost_usd = 0.10
+        counted_in_window_one = await session.get(TrialModel, f"{task_id}-0")
+        counted_in_window_one.finished_at = now
+        counted_in_window_one.cost_usd = 0.10
 
-        counted_today_two = await session.get(TrialModel, f"{task_id}-1")
-        counted_today_two.finished_at = now
-        counted_today_two.cost_usd = 0.20
+        counted_in_window_two = await session.get(TrialModel, f"{task_id}-1")
+        counted_in_window_two.finished_at = now
+        counted_in_window_two.cost_usd = 0.20
 
         still_in_flight = await session.get(TrialModel, f"{task_id}-2")
         still_in_flight.finished_at = None
         still_in_flight.cost_usd = 5.00
 
-        # Soft-deleted settled spend still counts: deleting is not a budget reset.
         soft_deleted_but_counted = await session.get(TrialModel, f"{task_id}-3")
         soft_deleted_but_counted.finished_at = now
         soft_deleted_but_counted.cost_usd = 9.00
@@ -130,9 +127,7 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
 
 @pytest.mark.asyncio
 async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
-    """A FINISHED trial that reported no price (cost_usd NULL) must count toward
-    the budget at ``unpriced_trial_cost_usd`` (not $0), so a cancelled/reaped/
-    unpriced run can't be billed as free. A genuine $0 stays $0."""
+    """Unpriced finished trials count at the safety floor."""
     task_id = f"quota-unpriced-{_RUN}"
     cleanup_task_ids.append(task_id)
     org_id = f"org-quota-unpriced-{_RUN}"
@@ -150,24 +145,19 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
         )
         await session.flush()
 
-        # Ran (started_at set) but unpriced (cost_usd stays NULL) -> floored.
         unpriced = await session.get(TrialModel, f"{task_id}-0")
         unpriced.started_at = now
         unpriced.finished_at = now
         unpriced.cost_usd = None
 
-        # Finished with a real price -> counts as-is.
         priced = await session.get(TrialModel, f"{task_id}-1")
         priced.finished_at = now
         priced.cost_usd = 0.25
 
-        # Finished but genuinely free (explicit 0) -> stays 0, NOT floored.
         free = await session.get(TrialModel, f"{task_id}-2")
         free.finished_at = now
         free.cost_usd = 0.0
 
-        # Cancelled while never-started (finished_at set, started_at NULL, unpriced)
-        # -> genuinely $0, NOT floored (never ran, can't be a start-then-cancel bypass).
         never_started = await session.get(TrialModel, f"{task_id}-3")
         never_started.started_at = None
         never_started.finished_at = now
@@ -180,7 +170,6 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
         )
         grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    # floored(started+unpriced) + priced + 0(explicit-zero) + 0(never-started)
     expected = floor + Decimal("0.25")
     assert settled == expected
     assert grouped[billed_user] == expected

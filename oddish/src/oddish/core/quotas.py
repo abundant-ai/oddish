@@ -27,36 +27,26 @@ QUOTA_WINDOW = timedelta(hours=24)
 
 
 def quota_window_start(now: datetime | None = None) -> datetime:
-    """Start of the rolling 24-hour quota window.
-
-    The budget window slides continuously (now - 24h) instead of resetting at
-    UTC calendar midnight, so spend "ages out" exactly 24h after it settled and
-    there is no reset moment to burst around (2x the cap by straddling
-    midnight).
-    """
+    """Return the start of the last 24 hours."""
     return (now or datetime.now(timezone.utc)) - QUOTA_WINDOW
 
 
-# Settled spend counts even after a trial/experiment is soft-deleted (deleting
-# is not a budget reset), so the sums bypass the deleted_at auto-filter.
 def _settled_cost_predicates(org_id: str | None, period_start: datetime) -> list:
     return [
         TrialModel.org_id == org_id,
-        TrialModel.finished_at >= period_start,
+        TrialModel.finished_at > period_start,
     ]
 
 
 def _settled_cost_expr():
-    """Per-trial settled cost for the budget SUM: an unpriced (NULL cost_usd)
-    finished trial counts as ``unpriced_trial_cost_usd`` so it is never billed
-    as free. A genuinely-$0 row (cost_usd = 0) is left as $0. The floor is gated
-    on ``started_at IS NOT NULL``: a never-started trial (cancelled while
-    PENDING/QUEUED, so it got finished_at but never claimed a worker) genuinely
-    cost $0 and can't be part of the start-then-cancel bypass, so it counts as $0."""
+    """Return the cost to count for one finished trial."""
     return func.coalesce(
         TrialModel.cost_usd,
         case(
-            (TrialModel.started_at.isnot(None), float(settings.unpriced_trial_cost_usd)),
+            (
+                TrialModel.started_at.isnot(None),
+                float(settings.unpriced_trial_cost_usd),
+            ),
             else_=0.0,
         ),
     )
@@ -112,9 +102,7 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
 async def inflight_reserved_usd(
     session: AsyncSession, org_id: str | None, billed_user_id: str
 ) -> Decimal:
-    """Reservation for in-flight trials: each stands in at its accumulated
-    cost so far (a $3 RETRYING attempt reserves $3), floored at the pending
-    reservation."""
+    """Return the reserved cost for running trials."""
     return to_money_decimal(
         await session.scalar(
             select(
@@ -137,10 +125,6 @@ async def inflight_reserved_usd(
 async def get_effective_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:
-    # ``deleted_at IS NULL`` matches the soft-delete convention + the S5 rollout
-    # docs. Override removal is currently a hard DELETE (orgs.py), so there are
-    # no soft-deleted rows today, but this keeps a removed override from ever
-    # enforcing an old limit if a soft-delete path is later introduced.
     override_limit_usd = await session.scalar(
         text(
             "SELECT limit_usd FROM quotas "

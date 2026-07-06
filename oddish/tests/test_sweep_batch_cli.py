@@ -126,8 +126,8 @@ def test_processed_batch_returns_results(monkeypatch, status):
 @pytest.mark.parametrize(
     "body",
     [
-        {"detail": {"message": "Over your budget: nope."}},  # FastAPI wrap
-        {"message": "Over your budget: nope."},  # legacy flat handler
+        {"detail": {"message": "Over your 24h budget: nope."}},
+        {"message": "Over your 24h budget: nope."},
     ],
 )
 def test_quota_402_message_read_from_both_wire_shapes(monkeypatch, capsys, body):
@@ -136,7 +136,7 @@ def test_quota_402_message_read_from_both_wire_shapes(monkeypatch, capsys, body)
     _install(monkeypatch, _Resp(402, json_data=body))
     with pytest.raises(typer.Exit):
         api.post_sweep_payload("http://api", {"task_id": "t-a"})
-    assert "Over your budget" in capsys.readouterr().err
+    assert "Over your 24h budget" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +158,7 @@ def test_map_results_maps_success_and_failure():
         {"index": 0, "success": True, "task": {"id": "t-a", "trials_count": 2}},
         {"index": 1, "success": False, "status_code": 404, "error": "missing"},
     ]
-    by_index, total, failed, quota_blocked = _map_batch_sweep_results(
-        results, _TARGETS
-    )
+    by_index, total, failed, quota_blocked = _map_batch_sweep_results(results, _TARGETS)
     assert by_index == [{"id": "t-a", "trials_count": 2}, None]
     assert total == 2
     assert failed == ["t-b"]

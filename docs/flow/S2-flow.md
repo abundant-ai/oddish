@@ -2,11 +2,11 @@
 
 ## The invariant
 
-**Every Oddish-billed trial carries `billed_user_id`** — the payer whose
+**Every Oddish-billed trial carries `billed_user_id`** — the payer whose daily
 budget its cost draws down. `NULL` means the trial's cost draws down *nobody's*
-quota (imported / combined rows, which are outside the billing window).
+quota (imported / combined rows, which are outside today's billing window).
 
-Why it matters: a later slice enforces the per-user quota (rolling 24h) with
+Why it matters: a later slice enforces the per-user daily quota with
 
 ```sql
 SELECT SUM(cost_usd) FROM trials
@@ -123,7 +123,7 @@ call to `maybe_enqueue_auto_probe` in `sweep.py` originally forwarded `org_id`
 but *not* `billed_user_id` (the earlier `replace_all` matched the append-mode
 call's indentation but missed the create-mode one). Since `run_probe` on a fresh
 sweep is the common case, this inserted the probe trial NULL-billed, and its real
-provider cost was invisible to the quota-spend SUM — a user could exceed their
+provider cost was invisible to the daily-spend SUM — a user could exceed their
 quota by accumulated probe cost. Fixed: the create-mode call now passes
 `billed_user_id`, and `test_auto_probe_forwards_billed_user_id_to_append` locks
 the payer being threaded into the insert. Both auto-probe call sites are now
