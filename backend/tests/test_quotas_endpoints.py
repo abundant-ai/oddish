@@ -11,7 +11,6 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
 import pytest_asyncio
@@ -172,7 +171,7 @@ async def test_admin_quota_list_shows_grouped_usage_and_default_limit(org_with_s
 
     assert members_by_id[member_a.id]["used_usd"] == pytest.approx(0.30)
     assert members_by_id[member_b.id]["used_usd"] == pytest.approx(0.0)
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(10.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(100.0)
 
 
 # --- S3-T4: /quotas/me returns ONLY the caller's usage --------------------------
@@ -198,7 +197,7 @@ async def test_quotas_me_returns_only_callers_usage(org_with_spend):
     body = response.json()
     assert body["user_id"] == member_a.id
     assert body["used_usd"] == pytest.approx(0.30)
-    assert body["limit_usd"] == pytest.approx(10.0)
+    assert body["limit_usd"] == pytest.approx(100.0)
 
 
 # --- S3-T5 (end to end): a FULL-scope API key is rejected by GET /quotas ---------

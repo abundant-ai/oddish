@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import settings
+from oddish.config import NOP_ORACLE_QUEUE_KEY, is_nop_oracle_agent, settings
+from oddish.core.baseline_gate import (
+    GateOutcome,
+    evaluate_baseline_gate,
+)
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
@@ -25,6 +28,7 @@ from oddish.db import (
     VerdictStatus,
     WorkerJobKind,
     WorkerJobModel,
+    WorkerJobStatus,
     generate_id,
     utcnow,
 )
@@ -33,7 +37,6 @@ from oddish.experiment import generate_experiment_name
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import TaskSubmission, TrialSpec
 from oddish.task_timeouts import validate_task_timeout_config
-from oddish.trial_cost import apply_settled_cost
 from oddish.workers.jobs.enqueue import (
     EnqueueRequest,
     bulk_enqueue_worker_jobs,
@@ -46,11 +49,6 @@ USER_CANCELLED_MESSAGE = "Cancelled by user"
 CANCELLED_HARBOR_STAGE = "cancelled"
 ACTIVE_TRIAL_STATUSES = (
     TrialStatus.PENDING,
-    TrialStatus.QUEUED,
-    TrialStatus.RUNNING,
-    TrialStatus.RETRYING,
-)
-BILLABLE_CANCEL_TRIAL_STATUSES = (
     TrialStatus.QUEUED,
     TrialStatus.RUNNING,
     TrialStatus.RETRYING,
@@ -82,9 +80,13 @@ async def cancel_tasks_runs(
 
     The cancel path walks ``worker_jobs`` (single UPDATE covers trial /
     analysis / verdict kinds uniformly) and then mirrors the terminal
-    state back onto the domain rows for live-UI visibility. Modal
-    function call ids are harvested from the cancelled rows so callers
-    can terminate the remote containers.
+    state back onto the domain rows for live-UI visibility.
+
+    POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` and
+    ``worker_targets`` are RETURNED, not terminated here -- a rollback must
+    never leave live rows pointing at destroyed containers. The caller
+    (route or OSS operator invoking this directly) must run
+    ``oddish.core.helpers.terminate_run_harvest(result)`` after commit.
     """
     requested_task_ids = list(dict.fromkeys(task_ids))
     if not requested_task_ids:
@@ -95,6 +97,7 @@ async def cancel_tasks_runs(
             "tasks_cancelled": 0,
             "trials_cancelled": 0,
             "modal_function_call_ids": [],
+            "worker_targets": [],
         }
 
     query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
@@ -227,7 +230,6 @@ async def cancel_tasks_runs(
     for trial in trials:
         trial_updated = False
         if trial.id in canceled_trial_kinds or trial.status in ACTIVE_TRIAL_STATUSES:
-            trial_consumed_billable_slot = trial.status in BILLABLE_CANCEL_TRIAL_STATUSES
             # Modal function-call ids now live only on ``worker_jobs``;
             # the ``UPDATE worker_jobs ... RETURNING`` above is the
             # single source for FCs to terminate.
@@ -241,8 +243,6 @@ async def cancel_tasks_runs(
             trial.max_attempts = trial.attempts
             trial.current_worker_id = None
             trial.current_queue_slot = None
-            if trial_consumed_billable_slot:
-                apply_settled_cost(trial)
             trials_cancelled += 1
             trial_updated = True
         if (
@@ -276,16 +276,6 @@ async def cancel_tasks_runs(
 
     await session.flush()
 
-    sandboxes_terminated = 0
-    if worker_targets:
-        results = await asyncio.gather(
-            *(
-                cancel_job_by_worker(provider, external_id)
-                for provider, external_id in worker_targets
-            )
-        )
-        sandboxes_terminated = sum(1 for ok in results if ok)
-
     return {
         "task_ids": found_task_ids,
         "not_found_task_ids": not_found_task_ids,
@@ -293,7 +283,7 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
-        "sandboxes_terminated": sandboxes_terminated,
+        "worker_targets": sorted(worker_targets),
     }
 
 
@@ -661,6 +651,31 @@ async def _bulk_insert_trials(
     await session.execute(_TRIAL_BULK_INSERT_SQL, params)
 
 
+def _submission_gates_llm_trials(submission: TaskSubmission) -> bool:
+    """True when this submission should hold its LLM trials on its baselines.
+
+    Active only when the global flag is on, this submission opts in
+    (``gate_baselines``, the default), and the submission mixes nop/oracle
+    baselines with LLM agents. Applies to both the initial create and later
+    appends, so a re-run that adds fresh baselines re-gates its agent trials.
+    ``--no-baseline-gate`` sets ``gate_baselines=False`` to run this
+    submission's LLM trials ungated (the baselines still run).
+    """
+    if not settings.gate_llm_on_baselines or not submission.gate_baselines:
+        return False
+    specs = submission.trials
+    has_baseline = any(is_nop_oracle_agent(s.agent) for s in specs)
+    has_llm = any(not is_nop_oracle_agent(s.agent) for s in specs)
+    return has_baseline and has_llm
+
+
+def _initial_trial_job_status(agent: str, *, gating: bool) -> WorkerJobStatus:
+    """BLOCKED for LLM trials under an armed gate, else QUEUED."""
+    if gating and not is_nop_oracle_agent(agent):
+        return WorkerJobStatus.BLOCKED
+    return WorkerJobStatus.QUEUED
+
+
 def _ensure_not_collection_target(experiment: "ExperimentModel | None") -> None:
     """Reject runs targeting a read-only collection experiment."""
     if experiment is not None and experiment.is_collection:
@@ -788,6 +803,11 @@ async def create_task(
     task.current_version_id = version_id
 
     registry_auth_enc = _encrypt_submission_registry_auth(submission)
+    # Gate LLM agents on the baselines when the task mixes both: the LLM trials
+    # are enqueued BLOCKED and released (or cancelled) once the nop/oracle
+    # baselines finish. Only active when the global flag is on and both kinds
+    # are present, so every other submission is unaffected.
+    gate_llm_trials = _submission_gates_llm_trials(submission)
     trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     for i, spec in enumerate(submission.trials):
@@ -822,6 +842,7 @@ async def create_task(
             EnqueueRequest(
                 kind=WorkerJobKind.TRIAL,
                 queue_key=queue_key,
+                status=_initial_trial_job_status(spec.agent, gating=gate_llm_trials),
                 payload=_trial_job_payload(trial_id, registry_auth_enc),
                 subject_table="trials",
                 subject_id=trial_id,
@@ -1033,6 +1054,7 @@ async def append_trials_to_task(
     new_trial_rows: list[dict[str, Any]] = []
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
+    new_llm_trial_ids: list[str] = []
     for spec in submission.trials:
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
@@ -1074,6 +1096,8 @@ async def append_trials_to_task(
             )
         )
         new_trial_ids.append(trial_id)
+        if not is_nop_oracle_agent(spec.agent):
+            new_llm_trial_ids.append(trial_id)
         next_index += 1
 
     await _bulk_insert_trials(session, new_trial_rows)
@@ -1126,6 +1150,23 @@ async def append_trials_to_task(
                 """
             ),
             {"task_id": task.id},
+        )
+
+    # Gate the appended LLM trials on this scope's baselines (the just-added
+    # ones and any that already exist), blocking/releasing/cancelling under the
+    # task lock. Runs AFTER the reset-to-RUNNING + verdict-reset above so that,
+    # when the gate cancels the appended trials, its maybe_start_qa_stage call
+    # advances the (now all-terminal) task instead of being clobbered back to
+    # RUNNING. An append with no baselines anywhere in scope is left QUEUED.
+    # Skipped when this submission opts out (``--no-baseline-gate``): the new
+    # LLM trials were enqueued QUEUED and simply run ungated.
+    if submission.gate_baselines:
+        await apply_baseline_gate_to_new_llm_trials(
+            session,
+            task_id=task.id,
+            task_version_id=current_version_id,
+            experiment_id=trial_experiment_id,
+            llm_trial_ids=new_llm_trial_ids,
         )
 
     await session.flush()
@@ -1203,6 +1244,315 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
 
     await session.flush()
     return True
+
+
+async def maybe_gate_llm_trials(session: AsyncSession, trial_id: str) -> bool:
+    """Release or cancel BLOCKED LLM trials once their baselines finish.
+
+    Fires only when *trial_id* is a nop/oracle baseline. The decision is scoped
+    to the baseline's **(task version, experiment)**: when every baseline trial
+    for that task version in that experiment is terminal, evaluates them and —
+    if they validate the task (oracle passes, nop fails) — releases that scope's
+    BLOCKED LLM trials to QUEUED; otherwise cancels them and mirrors them to
+    FAILED so the task can advance. Scoping by experiment keeps concurrent sweeps
+    in different experiments from sharing each other's gate timing or verdict;
+    scoping by task version keeps an older version's baselines from validating a
+    newer version's (different code) LLM trials.
+
+    A no-op when there are no BLOCKED LLM trials in this scope (the gate was
+    never armed) or other baselines are still running. Uses SELECT FOR UPDATE on
+    the task row so the "last baseline wins" decision is race-safe.
+
+    Deliberately NOT guarded by ``gate_llm_on_baselines``: arming is flag-gated,
+    but *releasing* must always run so that disabling the flag while trials are
+    armed can't strand them BLOCKED forever (the dispatcher never claims BLOCKED
+    jobs). The cheap "any BLOCKED?" pre-check below keeps it off the hot path.
+    """
+    trial = await session.get(TrialModel, trial_id)
+    if not trial or not is_nop_oracle_agent(trial.agent):
+        return False
+
+    return await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=trial.task_id,
+        task_version_id=trial.task_version_id,
+        experiment_id=trial.experiment_id,
+    )
+
+
+async def _resolve_baseline_gate_for_scope(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+) -> bool:
+    """Release or cancel a (task version, experiment) scope's BLOCKED LLM trials.
+
+    Locks the task row FOR UPDATE so the decision is serialized against
+    concurrent baseline completions *and* new-trial enqueues on the same task.
+    No-op (returns False) when the scope has no BLOCKED LLM trials or its
+    baselines are still running. When all the scope's baselines are terminal it
+    evaluates them: VALID releases the BLOCKED LLM trials to QUEUED, FAULTY
+    cancels them (mirrored to FAILED).
+    """
+    # Cheap, lock-free skip: if the task has no BLOCKED trial jobs at all there
+    # is nothing to resolve, so don't take the task lock. This keeps the release
+    # path off the hot path (every baseline completion, every reconcile pass)
+    # while still running regardless of the feature flag.
+    has_blocked = await session.scalar(
+        select(WorkerJobModel.id)
+        .where(
+            and_(
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                WorkerJobModel.subject_id.in_(
+                    select(TrialModel.id).where(TrialModel.task_id == task_id)
+                ),
+            )
+        )
+        .limit(1)
+    )
+    if has_blocked is None:
+        return False
+
+    locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if locked is None:
+        return False
+
+    blocked_trial_ids = (
+        (
+            await session.execute(
+                select(WorkerJobModel.subject_id).where(
+                    and_(
+                        WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                        WorkerJobModel.subject_table == "trials",
+                        WorkerJobModel.status == WorkerJobStatus.BLOCKED,
+                        WorkerJobModel.subject_id.in_(
+                            select(TrialModel.id).where(
+                                and_(
+                                    TrialModel.task_id == task_id,
+                                    TrialModel.experiment_id == experiment_id,
+                                    TrialModel.task_version_id == task_version_id,
+                                )
+                            )
+                        ),
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not blocked_trial_ids:
+        return False
+
+    pending_baselines = await session.scalar(
+        select(func.count(TrialModel.id)).where(
+            and_(
+                TrialModel.task_id == task_id,
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.task_version_id == task_version_id,
+                TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
+                TrialModel.superseded_by_trial_id.is_(None),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+            )
+        )
+    )
+    if pending_baselines:
+        return False
+
+    baseline_rows = (
+        await session.execute(
+            select(TrialModel.agent, TrialModel.reward).where(
+                and_(
+                    TrialModel.task_id == task_id,
+                    TrialModel.experiment_id == experiment_id,
+                    TrialModel.task_version_id == task_version_id,
+                    TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                )
+            )
+        )
+    ).all()
+    outcome, reason = evaluate_baseline_gate(list(baseline_rows))
+
+    if outcome == GateOutcome.VALID:
+        await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
+    else:
+        await _cancel_gated_llm_trials(session, list(blocked_trial_ids), reason)
+
+    await session.flush()
+    return True
+
+
+async def _unblock_worker_jobs_for_trials(
+    session: AsyncSession, trial_ids: list[str]
+) -> None:
+    """Release BLOCKED trial worker_jobs (BLOCKED -> QUEUED) so they can run."""
+    if not trial_ids:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'QUEUED',
+                   available_after = NOW()
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'BLOCKED'
+            """
+        ),
+        {"trial_ids": trial_ids},
+    )
+
+
+async def _cancel_gated_llm_trials(
+    session: AsyncSession, trial_ids: list[str], reason: str
+) -> None:
+    """Cancel BLOCKED LLM worker_jobs and mark their trials terminal.
+
+    Gated trials never ran, so there is no sandbox to tear down. They are
+    recorded as FAILED with *reason* on the trial row; this is the single place
+    that decides that representation, so introducing a dedicated SKIPPED status
+    later is a localized change here.
+    """
+    if not trial_ids:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = :reason,
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL,
+                   payload = payload - 'registry_auth_enc'
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'BLOCKED'
+            """
+        ),
+        {"trial_ids": trial_ids, "reason": reason},
+    )
+    await session.execute(
+        update(TrialModel)
+        .where(
+            and_(
+                TrialModel.id.in_(trial_ids),
+                TrialModel.status.in_(ACTIVE_TRIAL_STATUSES),
+            )
+        )
+        .values(
+            status=TrialStatus.FAILED,
+            error_message=reason,
+            finished_at=utcnow(),
+            harbor_stage=CANCELLED_HARBOR_STAGE,
+        )
+    )
+
+
+async def _scope_has_baseline_trials(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+) -> bool:
+    """True when a (task version, experiment) scope has any live baseline."""
+    count = await session.scalar(
+        select(func.count(TrialModel.id)).where(
+            and_(
+                TrialModel.task_id == task_id,
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.task_version_id == task_version_id,
+                TrialModel.queue_key == NOP_ORACLE_QUEUE_KEY,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+        )
+    )
+    return bool(count)
+
+
+async def _block_worker_jobs_for_trials(
+    session: AsyncSession, trial_ids: list[str]
+) -> None:
+    """Arm the gate on freshly-enqueued trials (QUEUED -> BLOCKED)."""
+    if not trial_ids:
+        return
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'BLOCKED'
+            WHERE  subject_table = 'trials'
+              AND  kind::text = 'TRIAL'
+              AND  subject_id = ANY(:trial_ids)
+              AND  status::text = 'QUEUED'
+            """
+        ),
+        {"trial_ids": trial_ids},
+    )
+
+
+async def apply_baseline_gate_to_new_llm_trials(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    task_version_id: str | None,
+    experiment_id: str | None,
+    llm_trial_ids: list[str],
+) -> None:
+    """Gate freshly-enqueued LLM trials on their scope's *existing* baselines.
+
+    The pull-path counterpart to :func:`maybe_gate_llm_trials` (the push path).
+    Used by append and retry so an LLM trial added on its own still respects the
+    baselines of its (task version, experiment): no baselines in scope leaves it
+    QUEUED (ungated); baselines present block it and immediately resolve —
+    released if the baselines already validate the task, cancelled if they are
+    faulty, or left BLOCKED for the push path if baselines are still running.
+
+    Holds the task row FOR UPDATE across the check + block + resolve so it can't
+    interleave with a concurrent baseline completion (which locks the same row),
+    closing the "blocked just after the last baseline finished" race.
+    """
+    if not settings.gate_llm_on_baselines or not llm_trial_ids:
+        return
+
+    locked = await session.scalar(
+        select(TaskModel.id).where(TaskModel.id == task_id).with_for_update()
+    )
+    if locked is None:
+        return
+
+    if not await _scope_has_baseline_trials(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
+    ):
+        return  # ungated: nothing validates this scope
+
+    await _block_worker_jobs_for_trials(session, llm_trial_ids)
+    await _resolve_baseline_gate_for_scope(
+        session,
+        task_id=task_id,
+        task_version_id=task_version_id,
+        experiment_id=experiment_id,
+    )
+    # A FAULTY gate cancels the just-added LLM trials, which can make the task
+    # "all trials done". Advance it (to QA or COMPLETED) in the same request so
+    # an append/retry that gets gate-cancelled doesn't leave the task stuck in
+    # RUNNING (with its verdict reset) until the next reconcile cycle. No-op
+    # when trials are still BLOCKED/QUEUED.
+    await maybe_start_qa_stage(session, llm_trial_ids[0])
 
 
 async def maybe_advance_legacy_analyzing_task(

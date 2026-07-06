@@ -89,6 +89,60 @@ def _stamp_experiment_provenance(
         experiment.link = submission.link
 
 
+async def _finalize_sweep(
+    session: AsyncSession,
+    *,
+    task: TaskModel,
+    new_trials: list[TrialModel],
+    experiment: ExperimentModel | None,
+    is_append: bool,
+    org_id: str | None,
+    billed_user_id: str | None,
+    registry_auth,
+    reservation: Reservation | None,
+    idempotency_store: IdempotencyStore | None,
+) -> None:
+    """Shared finalize tail for the append and create sweep branches.
+
+    Behavior-identical for both branches: local-mode dispatch, auto-probe
+    enqueue, and idempotency completion. ``is_append`` only selects the
+    response shape stored for replay.
+    """
+    from oddish.config import settings
+    from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
+
+    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
+    # to the in-process runner instead of going through the Modal queue.
+    if settings.local_mode:
+        import asyncio
+        from oddish.worker.local_runner import run_trial_locally
+
+        for trial in new_trials:
+            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
+
+    if task.run_probe:
+        await maybe_enqueue_auto_probe(
+            session,
+            task=task,
+            experiment=experiment,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            registry_auth=registry_auth,
+        )
+    if reservation is not None and idempotency_store is not None and org_id is not None:
+        # Flush so trial ids / timestamps are populated, then store the
+        # response for replay alongside the trials in this transaction.
+        await session.flush()
+        await idempotency_store.complete(
+            org_id,
+            SWEEP_ROUTE,
+            reservation.key_hash,
+            build_task_sweep_response(
+                task, new_trials, is_append, experiment
+            ).model_dump(mode="json"),
+        )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -134,7 +188,6 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.probe.auto_probe import maybe_enqueue_auto_probe
     from oddish.core.quota_admission import acquire_payer_lock, admit_trials
 
     # Payer lock FIRST -- before the idempotency insert, the task refresh
@@ -330,42 +383,18 @@ async def create_task_sweep_core(
             billed_user_id=billed_user_id,
         )
 
-        # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
-        # to the in-process runner instead of going through the Modal queue.
-        from oddish.config import settings
-
-        if settings.local_mode:
-            import asyncio
-            from oddish.worker.local_runner import run_trial_locally
-
-            for trial in new_trials:
-                asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
-
-        if task.run_probe:
-            await maybe_enqueue_auto_probe(
-                session,
-                task=task,
-                experiment=experiment,
-                org_id=org_id,
-                billed_user_id=billed_user_id,
-                registry_auth=submission.registry_auth,
-            )
-        if (
-            reservation is not None
-            and idempotency_store is not None
-            and org_id is not None
-        ):
-            # Flush so trial ids / timestamps are populated, then store the
-            # response for replay alongside the trials in this transaction.
-            await session.flush()
-            await idempotency_store.complete(
-                org_id,
-                SWEEP_ROUTE,
-                reservation.key_hash,
-                build_task_sweep_response(
-                    task, new_trials, True, experiment
-                ).model_dump(mode="json"),
-            )
+        await _finalize_sweep(
+            session,
+            task=task,
+            new_trials=new_trials,
+            experiment=experiment,
+            is_append=True,
+            org_id=org_id,
+            billed_user_id=billed_user_id,
+            registry_auth=submission.registry_auth,
+            reservation=reservation,
+            idempotency_store=idempotency_store,
+        )
         return task, new_trials, True, experiment
 
     # Create mode
@@ -414,38 +443,18 @@ async def create_task_sweep_core(
 
     new_trials = list(task.trials)
 
-    # Local dev: when ODDISH_LOCAL_MODE=1, dispatch each probe trial
-    # to the in-process runner instead of going through the Modal queue.
-    from oddish.config import settings
-
-    if settings.local_mode:
-        import asyncio
-        from oddish.worker.local_runner import run_trial_locally
-
-        for trial in new_trials:
-            asyncio.create_task(run_trial_locally(trial.id, dry_run=False))
-
-    if task.run_probe:
-        await maybe_enqueue_auto_probe(
-            session,
-            task=task,
-            experiment=experiment,
-            org_id=org_id,
-            billed_user_id=billed_user_id,
-            registry_auth=submission.registry_auth,
-        )
-    if reservation is not None and idempotency_store is not None and org_id is not None:
-        # Flush so trial ids / timestamps are populated, then store the
-        # response for replay alongside the trials in this transaction.
-        await session.flush()
-        await idempotency_store.complete(
-            org_id,
-            SWEEP_ROUTE,
-            reservation.key_hash,
-            build_task_sweep_response(task, new_trials, False, experiment).model_dump(
-                mode="json"
-            ),
-        )
+    await _finalize_sweep(
+        session,
+        task=task,
+        new_trials=new_trials,
+        experiment=experiment,
+        is_append=False,
+        org_id=org_id,
+        billed_user_id=billed_user_id,
+        registry_auth=submission.registry_auth,
+        reservation=reservation,
+        idempotency_store=idempotency_store,
+    )
     return task, new_trials, False, experiment
 
 

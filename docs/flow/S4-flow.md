@@ -4,7 +4,7 @@
 
 S4 lets an admin **override** the flat per-user daily limit that S3 baked in.
 S3 returned `DEFAULT_DAILY_QUOTA_USD` (`settings.default_daily_quota_usd`,
-`Decimal("10.00")`) for every member. S4 adds a `quotas` table whose rows exist
+`Decimal("100.00")`) for every member. S4 adds a `quotas` table whose rows exist
 **only to override** that default, and a `PUT /quotas/{user_id}` for admins to
 set or clear an override. There is still **no enforcement** — S5 turns the
 effective limit into a gate. S4 only changes *which number* the read paths
@@ -20,7 +20,7 @@ row for every member, and no invariant says "every member must have a row."
 
 This is **default-at-read**, and it designs those problems away. Because both
 read paths fall back to the default in code (`COALESCE(override, default)`), a
-member with no row is already correct — they read at `$10`. Adding a member,
+member with no row is already correct — they read at `$100`. Adding a member,
 running the migration on an empty table, or a preview DB with zero rows all
 "just work." The table is a sparse set of *exceptions*; the common case stores
 nothing.
@@ -151,7 +151,7 @@ concurrently on other files, so **no code was touched**. Residual notes:
 
 - **`/quotas/me` still reports the flat default, ignoring the override row.**
   Only the admin list + PUT resolve `COALESCE(override, default)`; a member
-  viewing their own `/me` card sees `$10` even if an admin set them to `$25`.
+  viewing their own `/me` card sees `$100` even if an admin set them to `$25`.
   This is the documented MVP scope (overrides are admin-surface only), but it
   means the member-facing "used of $limit" can disagree with the admin table
   until `/me` is upgraded. Not a defect of this slice — flagged so S5's gate,

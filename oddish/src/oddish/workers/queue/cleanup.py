@@ -27,7 +27,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import SQLAlchemyError
 
-from oddish.config import settings
+from oddish.config import NOP_ORACLE_QUEUE_KEY, settings
 from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
@@ -45,7 +45,6 @@ from oddish.workers.queue.worker_job_single_job import (
     classify_retry_reason,
 )
 from oddish.workers.queue.shared import console
-from oddish.trial_cost import apply_settled_cost
 
 # See historical context: we bumped this from 10 -> 15 after a
 # pooler-blip incident reaped 25-70 healthy trials in a single sweep.
@@ -308,7 +307,6 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         trial.current_worker_id = None
         trial.current_queue_slot = None
         trial.stale_reaped_at = utcnow()
-        apply_settled_cost(trial)
         if trial.harbor_stage not in {"completed", "cancelled"}:
             trial.harbor_stage = "cancelled"
 
@@ -371,533 +369,44 @@ async def cleanup_orphaned_queue_state(
     else -- stage transitions, terminal-runtime-ref cleanup -- is
     either handled by the handler commit or kept as a safety net here.
     """
-    worker_jobs_retried = 0
-    worker_jobs_failed = 0
-    worker_sandboxes_terminated = 0
-    tasks_progressed_to_analysis = 0
-    tasks_progressed_to_verdict = 0
-    terminal_trial_runtime_refs_cleared = 0
-    orphaned_active_slots_cleared = 0
-    verdict_pending_completed = 0
-    stuck_analyzing_advanced = 0
-    stuck_analyzing_finalized = 0
-    stuck_analysis_nulls_failed = 0
-
     zombie_txn_reaped = await reap_idle_in_transaction_zombies()
 
-    # Lazy import: ``oddish.queue`` imports ``oddish.workers.jobs.enqueue``
-    # which transitively imports this module, so a top-level import
-    # would race with module initialization.
-    from oddish.queue import (
-        maybe_advance_legacy_analyzing_task,
-        maybe_start_qa_stage,
-    )
-
     async with get_session() as session:
-        # -----------------------------------------------------------------
-        # 1. Stale-heartbeat sweep on worker_jobs.
-        #    Transitions RUNNING rows whose heartbeat stalled to
-        #    RETRYING (attempts remain) or FAILED (exhausted), then
-        #    mirrors the terminal state onto the domain row. Each job is
-        #    one SAVEPOINT: when the domain row is locked (settle/retry
-        #    is writing its terminal state -- mirroring would clobber it
-        #    and waiting would deadlock, since we hold the job lock and
-        #    the holder takes domain-row -> worker_jobs), the whole unit
-        #    rolls back and retries next sweep.
-        # -----------------------------------------------------------------
-        stale_candidate_ids = [
-            row[0]
-            for row in (
-                await session.execute(
-                    text(
-                        """
-                        SELECT id FROM worker_jobs
-                        WHERE  status::text = 'RUNNING'
-                          AND  (
-                              heartbeat_at IS NULL
-                              OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                          )
-                        ORDER BY id
-                        """
-                    ),
-                    {"stale_after_minutes": stale_after_minutes},
-                )
-            ).all()
-        ]
-
-        stale_trial_ids: list[str] = []
-        worker_targets: set[tuple[str, str]] = set()
-
-        for stale_job_id in stale_candidate_ids:
-            try:
-                async with session.begin_nested():
-                    row = (
-                        (
-                            await session.execute(
-                                text(
-                                    """
-                    UPDATE worker_jobs
-                    SET    status = CASE
-                               WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
-                               ELSE 'FAILED'::worker_job_status
-                           END,
-                           payload = CASE
-                               WHEN attempts < max_attempts THEN payload
-                               ELSE payload - 'registry_auth_enc'
-                           END,
-                           stale_reaped_at = NOW(),
-                           finished_at = CASE
-                               WHEN attempts < max_attempts THEN finished_at
-                               ELSE NOW()
-                           END,
-                           current_worker_id = NULL,
-                           current_queue_slot = NULL,
-                           modal_function_call_id = NULL,
-                           error_message = CASE
-                               WHEN heartbeat_failure_count > 0 AND last_heartbeat_error IS NOT NULL
-                                   THEN 'Worker heartbeat stalled for over '
-                                        || :stale_after_minutes
-                                        || ' minutes. Worker reported '
-                                        || heartbeat_failure_count
-                                        || ' write failures; last error: '
-                                        || last_heartbeat_error
-                               ELSE 'Worker heartbeat stalled for over '
-                                    || :stale_after_minutes
-                                    || ' minutes.'
-                           END
-                    WHERE  id = :job_id
-                      AND  status::text = 'RUNNING'
-                      AND  (
-                          heartbeat_at IS NULL
-                          OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
-                      )
-                    RETURNING id,
-                              kind::text AS kind,
-                              status::text AS new_status,
-                              subject_table,
-                              subject_id,
-                              attempts,
-                              max_attempts,
-                              error_message,
-                              provider,
-                              external_id
-                                    """
-                                ),
-                                {
-                                    "job_id": stale_job_id,
-                                    "stale_after_minutes": stale_after_minutes,
-                                },
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if row is None:
-                        continue  # another actor already progressed this job
-
-                    committed_trial_id = await _mirror_stale_job_to_domain_row(
-                        session, row
-                    )
-            except _DomainRowLocked:
-                continue
-
-            if row["new_status"] == "RETRYING":
-                worker_jobs_retried += 1
-            else:
-                worker_jobs_failed += 1
-            provider = row.get("provider")
-            external_id = row.get("external_id")
-            if provider and external_id:
-                worker_targets.add((str(provider), str(external_id)))
-            if committed_trial_id is not None:
-                stale_trial_ids.append(committed_trial_id)
-
-        await session.flush()
-
-        # Kill the orphaned sandboxes whose workers crashed
-        # Best-effort and concurrent: a dead sandbox can't block the rest of the reap,
-        # and the provider's auto-stop / auto-delete TTL is backstop if this fails.
-        if worker_targets:
-            results = await asyncio.gather(
-                *(
-                    cancel_job_by_worker(provider, external_id)
-                    for provider, external_id in worker_targets
-                )
-            )
-            worker_sandboxes_terminated = sum(1 for ok in results if ok)
-
-        # Trigger stage transitions for tasks whose trials just got
-        # failed, in case the failure marks the task "all trials done"
-        # for the first time.
-        for trial_id in stale_trial_ids:
-            if await maybe_start_qa_stage(session, trial_id):
-                tasks_progressed_to_analysis += 1
-
-        # -----------------------------------------------------------------
-        # 2. Tasks stuck in RUNNING where all trials finished -> advance.
-        #    Safety net in case a handler's ``maybe_start_qa_stage``
-        #    call didn't run (e.g. the handler was killed between
-        #    writing the trial terminal state and committing the stage
-        #    transition).
-        # -----------------------------------------------------------------
-        tasks_ready_for_analysis = (
-            await session.execute(
-                text(
-                    """
-                    SELECT MIN(tr.id) AS trial_id
-                    FROM tasks t
-                    JOIN trials tr ON tr.task_id = t.id
-                    WHERE t.status = 'RUNNING'
-                      AND t.deleted_at IS NULL
-                      AND tr.deleted_at IS NULL
-                      AND tr.superseded_by_trial_id IS NULL
-                    GROUP BY t.id
-                    HAVING COUNT(*) FILTER (
-                        WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
-                    ) = 0
-                    """
-                )
-            )
-        ).all()
-
-        for (trial_id,) in tasks_ready_for_analysis:
-            if trial_id and await maybe_start_qa_stage(session, str(trial_id)):
-                tasks_progressed_to_analysis += 1
-
-        # -----------------------------------------------------------------
-        # 3. Legacy tasks stuck in ANALYZING (pre-QA-refactor) where all
-        #    per-trial classifications finished -> advance to the QA job.
-        # -----------------------------------------------------------------
-        tasks_ready_for_verdict = (
-            await session.execute(
-                text(
-                    """
-                    SELECT MIN(tr.id) AS trial_id
-                    FROM tasks t
-                    JOIN trials tr ON tr.task_id = t.id
-                    WHERE t.status = 'ANALYZING'
-                      AND t.deleted_at IS NULL
-                      AND tr.deleted_at IS NULL
-                      AND tr.superseded_by_trial_id IS NULL
-                    GROUP BY t.id
-                    HAVING COUNT(*) FILTER (
-                        WHERE tr.analysis_status IS NULL
-                           OR tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                    ) = 0
-                    """
-                )
-            )
-        ).all()
-
-        for (trial_id,) in tasks_ready_for_verdict:
-            if trial_id and await maybe_advance_legacy_analyzing_task(
-                session, str(trial_id)
-            ):
-                tasks_progressed_to_verdict += 1
-
-        # -----------------------------------------------------------------
-        # 4. VERDICT_PENDING tasks with no LIVE QA job.
-        #    A task is wedged here when its QA (task-level) job is gone --
-        #    it finished/failed/exhausted (and we missed the hook, or it
-        #    rolled back before committing a terminal ``verdict_status``),
-        #    or the task predates the unified refactor and never had one.
-        #    The condition that matters is "no claimable QA/VERDICT
-        #    worker_job", NOT ``verdict_status``: a row stuck at
-        #    ``verdict_status='QUEUED'`` with no live job (the old
-        #    probe-summary KeyError left thousands of these) would never be
-        #    healed by a ``verdict_status``-keyed check. Re-enqueue so the
-        #    dispatcher has something to claim (or finalize if the verdict
-        #    is already terminal). ``ANALYSIS`` rows are intentionally
-        #    ignored here -- they no longer drive the verdict.
-        # -----------------------------------------------------------------
-        stale_verdict_pending = (
-            await session.execute(
-                text(
-                    """
-                    SELECT t.id
-                    FROM tasks t
-                    WHERE t.status = 'VERDICT_PENDING'
-                      AND t.deleted_at IS NULL
-                      AND NOT EXISTS (
-                          SELECT 1 FROM worker_jobs wj
-                          WHERE wj.subject_table = 'tasks'
-                            AND wj.subject_id = t.id
-                            AND wj.kind::text IN ('QA', 'VERDICT')
-                            AND wj.status::text IN (
-                                'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
-                            )
-                      )
-                    ORDER BY t.updated_at ASC
-                    LIMIT :batch_limit
-                    """
-                ),
-                {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
-            )
-        ).all()
-
-        from oddish.queue import enqueue_qa_worker_job
-
-        for (task_id,) in stale_verdict_pending:
-            task = await session.get(TaskModel, str(task_id))
-            if not task or task.status != TaskStatus.VERDICT_PENDING:
-                continue
-            if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
-                task.status = TaskStatus.COMPLETED
-                task.finished_at = task.finished_at or utcnow()
-                verdict_pending_completed += 1
-            else:
-                task.verdict_status = VerdictStatus.QUEUED
-                task.verdict_error = None
-                task.verdict_started_at = None
-                task.verdict_finished_at = None
-                await enqueue_qa_worker_job(
-                    session, task_id=task.id, org_id=task.org_id
-                )
-
-        # -----------------------------------------------------------------
-        # 5. Unwedge tasks stuck in ANALYZING by a live trial that never got
-        #    an analysis verdict. The advance passes (2/3) treat a live trial
-        #    with analysis_status NULL as "analysis still pending", so a task
-        #    whose FAILED trials never had analysis enqueued sits in ANALYZING
-        #    forever. For stale tasks with nothing analysis- or trial-side in
-        #    flight, mark that lingering NULL analysis terminal (it will never
-        #    run) and let the normal advance carry the task to VERDICT_PENDING;
-        #    tasks with no live trials left are finalized FAILED. Staleness-
-        #    gated and batched so we never race a live transition.
-        # -----------------------------------------------------------------
-        stuck_rows = (
-            await session.execute(
-                text(
-                    """
-                    SELECT t.id AS task_id,
-                           (
-                               SELECT MIN(tr.id)
-                               FROM   trials tr
-                               WHERE  tr.task_id = t.id
-                                 AND  tr.deleted_at IS NULL
-                                 AND  tr.superseded_by_trial_id IS NULL
-                           ) AS live_trial_id
-                    FROM   tasks t
-                    WHERE  t.deleted_at IS NULL
-                      AND  t.status = 'ANALYZING'
-                      AND  t.updated_at < NOW() - make_interval(mins => :stale_minutes)
-                      AND  NOT EXISTS (
-                          SELECT 1 FROM trials a
-                          WHERE  a.task_id = t.id
-                            AND  a.deleted_at IS NULL
-                            AND  a.superseded_by_trial_id IS NULL
-                            AND  (
-                                a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
-                                OR a.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
-                            )
-                      )
-                    ORDER BY t.updated_at ASC
-                    LIMIT :batch_limit
-                    """
-                ),
-                {
-                    "stale_minutes": STUCK_ANALYZING_MINUTES,
-                    "batch_limit": STUCK_ANALYZING_BATCH_LIMIT,
-                },
-            )
-        ).all()
-
-        if stuck_rows:
-            stuck_task_ids = [row[0] for row in stuck_rows]
-
-            # 5a. A live trial with NULL analysis blocks the advance forever
-            #     (it reads as "still pending"). It will never run now, so mark
-            #     it terminal; SUCCESS/FAILED analyses are left intact.
-            stuck_analysis_nulls_failed = int(
-                cast(
-                    CursorResult,
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE trials
-                            SET    analysis_status = 'FAILED',
-                                   analysis_error = :reason,
-                                   analysis_finished_at = NOW()
-                            WHERE  task_id = ANY(:task_ids)
-                              AND  deleted_at IS NULL
-                              AND  superseded_by_trial_id IS NULL
-                              AND  analysis_status IS NULL
-                            """
-                        ),
-                        {"reason": STUCK_ANALYZING_REASON, "task_ids": stuck_task_ids},
-                    ),
-                ).rowcount
-                or 0
-            )
-            await session.flush()
-
-            # 5b. With every live trial's analysis now terminal, the normal
-            #     advance moves the task to VERDICT_PENDING (the verdict is
-            #     computed from the surviving trials). Tasks with no live
-            #     trials left have nothing to judge -> finalize FAILED.
-            no_live_trial_ids: list[str] = []
-            for task_id, live_trial_id in stuck_rows:
-                if live_trial_id is None:
-                    no_live_trial_ids.append(str(task_id))
-                    continue
-                if await maybe_advance_legacy_analyzing_task(
-                    session, str(live_trial_id)
-                ):
-                    stuck_analyzing_advanced += 1
-
-            if no_live_trial_ids:
-                stuck_analyzing_finalized = int(
-                    cast(
-                        CursorResult,
-                        await session.execute(
-                            text(
-                                """
-                                UPDATE tasks
-                                SET    status = 'FAILED',
-                                       finished_at = COALESCE(finished_at, NOW())
-                                WHERE  id = ANY(:task_ids)
-                                  AND  deleted_at IS NULL
-                                  AND  status = 'ANALYZING'
-                                """
-                            ),
-                            {"task_ids": no_live_trial_ids},
-                        ),
-                    ).rowcount
-                    or 0
-                )
-
-            if stuck_analyzing_advanced or stuck_analyzing_finalized:
-                console.print(
-                    "metric=stuck_analyzing_unwedged "
-                    f"advanced={stuck_analyzing_advanced} "
-                    f"finalized={stuck_analyzing_finalized} "
-                    f"analysis_nulls_failed={stuck_analysis_nulls_failed}"
-                )
-
-        # -----------------------------------------------------------------
-        # 6. (moved) Clearing stale claim metadata on terminal trials is
-        #    pure display-layer hygiene and used to deadlock against live
-        #    workers when run as one unbounded UPDATE inside this big
-        #    transaction. It now runs after this transaction commits, in
-        #    its own batched, SKIP-LOCKED helper -- see
-        #    ``clear_terminal_trial_runtime_refs`` below.
-        # -----------------------------------------------------------------
-
-        # -----------------------------------------------------------------
-        # 7. Release queue slot leases whose owning worker is dead.
-        #    A slot is reclaimable when no RUNNING worker_jobs row is
-        #    still owned by the worker that holds the lease
-        #    (``queue_slots.locked_by`` == ``worker_jobs.current_worker_id``).
-        #
-        #    This must be per-SLOT, not per-queue_key: the previous
-        #    version only released slots when *zero* jobs were RUNNING on
-        #    the whole queue_key, so on a busy key a single live job kept
-        #    every leaked lease (from a SIGKILLed/preempted worker) pinned
-        #    for the full ~12h lease. The slot pool then saturated while
-        #    only a handful of jobs actually ran, and the dispatcher --
-        #    which budgets on the (low) RUNNING count -- kept spawning
-        #    workers that all failed to acquire a slot.
-        #
-        #    ``locked_at`` grace avoids racing the brief acquire->claim
-        #    window: a freshly-acquired slot hasn't had its owning job
-        #    flip to RUNNING yet, so we leave very recent leases alone.
-        # -----------------------------------------------------------------
-        orphaned_slot_cleanup_result = cast(
-            CursorResult,
-            await session.execute(
-                text(
-                    """
-                    UPDATE queue_slots qs
-                    SET    locked_by = NULL,
-                           locked_until = NULL,
-                           locked_at = NULL
-                    WHERE  qs.locked_by IS NOT NULL
-                      AND  (
-                          qs.locked_at IS NULL
-                          OR qs.locked_at < NOW() - make_interval(
-                              mins => :slot_grace_minutes
-                          )
-                      )
-                      AND  NOT EXISTS (
-                          SELECT 1
-                          FROM   worker_jobs wj
-                          WHERE  wj.status::text = 'RUNNING'
-                            AND  wj.current_worker_id = qs.locked_by
-                      )
-                    """
-                ),
-                {"slot_grace_minutes": ORPHANED_SLOT_GRACE_MINUTES},
-            ),
+        (
+            worker_jobs_retried,
+            worker_jobs_failed,
+            reaped_trial_ids,
+            worker_targets,
+        ) = await _reap_stale_worker_jobs(
+            session, stale_after_minutes=stale_after_minutes
         )
-        orphaned_active_slots_cleared = int(orphaned_slot_cleanup_result.rowcount or 0)
+        tasks_progressed_to_analysis = await _advance_running_tasks_to_analysis(
+            session, reaped_trial_ids
+        )
 
-        # -----------------------------------------------------------------
-        # 8. Reconcile drift on the denormalized
-        #    ``experiments.last_activity_at`` column. Application
-        #    write paths bump it best-effort on task/trial inserts,
-        #    so this pass only catches misses (process crash between
-        #    insert flush and bump, etc). Bounded by a 30-minute
-        #    lookback so it stays cheap on every sweep.
-        # -----------------------------------------------------------------
-        experiments_last_activity_reconciled = int(
-            (
-                cast(
-                    CursorResult,
-                    await session.execute(
-                        text(
-                            """
-                            UPDATE experiments e
-                            SET last_activity_at = derived.last_activity_at
-                            FROM (
-                                SELECT
-                                    sub.experiment_id,
-                                    GREATEST(
-                                        MAX(sub.task_created_at),
-                                        MAX(sub.trial_created_at)
-                                    ) AS last_activity_at
-                                FROM (
-                                    SELECT
-                                        te.experiment_id,
-                                        t.created_at AS task_created_at,
-                                        NULL::timestamptz AS trial_created_at
-                                    FROM task_experiments te
-                                    JOIN tasks t ON t.id = te.task_id
-                                    WHERE te.deleted_at IS NULL
-                                      AND t.deleted_at IS NULL
-                                      AND t.created_at >= NOW() - INTERVAL '30 minutes'
-                                    UNION ALL
-                                    SELECT
-                                        tr.experiment_id,
-                                        NULL::timestamptz AS task_created_at,
-                                        tr.created_at AS trial_created_at
-                                    FROM trials tr
-                                    WHERE tr.deleted_at IS NULL
-                                      AND tr.superseded_by_trial_id IS NULL
-                                      AND tr.created_at >= NOW() - INTERVAL '30 minutes'
-                                ) sub
-                                GROUP BY sub.experiment_id
-                            ) derived
-                            WHERE e.id = derived.experiment_id
-                              AND e.deleted_at IS NULL
-                              AND (
-                                  e.last_activity_at IS NULL
-                                  OR e.last_activity_at < derived.last_activity_at
-                              )
-                            """
-                        )
-                    ),
-                )
-            ).rowcount
-            or 0
+        tasks_progressed_to_verdict = await _advance_legacy_analyzing_tasks(session)
+
+        verdict_pending_completed = await _heal_stale_verdict_pending(session)
+
+        (
+            stuck_analyzing_advanced,
+            stuck_analyzing_finalized,
+            stuck_analysis_nulls_failed,
+        ) = await _unwedge_stuck_analyzing(session)
+
+        orphaned_active_slots_cleared = await _release_orphaned_slots(session)
+
+        experiments_last_activity_reconciled = (
+            await _reconcile_experiment_last_activity(session)
         )
 
         tag_projections_reconciled = await _maybe_reconcile_tag_projections(session)
         tag_owners_reassigned = await sweep_orphaned_tag_owners(session)
 
-    # Display-hygiene clear of terminal-trial claim metadata runs *after* the
-    # main reconciliation transaction commits, in its own batched / SKIP-LOCKED
-    # transactions, so it can never deadlock against live workers or roll back
-    # the reconciliation work above (see note in step 6).
+    # These run AFTER the outer commit so a rolled-back sweep never tears down
+    # remote handles / claim metadata the DB still points at. Best-effort; the
+    # provider TTL and the next sweep are the backstops.
+    worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
 
     return {
@@ -1000,3 +509,600 @@ async def _maybe_reconcile_tag_projections(session) -> int:
         )
     )
     return recomputed
+
+
+# =============================================================================
+# Reconciliation steps. Each takes the shared sweep ``session`` (so it runs in
+# the one reconciliation transaction) and returns its counters. Extracted from
+# the former single ~560-line ``cleanup_orphaned_queue_state`` so each phase is
+# independently readable and testable; the orchestrator just sequences them.
+# =============================================================================
+
+
+async def _reap_stale_worker_jobs(
+    session, *, stale_after_minutes: int
+) -> tuple[int, int, list[str], set[tuple[str, str]]]:
+    """Step 1 -- stale-heartbeat sweep on ``worker_jobs``.
+
+    Transitions RUNNING rows whose heartbeat stalled to RETRYING (attempts
+    remain) or FAILED (exhausted), then mirrors the terminal state onto the
+    domain row. Each job is one SAVEPOINT: when the domain row is locked
+    (settle/retry is writing its terminal state -- mirroring would clobber it
+    and waiting would deadlock, since we hold the job lock and the holder takes
+    domain-row -> worker_jobs), the whole unit rolls back and retries next
+    sweep. Returns ``(retried, failed, reaped_trial_ids, worker_targets)``.
+    """
+    stale_candidate_ids = [
+        row[0]
+        for row in (
+            await session.execute(
+                text(
+                    """
+                    SELECT id FROM worker_jobs
+                    WHERE  status::text = 'RUNNING'
+                      AND  (
+                          heartbeat_at IS NULL
+                          OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                      )
+                    ORDER BY id
+                    """
+                ),
+                {"stale_after_minutes": stale_after_minutes},
+            )
+        ).all()
+    ]
+
+    worker_jobs_retried = 0
+    worker_jobs_failed = 0
+    reaped_trial_ids: list[str] = []
+    worker_targets: set[tuple[str, str]] = set()
+
+    for stale_job_id in stale_candidate_ids:
+        try:
+            async with session.begin_nested():
+                row = (
+                    (
+                        await session.execute(
+                            text(
+                                """
+                    UPDATE worker_jobs
+                    SET    status = CASE
+                               WHEN attempts < max_attempts THEN 'RETRYING'::worker_job_status
+                               ELSE 'FAILED'::worker_job_status
+                           END,
+                           payload = CASE
+                               WHEN attempts < max_attempts THEN payload
+                               ELSE payload - 'registry_auth_enc'
+                           END,
+                           stale_reaped_at = NOW(),
+                           finished_at = CASE
+                               WHEN attempts < max_attempts THEN finished_at
+                               ELSE NOW()
+                           END,
+                           current_worker_id = NULL,
+                           current_queue_slot = NULL,
+                           modal_function_call_id = NULL,
+                           error_message = CASE
+                               WHEN heartbeat_failure_count > 0 AND last_heartbeat_error IS NOT NULL
+                                   THEN 'Worker heartbeat stalled for over '
+                                        || :stale_after_minutes
+                                        || ' minutes. Worker reported '
+                                        || heartbeat_failure_count
+                                        || ' write failures; last error: '
+                                        || last_heartbeat_error
+                               ELSE 'Worker heartbeat stalled for over '
+                                    || :stale_after_minutes
+                                    || ' minutes.'
+                           END
+                    WHERE  id = :job_id
+                      AND  status::text = 'RUNNING'
+                      AND  (
+                          heartbeat_at IS NULL
+                          OR heartbeat_at < NOW() - make_interval(mins => :stale_after_minutes)
+                      )
+                    RETURNING id,
+                              kind::text AS kind,
+                              status::text AS new_status,
+                              subject_table,
+                              subject_id,
+                              attempts,
+                              max_attempts,
+                              error_message,
+                              provider,
+                              external_id
+                                """
+                            ),
+                            {
+                                "job_id": stale_job_id,
+                                "stale_after_minutes": stale_after_minutes,
+                            },
+                        )
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if row is None:
+                    continue  # another actor already progressed this job
+
+                committed_trial_id = await _mirror_stale_job_to_domain_row(
+                    session, row
+                )
+                # Flush this job's mirror WITHIN its own savepoint so the unit
+                # is explicitly atomic and independent of ``begin_nested``'s
+                # autoflush-on-enter timing (which, if it ever changed, could
+                # let a later ``_DomainRowLocked`` rollback revert an
+                # already-terminal job's domain mirror).
+                await session.flush()
+        except _DomainRowLocked:
+            console.print(
+                f"metric=worker_job_stale_reap_deferred id={stale_job_id} "
+                f"subject={row['subject_table']}/{row['subject_id']} "
+                "reason=domain_row_locked (retrying next sweep)"
+            )
+            continue
+
+        if row["new_status"] == "RETRYING":
+            worker_jobs_retried += 1
+        else:
+            worker_jobs_failed += 1
+        provider = row.get("provider")
+        external_id = row.get("external_id")
+        if provider and external_id:
+            worker_targets.add((str(provider), str(external_id)))
+        if committed_trial_id is not None:
+            reaped_trial_ids.append(committed_trial_id)
+
+    await session.flush()
+    return worker_jobs_retried, worker_jobs_failed, reaped_trial_ids, worker_targets
+
+
+async def _advance_running_tasks_to_analysis(
+    session, reaped_trial_ids: list[str]
+) -> int:
+    """Steps 1b + 2 -- move RUNNING tasks whose live trials are all terminal to
+    the analysis/QA stage. First for the trials we just reaped (a fresh failure
+    may complete the task for the first time), then a general safety-net query
+    in case a handler's own ``maybe_start_qa_stage`` never ran.
+    """
+    from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
+
+    progressed = 0
+    for trial_id in reaped_trial_ids:
+        await maybe_gate_llm_trials(session, trial_id)
+        if await maybe_start_qa_stage(session, trial_id):
+            progressed += 1
+
+    tasks_ready_for_analysis = (
+        await session.execute(
+            text(
+                """
+                SELECT MIN(tr.id) AS trial_id
+                FROM tasks t
+                JOIN trials tr ON tr.task_id = t.id
+                WHERE t.status = 'RUNNING'
+                  AND t.deleted_at IS NULL
+                  AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                GROUP BY t.id
+                HAVING COUNT(*) FILTER (
+                    WHERE tr.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                ) = 0
+                """
+            )
+        )
+    ).all()
+
+    for (trial_id,) in tasks_ready_for_analysis:
+        if trial_id and await maybe_start_qa_stage(session, str(trial_id)):
+            progressed += 1
+
+    # -----------------------------------------------------------------
+    # 2b. Baseline gate backstop: (task_version, experiment) groups whose
+    #     nop/oracle baselines are all terminal but whose LLM trials are
+    #     still BLOCKED. Normally the last baseline's handler resolves the
+    #     gate; this re-drives it if that handler was killed first. The gate
+    #     is (task version, experiment)-scoped, so group + match BLOCKED LLM
+    #     trials by (task_id, task_version_id, experiment_id) and hand it one
+    #     representative baseline trial id per group. ``IS NOT DISTINCT
+    #     FROM`` so a NULL version/experiment still matches itself (plain
+    #     ``=`` would drop those scopes, unlike the ORM push path). Skipped
+    #     entirely when the gate is off so it never touches the hot path.
+    # -----------------------------------------------------------------
+    # Only run the heavy grouped scan when something is actually BLOCKED.
+    # Runs regardless of the feature flag so a flag rollback can't strand
+    # armed trials; this cheap pre-check keeps the common (nothing-blocked)
+    # case -- including flag-off prod -- off the hot reconcile path.
+    any_blocked_trial = await session.scalar(
+        text(
+            "SELECT 1 FROM worker_jobs "
+            "WHERE kind::text = 'TRIAL' AND status::text = 'BLOCKED' LIMIT 1"
+        )
+    )
+    tasks_pending_gate = (
+        (
+            await session.execute(
+                text(
+                    """
+                    SELECT MIN(base.id) AS baseline_trial_id
+                    FROM trials base
+                    WHERE base.queue_key = :nop_oracle_queue_key
+                      AND base.deleted_at IS NULL
+                      AND base.superseded_by_trial_id IS NULL
+                      AND EXISTS (
+                          SELECT 1
+                          FROM worker_jobs wj
+                          JOIN trials llm ON llm.id = wj.subject_id
+                          WHERE wj.subject_table = 'trials'
+                            AND wj.kind::text = 'TRIAL'
+                            AND wj.status::text = 'BLOCKED'
+                            AND llm.task_id = base.task_id
+                            AND llm.task_version_id
+                                IS NOT DISTINCT FROM base.task_version_id
+                            AND llm.experiment_id
+                                IS NOT DISTINCT FROM base.experiment_id
+                      )
+                    GROUP BY base.task_id, base.task_version_id,
+                             base.experiment_id
+                    HAVING COUNT(*) FILTER (
+                        WHERE base.status
+                            IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                    ) = 0
+                    """
+                ),
+                {"nop_oracle_queue_key": NOP_ORACLE_QUEUE_KEY},
+            )
+        ).all()
+        if any_blocked_trial
+        else []
+    )
+
+    for (baseline_trial_id,) in tasks_pending_gate:
+        if not baseline_trial_id:
+            continue
+        await maybe_gate_llm_trials(session, str(baseline_trial_id))
+        # A FAULTY gate cancels the scope's LLM trials, which can make the
+        # task "all trials done" for the first time. Advance it in the same
+        # pass (the loop above already ran while they were still BLOCKED), so
+        # the task isn't left RUNNING until the next cleanup cycle.
+        if await maybe_start_qa_stage(session, str(baseline_trial_id)):
+            progressed += 1
+    return progressed
+
+
+async def _advance_legacy_analyzing_tasks(session) -> int:
+    """Step 3 -- legacy tasks stuck in ANALYZING (pre-QA-refactor) whose
+    per-trial classifications all finished advance to the QA job."""
+    from oddish.queue import maybe_advance_legacy_analyzing_task
+
+    tasks_ready_for_verdict = (
+        await session.execute(
+            text(
+                """
+                SELECT MIN(tr.id) AS trial_id
+                FROM tasks t
+                JOIN trials tr ON tr.task_id = t.id
+                WHERE t.status = 'ANALYZING'
+                  AND t.deleted_at IS NULL
+                  AND tr.deleted_at IS NULL
+                  AND tr.superseded_by_trial_id IS NULL
+                GROUP BY t.id
+                HAVING COUNT(*) FILTER (
+                    WHERE tr.analysis_status IS NULL
+                       OR tr.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                ) = 0
+                """
+            )
+        )
+    ).all()
+
+    progressed = 0
+    for (trial_id,) in tasks_ready_for_verdict:
+        if trial_id and await maybe_advance_legacy_analyzing_task(
+            session, str(trial_id)
+        ):
+            progressed += 1
+    return progressed
+
+
+async def _heal_stale_verdict_pending(session) -> int:
+    """Step 4 -- VERDICT_PENDING tasks with no LIVE QA job.
+
+    A task is wedged here when its QA (task-level) job is gone -- it
+    finished/failed/exhausted (and we missed the hook, or it rolled back before
+    committing a terminal ``verdict_status``), or the task predates the unified
+    refactor and never had one. The condition that matters is "no claimable
+    QA/VERDICT worker_job", NOT ``verdict_status``: a row stuck at
+    ``verdict_status='QUEUED'`` with no live job (the old probe-summary KeyError
+    left thousands of these) would never be healed by a ``verdict_status``-keyed
+    check. Re-enqueue so the dispatcher has something to claim (or finalize if
+    the verdict is already terminal). ``ANALYSIS`` rows are intentionally ignored
+    here -- they no longer drive the verdict. Returns the count finalized.
+    """
+    from oddish.queue import enqueue_qa_worker_job
+
+    stale_verdict_pending = (
+        await session.execute(
+            text(
+                """
+                SELECT t.id
+                FROM tasks t
+                WHERE t.status = 'VERDICT_PENDING'
+                  AND t.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM worker_jobs wj
+                      WHERE wj.subject_table = 'tasks'
+                        AND wj.subject_id = t.id
+                        AND wj.kind::text IN ('QA', 'VERDICT')
+                        AND wj.status::text IN (
+                            'QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED'
+                        )
+                  )
+                ORDER BY t.updated_at ASC
+                LIMIT :batch_limit
+                """
+            ),
+            {"batch_limit": STALE_VERDICT_PENDING_BATCH_LIMIT},
+        )
+    ).all()
+
+    verdict_pending_completed = 0
+    for (task_id,) in stale_verdict_pending:
+        task = await session.get(TaskModel, str(task_id))
+        if not task or task.status != TaskStatus.VERDICT_PENDING:
+            continue
+        if task.verdict_status in (VerdictStatus.SUCCESS, VerdictStatus.FAILED):
+            task.status = TaskStatus.COMPLETED
+            task.finished_at = task.finished_at or utcnow()
+            verdict_pending_completed += 1
+        else:
+            task.verdict_status = VerdictStatus.QUEUED
+            task.verdict_error = None
+            task.verdict_started_at = None
+            task.verdict_finished_at = None
+            await enqueue_qa_worker_job(session, task_id=task.id, org_id=task.org_id)
+    return verdict_pending_completed
+
+
+async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
+    """Step 5 -- unwedge tasks stuck in ANALYZING by a live trial that never got
+    an analysis verdict. The advance passes (2/3) treat a live trial with
+    ``analysis_status`` NULL as "analysis still pending", so a task whose FAILED
+    trials never had analysis enqueued sits in ANALYZING forever. For stale
+    tasks with nothing analysis- or trial-side in flight, mark that lingering
+    NULL analysis terminal (it will never run) and let the normal advance carry
+    the task to VERDICT_PENDING; tasks with no live trials left are finalized
+    FAILED. Staleness-gated and batched so we never race a live transition.
+    Returns ``(advanced, finalized, nulls_failed)``.
+    """
+    from oddish.queue import maybe_advance_legacy_analyzing_task
+
+    stuck_rows = (
+        await session.execute(
+            text(
+                """
+                SELECT t.id AS task_id,
+                       (
+                           SELECT MIN(tr.id)
+                           FROM   trials tr
+                           WHERE  tr.task_id = t.id
+                             AND  tr.deleted_at IS NULL
+                             AND  tr.superseded_by_trial_id IS NULL
+                       ) AS live_trial_id
+                FROM   tasks t
+                WHERE  t.deleted_at IS NULL
+                  AND  t.status = 'ANALYZING'
+                  AND  t.updated_at < NOW() - make_interval(mins => :stale_minutes)
+                  AND  NOT EXISTS (
+                      SELECT 1 FROM trials a
+                      WHERE  a.task_id = t.id
+                        AND  a.deleted_at IS NULL
+                        AND  a.superseded_by_trial_id IS NULL
+                        AND  (
+                            a.status IN ('PENDING', 'QUEUED', 'RUNNING', 'RETRYING')
+                            OR a.analysis_status IN ('PENDING', 'QUEUED', 'RUNNING')
+                        )
+                  )
+                ORDER BY t.updated_at ASC
+                LIMIT :batch_limit
+                """
+            ),
+            {
+                "stale_minutes": STUCK_ANALYZING_MINUTES,
+                "batch_limit": STUCK_ANALYZING_BATCH_LIMIT,
+            },
+        )
+    ).all()
+
+    if not stuck_rows:
+        return 0, 0, 0
+
+    stuck_task_ids = [row[0] for row in stuck_rows]
+
+    # 5a. A live trial with NULL analysis blocks the advance forever (it reads
+    #     as "still pending"). It will never run now, so mark it terminal;
+    #     SUCCESS/FAILED analyses are left intact.
+    stuck_analysis_nulls_failed = int(
+        cast(
+            CursorResult,
+            await session.execute(
+                text(
+                    """
+                    UPDATE trials
+                    SET    analysis_status = 'FAILED',
+                           analysis_error = :reason,
+                           analysis_finished_at = NOW()
+                    WHERE  task_id = ANY(:task_ids)
+                      AND  deleted_at IS NULL
+                      AND  superseded_by_trial_id IS NULL
+                      AND  analysis_status IS NULL
+                    """
+                ),
+                {"reason": STUCK_ANALYZING_REASON, "task_ids": stuck_task_ids},
+            ),
+        ).rowcount
+        or 0
+    )
+    await session.flush()
+
+    # 5b. With every live trial's analysis now terminal, the normal advance
+    #     moves the task to VERDICT_PENDING (the verdict is computed from the
+    #     surviving trials). Tasks with no live trials left have nothing to
+    #     judge -> finalize FAILED.
+    stuck_analyzing_advanced = 0
+    no_live_trial_ids: list[str] = []
+    for task_id, live_trial_id in stuck_rows:
+        if live_trial_id is None:
+            no_live_trial_ids.append(str(task_id))
+            continue
+        if await maybe_advance_legacy_analyzing_task(session, str(live_trial_id)):
+            stuck_analyzing_advanced += 1
+
+    stuck_analyzing_finalized = 0
+    if no_live_trial_ids:
+        stuck_analyzing_finalized = int(
+            cast(
+                CursorResult,
+                await session.execute(
+                    text(
+                        """
+                        UPDATE tasks
+                        SET    status = 'FAILED',
+                               finished_at = COALESCE(finished_at, NOW())
+                        WHERE  id = ANY(:task_ids)
+                          AND  deleted_at IS NULL
+                          AND  status = 'ANALYZING'
+                        """
+                    ),
+                    {"task_ids": no_live_trial_ids},
+                ),
+            ).rowcount
+            or 0
+        )
+
+    if stuck_analyzing_advanced or stuck_analyzing_finalized:
+        console.print(
+            "metric=stuck_analyzing_unwedged "
+            f"advanced={stuck_analyzing_advanced} "
+            f"finalized={stuck_analyzing_finalized} "
+            f"analysis_nulls_failed={stuck_analysis_nulls_failed}"
+        )
+    return stuck_analyzing_advanced, stuck_analyzing_finalized, stuck_analysis_nulls_failed
+
+
+async def _release_orphaned_slots(session) -> int:
+    """Step 7 -- release queue slot leases whose owning worker is dead.
+
+    A slot is reclaimable when no RUNNING worker_jobs row is still owned by the
+    worker that holds the lease (``queue_slots.locked_by`` ==
+    ``worker_jobs.current_worker_id``). This must be per-SLOT, not per-queue_key:
+    the previous version only released slots when *zero* jobs were RUNNING on the
+    whole queue_key, so on a busy key a single live job kept every leaked lease
+    (from a SIGKILLed/preempted worker) pinned for the full ~12h lease, saturating
+    the pool while only a handful of jobs ran. ``locked_at`` grace avoids racing
+    the brief acquire->claim window.
+    """
+    result = cast(
+        CursorResult,
+        await session.execute(
+            text(
+                """
+                UPDATE queue_slots qs
+                SET    locked_by = NULL,
+                       locked_until = NULL,
+                       locked_at = NULL
+                WHERE  qs.locked_by IS NOT NULL
+                  AND  (
+                      qs.locked_at IS NULL
+                      OR qs.locked_at < NOW() - make_interval(
+                          mins => :slot_grace_minutes
+                      )
+                  )
+                  AND  NOT EXISTS (
+                      SELECT 1
+                      FROM   worker_jobs wj
+                      WHERE  wj.status::text = 'RUNNING'
+                        AND  wj.current_worker_id = qs.locked_by
+                  )
+                """
+            ),
+            {"slot_grace_minutes": ORPHANED_SLOT_GRACE_MINUTES},
+        ),
+    )
+    return int(result.rowcount or 0)
+
+
+async def _reconcile_experiment_last_activity(session) -> int:
+    """Step 8 -- reconcile drift on the denormalized
+    ``experiments.last_activity_at`` column. Application write paths bump it
+    best-effort on task/trial inserts, so this pass only catches misses (process
+    crash between insert flush and bump, etc). Bounded by a 30-minute lookback so
+    it stays cheap on every sweep.
+    """
+    return int(
+        (
+            cast(
+                CursorResult,
+                await session.execute(
+                    text(
+                        """
+                        UPDATE experiments e
+                        SET last_activity_at = derived.last_activity_at
+                        FROM (
+                            SELECT
+                                sub.experiment_id,
+                                GREATEST(
+                                    MAX(sub.task_created_at),
+                                    MAX(sub.trial_created_at)
+                                ) AS last_activity_at
+                            FROM (
+                                SELECT
+                                    te.experiment_id,
+                                    t.created_at AS task_created_at,
+                                    NULL::timestamptz AS trial_created_at
+                                FROM task_experiments te
+                                JOIN tasks t ON t.id = te.task_id
+                                WHERE te.deleted_at IS NULL
+                                  AND t.deleted_at IS NULL
+                                  AND t.created_at >= NOW() - INTERVAL '30 minutes'
+                                UNION ALL
+                                SELECT
+                                    tr.experiment_id,
+                                    NULL::timestamptz AS task_created_at,
+                                    tr.created_at AS trial_created_at
+                                FROM trials tr
+                                WHERE tr.deleted_at IS NULL
+                                  AND tr.superseded_by_trial_id IS NULL
+                                  AND tr.created_at >= NOW() - INTERVAL '30 minutes'
+                            ) sub
+                            GROUP BY sub.experiment_id
+                        ) derived
+                        WHERE e.id = derived.experiment_id
+                          AND e.deleted_at IS NULL
+                          AND (
+                              e.last_activity_at IS NULL
+                              OR e.last_activity_at < derived.last_activity_at
+                          )
+                        """
+                    )
+                ),
+            ).rowcount
+            or 0
+        )
+    )
+
+
+async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) -> int:
+    """Kill the orphaned sandboxes whose workers crashed. Runs AFTER the outer
+    commit: a rolled-back sweep must never leave RUNNING rows pointing at
+    sandboxes we already destroyed. Best-effort and concurrent; the provider's
+    auto-stop / auto-delete TTL is the backstop.
+    """
+    if not worker_targets:
+        return 0
+    results = await asyncio.gather(
+        *(
+            cancel_job_by_worker(provider, external_id)
+            for provider, external_id in worker_targets
+        )
+    )
+    return sum(1 for ok in results if ok)

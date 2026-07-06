@@ -173,13 +173,12 @@ async def retry_trial(
             trial_id=trial_id,
             org_id=auth.org_id,
             registry_auth=(payload.registry_auth if payload else None),
+            gate_baselines=(payload.gate_baselines if payload else True),
         )
 
-    from api.routers.tasks import _cancel_modal_function_calls
+    from oddish.core.helpers import terminate_run_harvest
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.pop("modal_function_call_ids", [])
-    )
+    modal_cancelled = await terminate_run_harvest(result)
     return result | {"modal_calls_cancelled": modal_cancelled}
 
 
@@ -199,11 +198,9 @@ async def delete_trial(
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
-    from api.routers.tasks import _cancel_modal_function_calls
+    from oddish.core.helpers import terminate_run_harvest
 
-    modal_cancelled = await _cancel_modal_function_calls(
-        result.pop("modal_function_call_ids", [])
-    )
+    modal_cancelled = await terminate_run_harvest(result)
 
     s3_prefixes = result.get("s3_prefixes", []) or []
     s3_keys_deleted = 0

@@ -12,7 +12,12 @@ import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import settings
+from oddish.config import QuotaMode, settings
+from oddish.core.quotas import (
+    get_effective_limit,
+    start_of_today_utc,
+    sum_cost_usd,
+)
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -23,6 +28,7 @@ from oddish.db import (
 
 from .client import GitHubMeta, get_github_client
 from .formatter import (
+    QuotaSnapshot,
     TaskSummary,
     TrialSummary,
     format_experiment_comment,
@@ -65,6 +71,7 @@ async def _build_trial_summary(
         classification=classification,
         subtype=subtype,
         task_name=task_name,
+        cost_usd=trial.cost_usd,
     )
 
 
@@ -99,6 +106,51 @@ async def _build_task_summary(
         verdict_status=task.verdict_status.value if task.verdict_status else None,
         verdict=task.verdict,
     )
+
+
+async def _get_quota_snapshot(
+    session: AsyncSession,
+    *,
+    org_id: str | None,
+    task_ids: list[str],
+    experiment_id: str,
+) -> QuotaSnapshot | None:
+    """Best-effort daily quota usage for the run's billed user.
+
+    The payer lookup is scoped to trials of the experiment being rendered
+    (mirroring _build_task_summary): a shared task can also have trials in
+    *other* experiments billed to a different user, and those must not
+    supply the quota shown on this PR.
+
+    Returns None whenever quotas aren't in play: quota_mode off (the hosted
+    backend forces it off when the quotas schema is missing, and self-hosted
+    deployments default to off — so this also guards the ``quotas`` table
+    lookup in get_effective_limit), no org, or no billed trial. Any failure
+    is swallowed: the quota line is decoration, never a reason to skip the
+    comment update.
+    """
+    if settings.quota_mode == QuotaMode.OFF or org_id is None or not task_ids:
+        return None
+    try:
+        billed_user_id = await session.scalar(
+            select(TrialModel.billed_user_id)
+            .where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.experiment_id == experiment_id,
+                TrialModel.billed_user_id.is_not(None),
+            )
+            .limit(1)
+        )
+        if billed_user_id is None:
+            return None
+        used_usd = await sum_cost_usd(
+            session, org_id, billed_user_id, start_of_today_utc()
+        )
+        limit_usd = await get_effective_limit(session, org_id, billed_user_id)
+        return QuotaSnapshot(used_usd=float(used_usd), limit_usd=float(limit_usd))
+    except Exception as e:
+        logger.warning(f"Failed to compute quota snapshot for PR comment: {e}")
+        return None
 
 
 async def _get_experiment_tasks(
@@ -191,18 +243,32 @@ async def _update_pr_comment_for_task(
                 )
                 for t in experiment_tasks
             ]
+            quota = await _get_quota_snapshot(
+                session,
+                org_id=task.org_id,
+                task_ids=[t.id for t in experiment_tasks],
+                experiment_id=resolved_experiment_id,
+            )
             comment_body = format_experiment_comment(
                 tasks=task_summaries,
                 experiment_name=experiment_name,
                 experiment_url=experiment_url,
                 dashboard_url=DASHBOARD_URL,
+                quota=quota,
             )
         else:
+            quota = await _get_quota_snapshot(
+                session,
+                org_id=task.org_id,
+                task_ids=[task.id],
+                experiment_id=resolved_experiment_id,
+            )
             comment_body = format_task_comment(
                 task=task_summary,
                 experiment_name=experiment_name,
                 experiment_url=experiment_url,
                 dashboard_url=DASHBOARD_URL,
+                quota=quota,
             )
 
     try:

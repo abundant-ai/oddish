@@ -8,6 +8,7 @@ from sqlalchemy import (
     and_,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -856,11 +857,6 @@ class TrialModel(TimestampedMixin, Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Last attempt whose outcome settled cost_usd; gates at-least-once outcome
-    # redelivery so accumulation never double-bills an attempt.
-    cost_settled_attempt: Mapped[int] = mapped_column(
-        Integer, default=0, nullable=False, server_default="0"
-    )
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1802,6 +1798,47 @@ class DocumentModel(TimestampedMixin, Base):
     s3_key_raw: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     raw_mime: Mapped[str | None] = mapped_column(String(128), nullable=True)
     raw_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class QueueRuntimeStatusModel(Base):
+    """Per-component runtime heartbeat the admin dashboard reads back.
+
+    Written via raw SQL in ``workers/queue/runtime_status.py`` and created by
+    migration. Modeled here so ``create_all`` materializes it on preview DBs:
+    previews ``stamp`` migrations instead of running them, so a raw-SQL-only
+    table would otherwise be absent (see ``backend/preview_seed.py`` and
+    ``.github/scripts/preview/bootstrap_preview_db.py``).
+    """
+
+    __tablename__ = "queue_runtime_status"
+
+    component: Mapped[str] = mapped_column(Text, primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("now()")
+    )
+    payload: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+
+class TagProjectionSweepStateModel(Base):
+    """Singleton (1-row) checkpoint for the hourly tag-projection reconciler.
+
+    Holds ``last_full_sweep_at``; read/written via raw SQL in
+    ``workers/queue/cleanup.py`` and created by migration ``aa04ta05sweep``.
+    Modeled here for the same reason as :class:`QueueRuntimeStatusModel` — so
+    ``create_all`` builds it on preview DBs.
+    """
+
+    __tablename__ = "tag_projection_sweep_state"
+    __table_args__ = (CheckConstraint("id", name="tag_sweep_singleton"),)
+
+    id: Mapped[bool] = mapped_column(
+        Boolean, primary_key=True, server_default=text("true")
+    )
+    last_full_sweep_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 from oddish.db.soft_delete import register_soft_delete_models

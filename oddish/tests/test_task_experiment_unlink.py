@@ -95,17 +95,11 @@ def _patched_side_effects(monkeypatch):
     async def _noop_cancel_trials(*_args, **_kwargs):
         return []
 
-    async def _noop_settle(*_args, **_kwargs):
-        return None
-
     async def _noop_tag_hook(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(
         _deletion, "_cancel_worker_jobs_for_trials", _noop_cancel_trials
-    )
-    monkeypatch.setattr(
-        _deletion, "_settle_active_billable_trials", _noop_settle
     )
     # Lazy-imported inside the core function from oddish.queue.
     import oddish.queue as _queue
@@ -148,6 +142,7 @@ async def test_unlink_tombstones_link_and_scoped_trials_only(_patched_side_effec
         },
         "unlinked": True,
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     assert session.delete_called is False
     # Verdict cache cleared because the live trial set shrank.

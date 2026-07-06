@@ -206,7 +206,6 @@ def test_store_trial_results_marks_modal_image_build_failed_permanent(monkeypatc
         heartbeat_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -277,7 +276,6 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
         heartbeat_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -292,11 +290,17 @@ def test_store_trial_results_persists_total_steps(monkeypatch):
     async def _fake_maybe_start_qa_stage(session, trial_id: str) -> bool:
         return False
 
+    async def _fake_maybe_gate_llm_trials(session, trial_id: str) -> bool:
+        return False
+
     import oddish.queue as queue_module
 
     monkeypatch.setattr(trial_handler, "_trial_session", _fake_trial_session)
     monkeypatch.setattr(
         queue_module, "maybe_start_qa_stage", _fake_maybe_start_qa_stage
+    )
+    monkeypatch.setattr(
+        queue_module, "maybe_gate_llm_trials", _fake_maybe_gate_llm_trials
     )
 
     outcome = harbor_runner.HarborOutcome(
@@ -358,7 +362,6 @@ def test_store_trial_results_overrides_runtime_cancelled_for_image_build(monkeyp
         heartbeat_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
     class _Session:
@@ -429,7 +432,6 @@ def test_store_trial_results_preserves_user_cancel_for_image_build(monkeypatch):
         finished_at=object(),
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
     original_finished_at = trial.finished_at
 
@@ -1572,7 +1574,6 @@ def _make_retry_decision_trial(*, attempts: int = 1, max_attempts: int = 6):
         finished_at=None,
         superseded_by_trial_id=None,
         deleted_at=None,
-        cost_settled_attempt=0,
     )
 
 

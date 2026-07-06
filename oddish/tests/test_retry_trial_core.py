@@ -61,7 +61,6 @@ class _RecordingTrial:
         self.current_worker_id = None
         self.current_queue_slot = None
         self.cost_usd = None
-        self.cost_settled_attempt = 0
         self.deleted_at = None
         self.input_tokens = None
         self.cache_tokens = None
@@ -180,6 +179,7 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
         "trial_id": "task-1-1",
         "superseded_trial_id": "task-1-0",
         "modal_function_call_ids": [],
+        "worker_targets": [],
     }
     event_names = [event[0] for event in events]
     assert event_names.index("add") < event_names.index("flush")

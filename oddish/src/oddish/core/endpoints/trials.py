@@ -26,8 +26,10 @@ from oddish.db import (
     TaskStatus,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
+    WorkerJobModel,
+    WorkerJobStatus,
 )
-from oddish.config import settings
 from oddish.registry_auth import RegistryCredential, encrypt_credentials
 from oddish.schemas import RegistryAuth, TrialResponse
 
@@ -105,8 +107,21 @@ async def retry_trial_core(
     trial_id: str,
     org_id: str | None = None,
     registry_auth: list[RegistryAuth] | None = None,
+    gate_baselines: bool = True,
 ) -> dict:
-    """Create a new trial that replaces an old one."""
+    """Create a new trial that replaces an old one.
+
+    POST-COMMIT CONTRACT: the superseded run's remote handles are RETURNED as
+    ``modal_function_call_ids`` + ``worker_targets``, never terminated here.
+    The caller must run ``oddish.core.helpers.terminate_run_harvest(result)``
+    after commit or the containers leak until provider TTL (the worker's
+    superseded-branch harvest and the reaper remain backstops).
+
+    ``gate_baselines`` is a fresh, per-retry decision (the opt-out does not
+    persist from the original run): when True (default) a retried LLM trial
+    re-consults its scope's baselines; ``--no-baseline-gate`` sets it False to
+    re-run the trial ungated.
+    """
     old_trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
     old_trial = await session.get(TrialModel, old_trial.id)
     if old_trial is None:
@@ -139,11 +154,20 @@ async def retry_trial_core(
     if not task:
         raise HTTPException(status_code=404, detail=f"Trial {trial_id} not found")
 
-    from oddish.queue import enqueue_trial_worker_job, reserve_next_trial_index
+    from oddish.config import is_nop_oracle_agent, settings
+    from oddish.queue import (
+        apply_baseline_gate_to_new_llm_trials,
+        enqueue_trial_worker_job,
+        reserve_next_trial_index,
+    )
 
     if old_trial.billed_user_id is not None:
         from oddish.core.quota_admission import admit_trials
 
+        # Admission deliberately precedes the supersede and counts the old
+        # attempt's reservation: the CAS below settles that cost (never
+        # refunds it), so this check equals post-retry exposure -- excluding
+        # the old row would let a capped user reset spend by retrying.
         await admit_trials(session, org_id, old_trial.billed_user_id, count=1)
 
     next_index = await reserve_next_trial_index(session, task_id=task.id)
@@ -192,14 +216,7 @@ async def retry_trial_core(
                        THEN NULL ELSE current_worker_id END,
                    current_queue_slot = CASE
                        WHEN status::text NOT IN ('FAILED', 'SUCCESS')
-                       THEN NULL ELSE current_queue_slot END,
-                   -- Floor the cost of a stuck non-terminal trial we're
-                   -- superseding so the daily quota SUM never undercounts it
-                   -- (cost-completeness; a killed row otherwise keeps NULL cost).
-                   cost_usd = CASE
-                       WHEN status::text NOT IN ('FAILED', 'SUCCESS')
-                            AND cost_usd IS NULL
-                       THEN :floor_usd ELSE cost_usd END
+                       THEN NULL ELSE current_queue_slot END
             WHERE  id = :old_trial_id
               AND  superseded_by_trial_id IS NULL
               AND  deleted_at IS NULL
@@ -208,7 +225,6 @@ async def retry_trial_core(
         {
             "new_trial_id": new_trial_id,
             "old_trial_id": old_trial.id,
-            "floor_usd": float(settings.pending_trial_reservation_usd),
         },
     )
     if cast(Any, cas).rowcount == 0:
@@ -252,11 +268,12 @@ async def retry_trial_core(
         text(
             """
             WITH to_cancel AS (
-                SELECT id, modal_function_call_id
+                SELECT id, modal_function_call_id, provider, external_id
                 FROM   worker_jobs
                 WHERE  subject_table = 'trials'
                   AND  subject_id = :trial_id
                   AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+                ORDER BY id
                 FOR UPDATE
             )
             UPDATE worker_jobs w
@@ -269,12 +286,20 @@ async def retry_trial_core(
                    payload = payload - 'registry_auth_enc'
             FROM   to_cancel
             WHERE  w.id = to_cancel.id
-            RETURNING to_cancel.modal_function_call_id
+            RETURNING to_cancel.modal_function_call_id,
+                      to_cancel.provider,
+                      to_cancel.external_id
             """
         ),
         {"trial_id": trial_id},
     )
-    modal_fc_ids = [str(fc) for (fc,) in cancelled_jobs if fc]
+    modal_fc_ids: list[str] = []
+    worker_targets: set[tuple[str, str]] = set()
+    for fc, provider, external_id in cancelled_jobs:
+        if fc:
+            modal_fc_ids.append(str(fc))
+        if provider and external_id:
+            worker_targets.add((str(provider), str(external_id)))
 
     if task.status in (
         TaskStatus.ANALYZING,
@@ -328,12 +353,43 @@ async def retry_trial_core(
         registry_auth_enc=registry_auth_enc,
     )
 
+    # Retrying an LLM trial re-arms the gate: a retried agent trial consults its
+    # scope's baselines just like a fresh one, so it can't bypass a faulty task.
+    # The gate may leave it BLOCKED (baselines still running) or CANCELLED
+    # (faulty baselines), so report its real state rather than always "queued".
+    status_label = "queued"
+    if (
+        settings.gate_llm_on_baselines
+        and gate_baselines
+        and not is_nop_oracle_agent(new_trial.agent)
+    ):
+        await apply_baseline_gate_to_new_llm_trials(
+            session,
+            task_id=new_trial.task_id,
+            task_version_id=new_trial.task_version_id,
+            experiment_id=new_trial.experiment_id,
+            llm_trial_ids=[new_trial_id],
+        )
+        final_status = await session.scalar(
+            select(WorkerJobModel.status).where(
+                WorkerJobModel.subject_table == "trials",
+                WorkerJobModel.kind == WorkerJobKind.TRIAL,
+                WorkerJobModel.subject_id == new_trial_id,
+            )
+        )
+        status_label = {
+            WorkerJobStatus.QUEUED: "queued",
+            WorkerJobStatus.BLOCKED: "blocked",
+            WorkerJobStatus.CANCELLED: "skipped",
+        }.get(final_status, "queued")
+
     await session.commit()
     return {
-        "status": "queued",
+        "status": status_label,
         "trial_id": new_trial_id,
         "superseded_trial_id": trial_id,
         "modal_function_call_ids": modal_fc_ids,
+        "worker_targets": sorted(worker_targets),
     }
 
 

@@ -28,6 +28,7 @@ class TrialSummary:
     )  # GOOD_SUCCESS, GOOD_FAILURE, BAD_SUCCESS, BAD_FAILURE, HARNESS_ERROR
     subtype: str | None = None
     task_name: str | None = None
+    cost_usd: float | None = None
 
 
 @dataclass
@@ -42,6 +43,14 @@ class TaskSummary:
     verdict: dict | None
 
 
+@dataclass
+class QuotaSnapshot:
+    """Point-in-time daily quota usage for the run's billed user."""
+
+    used_usd: float
+    limit_usd: float
+
+
 def _format_duration(seconds: float | None) -> str:
     if seconds is None:
         return "-"
@@ -52,6 +61,37 @@ def _format_duration(seconds: float | None) -> str:
         return f"{minutes:.1f}m"
     hours = minutes / 60
     return f"{hours:.1f}h"
+
+
+def _format_cost(cost_usd: float | None) -> str:
+    if cost_usd is None:
+        return "-"
+    return f"${cost_usd:.2f}"
+
+
+def _cost_summary_lines(
+    trials: list[TrialSummary], quota: QuotaSnapshot | None
+) -> list[str]:
+    """Render the run-cost / quota footer block (empty if nothing to show).
+
+    The run cost sums only trials that reported a cost; while trials are
+    still running (or unpriced) it is a lower bound, so it is labeled
+    "so far" until every trial has a cost.
+    """
+    parts = []
+    priced = [t.cost_usd for t in trials if t.cost_usd is not None]
+    if priced:
+        total = sum(priced)
+        suffix = " (so far)" if len(priced) < len(trials) else ""
+        parts.append(f"**Run cost:** ${total:.2f}{suffix}")
+    if quota is not None:
+        parts.append(
+            f"**Daily quota:** ${quota.used_usd:.2f} of "
+            f"${quota.limit_usd:.2f} used"
+        )
+    if not parts:
+        return []
+    return [" \u2022 ".join(parts), ""]
 
 
 def _format_reward(reward: float | None) -> str:
@@ -137,6 +177,7 @@ def format_task_comment(
     experiment_name: str,
     experiment_url: str,
     dashboard_url: str = "https://www.oddish.app",
+    quota: QuotaSnapshot | None = None,
 ) -> str:
     """Format a complete PR comment for a single task's validation status."""
     lines = [
@@ -180,12 +221,17 @@ def format_task_comment(
 
     lines.append("#### Trajectory Analyses")
     lines.append("")
-    lines.append("| # | Agent | Model | Status | Reward | Classification | Analysis |")
-    lines.append("|---|-------|-------|--------|--------|----------------|----------|")
+    lines.append(
+        "| # | Agent | Model | Status | Reward | Cost | Classification | Analysis |"
+    )
+    lines.append(
+        "|---|-------|-------|--------|--------|------|----------------|----------|"
+    )
 
     for trial in task.trials:
         status_str = _trial_status_cell(trial)
         reward_str = _format_reward(trial.reward)
+        cost_str = _format_cost(trial.cost_usd)
         classification_str = _classification_label(trial.classification, trial.subtype)
         analysis_str = _analysis_cell(trial, dashboard_url, experiment_url)
         model_str = trial.model or "-"
@@ -193,10 +239,12 @@ def format_task_comment(
 
         lines.append(
             f"| {trial_link} | {trial.agent} | {model_str} | "
-            f"{status_str} | {reward_str} | {classification_str} | {analysis_str} |"
+            f"{status_str} | {reward_str} | {cost_str} | "
+            f"{classification_str} | {analysis_str} |"
         )
 
     lines.append("")
+    lines.extend(_cost_summary_lines(task.trials, quota))
 
     if task.verdict and task.verdict_status == "success":
         lines.append("<details>")
@@ -251,6 +299,7 @@ def format_experiment_comment(
     experiment_name: str,
     experiment_url: str,
     dashboard_url: str = "https://www.oddish.app",
+    quota: QuotaSnapshot | None = None,
 ) -> str:
     """Format a PR comment for multiple tasks with a flat trajectory analyses matrix."""
     lines = [
@@ -341,12 +390,13 @@ def format_experiment_comment(
         "Analysis of agent trajectories including baseline validation and outcome classification."
     )
     lines.append("")
-    lines.append("| Task | Agent | Model | Attempt | Classification | Analysis |")
-    lines.append("|------|-------|-------|---------|----------------|----------|")
+    lines.append("| Task | Agent | Model | Attempt | Cost | Classification | Analysis |")
+    lines.append("|------|-------|-------|---------|------|----------------|----------|")
 
     for task in tasks:
         for trial in task.trials:
             model_str = trial.model or "-"
+            cost_str = _format_cost(trial.cost_usd)
             classification_str = _classification_label(
                 trial.classification, trial.subtype
             )
@@ -355,10 +405,13 @@ def format_experiment_comment(
 
             lines.append(
                 f"| {task.task_name} | {trial.agent} | {model_str} | "
-                f"{trial_link} | {classification_str} | {analysis_str} |"
+                f"{trial_link} | {cost_str} | {classification_str} | {analysis_str} |"
             )
 
     lines.append("")
+    lines.extend(
+        _cost_summary_lines([t for task in tasks for t in task.trials], quota)
+    )
 
     lines.append("---")
     lines.append(

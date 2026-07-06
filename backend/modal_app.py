@@ -265,6 +265,9 @@ ENV_VARS = {
     # nop/oracle do not call model providers; this cap is for Modal/DB/S3
     # pressure rather than provider rate limits.
     "ODDISH_NOP_ORACLE_CONCURRENCY": str(NOP_ORACLE_CONCURRENCY),
+    # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
+    # environment sets it (preview sets "1"); prod stays off until flipped here.
+    "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
 }
 
 

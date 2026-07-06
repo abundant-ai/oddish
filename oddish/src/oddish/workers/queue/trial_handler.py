@@ -18,7 +18,6 @@ from harbor.viewer.scanner import JobScanner
 from sqlalchemy import select, update
 
 from oddish.config import settings
-from oddish.trial_cost import apply_settled_cost
 from oddish.db import (
     AnalysisStatus,
     ExperimentModel,
@@ -328,7 +327,7 @@ async def _touch_trial_execution(
     ):
         if not trial or trial.status != TrialStatus.RUNNING:
             return False
-        if trial.superseded_by_trial_id is not None or trial.deleted_at is not None:
+        if trial.superseded_by_trial_id is not None:
             return False
         if worker_id and trial.current_worker_id not in (None, worker_id):
             return False
@@ -444,10 +443,8 @@ async def _prepare_trial_run(
         if not trial:
             console.print(f"[yellow]Trial {trial_id} not found, skipping[/yellow]")
             return None
-        if trial.superseded_by_trial_id is not None or trial.deleted_at is not None:
-            console.print(
-                f"[dim]Trial {trial_id} was superseded/deleted, skipping[/dim]"
-            )
+        if trial.superseded_by_trial_id is not None:
+            console.print(f"[dim]Trial {trial_id} was superseded, skipping[/dim]")
             return None
 
         trial.status = TrialStatus.RUNNING
@@ -465,8 +462,7 @@ async def _prepare_trial_run(
         trial.cache_write_tokens = None
         trial.output_tokens = None
         trial.total_steps = None
-        # cost_usd is NOT cleared: it carries the prior attempt's settled spend,
-        # which apply_settled_cost accumulates on attempts > 1.
+        trial.cost_usd = None
         trial.phase_timing = None
         trial.has_trajectory = False
         trial.attempts += 1
@@ -633,37 +629,30 @@ async def _store_trial_results(
     ):
         if not trial:
             return
-
-        is_modal_image_build_error = bool(
-            outcome and is_modal_image_build_failure(outcome.error)
-        )
-        # Terminal rows (superseded / deleted / cancelled / exhausted FAILED)
-        # never get result updates, but a late real outcome still settles cost
-        # (replacing the provisional floor or accumulating a retried attempt's
-        # burn). Runs BEFORE the ownership check: the cancel/supersede/delete
-        # flows already released ownership, which is exactly the late case.
-        user_cancelled = trial.error_message == "Cancelled by user" or (
-            trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
-        )
-        runtime_cancelled = trial.harbor_stage == "cancelled"
-        if (
-            trial.superseded_by_trial_id is not None
-            or trial.deleted_at is not None
-            or user_cancelled
-            or (runtime_cancelled and not is_modal_image_build_error)
-        ):
+        if trial.superseded_by_trial_id is not None:
             console.print(
-                f"[dim]Trial {trial_id} already terminal; harvesting late "
-                "outcome cost only[/dim]"
+                f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
-            if outcome:
-                apply_settled_cost(trial, outcome)
             return
         if not await _worker_still_owns_trial(
             session, trial, worker_id=worker_id, worker_job_id=worker_job_id
         ):
             console.print(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
+            )
+            return
+
+        is_modal_image_build_error = bool(
+            outcome and is_modal_image_build_failure(outcome.error)
+        )
+
+        user_cancelled = trial.error_message == "Cancelled by user" or (
+            trial.status == TrialStatus.FAILED and trial.max_attempts <= trial.attempts
+        )
+        runtime_cancelled = trial.harbor_stage == "cancelled"
+        if user_cancelled or (runtime_cancelled and not is_modal_image_build_error):
+            console.print(
+                f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
             return
 
@@ -690,7 +679,12 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
-            apply_settled_cost(trial, outcome)
+            trial.input_tokens = outcome.input_tokens
+            trial.cache_tokens = outcome.cache_tokens
+            trial.cache_write_tokens = outcome.cache_write_tokens
+            trial.output_tokens = outcome.output_tokens
+            trial.total_steps = outcome.total_steps
+            trial.cost_usd = outcome.cost_usd
 
             trial.phase_timing = outcome.phase_timing
 
@@ -739,7 +733,6 @@ async def _store_trial_results(
             trial.error_message = (
                 execution_error or "Trial execution failed with exception"
             )
-            apply_settled_cost(trial)
             console.print(f"[red]Trial {trial_id} FAILED (exception)[/red]")
 
         trial.current_worker_id = None
@@ -755,8 +748,12 @@ async def _store_trial_results(
             trial.analysis_finished_at = probe_analysis["analysis_finished_at"]
 
         if trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED):
-            from oddish.queue import maybe_start_qa_stage
+            from oddish.queue import maybe_gate_llm_trials, maybe_start_qa_stage
 
+            # Resolve the baseline gate first: a faulty-task cancel drops the
+            # LLM trials from the pending set so the task can advance below; a
+            # release adds them back so QA correctly waits for them.
+            await maybe_gate_llm_trials(session, trial_id)
             started = await maybe_start_qa_stage(session, trial_id)
             if started:
                 console.print(
@@ -808,11 +805,7 @@ async def _handle_harbor_event(
                 _session,
                 trial,
             ):
-                if (
-                    not trial
-                    or trial.superseded_by_trial_id is not None
-                    or trial.deleted_at is not None
-                ):
+                if not trial or trial.superseded_by_trial_id is not None:
                     console.print(
                         f"[dim]Trial {trial_id} event {event.value} ignored "
                         "(superseded)[/dim]"
@@ -833,7 +826,7 @@ async def _handle_harbor_event(
         ) as (_session, trial):
             if not trial:
                 return
-            if trial.superseded_by_trial_id is not None or trial.deleted_at is not None:
+            if trial.superseded_by_trial_id is not None:
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
                     "(superseded)[/dim]"

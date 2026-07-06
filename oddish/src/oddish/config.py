@@ -65,11 +65,14 @@ _NOP_ORACLE_AGENTS: set[str] = {AgentName.NOP.value, AgentName.ORACLE.value}
 # "oracle-v2", "agent-nop"). Kept in sync with the dashboard's
 # ``_baseline_agent_clause`` and the frontend's ``isBaselineAgentName`` so every
 # code path agrees on what counts as a nop/oracle baseline.
+# Per-kind prefix lists are the single source of truth: the combined membership
+# tuple below composes from them, so adding a variant to one kind flows to both
+# ``is_nop_oracle_agent`` (membership) and ``nop_oracle_kind`` (classification)
+# without the two drifting.
+_ORACLE_AGENT_PREFIXES: tuple[str, ...] = ("oracle-", "agent-oracle")
+_NOP_AGENT_PREFIXES: tuple[str, ...] = ("nop-", "agent-nop")
 _NOP_ORACLE_AGENT_PREFIXES: tuple[str, ...] = (
-    "nop-",
-    "oracle-",
-    "agent-nop",
-    "agent-oracle",
+    _NOP_AGENT_PREFIXES + _ORACLE_AGENT_PREFIXES
 )
 
 
@@ -88,6 +91,28 @@ def is_nop_oracle_agent(agent: str | None) -> bool:
     if normalized in _NOP_ORACLE_AGENTS:
         return True
     return normalized.startswith(_NOP_ORACLE_AGENT_PREFIXES)
+
+
+def nop_oracle_kind(agent: str | None) -> str | None:
+    """Classify a baseline agent as ``'oracle'`` / ``'nop'`` (else ``None``).
+
+    The kind-resolving counterpart to :func:`is_nop_oracle_agent`, using the
+    same exact-name + prefix rules so the two can't drift -- callers that need
+    to tell oracle from nop (e.g. the baseline gate) should use this rather than
+    re-deriving the classification with looser substring matching.
+    """
+    normalized = (agent or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == AgentName.ORACLE.value or normalized.startswith(
+        _ORACLE_AGENT_PREFIXES
+    ):
+        return AgentName.ORACLE.value
+    if normalized == AgentName.NOP.value or normalized.startswith(
+        _NOP_AGENT_PREFIXES
+    ):
+        return AgentName.NOP.value
+    return None
 
 
 # --- Configurable Harbor source ----------------------------------------------
@@ -907,9 +932,15 @@ class Settings(BaseSettings):
     # Worker behavior
     auto_start_workers: bool = True
 
-    pending_trial_reservation_usd: Decimal = Decimal("0.50")
-    default_daily_quota_usd: Decimal = Decimal("10.00")
-    quota_mode: QuotaMode = QuotaMode.OFF
+    pending_trial_reservation_usd: Decimal = Decimal("1.00")
+    default_daily_quota_usd: Decimal = Decimal("100.00")
+    # Budget stand-in for a FINISHED trial that reported no price (cost_usd NULL):
+    # counted toward the daily quota so an unpriced/cancelled/reaped run is never
+    # treated as free (an "unknown cost = $0" row would let a start-then-cancel
+    # loop bypass the cap). The trial row itself keeps cost_usd NULL; only the
+    # quota SUMs floor it. A genuinely-$0 row (cost_usd = 0) is left untouched.
+    unpriced_trial_cost_usd: Decimal = Decimal("1.00")
+    quota_mode: QuotaMode = QuotaMode.SHADOW
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
     # (model key for the job's provider only + an S3 write prefix), replacing the
@@ -998,6 +1029,12 @@ class Settings(BaseSettings):
     default_model_concurrency: int = 8
     nop_oracle_concurrency: int = 256
     model_concurrency_overrides: dict[str, int] = Field(default_factory=dict)
+    # When enabled, a task that mixes nop/oracle baselines with LLM agents holds
+    # the LLM trials BLOCKED until the baselines finish, then releases them only
+    # if the baselines validate the task (oracle passes, nop fails). Otherwise
+    # the LLM trials are cancelled. Global, env-driven via
+    # ODDISH_GATE_LLM_ON_BASELINES; default off leaves every path unchanged.
+    gate_llm_on_baselines: bool = False
 
     # Dynamic per-model concurrency controller (default OFF; see
     # workers.queue.concurrency_controller). When enabled, the reconciler
@@ -1156,6 +1193,15 @@ class Settings(BaseSettings):
                 queue_key = self.normalize_queue_key(str(key))
                 normalized[queue_key] = int(value)
             self.model_concurrency_overrides = normalized
+
+        gate_raw = os.getenv("ODDISH_GATE_LLM_ON_BASELINES")
+        if gate_raw is not None:
+            self.gate_llm_on_baselines = gate_raw.strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
 
         raw_buckets = os.getenv("ODDISH_PROVIDER_RATE_LIMITS")
         if raw_buckets:
