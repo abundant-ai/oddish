@@ -915,6 +915,14 @@ class TrialResponse(BaseModel):
             "runtime. Null when no cost is available."
         ),
     )
+    is_billed: bool = Field(
+        False,
+        description=(
+            "True when the trial is attributed to a billed user "
+            "(``billed_user_id`` is set), i.e. its cost counts toward "
+            "billed spend and quota usage."
+        ),
+    )
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(

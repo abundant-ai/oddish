@@ -149,6 +149,10 @@ type ExperimentSummary = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  billedCostUsd: number;
+  billedTrialCount: number;
+  billedHasEstimated: boolean;
+  billedHasNative: boolean;
 };
 
 function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
@@ -214,6 +218,10 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     costTrialCount: acc.costTrialCount,
     costHasEstimated: acc.costHasEstimated,
     costHasNative: acc.costHasNative,
+    billedCostUsd: acc.billedCostUsd,
+    billedTrialCount: acc.billedTrialCount,
+    billedHasEstimated: acc.billedHasEstimated,
+    billedHasNative: acc.billedHasNative,
   };
 }
 
@@ -508,11 +516,13 @@ function ExperimentSummaryBar({
   summary,
   isInitialLoading,
   isLoadingTrials,
+  showBilledSpend,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
+  showBilledSpend: boolean;
 }) {
   if (isInitialLoading) {
     return (
@@ -554,7 +564,13 @@ function ExperimentSummaryBar({
     : 0;
 
   return (
-    <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]">
+    <div
+      className={`grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] ${
+        showBilledSpend
+          ? "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_0.9fr_1.4fr]"
+          : "md:grid-cols-[1.1fr_1fr_0.9fr_0.9fr_1.4fr]"
+      }`}
+    >
       <KpiTile
         label="Avg score"
         labelInfo="Average of per-task average reward, nop/oracle excluded"
@@ -637,6 +653,44 @@ function ExperimentSummaryBar({
           )}
         </span>
       </KpiTile>
+      {showBilledSpend && (
+        <KpiTile label="Billed spend">
+          <span
+            className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
+            title={
+              summary.billedTrialCount > 0
+                ? `Summed across ${summary.billedTrialCount} billed trial${
+                    summary.billedTrialCount === 1 ? "" : "s"
+                  }${
+                    summary.billedHasEstimated && summary.billedHasNative
+                      ? ". Mixed native + estimated values; ~ marks estimates."
+                      : summary.billedHasEstimated
+                        ? ". Estimated from token counts × static model pricing."
+                        : ". Reported by the agent runtime."
+                  }`
+                : "No billed trials yet"
+            }
+          >
+            {summary.billedTrialCount > 0 ? (
+              <>
+                {summary.billedHasEstimated && !summary.billedHasNative && (
+                  <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
+                    ~
+                  </span>
+                )}
+                {formatCostUsd(summary.billedCostUsd)}
+                {summary.billedHasEstimated && summary.billedHasNative && (
+                  <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
+                    *
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="text-[color:var(--paper-ink-3)]">—</span>
+            )}
+          </span>
+        </KpiTile>
+      )}
       <KpiTile
         label="Outcome distribution"
         className="col-span-2 md:col-span-1"
@@ -1174,6 +1228,9 @@ export function ExperimentDetailView({
             summary={summary}
             isInitialLoading={isInitialLoading}
             isLoadingTrials={isLoadingTrials}
+            // Billing attribution is internal; keep it off the public share
+            // view (the only readOnly consumer).
+            showBilledSpend={!readOnly}
           />
 
           {hasError ? (
