@@ -268,6 +268,7 @@ def create_app() -> FastAPI:
     from api.routers import (
         admin,
         api_keys,
+        byok,
         cc_chat,
         clerk_webhooks,
         dashboard,
@@ -288,6 +289,7 @@ def create_app() -> FastAPI:
     api.include_router(dashboard.router)
     api.include_router(orgs.router)
     api.include_router(api_keys.router)
+    api.include_router(byok.router)
     api.include_router(clerk_webhooks.router)
     api.include_router(github_linkage.router)
     api.include_router(github_webhooks.router)
