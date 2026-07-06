@@ -769,6 +769,10 @@ class TaskVersionSummary(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     last_run_at: datetime | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
@@ -786,6 +790,10 @@ class TaskCostTotals(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     total_trials: int = 0
 
 
@@ -1141,6 +1149,10 @@ class TaskBrowseItem(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
