@@ -127,7 +127,7 @@ const clerkEmbeddedAppearance = {
   },
 };
 
-type SettingsSection = "profile" | "workspace" | "api-keys";
+type SettingsSection = "profile" | "workspace" | "api-keys" | "byok";
 
 const SECTIONS: {
   id: SettingsSection;
@@ -153,10 +153,21 @@ const SECTIONS: {
     description: "Programmatic access tokens for the Oddish CLI and API.",
     icon: Key,
   },
+  {
+    id: "byok",
+    label: "Your API key",
+    description: "Use your own Anthropic key for your runs.",
+    icon: Key,
+  },
 ];
 
 function isSettingsSection(value: string | null): value is SettingsSection {
-  return value === "profile" || value === "workspace" || value === "api-keys";
+  return (
+    value === "profile" ||
+    value === "workspace" ||
+    value === "api-keys" ||
+    value === "byok"
+  );
 }
 
 interface APIKey {
@@ -799,6 +810,117 @@ function APIKeysPanel() {
 }
 
 // =============================================================================
+// Your API key (BYOK)
+// =============================================================================
+
+function ByokPanel() {
+  const { data } = useSWR<{
+    enabled: boolean;
+    key_set: boolean;
+    key_hint: string;
+  }>("/api/settings/byok", fetcher);
+  const [keyInput, setKeyInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function saveKey() {
+    const key = keyInput.trim();
+    if (!key) return;
+    setBusy(true);
+    setError(null);
+    const res = await fetch("/api/settings/byok/keys/anthropic", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+    if (!res.ok) setError("Could not save the key. Try again.");
+    else setKeyInput("");
+    await mutate("/api/settings/byok");
+    setBusy(false);
+  }
+
+  async function removeKey() {
+    setBusy(true);
+    setError(null);
+    const res = await fetch("/api/settings/byok/keys/anthropic", {
+      method: "DELETE",
+    });
+    if (!res.ok) setError("Could not remove the key. Try again.");
+    await mutate("/api/settings/byok");
+    setBusy(false);
+  }
+
+  return (
+    <Panel>
+      <PanelHeader
+        icon={Key}
+        title="Your Anthropic API key"
+        description="When enabled for you, your runs use this key instead of the platform key. Otherwise it sits unused."
+      />
+      <div className="space-y-4 pt-4">
+        {error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {data?.key_set ? (
+            <Badge>set ••••{data.key_hint}</Badge>
+          ) : (
+            <Badge variant="outline">not set</Badge>
+          )}
+          <Badge variant={data?.enabled ? "default" : "outline"}>
+            {data?.enabled ? "enabled for you" : "not enabled"}
+          </Badge>
+        </div>
+
+        {data && !data.enabled ? (
+          <p className="text-muted-foreground text-xs">
+            You can save a key now; it takes effect once this is enabled for
+            your account.
+          </p>
+        ) : null}
+
+        <div className="flex items-center gap-2">
+          <Input
+            id="byok-key-anthropic"
+            type="password"
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            placeholder="sk-ant-..."
+            disabled={busy}
+            className="h-9 w-64"
+            aria-label="Anthropic API key"
+          />
+          <Button
+            type="button"
+            size="sm"
+            onClick={saveKey}
+            disabled={busy || !keyInput.trim()}
+          >
+            {data?.key_set ? "Replace" : "Save"}
+          </Button>
+          {data?.key_set ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={removeKey}
+              disabled={busy}
+              className="text-muted-foreground hover:text-destructive h-7 w-7 p-0"
+              aria-label="Remove key"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// =============================================================================
 // Profile
 // =============================================================================
 
@@ -1164,6 +1286,9 @@ export default function SettingsPage() {
             </SectionContainer>
             <SectionContainer active={section === "api-keys"}>
               <APIKeysPanel />
+            </SectionContainer>
+            <SectionContainer active={section === "byok"}>
+              <ByokPanel />
             </SectionContainer>
           </div>
         </section>
