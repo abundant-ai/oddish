@@ -3,8 +3,8 @@
 ## What this slice does
 
 S5 is the gate. S1–S3 guaranteed the *inputs* (every settled billable trial has
-a real `cost_usd`, every new billable trial carries `billed_user_id`, and
-rolling-window spend is summable); S4 made the *limit* per-user overridable. S5 finally
+a real `cost_usd`, every new billable trial carries `billed_user_id`, and daily
+spend is summable); S4 made the *limit* per-user overridable. S5 finally
 **compares spend against the limit at submit time and can block the run** with a
 `402`. It ships **off** and rolls out `off → shadow → enforce` behind one flag.
 
@@ -24,9 +24,8 @@ raises an `HTTPException` subclass (block). The decision, in order:
    under **shadow** it logs `quota.would_block reason=unattributed` and admits.
 3. **Budget check.** Otherwise compute three exact `Decimal` values and compare:
    - `effective_limit = get_effective_limit(...)` — the S4 limit (see below).
-   - `used = sum_cost_usd(...)` — the payer's spend settled in the trailing
-     24h (`SUM(cost_usd)` over `finished_at > quota_window_start()`), the S3
-     read.
+   - `used = sum_cost_usd(...)` — today's settled spend for this payer
+     (`SUM(cost_usd)` over `finished_at >= start_of_today_utc()`), the S3 read.
    - `reserved = (inflight_count(...) + count) * pending_trial_reservation_usd`
      — a **pessimistic hold** for work that hasn't settled a cost yet. It counts
      both the trials already in flight (`PENDING/QUEUED/RUNNING/RETRYING`, not
