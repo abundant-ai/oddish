@@ -94,13 +94,7 @@ async def get_worker_jobs(
 
 
 async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None:
-    """Fill owner/org display names on a cost breakdown in place.
-
-    The core aggregation in ``oddish`` only knows ``owner_user_id`` /
-    ``org_id`` (the cloud auth tables it can't import). We resolve those to
-    names here. ``include_deleted=True`` keeps historical spend attributable
-    to users/orgs that have since been deactivated.
-    """
+    """Fill in user and org display names on a cost breakdown."""
     user_ids: set[str] = set()
     org_ids: set[str] = set()
     for entry in result.by_user:
@@ -113,10 +107,8 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             user_ids.add(experiment.owner_user_id)
         if experiment.org_id:
             org_ids.add(experiment.org_id)
-    # The by-user chart series keys are owner user ids too (plus the synthetic
-    # "__other__" / "__unattributed__" keys, which carry their own labels).
     for series_key in result.series_by_user.keys:
-        if series_key.key == series_key.label:  # unresolved -> a raw user id
+        if series_key.key == series_key.label:
             user_ids.add(series_key.key)
 
     users: dict[str, UserModel] = {}
@@ -158,7 +150,6 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             experiment.owner_email = user.email
         experiment.org_name = orgs.get(experiment.org_id) if experiment.org_id else None
 
-    # Relabel by-user series keys (raw user ids) with display names.
     for series_key in result.series_by_user.keys:
         user = users.get(series_key.key)
         if user is not None:
@@ -174,14 +165,7 @@ async def get_costs(
     experiment_limit: int = Query(100, ge=1, le=500),
     user_limit: int = Query(100, ge=1, le=500),
 ) -> CostBreakdownResponse:
-    """Global trial-spend breakdown for the admin cost dashboard.
-
-    Reports total cost over fixed trailing windows (24h / 7d / 30d / all-time)
-    plus a per-user breakdown and a ranked table of the most expensive recent
-    experiments with their model mix, for the selected ``window_days`` window.
-    Cost uses the native runtime cost when reported and a per-model token
-    estimate otherwise.
-    """
+    """Return the global billable-spend breakdown for the admin dashboard."""
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         result = await get_cost_breakdown_core(
