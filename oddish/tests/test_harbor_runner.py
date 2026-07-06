@@ -1461,6 +1461,115 @@ def test_run_harbor_trial_async_scopes_azure_env(monkeypatch, tmp_path):
     assert os.environ.get("OPENAI_BASE_URL") is None
 
 
+def _byok_runner_doubles(monkeypatch, seen):
+    class _FakeJob:
+        def __init__(self, config):
+            seen["model_name"] = config["agents"][0].model_name
+            seen["ambient_anthropic"] = os.environ.get("ANTHROPIC_API_KEY")
+            seen["ambient_bedrock"] = os.environ.get("CLAUDE_CODE_USE_BEDROCK")
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
+    )
+    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+
+def test_run_harbor_trial_async_byok_forces_direct_without_platform_key(
+    monkeypatch, tmp_path
+):
+    """A BYOK user key routes claude-code to the direct Anthropic API even when
+    the worker has no platform key. The routing decision reads os.environ, so
+    the user key is surfaced as ambient: the model id follows the direct
+    transport and the baked-in Bedrock creds are blanked, and the agent
+    authenticates with the user's key."""
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    # No platform Anthropic key, but the image bakes in Bedrock.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer")
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    seen: dict[str, object] = {}
+    _byok_runner_doubles(monkeypatch, seen)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            model="global.anthropic.claude-sonnet-4-6",
+            extra_agent_env={"ANTHROPIC_API_KEY": "sk-user-byok"},
+        )
+    )
+
+    assert outcome.error is None
+    # Routed to the direct Anthropic id, not the Bedrock inference-profile id.
+    assert seen["model_name"] == "claude-sonnet-4-6"
+    # The user key was ambient at Job.create and Bedrock was blanked for the run.
+    assert seen["ambient_anthropic"] == "sk-user-byok"
+    assert seen["ambient_bedrock"] == ""
+    # Nothing leaked past the trial: the temporary env was restored.
+    assert os.environ.get("ANTHROPIC_API_KEY") is None
+    assert os.environ.get("CLAUDE_CODE_USE_BEDROCK") == "1"
+
+
+def test_run_harbor_trial_async_no_byok_keeps_bedrock_without_platform_key(
+    monkeypatch, tmp_path
+):
+    """Control: with no BYOK key and no platform key, claude-code still routes to
+    Bedrock. The fix forces direct only when a user key is actually present."""
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setattr(harbor_runner.settings, "claude_code_force_direct_api", True)
+    seen: dict[str, object] = {}
+    _byok_runner_doubles(monkeypatch, seen)
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=tmp_path / "jobs",
+            model="global.anthropic.claude-sonnet-4-6",
+        )
+    )
+
+    assert outcome.error is None
+    assert seen["model_name"] == "global.anthropic.claude-sonnet-4-6"
+    assert seen["ambient_anthropic"] is None
+    assert seen["ambient_bedrock"] == "1"
+
+
 def test_run_harbor_trial_async_checks_temp_root_when_task_patch_needed(
     monkeypatch, tmp_path
 ):

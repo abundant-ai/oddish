@@ -399,6 +399,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "auth",
             "backfill_github_id",
             "cloud_policy",
+            "crypto",
             "dashboard_attribution",
             "dashboard_owner_backfill",
             "endpoints",
@@ -406,6 +407,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "modal_app",
             "models",
             "observability",
+            "statsig_client",
             "worker",
             copy=True,
         )
