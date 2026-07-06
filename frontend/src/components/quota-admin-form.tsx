@@ -84,6 +84,17 @@ function errorMessage(body: unknown): string | undefined {
   return undefined;
 }
 
+async function requestQuotaError(
+  res: Response | null,
+  fallback: string
+): Promise<string | null> {
+  if (res?.ok) return null;
+  if (res?.status === 403) return "Admins only.";
+  if (res?.status === 404) return "Member not found.";
+  const body: unknown = await res?.json().catch(() => null);
+  return errorMessage(body) ?? fallback;
+}
+
 function buildPayload(raw: string): QuotaUpdate | string {
   if (raw.trim() === "") return { limit_usd: null };
   const rounded = Number(Number(raw).toFixed(2));
@@ -98,8 +109,9 @@ export function QuotaAdminForm() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<Record<string, string>>({});
-  const [bumpAmount, setBumpAmount] = useState<Record<string, string>>({});
-  const [bumpDuration, setBumpDuration] = useState<Record<string, string>>({});
+  const [bumpDraft, setBumpDraft] = useState<
+    Record<string, { amount?: string; duration?: string }>
+  >({});
   const [bumpBusy, setBumpBusy] = useState<Record<string, boolean>>({});
   const [bumpError, setBumpError] = useState<Record<string, string>>({});
   const [bumpOpen, setBumpOpen] = useState<Record<string, boolean>>({});
@@ -124,8 +136,6 @@ export function QuotaAdminForm() {
     return <p className="text-muted-foreground text-sm">No members to show.</p>;
   }
 
-  // The editable input tracks the BASE limit (override row or default), not the
-  // effective limit, so saving a draft after a bump never persists base+bump.
   const baseLimit = (member: QuotaMember) =>
     member.base_limit_usd ?? member.limit_usd - (member.bump_usd ?? 0);
   const draftValue = (member: QuotaMember) =>
@@ -172,15 +182,7 @@ export function QuotaAdminForm() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         }).catch(() => null);
-        if (res?.ok) return { id, error: null };
-        const body: unknown = await res?.json().catch(() => null);
-        const message =
-          res?.status === 403
-            ? "Admins only."
-            : res?.status === 404
-              ? "Member not found."
-              : (errorMessage(body) ?? "Could not save limit.");
-        return { id, error: message };
+        return { id, error: await requestQuotaError(res, "Could not save limit.") };
       })
     );
     setSaving(false);
@@ -199,7 +201,7 @@ export function QuotaAdminForm() {
   async function grantBump(member: QuotaMember) {
     const id = member.user_id;
     if (bumpBusy[id]) return;
-    const rounded = Number(Number(bumpAmount[id] ?? "").toFixed(2));
+    const rounded = Number(Number(bumpDraft[id]?.amount ?? "").toFixed(2));
     if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
       setBumpError((p) => ({
         ...p,
@@ -207,7 +209,7 @@ export function QuotaAdminForm() {
       }));
       return;
     }
-    const hours = Number(bumpDuration[id] ?? DEFAULT_BUMP_DURATION);
+    const hours = Number(bumpDraft[id]?.duration ?? DEFAULT_BUMP_DURATION);
     const payload: QuotaBumpCreate = {
       amount_usd: rounded.toFixed(2),
       expires_at: new Date(Date.now() + hours * 3_600_000).toISOString(),
@@ -222,20 +224,14 @@ export function QuotaAdminForm() {
     }).catch(() => null);
     setBumpBusy((p) => ({ ...p, [id]: false }));
 
-    if (res?.ok) {
-      setBumpAmount(({ [id]: _drop, ...rest }) => rest);
-      setBumpOpen((p) => ({ ...p, [id]: false }));
-      void mutate();
+    const message = await requestQuotaError(res, "Could not grant boost.");
+    if (message) {
+      setBumpError((p) => ({ ...p, [id]: message }));
       return;
     }
-    const body: unknown = await res?.json().catch(() => null);
-    const message =
-      res?.status === 403
-        ? "Admins only."
-        : res?.status === 404
-          ? "Member not found."
-          : (errorMessage(body) ?? "Could not grant boost.");
-    setBumpError((p) => ({ ...p, [id]: message }));
+    setBumpDraft(({ [id]: _drop, ...rest }) => rest);
+    setBumpOpen((p) => ({ ...p, [id]: false }));
+    void mutate();
   }
 
   async function revokeBump(member: QuotaMember) {
@@ -248,18 +244,12 @@ export function QuotaAdminForm() {
     }).catch(() => null);
     setBumpBusy((p) => ({ ...p, [id]: false }));
 
-    if (res?.ok) {
-      void mutate();
+    const message = await requestQuotaError(res, "Could not revoke boost.");
+    if (message) {
+      setBumpError((p) => ({ ...p, [id]: message }));
       return;
     }
-    const body: unknown = await res?.json().catch(() => null);
-    const message =
-      res?.status === 403
-        ? "Admins only."
-        : res?.status === 404
-          ? "Member not found."
-          : (errorMessage(body) ?? "Could not revoke boost.");
-    setBumpError((p) => ({ ...p, [id]: message }));
+    void mutate();
   }
 
   return (
@@ -398,16 +388,16 @@ export function QuotaAdminForm() {
                                   inputMode="decimal"
                                   placeholder="50.00"
                                   className="h-8 text-right font-mono text-xs"
-                                  value={bumpAmount[id] ?? ""}
+                                  value={bumpDraft[id]?.amount ?? ""}
                                   disabled={busy}
                                   onChange={(e) => {
                                     const value = e.target.value;
                                     setBumpError(
                                       ({ [id]: _drop, ...rest }) => rest
                                     );
-                                    setBumpAmount((p) => ({
+                                    setBumpDraft((p) => ({
                                       ...p,
-                                      [id]: value,
+                                      [id]: { ...p[id], amount: value },
                                     }));
                                   }}
                                   onKeyDown={(e) => {
@@ -418,12 +408,12 @@ export function QuotaAdminForm() {
                               <div className="space-y-1">
                                 <Label className="text-xs">Duration</Label>
                                 <Select
-                                  value={bumpDuration[id] ?? DEFAULT_BUMP_DURATION}
+                                  value={bumpDraft[id]?.duration ?? DEFAULT_BUMP_DURATION}
                                   disabled={busy}
                                   onValueChange={(value) =>
-                                    setBumpDuration((p) => ({
+                                    setBumpDraft((p) => ({
                                       ...p,
-                                      [id]: value,
+                                      [id]: { ...p[id], duration: value },
                                     }))
                                   }
                                 >

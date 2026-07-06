@@ -1,11 +1,4 @@
-"""Temporary quota bumps: additive, time-boxed boosts on the base 24h limit.
-
-The migration test is static (no DB). Core-helper and admit_trials cases hit
-the real ``oddish.core.quotas`` against the unit DB. Endpoint round-trips use
-FastAPI ``dependency_overrides`` for the admin user-auth; the API-key rejection
-uses a real FULL-scope key (proving the bumps routes reject API keys the same
-way ``require_can_manage_quotas`` does elsewhere).
-"""
+"""Temporary quota bumps: helpers, admission, and the bump endpoints."""
 
 from __future__ import annotations
 
@@ -68,9 +61,6 @@ def _admin_client(app, org_id, admin_user):
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-# --- 1. static migration test: DDL only, CHECK constraint, table, downgrade -----
-
-
 def test_quota_bumps_migration_is_ddl_only():
     migration = (
         Path(__file__).resolve().parents[1]
@@ -89,9 +79,6 @@ def test_quota_bumps_migration_is_ddl_only():
     uppercased = source.upper()
     assert "INSERT INTO" not in uppercased
     assert "UPDATE QUOTA_BUMPS" not in uppercased
-
-
-# --- shared fixture: org + admin + one member ----------------------------------
 
 
 @pytest_asyncio.fixture
@@ -144,9 +131,6 @@ async def _add_bump(
     await session.flush()
 
 
-# --- 2. effective = default + live bump when there is no override row ------------
-
-
 @requires_db
 @pytest.mark.asyncio
 async def test_effective_limit_is_default_plus_live_bump(org_with_member):
@@ -156,9 +140,6 @@ async def test_effective_limit_is_default_plus_live_bump(org_with_member):
         await _add_bump(session, org_id, member_a.id, "25.00", expires_at=future)
         effective = await get_effective_limit(session, org_id, member_a.id)
     assert effective == settings.default_daily_quota_usd + Decimal("25.0000")
-
-
-# --- 3. effective = override + live bump when an override row exists -------------
 
 
 @requires_db
@@ -174,9 +155,6 @@ async def test_effective_limit_is_override_plus_live_bump(org_with_member):
         await _add_bump(session, org_id, member_a.id, "10.00", expires_at=future)
         effective = await get_effective_limit(session, org_id, member_a.id)
     assert effective == Decimal("15.0000")
-
-
-# --- 4. expired/revoked/tombstoned excluded; two live bumps SUM ------------------
 
 
 @requires_db
@@ -218,9 +196,6 @@ async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_me
     assert max_expires is not None
     # MAX expiry is the later of the two live bumps (compare on the second).
     assert abs((max_expires - later).total_seconds()) < 1
-
-
-# --- 5. admit_trials picks up a live bump, then re-blocks once it expires --------
 
 
 @pytest.fixture
@@ -295,9 +270,6 @@ async def test_admit_trials_admits_after_bump_then_blocks_when_expired(
             )
 
 
-# --- 6. POST happy path: effective = base + amount; row persists w/ granter -----
-
-
 @requires_db
 @pytest.mark.asyncio
 async def test_post_bump_happy_path_returns_member_item_and_persists(org_with_member):
@@ -341,9 +313,6 @@ async def test_post_bump_happy_path_returns_member_item_and_persists(org_with_me
     assert len(rows) == 1
     assert rows[0]["granted_by_user_id"] == admin_user.id
     assert rows[0]["reason"] == "launch week"
-
-
-# --- 7. POST auth: FULL API key rejected; non-admin member rejected -------------
 
 
 @pytest_asyncio.fixture
@@ -443,9 +412,6 @@ async def test_bump_routes_reject_non_admin_member_at_the_route():
     assert delete.status_code == 403
 
 
-# --- 8. POST 404 for a user in another org / unknown user -----------------------
-
-
 @requires_db
 @pytest.mark.asyncio
 async def test_post_bump_cross_org_user_is_404(org_with_member):
@@ -489,9 +455,6 @@ async def test_post_bump_cross_org_user_is_404(org_with_member):
                     OrganizationModel.id == other_org_id
                 )
             )
-
-
-# --- 9. POST 400 past; 400 naive; 422 amount <= 0 -------------------------------
 
 
 @requires_db
@@ -550,9 +513,6 @@ async def test_post_bump_422_for_non_positive_amount(org_with_member, bad_amount
     finally:
         app.dependency_overrides.clear()
     assert response.status_code == 422
-
-
-# --- 10. DELETE revokes: GET /quotas shows base again; audit row survives --------
 
 
 @requires_db
@@ -620,9 +580,6 @@ async def test_delete_bump_unknown_member_is_404(org_with_member):
     assert response.status_code == 404
 
 
-# --- 11. GET /quotas members carry base/bump fields; limit_usd includes bumps ----
-
-
 @requires_db
 @pytest.mark.asyncio
 async def test_admin_list_members_carry_base_and_bump_fields(org_with_member):
@@ -650,9 +607,6 @@ async def test_admin_list_members_carry_base_and_bump_fields(org_with_member):
     assert admin_row["bump_usd"] == pytest.approx(0.0)
     assert admin_row["base_limit_usd"] == pytest.approx(100.0)
     assert admin_row["bump_expires_at"] is None
-
-
-# --- 12. GET /quotas/me includes bump fields ------------------------------------
 
 
 @requires_db

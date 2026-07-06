@@ -146,33 +146,56 @@ async def list_users(
 async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
-    used_usd = Decimal(0)
-    reserved = Decimal(0)
-    base_limit_usd = settings.default_daily_quota_usd
-    bump_usd = Decimal(0)
-    bump_expires_at = None
-    if auth.user_id:
-        async with get_session() as session:
-            used_usd = await sum_cost_usd(
-                session, auth.org_id, auth.user_id, quota_window_start()
-            )
-            base_limit_usd = await get_base_limit(session, auth.org_id, auth.user_id)
-            reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
-            bump_usd, bump_expires_at = await live_bump_total(
-                session, auth.org_id, auth.user_id
-            )
-    # Composed from one (base, bump) pair so limit/base/bump stay consistent
-    # even if a concurrent grant/revoke lands between the reads.
+    enforced = settings.quota_mode == QuotaMode.ENFORCE
+    if not auth.user_id:
+        base_limit_usd = settings.default_daily_quota_usd
+        return QuotaUsageResponse(
+            user_id="",
+            limit_usd=float(base_limit_usd),
+            used_usd=0.0,
+            reserved_usd=0.0,
+            enforced=enforced,
+            base_limit_usd=float(base_limit_usd),
+        )
+
+    async with get_session() as session:
+        used_usd, base_limit_usd, bump_usd, bump_expires_at = (
+            await _read_member_quota_fields(session, auth.org_id, auth.user_id)
+        )
+        reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
+
     return QuotaUsageResponse(
-        user_id=auth.user_id or "",
+        user_id=auth.user_id,
         limit_usd=float(base_limit_usd + bump_usd),
         used_usd=float(used_usd),
         reserved_usd=float(reserved),
-        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+        enforced=enforced,
         base_limit_usd=float(base_limit_usd),
         bump_usd=float(bump_usd),
         bump_expires_at=bump_expires_at.isoformat() if bump_expires_at else None,
     )
+
+
+async def _get_member_or_404(session, org_id: str | None, user_id: str) -> UserModel:
+    member = (
+        await session.execute(
+            select(UserModel).where(
+                UserModel.id == user_id, UserModel.org_id == org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(
+            status_code=404, detail=f"User {user_id} not found in this org"
+        )
+    return member
+
+
+async def _read_member_quota_fields(session, org_id: str | None, user_id: str):
+    used_usd = await sum_cost_usd(session, org_id, user_id, quota_window_start())
+    base_limit_usd = await get_base_limit(session, org_id, user_id)
+    bump_usd, bump_expires_at = await live_bump_total(session, org_id, user_id)
+    return used_usd, base_limit_usd, bump_usd, bump_expires_at
 
 
 def _quota_member_item(
@@ -194,6 +217,17 @@ def _quota_member_item(
         base_limit_usd=float(base_limit_usd),
         bump_usd=float(bump_usd),
         bump_expires_at=bump_expires_at.isoformat() if bump_expires_at else None,
+    )
+
+
+def _member_item_from_fields(member, fields) -> QuotaMemberItem:
+    used_usd, base_limit_usd, bump_usd, bump_expires_at = fields
+    return _quota_member_item(
+        member,
+        base_limit_usd=base_limit_usd,
+        used_usd=used_usd,
+        bump_usd=bump_usd,
+        bump_expires_at=bump_expires_at,
     )
 
 
@@ -256,17 +290,7 @@ async def set_member_quota(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaMemberItem:
     async with get_session() as session:
-        member = (
-            await session.execute(
-                select(UserModel).where(
-                    UserModel.id == user_id, UserModel.org_id == auth.org_id
-                )
-            )
-        ).scalar_one_or_none()
-        if member is None:
-            raise HTTPException(
-                status_code=404, detail=f"User {user_id} not found in this org"
-            )
+        member = await _get_member_or_404(session, auth.org_id, user_id)
 
         if payload.limit_usd is None:
             await session.execute(
@@ -286,10 +310,8 @@ async def set_member_quota(
                 )
                 .on_conflict_do_update(
                     index_elements=["org_id", "user_id"],
-                    # Clear deleted_at too: get_effective_limit / the admin list
-                    # only read live rows, so a PUT over a tombstoned override
-                    # must revive it or the new limit would store but never
-                    # enforce (the (org_id,user_id) unique index spans all rows).
+                    # Revive a tombstoned override: the (org_id, user_id) unique
+                    # index spans all rows, and only live rows are read.
                     set_={
                         "limit_usd": payload.limit_usd,
                         "updated_at": utcnow(),
@@ -298,21 +320,9 @@ async def set_member_quota(
                 )
             )
 
-        used_usd = await sum_cost_usd(
-            session, auth.org_id, user_id, quota_window_start()
-        )
-        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
-        bump_usd, bump_expires_at = await live_bump_total(
-            session, auth.org_id, user_id
-        )
+        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
 
-    return _quota_member_item(
-        member,
-        base_limit_usd=base_limit_usd,
-        used_usd=used_usd,
-        bump_usd=bump_usd,
-        bump_expires_at=bump_expires_at,
-    )
+    return _member_item_from_fields(member, fields)
 
 
 @router.post("/quotas/{user_id}/bumps", response_model=QuotaMemberItem)
@@ -323,9 +333,8 @@ async def add_member_quota_bump(
 ) -> QuotaMemberItem:
     """Grant a member a temporary additive quota boost.
 
-    Bumps stack (SUM of live rows) on top of the base limit and expire at
-    read time (``expires_at > NOW()``), so there is no revert job. Requires a
-    tz-aware, future ``expires_at``.
+    Bumps stack (SUM of live rows) and expire at read time
+    (``expires_at > NOW()``), so there is no revert job.
     """
     expires_at = payload.expires_at
     if expires_at.tzinfo is None or expires_at.utcoffset() is None:
@@ -334,21 +343,10 @@ async def add_member_quota_bump(
         )
 
     async with get_session() as session:
-        member = (
-            await session.execute(
-                select(UserModel).where(
-                    UserModel.id == user_id, UserModel.org_id == auth.org_id
-                )
-            )
-        ).scalar_one_or_none()
-        if member is None:
-            raise HTTPException(
-                status_code=404, detail=f"User {user_id} not found in this org"
-            )
+        member = await _get_member_or_404(session, auth.org_id, user_id)
 
-        # Liveness reads compare against the DB clock (expires_at > NOW()), so
-        # validate "future" on the same clock: a grant accepted here must be
-        # live for at least an instant regardless of app/DB clock skew.
+        # Validate "future" on the DB clock, the same clock the liveness reads
+        # use, so an accepted grant is live regardless of app/DB skew.
         db_now = await session.scalar(sa_text("SELECT NOW()"))
         if expires_at <= db_now:
             raise HTTPException(
@@ -367,22 +365,9 @@ async def add_member_quota_bump(
             )
         )
         await session.flush()
+        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
 
-        used_usd = await sum_cost_usd(
-            session, auth.org_id, user_id, quota_window_start()
-        )
-        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
-        bump_usd, bump_expires_at = await live_bump_total(
-            session, auth.org_id, user_id
-        )
-
-    return _quota_member_item(
-        member,
-        base_limit_usd=base_limit_usd,
-        used_usd=used_usd,
-        bump_usd=bump_usd,
-        bump_expires_at=bump_expires_at,
-    )
+    return _member_item_from_fields(member, fields)
 
 
 @router.delete("/quotas/{user_id}/bumps", response_model=QuotaMemberItem)
@@ -390,23 +375,9 @@ async def revoke_member_quota_bumps(
     user_id: str,
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaMemberItem:
-    """Revoke ALL live bumps for a member (idempotent no-op when none).
-
-    Stamps ``revoked_at`` on live rows only; the audit rows survive. The
-    member reverts to the base limit at read time.
-    """
+    """Revoke all live bumps for a member (idempotent); audit rows survive."""
     async with get_session() as session:
-        member = (
-            await session.execute(
-                select(UserModel).where(
-                    UserModel.id == user_id, UserModel.org_id == auth.org_id
-                )
-            )
-        ).scalar_one_or_none()
-        if member is None:
-            raise HTTPException(
-                status_code=404, detail=f"User {user_id} not found in this org"
-            )
+        member = await _get_member_or_404(session, auth.org_id, user_id)
 
         await session.execute(
             update(QuotaBumpModel)
@@ -420,22 +391,9 @@ async def revoke_member_quota_bumps(
             .values(revoked_at=utcnow(), updated_at=utcnow())
         )
         await session.flush()
+        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
 
-        used_usd = await sum_cost_usd(
-            session, auth.org_id, user_id, quota_window_start()
-        )
-        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
-        bump_usd, bump_expires_at = await live_bump_total(
-            session, auth.org_id, user_id
-        )
-
-    return _quota_member_item(
-        member,
-        base_limit_usd=base_limit_usd,
-        used_usd=used_usd,
-        bump_usd=bump_usd,
-        bump_expires_at=bump_expires_at,
-    )
+    return _member_item_from_fields(member, fields)
 
 
 @router.post("/users", response_model=InviteUserResponse)

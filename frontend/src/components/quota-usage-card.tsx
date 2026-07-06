@@ -20,9 +20,9 @@ export function QuotaUsageCard() {
   const reserved = data?.reserved_usd ?? 0;
   const limit = data?.limit_usd ?? 0;
   const bump = data?.bump_usd ?? 0;
-  const pct =
-    limit > 0 ? Math.min(100, ((used + reserved) / limit) * 100) : data ? 100 : 0;
-  const over = limit <= 0 || used + reserved >= limit;
+  const total = used + reserved;
+  const pct = limit > 0 ? Math.min(100, (total / limit) * 100) : data ? 100 : 0;
+  const over = limit <= 0 || total >= limit;
   const blocked = over && data?.enforced === true;
 
   return (

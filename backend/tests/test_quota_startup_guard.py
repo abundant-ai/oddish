@@ -16,8 +16,6 @@ from oddish.config import QuotaMode, settings
 
 
 def test_guard_sql_checks_all_quota_schema_objects():
-    """The guard's single scalar query must probe every schema object the
-    admission path needs: the trials column and both backend tables."""
     source = inspect.getsource(app_module._assert_quota_schema_or_force_off)
     assert "billed_user_id" in source
     assert "'quotas'" in source

@@ -41,19 +41,12 @@ class UserResponse(BaseModel):
 
 class QuotaUsageResponse(BaseModel):
     user_id: str
-    # Effective limit: base (default or override) + live temporary bumps.
     limit_usd: float
     used_usd: float
-    # In-flight trial reservations; admission blocks when used + reserved >= limit.
     reserved_usd: float = 0
-    # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
-    # enforce). False under off/shadow, so the UI must not claim runs are blocked.
     enforced: bool = False
-    # Base limit (override row or org default), before any bumps.
     base_limit_usd: float = 0
-    # SUM of the caller's live temporary bump amounts (0 when none).
     bump_usd: float = 0
-    # ISO datetime of the latest live bump expiry, or null when no live bump.
     bump_expires_at: str | None = None
 
 
@@ -63,14 +56,10 @@ class QuotaMemberItem(BaseModel):
     name: str | None
     github_username: str | None
     role: str
-    # Effective limit: base + live bumps.
     limit_usd: float
     used_usd: float
-    # Base limit (override row or org default), before any bumps.
     base_limit_usd: float = 0
-    # SUM of live bump amounts (0 when none).
     bump_usd: float = 0
-    # ISO datetime of the latest live bump expiry, or null when no live bump.
     bump_expires_at: str | None = None
 
 

@@ -400,11 +400,10 @@ tables exist and otherwise forces `off` (fail-safe, never a silent SUM
 fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
 `ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
 
-**Temporary quota bumps.** An org admin can grant a member `+$X until <ts>` via
-`POST /quotas/{user_id}/bumps`; the grant is a `quota_bumps` row and the
-effective limit becomes `base + SUM(live bumps)` (grants stack). Expiry is
-resolved at read time (`expires_at > NOW()` on the DB clock — no scheduler or
-revert job), and `DELETE /quotas/{user_id}/bumps` revokes all of a member's live
-bumps by stamping `revoked_at` (the audit row survives). After a bump expires
-the member's spend still counts in the rolling window, so they may block at the
-base limit — that is intended.
+**Temporary quota bumps.** `POST /quotas/{user_id}/bumps` grants `+amount_usd`
+until `expires_at`; `DELETE /quotas/{user_id}/bumps` revokes a member's live
+bumps by stamping `revoked_at` (audit rows survive). Effective limit is
+`base + SUM(live bumps)` where live means `revoked_at IS NULL`, `deleted_at IS
+NULL`, and `expires_at > NOW()` (read-time expiry on the DB clock — no scheduler
+or revert job). After a bump expires the member's spend still counts in the
+rolling window, so they may block at the base limit — that is intended.

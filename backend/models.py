@@ -198,13 +198,9 @@ class QuotaModel(TimestampedMixin, Base):
 class QuotaBumpModel(TimestampedMixin, Base):
     """A temporary additive boost to a user's 24h dollar limit.
 
-    Each live row grants ``+amount_usd`` on top of the member's base limit
-    (default or ``QuotaModel`` override) until ``expires_at``; expiry is
-    resolved at READ time (``expires_at > NOW()`` on the DB clock), so there is
-    no scheduler. Grants stack (SUM of live rows). Revocation stamps
-    ``revoked_at`` and leaves the audit row in place. Like ``QuotaModel`` this
-    is deliberately NOT registered for soft delete: every read spells out
-    ``revoked_at IS NULL`` / ``deleted_at IS NULL`` / ``expires_at > NOW()``.
+    Like ``QuotaModel``, deliberately NOT registered for soft delete: every
+    read spells out ``revoked_at IS NULL`` / ``deleted_at IS NULL`` /
+    ``expires_at > NOW()`` instead.
     """
 
     __tablename__ = "quota_bumps"

@@ -125,18 +125,15 @@ async def inflight_reserved_usd(
 async def live_bump_total(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> tuple[Decimal, datetime | None]:
-    """Return (SUM of live bump amounts, MAX expiry) for a member.
+    """Live bump sum and max expiry for one user.
 
-    A bump is "live" when it is not revoked, not tombstoned, and not yet
-    expired on the DB clock (``expires_at > NOW()``). Cross-package read:
-    ``oddish`` must not import backend models, so this is raw ``text()`` SQL
-    mirroring ``get_effective_limit``'s read of ``quotas``.
+    Raw text SQL because oddish must not import backend models.
     """
-    row = (
+    total, max_expires_at = (
         await session.execute(
             text(
-                "SELECT COALESCE(SUM(amount_usd), 0) AS total, "
-                "MAX(expires_at) AS max_expires_at FROM quota_bumps "
+                "SELECT COALESCE(SUM(amount_usd), 0), MAX(expires_at) "
+                "FROM quota_bumps "
                 "WHERE org_id = :org_id AND user_id = :user_id "
                 "AND revoked_at IS NULL AND deleted_at IS NULL "
                 "AND expires_at > NOW()"
@@ -144,17 +141,17 @@ async def live_bump_total(
             {"org_id": org_id, "user_id": user_id},
         )
     ).one()
-    return to_money_decimal(row.total), row.max_expires_at
+    return to_money_decimal(total), max_expires_at
 
 
 async def live_bump_totals_by_user(
     session: AsyncSession, org_id: str | None
 ) -> dict[str, tuple[Decimal, datetime | None]]:
-    """Bulk (SUM, MAX expiry) of live bumps per user for the admin list."""
+    """Live bump sum and max expiry per user, for the admin list."""
     rows = await session.execute(
         text(
-            "SELECT user_id, COALESCE(SUM(amount_usd), 0) AS total, "
-            "MAX(expires_at) AS max_expires_at FROM quota_bumps "
+            "SELECT user_id, COALESCE(SUM(amount_usd), 0), MAX(expires_at) "
+            "FROM quota_bumps "
             "WHERE org_id = :org_id AND revoked_at IS NULL "
             "AND deleted_at IS NULL AND expires_at > NOW() "
             "GROUP BY user_id"
