@@ -546,6 +546,10 @@ class TaskModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Audit-only: API key that submitted this task (NULL for JWT/OSS). Billing
+    # still follows trials.billed_user_id, never this.
+    api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     user: Mapped[str] = mapped_column(String(255), nullable=False)
     priority: Mapped[Priority] = mapped_column(
         SQLEnum(Priority), default=Priority.LOW, nullable=False
