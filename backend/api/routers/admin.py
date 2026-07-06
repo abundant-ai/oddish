@@ -189,7 +189,7 @@ async def get_user_costs(
     ),
     task_limit: int = Query(100, ge=1, le=500),
 ) -> UserCostBreakdownResponse:
-    """Per-user billed-spend drilldown (settled quota-basis; finished_at axis)."""
+    """Per-user billed spend over settled trials (finished_at axis, estimate-priced)."""
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         user = await session.get(

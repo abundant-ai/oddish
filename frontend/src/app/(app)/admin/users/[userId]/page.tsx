@@ -235,8 +235,10 @@ export default function AdminUserCostPage({
           {data?.email && <span>{data.email}</span>}
         </div>
         <p className="text-muted-foreground text-xs">
-          Billed-user attribution — spend billed to this user. Totals can
-          differ from the Costs tab, which attributes by experiment owner.
+          Spend billed to this user, summed over settled trials (deleted runs
+          included) by finish time. Totals can differ from the Costs tab
+          (submission-time axis, live trials only) and from the quota Used
+          figure (which floors unpriced trials instead of estimating).
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
