@@ -1052,6 +1052,18 @@ async def _execute_trial(
     return TrialExecutionResult(outcome=outcome, execution_error=execution_error)
 
 
+def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
+    """Whether the trial runs on the out-of-process (custom-Harbor) engine.
+
+    Mirrors the runner's own fork on ``variant_id``. BYOK is honored only
+    in-process: the ephemeral child builds its agent from the raw trial model
+    without the direct/Bedrock normalization a user key needs, and it serializes
+    the agent env into a payload.json under the uploaded job dir. So a user key
+    must not be resolved for these trials -- they keep the platform credentials.
+    """
+    return (harbor_config or {}).get("variant_id") == "ephemeral"
+
+
 async def run_trial_job(
     trial_id: str,
     queue_key: str,
@@ -1180,9 +1192,13 @@ async def run_trial_job(
 
     # Per-user BYOK: when the owner has a stored key and the Statsig gate is on,
     # layer it under any probe creds. Fully fail-open -- resolve_byok returns
-    # None (so the trial keeps the platform key) on anything unexpected.
+    # None (so the trial keeps the platform key) on anything unexpected. Skipped
+    # for the ephemeral engine, which can neither route nor safely persist a user
+    # key (see _harbor_config_is_ephemeral).
     byok_resolution = None
-    if byok.byok_resolver_registered():
+    if byok.byok_resolver_registered() and not _harbor_config_is_ephemeral(
+        prepared_trial.trial_harbor_config
+    ):
         byok_resolution = await byok.resolve_byok(
             owner_user_id=prepared_trial.created_by_user_id,
             org_id=prepared_trial.org_id,
