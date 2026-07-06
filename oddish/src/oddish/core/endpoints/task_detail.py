@@ -123,10 +123,14 @@ async def get_task_detail_core(
         session, task_id=task_id, org_id=org_id, task=task
     )
 
+    billed_trial_ids = {
+        t.id for t in all_trial_models if t.billed_user_id is not None
+    }
     totals, versions_sorted = _aggregate_task_detail_rollups(
         trials=task_status.trials or [],
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
+        billed_trial_ids=billed_trial_ids,
     )
 
     # Version-scoped experiments: which experiments ran non-probe trials
@@ -233,6 +237,7 @@ def _aggregate_task_detail_rollups(
     trials,
     version_rows,
     current_version_id: str | None,
+    billed_trial_ids: set[str] | None = None,
 ) -> tuple[TaskCostTotals, list[TaskVersionSummary]]:
     """Fold trials into a task-wide cost rollup + per-version summaries.
 
@@ -250,9 +255,11 @@ def _aggregate_task_detail_rollups(
         for v in version_rows
     }
 
+    billed_ids = billed_trial_ids or set()
     totals = TaskCostTotals()
     for trial in trials:
         totals.total_trials += 1
+        is_billed = trial.id in billed_ids
         if trial.cost_usd is not None:
             totals.cost_usd += trial.cost_usd
             totals.cost_trial_count += 1
@@ -260,6 +267,13 @@ def _aggregate_task_detail_rollups(
                 totals.cost_has_estimated = True
             else:
                 totals.cost_has_native = True
+            if is_billed:
+                totals.billed_cost_usd += trial.cost_usd
+                totals.billed_trial_count += 1
+                if trial.cost_is_estimated:
+                    totals.billed_has_estimated = True
+                else:
+                    totals.billed_has_native = True
 
         bucket = summary_by_version_id.get(trial.task_version_id or "")
         if bucket is None:
@@ -294,6 +308,13 @@ def _aggregate_task_detail_rollups(
                 bucket.cost_has_estimated = True
             else:
                 bucket.cost_has_native = True
+            if is_billed:
+                bucket.billed_cost_usd += trial.cost_usd
+                bucket.billed_trial_count += 1
+                if trial.cost_is_estimated:
+                    bucket.billed_has_estimated = True
+                else:
+                    bucket.billed_has_native = True
 
         candidate = trial.finished_at or trial.started_at or trial.created_at
         if candidate is not None and (

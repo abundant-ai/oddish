@@ -860,9 +860,9 @@ export function TaskDetailClient({
           }
         />
 
-        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
+        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
           <KpiTile
-            label="Total spent (all versions)"
+            label="Total cost (all versions)"
             hint={
               totals && totals.cost_trial_count > 0
                 ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
@@ -876,6 +876,24 @@ export function TaskDetailClient({
               trialCount={totals?.cost_trial_count ?? 0}
               hasEstimated={totals?.cost_has_estimated ?? false}
               hasNative={totals?.cost_has_native ?? false}
+              size="lg"
+            />
+          </KpiTile>
+          <KpiTile
+            label="Billed spend"
+            hint={
+              totals && totals.billed_trial_count > 0
+                ? `${totals.billed_trial_count} billed trial${
+                    totals.billed_trial_count === 1 ? "" : "s"
+                  }`
+                : "no billed trials"
+            }
+          >
+            <CostBadge
+              cost={totals?.billed_cost_usd ?? 0}
+              trialCount={totals?.billed_trial_count ?? 0}
+              hasEstimated={totals?.billed_has_estimated ?? false}
+              hasNative={totals?.billed_has_native ?? false}
               size="lg"
             />
           </KpiTile>
