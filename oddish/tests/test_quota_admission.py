@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -86,9 +86,6 @@ async def _settle(task_id, index, cost_usd, *, now=None):
         trial.cost_usd = cost_usd
 
 
-# --- S5-T1: blocks at exactly limit_usd; admits just under (Decimal boundary) ---
-
-
 @pytest.mark.asyncio
 async def test_admit_blocks_at_exactly_the_cap(cleanup_task_ids):
     org_id = f"org-adm-{_RUN}-a"
@@ -122,7 +119,29 @@ async def test_admit_allows_just_under_the_cap(cleanup_task_ids):
         await admit_trials(session, org_id, billed_user, count=1)
 
 
-# --- S5-T2: unattributed -> 403 in enforce, silent in shadow ------------------
+@pytest.mark.asyncio
+async def test_admit_ignores_spend_finished_at_the_rolling_boundary(
+    cleanup_task_ids, monkeypatch
+):
+    org_id = f"org-adm-{_RUN}-boundary"
+    billed_user = f"user-adm-{_RUN}-boundary"
+    task_id = await _make_billed_task(
+        cleanup_task_ids, n_trials=2, billed_user=billed_user, org_id=org_id
+    )
+    boundary = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "oddish.core.quota_admission.quota_window_start", lambda: boundary
+    )
+    await _settle(task_id, 0, 0.30, now=boundary)
+
+    async with get_session() as session:
+        await admit_trials(session, org_id, billed_user, count=1)
+
+    await _settle(task_id, 1, 0.30, now=boundary + timedelta(microseconds=1))
+
+    async with get_session() as session:
+        with pytest.raises(QuotaExceeded):
+            await admit_trials(session, org_id, billed_user, count=1)
 
 
 @pytest.mark.asyncio
@@ -138,9 +157,6 @@ async def test_null_billed_user_is_silent_in_shadow(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
     async with get_session() as session:
         await admit_trials(session, "org-x", None, count=1)
-
-
-# --- S5-T3: off is a no-op; OSS (org_id None) is a no-op ----------------------
 
 
 @pytest.mark.asyncio
@@ -162,9 +178,6 @@ async def test_oss_org_none_never_blocks():
         await admit_trials(session, None, None, count=5)
 
 
-# --- S5-T4: a missing quota row enforces at the default -----------------------
-
-
 @pytest.mark.asyncio
 async def test_missing_quota_row_enforces_at_default(cleanup_task_ids):
     org_id = f"org-adm-{_RUN}-d"
@@ -172,14 +185,11 @@ async def test_missing_quota_row_enforces_at_default(cleanup_task_ids):
     task_id = await _make_billed_task(
         cleanup_task_ids, n_trials=1, billed_user=billed_user, org_id=org_id
     )
-    await _settle(task_id, 0, 0.50)  # over the 0.30 default, no quota row exists
+    await _settle(task_id, 0, 0.50)
 
     async with get_session() as session:
         with pytest.raises(QuotaExceeded):
             await admit_trials(session, org_id, billed_user, count=1)
-
-
-# --- S5-T5: in-flight trials add to the reservation ---------------------------
 
 
 @pytest.mark.asyncio
@@ -187,27 +197,20 @@ async def test_inflight_trials_count_toward_reservation(cleanup_task_ids, monkey
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.20"))
     org_id = f"org-adm-{_RUN}-e"
     billed_user = f"user-adm-{_RUN}-e"
-    # two QUEUED (in-flight, finished_at NULL) trials, no settled spend
     await _make_billed_task(
         cleanup_task_ids, n_trials=2, billed_user=billed_user, org_id=org_id
     )
     async with get_session() as session:
-        # used=0, reserved=(inflight 2 + count 1) * 0.20 = 0.60 >= 0.30 default
         with pytest.raises(QuotaExceeded) as raised:
             await admit_trials(session, org_id, billed_user, count=1)
     assert raised.value.detail["reserved_usd"] == pytest.approx(0.60)
-
-
-# --- concurrent same-payer admissions serialize on the advisory lock ----------
 
 
 @pytest.mark.asyncio
 async def test_concurrent_admissions_serialize_on_the_payer_lock(
     cleanup_task_ids, monkeypatch
 ):
-    """A admits + inserts but hasn't committed; B (same payer) must wait on the
-    advisory xact lock and then see A's inflight row -> 402. Without the lock B
-    reads pre-commit state (0 inflight) and both submissions pass."""
+    """Same-payer submissions wait their turn."""
     monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.20"))
     org_id = f"org-adm-{_RUN}-f"
     billed_user = f"user-adm-{_RUN}-f"
@@ -219,7 +222,6 @@ async def test_concurrent_admissions_serialize_on_the_payer_lock(
 
     async def first_submission():
         async with get_session() as session:
-            # reserved=(0 inflight + 1) * 0.20 = 0.20 < 0.30 default -> admitted
             await admit_trials(session, org_id, billed_user, count=1)
             await create_task(
                 session,
@@ -231,23 +233,18 @@ async def test_concurrent_admissions_serialize_on_the_payer_lock(
             await session.flush()
             a_admitted.set()
             await a_release.wait()
-        # get_session commits on exit, releasing the xact lock
 
     async def second_submission():
         async with get_session() as session:
-            # reserved=(1 inflight + 1) * 0.20 = 0.40 >= 0.30 -> blocked
             with pytest.raises(QuotaExceeded):
                 await admit_trials(session, org_id, billed_user, count=1)
 
     first = asyncio.create_task(first_submission())
     await asyncio.wait_for(a_admitted.wait(), timeout=10)
     second = asyncio.create_task(second_submission())
-    await asyncio.sleep(0.2)  # let B reach (and block on) the advisory lock
+    await asyncio.sleep(0.2)
     a_release.set()
     await asyncio.wait_for(asyncio.gather(first, second), timeout=30)
-
-
-# --- acquire_payer_lock: escape hatches mirror admit_trials -------------------
 
 
 class _RecordingSession:
@@ -269,16 +266,13 @@ async def test_acquire_payer_lock_escape_hatches(monkeypatch):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
     await acquire_payer_lock(recording, None, "user-x")
     await acquire_payer_lock(recording, "org-x", None)
-    assert recording.calls == []  # OFF / SHADOW / no org / no payer never lock
+    assert recording.calls == []
 
     await acquire_payer_lock(recording, "org-x", "user-x")
     assert len(recording.calls) == 1
     sql, params = recording.calls[0]
     assert "pg_advisory_xact_lock" in sql
     assert params == {"k": "quota:org-x:user-x"}
-
-
-# --- M4: an in-flight retry's accumulated cost reserves at full value ---------
 
 
 @pytest.mark.asyncio
@@ -294,10 +288,9 @@ async def test_retrying_attempt_cost_counts_toward_reservation(
     async with get_session() as session:
         retrying = await session.get(TrialModel, f"{task_id}-0")
         retrying.status = TrialStatus.RETRYING
-        retrying.cost_usd = 3.0  # attempt-1 burn, preserved across re-claim
+        retrying.cost_usd = 3.0
 
     async with get_session() as session:
-        # reserved = max(3.00, 0.20) inflight + 1 * 0.20 = 3.20 >= 0.30 default
         with pytest.raises(QuotaExceeded) as raised:
             await admit_trials(session, org_id, billed_user, count=1)
     assert raised.value.detail["reserved_usd"] == pytest.approx(3.20)

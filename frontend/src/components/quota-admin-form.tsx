@@ -32,7 +32,6 @@ const memberLabel = (member: QuotaMember) =>
 
 const MAX_LIMIT_USD = 99999999.9999;
 
-// Collapse backend error shapes (string detail, FastAPI detail array, error) into one string.
 function errorMessage(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;
   const b = body as { detail?: unknown; error?: unknown };
@@ -51,11 +50,8 @@ function errorMessage(body: unknown): string | undefined {
   return undefined;
 }
 
-// Returns the payload for one dirty row, or an error string if invalid.
 function buildPayload(raw: string): QuotaUpdate | string {
   if (raw.trim() === "") return { limit_usd: null };
-  // Validate the 2dp value actually sent, not the raw parse (e.g. 0.001
-  // parses > 0 but rounds to "0.00", which the backend rejects).
   const rounded = Number(Number(raw).toFixed(2));
   if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
     return "Enter an amount greater than 0, or leave empty to reset.";
@@ -112,7 +108,6 @@ export function QuotaAdminForm() {
   async function saveAll() {
     if (saving || dirtyMembers.length === 0) return;
 
-    // Validate every dirty row before sending anything.
     const payloads = new Map<string, QuotaUpdate>();
     const errors: Record<string, string> = {};
     for (const member of dirtyMembers) {
@@ -121,8 +116,6 @@ export function QuotaAdminForm() {
       else payloads.set(member.user_id, result);
     }
     if (Object.keys(errors).length > 0) {
-      // Merge instead of replace so a row that failed its last save keeps
-      // its error while an unrelated row fails validation.
       setRowError((prev) => ({ ...prev, ...errors }));
       return;
     }
@@ -154,7 +147,6 @@ export function QuotaAdminForm() {
       if (err) failed[id] = err;
     }
     setRowError(failed);
-    // Keep only failed drafts so successful rows show fresh server values.
     setDrafts((d) =>
       Object.fromEntries(Object.entries(d).filter(([id]) => id in failed))
     );
@@ -170,10 +162,10 @@ export function QuotaAdminForm() {
               <TableHead className="h-9 text-xs">Member</TableHead>
               <TableHead className="h-9 w-24 text-xs">Role</TableHead>
               <TableHead className="h-9 w-44 text-right text-xs">
-                Used today
+                Used (24h)
               </TableHead>
               <TableHead className="h-9 w-36 text-right text-xs">
-                Daily limit
+                Limit (per 24h)
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -239,7 +231,7 @@ export function QuotaAdminForm() {
                         min={0}
                         step="0.01"
                         inputMode="decimal"
-                        aria-label={`Daily limit for ${memberLabel(member)}`}
+                        aria-label={`24-hour limit for ${memberLabel(member)}`}
                         aria-invalid={err ? true : undefined}
                         className={`h-8 w-28 text-right font-mono text-xs ${
                           err
