@@ -17,11 +17,9 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from api.routers.orgs import add_member_quota_bump, revoke_member_quota_bumps
 from auth import require_can_manage_quotas
 from auth.types import AuthContext, AuthMethod
 from models import (
@@ -130,7 +128,7 @@ async def org_with_member():
 
 
 async def _add_bump(
-    session, org_id, user_id, amount, *, expires_at, revoked_at=None
+    session, org_id, user_id, amount, *, expires_at, revoked_at=None, deleted_at=None
 ):
     session.add(
         QuotaBumpModel(
@@ -140,6 +138,7 @@ async def _add_bump(
             amount_usd=Decimal(str(amount)),
             expires_at=expires_at,
             revoked_at=revoked_at,
+            deleted_at=deleted_at,
         )
     )
     await session.flush()
@@ -177,7 +176,7 @@ async def test_effective_limit_is_override_plus_live_bump(org_with_member):
     assert effective == Decimal("15.0000")
 
 
-# --- 4. expired excluded; revoked excluded; two live bumps SUM ------------------
+# --- 4. expired/revoked/tombstoned excluded; two live bumps SUM ------------------
 
 
 @requires_db
@@ -198,6 +197,16 @@ async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_me
             "200.00",
             expires_at=future,
             revoked_at=utcnow(),
+        )
+        # Tombstoned (deleted_at): not counted -- QuotaBumpModel is not
+        # soft-delete-registered, so only the explicit SQL predicate hides it.
+        await _add_bump(
+            session,
+            org_id,
+            member_a.id,
+            "400.00",
+            expires_at=future,
+            deleted_at=utcnow(),
         )
         # Two live bumps: SUM, MAX(expires_at).
         await _add_bump(session, org_id, member_a.id, "7.00", expires_at=future)
@@ -403,16 +412,35 @@ async def test_delete_bump_rejects_full_api_key(org_with_full_key):
 
 
 @pytest.mark.asyncio
-async def test_bump_routes_reject_non_admin_member():
-    """Both bump routes gate on ``require_can_manage_quotas`` (admin-only)."""
-    member_auth = _user_auth(org_id="org-1", user_id="u1", role=UserRole.MEMBER)
-    for handler in (add_member_quota_bump, revoke_member_quota_bumps):
-        with pytest.raises(HTTPException) as raised:
-            await require_can_manage_quotas(member_auth)
-        assert raised.value.status_code == 403
-    # Sanity: the handlers are wired (referenced) so the import can't silently
-    # drop; the guard behavior above is what the routes enforce.
-    assert callable(add_member_quota_bump) and callable(revoke_member_quota_bumps)
+async def test_bump_routes_reject_non_admin_member_at_the_route():
+    """Route-level guard: a MEMBER request 403s before either handler runs.
+
+    Overrides only ``require_auth`` (the sub-dependency) so the REAL
+    ``require_can_manage_quotas`` runs -- if a bump route dropped that
+    dependency, the request would reach the handler and this test would fail.
+    """
+    from auth import require_auth
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: _user_auth(
+        org_id="org-1", user_id="u1", role=UserRole.MEMBER
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            post = await client.post(
+                "/quotas/u2/bumps",
+                json={
+                    "amount_usd": "5.00",
+                    "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
+                },
+            )
+            delete = await client.delete("/quotas/u2/bumps")
+    finally:
+        app.dependency_overrides.clear()
+    assert post.status_code == 403
+    assert delete.status_code == 403
 
 
 # --- 8. POST 404 for a user in another org / unknown user -----------------------
@@ -652,6 +680,7 @@ async def test_quotas_me_includes_bump_fields(org_with_member):
     assert response.status_code == 200
     body = response.json()
     assert body["user_id"] == member_a.id
+    assert body["base_limit_usd"] == pytest.approx(100.0)
     assert body["bump_usd"] == pytest.approx(15.0)
     assert body["limit_usd"] == pytest.approx(115.0)
     assert body["bump_expires_at"] is not None

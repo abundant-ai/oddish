@@ -167,9 +167,10 @@ async def live_bump_totals_by_user(
     }
 
 
-async def get_effective_limit(
+async def get_base_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:
+    """Base 24h limit: the ``quotas`` override row or the org default."""
     override_limit_usd = await session.scalar(
         text(
             "SELECT limit_usd FROM quotas "
@@ -178,10 +179,14 @@ async def get_effective_limit(
         ),
         {"org_id": org_id, "user_id": user_id},
     )
-    base_limit_usd = (
-        settings.default_daily_quota_usd
-        if override_limit_usd is None
-        else Decimal(str(override_limit_usd))
-    )
+    if override_limit_usd is None:
+        return settings.default_daily_quota_usd
+    return Decimal(str(override_limit_usd))
+
+
+async def get_effective_limit(
+    session: AsyncSession, org_id: str | None, user_id: str
+) -> Decimal:
+    base_limit_usd = await get_base_limit(session, org_id, user_id)
     bump_total, _ = await live_bump_total(session, org_id, user_id)
     return base_limit_usd + bump_total

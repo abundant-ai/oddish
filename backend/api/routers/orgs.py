@@ -8,6 +8,7 @@ from typing import Annotated
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from api.schemas import (
@@ -32,7 +33,7 @@ from auth.verification import invalidate_cached_clerk_auth
 from oddish.config import QuotaMode, settings
 from models import QuotaBumpModel, QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import (
-    get_effective_limit,
+    get_base_limit,
     inflight_reserved_usd,
     live_bump_total,
     live_bump_totals_by_user,
@@ -147,7 +148,7 @@ async def get_my_quota_usage(
 ) -> QuotaUsageResponse:
     used_usd = Decimal(0)
     reserved = Decimal(0)
-    effective_limit_usd = settings.default_daily_quota_usd
+    base_limit_usd = settings.default_daily_quota_usd
     bump_usd = Decimal(0)
     bump_expires_at = None
     if auth.user_id:
@@ -155,19 +156,20 @@ async def get_my_quota_usage(
             used_usd = await sum_cost_usd(
                 session, auth.org_id, auth.user_id, quota_window_start()
             )
-            effective_limit_usd = await get_effective_limit(
-                session, auth.org_id, auth.user_id
-            )
+            base_limit_usd = await get_base_limit(session, auth.org_id, auth.user_id)
             reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
             bump_usd, bump_expires_at = await live_bump_total(
                 session, auth.org_id, auth.user_id
             )
+    # Composed from one (base, bump) pair so limit/base/bump stay consistent
+    # even if a concurrent grant/revoke lands between the reads.
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
-        limit_usd=float(effective_limit_usd),
+        limit_usd=float(base_limit_usd + bump_usd),
         used_usd=float(used_usd),
         reserved_usd=float(reserved),
         enforced=settings.quota_mode == QuotaMode.ENFORCE,
+        base_limit_usd=float(base_limit_usd),
         bump_usd=float(bump_usd),
         bump_expires_at=bump_expires_at.isoformat() if bump_expires_at else None,
     )
@@ -299,14 +301,14 @@ async def set_member_quota(
         used_usd = await sum_cost_usd(
             session, auth.org_id, user_id, quota_window_start()
         )
-        effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
+        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
         bump_usd, bump_expires_at = await live_bump_total(
             session, auth.org_id, user_id
         )
 
     return _quota_member_item(
         member,
-        base_limit_usd=effective_limit_usd - bump_usd,
+        base_limit_usd=base_limit_usd,
         used_usd=used_usd,
         bump_usd=bump_usd,
         bump_expires_at=bump_expires_at,
@@ -330,10 +332,6 @@ async def add_member_quota_bump(
         raise HTTPException(
             status_code=400, detail="expires_at must include a timezone offset"
         )
-    if expires_at <= utcnow():
-        raise HTTPException(
-            status_code=400, detail="expires_at must be in the future"
-        )
 
     async with get_session() as session:
         member = (
@@ -346,6 +344,15 @@ async def add_member_quota_bump(
         if member is None:
             raise HTTPException(
                 status_code=404, detail=f"User {user_id} not found in this org"
+            )
+
+        # Liveness reads compare against the DB clock (expires_at > NOW()), so
+        # validate "future" on the same clock: a grant accepted here must be
+        # live for at least an instant regardless of app/DB clock skew.
+        db_now = await session.scalar(sa_text("SELECT NOW()"))
+        if expires_at <= db_now:
+            raise HTTPException(
+                status_code=400, detail="expires_at must be in the future"
             )
 
         session.add(
@@ -364,14 +371,14 @@ async def add_member_quota_bump(
         used_usd = await sum_cost_usd(
             session, auth.org_id, user_id, quota_window_start()
         )
-        effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
+        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
         bump_usd, bump_expires_at = await live_bump_total(
             session, auth.org_id, user_id
         )
 
     return _quota_member_item(
         member,
-        base_limit_usd=effective_limit_usd - bump_usd,
+        base_limit_usd=base_limit_usd,
         used_usd=used_usd,
         bump_usd=bump_usd,
         bump_expires_at=bump_expires_at,
@@ -417,14 +424,14 @@ async def revoke_member_quota_bumps(
         used_usd = await sum_cost_usd(
             session, auth.org_id, user_id, quota_window_start()
         )
-        effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
+        base_limit_usd = await get_base_limit(session, auth.org_id, user_id)
         bump_usd, bump_expires_at = await live_bump_total(
             session, auth.org_id, user_id
         )
 
     return _quota_member_item(
         member,
-        base_limit_usd=effective_limit_usd - bump_usd,
+        base_limit_usd=base_limit_usd,
         used_usd=used_usd,
         bump_usd=bump_usd,
         bump_expires_at=bump_expires_at,

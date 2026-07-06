@@ -49,6 +49,8 @@ class QuotaUsageResponse(BaseModel):
     # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
     # enforce). False under off/shadow, so the UI must not claim runs are blocked.
     enforced: bool = False
+    # Base limit (override row or org default), before any bumps.
+    base_limit_usd: float = 0
     # SUM of the caller's live temporary bump amounts (0 when none).
     bump_usd: float = 0
     # ISO datetime of the latest live bump expiry, or null when no live bump.
