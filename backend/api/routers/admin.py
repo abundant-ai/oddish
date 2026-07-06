@@ -189,17 +189,9 @@ async def get_user_costs(
     ),
     task_limit: int = Query(100, ge=1, le=500),
 ) -> UserCostBreakdownResponse:
-    """Per-user billed-spend drilldown for the admin cost dashboard.
-
-    Attributed via ``billed_user_id`` (the quota payer), so totals can diverge
-    from the ``/admin/costs`` by-user table (owner-basis). Settled trials only,
-    time axis is ``finished_at``; soft-deleted trials are included.
-    """
+    """Per-user billed-spend drilldown (settled quota-basis; finished_at axis)."""
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
-        # include_deleted: offboarded users keep historical billed trials
-        # (and the Costs tab still lists and links them), so the drilldown
-        # must stay reachable after the user row is tombstoned.
         user = await session.get(
             UserModel, user_id, execution_options={"include_deleted": True}
         )

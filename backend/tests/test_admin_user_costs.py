@@ -1,9 +1,4 @@
-"""Admin per-user cost drilldown: GET /admin/costs/users/{user_id}.
-
-DB-backed (requires_db). Trials are inserted directly so each scenario controls
-finished_at / cost_usd / billed_user_id / tokens / model / deleted_at exactly.
-require_admin is exercised for real (403) and overridden for the content cases.
-"""
+"""DB-backed tests for the admin per-user cost drilldown endpoint."""
 
 from __future__ import annotations
 
@@ -24,8 +19,6 @@ from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
 
-# claude-haiku-4: input=1e-6, output=5e-6. 1000 in + 500 out (no cache) =>
-# 0.001 + 0.0025 = 0.0035 estimated when cost_usd is NULL.
 _EST_MODEL = "claude-haiku-4"
 _EST_EXPECTED = 0.0035
 
@@ -133,7 +126,6 @@ async def costs_fixture():
         await session.flush()
         session.add_all(
             [
-                # task_a: two native-cost trials for the target, recent window.
                 _trial(
                     task_a, 0, org_id=org_id, billed_user_id=target.id,
                     finished_at=recent, cost_usd=0.10,
@@ -142,33 +134,27 @@ async def costs_fixture():
                     task_a, 1, org_id=org_id, billed_user_id=target.id,
                     finished_at=recent, cost_usd=0.20,
                 ),
-                # task_b: one estimate-only trial (cost_usd NULL) for the target.
                 _trial(
                     task_b, 0, org_id=org_id, billed_user_id=target.id,
                     finished_at=recent, cost_usd=None,
                     input_tokens=1000, output_tokens=500,
                 ),
-                # Another user's billed trial -- must be excluded.
                 _trial(
                     task_a, 2, org_id=org_id, billed_user_id=other.id,
                     finished_at=recent, cost_usd=5.00,
                 ),
-                # NULL billed_user_id -- draws down nobody, must be excluded.
                 _trial(
                     task_a, 3, org_id=org_id, billed_user_id=None,
                     finished_at=recent, cost_usd=7.00,
                 ),
-                # target, but never settled (finished_at NULL) -- excluded always.
                 _trial(
                     task_a, 4, org_id=org_id, billed_user_id=target.id,
                     finished_at=None, cost_usd=9.00,
                 ),
-                # target, settled but 40 days ago -- outside a 7d window.
                 _trial(
                     task_a, 5, org_id=org_id, billed_user_id=target.id,
                     finished_at=old, cost_usd=3.00,
                 ),
-                # target, soft-deleted but settled and recent -- INCLUDED.
                 _trial(
                     task_b, 1, org_id=org_id, billed_user_id=target.id,
                     finished_at=recent, cost_usd=0.05, deleted_at=now,
@@ -233,7 +219,6 @@ async def test_attribution_settled_soft_delete_and_window(costs_fixture):
     assert resp.status_code == 200
     body = resp.json()
 
-    # target identity is filled from the UserModel row.
     assert body["billed_user_id"] == f.target.id
     assert body["org_id"] == f.org_id
     assert body["name"] == f.target.name
@@ -241,11 +226,6 @@ async def test_attribution_settled_soft_delete_and_window(costs_fixture):
     assert body["github_username"] == f.target.github_username
 
     totals = body["totals"]
-    # Included, within 7d, settled, billed to target:
-    #   task_a: 0.10 + 0.20 native
-    #   task_b: 0.0035 estimate + 0.05 native (soft-deleted, still counted)
-    # Excluded: other user (5.00), NULL billed (7.00), unsettled (9.00),
-    #   40d-old (3.00).
     assert totals["trial_count"] == 4
     assert totals["task_count"] == 2
     assert totals["cost_native_usd"] == pytest.approx(0.35)
@@ -262,7 +242,6 @@ async def test_task_grouping_and_sort(costs_fixture):
     body = resp.json()
     tasks = body["tasks"]
     assert len(tasks) == 2
-    # task_a (0.30) sorts before task_b (~0.0535).
     assert tasks[0]["task_name"] == "alpha-task"
     assert tasks[0]["cost_usd"] == pytest.approx(0.30)
     assert tasks[0]["trial_count"] == 2
@@ -271,7 +250,6 @@ async def test_task_grouping_and_sort(costs_fixture):
     assert tasks[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert tasks[1]["trial_count"] == 2
     assert tasks[1]["cost_estimated_usd"] == pytest.approx(_EST_EXPECTED)
-    # per-task model split is present.
     assert tasks[1]["models"][0]["model"] == _EST_MODEL
 
 
@@ -299,7 +277,6 @@ async def test_all_time_still_excludes_unsettled(costs_fixture):
     body = resp.json()
     totals = body["totals"]
     assert totals["window_days"] is None
-    # All-time pulls in the 40d-old 3.00 trial too, but NOT the unsettled 9.00.
     assert totals["trial_count"] == 5
     assert totals["cost_native_usd"] == pytest.approx(0.35 + 3.00)
     assert totals["cost_estimated_usd"] == pytest.approx(_EST_EXPECTED)
@@ -313,7 +290,6 @@ async def test_task_limit_cap(costs_fixture):
         f.org_id, f.admin.id, f.target.id, params={"window_days": 0, "task_limit": 1}
     )
     body = resp.json()
-    # Two tasks in the data; capped to the top 1, but task_count reports the full set.
     assert len(body["tasks"]) == 1
     assert body["tasks"][0]["task_name"] == "alpha-task"
     assert body["totals"]["task_count"] == 2
@@ -323,8 +299,6 @@ async def test_task_limit_cap(costs_fixture):
 @pytest.mark.asyncio
 async def test_zero_trial_user_returns_empty_200(costs_fixture):
     f = costs_fixture
-    # ``other`` is billed on exactly one excluded-from-target trial; query for a
-    # brand-new user with no trials at all.
     fresh = _member(f.org_id, "fresh")
     async with get_session() as session:
         session.add(fresh)
@@ -348,8 +322,7 @@ async def test_zero_trial_user_returns_empty_200(costs_fixture):
 @requires_db
 @pytest.mark.asyncio
 async def test_soft_deleted_user_still_resolvable(costs_fixture):
-    """Offboarded (soft-deleted) users keep historical billed trials and the
-    Costs tab still links them, so the drilldown must not 404 on them."""
+    """Soft-deleted users stay resolvable so the drilldown never 404s on them."""
     f = costs_fixture
     now = datetime.now(timezone.utc)
     async with get_session() as session:
@@ -386,8 +359,6 @@ async def test_unknown_user_returns_404(costs_fixture):
 @pytest.mark.asyncio
 async def test_non_admin_returns_403(costs_fixture):
     f = costs_fixture
-    # Override the underlying auth dependency with a MEMBER context so the real
-    # require_admin runs and rejects (proves the role gate, not a stubbed 403).
     member_auth = AuthContext(
         method=AuthMethod.CLERK_JWT,
         org_id=f.org_id,

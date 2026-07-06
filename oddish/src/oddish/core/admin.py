@@ -1628,19 +1628,6 @@ async def get_cost_breakdown_core(
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-user cost drilldown
-#
-# One user's billed spend for the admin drilldown: total, per-task breakdown,
-# and a stacked-by-model cost-over-time series. Attribution is billed_user_id
-# (the quota payer), not experiment ownership -- so the totals here can diverge
-# from the /admin/costs by_user table (owner-basis). Settled trials only
-# (finished_at IS NOT NULL), time axis is finished_at, soft-deleted trials
-# included (mirrors quota spend: deleting isn't a budget reset), estimates
-# split out the same way as the global breakdown.
-# ---------------------------------------------------------------------------
-
-
 class CostTaskBreakdown(BaseModel):
     task_id: str
     task_name: str | None
@@ -1687,12 +1674,11 @@ async def get_user_cost_breakdown_core(
     window_days: int | None = 7,
     task_limit: int = 100,
 ) -> UserCostBreakdownResponse:
+    """One user's settled billed spend: totals, per-task rollup, by-model series."""
     now = datetime.now(timezone.utc)
     since = None if window_days is None else now - timedelta(days=window_days)
     bucket = _series_bucket(window_days)
 
-    # Settled spend counts soft-deleted trials (deleting isn't a budget reset),
-    # so bypass the deleted_at auto-filter -- same invariant as quotas.py.
     filters = [
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
