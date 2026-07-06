@@ -195,6 +195,56 @@ class QuotaModel(TimestampedMixin, Base):
     __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),)
 
 
+class QuotaBumpModel(TimestampedMixin, Base):
+    """A temporary additive boost to a user's 24h dollar limit.
+
+    Each live row grants ``+amount_usd`` on top of the member's base limit
+    (default or ``QuotaModel`` override) until ``expires_at``; expiry is
+    resolved at READ time (``expires_at > NOW()`` on the DB clock), so there is
+    no scheduler. Grants stack (SUM of live rows). Revocation stamps
+    ``revoked_at`` and leaves the audit row in place. Like ``QuotaModel`` this
+    is deliberately NOT registered for soft delete: every read spells out
+    ``revoked_at IS NULL`` / ``deleted_at IS NULL`` / ``expires_at > NOW()``.
+    """
+
+    __tablename__ = "quota_bumps"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    granted_by_user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount_usd > 0", name="ck_quota_bumps_amount_positive"
+        ),
+        Index(
+            "idx_quota_bumps_org_user_expires", "org_id", "user_id", "expires_at"
+        ),
+    )
+
+
 # =============================================================================
 # Chat models
 # =============================================================================

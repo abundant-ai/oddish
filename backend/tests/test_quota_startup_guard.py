@@ -1,16 +1,27 @@
 """S5-T9: the startup schema guard forces quota_mode=off (never crashes) when
-the quota schema is incomplete -- covering BOTH the trials column (oddish
-alembic tree) and the backend quotas table, which migrate separately.
+the quota schema is incomplete -- covering the trials column (oddish alembic
+tree) and the backend quotas + quota_bumps tables, which migrate separately.
 """
 
 from __future__ import annotations
 
+import inspect
 from contextlib import asynccontextmanager
 
 import pytest
 
+import api.app as app_module
 from api.app import _assert_quota_schema_or_force_off
 from oddish.config import QuotaMode, settings
+
+
+def test_guard_sql_checks_all_quota_schema_objects():
+    """The guard's single scalar query must probe every schema object the
+    admission path needs: the trials column and both backend tables."""
+    source = inspect.getsource(app_module._assert_quota_schema_or_force_off)
+    assert "billed_user_id" in source
+    assert "'quotas'" in source
+    assert "'quota_bumps'" in source
 
 
 class _FakeSession:

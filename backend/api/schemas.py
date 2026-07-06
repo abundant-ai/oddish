@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -40,6 +41,7 @@ class UserResponse(BaseModel):
 
 class QuotaUsageResponse(BaseModel):
     user_id: str
+    # Effective limit: base (default or override) + live temporary bumps.
     limit_usd: float
     used_usd: float
     # In-flight trial reservations; admission blocks when used + reserved >= limit.
@@ -47,6 +49,10 @@ class QuotaUsageResponse(BaseModel):
     # Whether exceeding the limit actually blocks new billable runs (quota_mode ==
     # enforce). False under off/shadow, so the UI must not claim runs are blocked.
     enforced: bool = False
+    # SUM of the caller's live temporary bump amounts (0 when none).
+    bump_usd: float = 0
+    # ISO datetime of the latest live bump expiry, or null when no live bump.
+    bump_expires_at: str | None = None
 
 
 class QuotaMemberItem(BaseModel):
@@ -55,8 +61,15 @@ class QuotaMemberItem(BaseModel):
     name: str | None
     github_username: str | None
     role: str
+    # Effective limit: base + live bumps.
     limit_usd: float
     used_usd: float
+    # Base limit (override row or org default), before any bumps.
+    base_limit_usd: float = 0
+    # SUM of live bump amounts (0 when none).
+    bump_usd: float = 0
+    # ISO datetime of the latest live bump expiry, or null when no live bump.
+    bump_expires_at: str | None = None
 
 
 class QuotaListResponse(BaseModel):
@@ -67,6 +80,16 @@ class QuotaUpdateRequest(BaseModel):
     limit_usd: Decimal | None = Field(
         None, gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
     )
+
+
+class QuotaBumpRequest(BaseModel):
+    """Grant a temporary additive boost to a member's 24h limit."""
+
+    amount_usd: Decimal = Field(
+        gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+    )
+    expires_at: datetime
+    reason: str | None = Field(None, max_length=500)
 
 
 class InviteUserRequest(BaseModel):

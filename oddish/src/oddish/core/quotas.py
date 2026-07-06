@@ -122,6 +122,51 @@ async def inflight_reserved_usd(
     )
 
 
+async def live_bump_total(
+    session: AsyncSession, org_id: str | None, user_id: str
+) -> tuple[Decimal, datetime | None]:
+    """Return (SUM of live bump amounts, MAX expiry) for a member.
+
+    A bump is "live" when it is not revoked, not tombstoned, and not yet
+    expired on the DB clock (``expires_at > NOW()``). Cross-package read:
+    ``oddish`` must not import backend models, so this is raw ``text()`` SQL
+    mirroring ``get_effective_limit``'s read of ``quotas``.
+    """
+    row = (
+        await session.execute(
+            text(
+                "SELECT COALESCE(SUM(amount_usd), 0) AS total, "
+                "MAX(expires_at) AS max_expires_at FROM quota_bumps "
+                "WHERE org_id = :org_id AND user_id = :user_id "
+                "AND revoked_at IS NULL AND deleted_at IS NULL "
+                "AND expires_at > NOW()"
+            ),
+            {"org_id": org_id, "user_id": user_id},
+        )
+    ).one()
+    return to_money_decimal(row.total), row.max_expires_at
+
+
+async def live_bump_totals_by_user(
+    session: AsyncSession, org_id: str | None
+) -> dict[str, tuple[Decimal, datetime | None]]:
+    """Bulk (SUM, MAX expiry) of live bumps per user for the admin list."""
+    rows = await session.execute(
+        text(
+            "SELECT user_id, COALESCE(SUM(amount_usd), 0) AS total, "
+            "MAX(expires_at) AS max_expires_at FROM quota_bumps "
+            "WHERE org_id = :org_id AND revoked_at IS NULL "
+            "AND deleted_at IS NULL AND expires_at > NOW() "
+            "GROUP BY user_id"
+        ),
+        {"org_id": org_id},
+    )
+    return {
+        user_id: (to_money_decimal(total), max_expires_at)
+        for user_id, total, max_expires_at in rows.all()
+    }
+
+
 async def get_effective_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:
@@ -133,6 +178,10 @@ async def get_effective_limit(
         ),
         {"org_id": org_id, "user_id": user_id},
     )
-    if override_limit_usd is None:
-        return settings.default_daily_quota_usd
-    return Decimal(str(override_limit_usd))
+    base_limit_usd = (
+        settings.default_daily_quota_usd
+        if override_limit_usd is None
+        else Decimal(str(override_limit_usd))
+    )
+    bump_total, _ = await live_bump_total(session, org_id, user_id)
+    return base_limit_usd + bump_total

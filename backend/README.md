@@ -395,7 +395,16 @@ schema-guard fail-safe below):
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
-API startup verifies `trials.billed_user_id` and the `quotas` table exist and
-otherwise forces `off` (fail-safe, never a silent SUM fail-open). Tune
-`ODDISH_DEFAULT_DAILY_QUOTA_USD` and `ODDISH_PENDING_TRIAL_RESERVATION_USD`
-without a code change.
+API startup verifies `trials.billed_user_id` and the `quotas` + `quota_bumps`
+tables exist and otherwise forces `off` (fail-safe, never a silent SUM
+fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
+`ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
+
+**Temporary quota bumps.** An org admin can grant a member `+$X until <ts>` via
+`POST /quotas/{user_id}/bumps`; the grant is a `quota_bumps` row and the
+effective limit becomes `base + SUM(live bumps)` (grants stack). Expiry is
+resolved at read time (`expires_at > NOW()` on the DB clock — no scheduler or
+revert job), and `DELETE /quotas/{user_id}/bumps` revokes all of a member's live
+bumps by stamping `revoked_at` (the audit row survives). After a bump expires
+the member's spend still counts in the rolling window, so they may block at the
+base limit — that is intended.
