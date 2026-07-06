@@ -1,4 +1,4 @@
-name: E2E CLI Smoke
+name: "E2E: CLI smoke"
 
 # Runs the opt-in end-to-end CLI suite (backend/tests/e2e) against a real
 # uvicorn server, the real oddish CLI subprocess, and a real Postgres. This is
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   e2e:
-    name: Backend e2e CLI smoke
+    name: "oddish run → queued trial"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
