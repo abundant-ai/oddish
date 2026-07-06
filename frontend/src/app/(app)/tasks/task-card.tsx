@@ -310,6 +310,14 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
                   {task.cost_trial_count} of {task.total_trials} priced
                 </div>
               ) : null}
+              {task.cost_trial_count > 0 ? (
+                <div className="text-muted-foreground text-[11px]">
+                  spent{" "}
+                  {task.billed_trial_count === 0
+                    ? formatCostUsd(0)
+                    : `${task.billed_has_estimated && !task.billed_has_native ? "~" : ""}${formatCostUsd(task.billed_cost_usd)}`}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

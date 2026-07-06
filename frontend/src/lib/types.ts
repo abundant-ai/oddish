@@ -255,6 +255,10 @@ export interface TaskBrowseItem {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -298,6 +302,10 @@ export interface TaskVersionSummary {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   last_run_at?: string | null;
   user_tags?: UserTagRef[];
   experiments?: { id: string; name: string }[];
@@ -308,6 +316,10 @@ interface TaskCostTotals {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   total_trials: number;
 }
 

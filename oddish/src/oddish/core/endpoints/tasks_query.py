@@ -2091,6 +2091,7 @@ async def browse_tasks_core(
                 TrialModel.output_tokens.label("output_tokens"),
                 TrialModel.cache_tokens.label("cache_tokens"),
                 TrialModel.cache_write_tokens.label("cache_write_tokens"),
+                TrialModel.billed_user_id.label("billed_user_id"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
@@ -2135,6 +2136,10 @@ async def browse_tasks_core(
                         "cost_trial_count": 0,
                         "cost_has_estimated": False,
                         "cost_has_native": False,
+                        "billed_cost_usd": 0.0,
+                        "billed_trial_count": 0,
+                        "billed_has_estimated": False,
+                        "billed_has_native": False,
                     },
                 )
                 cost_agg["cost_usd"] += resolved_cost
@@ -2143,6 +2148,13 @@ async def browse_tasks_core(
                     cost_agg["cost_has_estimated"] = True
                 else:
                     cost_agg["cost_has_native"] = True
+                if trial_row["billed_user_id"] is not None:
+                    cost_agg["billed_cost_usd"] += resolved_cost
+                    cost_agg["billed_trial_count"] += 1
+                    if cost_estimated:
+                        cost_agg["billed_has_estimated"] = True
+                    else:
+                        cost_agg["billed_has_native"] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -2214,6 +2226,22 @@ async def browse_tasks_core(
                 ),
                 cost_has_native=bool(
                     cost_by_task.get(str(row["task_id"]), {}).get("cost_has_native")
+                ),
+                billed_cost_usd=float(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_cost_usd")
+                    or 0.0
+                ),
+                billed_trial_count=int(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_trial_count")
+                    or 0
+                ),
+                billed_has_estimated=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get(
+                        "billed_has_estimated"
+                    )
+                ),
+                billed_has_native=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_has_native")
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),
