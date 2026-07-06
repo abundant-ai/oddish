@@ -226,6 +226,11 @@ async def list_tasks_core(
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
                 TrialModel.cost_usd,
+                # Read by both trial builders (``is_billed``). Must be loaded
+                # eagerly; otherwise the builder triggers a lazy-load outside
+                # the async greenlet and fails with MissingGreenlet (same
+                # reason ``origin`` is here).
+                TrialModel.billed_user_id,
                 # Loaded eagerly so the compact builder can surface the
                 # rerun pointer without triggering a lazy-load outside
                 # the async greenlet (same reason ``origin`` is here).
