@@ -85,25 +85,30 @@ async def resolve_byok(
 
 
 def uses_direct_anthropic(agent: str, model: str | None, *, settings: Any) -> bool:
-    """Whether the trial runs on the direct Anthropic API, so an injected
+    """Whether the trial reaches the direct Anthropic API, so an injected
     ``ANTHROPIC_API_KEY`` actually takes effect.
 
-    ``get_provider_for_trial`` reports "bedrock" for claude-family models, but
-    the force-direct-API flag reroutes those to the direct Anthropic API at
-    runtime -- so that combination counts. A real Bedrock run authenticates
-    with AWS SigV4 creds an API key can't serve, so it does not.
+    Oddish canonicalizes claude models to a Bedrock runtime id, so
+    ``get_provider_for_trial`` reports "bedrock" for them. Only claude-code
+    reroutes such a trial to the direct Anthropic API: the harbor runner
+    surfaces the user key in the worker's ambient env and blanks the baked-in
+    Bedrock creds for claude-code alone, so the direct-vs-Bedrock decision
+    (which reads ``os.environ``) picks the direct transport. Any other agent
+    stays on real Bedrock, which authenticates with AWS SigV4 creds an API key
+    can't serve -- so a user key only takes effect for claude-code, and the
+    resolver must not claim eligibility it can't deliver.
 
-    The harbor runner makes this self-consistent: when it injects a BYOK
-    ``ANTHROPIC_API_KEY`` it also surfaces it in the worker's ambient env, so
-    the direct-vs-Bedrock routing decision (which reads ``os.environ``, not the
-    agent env) picks the direct transport even on a worker without a platform
-    key -- otherwise the trial could stay on Bedrock and ignore the user key.
+    A provider that is already direct-Anthropic (not the Bedrock reroute) works
+    for any agent, since the key rides in the agent env.
     """
     provider = (settings.get_provider_for_trial(agent, model) or "").lower()
     if provider in _ANTHROPIC_PROVIDERS:
         return True
-    return provider == "bedrock" and bool(
-        getattr(settings, "claude_code_force_direct_api", False)
+    is_claude_code = "claude-code" in (agent or "").strip().lower()
+    return (
+        is_claude_code
+        and provider == "bedrock"
+        and bool(getattr(settings, "claude_code_force_direct_api", False))
     )
 
 
