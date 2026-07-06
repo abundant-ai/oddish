@@ -422,9 +422,14 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            Per-user figures attribute each experiment to its owner; per-model
-            and per-user are the same per-trial costs grouped differently, so
-            each view sums back to the same total.
+            Only billable trials are counted. Imported, combined, and pre-quota
+            trials draw down no budget and are excluded, so totals count real
+            spend once. Per-user figures attribute each trial to its billed user
+            (the experiments table still lists the experiment owner).
+          </li>
+          <li>
+            Per-model and per-user are the same per-trial costs grouped
+            differently, so each view sums back to the same total.
           </li>
           <li>Figures span all organizations.</li>
         </ul>
@@ -509,9 +514,9 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Total trial spend across all organizations. Native runtime cost when
-          reported, otherwise a per-model token estimate — see the info icon for
-          methodology.
+          Billable trial spend across all organizations. Native runtime cost
+          when reported, otherwise a per-model token estimate — see the info
+          icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">

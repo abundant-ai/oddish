@@ -173,13 +173,7 @@ class UserModel(TimestampedMixin, Base):
 
 
 class QuotaModel(TimestampedMixin, Base):
-    """Per-user daily dollar limit OVERRIDE.
-
-    Rows exist only to override the read-time default (DEFAULT_DAILY_QUOTA_USD);
-    a missing row means the member is enforced at that default. Keyed per
-    (org_id, user_id) membership -- the same human carries independent budgets
-    in different orgs.
-    """
+    """A user's 24 hour dollar limit override."""
 
     __tablename__ = "quotas"
 
@@ -198,9 +192,7 @@ class QuotaModel(TimestampedMixin, Base):
     )
     limit_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),)
 
 
 # =============================================================================

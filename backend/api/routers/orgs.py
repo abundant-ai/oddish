@@ -33,7 +33,7 @@ from models import QuotaModel, UserModel, UserRole, generate_id
 from oddish.core.quotas import (
     get_effective_limit,
     inflight_reserved_usd,
-    start_of_today_utc,
+    quota_window_start,
     sum_cost_usd,
     sum_cost_usd_by_user,
 )
@@ -142,24 +142,22 @@ async def list_users(
 async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
-    used_today = Decimal(0)
+    used_usd = Decimal(0)
     reserved = Decimal(0)
     effective_limit_usd = settings.default_daily_quota_usd
     if auth.user_id:
         async with get_session() as session:
-            used_today = await sum_cost_usd(
-                session, auth.org_id, auth.user_id, start_of_today_utc()
+            used_usd = await sum_cost_usd(
+                session, auth.org_id, auth.user_id, quota_window_start()
             )
             effective_limit_usd = await get_effective_limit(
                 session, auth.org_id, auth.user_id
             )
-            reserved = await inflight_reserved_usd(
-                session, auth.org_id, auth.user_id
-            )
+            reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
         limit_usd=float(effective_limit_usd),
-        used_usd=float(used_today),
+        used_usd=float(used_usd),
         reserved_usd=float(reserved),
         enforced=settings.quota_mode == QuotaMode.ENFORCE,
     )
@@ -181,7 +179,7 @@ def _quota_member_item(member, effective_limit_usd, used_usd) -> QuotaMemberItem
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaListResponse:
-    period_start = start_of_today_utc()
+    period_start = quota_window_start()
     default_limit_usd = settings.default_daily_quota_usd
 
     async with get_session() as session:
@@ -270,12 +268,12 @@ async def set_member_quota(
                 )
             )
 
-        used_today = await sum_cost_usd(
-            session, auth.org_id, user_id, start_of_today_utc()
+        used_usd = await sum_cost_usd(
+            session, auth.org_id, user_id, quota_window_start()
         )
         effective_limit_usd = await get_effective_limit(session, auth.org_id, user_id)
 
-    return _quota_member_item(member, effective_limit_usd, used_today)
+    return _quota_member_item(member, effective_limit_usd, used_usd)
 
 
 @router.post("/users", response_model=InviteUserResponse)
@@ -347,16 +345,13 @@ async def _require_no_stranded_org(session, rows: list[UserModel]) -> None:
         if row.role != UserRole.ADMIN:
             continue
         others = (
-            (
-                await session.execute(
-                    select(UserModel.id, UserModel.role)
-                    .where(UserModel.org_id == row.org_id)
-                    .where(UserModel.id != row.id)
-                    .where(UserModel.is_active == True)  # noqa: E712
-                )
+            await session.execute(
+                select(UserModel.id, UserModel.role)
+                .where(UserModel.org_id == row.org_id)
+                .where(UserModel.id != row.id)
+                .where(UserModel.is_active == True)  # noqa: E712
             )
-            .all()
-        )
+        ).all()
         if others and not any(role == UserRole.ADMIN for _, role in others):
             raise HTTPException(
                 status_code=400,
