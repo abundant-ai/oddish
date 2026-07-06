@@ -10,7 +10,7 @@ from oddish.config import QuotaMode, settings
 from oddish.core.quotas import (
     get_effective_limit,
     inflight_reserved_usd,
-    start_of_today_utc,
+    quota_window_start,
     sum_cost_usd,
 )
 
@@ -23,10 +23,10 @@ class QuotaExceeded(HTTPException):
             status_code=402,
             detail={
                 "message": (
-                    f"Over your daily budget: used ${float(used_usd):.2f} + "
+                    f"Over your 24h budget: used ${float(used_usd):.2f} + "
                     f"${float(reserved_usd):.2f} reserved of "
-                    f"${float(limit_usd):.2f} (daily). Ask an org admin to "
-                    "raise your quota."
+                    f"${float(limit_usd):.2f}. Spend frees 24h after each "
+                    "run finishes. Ask an org admin to raise your quota."
                 ),
                 "used_usd": float(used_usd),
                 "reserved_usd": float(reserved_usd),
@@ -95,8 +95,6 @@ async def admit_trials(
     count: int,
 ) -> None:
     mode = settings.quota_mode
-    # OSS/self-hosted single-tenant (no org -> no payer) never enforces, even when
-    # a billed_user_id is present.
     if mode == QuotaMode.OFF or org_id is None or count <= 0:
         return
 
@@ -109,7 +107,7 @@ async def admit_trials(
     await acquire_payer_lock(session, org_id, billed_user_id)
 
     effective_limit_usd = await get_effective_limit(session, org_id, billed_user_id)
-    used_usd = await sum_cost_usd(session, org_id, billed_user_id, start_of_today_utc())
+    used_usd = await sum_cost_usd(session, org_id, billed_user_id, quota_window_start())
     reserved_usd = (
         await inflight_reserved_usd(session, org_id, billed_user_id)
         + count * settings.pending_trial_reservation_usd
