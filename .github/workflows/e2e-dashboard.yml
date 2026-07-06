@@ -1,4 +1,4 @@
-name: E2E Dashboard
+name: "E2E: Dashboard"
 
 # Boots the ENTIRE stack inside one runner — a postgres:16-alpine service, the
 # backend (`serve.py`), and the frontend (`pnpm dev`) — then drives the
@@ -54,7 +54,7 @@ permissions:
 
 jobs:
   dashboard:
-    name: Full-stack authenticated dashboard e2e
+    name: "signed-in task view"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
