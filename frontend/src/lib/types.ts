@@ -142,6 +142,7 @@ export interface Trial {
   total_steps?: number | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
   created_at: string;
@@ -794,6 +795,41 @@ export interface CostBreakdownResponse {
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
   experiments: CostExperimentBreakdown[];
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
+// ---------------------------------------------------------------------------
+
+export interface UserCostTaskBreakdown {
+  task_id: string;
+  task_name: string | null;
+  trial_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+  models: CostModelBreakdown[];
+}
+
+interface UserCostTotals {
+  window_days: number | null;
+  trial_count: number;
+  task_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+}
+
+export interface UserCostBreakdownResponse {
+  billed_user_id: string;
+  name: string | null;
+  email: string | null;
+  github_username: string | null;
+  org_id: string | null;
+  window_days: number | null;
+  bucket: string;
+  totals: UserCostTotals;
+  tasks: UserCostTaskBreakdown[];
+  series_by_model: CostSeries;
   timestamp: string;
 }
 
