@@ -3,7 +3,7 @@
 import { useState } from "react";
 import useSWR from "swr";
 
-import { Loader2 } from "lucide-react";
+import { Loader2, Zap } from "lucide-react";
 
 import {
   Table,
@@ -16,8 +16,26 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { fetcher } from "@/lib/api";
-import type { QuotaList, QuotaMember, QuotaUpdate } from "@/lib/types";
+import type {
+  QuotaBumpCreate,
+  QuotaList,
+  QuotaMember,
+  QuotaUpdate,
+} from "@/lib/types";
 
 const formatDollars = (value: number) =>
   value.toLocaleString(undefined, {
@@ -27,10 +45,26 @@ const formatDollars = (value: number) =>
     maximumFractionDigits: 2,
   });
 
+const formatBumpExpiry = (iso: string) =>
+  new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+
 const memberLabel = (member: QuotaMember) =>
   member.name || member.email || member.github_username || member.user_id;
 
 const MAX_LIMIT_USD = 99999999.9999;
+
+const DEFAULT_BUMP_DURATION = "24";
+const BUMP_DURATIONS: { value: string; label: string; hours: number }[] = [
+  { value: "6", label: "6 hours", hours: 6 },
+  { value: "24", label: "24 hours", hours: 24 },
+  { value: "48", label: "48 hours", hours: 48 },
+  { value: "168", label: "7 days", hours: 168 },
+];
 
 function errorMessage(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;
@@ -64,6 +98,11 @@ export function QuotaAdminForm() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<Record<string, string>>({});
+  const [bumpAmount, setBumpAmount] = useState<Record<string, string>>({});
+  const [bumpDuration, setBumpDuration] = useState<Record<string, string>>({});
+  const [bumpBusy, setBumpBusy] = useState<Record<string, boolean>>({});
+  const [bumpError, setBumpError] = useState<Record<string, string>>({});
+  const [bumpOpen, setBumpOpen] = useState<Record<string, boolean>>({});
 
   if (error) {
     const status = (error as { status?: number }).status;
@@ -85,13 +124,17 @@ export function QuotaAdminForm() {
     return <p className="text-muted-foreground text-sm">No members to show.</p>;
   }
 
+  // The editable input tracks the BASE limit (override row or default), not the
+  // effective limit, so saving a draft after a bump never persists base+bump.
+  const baseLimit = (member: QuotaMember) =>
+    member.base_limit_usd ?? member.limit_usd - (member.bump_usd ?? 0);
   const draftValue = (member: QuotaMember) =>
-    drafts[member.user_id] ?? member.limit_usd.toFixed(2);
+    drafts[member.user_id] ?? baseLimit(member).toFixed(2);
   const isDirty = (member: QuotaMember) => {
     const draft = drafts[member.user_id];
     return (
       draft !== undefined &&
-      (draft === "" ? true : Number(draft) !== member.limit_usd)
+      (draft === "" ? true : Number(draft) !== baseLimit(member))
     );
   };
   const dirtyMembers = members.filter(isDirty);
@@ -153,6 +196,72 @@ export function QuotaAdminForm() {
     void mutate();
   }
 
+  async function grantBump(member: QuotaMember) {
+    const id = member.user_id;
+    if (bumpBusy[id]) return;
+    const rounded = Number(Number(bumpAmount[id] ?? "").toFixed(2));
+    if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
+      setBumpError((p) => ({
+        ...p,
+        [id]: "Enter a boost amount greater than 0.",
+      }));
+      return;
+    }
+    const hours = Number(bumpDuration[id] ?? DEFAULT_BUMP_DURATION);
+    const payload: QuotaBumpCreate = {
+      amount_usd: rounded.toFixed(2),
+      expires_at: new Date(Date.now() + hours * 3_600_000).toISOString(),
+    };
+
+    setBumpBusy((p) => ({ ...p, [id]: true }));
+    setBumpError(({ [id]: _drop, ...rest }) => rest);
+    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}/bumps`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }).catch(() => null);
+    setBumpBusy((p) => ({ ...p, [id]: false }));
+
+    if (res?.ok) {
+      setBumpAmount(({ [id]: _drop, ...rest }) => rest);
+      setBumpOpen((p) => ({ ...p, [id]: false }));
+      void mutate();
+      return;
+    }
+    const body: unknown = await res?.json().catch(() => null);
+    const message =
+      res?.status === 403
+        ? "Admins only."
+        : res?.status === 404
+          ? "Member not found."
+          : (errorMessage(body) ?? "Could not grant boost.");
+    setBumpError((p) => ({ ...p, [id]: message }));
+  }
+
+  async function revokeBump(member: QuotaMember) {
+    const id = member.user_id;
+    if (bumpBusy[id]) return;
+    setBumpBusy((p) => ({ ...p, [id]: true }));
+    setBumpError(({ [id]: _drop, ...rest }) => rest);
+    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}/bumps`, {
+      method: "DELETE",
+    }).catch(() => null);
+    setBumpBusy((p) => ({ ...p, [id]: false }));
+
+    if (res?.ok) {
+      void mutate();
+      return;
+    }
+    const body: unknown = await res?.json().catch(() => null);
+    const message =
+      res?.status === 403
+        ? "Admins only."
+        : res?.status === 404
+          ? "Member not found."
+          : (errorMessage(body) ?? "Could not revoke boost.");
+    setBumpError((p) => ({ ...p, [id]: message }));
+  }
+
   return (
     <div className="space-y-3">
       <div className="border-border overflow-hidden rounded-lg border">
@@ -164,7 +273,7 @@ export function QuotaAdminForm() {
               <TableHead className="h-9 w-44 text-right text-xs">
                 Used (24h)
               </TableHead>
-              <TableHead className="h-9 w-36 text-right text-xs">
+              <TableHead className="h-9 w-56 text-right text-xs">
                 Limit (per 24h)
               </TableHead>
             </TableRow>
@@ -180,9 +289,11 @@ export function QuotaAdminForm() {
                   : 0;
               const dirty = isDirty(member);
               const err = rowError[id];
+              const busy = bumpBusy[id] ?? false;
+              const bumpUsd = member.bump_usd ?? 0;
               return (
                 <TableRow key={id} className="border-border/70">
-                  <TableCell className="py-2.5">
+                  <TableCell className="py-2.5 align-top">
                     <div className="min-w-0">
                       <p className="text-foreground truncate text-sm font-medium">
                         {member.name || member.email}
@@ -192,12 +303,12 @@ export function QuotaAdminForm() {
                       </p>
                     </div>
                   </TableCell>
-                  <TableCell className="py-2.5">
+                  <TableCell className="py-2.5 align-top">
                     <Badge variant="outline" className="text-[11px] capitalize">
                       {member.role.replace(/^org:/, "")}
                     </Badge>
                   </TableCell>
-                  <TableCell className="py-2.5 text-right">
+                  <TableCell className="py-2.5 text-right align-top">
                     <div className="flex flex-col items-end gap-1.5">
                       <span
                         className={`font-mono text-xs ${
@@ -224,33 +335,163 @@ export function QuotaAdminForm() {
                       </div>
                     </div>
                   </TableCell>
-                  <TableCell className="py-2.5 text-right">
+                  <TableCell className="py-2.5 text-right align-top">
                     <div className="flex flex-col items-end gap-1">
-                      <Input
-                        type="number"
-                        min={0}
-                        step="0.01"
-                        inputMode="decimal"
-                        aria-label={`24-hour limit for ${memberLabel(member)}`}
-                        aria-invalid={err ? true : undefined}
-                        className={`h-8 w-28 text-right font-mono text-xs ${
-                          err
-                            ? "border-destructive focus-visible:ring-destructive"
-                            : dirty
-                              ? "border-primary/50"
-                              : ""
-                        }`}
-                        value={draftValue(member)}
-                        disabled={saving}
-                        onChange={(e) => setDraft(id, e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void saveAll();
-                          if (e.key === "Escape") revertDraft(id);
-                        }}
-                      />
+                      <div className="flex items-center justify-end gap-1">
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          inputMode="decimal"
+                          aria-label={`24-hour base limit for ${memberLabel(member)}`}
+                          aria-invalid={err ? true : undefined}
+                          className={`h-8 w-24 text-right font-mono text-xs ${
+                            err
+                              ? "border-destructive focus-visible:ring-destructive"
+                              : dirty
+                                ? "border-primary/50"
+                                : ""
+                          }`}
+                          value={draftValue(member)}
+                          disabled={saving}
+                          onChange={(e) => setDraft(id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void saveAll();
+                            if (e.key === "Escape") revertDraft(id);
+                          }}
+                        />
+                        <Popover
+                          open={bumpOpen[id] ?? false}
+                          onOpenChange={(open) =>
+                            setBumpOpen((p) => ({ ...p, [id]: open }))
+                          }
+                        >
+                          <PopoverTrigger asChild>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 px-2 text-xs"
+                              disabled={saving}
+                            >
+                              <Zap className="mr-1 size-3" />
+                              Boost
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent align="end" className="w-64 space-y-3">
+                            <div className="space-y-0.5">
+                              <p className="text-sm font-medium">
+                                Temporary boost
+                              </p>
+                              <p className="text-muted-foreground text-xs">
+                                Adds to {memberLabel(member)}&rsquo;s base limit
+                                until it expires.
+                              </p>
+                            </div>
+                            <div className="space-y-2">
+                              <div className="space-y-1">
+                                <Label className="text-xs">Amount (USD)</Label>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  step="0.01"
+                                  inputMode="decimal"
+                                  placeholder="50.00"
+                                  className="h-8 text-right font-mono text-xs"
+                                  value={bumpAmount[id] ?? ""}
+                                  disabled={busy}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    setBumpError(
+                                      ({ [id]: _drop, ...rest }) => rest
+                                    );
+                                    setBumpAmount((p) => ({
+                                      ...p,
+                                      [id]: value,
+                                    }));
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") void grantBump(member);
+                                  }}
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label className="text-xs">Duration</Label>
+                                <Select
+                                  value={bumpDuration[id] ?? DEFAULT_BUMP_DURATION}
+                                  disabled={busy}
+                                  onValueChange={(value) =>
+                                    setBumpDuration((p) => ({
+                                      ...p,
+                                      [id]: value,
+                                    }))
+                                  }
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {BUMP_DURATIONS.map((d) => (
+                                      <SelectItem
+                                        key={d.value}
+                                        value={d.value}
+                                        className="text-xs"
+                                      >
+                                        {d.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                            {bumpError[id] ? (
+                              <p className="text-destructive text-xs">
+                                {bumpError[id]}
+                              </p>
+                            ) : null}
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="w-full"
+                              disabled={busy}
+                              onClick={() => grantBump(member)}
+                            >
+                              {busy ? (
+                                <Loader2
+                                  className="animate-spin"
+                                  aria-label="Saving"
+                                />
+                              ) : (
+                                "Grant boost"
+                              )}
+                            </Button>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
                       {err ? (
                         <p className="text-destructive text-right text-[11px]">
                           {err}
+                        </p>
+                      ) : null}
+                      {bumpUsd > 0 && member.bump_expires_at ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-500">
+                            +{formatDollars(bumpUsd)} until{" "}
+                            {formatBumpExpiry(member.bump_expires_at)}
+                          </span>
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-destructive text-[11px] underline underline-offset-2 disabled:opacity-50"
+                            disabled={busy}
+                            onClick={() => revokeBump(member)}
+                          >
+                            Revoke
+                          </button>
+                        </div>
+                      ) : null}
+                      {!(bumpOpen[id] ?? false) && bumpError[id] ? (
+                        <p className="text-destructive text-right text-[11px]">
+                          {bumpError[id]}
                         </p>
                       ) : null}
                     </div>

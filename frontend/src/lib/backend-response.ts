@@ -61,7 +61,7 @@ export async function proxyBackendJson({
   body,
 }: {
   path: string;
-  method?: "GET" | "PUT";
+  method?: "GET" | "PUT" | "POST" | "DELETE";
   body?: unknown;
 }): Promise<NextResponse> {
   try {
@@ -71,14 +71,14 @@ export async function proxyBackendJson({
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const sendsBody = body !== undefined;
     const res = await fetch(getBackendUrl(path), {
       method,
       cache: "no-store",
-      headers:
-        method === "PUT"
-          ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
-          : getAuthHeaders(token),
-      body: method === "PUT" ? JSON.stringify(body) : undefined,
+      headers: sendsBody
+        ? { "Content-Type": "application/json", ...getAuthHeaders(token) }
+        : getAuthHeaders(token),
+      body: sendsBody ? JSON.stringify(body) : undefined,
     });
 
     const text = await res.text();

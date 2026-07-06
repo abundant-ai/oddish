@@ -400,6 +400,8 @@ export interface QuotaUsage {
   used_usd: number;
   reserved_usd?: number;
   enforced?: boolean;
+  bump_usd?: number;
+  bump_expires_at?: string | null;
 }
 
 export interface QuotaMember extends QuotaUsage {
@@ -407,6 +409,7 @@ export interface QuotaMember extends QuotaUsage {
   name: string | null;
   github_username: string | null;
   role: string;
+  base_limit_usd?: number;
 }
 
 export interface QuotaList {
@@ -415,6 +418,12 @@ export interface QuotaList {
 
 export interface QuotaUpdate {
   limit_usd: string | null;
+}
+
+export interface QuotaBumpCreate {
+  amount_usd: string;
+  expires_at: string;
+  reason?: string;
 }
 
 export interface DashboardExperiment {
