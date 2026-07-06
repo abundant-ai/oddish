@@ -142,6 +142,7 @@ export interface Trial {
   total_steps?: number | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
   created_at: string;
