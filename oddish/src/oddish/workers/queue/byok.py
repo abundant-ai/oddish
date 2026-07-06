@@ -92,6 +92,12 @@ def uses_direct_anthropic(agent: str, model: str | None, *, settings: Any) -> bo
     the force-direct-API flag reroutes those to the direct Anthropic API at
     runtime -- so that combination counts. A real Bedrock run authenticates
     with AWS SigV4 creds an API key can't serve, so it does not.
+
+    The harbor runner makes this self-consistent: when it injects a BYOK
+    ``ANTHROPIC_API_KEY`` it also surfaces it in the worker's ambient env, so
+    the direct-vs-Bedrock routing decision (which reads ``os.environ``, not the
+    agent env) picks the direct transport even on a worker without a platform
+    key -- otherwise the trial could stay on Bedrock and ignore the user key.
     """
     provider = (settings.get_provider_for_trial(agent, model) or "").lower()
     if provider in _ANTHROPIC_PROVIDERS:

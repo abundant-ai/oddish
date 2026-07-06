@@ -58,7 +58,12 @@ class HarborOverrideImportError(Exception):
 
 
 def _runtime_env_overrides(
-    *, agent: str, model: str | None, raw_harbor_config: dict[str, Any], is_probe: bool
+    *,
+    agent: str,
+    model: str | None,
+    raw_harbor_config: dict[str, Any],
+    is_probe: bool,
+    extra_agent_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build child runtime env overrides."""
     uses_openai = _trial_uses_openai_provider(
@@ -70,10 +75,18 @@ def _runtime_env_overrides(
     env: dict[str, str] = {}
     if uses_openai:
         env.update(settings.get_openai_agent_env(model=openai_model))
-    if "claude-code" in (
-        agent or ""
-    ).strip().lower() and _claude_code_forces_direct_api(is_probe):
+    is_claude_code = "claude-code" in (agent or "").strip().lower()
+    # A BYOK ANTHROPIC_API_KEY (in the agent env) means this claude-code trial
+    # runs against the direct Anthropic API on the user's key. Surface it in the
+    # child's ambient env and blank Bedrock creds so Harbor's os.environ-based
+    # Bedrock check agrees -- even on a worker with no platform key.
+    byok_key = (
+        (extra_agent_env or {}).get("ANTHROPIC_API_KEY") if is_claude_code else None
+    )
+    if is_claude_code and (byok_key or _claude_code_forces_direct_api(is_probe)):
         env.update({var: "" for var in BEDROCK_ENV_VARS})
+    if byok_key:
+        env["ANTHROPIC_API_KEY"] = byok_key
     return env
 
 
@@ -124,6 +137,7 @@ def _build_payload(
             model=model,
             raw_harbor_config=raw_harbor_config,
             is_probe=is_probe,
+            extra_agent_env=extra_agent_env,
         ),
         "probe_task_dir": str(task_path) if is_probe else None,
         "probe_harness_dir": PROBE_HARNESS_DIR,
