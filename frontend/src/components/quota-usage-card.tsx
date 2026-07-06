@@ -30,7 +30,7 @@ export function QuotaUsageCard() {
     <div className="border-border bg-muted/30 rounded-lg border p-4">
       <div className="flex items-center gap-2">
         <Gauge className="text-muted-foreground h-4 w-4" />
-        <p className="text-foreground text-sm font-medium">Daily usage</p>
+        <p className="text-foreground text-sm font-medium">Usage (last 24h)</p>
       </div>
 
       <div className="mt-3">
@@ -43,7 +43,7 @@ export function QuotaUsageCard() {
             <p className="text-foreground text-sm">
               <span className="font-semibold">{formatDollars(used)}</span> of{" "}
               <span className="font-semibold">{formatDollars(limit)}</span> used
-              today
+              in the last 24h
               {reserved > 0 ? (
                 <span className="text-muted-foreground">
                   {" "}
@@ -63,12 +63,12 @@ export function QuotaUsageCard() {
             </div>
             {blocked ? (
               <p className="text-destructive text-xs">
-                You&rsquo;ve reached today&rsquo;s limit. New billable runs are
-                blocked until it resets.
+                You&rsquo;ve reached your 24-hour limit. New billable runs are
+                blocked until older spend ages out of the window.
               </p>
             ) : over ? (
               <p className="text-muted-foreground text-xs">
-                You&rsquo;re over today&rsquo;s budget. Runs aren&rsquo;t blocked
+                You&rsquo;re over your 24-hour budget. Runs aren&rsquo;t blocked
                 yet, but usage is being tracked.
               </p>
             ) : null}

@@ -60,4 +60,5 @@ async def test_sweep_route_renders_402_wrapped_in_detail(monkeypatch):
     assert detail["used_usd"] == pytest.approx(3.0)
     assert detail["reserved_usd"] == pytest.approx(1.0)
     assert detail["limit_usd"] == pytest.approx(2.0)
-    assert "Over your daily budget" in detail["message"]
+    assert "Over your budget" in detail["message"]
+    assert "rolling 24h" in detail["message"]

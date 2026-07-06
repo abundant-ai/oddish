@@ -173,7 +173,7 @@ class UserModel(TimestampedMixin, Base):
 
 
 class QuotaModel(TimestampedMixin, Base):
-    """Per-user daily dollar limit OVERRIDE.
+    """Per-user dollar limit OVERRIDE for the rolling 24h quota window.
 
     Rows exist only to override the read-time default (DEFAULT_DAILY_QUOTA_USD);
     a missing row means the member is enforced at that default. Keyed per

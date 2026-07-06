@@ -2,10 +2,11 @@
 
 ## What this slice does
 
-S3 makes a user's **daily spend** visible — nothing more. It reads the
-`billed_user_id` + `cost_usd` columns that S1 and S2 guaranteed, sums them per
-user per day, and surfaces the number two ways: a self-service card ("$X of $Y
-used today") and an admin table of every member's spend. There is **no
+S3 makes a user's **rolling 24-hour spend** visible — nothing more. It reads
+the `billed_user_id` + `cost_usd` columns that S1 and S2 guaranteed, sums them
+per user over the trailing 24 hours, and surfaces the number two ways: a
+self-service card ("$X of $Y used in the last 24h") and an admin table of every
+member's spend. There is **no
 enforcement** here — no run is blocked, no cap is compared. S5 is the slice that
 turns this read into a gate.
 
@@ -17,28 +18,27 @@ The one query lives in `oddish/src/oddish/core/quotas.py`:
 SELECT COALESCE(SUM(cost_usd), 0) FROM trials
 WHERE org_id = :org_id
   AND billed_user_id = :user_id
-  AND finished_at >= :period_start   -- start_of_today_utc()
+  AND finished_at >= :period_start   -- quota_window_start() = now - 24h
   AND deleted_at IS NULL
 ```
 
-This is **settled spend today, keyed on settlement day**. Read the four
-predicates as four deliberate exclusions:
+This is **settled spend in the trailing 24h, keyed on settlement time**. Read
+the four predicates as four deliberate exclusions:
 
 - `finished_at >= period_start` — only trials that reached a terminal state
-  *and* settled at or after today's UTC midnight count. **In-flight trials
+  *and* settled within the last 24 hours count. **In-flight trials
   (`finished_at IS NULL`) are excluded** — SQL `>=` is false against `NULL`. So
-  spend lands in the day's total the moment it settles, not when it started. A
-  run that spanned midnight counts on the day it *finished*.
+  spend enters the window the moment it settles, not when it started, and ages
+  out exactly 24h later.
 - `billed_user_id = :user_id` — only trials attributed to this payer (the S2
   invariant). **NULL-billed rows** (imported / combined — already-paid trials)
   never match and are excluded.
 - `deleted_at IS NULL` — **soft-deleted** trials drop out of the total.
-- `COALESCE(..., 0)` — a user with no settled trials today sums to `0`, not
-  `NULL`.
+- `COALESCE(..., 0)` — a user with no settled trials in the window sums to
+  `0`, not `NULL`.
 
-`start_of_today_utc()` is calendar UTC midnight — it takes `now` and zeroes
-hour/minute/second/microsecond. The window is a fixed calendar day, not a
-rolling 24h.
+`quota_window_start()` is a rolling boundary — `now - 24h`. The window slides
+continuously; there is no calendar-day reset moment.
 
 ### Why quantize to `0.0001`
 
@@ -52,7 +52,7 @@ check must be evaluated against a stable, reproducible number, not float slop.
 
 ## The effective limit
 
-In S3 the effective daily limit is **just the deploy-time default**,
+In S3 the effective limit is **just the deploy-time default**,
 `settings.default_daily_quota_usd` (`Decimal("100.00")`, `config.py`). Every
 endpoint returns `float(settings.default_daily_quota_usd)` for every member —
 there are no per-user overrides yet. S4 introduces the override column and
@@ -85,8 +85,8 @@ Both live in `backend/api/routers/orgs.py`.
 
 - **`GET /quotas/me`** (`require_auth`) — caller-scoped. Calls `sum_cost_usd`
   with `auth.org_id` + `auth.user_id`, returns `QuotaUsageResponse`
-  (`user_id`, `limit_usd`, `used_usd`, `period="daily"`). If the caller has no
-  `user_id` (e.g. a bare API key with no user), `used_today` stays `0`.
+  (`user_id`, `limit_usd`, `used_usd`). If the caller has no `user_id` (e.g. a
+  bare API key with no user), `used_today` stays `0`.
 - **`GET /quotas`** (`require_can_manage_quotas`) — org-wide admin view. It does
   **one grouped query, not N+1**: it lists members once, then runs a single
   `SUM(cost_usd) ... GROUP BY billed_user_id` over the org's settled trials
@@ -124,9 +124,10 @@ the backend with `cache: "no-store"`, and passes upstream status/body through
 Two components consume them via SWR:
 
 - **`quota-usage-card.tsx`** — the member widget. Fetches `/api/quotas/me`,
-  renders "$used of $limit used today" with a progress bar; when
-  `used >= limit` it flips the bar to destructive and shows a "reached today's
-  limit" note. (The note is copy only — S3 does not actually block anything.)
+  renders "$used of $limit used in the last 24h" with a progress bar; when
+  `used >= limit` it flips the bar to destructive and shows a "reached your
+  24-hour limit" note. (The note is copy only — S3 does not actually block
+  anything.)
 - **`quota-admin-form.tsx`** — the **read-only** admin table. Fetches
   `/api/quotas`, sorts members by label, renders used/limit per row, and shows
   "Admins only." on a `403`. Its own comment flags that S4 will make `limit_usd`
@@ -154,17 +155,17 @@ confirmed bugs**. This section is documentation for a human, not a fix list —
 S3 is frozen and a later slice is being built on these files concurrently, so no
 code was touched. Residual things a reviewer should be aware of:
 
-- **`start_of_today_utc()` is server-clock UTC, not the user's local day.** A
-  user in UTC-7 sees their "daily" total reset at 5pm local. This is an accepted
-  MVP choice (one global calendar day keyed on settlement), consistent with how
-  S5 will compare against it — but it is a product decision worth stating
-  explicitly, not a bug.
+- **`quota_window_start()` is a rolling 24h window, timezone-free.** Every
+  user's window is the same `now - 24h` regardless of locale — there is no
+  "my day resets at 5pm local" confusion and no reset moment to burst around.
+  The flip side: when a user is capped there is no clean "try again at
+  midnight"; headroom returns gradually as older spend ages out.
 
-- **Day is keyed on `finished_at`, so a long run that crosses midnight counts
-  entirely on its finish day.** Its whole cost lands in the finish-day bucket
-  even though the work spanned two days. Intended (spend is counted at
-  settlement, matching S1's "settled cost" model), but it means a single
-  expensive overnight run can spike one day's total. Not a defect.
+- **The window is keyed on `finished_at`, so a long run counts entirely at its
+  finish time.** Its whole cost enters the window at settlement even though
+  the work spanned many hours. Intended (spend is counted at settlement,
+  matching S1's "settled cost" model), but it means a single expensive long
+  run can consume the window's headroom all at once. Not a defect.
 
 - **`limit_usd` is the flat default for everyone.** By design in S3 (overrides
   arrive in S4). Worth flagging only so a reader doesn't mistake the constant

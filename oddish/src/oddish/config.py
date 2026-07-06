@@ -933,6 +933,9 @@ class Settings(BaseSettings):
     auto_start_workers: bool = True
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
+    # Per-user budget over a ROLLING 24h window (quota_window_start), not a
+    # calendar day. The name keeps "daily" for env-var stability
+    # (ODDISH_DEFAULT_DAILY_QUOTA_USD).
     default_daily_quota_usd: Decimal = Decimal("100.00")
     # Budget stand-in for a FINISHED trial that reported no price (cost_usd NULL):
     # counted toward the daily quota so an unpriced/cancelled/reaped run is never

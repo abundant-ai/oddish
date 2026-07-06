@@ -170,10 +170,10 @@ export function QuotaAdminForm() {
               <TableHead className="h-9 text-xs">Member</TableHead>
               <TableHead className="h-9 w-24 text-xs">Role</TableHead>
               <TableHead className="h-9 w-44 text-right text-xs">
-                Used today
+                Used (24h)
               </TableHead>
               <TableHead className="h-9 w-36 text-right text-xs">
-                Daily limit
+                Limit (per 24h)
               </TableHead>
             </TableRow>
           </TableHeader>
@@ -239,7 +239,7 @@ export function QuotaAdminForm() {
                         min={0}
                         step="0.01"
                         inputMode="decimal"
-                        aria-label={`Daily limit for ${memberLabel(member)}`}
+                        aria-label={`24-hour limit for ${memberLabel(member)}`}
                         aria-invalid={err ? true : undefined}
                         className={`h-8 w-28 text-right font-mono text-xs ${
                           err

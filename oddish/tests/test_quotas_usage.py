@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
 from oddish.core.quotas import (  # noqa: E402
-    start_of_today_utc,
+    quota_window_start,
     sum_cost_usd,
     sum_cost_usd_by_user,
 )
@@ -53,16 +53,16 @@ async def cleanup_task_ids():
             )
 
 
-def test_start_of_today_utc_is_calendar_midnight_boundary():
-    last_moment_of_the_day = datetime(2026, 6, 30, 23, 59, 59, 999000, tzinfo=timezone.utc)
-    first_moment_of_the_day = datetime(2026, 6, 30, 0, 0, 0, tzinfo=timezone.utc)
-    first_moment_of_next_day = datetime(2026, 7, 1, 0, 0, 0, tzinfo=timezone.utc)
+def test_quota_window_start_is_a_rolling_24h_boundary():
+    now = datetime(2026, 6, 30, 15, 30, 45, 123000, tzinfo=timezone.utc)
 
-    assert start_of_today_utc(last_moment_of_the_day) == first_moment_of_the_day
-    assert start_of_today_utc(first_moment_of_the_day) == first_moment_of_the_day
-    assert start_of_today_utc(last_moment_of_the_day).tzinfo is not None
-    assert start_of_today_utc(first_moment_of_next_day) > start_of_today_utc(
-        last_moment_of_the_day
+    window_start = quota_window_start(now)
+    assert window_start == datetime(2026, 6, 29, 15, 30, 45, 123000, tzinfo=timezone.utc)
+    assert window_start.tzinfo is not None
+    # The window slides continuously: there is no shared calendar boundary —
+    # one second later, the window start is one second later too.
+    assert quota_window_start(now + timedelta(seconds=1)) == window_start + timedelta(
+        seconds=1
     )
 
 
@@ -76,7 +76,9 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
     billed_user = f"user-A-{_RUN}"
 
     now = datetime.now(timezone.utc)
-    yesterday = now - timedelta(days=1)
+    # Strictly older than the rolling 24h window (now - 24h exactly would
+    # still match the inclusive >= window-start predicate).
+    aged_out = now - timedelta(hours=25)
 
     async with get_session() as session:
         await create_task(
@@ -111,18 +113,18 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
         billed_to_nobody.cost_usd = 7.00
         billed_to_nobody.billed_user_id = None
 
-        finished_before_today = await session.get(TrialModel, f"{task_id}-5")
-        finished_before_today.finished_at = yesterday
-        finished_before_today.cost_usd = 3.00
+        finished_before_window = await session.get(TrialModel, f"{task_id}-5")
+        finished_before_window.finished_at = aged_out
+        finished_before_window.cost_usd = 3.00
 
         await session.flush()
 
-        settled_today = await sum_cost_usd(
-            session, org_id, billed_user, start_of_today_utc(now)
+        settled_in_window = await sum_cost_usd(
+            session, org_id, billed_user, quota_window_start(now)
         )
-        grouped = await sum_cost_usd_by_user(session, org_id, start_of_today_utc(now))
+        grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    assert settled_today == Decimal("9.30")
+    assert settled_in_window == Decimal("9.30")
     assert grouped[billed_user] == Decimal("9.30")
 
 
@@ -173,8 +175,10 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
 
         await session.flush()
 
-        settled = await sum_cost_usd(session, org_id, billed_user, start_of_today_utc(now))
-        grouped = await sum_cost_usd_by_user(session, org_id, start_of_today_utc(now))
+        settled = await sum_cost_usd(
+            session, org_id, billed_user, quota_window_start(now)
+        )
+        grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
     # floored(started+unpriced) + priced + 0(explicit-zero) + 0(never-started)
     expected = floor + Decimal("0.25")

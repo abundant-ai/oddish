@@ -1,5 +1,12 @@
 # User Quotas MVP, explained from first principles
 
+> **Update (2026-07):** the budget window described in this document has since
+> changed from a calendar UTC day (`start_of_today_utc()`, reset at UTC
+> midnight) to a **rolling 24-hour window** (`quota_window_start()` =
+> `now - 24h`). Everything else — settlement keyed on `finished_at`,
+> attribution, reservations, enforcement — is unchanged. Where this document
+> says "today" / "daily", read "the trailing 24 hours".
+
 Audience: a 3rd year CS student. You know data structures, SQL basics, HTTP, and a little Python and JavaScript. You have not necessarily seen SQLAlchemy, FastAPI, Pydantic, Alembic, Next.js, or React SWR. Those are explained where they appear.
 
 Open this file in the worktree window (`/Users/charles/worktrees/oddish-user-quotas-mvp`) so the code links resolve. Every claim here is checked against executable code, not against comments. Comments are ignored as proof. Where something looks wrong, it is flagged inline and collected in [section 9](#9-suspicious-findings-consolidated).

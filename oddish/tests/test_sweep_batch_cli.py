@@ -126,8 +126,8 @@ def test_processed_batch_returns_results(monkeypatch, status):
 @pytest.mark.parametrize(
     "body",
     [
-        {"detail": {"message": "Over your daily budget: nope."}},  # FastAPI wrap
-        {"message": "Over your daily budget: nope."},  # legacy flat handler
+        {"detail": {"message": "Over your budget: nope."}},  # FastAPI wrap
+        {"message": "Over your budget: nope."},  # legacy flat handler
     ],
 )
 def test_quota_402_message_read_from_both_wire_shapes(monkeypatch, capsys, body):
@@ -136,7 +136,7 @@ def test_quota_402_message_read_from_both_wire_shapes(monkeypatch, capsys, body)
     _install(monkeypatch, _Resp(402, json_data=body))
     with pytest.raises(typer.Exit):
         api.post_sweep_payload("http://api", {"task_id": "t-a"})
-    assert "Over your daily budget" in capsys.readouterr().err
+    assert "Over your budget" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

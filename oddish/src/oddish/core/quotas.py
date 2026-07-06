@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import case, func, select, text
@@ -23,8 +23,18 @@ def to_money_decimal(raw_amount) -> Decimal:
     return Decimal(str(raw_amount or 0)).quantize(MONEY_QUANTUM)
 
 
-def start_of_today_utc(now: datetime | None = None) -> datetime:
-    return (now or datetime.now(timezone.utc)).replace(hour=0, minute=0, second=0, microsecond=0)
+QUOTA_WINDOW = timedelta(hours=24)
+
+
+def quota_window_start(now: datetime | None = None) -> datetime:
+    """Start of the rolling 24-hour quota window.
+
+    The budget window slides continuously (now - 24h) instead of resetting at
+    UTC calendar midnight, so spend "ages out" exactly 24h after it settled and
+    there is no reset moment to burst around (2x the cap by straddling
+    midnight).
+    """
+    return (now or datetime.now(timezone.utc)) - QUOTA_WINDOW
 
 
 # Settled spend counts even after a trial/experiment is soft-deleted (deleting
