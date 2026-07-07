@@ -136,6 +136,12 @@ class LiveTailer:
                     )
                     return
             if stopping:
+                if self.carry:
+                    self.fold.feed_line(self.carry)
+                    try:
+                        await self._checkpoint()
+                    except Exception:
+                        pass
                 return
             try:
                 await asyncio.wait_for(
@@ -159,6 +165,7 @@ class LiveTailer:
             return
         encoded = (result.stdout or "").strip()
         if not encoded:
+            await self._checkpoint()
             return
         try:
             raw = base64.b64decode(encoded, validate=True)
