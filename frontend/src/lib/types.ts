@@ -759,6 +759,7 @@ export interface CostExperimentBreakdown {
   owner_user_id: string | null;
   owner_name: string | null;
   owner_email: string | null;
+  owner_label: string | null;
   org_name: string | null;
   created_at: string | null;
   last_activity_at: string | null;

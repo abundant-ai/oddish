@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TaskModel, TrialModel, utcnow
+from oddish.db import ExperimentModel, TaskModel, TrialModel, task_experiments, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1073,6 +1073,7 @@ class CostExperimentBreakdown(BaseModel):
     owner_user_id: str | None
     owner_name: str | None = None
     owner_email: str | None = None
+    owner_label: str | None = None
     org_name: str | None = None
     created_at: datetime | None
     last_activity_at: datetime | None
@@ -1354,6 +1355,51 @@ async def _cost_time_series(
     return by_agent, by_model, by_user
 
 
+def _clean_author(value: str | None) -> str | None:
+    """Ignore blank and placeholder 'unknown' author strings."""
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.lower() == "unknown":
+        return None
+    return cleaned
+
+
+async def _primary_task_authors(
+    session: AsyncSession, experiment_ids: list[str]
+) -> dict[str, str]:
+    """Get each experiment's oldest-task author, used as a fallback owner name."""
+    if not experiment_ids:
+        return {}
+    github_tag = TaskModel.tags["github_username"].astext
+    rows = (
+        await session.execute(
+            select(
+                task_experiments.c.experiment_id.label("experiment_id"),
+                github_tag.label("github_username"),
+                TaskModel.user.label("user"),
+            )
+            .select_from(
+                task_experiments.join(
+                    TaskModel, TaskModel.id == task_experiments.c.task_id
+                )
+            )
+            .where(task_experiments.c.experiment_id.in_(experiment_ids))
+            .where(task_experiments.c.deleted_at.is_(None))
+            .order_by(
+                task_experiments.c.experiment_id.asc(),
+                TaskModel.created_at.asc(),
+                TaskModel.id.asc(),
+            )
+            .distinct(task_experiments.c.experiment_id)
+        )
+    ).all()
+    authors: dict[str, str] = {}
+    for row in rows:
+        name = _clean_author(row.github_username) or _clean_author(row.user)
+        if name:
+            authors[str(row.experiment_id)] = name
+    return authors
+
+
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
@@ -1376,6 +1422,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.name.label("exp_name"),
             ExperimentModel.org_id.label("exp_org_id"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
+            ExperimentModel.owner.label("exp_owner"),
             TrialModel.billed_user_id.label("billed_user_id"),
             ExperimentModel.created_at.label("exp_created_at"),
             ExperimentModel.last_activity_at.label("exp_last_activity_at"),
@@ -1428,6 +1475,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.name,
             ExperimentModel.org_id,
             ExperimentModel.owner_user_id,
+            ExperimentModel.owner,
             TrialModel.billed_user_id,
             ExperimentModel.created_at,
             ExperimentModel.last_activity_at,
@@ -1499,6 +1547,7 @@ async def get_cost_breakdown_core(
                 "name": row.exp_name,
                 "org_id": row.exp_org_id,
                 "owner_user_id": owner_user_id,
+                "owner": row.exp_owner,
                 "created_at": row.exp_created_at,
                 "last_activity_at": row.exp_last_activity_at,
                 "trial_count": 0,
@@ -1582,12 +1631,17 @@ async def get_cost_breakdown_core(
     experiment_rows = sorted(
         experiments.values(), key=lambda e: e["cost_usd"], reverse=True
     )[:experiment_limit]
+    task_authors = await _primary_task_authors(
+        session, [str(e["experiment_id"]) for e in experiment_rows]
+    )
     experiments_out = [
         CostExperimentBreakdown(
             experiment_id=str(e["experiment_id"]),
             name=e["name"],
             org_id=e["org_id"],
             owner_user_id=e["owner_user_id"],
+            owner_label=_clean_author(e["owner"])
+            or task_authors.get(str(e["experiment_id"])),
             created_at=e["created_at"],
             last_activity_at=e["last_activity_at"],
             trial_count=int(e["trial_count"]),
