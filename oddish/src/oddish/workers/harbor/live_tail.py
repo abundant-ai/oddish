@@ -245,6 +245,8 @@ def start(
     tailer = LiveTailer(
         trial_id=trial_id, environment=environment, attempt=attempt, model=model
     )
+    if old:
+        tailer._last_cost = old[0]._last_cost
     task = asyncio.create_task(tailer.run())
     entry = (tailer, task)
     _tailers[trial_id] = entry

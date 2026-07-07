@@ -327,11 +327,13 @@ async def test_start_replaces_existing_tailer(monkeypatch):
     kwargs = dict(trial_id="t1", environment=env, attempt=0, agent="claude-code", model=None)
     live_tail.start(**kwargs)
     old_tailer, old_task = live_tail._tailers["t1"]
+    old_tailer._last_cost = 2.5
     live_tail.start(**{**kwargs, "attempt": 1})
     new_tailer, new_task = live_tail._tailers["t1"]
     assert new_tailer is not old_tailer
     assert new_tailer.attempt == 1
     assert old_tailer.replaced and not new_tailer.replaced
+    assert new_tailer._last_cost == 2.5
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     assert live_tail._tailers.get("t1") == (new_tailer, new_task)
