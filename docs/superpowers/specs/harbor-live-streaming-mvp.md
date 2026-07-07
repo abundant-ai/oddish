@@ -91,10 +91,14 @@ Registered from the existing hook dispatcher in
   dispatcher already binds by closure — `hook_event.trial_id` is Harbor's
   `trial_name`, a different namespace — and stamp the current `trial.attempts`
   (load-bearing, see §7).
-- On `AGENT_END` / `CANCEL`: set a stop flag; the tailer does one final drain and
-  exits. Never exec inside the hook body — hooks are awaited inline in the trial's
-  control flow, so a drain there blocks Harbor's teardown. `END` is too late to
-  drain at all: Harbor stops the environment *before* emitting it
+- On `AGENT_END` / `CANCEL`: set a stop flag; the tailer wakes immediately, does
+  one final drain, and exits. The drain is **best-effort by contract**: it races
+  Harbor's continuation (verification, then env stop — and on Harbor-internal
+  retries, a fresh AGENT_START replaces the tailer outright), and any bytes it
+  misses are covered by the authoritative end-of-trial extraction. Never exec
+  inside the hook body — hooks are awaited inline in the trial's control flow, so
+  a drain there blocks Harbor's teardown. `END` is too late to drain at all:
+  Harbor stops the environment *before* emitting it
   (`harbor/trial/trial.py:383-387`); treat END as bookkeeping only.
 
 Each tick:
@@ -314,6 +318,8 @@ sequenceDiagram
 | failure | what happens | absorbed by |
 |---|---|---|
 | exec tick fails (sandbox busy/dying) | skip tick, retry next | pull model — no state lost |
+| tail tooling missing / sandbox dead | rc 127 or repeated failures | pipefail + disable after N consecutive failures, logged |
+| harbor-internal retry (same trial, one job) | new AGENT_START while old tailer lives | start() replaces the registry entry, old task cancelled |
 | worker hard-killed | tailer dies with trial; last checkpoint persists | new attempt starts at byte 0; events keyed by attempt |
 | trial auto-retried in place | same `trial_id`, `seq` restarts at 0 | `attempt` in the PK — new rows land beside old ones |
 | duplicate read / replayed lines | same events re-parsed | fold-by-message.id + `ON CONFLICT DO NOTHING` |

@@ -1,12 +1,65 @@
+import asyncio
+import base64
+import contextlib
 import json
+
+import pytest
 
 from oddish.workers.harbor import live_tail
 from oddish.workers.harbor.live_tail import (
     ClaudeUsageFold,
+    LiveTailer,
+    TailExecError,
     UsageTotals,
     price_totals,
     split_lines,
 )
+
+
+class FakeResult:
+    def __init__(self, stdout="", return_code=0):
+        self.stdout = stdout
+        self.return_code = return_code
+
+
+class FakeEnv:
+    def __init__(self, results):
+        self.results = list(results)
+        self.commands = []
+
+    async def exec(self, command, timeout_sec=None):
+        self.commands.append(command)
+        result = self.results.pop(0) if self.results else FakeResult()
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def b64(raw: bytes) -> FakeResult:
+    return FakeResult(stdout=base64.b64encode(raw).decode())
+
+
+class FakeSession:
+    def __init__(self):
+        self.stmts = []
+
+    async def execute(self, stmt):
+        self.stmts.append(stmt)
+
+
+def patch_db(monkeypatch):
+    session = FakeSession()
+
+    @contextlib.asynccontextmanager
+    async def fake_get_session():
+        yield session
+
+    monkeypatch.setattr(live_tail, "get_session", fake_get_session)
+    return session
+
+
+def checkpoint_params(session):
+    return [dict(stmt.compile().params) for stmt in session.stmts]
 
 
 def assistant_line(msg_id, usage, model="claude-opus-4-8"):
@@ -109,3 +162,102 @@ def test_supports_only_claude_code():
     assert live_tail.supports("claude-code@2.1")
     assert not live_tail.supports("codex")
     assert not live_tail.supports(None)
+
+
+@pytest.mark.asyncio
+async def test_tick_offset_math_and_checkpoint_across_split_chunks(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: 0.5)
+    line1 = assistant_line("msg_1", {"input_tokens": 10, "output_tokens": 2})
+    line2 = assistant_line("msg_2", {"input_tokens": 3, "output_tokens": 4})
+    raw1 = line1 + b"\n" + line2[:7]
+    raw2 = line2[7:] + b"\n"
+    env = FakeEnv([b64(raw1), b64(raw2), FakeResult()])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+
+    await tailer._tick()
+    assert tailer.offset == len(raw1)
+    assert tailer.carry == line2[:7]
+    assert set(tailer.fold.usage_by_id) == {"msg_1"}
+
+    await tailer._tick()
+    assert tailer.offset == len(raw1) + len(raw2)
+    assert tailer.carry == b""
+    assert set(tailer.fold.usage_by_id) == {"msg_1", "msg_2"}
+
+    await tailer._tick()
+    params = checkpoint_params(session)
+    assert len(params) == 2
+    assert params[0]["input_tokens"] == 10 and params[0]["output_tokens"] == 2
+    assert params[1]["input_tokens"] == 13 and params[1]["output_tokens"] == 6
+    assert params[1]["cost_usd"] == 0.5
+    assert "+1 " in env.commands[0] and f"+{len(raw1) + 1} " in env.commands[1]
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_writes_null_cost_when_unpriceable(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model="m")
+    await tailer._tick()
+    params = checkpoint_params(session)
+    assert params[-1]["cost_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_tick_rc_semantics():
+    env = FakeEnv([FakeResult(return_code=1)])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    await tailer._tick()
+
+    env = FakeEnv([FakeResult(return_code=127)])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    with pytest.raises(TailExecError):
+        await tailer._tick()
+
+    env = FakeEnv([FakeResult(return_code=1)])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer.offset = 10
+    with pytest.raises(TailExecError):
+        await tailer._tick()
+
+
+@pytest.mark.asyncio
+async def test_run_disables_after_consecutive_failures(monkeypatch):
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 0.001)
+    env = FakeEnv([RuntimeError("boom")] * 10)
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    await asyncio.wait_for(tailer.run(), timeout=5)
+    assert len(env.commands) == live_tail.MAX_CONSECUTIVE_FAILURES
+
+
+@pytest.mark.asyncio
+async def test_stop_triggers_final_drain(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 5}) + b"\n")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer.request_stop()
+    await asyncio.wait_for(tailer.run(), timeout=5)
+    assert len(env.commands) == 1
+    assert checkpoint_params(session)[-1]["input_tokens"] == 5
+
+
+@pytest.mark.asyncio
+async def test_start_replaces_existing_tailer(monkeypatch):
+    monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
+    env = FakeEnv([])
+    kwargs = dict(trial_id="t1", environment=env, attempt=0, agent="claude-code", model=None)
+    live_tail.start(**kwargs)
+    old_tailer, old_task = live_tail._tailers["t1"]
+    live_tail.start(**{**kwargs, "attempt": 1})
+    new_tailer, new_task = live_tail._tailers["t1"]
+    assert new_tailer is not old_tailer
+    assert new_tailer.attempt == 1
+    with contextlib.suppress(asyncio.CancelledError):
+        await old_task
+    assert live_tail._tailers.get("t1") == (new_tailer, new_task)
+    await live_tail.shutdown("t1")
+    assert "t1" not in live_tail._tailers

@@ -16,6 +16,11 @@ from oddish.workers.queue.shared import console
 CLAUDE_LOG_PATH = "/logs/agent/claude-code.txt"
 MAX_CHUNK_BYTES = 256 * 1024
 EXEC_TIMEOUT_SEC = 30
+MAX_CONSECUTIVE_FAILURES = 5
+
+
+class TailExecError(RuntimeError):
+    pass
 
 
 def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
@@ -112,14 +117,22 @@ class LiveTailer:
         self._stop.set()
 
     async def run(self) -> None:
+        failures = 0
         while True:
             stopping = self._stop.is_set()
             try:
                 await self._tick()
+                failures = 0
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                console.print(f"[dim]Trial {self.trial_id} live tail: {exc}[/dim]")
+                failures += 1
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    console.print(
+                        f"[dim]Trial {self.trial_id} live tail disabled "
+                        f"after {failures} failures: {exc}[/dim]"
+                    )
+                    return
             if stopping:
                 return
             try:
@@ -131,12 +144,17 @@ class LiveTailer:
 
     async def _tick(self) -> None:
         command = (
-            f"tail -c +{self.offset + 1} {CLAUDE_LOG_PATH} 2>/dev/null"
-            f" | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
+            f"set -o pipefail; tail -c +{self.offset + 1} '{CLAUDE_LOG_PATH}'"
+            f" 2>/dev/null | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
         )
         result = await self.environment.exec(
             command=command, timeout_sec=EXEC_TIMEOUT_SEC
         )
+        return_code = getattr(result, "return_code", 0)
+        if return_code not in (0, None):
+            if return_code == 127 or self.offset > 0:
+                raise TailExecError(f"tail exec failed rc={return_code}")
+            return
         encoded = (result.stdout or "").strip()
         if not encoded:
             return
@@ -169,9 +187,8 @@ class LiveTailer:
             "cache_tokens": totals.cache_tokens,
             "cache_write_tokens": totals.cache_write_tokens,
             "output_tokens": totals.output_tokens,
+            "cost_usd": cost,
         }
-        if cost is not None:
-            values["cost_usd"] = cost
         async with get_session() as session:
             await session.execute(
                 update(TrialModel)
@@ -201,14 +218,24 @@ def start(
 ) -> None:
     if not settings.live_tail_enabled:
         return
-    if environment is None or not supports(agent) or trial_id in _tailers:
+    if environment is None or not supports(agent):
         return
+    old = _tailers.pop(trial_id, None)
+    if old:
+        old[0].request_stop()
+        old[1].cancel()
     tailer = LiveTailer(
         trial_id=trial_id, environment=environment, attempt=attempt, model=model
     )
     task = asyncio.create_task(tailer.run())
-    _tailers[trial_id] = (tailer, task)
-    task.add_done_callback(lambda _t: _tailers.pop(trial_id, None))
+    entry = (tailer, task)
+    _tailers[trial_id] = entry
+
+    def _cleanup(_task: asyncio.Task) -> None:
+        if _tailers.get(trial_id) is entry:
+            _tailers.pop(trial_id, None)
+
+    task.add_done_callback(_cleanup)
 
 
 def request_stop(trial_id: str) -> None:
