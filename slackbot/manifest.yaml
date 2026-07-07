@@ -1,0 +1,20 @@
+display_information:
+  name: Oddish Claude
+  description: Ask Claude about oddish spend, queue health, tasks, and failed trials.
+features:
+  bot_user:
+    display_name: Oddish Claude
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+settings:
+  event_subscriptions:
+    request_url: https://REPLACE.modal.run/slack/events
+    bot_events:
+      - app_mention
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
