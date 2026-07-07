@@ -732,6 +732,10 @@ export interface CostUserBreakdown {
   output_tokens: number;
   cost_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  inflight_trial_count?: number;
+  quota_spent_usd?: number | null;
+  quota_limit_usd?: number | null;
   models: CostModelBreakdown[];
 }
 
@@ -784,6 +788,12 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  prev_trial_count?: number | null;
+  prev_user_count?: number | null;
+  failed_cost_usd?: number;
+  failed_trial_count?: number;
+  prev_failed_cost_usd?: number | null;
 }
 
 export interface CostBreakdownResponse {
