@@ -178,10 +178,13 @@ export function Nav() {
                     <span className="hidden sm:inline">Docs</span>
                   </a>
                 </Button>
+                {/* No afterSelect/afterCreateOrganizationUrl: Clerk's
+                    client-side navigation would render /dashboard from the
+                    URL-keyed router cache (previous org's payload) before the
+                    org-change effect below fires its hard reload. Routing the
+                    switch solely through that reload avoids the stale flash. */}
                 <OrganizationSwitcher
                   hidePersonal
-                  afterCreateOrganizationUrl="/dashboard"
-                  afterSelectOrganizationUrl="/dashboard"
                   appearance={navSwitcherAppearance}
                 />
                 <DropdownMenu modal={false}>
