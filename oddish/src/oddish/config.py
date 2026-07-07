@@ -1007,6 +1007,22 @@ class Settings(BaseSettings):
     # at provision time. See docs/cc-chat-snapshot.md to build it.
     cc_chat_daytona_snapshot: str = ""
 
+    # GKE execution backend (TPU trials). The cluster and Artifact Registry
+    # coordinates are unset by default; setting gke_cluster_name registers the
+    # backend and makes ``--env gke`` available. Deployment targets region
+    # us-east5 (zone us-east5-b), the only location with preemptible TPU v6e
+    # DWS flex-start capacity.
+    gke_cluster_name: str | None = None
+    gke_region: str | None = None
+    gke_project_id: str | None = None
+    gke_namespace: str = "oddish-trials"
+    gke_registry_location: str | None = None
+    gke_registry_name: str | None = None
+    # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
+    # while the node is created; the readiness wait is generous to match.
+    gke_flex_start: bool = True
+    gke_pod_ready_timeout_sec: int = 3600
+
     # API server
     api_host: str = "0.0.0.0"
     api_port: int = 8000
