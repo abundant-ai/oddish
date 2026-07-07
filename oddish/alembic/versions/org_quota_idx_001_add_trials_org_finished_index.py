@@ -1,7 +1,7 @@
 """add (org_id, finished_at) trials index for the org-wide quota sums
 
 Revision ID: org_quota_idx_001
-Revises: ixdrift01_add_model_indexes
+Revises: taskapikey_oss_001
 Create Date: 2026-07-06 00:00:00.000000
 
 ``sum_org_cost_usd`` filters ``org_id = ? AND finished_at > start_of_month``
@@ -20,7 +20,7 @@ from alembic import op
 
 
 revision: str = "org_quota_idx_001"
-down_revision: Union[str, Sequence[str], None] = "ixdrift01_add_model_indexes"
+down_revision: Union[str, Sequence[str], None] = "taskapikey_oss_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

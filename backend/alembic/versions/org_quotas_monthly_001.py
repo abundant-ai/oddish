@@ -1,7 +1,7 @@
 """add org_quotas table (org-level aggregate MONTHLY cap overrides)
 
 Revision ID: org_quotas_monthly_001
-Revises: u7v8w9x0y1z2
+Revises: taskapikey_be_001
 Create Date: 2026-07-06 00:00:00.000000
 
 Override-only table: a row overrides the read-time
@@ -26,7 +26,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "org_quotas_monthly_001"
-down_revision: Union[str, Sequence[str], None] = "u7v8w9x0y1z2"
+down_revision: Union[str, Sequence[str], None] = "taskapikey_be_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
