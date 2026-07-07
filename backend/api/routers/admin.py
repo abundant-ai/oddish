@@ -188,6 +188,9 @@ async def get_user_costs(
         7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
     ),
     task_limit: int = Query(100, ge=1, le=500),
+    org_id: str | None = Query(
+        None, description="Org slice to bill against; defaults to the user's home org"
+    ),
 ) -> UserCostBreakdownResponse:
     """Per-user billed spend over settled trials (finished_at axis, estimate-priced)."""
     effective_window = None if window_days == 0 else window_days
@@ -199,7 +202,7 @@ async def get_user_costs(
             raise HTTPException(status_code=404, detail="User not found")
         result = await get_user_cost_breakdown_core(
             session,
-            org_id=user.org_id,
+            org_id=org_id if org_id is not None else user.org_id,
             billed_user_id=user_id,
             window_days=effective_window,
             task_limit=task_limit,
