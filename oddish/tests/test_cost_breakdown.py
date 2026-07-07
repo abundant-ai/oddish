@@ -67,6 +67,7 @@ async def seeded_cost_data():
                     name="cost-exp-two",
                     org_id=ORG_1,
                     owner_user_id=USER_B,
+                    owner="gh-octocat",
                     created_at=recent,
                     last_activity_at=recent,
                 ),
@@ -104,6 +105,7 @@ async def seeded_cost_data():
             (E4, ORG_1),
             (E5, ORG_2),
         ):
+            tags = {"github_username": "e3-gh"} if exp_id == E3 else None
             session.add(
                 TaskModel(
                     id=f"{exp_id}-task",
@@ -111,6 +113,7 @@ async def seeded_cost_data():
                     user="test",
                     org_id=org_id,
                     task_path="some/path",
+                    tags=tags,
                 )
             )
         session.add_all(
@@ -259,6 +262,10 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E3].models[0].model == "claude-opus-4-8"
     assert exps[E3].owner_user_id is None
 
+    assert exps[E2].owner_label == "gh-octocat", exps[E2].owner_label
+    assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
+    assert exps[E1].owner_label == "test", exps[E1].owner_label
+
     by_user = {u.owner_user_id: u for u in result.by_user}
     assert _approx(by_user[USER_A].cost_usd, 3.5)
     assert by_user[USER_A].experiment_count == 2
@@ -312,6 +319,7 @@ async def test_cost_breakdown_excludes_non_billable_and_normalizes_sentinel(
 
     assert E5 not in exps
     assert exps[E3].owner_user_id is None, exps[E3].owner_user_id
+    assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
 
     assert all(e.owner_user_id != EXPERIMENTS_UNATTRIBUTED_OWNER for e in exps.values())
     owner_ids = {u.owner_user_id for u in result.by_user}
