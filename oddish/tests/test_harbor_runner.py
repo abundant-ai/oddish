@@ -2193,3 +2193,130 @@ def test_env_build_timeout_base_matches_harbor_default():
         harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
         == EnvironmentConfig.model_fields["build_timeout_sec"].default
     )
+
+
+def test_effective_pod_ready_timeout_prefers_kwargs_override():
+    # A submission override in the merged env kwargs beats the platform default.
+    assert (
+        harbor_runner._effective_pod_ready_timeout_sec(
+            {"pod_ready_timeout_sec": 7200}, 3600
+        )
+        == 7200
+    )
+
+
+def test_effective_pod_ready_timeout_coerces_string_override():
+    # --environment-kwarg values arrive as strings; coerce before the arithmetic
+    # in the sizing helper (which expects an int).
+    assert (
+        harbor_runner._effective_pod_ready_timeout_sec(
+            {"pod_ready_timeout_sec": "7200"}, 3600
+        )
+        == 7200
+    )
+
+
+def test_effective_pod_ready_timeout_falls_back_when_absent():
+    # No override -> the platform default stands.
+    assert harbor_runner._effective_pod_ready_timeout_sec({}, 3600) == 3600
+
+
+def test_effective_pod_ready_timeout_falls_back_when_unparseable():
+    # A malformed value must not crash the sizing arithmetic; fall back safely.
+    assert (
+        harbor_runner._effective_pod_ready_timeout_sec(
+            {"pod_ready_timeout_sec": "not-a-number"}, 3600
+        )
+        == 3600
+    )
+
+
+def test_gke_env_build_multiplier_sizes_off_effective_pod_ready_override(
+    monkeypatch, tmp_path
+):
+    # A submission can raise pod_ready_timeout_sec above the platform default via
+    # environment kwargs (caller-wins in harbor_env_kwargs). The outer build wait
+    # must be sized to that larger EFFECTIVE value, not the smaller raw setting,
+    # or Harbor deletes a still-Pending flex-start Pod before capacity is granted.
+    from harbor.models.environment_type import EnvironmentType
+    from oddish.runtime.backends.gke import GkeBackend
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text("", encoding="utf-8")
+    jobs_dir = tmp_path / "jobs"
+
+    setting = 3600
+    override = 7200
+    monkeypatch.setattr(harbor_runner.settings, "gke_pod_ready_timeout_sec", setting)
+    # GKE registered on the worker: harbor_env_kwargs seeds the default, then the
+    # submission override in env kwargs wins -- the merge the runner must honour.
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda name: GkeBackend())
+
+    captured: dict = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            captured.update(config)
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=jobs_dir,
+            model="global.anthropic.claude-sonnet-4-6",
+            environment=EnvironmentType.GKE,
+            harbor_config={
+                "environment": {
+                    "type": "gke",
+                    "kwargs": {"pod_ready_timeout_sec": override},
+                }
+            },
+        )
+    )
+
+    assert outcome.error is None
+    multiplier = captured["environment_build_timeout_multiplier"]
+    outer_wait = multiplier * harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
+    assert outer_wait >= override + harbor_runner._GKE_ENV_BUILD_OVERHEAD_SEC
+    # Strictly larger than sizing off the raw setting alone would have produced --
+    # the early-deletion regression this guards against.
+    setting_only = harbor_runner._sized_environment_build_timeout_multiplier(
+        environment=EnvironmentType.GKE,
+        environment_build_timeout_multiplier=None,
+        timeout_multiplier=None,
+        pod_ready_timeout_sec=setting,
+    )
+    assert multiplier > setting_only

@@ -96,6 +96,27 @@ def _sized_environment_build_timeout_multiplier(
     return float(max(effective_current, needed))
 
 
+def _effective_pod_ready_timeout_sec(
+    env_kwargs: dict[str, Any], default_sec: int
+) -> int:
+    """The pod-ready timeout Harbor will actually enforce for a GKE Pod.
+
+    ``GkeBackend.harbor_env_kwargs`` seeds ``pod_ready_timeout_sec`` from the
+    platform default but lets a submission override it (caller-wins), and that
+    override can arrive as a string via ``--environment-kwarg``. Read the merged
+    value, coercing to int, and fall back to ``default_sec`` when it is absent or
+    unparseable, so the outer build wait is sized to the timeout the Pod is
+    really given rather than the smaller raw setting.
+    """
+    raw = env_kwargs.get("pod_ready_timeout_sec")
+    if raw is None:
+        return default_sec
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default_sec
+
+
 def _read_query_cli_text() -> str:
     """Thin wrapper so tests can monkeypatch without reaching into probe_staging."""
     from oddish.worker.probe_staging import read_query_cli_text
@@ -350,7 +371,9 @@ async def run_harbor_trial_async(
                 hc.environment_build_timeout_multiplier
             ),
             timeout_multiplier=hc.timeout_multiplier,
-            pod_ready_timeout_sec=settings.gke_pod_ready_timeout_sec,
+            pod_ready_timeout_sec=_effective_pod_ready_timeout_sec(
+                env_config.kwargs, settings.gke_pod_ready_timeout_sec
+            ),
         )
         if env_build_multiplier is not None:
             job_config_kwargs["environment_build_timeout_multiplier"] = (
