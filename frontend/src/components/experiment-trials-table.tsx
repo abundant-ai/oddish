@@ -55,6 +55,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
+import { formatCostUsd, sumTaskTrialCost } from "@/lib/format";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2330,6 +2331,27 @@ export function ExperimentTrialsTable({
                                 v{task.current_version}
                               </span>
                             )}
+                            {(() => {
+                              const c = sumTaskTrialCost(task.trials);
+                              if (c.pricedCount === 0) return null;
+                              return (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
+                                      {c.hasEstimated ? "~" : ""}
+                                      {formatCostUsd(c.costUsd)}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Total cost across {c.pricedCount} priced trial
+                                    {c.pricedCount === 1 ? "" : "s"}
+                                    {c.hasEstimated
+                                      ? " · ~ includes token-estimated pricing"
+                                      : ""}
+                                  </TooltipContent>
+                                </Tooltip>
+                              );
+                            })()}
                             {/* Jump from the experiment to this task's own
                                 page. Hidden on the read-only share view since
                                 /tasks/[id] is an authenticated route. */}

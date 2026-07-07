@@ -8,6 +8,31 @@ export function formatCostUsd(value: number): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+export interface TaskTrialCost {
+  costUsd: number;
+  pricedCount: number;
+  hasEstimated: boolean;
+}
+
+// Priced, non-probe, non-superseded trials only — same scope as the experiment
+// header and /tasks rollup, so retries don't double-count.
+export function sumTaskTrialCost(
+  trials: Trial[] | null | undefined,
+): TaskTrialCost {
+  let costUsd = 0;
+  let pricedCount = 0;
+  let hasEstimated = false;
+  for (const trial of trials ?? []) {
+    if (trial.is_probe) continue;
+    if (trial.superseded_by_trial_id) continue;
+    if (trial.cost_usd == null) continue;
+    costUsd += trial.cost_usd;
+    pricedCount += 1;
+    if (trial.cost_is_estimated) hasEstimated = true;
+  }
+  return { costUsd, pricedCount, hasEstimated };
+}
+
 export function formatDurationSec(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "—";
   if (seconds < 1) return `${(seconds * 1000).toFixed(0)}ms`;

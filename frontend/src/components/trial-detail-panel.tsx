@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import { formatCostUsd, sumTaskTrialCost } from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -549,6 +550,7 @@ export function TrialDetailPanel({
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
+  const taskCost = sumTaskTrialCost(task?.trials);
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
   const sandboxBackend = getSandboxBackend(trial);
@@ -763,6 +765,29 @@ export function TrialDetailPanel({
                 </div>
               </CardContent>
             </Card>
+            {trial.cost_usd != null && (
+              <Card className="min-w-[120px] border">
+                <CardContent className="flex h-full items-center px-2 py-1">
+                  <div className="min-w-0">
+                    <div className="text-muted-foreground text-[8px] leading-none tracking-wider uppercase">
+                      Cost
+                    </div>
+                    <div className="mt-1 flex items-baseline gap-1">
+                      <span className="font-mono text-sm leading-none font-bold tabular-nums">
+                        {trial.cost_is_estimated ? "~" : ""}
+                        {formatCostUsd(trial.cost_usd)}
+                      </span>
+                      {taskCost.pricedCount > 1 && (
+                        <span className="text-muted-foreground text-[9px] leading-none">
+                          of {taskCost.hasEstimated ? "~" : ""}
+                          {formatCostUsd(taskCost.costUsd)} task
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
             {canRetry && (
               <Button
                 onClick={handleRetry}
