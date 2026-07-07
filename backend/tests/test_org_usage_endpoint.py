@@ -291,6 +291,87 @@ async def test_org_usage_does_not_swallow_other_programming_errors(
         app.dependency_overrides.clear()
 
 
+@requires_db
+@pytest.mark.asyncio
+async def test_org_usage_degrade_preserves_real_trial_usage(
+    org_with_member, monkeypatch
+):
+    """org_quotas missing degrades the CAP to the default, but month spend and
+    reservation live on trials and must still be reported (not zeroed)."""
+    from sqlalchemy.exc import ProgrammingError
+
+    class FakeUndefinedTable(Exception):
+        sqlstate = "42P01"
+
+    async def raise_undefined_table(session, org_id):
+        raise ProgrammingError(
+            "SELECT limit_usd FROM org_quotas", {}, FakeUndefinedTable()
+        )
+
+    async def fake_usage(session, org_id):
+        return Decimal("12.34"), Decimal("5.00")
+
+    monkeypatch.setattr(orgs_mod, "get_effective_org_limit", raise_undefined_table)
+    monkeypatch.setattr(orgs_mod, "_org_trial_usage", fake_usage)
+    monkeypatch.setattr(settings, "default_org_monthly_quota_usd", Decimal("300.00"))
+
+    org_id, member = org_with_member
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: _user_auth(
+        org_id=org_id, user_id=member.id, role=UserRole.MEMBER
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/quotas/org")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["org_limit_usd"] == pytest.approx(300.0)
+    assert body["org_used_month_usd"] == pytest.approx(12.34)
+    assert body["org_reserved_usd"] == pytest.approx(5.0)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_put_org_quota_degrades_503_when_schema_missing(
+    org_with_member, monkeypatch
+):
+    """PUT can't write a cap to a missing org_quotas table; it must return a
+    clean 503, never an uncaught 500."""
+    from sqlalchemy.exc import ProgrammingError
+
+    from auth import require_can_manage_quotas
+
+    class FakeUndefinedTable(Exception):
+        sqlstate = "42P01"
+
+    async def raise_undefined_table(session, org_id):
+        raise ProgrammingError(
+            "SELECT limit_usd FROM org_quotas", {}, FakeUndefinedTable()
+        )
+
+    monkeypatch.setattr(orgs_mod, "get_effective_org_limit", raise_undefined_table)
+
+    org_id, member = org_with_member
+    app = create_app()
+    app.dependency_overrides[require_can_manage_quotas] = lambda: _user_auth(
+        org_id=org_id, user_id=member.id, role=UserRole.ADMIN
+    )
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put("/quotas/org", json={"limit_usd": None})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+
+
 # --- API key auth: consistent with GET /quotas/me (a valid key gets a snapshot) -
 
 
