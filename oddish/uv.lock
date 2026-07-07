@@ -936,7 +936,7 @@ wheels = [
 [[package]]
 name = "harbor"
 version = "0.17.1"
-source = { git = "https://github.com/abundant-ai/harbor-gke?branch=feat%2Fgke-tpu-flex-start#a0123a871294882dae11a0326d7f7386f98b12df" }
+source = { git = "https://github.com/abundant-ai/harbor-gke?branch=feat%2Fgke-tpu-flex-start#7c97764f7d42da445f74409d7926ff9d66f99a79" }
 dependencies = [
     { name = "dirhash" },
     { name = "fastapi" },
