@@ -2,7 +2,9 @@
 
 ``ordered_backends()`` returns Daytona before Modal so capability negotiation
 (routing.py) picks the cheap CPU backend by default and only escalates to
-Modal when a capability (GPU, private-registry pull) requires it."""
+Modal when a capability (GPU, private-registry pull) requires it. GKE joins
+last, only when a cluster is configured, so cheap-first negotiation hands it
+only the TPU work nothing cheaper satisfies."""
 
 from __future__ import annotations
 
@@ -37,7 +39,8 @@ def get_backend(name: str | None) -> ExecutionBackend | None:
 
 
 def ordered_backends() -> list[ExecutionBackend]:
-    """Backends in cheap-first order: Daytona (CPU) then Modal (GPU/private).
+    """Backends in cheap-first order: Daytona (CPU), Modal (GPU/private), then
+    GKE (TPU) when a cluster is configured.
 
     Sourced from ``REGISTERED_BACKENDS`` (insertion-ordered cheap-first) so the
     resolution set and the routing order never desync."""
