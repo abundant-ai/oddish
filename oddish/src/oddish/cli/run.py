@@ -121,13 +121,23 @@ def _default_cloud_environment_for_task(
 
     requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
-        return default_cloud_environment(
-            requires_gpu=override_gpus > 0, requires_tpu=requires_tpu
+        requires_gpu = override_gpus > 0
+    else:
+        requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+
+    if requires_gpu and requires_tpu:
+        raise typer.BadParameter(
+            "A task cannot request both GPU and TPU resources: no single "
+            "execution backend provides both. Split them into separate tasks, "
+            "or drop the '[environment.tpu]' block / the GPU request."
         )
-    requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
-    return default_cloud_environment(
-        requires_gpu=requires_gpu, requires_tpu=requires_tpu
-    )
+    if requires_tpu:
+        # GKE is the only TPU-capable backend. Resolve it by name so a cloud
+        # submission still routes TPU work to GKE even when the local registry
+        # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
+        # hosted deployment validates the choice against its own cloud policy.
+        return EnvironmentType.GKE
+    return default_cloud_environment(requires_gpu=requires_gpu)
 
 
 def _map_batch_sweep_results(
