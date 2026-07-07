@@ -218,9 +218,7 @@ if SAURON_AWS_SECRET_NAME:
 # installs without GKE never reference the secret and still boot.
 if os.environ.get("ODDISH_GKE_CLUSTER_NAME"):
     runtime_secrets.append(
-        modal.Secret.from_name(
-            "oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT
-        )
+        modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
     )
 
 if LOCAL_DOTENV_VARS:
