@@ -138,10 +138,10 @@ class LiveTailer:
             if stopping:
                 if self.carry:
                     self.fold.feed_line(self.carry)
-                    try:
-                        await self._checkpoint()
-                    except Exception:
-                        pass
+                try:
+                    await self._checkpoint()
+                except Exception:
+                    pass
                 return
             try:
                 await asyncio.wait_for(

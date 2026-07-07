@@ -279,6 +279,18 @@ async def test_final_drain_folds_unterminated_carry(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stop_path_persists_fold_when_final_tick_fails(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    env = FakeEnv([RuntimeError("sandbox died")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 6}))
+    tailer.request_stop()
+    await asyncio.wait_for(tailer.run(), timeout=5)
+    assert checkpoint_params(session)[-1]["input_tokens"] == 6
+
+
+@pytest.mark.asyncio
 async def test_empty_tick_retries_pending_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
