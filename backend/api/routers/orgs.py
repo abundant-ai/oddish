@@ -296,10 +296,12 @@ def _org_usage_response(org_fields: dict, org_used_today: Decimal) -> OrgUsageRe
 
     limit = org_fields["org_limit_usd"]
     used_month = Decimal(str(org_fields["org_used_usd"]))
+    reserved = Decimal(str(org_fields["org_reserved_usd"]))
     daily_goal: float | None = None
     if limit is not None:
         remaining_at_day_start = max(
-            Decimal(0), Decimal(str(limit)) - used_month + org_used_today
+            Decimal(0),
+            Decimal(str(limit)) - used_month + org_used_today - reserved,
         )
         daily_goal = float(remaining_at_day_start / Decimal(days_remaining))
 

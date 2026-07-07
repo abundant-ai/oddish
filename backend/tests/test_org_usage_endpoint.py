@@ -88,6 +88,25 @@ def test_goal_floors_at_zero_when_budget_exhausted(monkeypatch):
     assert resp.daily_goal_usd == pytest.approx(0.0)
 
 
+def test_goal_subtracts_in_flight_reservation(monkeypatch):
+    _pin_today(monkeypatch, datetime(2026, 7, 6, tzinfo=timezone.utc))
+    # $100 settled before today + $50 in-flight reserved of a $300 cap ->
+    # uncommitted budget is $150 spread over 26 days.
+    resp = _org_usage_response(
+        _fields(limit=300.0, used_month=100.0, reserved=50.0), Decimal("0")
+    )
+    assert resp.daily_goal_usd == pytest.approx(150.0 / 26)
+
+
+def test_goal_floors_at_zero_when_reservation_exhausts_budget(monkeypatch):
+    _pin_today(monkeypatch, datetime(2026, 7, 6, tzinfo=timezone.utc))
+    # settled + reserved already at the cap -> goal 0, matching the 402 gate.
+    resp = _org_usage_response(
+        _fields(limit=300.0, used_month=250.0, reserved=60.0), Decimal("0")
+    )
+    assert resp.daily_goal_usd == pytest.approx(0.0)
+
+
 def test_days_remaining_on_last_day_of_month(monkeypatch):
     _pin_today(monkeypatch, datetime(2026, 7, 31, tzinfo=timezone.utc))
     resp = _org_usage_response(_fields(limit=300.0, used_month=100.0), Decimal("0"))
