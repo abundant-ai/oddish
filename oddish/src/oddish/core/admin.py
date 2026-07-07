@@ -1559,6 +1559,7 @@ async def get_cost_breakdown_core(
         select(
             TrialModel.experiment_id.label("experiment_id"),
             ExperimentModel.name.label("exp_name"),
+            ExperimentModel.org_id.label("exp_org_id"),
             TrialModel.org_id.label("trial_org_id"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
             ExperimentModel.owner.label("exp_owner"),
@@ -1612,6 +1613,7 @@ async def get_cost_breakdown_core(
         .group_by(
             TrialModel.experiment_id,
             ExperimentModel.name,
+            ExperimentModel.org_id,
             ExperimentModel.owner_user_id,
             ExperimentModel.owner,
             TrialModel.org_id,
@@ -1684,7 +1686,7 @@ async def get_cost_breakdown_core(
             exp = experiments[row.experiment_id] = {
                 "experiment_id": row.experiment_id,
                 "name": row.exp_name,
-                "org_id": row.trial_org_id,
+                "org_id": row.exp_org_id,
                 "owner_user_id": owner_user_id,
                 "owner": row.exp_owner,
                 "created_at": row.exp_created_at,
