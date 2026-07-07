@@ -55,6 +55,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
+import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -173,6 +174,7 @@ const STATUS_FILTER_ORDER: MatrixStatus[] = [
   "fail",
   "harness-error",
   "scoreless",
+  "skipped",
 ];
 
 // Row-level filter modes. Inspired by sauron's "any/all pass/k=0" toggle:
@@ -240,7 +242,14 @@ function summarizeAgentRowFilterState(trials: readonly Trial[] | undefined): {
     ) {
       hasError = true;
     }
-    if (trial.status !== "success" && trial.status !== "failed") continue;
+    // Skipped is terminal (a non-pass): count it so an all-skipped agent reads
+    // as done (and "failed" for row filters), not still-running.
+    if (
+      trial.status !== "success" &&
+      trial.status !== "failed" &&
+      trial.status !== "skipped"
+    )
+      continue;
     hasTerminal = true;
     // Any positive reward — full or partial — disqualifies the agent
     // from counting as "failed" on this task.
@@ -555,6 +564,7 @@ export function ExperimentTrialsTable({
               value === "fail" ||
               value === "harness-error" ||
               value === "scoreless" ||
+              value === "skipped" ||
               value === "queued" ||
               value === "running",
           ),
@@ -919,7 +929,10 @@ export function ExperimentTrialsTable({
         const trials = task.trials ?? [];
         if (trials.length === 0) return false;
         const allTrialsTerminal = trials.every(
-          (trial) => trial.status === "failed" || trial.status === "success",
+          (trial) =>
+            trial.status === "failed" ||
+            trial.status === "success" ||
+            trial.status === "skipped",
         );
         const hasAnalysisInFlight = trials.some((trial) =>
           isActivePipelineStatus(trial.analysis_status),
@@ -2318,6 +2331,37 @@ export function ExperimentTrialsTable({
                                 v{task.current_version}
                               </span>
                             )}
+                            {(() => {
+                              // Sum the trials actually rendered in this row's
+                              // matrix (visible agent columns) so the badge
+                              // tracks the grid when agent columns are hidden.
+                              const c = sumTaskTrialCost(orderedTrials);
+                              if (c.pricedCount === 0) return null;
+                              const marks = costEstimateMarks(
+                                c.hasEstimated,
+                                c.hasNative,
+                              );
+                              return (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
+                                      {marks.prefix}
+                                      {formatCostUsd(c.costUsd)}
+                                      {marks.suffix}
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    Total cost across {c.pricedCount} priced trial
+                                    {c.pricedCount === 1 ? "" : "s"}
+                                    {c.hasEstimated && c.hasNative
+                                      ? " · * mixes native + token-estimated pricing"
+                                      : c.hasEstimated
+                                        ? " · ~ token-estimated pricing"
+                                        : ""}
+                                  </TooltipContent>
+                                </Tooltip>
+                              );
+                            })()}
                             {/* Jump from the experiment to this task's own
                                 page. Hidden on the read-only share view since
                                 /tasks/[id] is an authenticated route. */}

@@ -51,7 +51,7 @@ export function ExperimentsList({
           <Button
             type="button"
             variant="link"
-            className="text-muted-foreground hover:text-foreground rounded text-left underline-offset-2 hover:underline"
+            className="text-muted-foreground hover:text-foreground h-auto p-0 text-[length:inherit] font-normal underline-offset-2 hover:underline"
           >
             +{overflowCount} more
           </Button>

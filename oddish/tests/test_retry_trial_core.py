@@ -92,7 +92,14 @@ class _RecordingSession:
         if "UPDATE trials" in sql and "superseded_by_trial_id IS NULL" in sql:
             if self.trial.superseded_by_trial_id is not None:
                 return _Result(rowcount=0)
-            terminal = self.trial.status in {TrialStatus.FAILED, TrialStatus.SUCCESS}
+            # Mirror the CAS SQL's terminal set: SKIPPED is terminal too, so a
+            # superseded skipped trial keeps its status instead of flipping to
+            # FAILED.
+            terminal = self.trial.status in {
+                TrialStatus.FAILED,
+                TrialStatus.SUCCESS,
+                TrialStatus.SKIPPED,
+            }
             self.trial.superseded_by_trial_id = _params["new_trial_id"]
             if not terminal:
                 self.trial.status = TrialStatus.FAILED
@@ -185,6 +192,45 @@ async def test_retry_trial_flushes_new_trial_before_setting_superseded_fk(
     assert event_names.index("add") < event_names.index("flush")
     assert event_names.index("flush") < event_names.index("supersede")
     assert any("kind::text IN ('QA', 'VERDICT')" in str(event[1]) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_retry_superseded_skipped_trial_stays_skipped(monkeypatch):
+    # A gate-skipped trial is terminal. Superseding it on retry must NOT rewrite
+    # its status to FAILED (that would corrupt history: a trial that never ran
+    # would read as a failure).
+    events = []
+    trial = _RecordingTrial(
+        events,
+        status=TrialStatus.SKIPPED,
+        error_message="Trial skipped: nop/oracle validation failed",
+    )
+    task = SimpleNamespace(
+        id="task-1", name="task-1", status=TaskStatus.COMPLETED, finished_at=None
+    )
+    session = _RecordingSession(trial=trial, task=task, events=events)
+
+    async def fake_reserve_next_trial_index(_session, *, task_id):
+        return 1
+
+    async def fake_enqueue_trial_worker_job(_session, **_):
+        return None
+
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
+
+    result = await endpoints.retry_trial_core(
+        session, trial_id=trial.id, org_id="org-1"
+    )
+
+    assert result["superseded_trial_id"] == "task-1-0"
+    # Unchanged: still SKIPPED, reason preserved.
+    assert trial.status == TrialStatus.SKIPPED
+    assert trial.error_message == "Trial skipped: nop/oracle validation failed"
 
 
 @pytest.mark.asyncio

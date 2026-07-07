@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core.baseline_gate import (  # noqa: E402
-    GATE_SKIP_PREFIX,
+    GATE_SKIP_MESSAGE,
     GateOutcome,
     evaluate_baseline_gate,
 )
@@ -57,9 +57,9 @@ def test_evaluate_baseline_gate_outcomes(results, expected):
     assert isinstance(reason, str) and reason
 
 
-def test_faulty_reason_is_greppable():
+def test_faulty_reason_is_the_skip_message():
     _, reason = evaluate_baseline_gate([("oracle", 0.0), ("nop", 0.0)])
-    assert GATE_SKIP_PREFIX in reason
+    assert reason == GATE_SKIP_MESSAGE
 
 
 def test_error_in_oracle_makes_task_faulty():
@@ -69,11 +69,12 @@ def test_error_in_oracle_makes_task_faulty():
         [("oracle", 1.0), ("oracle", None), ("nop", 0.0)]
     )
     assert outcome is GateOutcome.FAULTY
-    assert GATE_SKIP_PREFIX in reason
+    assert reason == GATE_SKIP_MESSAGE
 
 
-def test_not_clean_vs_no_baselines_reasons_differ():
-    _, not_clean = evaluate_baseline_gate([("oracle", 0.0), ("nop", 0.0)])
+def test_faulty_reason_is_uniform_across_cases():
+    # An inverted verdict and no-baseline-present now yield the SAME uniform
+    # skip message (metrics/UI key off the SKIPPED status, not this text).
+    _, inverted = evaluate_baseline_gate([("oracle", 0.0), ("nop", 0.0)])
     _, no_baselines = evaluate_baseline_gate([])
-    assert "not clean" in not_clean
-    assert "inconclusive" in no_baselines
+    assert inverted == GATE_SKIP_MESSAGE == no_baselines

@@ -226,6 +226,11 @@ async def list_tasks_core(
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
                 TrialModel.cost_usd,
+                # Read by both trial builders (``is_billed``). Must be loaded
+                # eagerly; otherwise the builder triggers a lazy-load outside
+                # the async greenlet and fails with MissingGreenlet (same
+                # reason ``origin`` is here).
+                TrialModel.billed_user_id,
                 # Loaded eagerly so the compact builder can surface the
                 # rerun pointer without triggering a lazy-load outside
                 # the async greenlet (same reason ``origin`` is here).
@@ -740,11 +745,16 @@ _AGENT_TIMEOUT_LIKE = ("%AgentTimeoutError%", "%Agent execution timed out%")
 
 
 def _trial_bucket_label() -> Any:
-    """SQL bucket (``pass``/``partial``/``fail``/``harness``/``scoreless``/``other``)
-    for one trial, mirroring the frontend ``getMatrixStatus``
-    (oddish/frontend/src/lib/status-config.ts) EXACTLY so the browser's
-    Pass/Partial/Fail/Harness count filters agree with the card chips:
+    """SQL bucket (``skipped``/``pass``/``partial``/``fail``/``harness``/
+    ``scoreless``/``other``) for one trial, mirroring the frontend
+    ``getMatrixStatus`` (oddish/frontend/src/lib/status-config.ts) EXACTLY so the
+    browser's Pass/Partial/Fail/Harness count filters agree with the card chips:
 
+      * ``SKIPPED`` status is ``skipped`` — checked FIRST, before the
+        error-message rule, because a gate-skipped trial carries
+        ``GATE_SKIP_MESSAGE`` and must not be miscounted as ``harness`` (matches
+        ``getMatrixStatus``, which returns "skipped" before its error-message
+        short-circuit);
       * an ``error_message`` forces ``harness`` — UNLESS it is an agent timeout
         that still produced a reward (then it scores normally);
       * ``FAILED`` status is ``harness`` (same agent-timeout-with-reward carve-out);
@@ -766,6 +776,9 @@ def _trial_bucket_label() -> Any:
         else_="partial",
     )
     return case(
+        # Checked before the error-message rule: a gate-skipped trial carries an
+        # error_message but is its own bucket, not a harness error.
+        (TrialModel.status == TrialStatus.SKIPPED, "skipped"),
         (
             and_(
                 TrialModel.error_message.isnot(None),
@@ -930,6 +943,8 @@ def _agent_compare_subquery(
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # NOTE: skipped trials are intentionally INCLUDED in metric denominators
+        # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -1075,6 +1090,8 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
     ).where(
         TrialModel.superseded_by_trial_id.is_(None),
         TrialModel.is_probe.isnot(True),
+        # NOTE: skipped trials are intentionally INCLUDED in metric denominators
+        # (a non-pass, like a harness error), so pass_rate reflects "N launched".
     )
     if org_id is not None:
         stmt = stmt.where(TrialModel.org_id == org_id)
@@ -2079,6 +2096,7 @@ async def browse_tasks_core(
                 TrialModel.output_tokens.label("output_tokens"),
                 TrialModel.cache_tokens.label("cache_tokens"),
                 TrialModel.cache_write_tokens.label("cache_write_tokens"),
+                TrialModel.billed_user_id.label("billed_user_id"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
@@ -2123,6 +2141,10 @@ async def browse_tasks_core(
                         "cost_trial_count": 0,
                         "cost_has_estimated": False,
                         "cost_has_native": False,
+                        "billed_cost_usd": 0.0,
+                        "billed_trial_count": 0,
+                        "billed_has_estimated": False,
+                        "billed_has_native": False,
                     },
                 )
                 cost_agg["cost_usd"] += resolved_cost
@@ -2131,6 +2153,13 @@ async def browse_tasks_core(
                     cost_agg["cost_has_estimated"] = True
                 else:
                     cost_agg["cost_has_native"] = True
+                if trial_row["billed_user_id"] is not None:
+                    cost_agg["billed_cost_usd"] += resolved_cost
+                    cost_agg["billed_trial_count"] += 1
+                    if cost_estimated:
+                        cost_agg["billed_has_estimated"] = True
+                    else:
+                        cost_agg["billed_has_native"] = True
 
     # Hydrate effective user tags for each visible task, batched in a
     # single round trip. Used to populate ``TaskBrowseItem.user_tags`` so
@@ -2202,6 +2231,22 @@ async def browse_tasks_core(
                 ),
                 cost_has_native=bool(
                     cost_by_task.get(str(row["task_id"]), {}).get("cost_has_native")
+                ),
+                billed_cost_usd=float(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_cost_usd")
+                    or 0.0
+                ),
+                billed_trial_count=int(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_trial_count")
+                    or 0
+                ),
+                billed_has_estimated=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get(
+                        "billed_has_estimated"
+                    )
+                ),
+                billed_has_native=bool(
+                    cost_by_task.get(str(row["task_id"]), {}).get("billed_has_native")
                 ),
                 latest_trials=latest_trials_by_task.get(str(row["task_id"]), []),
                 experiments=experiments_by_task.get(str(row["task_id"]), []),

@@ -297,6 +297,7 @@ async def create_task_sweep(
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
+            task.api_key_id = auth.api_key_id
 
             await maybe_publish_experiment(session, task, submission, auth)
 
@@ -385,6 +386,7 @@ async def create_task_sweep_batch(
             )
             if created_by_user_id:
                 task.created_by_user_id = created_by_user_id
+            task.api_key_id = auth.api_key_id
             await maybe_publish_experiment(session, task, submission, auth)
         elif experiment and submission.publish_experiment:
             require_experiment_publish_scope(auth)

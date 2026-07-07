@@ -392,7 +392,10 @@ export function TaskFilesPanel({
   const allTrialsTerminal =
     Boolean(task?.trials?.length) &&
     (task?.trials ?? []).every(
-      (trial) => trial.status === "failed" || trial.status === "success",
+      (trial) =>
+        trial.status === "failed" ||
+        trial.status === "success" ||
+        trial.status === "skipped",
     );
   const hasAnalysisInFlight = (task?.trials ?? []).some((trial) =>
     isActivePipelineStatus(trial.analysis_status),

@@ -4,6 +4,7 @@ export type TrialAggregate = {
   trialCount: number;
   completed: number;
   failed: number;
+  skipped: number;
   passCount: number;
   partialCount: number;
   failCount: number;
@@ -15,6 +16,10 @@ export type TrialAggregate = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  billedCostUsd: number;
+  billedTrialCount: number;
+  billedHasEstimated: boolean;
+  billedHasNative: boolean;
   lastRunAt: string | null;
 };
 
@@ -22,6 +27,7 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   trialCount: 0,
   completed: 0,
   failed: 0,
+  skipped: 0,
   passCount: 0,
   partialCount: 0,
   failCount: 0,
@@ -33,6 +39,10 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   costTrialCount: 0,
   costHasEstimated: false,
   costHasNative: false,
+  billedCostUsd: 0,
+  billedTrialCount: 0,
+  billedHasEstimated: false,
+  billedHasNative: false,
   lastRunAt: null,
 };
 
@@ -43,9 +53,16 @@ export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
     acc.costTrialCount += 1;
     if (trial.cost_is_estimated === true) acc.costHasEstimated = true;
     else acc.costHasNative = true;
+    if (trial.is_billed) {
+      acc.billedCostUsd += trial.cost_usd;
+      acc.billedTrialCount += 1;
+      if (trial.cost_is_estimated === true) acc.billedHasEstimated = true;
+      else acc.billedHasNative = true;
+    }
   }
   if (trial.status === "success") acc.completed += 1;
   else if (trial.status === "failed") acc.failed += 1;
+  else if (trial.status === "skipped") acc.skipped += 1;
 
   if (trial.status === "success" && trial.reward != null) {
     acc.rewardSum += trial.reward;
@@ -55,6 +72,8 @@ export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
     else acc.partialCount += 1;
   } else if (trial.status === "failed") {
     acc.harnessErrorCount += 1;
+  } else if (trial.status === "skipped") {
+    // Never ran -> counted only as `skipped` above; not pending, not an error.
   } else if (trial.status !== "success") {
     acc.pendingCount += 1;
   }

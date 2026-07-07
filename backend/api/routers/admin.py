@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import and_, func, select
 
@@ -16,12 +16,14 @@ from oddish.core.admin import (
     QueueSlotsResponse,
     QueueStatusResponse,
     OrphanedStateResponse,
+    UserCostBreakdownResponse,
     WorkerJobsResponse,
     get_cost_breakdown_core,
     get_queue_health_core,
     get_queue_slots_core,
     get_queue_status_core,
     get_orphaned_state_core,
+    get_user_cost_breakdown_core,
     get_worker_jobs_admin_core,
 )
 from oddish.db import TaskModel, TaskVersionModel, get_session
@@ -94,13 +96,7 @@ async def get_worker_jobs(
 
 
 async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None:
-    """Fill owner/org display names on a cost breakdown in place.
-
-    The core aggregation in ``oddish`` only knows ``owner_user_id`` /
-    ``org_id`` (the cloud auth tables it can't import). We resolve those to
-    names here. ``include_deleted=True`` keeps historical spend attributable
-    to users/orgs that have since been deactivated.
-    """
+    """Fill in user and org display names on a cost breakdown."""
     user_ids: set[str] = set()
     org_ids: set[str] = set()
     for entry in result.by_user:
@@ -113,10 +109,8 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             user_ids.add(experiment.owner_user_id)
         if experiment.org_id:
             org_ids.add(experiment.org_id)
-    # The by-user chart series keys are owner user ids too (plus the synthetic
-    # "__other__" / "__unattributed__" keys, which carry their own labels).
     for series_key in result.series_by_user.keys:
-        if series_key.key == series_key.label:  # unresolved -> a raw user id
+        if series_key.key == series_key.label:
             user_ids.add(series_key.key)
 
     users: dict[str, UserModel] = {}
@@ -158,7 +152,6 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             experiment.owner_email = user.email
         experiment.org_name = orgs.get(experiment.org_id) if experiment.org_id else None
 
-    # Relabel by-user series keys (raw user ids) with display names.
     for series_key in result.series_by_user.keys:
         user = users.get(series_key.key)
         if user is not None:
@@ -174,14 +167,7 @@ async def get_costs(
     experiment_limit: int = Query(100, ge=1, le=500),
     user_limit: int = Query(100, ge=1, le=500),
 ) -> CostBreakdownResponse:
-    """Global trial-spend breakdown for the admin cost dashboard.
-
-    Reports total cost over fixed trailing windows (24h / 7d / 30d / all-time)
-    plus a per-user breakdown and a ranked table of the most expensive recent
-    experiments with their model mix, for the selected ``window_days`` window.
-    Cost uses the native runtime cost when reported and a per-model token
-    estimate otherwise.
-    """
+    """Return the global billable-spend breakdown for the admin dashboard."""
     effective_window = None if window_days == 0 else window_days
     async with get_session() as session:
         result = await get_cost_breakdown_core(
@@ -191,6 +177,36 @@ async def get_costs(
             user_limit=user_limit,
         )
         await _enrich_cost_breakdown(session, result)
+    return result
+
+
+@router.get("/costs/users/{user_id}", response_model=UserCostBreakdownResponse)
+async def get_user_costs(
+    auth: Annotated[AuthContext, Depends(require_admin)],
+    user_id: str,
+    window_days: int = Query(
+        7, ge=0, le=3650, description="Trailing window in days; 0 = all-time"
+    ),
+    task_limit: int = Query(100, ge=1, le=500),
+) -> UserCostBreakdownResponse:
+    """Per-user billed spend over settled trials (finished_at axis, estimate-priced)."""
+    effective_window = None if window_days == 0 else window_days
+    async with get_session() as session:
+        user = await session.get(
+            UserModel, user_id, execution_options={"include_deleted": True}
+        )
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        result = await get_user_cost_breakdown_core(
+            session,
+            org_id=user.org_id,
+            billed_user_id=user_id,
+            window_days=effective_window,
+            task_limit=task_limit,
+        )
+    result.name = user.name
+    result.email = user.email
+    result.github_username = user.github_username
     return result
 
 

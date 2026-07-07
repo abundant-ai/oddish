@@ -119,6 +119,11 @@ class JobStatus(str, Enum):
     SUCCESS = "success"  # Execution completed (regardless of test result)
     FAILED = "failed"  # Execution error (harness/infrastructure failure)
     RETRYING = "retrying"  # Only used by trials
+    # Trials only: the trial never ran because the baseline gate cancelled it
+    # (its nop/oracle baselines didn't validate the task). Terminal and its own
+    # bucket (not a failure), but counted as a non-pass in pass-rate denominators
+    # and toward "done", like a harness error.
+    SKIPPED = "skipped"
 
 
 # Aliases for backwards compatibility and clarity
@@ -546,6 +551,10 @@ class TaskModel(TimestampedMixin, Base):
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     created_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Audit-only: API key that submitted this task (NULL for JWT/OSS). Billing
+    # still follows trials.billed_user_id, never this.
+    api_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     user: Mapped[str] = mapped_column(String(255), nullable=False)
     priority: Mapped[Priority] = mapped_column(
         SQLEnum(Priority), default=Priority.LOW, nullable=False
@@ -733,10 +742,6 @@ class TrialModel(TimestampedMixin, Base):
     # -------------------------------------------------------------------------
     org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
-    # Denormalized payer for per-user daily quota accounting. String, NOT a
-    # ForeignKey -- users live in the backend package, so a cross-package FK
-    # would break OSS installs. NULL means this trial's cost draws down nobody's
-    # quota (imported/combined rows). Stamped at creation in the billable paths.
     billed_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Idempotency key for preventing duplicate processing of retried jobs
@@ -916,9 +921,6 @@ class TrialModel(TimestampedMixin, Base):
         # Composite index for efficient queue stats aggregation (no JOIN needed)
         Index("idx_trials_org_provider_status", "org_id", "provider", "status"),
         Index("idx_trials_org_queue_key_status", "org_id", "queue_key", "status"),
-        # Per-user daily spend SUM: WHERE org_id, billed_user_id, finished_at >=
-        # start_of_today. Not partial: settled spend counts soft-deleted rows
-        # (must match the billed_user_001 migration).
         Index(
             "idx_trials_org_billed_user_finished",
             "org_id",

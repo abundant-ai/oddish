@@ -758,6 +758,7 @@ class TaskVersionSummary(BaseModel):
     trial_count: int = 0
     completed_count: int = 0
     failed_count: int = 0
+    skipped_count: int = 0
     pass_count: int = 0
     partial_count: int = 0
     fail_count: int = 0
@@ -768,10 +769,18 @@ class TaskVersionSummary(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     last_run_at: datetime | None = None
     # Direct VERSION-scope tags on this version (forward ref — UserTagRef is
     # defined below in the tag section; model_rebuild() runs after it).
     user_tags: list["UserTagRef"] = Field(default_factory=list)
+    # Experiments that ran trials against THIS version (version-scoped, unlike
+    # the task-level all-time list). Forward ref — TaskBrowseExperiment is
+    # defined further below; the model_rebuild() below resolves it.
+    experiments: list["TaskBrowseExperiment"] = Field(default_factory=list)
 
 
 class TaskCostTotals(BaseModel):
@@ -781,6 +790,10 @@ class TaskCostTotals(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     total_trials: int = 0
 
 
@@ -902,6 +915,14 @@ class TrialResponse(BaseModel):
             "runtime. Null when no cost is available."
         ),
     )
+    is_billed: bool = Field(
+        False,
+        description=(
+            "True when the trial is attributed to a billed user "
+            "(``billed_user_id`` is set), i.e. its cost counts toward "
+            "billed spend and quota usage."
+        ),
+    )
 
     # Per-phase timing breakdown
     phase_timing: dict | None = Field(
@@ -962,10 +983,6 @@ class UserTagRef(BaseModel):
     visibility: str = "PRIVATE"
     current: bool = False
     older: bool = False
-
-
-# TaskVersionSummary forward-references UserTagRef (defined above only now).
-TaskVersionSummary.model_rebuild()
 
 
 class TaskResponse(BaseModel):
@@ -1108,6 +1125,11 @@ class TaskBrowseExperiment(BaseModel):
     name: str
 
 
+# Deferred rebuild: resolves TaskVersionSummary's forward refs to UserTagRef
+# and TaskBrowseExperiment now that both are defined.
+TaskVersionSummary.model_rebuild()
+
+
 class TaskBrowseTrial(BaseModel):
     id: str
     name: str
@@ -1135,6 +1157,10 @@ class TaskBrowseItem(BaseModel):
     cost_trial_count: int = 0
     cost_has_estimated: bool = False
     cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
     latest_trials: list[TaskBrowseTrial] = Field(default_factory=list)
     experiments: list[TaskBrowseExperiment] = Field(default_factory=list)
     user_tags: list[UserTagRef] = Field(default_factory=list)
@@ -1201,6 +1227,11 @@ class TaskStatusResponse(BaseModel):
     total: int
     completed: int
     failed: int
+    # SKIPPED trials are terminal non-passes: included in ``total`` but not in
+    # ``completed``/``failed``. Exposed so clients can compute
+    # ``active = total - completed - failed - skipped`` instead of treating
+    # skipped as still-running.
+    skipped: int = 0
     progress: str  # e.g., "5/10 completed"
     reward_success: int | None = None
     reward_sum: float | None = None

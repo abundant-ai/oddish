@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   XCircle,
   Ban,
+  CircleSlash,
   Loader2,
   MinusCircle,
   type LucideIcon,
@@ -19,6 +20,7 @@ export type MatrixStatus =
   | "fail"
   | "harness-error"
   | "scoreless"
+  | "skipped"
   | "pending"
   | "queued"
   | "running";
@@ -111,6 +113,19 @@ export const STATUS_CONFIG: Record<
       "bg-paper-bg-2 text-paper-ink-2 border-paper-line hover:opacity-90",
     bracketClass: "bg-slate-500 text-white",
     panelBadgeClass: "bg-slate-500/20 text-slate-300 border-slate-500/50",
+  },
+  skipped: {
+    icon: CircleSlash,
+    label: "SKIPPED",
+    shortLabel: "Skipped",
+    symbol: "⊘",
+    description: "Skipped — nop/oracle baselines didn't validate the task",
+    badgeClass:
+      "bg-slate-500/50 text-slate-200 border-slate-400/50 hover:bg-slate-500/60",
+    matrixClass:
+      "bg-paper-bg-2 text-paper-ink-2 border-paper-line border-dashed hover:opacity-90",
+    bracketClass: "bg-slate-400 text-slate-950",
+    panelBadgeClass: "bg-slate-500/15 text-slate-400 border-slate-500/40",
   },
   pending: {
     icon: Loader2,
@@ -266,6 +281,13 @@ export function getMatrixStatus(
     (errorMessage.includes("AgentTimeoutError") ||
       errorMessage.includes("Agent execution timed out"));
   const hasReward = hasRewardValue(reward);
+
+  // Gate-skipped trials never ran. They carry a reason in error_message, so
+  // this MUST come before the error-message short-circuit below -- otherwise a
+  // skipped trial would render as a harness error instead of "Skipped".
+  if (trialStatus === "skipped") {
+    return "skipped";
+  }
 
   // If there's an error message, treat as harness error regardless of status,
   // except for agent timeouts that still produced a reward.

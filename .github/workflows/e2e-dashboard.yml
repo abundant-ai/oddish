@@ -1,0 +1,241 @@
+name: "E2E: Dashboard"
+
+# Boots the ENTIRE stack inside one runner — a postgres:16-alpine service, the
+# backend (`serve.py`), and the frontend (`pnpm dev`) — then drives the
+# authenticated dashboard Playwright spec (frontend/e2e/tasks-view.spec.ts)
+# against it. No Vercel, no Modal, no preview coupling: everything lives and
+# dies in this job.
+#
+# Why a Clerk DEVELOPMENT instance (never production): the spec signs in with
+# `@clerk/testing` — a Testing Token (mints past bot detection) plus
+# `clerk.signIn`, and a `+clerk_test` email that verifies with the universal
+# OTP. All three are development-instance-only affordances; a production Clerk
+# instance rejects Testing Tokens and has no test-email bypass, so it simply
+# cannot drive this flow. Credentials therefore come from repo secrets pointing
+# at a dev instance (`pk_test`/`sk_test`).
+#
+# Why it can no-op: when any of the five Clerk secrets is absent (forks,
+# unconfigured repos), the gate step flips `have_clerk=false` and every
+# subsequent step is skipped, so the job goes green in seconds doing almost
+# nothing. Secrets cannot be read in a job-level `if:`, so we map them to job
+# env and branch on a step output — the standard workaround.
+#
+# Like e2e-cli.yml this runs directly on ubuntu-latest (not a job container):
+# the postgres service port is mapped to the host so the DB is reachable at
+# 127.0.0.1:5432, keeping the seed script's localhost-only guard intact.
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "oddish/src/**"
+      - "oddish/pyproject.toml"
+      - "oddish/uv.lock"
+      - ".github/workflows/e2e-dashboard.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "frontend/**"
+      - "backend/**"
+      - "oddish/src/**"
+      - "oddish/pyproject.toml"
+      - "oddish/uv.lock"
+      - ".github/workflows/e2e-dashboard.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-dashboard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dashboard:
+    name: "signed-in task view"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      E2E_CLERK_EMAIL: ${{ secrets.E2E_CLERK_EMAIL }}
+      E2E_CLERK_ORG_ID: ${{ secrets.E2E_CLERK_ORG_ID }}
+      CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oddish
+          POSTGRES_PASSWORD: oddish
+          POSTGRES_DB: oddish
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U oddish -d oddish"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Gate on Clerk secrets
+        id: gate
+        env:
+          CLERK_DOMAIN_RAW: ${{ secrets.CLERK_DOMAIN }}
+        run: |
+          if [ -n "$E2E_CLERK_EMAIL" ] \
+            && [ -n "$E2E_CLERK_ORG_ID" ] \
+            && [ -n "$CLERK_SECRET_KEY" ] \
+            && [ -n "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" ] \
+            && [ -n "$CLERK_DOMAIN_RAW" ]; then
+            echo "have_clerk=true" >> "$GITHUB_OUTPUT"
+            # The backend builds https://$CLERK_DOMAIN/.well-known/jwks.json. A
+            # secret pasted with a scheme, path, or the trailing '$' from a
+            # base64-decoded publishable key produces an unresolvable hostname
+            # (JWT verification then 503s with "name resolution" errors), so
+            # normalize to the bare domain before handing it to the backend.
+            domain="${CLERK_DOMAIN_RAW#https://}"
+            domain="${domain#http://}"
+            domain="${domain%%/*}"
+            domain="${domain%\$}"
+            echo "CLERK_DOMAIN=$domain" >> "$GITHUB_ENV"
+          else
+            echo "have_clerk=false" >> "$GITHUB_OUTPUT"
+            echo "E2E Dashboard skipped: Clerk dev-instance secrets are not all set (need E2E_CLERK_EMAIL, E2E_CLERK_ORG_ID, CLERK_SECRET_KEY, NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY, CLERK_DOMAIN). This is by design so forks and unconfigured repos stay green." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout repository
+        if: steps.gate.outputs.have_clerk == 'true'
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        if: steps.gate.outputs.have_clerk == 'true'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Sync backend dependencies
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Seed dashboard org + task
+        id: seed
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: backend
+        env:
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+        run: uv run python tests/e2e/seed_dashboard.py
+
+      - name: Start backend
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: backend
+        env:
+          ODDISH_DATABASE_URL: postgresql+asyncpg://oddish:oddish@127.0.0.1:5432/oddish
+          PORT: "8000"
+          ODDISH_S3_ENDPOINT_URL: http://127.0.0.1:9000
+          ODDISH_S3_ACCESS_KEY: dummy
+          ODDISH_S3_SECRET_KEY: dummy
+          ODDISH_S3_BUCKET: dummy
+          ODDISH_S3_REGION: us-east-1
+        run: |
+          uv run python serve.py > /tmp/backend.log 2>&1 &
+          echo "BACKEND_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for backend readiness
+        if: steps.gate.outputs.have_clerk == 'true'
+        run: |
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/public/experiments || true)
+            if [ "$code" = "200" ]; then echo "backend ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "::error::backend did not become ready within 60s"
+          cat /tmp/backend.log
+          exit 1
+
+      - name: Setup pnpm
+        if: steps.gate.outputs.have_clerk == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.0.0
+
+      - name: Setup Node
+        if: steps.gate.outputs.have_clerk == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install frontend dependencies
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        run: pnpm exec playwright install chromium --with-deps
+
+      - name: Start frontend
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8000
+          CLERK_JWT_TEMPLATE: oddish
+        run: |
+          pnpm dev > /tmp/frontend.log 2>&1 &
+          echo "FRONTEND_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for frontend readiness
+        if: steps.gate.outputs.have_clerk == 'true'
+        run: |
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000 || true)
+            case "$code" in
+              2*|3*) echo "frontend ready after ${i}s (HTTP $code)"; exit 0 ;;
+            esac
+            sleep 1
+          done
+          echo "::error::frontend did not become ready within 90s"
+          cat /tmp/frontend.log
+          exit 1
+
+      - name: Run Playwright dashboard spec
+        if: steps.gate.outputs.have_clerk == 'true'
+        working-directory: frontend
+        env:
+          E2E_BASE_URL: http://localhost:3000
+          E2E_TASK_ID: ${{ steps.seed.outputs.task_id }}
+          CLERK_JWT_TEMPLATE: oddish
+        run: pnpm exec playwright test
+
+      - name: Show server logs on failure
+        if: ${{ failure() && steps.gate.outputs.have_clerk == 'true' }}
+        run: |
+          echo "===== backend log (tail) ====="
+          tail -n 200 /tmp/backend.log || true
+          echo "===== frontend log (tail) ====="
+          tail -n 200 /tmp/frontend.log || true
+
+      - name: Upload Playwright artifacts
+        if: ${{ always() && steps.gate.outputs.have_clerk == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+            /tmp/backend.log
+            /tmp/frontend.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Stop background processes
+        if: always()
+        run: |
+          if [ -n "$BACKEND_PID" ]; then kill "$BACKEND_PID" 2>/dev/null || true; fi
+          if [ -n "$FRONTEND_PID" ]; then kill "$FRONTEND_PID" 2>/dev/null || true; fi

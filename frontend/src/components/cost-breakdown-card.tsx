@@ -299,7 +299,13 @@ function ChartTooltip(
   );
 }
 
-function CostChart({ series, bucket }: { series: CostSeries; bucket: string }) {
+export function CostChart({
+  series,
+  bucket,
+}: {
+  series: CostSeries;
+  bucket: string;
+}) {
   const labels = useMemo(() => {
     const map: Record<string, string> = {};
     series.keys.forEach((k) => (map[k.key] = k.label));
@@ -422,9 +428,14 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            Per-user figures attribute each experiment to its owner; per-model
-            and per-user are the same per-trial costs grouped differently, so
-            each view sums back to the same total.
+            Only billable trials are counted. Imported, combined, and pre-quota
+            trials draw down no budget and are excluded, so totals count real
+            spend once. Per-user figures attribute each trial to its billed user
+            (the experiments table still lists the experiment owner).
+          </li>
+          <li>
+            Per-model and per-user are the same per-trial costs grouped
+            differently, so each view sums back to the same total.
           </li>
           <li>Figures span all organizations.</li>
         </ul>
@@ -509,9 +520,9 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Total trial spend across all organizations. Native runtime cost when
-          reported, otherwise a per-model token estimate — see the info icon for
-          methodology.
+          Billable trial spend across all organizations. Native runtime cost
+          when reported, otherwise a per-model token estimate — see the info
+          icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -621,7 +632,16 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
           <TableRow key={user.owner_user_id ?? "unattributed"}>
             <TableCell>
               <div className="flex flex-col">
-                <span className="text-xs font-medium">{userLabel(user)}</span>
+                {user.owner_user_id ? (
+                  <Link
+                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}`}
+                    className="text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                  >
+                    {userLabel(user)}
+                  </Link>
+                ) : (
+                  <span className="text-xs font-medium">{userLabel(user)}</span>
+                )}
                 {user.email && user.email !== userLabel(user) && (
                   <span className="text-muted-foreground text-[10px]">
                     {user.email}
@@ -732,7 +752,7 @@ function ExperimentTable({
               </Link>
             </TableCell>
             <TableCell className="text-muted-foreground text-[11px]">
-              {exp.owner_name ?? exp.owner_email ?? exp.owner_user_id ?? "—"}
+              {exp.owner_name ?? exp.owner_email ?? exp.owner_label ?? "—"}
             </TableCell>
             <CostCell cost={exp.cost_usd} estimated={exp.cost_estimated_usd} />
             <TableCell className="text-right font-mono text-xs">
