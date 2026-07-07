@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-07-06]
 
+### Added
+
+- Org-wide aggregate **calendar-month (UTC)** spend cap, layered on top of the per-user rolling-24h cap. Admission now sums every payer's settled org spend (including unattributed NULL-billed spend) plus the org's in-flight reservation and blocks when it reaches the effective org limit (override row `org_quotas` ?? `ODDISH_DEFAULT_ORG_MONTHLY_QUOTA_USD` ?? none); over-cap submissions get HTTP 402 under `enforce` and log `reason=org_over_budget` under `shadow`. Advisory-lock order is org → payer → row locks (ENFORCE-only, org lock only when a cap is configured). Admins set/clear the cap via `PUT /quotas/org` and see month-to-date org usage on `GET /quotas`; any member reads the org budget snapshot plus an adaptive daily-goal via the new `GET /quotas/org`. Ships inert (no default, no override rows). oddish core reads `org_quotas` via raw `text()` SQL to preserve the oddish→backend package boundary; per-user rolling-24h behavior is unchanged.
+
 ### Changed
 
 - Per-user quotas now use a rolling 24-hour window instead of a UTC-midnight reset. `quota_window_start()` replaces `start_of_today_utc()` in admission and quota usage reads, while `ODDISH_DEFAULT_DAILY_QUOTA_USD` keeps its existing name and value.
