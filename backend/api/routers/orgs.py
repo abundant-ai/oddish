@@ -189,13 +189,6 @@ def _as_float_or_none(value) -> float | None:
 
 
 def _is_undefined_table_error(exc: ProgrammingError) -> bool:
-    """True only for Postgres 42P01 (undefined table).
-
-    The degrade paths below must swallow ONLY the deploy-before-migrate
-    "org_quotas does not exist" case; any other ProgrammingError is a real
-    bug that must surface, not be masked as a no-cap snapshot. SQLAlchemy
-    wraps the asyncpg error, so walk orig/__cause__ looking for the
-    sqlstate/pgcode or the asyncpg class name."""
     error: BaseException | None = exc.orig if exc.orig is not None else exc
     seen: set[int] = set()
     while error is not None and id(error) not in seen:
@@ -210,11 +203,17 @@ def _is_undefined_table_error(exc: ProgrammingError) -> bool:
     return False
 
 
+def _unavailable_org_quota_fields() -> dict:
+    default = _as_float_or_none(settings.default_org_monthly_quota_usd)
+    return {
+        "org_limit_usd": default,
+        "org_used_usd": 0.0,
+        "org_reserved_usd": 0.0,
+        "org_default_limit_usd": default,
+    }
+
+
 async def _org_quota_fields(session, org_id) -> dict:
-    """Effective org-wide cap, this month's org-wide settled spend, in-flight
-    reservation, and the configured default -- shared by GET /quotas and
-    PUT /quotas/org so both agree. The org cap is a calendar-month budget, so
-    the used figure sums from the start of the UTC month."""
     effective_org_limit = await get_effective_org_limit(session, org_id)
     org_used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
     org_reserved = await org_inflight_reserved_usd(session, org_id)
@@ -229,16 +228,6 @@ async def _org_quota_fields(session, org_id) -> dict:
 
 
 async def _org_quota_fields_or_unavailable(org_id) -> dict:
-    """GET /quotas resilience for the deploy-before-migrate window.
-
-    The backend can boot before the ``org_quotas`` migration has run: the
-    startup guard forces ``quota_mode=off`` (protecting admissions) but does not
-    take this read path down, so a missing ``org_quotas`` table must degrade to
-    no-org-cap display fields instead of 500ing the whole admin quotas page.
-    Runs in its OWN session so the aborted transaction cannot poison the
-    caller's member query. PUT /quotas/org stays strict -- writing an org cap
-    without the table is a real error.
-    """
     try:
         async with get_session() as session:
             return await _org_quota_fields(session, org_id)
@@ -250,13 +239,7 @@ async def _org_quota_fields_or_unavailable(org_id) -> dict:
             "migrated yet); degrading to configured-default display fields",
             exc_info=True,
         )
-        default = _as_float_or_none(settings.default_org_monthly_quota_usd)
-        return {
-            "org_limit_usd": default,
-            "org_used_usd": 0.0,
-            "org_reserved_usd": 0.0,
-            "org_default_limit_usd": default,
-        }
+        return _unavailable_org_quota_fields()
 
 
 @router.get("/quotas", response_model=QuotaListResponse)
@@ -307,26 +290,17 @@ async def list_member_quotas(
 
 
 def _org_usage_response(org_fields: dict, org_used_today: Decimal) -> OrgUsageResponse:
-    """Build the member-visible ``GET /quotas/org`` snapshot + daily-goal math.
-
-    ``daily_goal_usd`` is an adaptive pace target (never enforced): the budget
-    still unspent at the START of today, spread across the days left in the UTC
-    month (including today). Overspending earlier in the month shrinks it; a
-    fully-spent month floors it at 0. Null when no org cap is configured.
-    """
     now = start_of_today_utc()
     days_in_month = calendar.monthrange(now.year, now.month)[1]
-    days_remaining = days_in_month - now.day + 1  # includes today
+    days_remaining = days_in_month - now.day + 1
 
     limit = org_fields["org_limit_usd"]
     used_month = Decimal(str(org_fields["org_used_usd"]))
     daily_goal: float | None = None
     if limit is not None:
-        # Spend booked before today; today's spend must not inflate today's goal.
-        spent_before_today = used_month - org_used_today
-        remaining_at_day_start = Decimal(str(limit)) - spent_before_today
-        if remaining_at_day_start < 0:
-            remaining_at_day_start = Decimal(0)
+        remaining_at_day_start = max(
+            Decimal(0), Decimal(str(limit)) - used_month + org_used_today
+        )
         daily_goal = float(remaining_at_day_start / Decimal(days_remaining))
 
     return OrgUsageResponse(
@@ -344,12 +318,6 @@ def _org_usage_response(org_fields: dict, org_used_today: Decimal) -> OrgUsageRe
 async def get_org_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> OrgUsageResponse:
-    """Org budget snapshot for the member-visible dashboard goal bar.
-
-    Any authenticated org member may read this (unlike the admin-only
-    ``GET /quotas``). Degrades to a no-cap snapshot when the ``org_quotas``
-    table has not been migrated yet -- it must not 500 during the
-    deploy-before-migrate window."""
     if auth.org_id is None:
         raise HTTPException(status_code=404, detail="Organization not found")
 
@@ -367,13 +335,7 @@ async def get_org_quota_usage(
             "yet); degrading to no-org-cap snapshot",
             exc_info=True,
         )
-        default = _as_float_or_none(settings.default_org_monthly_quota_usd)
-        org_fields = {
-            "org_limit_usd": default,
-            "org_used_usd": 0.0,
-            "org_reserved_usd": 0.0,
-            "org_default_limit_usd": default,
-        }
+        org_fields = _unavailable_org_quota_fields()
         org_used_today = Decimal(0)
 
     return _org_usage_response(org_fields, org_used_today)
@@ -384,14 +346,6 @@ async def set_org_quota(
     payload: QuotaUpdateRequest,
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> OrgQuotaResponse:
-    """Set or clear the org-wide aggregate monthly cap override.
-
-    A null ``limit_usd`` clears the override (hard DELETE, like the per-user
-    path) so the org reverts to the configured default. The effective cap is
-    re-read after the write so PUT and GET agree even under a concurrent write.
-    Declared before ``PUT /quotas/{user_id}`` so the literal ``org`` path is not
-    captured by the ``{user_id}`` route.
-    """
     async with get_session() as session:
         if payload.limit_usd is None:
             await session.execute(
