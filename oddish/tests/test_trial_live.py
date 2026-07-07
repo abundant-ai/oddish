@@ -35,22 +35,6 @@ def make_event(seq, kind="message", payload=None):
     )
 
 
-class FakeScalars:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def all(self):
-        return self.rows
-
-
-class FakeExecuteResult:
-    def __init__(self, rows):
-        self.rows = rows
-
-    def scalars(self):
-        return FakeScalars(self.rows)
-
-
 class FakeSession:
     def __init__(self, rows=()):
         self.rows = list(rows)
@@ -58,7 +42,8 @@ class FakeSession:
 
     async def execute(self, stmt):
         self.stmts.append(stmt)
-        return FakeExecuteResult(self.rows)
+        rows = self.rows
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
 
 
 def test_build_live_response_shape():

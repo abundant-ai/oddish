@@ -102,11 +102,6 @@ def _render_tool_results(event: dict) -> list[dict[str, Any]]:
     return rendered
 
 
-def _render_result(event: dict) -> list[dict[str, Any]]:
-    text_val = str(event.get("result") or event.get("subtype") or "")
-    return [{"kind": "summary", "payload": _clipped_payload("text", text_val)}]
-
-
 @dataclass
 class ClaudeUsageFold:
     usage_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -137,7 +132,8 @@ class ClaudeUsageFold:
         if event.get("type") == "user":
             return _render_tool_results(event)
         if event.get("type") == "result":
-            return _render_result(event)
+            value = event.get("result") or event.get("subtype") or ""
+            return [{"kind": "summary", "payload": _clipped_payload("text", value)}]
         return []
 
     def totals(self) -> UsageTotals:
@@ -247,18 +243,15 @@ class LiveTailer:
                 raise TailExecError(f"tail exec failed rc={return_code}")
             return
         encoded = (result.stdout or "").strip()
-        if not encoded:
-            await self._flush_events()
-            await self._checkpoint()
-            return
-        try:
-            raw = base64.b64decode(encoded, validate=True)
-        except binascii.Error as exc:
-            raise TailExecError(f"invalid base64 tail output: {exc}") from exc
-        lines, self.carry = split_lines(self.carry + raw)
-        self.offset += len(raw)
-        for line in lines:
-            self._buffer_events(self.fold.feed_line(line))
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except binascii.Error as exc:
+                raise TailExecError(f"invalid base64 tail output: {exc}") from exc
+            lines, self.carry = split_lines(self.carry + raw)
+            self.offset += len(raw)
+            for line in lines:
+                self._buffer_events(self.fold.feed_line(line))
         await self._flush_events()
         await self._checkpoint()
 
@@ -274,13 +267,12 @@ class LiveTailer:
                     {
                         "seq": self.seq,
                         "kind": "summary",
-                        "payload": {
-                            "capped": True,
-                            "text": (
-                                f"Transcript capped at {MAX_TRIAL_EVENTS} events; "
-                                "further output omitted."
-                            ),
-                        },
+                        "payload": _clipped_payload(
+                            "text",
+                            f"Transcript capped at {MAX_TRIAL_EVENTS} events; "
+                            "further output omitted.",
+                            capped=True,
+                        ),
                     }
                 )
                 self.capped = True
@@ -359,28 +351,20 @@ def start(
         return
     if environment is None or not supports(agent):
         return
-    old = _tailers.pop(trial_id, None)
-    if old:
-        old[0].replaced = True
-        old[0].request_stop()
-        old[1].cancel()
     tailer = LiveTailer(
         trial_id=trial_id, environment=environment, attempt=attempt, model=model
     )
+    old = _tailers.pop(trial_id, None)
     if old:
-        tailer._last_cost = old[0]._last_cost
-        tailer.seq = old[0].seq
-        tailer.capped = old[0].capped
-        tailer.pending_events = list(old[0].pending_events)
-    task = asyncio.create_task(tailer.run())
-    entry = (tailer, task)
-    _tailers[trial_id] = entry
-
-    def _cleanup(_task: asyncio.Task) -> None:
-        if _tailers.get(trial_id) is entry:
-            _tailers.pop(trial_id, None)
-
-    task.add_done_callback(_cleanup)
+        old_tailer, old_task = old
+        old_tailer.replaced = True
+        old_tailer.request_stop()
+        old_task.cancel()
+        tailer._last_cost = old_tailer._last_cost
+        tailer.seq = old_tailer.seq
+        tailer.capped = old_tailer.capped
+        tailer.pending_events = list(old_tailer.pending_events)
+    _tailers[trial_id] = (tailer, asyncio.create_task(tailer.run()))
 
 
 def request_stop(trial_id: str) -> None:
@@ -390,7 +374,7 @@ def request_stop(trial_id: str) -> None:
 
 
 async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> int | None:
-    entry = _tailers.get(trial_id)
+    entry = _tailers.pop(trial_id, None)
     if not entry:
         return None
     tailer, task = entry
@@ -399,6 +383,10 @@ async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> int | None:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout_sec)
     except asyncio.TimeoutError:
         task.cancel()
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                asyncio.gather(task, return_exceptions=True), timeout=5
+            )
     except Exception:
         pass
     return tailer.attempt

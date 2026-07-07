@@ -277,7 +277,11 @@ GET /trials/{trial_id}/live?attempt=A&after_seq=N
 Consumers loop: request, render, sleep 2s, repeat with `after_seq=next_seq`, until
 `done`. The cursor is really the pair `(attempt, seq)`: when the response's
 `attempt` is newer than the client's, the trial was retried — the client resets its
-transcript view and re-polls from `after_seq=0` on the new attempt. Both the CLI (`oddish logs --follow`) and the dashboard's live tab are thin
+transcript view and re-polls from `after_seq=0` on the new attempt. Note that
+`done` reports current row state and is **not final**: a queue-level auto-retry
+clears `finished_at` after a failed attempt set it, so a client that wants to
+survive retries keys on `attempt`, treating a newer attempt after `done: true` as
+a restart rather than an error. Both the CLI (`oddish logs --follow`) and the dashboard's live tab are thin
 clients of this one endpoint.
 
 Why polling and not SSE: our stack (Modal-served FastAPI behind a Next.js proxy)

@@ -288,6 +288,7 @@ def test_feed_line_never_raises_on_typed_garbage():
 
 @pytest.mark.asyncio
 async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
+    patch_db(monkeypatch)
     monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
     kwargs = dict(
@@ -312,6 +313,26 @@ async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     await live_tail.shutdown("t1")
+    assert "t1" not in live_tail._tailers
+
+
+@pytest.mark.asyncio
+async def test_shutdown_after_task_completion_returns_attempt(monkeypatch):
+    patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
+    live_tail.start(
+        trial_id="t1",
+        environment=FakeEnv([]),
+        attempt=3,
+        agent="claude-code",
+        model=None,
+    )
+    tailer, task = live_tail._tailers["t1"]
+    tailer.request_stop()
+    await asyncio.wait_for(task, timeout=5)
+    assert "t1" in live_tail._tailers
+    assert await live_tail.shutdown("t1") == 3
     assert "t1" not in live_tail._tailers
 
 
