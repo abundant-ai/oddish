@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import modal
@@ -193,6 +194,27 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 # lease (WORKER_TIMEOUT_SECONDS + 30).
 WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
 
+_GKE_CLUSTER_ENV = "ODDISH_GKE_CLUSTER_NAME"
+
+
+def _effective_gke_cluster_name(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> str | None:
+    """GKE cluster name from the same two channels the deploy resolves it from:
+    an explicit process env var wins, else ``backend/.env`` (LOCAL_DOTENV_VARS).
+
+    Both channels also reach the worker runtime -- env vars directly, ``.env``
+    via the ``from_dict`` secret appended below -- where pydantic ``Settings``
+    reads whichever is set and ``oddish.runtime.registry`` registers the GKE
+    backend (and TPU routing) on it. The oddish-gcp credential secret is gated on
+    this exact value so secret-attachment can never disagree with registration:
+    a dotenv-only deploy would otherwise register GKE and route TPU trials to
+    workers that lack ``GOOGLE_APPLICATION_CREDENTIALS_JSON`` and every such
+    trial would authenticate-fail.
+    """
+    return environ.get(_GKE_CLUSTER_ENV) or dotenv_vars.get(_GKE_CLUSTER_ENV)
+
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
@@ -213,10 +235,13 @@ if SAURON_AWS_SECRET_NAME:
     )
 
 # GCP service-account credentials for GKE TPU trials, materialized into an ADC
-# file by the worker runtime. Modal hydrates named secrets lazily at container
-# start, so gate the append on GKE being configured for this deployment —
-# installs without GKE never reference the secret and still boot.
-if os.environ.get("ODDISH_GKE_CLUSTER_NAME"):
+# file by the worker runtime. Optional and lazily hydrated by Modal, so installs
+# without GKE never reference the secret and still boot. The gate consults both
+# the process env and backend/.env (see _effective_gke_cluster_name) so the
+# secret attaches whenever GKE is configured by ANY channel that also registers
+# the backend -- otherwise GKE workers boot without credentials and every trial
+# authenticate-fails.
+if _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS):
     runtime_secrets.append(
         modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
     )
