@@ -969,6 +969,10 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
+    # Live tail of agent output for running trials (spec: harbor-live-streaming-mvp)
+    live_tail_enabled: bool = False
+    live_tail_interval_sec: float = 5.0
+
     harbor_source_repo: str = "rishidesai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.

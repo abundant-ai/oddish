@@ -313,6 +313,7 @@ async def run_harbor_trial_async(
                 job.on_trial_started(hook_callback)
                 job.on_environment_started(hook_callback)
                 job.on_agent_started(hook_callback)
+                job.on_agent_ended(hook_callback)
                 job.on_verification_started(hook_callback)
                 job.on_trial_ended(hook_callback)
                 job.on_trial_cancelled(hook_callback)

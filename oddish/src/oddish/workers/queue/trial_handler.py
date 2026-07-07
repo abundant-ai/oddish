@@ -40,6 +40,7 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
+from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
@@ -793,6 +794,7 @@ async def _handle_harbor_event(
 ) -> None:
     """Update a trial from Harbor lifecycle events."""
     event = hook_event.event
+    live_tail_spawn: tuple[int, str, str | None] | None = None
 
     try:
         should_upload_probe_dir = (
@@ -891,6 +893,7 @@ async def _handle_harbor_event(
                 )
             elif event == TrialEvent.AGENT_START:
                 trial.harbor_stage = "agent_running"
+                live_tail_spawn = (trial.attempts, trial.agent, trial.model)
                 console.print(f"[cyan]Trial {trial_id} agent started[/cyan]")
             elif event == TrialEvent.VERIFICATION_START:
                 trial.harbor_stage = "verification"
@@ -955,6 +958,17 @@ async def _handle_harbor_event(
                 )
                 trial.finished_at = utcnow()
                 console.print(f"[yellow]Trial {trial_id} cancelled[/yellow]")
+
+        if live_tail_spawn is not None and hook_event.environment is not None:
+            live_tail.start(
+                trial_id=trial_id,
+                environment=hook_event.environment,
+                attempt=live_tail_spawn[0],
+                agent=live_tail_spawn[1],
+                model=live_tail_spawn[2],
+            )
+        elif event in (TrialEvent.AGENT_END, TrialEvent.END, TrialEvent.CANCEL):
+            live_tail.request_stop(trial_id)
 
     except Exception as e:
         console.print(f"[yellow]Hook callback error: {e}[/yellow]")
@@ -1037,6 +1051,7 @@ async def _execute_trial(
     finally:
         heartbeat_stop.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
+        await live_tail.shutdown(trial_id)
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)

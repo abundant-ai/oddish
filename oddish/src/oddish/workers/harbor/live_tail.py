@@ -1,0 +1,231 @@
+import asyncio
+import base64
+import binascii
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy import update
+
+from oddish.config import settings
+from oddish.db import TrialModel
+from oddish.db.connection import get_session
+from oddish.model_pricing import estimate_cost_usd
+from oddish.workers.queue.shared import console
+
+CLAUDE_LOG_PATH = "/logs/agent/claude-code.txt"
+MAX_CHUNK_BYTES = 256 * 1024
+EXEC_TIMEOUT_SEC = 30
+
+
+def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
+    if b"\n" not in buf:
+        return [], buf
+    *lines, rest = buf.split(b"\n")
+    return lines, rest
+
+
+@dataclass
+class UsageTotals:
+    input_tokens: int = 0
+    cache_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+    model: str | None = None
+
+
+@dataclass
+class ClaudeUsageFold:
+    usage_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model: str | None = None
+
+    def feed_line(self, line: bytes) -> None:
+        line = line.strip()
+        if not line.startswith(b"{"):
+            return
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            return
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return
+        msg_id = message.get("id")
+        usage = message.get("usage")
+        if not msg_id or not isinstance(usage, dict):
+            return
+        self.usage_by_id[msg_id] = usage
+        model = message.get("model")
+        if isinstance(model, str) and model:
+            self.model = model
+
+    def totals(self) -> UsageTotals:
+        t = UsageTotals(model=self.model)
+        for usage in self.usage_by_id.values():
+            cache_read = int(usage.get("cache_read_input_tokens") or 0)
+            cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+            t.input_tokens += int(usage.get("input_tokens") or 0) + cache_read + cache_write
+            t.cache_tokens += cache_read
+            t.cache_write_tokens += cache_write
+            t.output_tokens += int(usage.get("output_tokens") or 0)
+        return t
+
+
+def price_totals(totals: UsageTotals, fallback_model: str | None) -> float | None:
+    model = totals.model or fallback_model
+    if not model:
+        return None
+    try:
+        return estimate_cost_usd(
+            model,
+            input_tokens=totals.input_tokens,
+            output_tokens=totals.output_tokens,
+            cached_tokens=totals.cache_tokens,
+            cache_write_tokens=totals.cache_write_tokens,
+        )
+    except Exception:
+        return None
+
+
+class LiveTailer:
+    def __init__(
+        self,
+        *,
+        trial_id: str,
+        environment: Any,
+        attempt: int,
+        model: str | None,
+    ):
+        self.trial_id = trial_id
+        self.environment = environment
+        self.attempt = attempt
+        self.fallback_model = model
+        self.fold = ClaudeUsageFold()
+        self.offset = 0
+        self.carry = b""
+        self._stop = asyncio.Event()
+        self._last_written: tuple | None = None
+
+    def request_stop(self) -> None:
+        self._stop.set()
+
+    async def run(self) -> None:
+        while True:
+            stopping = self._stop.is_set()
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                console.print(f"[dim]Trial {self.trial_id} live tail: {exc}[/dim]")
+            if stopping:
+                return
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(), timeout=settings.live_tail_interval_sec
+                )
+            except asyncio.TimeoutError:
+                pass
+
+    async def _tick(self) -> None:
+        command = (
+            f"tail -c +{self.offset + 1} {CLAUDE_LOG_PATH} 2>/dev/null"
+            f" | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
+        )
+        result = await self.environment.exec(
+            command=command, timeout_sec=EXEC_TIMEOUT_SEC
+        )
+        encoded = (result.stdout or "").strip()
+        if not encoded:
+            return
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except binascii.Error:
+            return
+        lines, self.carry = split_lines(self.carry + raw)
+        self.offset += len(raw)
+        for line in lines:
+            self.fold.feed_line(line)
+        await self._checkpoint()
+
+    async def _checkpoint(self) -> None:
+        if not self.fold.usage_by_id:
+            return
+        totals = self.fold.totals()
+        cost = price_totals(totals, self.fallback_model)
+        state = (
+            totals.input_tokens,
+            totals.cache_tokens,
+            totals.cache_write_tokens,
+            totals.output_tokens,
+            cost,
+        )
+        if state == self._last_written:
+            return
+        values: dict[str, Any] = {
+            "input_tokens": totals.input_tokens,
+            "cache_tokens": totals.cache_tokens,
+            "cache_write_tokens": totals.cache_write_tokens,
+            "output_tokens": totals.output_tokens,
+        }
+        if cost is not None:
+            values["cost_usd"] = cost
+        async with get_session() as session:
+            await session.execute(
+                update(TrialModel)
+                .where(
+                    TrialModel.id == self.trial_id,
+                    TrialModel.finished_at.is_(None),
+                )
+                .values(**values)
+            )
+        self._last_written = state
+
+
+_tailers: dict[str, tuple[LiveTailer, asyncio.Task]] = {}
+
+
+def supports(agent: str | None) -> bool:
+    return "claude-code" in (agent or "").lower()
+
+
+def start(
+    *,
+    trial_id: str,
+    environment: Any,
+    attempt: int,
+    agent: str | None,
+    model: str | None,
+) -> None:
+    if not settings.live_tail_enabled:
+        return
+    if environment is None or not supports(agent) or trial_id in _tailers:
+        return
+    tailer = LiveTailer(
+        trial_id=trial_id, environment=environment, attempt=attempt, model=model
+    )
+    task = asyncio.create_task(tailer.run())
+    _tailers[trial_id] = (tailer, task)
+    task.add_done_callback(lambda _t: _tailers.pop(trial_id, None))
+
+
+def request_stop(trial_id: str) -> None:
+    entry = _tailers.get(trial_id)
+    if entry:
+        entry[0].request_stop()
+
+
+async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> None:
+    entry = _tailers.get(trial_id)
+    if not entry:
+        return
+    tailer, task = entry
+    tailer.request_stop()
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        task.cancel()
+    except Exception:
+        pass
