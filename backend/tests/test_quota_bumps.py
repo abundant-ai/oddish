@@ -1,10 +1,8 @@
-"""Temporary quota bumps: helpers, admission, and the bump endpoints."""
-
 from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -13,7 +11,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from api.app import create_app
-from auth import require_can_manage_quotas
+from auth import require_auth, require_can_manage_quotas
 from auth.types import AuthContext, AuthMethod
 from models import (
     APIKeyScope,
@@ -28,6 +26,7 @@ from oddish.core.api_keys import create_api_key
 from oddish.core.quota_admission import QuotaExceeded, admit_trials
 from oddish.core.quotas import get_effective_limit, live_bump_total
 from oddish.db import TaskModel, TrialModel, WorkerJobModel, get_session, utcnow
+from oddish.db.models import APIKeyModel
 from oddish.queue import create_task
 from oddish.schemas import TaskSubmission, TrialSpec
 
@@ -54,11 +53,40 @@ def _member(org_id: str, handle: str, role: str) -> UserModel:
     )
 
 
-def _admin_client(app, org_id, admin_user):
-    app.dependency_overrides[require_can_manage_quotas] = lambda: _user_auth(
-        org_id=org_id, user_id=admin_user.id, role=UserRole.ADMIN
-    )
+def _client(app) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+def _bump_payload(amount="5.00", hours=6, **extra):
+    return {"amount_usd": amount, "duration_hours": hours, **extra}
+
+
+async def _add_bump(
+    session, org_id, user_id, amount, *, expires_at, revoked_at=None, deleted_at=None
+):
+    session.add(
+        QuotaBumpModel(
+            id=uuid.uuid4().hex[:8],
+            org_id=org_id,
+            user_id=user_id,
+            amount_usd=Decimal(str(amount)),
+            expires_at=expires_at,
+            revoked_at=revoked_at,
+            deleted_at=deleted_at,
+        )
+    )
+    await session.flush()
+
+
+async def _bump_rows(org_id, user_id):
+    async with get_session() as session:
+        result = await session.execute(
+            QuotaBumpModel.__table__.select().where(
+                QuotaBumpModel.org_id == org_id,
+                QuotaBumpModel.user_id == user_id,
+            )
+        )
+        return result.mappings().all()
 
 
 def test_quota_bumps_migration_is_ddl_only():
@@ -73,7 +101,7 @@ def test_quota_bumps_migration_is_ddl_only():
     assert "ck_quota_bumps_amount_positive" in source
     assert "CHECK (amount_usd > 0)" in source
     assert "DROP TABLE IF EXISTS quota_bumps" in source
-    assert 'down_revision' in source
+    assert "down_revision" in source
     assert '"apk_role_backend_001"' in source
 
     uppercased = source.upper()
@@ -114,60 +142,53 @@ async def org_with_member():
             )
 
 
-async def _add_bump(
-    session, org_id, user_id, amount, *, expires_at, revoked_at=None, deleted_at=None
-):
-    session.add(
-        QuotaBumpModel(
-            id=uuid.uuid4().hex[:8],
-            org_id=org_id,
-            user_id=user_id,
-            amount_usd=Decimal(str(amount)),
-            expires_at=expires_at,
-            revoked_at=revoked_at,
-            deleted_at=deleted_at,
-        )
+@pytest_asyncio.fixture
+async def admin_client(org_with_member):
+    org_id, admin_user, member_a = org_with_member
+    app = create_app()
+    app.dependency_overrides[require_can_manage_quotas] = lambda: _user_auth(
+        org_id=org_id, user_id=admin_user.id, role=UserRole.ADMIN
     )
-    await session.flush()
+    async with _client(app) as client:
+        yield client, org_id, admin_user, member_a
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_effective_limit_is_default_plus_live_bump(org_with_member):
+@pytest.mark.parametrize("override", [None, "5.00"])
+async def test_effective_limit_is_base_plus_live_bump(org_with_member, override):
     org_id, _admin, member_a = org_with_member
-    future = utcnow() + timedelta(hours=6)
     async with get_session() as session:
-        await _add_bump(session, org_id, member_a.id, "25.00", expires_at=future)
-        effective = await get_effective_limit(session, org_id, member_a.id)
-    assert effective == settings.default_daily_quota_usd + Decimal("25.0000")
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_effective_limit_is_override_plus_live_bump(org_with_member):
-    org_id, _admin, member_a = org_with_member
-    future = utcnow() + timedelta(hours=6)
-    async with get_session() as session:
-        session.add(
-            QuotaModel(org_id=org_id, user_id=member_a.id, limit_usd=Decimal("5.00"))
+        if override:
+            session.add(
+                QuotaModel(
+                    org_id=org_id, user_id=member_a.id, limit_usd=Decimal(override)
+                )
+            )
+            await session.flush()
+        await _add_bump(
+            session,
+            org_id,
+            member_a.id,
+            "10.00",
+            expires_at=utcnow() + timedelta(hours=6),
         )
-        await session.flush()
-        await _add_bump(session, org_id, member_a.id, "10.00", expires_at=future)
         effective = await get_effective_limit(session, org_id, member_a.id)
-    assert effective == Decimal("15.0000")
+    base = Decimal(override) if override else settings.default_daily_quota_usd
+    assert effective == base + Decimal("10.0000")
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_member):
+async def test_live_bump_total_excludes_expired_revoked_tombstoned_and_sums(
+    org_with_member,
+):
     org_id, _admin, member_a = org_with_member
     past = utcnow() - timedelta(hours=1)
     future = utcnow() + timedelta(hours=6)
     later = utcnow() + timedelta(hours=48)
     async with get_session() as session:
-        # Expired: not counted.
         await _add_bump(session, org_id, member_a.id, "100.00", expires_at=past)
-        # Revoked: not counted.
         await _add_bump(
             session,
             org_id,
@@ -176,8 +197,6 @@ async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_me
             expires_at=future,
             revoked_at=utcnow(),
         )
-        # Tombstoned (deleted_at): not counted -- QuotaBumpModel is not
-        # soft-delete-registered, so only the explicit SQL predicate hides it.
         await _add_bump(
             session,
             org_id,
@@ -186,7 +205,6 @@ async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_me
             expires_at=future,
             deleted_at=utcnow(),
         )
-        # Two live bumps: SUM, MAX(expires_at).
         await _add_bump(session, org_id, member_a.id, "7.00", expires_at=future)
         await _add_bump(session, org_id, member_a.id, "3.00", expires_at=later)
 
@@ -194,7 +212,6 @@ async def test_live_bump_total_excludes_expired_and_revoked_and_sums(org_with_me
 
     assert total == Decimal("10.0000")
     assert max_expires is not None
-    # MAX expiry is the later of the two live bumps (compare on the second).
     assert abs((max_expires - later).total_seconds()) < 1
 
 
@@ -212,7 +229,6 @@ async def test_admit_trials_admits_after_bump_then_blocks_when_expired(
 ):
     org_id, _admin, member_a = org_with_member
     task_id = f"bump-adm-{uuid.uuid4().hex[:8]}"
-    now = datetime.now(timezone.utc)
     try:
         async with get_session() as session:
             await create_task(
@@ -228,15 +244,13 @@ async def test_admit_trials_admits_after_bump_then_blocks_when_expired(
             )
             await session.flush()
             trial = await session.get(TrialModel, f"{task_id}-0")
-            trial.finished_at = now
-            trial.cost_usd = 0.30  # exactly the base cap -> blocked at base
+            trial.finished_at = utcnow()
+            trial.cost_usd = 0.30
 
-        # Blocked at the base default (0.30).
         async with get_session() as session:
             with pytest.raises(QuotaExceeded):
                 await admit_trials(session, org_id, member_a.id, count=1)
 
-        # A live bump raises the effective limit -> admitted.
         async with get_session() as session:
             await _add_bump(
                 session,
@@ -248,7 +262,6 @@ async def test_admit_trials_admits_after_bump_then_blocks_when_expired(
         async with get_session() as session:
             await admit_trials(session, org_id, member_a.id, count=1)
 
-        # Expire the bump (DB NOW() can't be monkeypatched): re-blocked at base.
         async with get_session() as session:
             await session.execute(
                 QuotaBumpModel.__table__.update()
@@ -272,44 +285,28 @@ async def test_admit_trials_admits_after_bump_then_blocks_when_expired(
 
 @requires_db
 @pytest.mark.asyncio
-async def test_post_bump_happy_path_returns_member_item_and_persists(org_with_member):
-    org_id, admin_user, member_a = org_with_member
-    expires_at = (utcnow() + timedelta(hours=24)).isoformat()
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.post(
-                f"/quotas/{member_a.id}/bumps",
-                json={
-                    "amount_usd": "50.00",
-                    "expires_at": expires_at,
-                    "reason": "launch week",
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+@pytest.mark.parametrize(
+    ("amount", "expected_bump"),
+    [("50.00", 50.0), ("0.01", 0.01), ("99999999.9999", 99999999.9999)],
+)
+async def test_post_bump_happy_path_returns_member_item_and_persists(
+    admin_client, amount, expected_bump
+):
+    client, org_id, admin_user, member_a = admin_client
+    response = await client.post(
+        f"/quotas/{member_a.id}/bumps",
+        json=_bump_payload(amount, hours=24, reason="launch week"),
+    )
 
     assert response.status_code == 200
     body = response.json()
     assert body["user_id"] == member_a.id
     assert body["base_limit_usd"] == pytest.approx(100.0)
-    assert body["bump_usd"] == pytest.approx(50.0)
-    assert body["limit_usd"] == pytest.approx(150.0)
+    assert body["bump_usd"] == pytest.approx(expected_bump)
+    assert body["limit_usd"] == pytest.approx(100.0 + expected_bump)
     assert body["bump_expires_at"] is not None
 
-    async with get_session() as session:
-        rows = (
-            (
-                await session.execute(
-                    QuotaBumpModel.__table__.select().where(
-                        QuotaBumpModel.org_id == org_id,
-                        QuotaBumpModel.user_id == member_a.id,
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+    rows = await _bump_rows(org_id, member_a.id)
     assert len(rows) == 1
     assert rows[0]["granted_by_user_id"] == admin_user.id
     assert rows[0]["reason"] == "launch week"
@@ -330,8 +327,6 @@ async def org_with_full_key():
     try:
         yield raw_key, member_a
     finally:
-        from oddish.db.models import APIKeyModel
-
         async with get_session() as session:
             await session.execute(
                 APIKeyModel.__table__.delete().where(APIKeyModel.id == key_model.id)
@@ -348,74 +343,36 @@ async def org_with_full_key():
 
 @requires_db
 @pytest.mark.asyncio
-async def test_post_bump_rejects_full_api_key(org_with_full_key):
+@pytest.mark.parametrize("method", ["post", "delete"])
+async def test_bump_routes_reject_full_api_key(org_with_full_key, method):
     raw_key, member_a = org_with_full_key
-    app = create_app()
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            f"/quotas/{member_a.id}/bumps",
-            json={
-                "amount_usd": "5.00",
-                "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
-            },
-            headers={"Authorization": f"Bearer {raw_key}"},
-        )
-    assert response.status_code == 403
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_delete_bump_rejects_full_api_key(org_with_full_key):
-    raw_key, member_a = org_with_full_key
-    app = create_app()
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.delete(
+    kwargs = {"json": _bump_payload()} if method == "post" else {}
+    async with _client(create_app()) as client:
+        response = await getattr(client, method)(
             f"/quotas/{member_a.id}/bumps",
             headers={"Authorization": f"Bearer {raw_key}"},
+            **kwargs,
         )
     assert response.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_bump_routes_reject_non_admin_member_at_the_route():
-    """Route-level guard: a MEMBER request 403s before either handler runs.
-
-    Overrides only ``require_auth`` (the sub-dependency) so the REAL
-    ``require_can_manage_quotas`` runs -- if a bump route dropped that
-    dependency, the request would reach the handler and this test would fail.
-    """
-    from auth import require_auth
-
+async def test_member_403s_via_real_can_manage_quotas_dependency():
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: _user_auth(
         org_id="org-1", user_id="u1", role=UserRole.MEMBER
     )
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            post = await client.post(
-                "/quotas/u2/bumps",
-                json={
-                    "amount_usd": "5.00",
-                    "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
-                },
-            )
-            delete = await client.delete("/quotas/u2/bumps")
-    finally:
-        app.dependency_overrides.clear()
+    async with _client(app) as client:
+        post = await client.post("/quotas/u2/bumps", json=_bump_payload())
+        delete = await client.delete("/quotas/u2/bumps")
     assert post.status_code == 403
     assert delete.status_code == 403
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_post_bump_cross_org_user_is_404(org_with_member):
-    org_id, admin_user, _member_a = org_with_member
+async def test_post_bump_cross_org_user_is_404(admin_client):
+    client, _org_id, _admin, _member_a = admin_client
     other_org_id = f"org_other_{uuid.uuid4().hex[:8]}"
     outsider = _member(other_org_id, "outsider", "member")
     async with get_session() as session:
@@ -425,27 +382,13 @@ async def test_post_bump_cross_org_user_is_404(org_with_member):
         await session.flush()
         session.add(outsider)
 
-    app = create_app()
     try:
-        async with _admin_client(app, org_id, admin_user) as client:
+        for target in (outsider.id, "does-not-exist"):
             response = await client.post(
-                f"/quotas/{outsider.id}/bumps",
-                json={
-                    "amount_usd": "5.00",
-                    "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
-                },
+                f"/quotas/{target}/bumps", json=_bump_payload()
             )
             assert response.status_code == 404
-            unknown = await client.post(
-                "/quotas/does-not-exist/bumps",
-                json={
-                    "amount_usd": "5.00",
-                    "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
-                },
-            )
-            assert unknown.status_code == 404
     finally:
-        app.dependency_overrides.clear()
         async with get_session() as session:
             await session.execute(
                 UserModel.__table__.delete().where(UserModel.id == outsider.id)
@@ -459,141 +402,86 @@ async def test_post_bump_cross_org_user_is_404(org_with_member):
 
 @requires_db
 @pytest.mark.asyncio
-async def test_post_bump_400_for_past_expires_at(org_with_member):
-    org_id, admin_user, member_a = org_with_member
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.post(
-                f"/quotas/{member_a.id}/bumps",
-                json={
-                    "amount_usd": "5.00",
-                    "expires_at": (utcnow() - timedelta(hours=1)).isoformat(),
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
-    assert response.status_code == 400
-    assert response.json()["detail"] == "expires_at must be in the future"
-
-
-@requires_db
-@pytest.mark.asyncio
-async def test_post_bump_400_for_naive_expires_at(org_with_member):
-    org_id, admin_user, member_a = org_with_member
-    naive = datetime.now().replace(microsecond=0) + timedelta(hours=6)
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.post(
-                f"/quotas/{member_a.id}/bumps",
-                json={"amount_usd": "5.00", "expires_at": naive.isoformat()},
-            )
-    finally:
-        app.dependency_overrides.clear()
-    assert response.status_code == 400
-    assert response.json()["detail"] == "expires_at must include a timezone offset"
-
-
-@requires_db
-@pytest.mark.asyncio
-@pytest.mark.parametrize("bad_amount", ["0", "-5.00"])
-async def test_post_bump_422_for_non_positive_amount(org_with_member, bad_amount):
-    org_id, admin_user, member_a = org_with_member
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.post(
-                f"/quotas/{member_a.id}/bumps",
-                json={
-                    "amount_usd": bad_amount,
-                    "expires_at": (utcnow() + timedelta(hours=6)).isoformat(),
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+@pytest.mark.parametrize(
+    ("amount", "hours"),
+    [
+        ("0", 6),
+        ("-5.00", 6),
+        ("5.00001", 6),
+        ("100000000.00", 6),
+        ("5.00", 0),
+        ("5.00", -6),
+        ("5.00", 8761),
+    ],
+)
+async def test_post_bump_rejects_invalid_payloads(admin_client, amount, hours):
+    client, _org_id, _admin, member_a = admin_client
+    response = await client.post(
+        f"/quotas/{member_a.id}/bumps", json=_bump_payload(amount, hours=hours)
+    )
     assert response.status_code == 422
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_delete_revokes_all_live_bumps_but_keeps_audit_row(org_with_member):
-    org_id, admin_user, member_a = org_with_member
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            grant = await client.post(
-                f"/quotas/{member_a.id}/bumps",
-                json={
-                    "amount_usd": "40.00",
-                    "expires_at": (utcnow() + timedelta(hours=24)).isoformat(),
-                },
-            )
-            assert grant.json()["limit_usd"] == pytest.approx(140.0)
+async def test_bump_lifecycle_revoke_keeps_audit_and_regrant_counts_only_live(
+    admin_client,
+):
+    client, org_id, _admin, member_a = admin_client
+    grant = await client.post(
+        f"/quotas/{member_a.id}/bumps", json=_bump_payload("40.00", hours=24)
+    )
+    assert grant.json()["limit_usd"] == pytest.approx(140.0)
 
-            delete = await client.delete(f"/quotas/{member_a.id}/bumps")
-            assert delete.status_code == 200
-            assert delete.json()["limit_usd"] == pytest.approx(100.0)
-            assert delete.json()["bump_usd"] == pytest.approx(0.0)
-            assert delete.json()["bump_expires_at"] is None
+    delete = await client.delete(f"/quotas/{member_a.id}/bumps")
+    assert delete.status_code == 200
+    assert delete.json()["limit_usd"] == pytest.approx(100.0)
+    assert delete.json()["bump_usd"] == pytest.approx(0.0)
+    assert delete.json()["bump_expires_at"] is None
 
-            # Idempotent: revoking again with no live bumps is a 200 no-op.
-            again = await client.delete(f"/quotas/{member_a.id}/bumps")
-            assert again.status_code == 200
-            assert again.json()["limit_usd"] == pytest.approx(100.0)
+    again = await client.delete(f"/quotas/{member_a.id}/bumps")
+    assert again.status_code == 200
+    assert again.json()["limit_usd"] == pytest.approx(100.0)
 
-            list_response = await client.get("/quotas")
-    finally:
-        app.dependency_overrides.clear()
+    regrant = await client.post(
+        f"/quotas/{member_a.id}/bumps", json=_bump_payload("25.00", hours=12)
+    )
+    assert regrant.json()["bump_usd"] == pytest.approx(25.0)
+    assert regrant.json()["limit_usd"] == pytest.approx(125.0)
 
+    list_response = await client.get("/quotas")
     members_by_id = {m["user_id"]: m for m in list_response.json()["members"]}
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(100.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(125.0)
 
-    # The audit row survives with revoked_at stamped.
-    async with get_session() as session:
-        rows = (
-            (
-                await session.execute(
-                    QuotaBumpModel.__table__.select().where(
-                        QuotaBumpModel.org_id == org_id,
-                        QuotaBumpModel.user_id == member_a.id,
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
-    assert len(rows) == 1
-    assert rows[0]["revoked_at"] is not None
+    rows = await _bump_rows(org_id, member_a.id)
+    assert len(rows) == 2
+    by_amount = {row["amount_usd"]: row for row in rows}
+    assert by_amount[Decimal("40.0000")]["revoked_at"] is not None
+    assert by_amount[Decimal("25.0000")]["revoked_at"] is None
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_delete_bump_unknown_member_is_404(org_with_member):
-    org_id, admin_user, _member_a = org_with_member
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.delete("/quotas/does-not-exist/bumps")
-    finally:
-        app.dependency_overrides.clear()
+async def test_delete_bump_unknown_member_is_404(admin_client):
+    client, _org_id, _admin, _member_a = admin_client
+    response = await client.delete("/quotas/does-not-exist/bumps")
     assert response.status_code == 404
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_admin_list_members_carry_base_and_bump_fields(org_with_member):
-    org_id, admin_user, member_a = org_with_member
-    future = utcnow() + timedelta(hours=12)
+async def test_admin_list_members_carry_base_and_bump_fields(admin_client):
+    client, org_id, admin_user, member_a = admin_client
     async with get_session() as session:
-        await _add_bump(session, org_id, member_a.id, "30.00", expires_at=future)
+        await _add_bump(
+            session,
+            org_id,
+            member_a.id,
+            "30.00",
+            expires_at=utcnow() + timedelta(hours=12),
+        )
 
-    app = create_app()
-    try:
-        async with _admin_client(app, org_id, admin_user) as client:
-            response = await client.get("/quotas")
-    finally:
-        app.dependency_overrides.clear()
+    response = await client.get("/quotas")
 
     assert response.status_code == 200
     members_by_id = {m["user_id"]: m for m in response.json()["members"]}
@@ -602,7 +490,6 @@ async def test_admin_list_members_carry_base_and_bump_fields(org_with_member):
     assert row["bump_usd"] == pytest.approx(30.0)
     assert row["limit_usd"] == pytest.approx(130.0)
     assert row["bump_expires_at"] is not None
-    # A member with no bump reports zeros.
     admin_row = members_by_id[admin_user.id]
     assert admin_row["bump_usd"] == pytest.approx(0.0)
     assert admin_row["base_limit_usd"] == pytest.approx(100.0)
@@ -612,24 +499,22 @@ async def test_admin_list_members_carry_base_and_bump_fields(org_with_member):
 @requires_db
 @pytest.mark.asyncio
 async def test_quotas_me_includes_bump_fields(org_with_member):
-    from auth import require_auth
-
     org_id, _admin, member_a = org_with_member
-    future = utcnow() + timedelta(hours=12)
     async with get_session() as session:
-        await _add_bump(session, org_id, member_a.id, "15.00", expires_at=future)
+        await _add_bump(
+            session,
+            org_id,
+            member_a.id,
+            "15.00",
+            expires_at=utcnow() + timedelta(hours=12),
+        )
 
     app = create_app()
     app.dependency_overrides[require_auth] = lambda: _user_auth(
         org_id=org_id, user_id=member_a.id, role=UserRole.MEMBER
     )
-    try:
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            response = await client.get("/quotas/me")
-    finally:
-        app.dependency_overrides.clear()
+    async with _client(app) as client:
+        response = await client.get("/quotas/me")
 
     assert response.status_code == 200
     body = response.json()

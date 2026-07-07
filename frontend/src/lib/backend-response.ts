@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { getAuthHeaders, getBackendUrl, getClerkToken } from "./backend-config";
 
@@ -81,25 +81,18 @@ export async function proxyBackendJson({
       body: sendsBody ? JSON.stringify(body) : undefined,
     });
 
-    const text = await res.text();
-    let data: unknown = null;
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch {
-        return NextResponse.json(
-          { error: "Upstream error" },
-          { status: res.ok ? 502 : res.status },
-        );
-      }
+    const { data, parseError, status } = await readBackendJson(
+      res,
+      "Upstream error",
+    );
+    if (parseError) {
+      return NextResponse.json(parseError, { status });
     }
-
     if (!res.ok) {
-      return NextResponse.json(data ?? { error: "Upstream error" }, {
+      return NextResponse.json(backendErrorPayload(data, "Upstream error"), {
         status: res.status,
       });
     }
-    // A 2xx with no JSON body is not a success the client can use.
     return data === null
       ? NextResponse.json({ error: "Upstream error" }, { status: 502 })
       : NextResponse.json(data);
@@ -109,4 +102,18 @@ export async function proxyBackendJson({
       { status: 503 },
     );
   }
+}
+
+export async function proxyJsonRequest(
+  request: NextRequest,
+  path: string,
+  method: "PUT" | "POST",
+): Promise<NextResponse> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  return proxyBackendJson({ path, method, body });
 }

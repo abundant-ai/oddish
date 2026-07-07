@@ -122,21 +122,18 @@ async def inflight_reserved_usd(
     )
 
 
+_LIVE_BUMP = "revoked_at IS NULL AND deleted_at IS NULL AND expires_at > NOW()"
+
+
 async def live_bump_total(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> tuple[Decimal, datetime | None]:
-    """Live bump sum and max expiry for one user.
-
-    Raw text SQL because oddish must not import backend models.
-    """
     total, max_expires_at = (
         await session.execute(
             text(
                 "SELECT COALESCE(SUM(amount_usd), 0), MAX(expires_at) "
                 "FROM quota_bumps "
-                "WHERE org_id = :org_id AND user_id = :user_id "
-                "AND revoked_at IS NULL AND deleted_at IS NULL "
-                "AND expires_at > NOW()"
+                f"WHERE org_id = :org_id AND user_id = :user_id AND {_LIVE_BUMP}"
             ),
             {"org_id": org_id, "user_id": user_id},
         )
@@ -147,13 +144,11 @@ async def live_bump_total(
 async def live_bump_totals_by_user(
     session: AsyncSession, org_id: str | None
 ) -> dict[str, tuple[Decimal, datetime | None]]:
-    """Live bump sum and max expiry per user, for the admin list."""
     rows = await session.execute(
         text(
             "SELECT user_id, COALESCE(SUM(amount_usd), 0), MAX(expires_at) "
             "FROM quota_bumps "
-            "WHERE org_id = :org_id AND revoked_at IS NULL "
-            "AND deleted_at IS NULL AND expires_at > NOW() "
+            f"WHERE org_id = :org_id AND {_LIVE_BUMP} "
             "GROUP BY user_id"
         ),
         {"org_id": org_id},
@@ -167,7 +162,6 @@ async def live_bump_totals_by_user(
 async def get_base_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:
-    """Base 24h limit: the ``quotas`` override row or the org default."""
     override_limit_usd = await session.scalar(
         text(
             "SELECT limit_usd FROM quotas "

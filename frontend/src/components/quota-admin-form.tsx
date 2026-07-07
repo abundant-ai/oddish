@@ -59,11 +59,11 @@ const memberLabel = (member: QuotaMember) =>
 const MAX_LIMIT_USD = 99999999.9999;
 
 const DEFAULT_BUMP_DURATION = "24";
-const BUMP_DURATIONS: { value: string; label: string; hours: number }[] = [
-  { value: "6", label: "6 hours", hours: 6 },
-  { value: "24", label: "24 hours", hours: 24 },
-  { value: "48", label: "48 hours", hours: 48 },
-  { value: "168", label: "7 days", hours: 168 },
+const BUMP_DURATIONS = [
+  { value: "6", label: "6 hours" },
+  { value: "24", label: "24 hours" },
+  { value: "48", label: "48 hours" },
+  { value: "168", label: "7 days" },
 ];
 
 function errorMessage(body: unknown): string | undefined {
@@ -198,9 +198,31 @@ export function QuotaAdminForm() {
     void mutate();
   }
 
+  async function submitBump(
+    id: string,
+    init: RequestInit,
+    fallback: string
+  ): Promise<boolean> {
+    if (bumpBusy[id]) return false;
+    setBumpBusy((p) => ({ ...p, [id]: true }));
+    setBumpError(({ [id]: _drop, ...rest }) => rest);
+    const res = await fetch(
+      `/api/quotas/${encodeURIComponent(id)}/bumps`,
+      init
+    ).catch(() => null);
+    setBumpBusy((p) => ({ ...p, [id]: false }));
+
+    const message = await requestQuotaError(res, fallback);
+    if (message) {
+      setBumpError((p) => ({ ...p, [id]: message }));
+      return false;
+    }
+    void mutate();
+    return true;
+  }
+
   async function grantBump(member: QuotaMember) {
     const id = member.user_id;
-    if (bumpBusy[id]) return;
     const rounded = Number(Number(bumpDraft[id]?.amount ?? "").toFixed(2));
     if (!Number.isFinite(rounded) || rounded <= 0 || rounded > MAX_LIMIT_USD) {
       setBumpError((p) => ({
@@ -209,48 +231,27 @@ export function QuotaAdminForm() {
       }));
       return;
     }
-    const hours = Number(bumpDraft[id]?.duration ?? DEFAULT_BUMP_DURATION);
     const payload: QuotaBumpCreate = {
       amount_usd: rounded.toFixed(2),
-      expires_at: new Date(Date.now() + hours * 3_600_000).toISOString(),
+      duration_hours: Number(bumpDraft[id]?.duration ?? DEFAULT_BUMP_DURATION),
     };
-
-    setBumpBusy((p) => ({ ...p, [id]: true }));
-    setBumpError(({ [id]: _drop, ...rest }) => rest);
-    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}/bumps`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
-    setBumpBusy((p) => ({ ...p, [id]: false }));
-
-    const message = await requestQuotaError(res, "Could not grant boost.");
-    if (message) {
-      setBumpError((p) => ({ ...p, [id]: message }));
-      return;
+    const ok = await submitBump(
+      id,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      "Could not grant boost."
+    );
+    if (ok) {
+      setBumpDraft(({ [id]: _drop, ...rest }) => rest);
+      setBumpOpen((p) => ({ ...p, [id]: false }));
     }
-    setBumpDraft(({ [id]: _drop, ...rest }) => rest);
-    setBumpOpen((p) => ({ ...p, [id]: false }));
-    void mutate();
   }
 
-  async function revokeBump(member: QuotaMember) {
-    const id = member.user_id;
-    if (bumpBusy[id]) return;
-    setBumpBusy((p) => ({ ...p, [id]: true }));
-    setBumpError(({ [id]: _drop, ...rest }) => rest);
-    const res = await fetch(`/api/quotas/${encodeURIComponent(id)}/bumps`, {
-      method: "DELETE",
-    }).catch(() => null);
-    setBumpBusy((p) => ({ ...p, [id]: false }));
-
-    const message = await requestQuotaError(res, "Could not revoke boost.");
-    if (message) {
-      setBumpError((p) => ({ ...p, [id]: message }));
-      return;
-    }
-    void mutate();
-  }
+  const revokeBump = (member: QuotaMember) =>
+    submitBump(member.user_id, { method: "DELETE" }, "Could not revoke boost.");
 
   return (
     <div className="space-y-3">

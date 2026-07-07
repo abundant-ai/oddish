@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, Field
@@ -74,12 +73,10 @@ class QuotaUpdateRequest(BaseModel):
 
 
 class QuotaBumpRequest(BaseModel):
-    """Grant a temporary additive boost to a member's 24h limit."""
-
     amount_usd: Decimal = Field(
         gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
     )
-    expires_at: datetime
+    duration_hours: int = Field(gt=0, le=8760)
     reason: str | None = Field(None, max_length=500)
 
 

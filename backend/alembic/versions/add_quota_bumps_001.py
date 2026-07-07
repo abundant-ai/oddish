@@ -43,7 +43,7 @@ def upgrade() -> None:
         """
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_quota_bumps_user_id ON quota_bumps (user_id)"
+        "CREATE INDEX IF NOT EXISTS ix_quota_bumps_user_id ON quota_bumps (user_id)"
     )
 
 

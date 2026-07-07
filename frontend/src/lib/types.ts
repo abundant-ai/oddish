@@ -422,7 +422,7 @@ export interface QuotaUpdate {
 
 export interface QuotaBumpCreate {
   amount_usd: string;
-  expires_at: string;
+  duration_hours: number;
   reason?: string;
 }
 

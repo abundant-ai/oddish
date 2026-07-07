@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import timedelta
 from decimal import Decimal
 from typing import Annotated
 
@@ -146,30 +147,21 @@ async def list_users(
 async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
-    enforced = settings.quota_mode == QuotaMode.ENFORCE
-    if not auth.user_id:
-        base_limit_usd = settings.default_daily_quota_usd
-        return QuotaUsageResponse(
-            user_id="",
-            limit_usd=float(base_limit_usd),
-            used_usd=0.0,
-            reserved_usd=0.0,
-            enforced=enforced,
-            base_limit_usd=float(base_limit_usd),
-        )
-
-    async with get_session() as session:
-        used_usd, base_limit_usd, bump_usd, bump_expires_at = (
-            await _read_member_quota_fields(session, auth.org_id, auth.user_id)
-        )
-        reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
+    used_usd = reserved = bump_usd = Decimal(0)
+    base_limit_usd, bump_expires_at = settings.default_daily_quota_usd, None
+    if auth.user_id:
+        async with get_session() as session:
+            used_usd, base_limit_usd, bump_usd, bump_expires_at = (
+                await _read_member_quota_fields(session, auth.org_id, auth.user_id)
+            )
+            reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
 
     return QuotaUsageResponse(
-        user_id=auth.user_id,
+        user_id=auth.user_id or "",
         limit_usd=float(base_limit_usd + bump_usd),
         used_usd=float(used_usd),
         reserved_usd=float(reserved),
-        enforced=enforced,
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
         base_limit_usd=float(base_limit_usd),
         bump_usd=float(bump_usd),
         bump_expires_at=bump_expires_at.isoformat() if bump_expires_at else None,
@@ -199,12 +191,7 @@ async def _read_member_quota_fields(session, org_id: str | None, user_id: str):
 
 
 def _quota_member_item(
-    member,
-    *,
-    base_limit_usd,
-    used_usd,
-    bump_usd=Decimal(0),
-    bump_expires_at=None,
+    member, used_usd, base_limit_usd, bump_usd=Decimal(0), bump_expires_at=None
 ) -> QuotaMemberItem:
     return QuotaMemberItem(
         user_id=member.id,
@@ -220,15 +207,9 @@ def _quota_member_item(
     )
 
 
-def _member_item_from_fields(member, fields) -> QuotaMemberItem:
-    used_usd, base_limit_usd, bump_usd, bump_expires_at = fields
-    return _quota_member_item(
-        member,
-        base_limit_usd=base_limit_usd,
-        used_usd=used_usd,
-        bump_usd=bump_usd,
-        bump_expires_at=bump_expires_at,
-    )
+async def _member_quota_item(session, org_id: str | None, member) -> QuotaMemberItem:
+    fields = await _read_member_quota_fields(session, org_id, member.id)
+    return _quota_member_item(member, *fields)
 
 
 @router.get("/quotas", response_model=QuotaListResponse)
@@ -265,22 +246,17 @@ async def list_member_quotas(
 
         bump_totals_by_user_id = await live_bump_totals_by_user(session, auth.org_id)
 
-    members_out = []
-    for member in members:
-        base_limit_usd = override_limit_by_user_id.get(member.id, default_limit_usd)
-        bump_usd, bump_expires_at = bump_totals_by_user_id.get(
-            member.id, (Decimal(0), None)
-        )
-        members_out.append(
+    return QuotaListResponse(
+        members=[
             _quota_member_item(
                 member,
-                base_limit_usd=base_limit_usd,
-                used_usd=used_usd_by_user_id.get(member.id, Decimal(0)),
-                bump_usd=bump_usd,
-                bump_expires_at=bump_expires_at,
+                used_usd_by_user_id.get(member.id, Decimal(0)),
+                override_limit_by_user_id.get(member.id, default_limit_usd),
+                *bump_totals_by_user_id.get(member.id, (Decimal(0), None)),
             )
-        )
-    return QuotaListResponse(members=members_out)
+            for member in members
+        ]
+    )
 
 
 @router.put("/quotas/{user_id}", response_model=QuotaMemberItem)
@@ -310,8 +286,6 @@ async def set_member_quota(
                 )
                 .on_conflict_do_update(
                     index_elements=["org_id", "user_id"],
-                    # Revive a tombstoned override: the (org_id, user_id) unique
-                    # index spans all rows, and only live rows are read.
                     set_={
                         "limit_usd": payload.limit_usd,
                         "updated_at": utcnow(),
@@ -320,9 +294,7 @@ async def set_member_quota(
                 )
             )
 
-        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
-
-    return _member_item_from_fields(member, fields)
+        return await _member_quota_item(session, auth.org_id, member)
 
 
 @router.post("/quotas/{user_id}/bumps", response_model=QuotaMemberItem)
@@ -331,43 +303,23 @@ async def add_member_quota_bump(
     payload: QuotaBumpRequest,
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaMemberItem:
-    """Grant a member a temporary additive quota boost.
-
-    Bumps stack (SUM of live rows) and expire at read time
-    (``expires_at > NOW()``), so there is no revert job.
-    """
-    expires_at = payload.expires_at
-    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
-        raise HTTPException(
-            status_code=400, detail="expires_at must include a timezone offset"
-        )
-
     async with get_session() as session:
         member = await _get_member_or_404(session, auth.org_id, user_id)
 
-        # Validate "future" on the DB clock, the same clock the liveness reads
-        # use, so an accepted grant is live regardless of app/DB skew.
         db_now = await session.scalar(sa_text("SELECT NOW()"))
-        if expires_at <= db_now:
-            raise HTTPException(
-                status_code=400, detail="expires_at must be in the future"
-            )
-
         session.add(
             QuotaBumpModel(
                 id=generate_id(),
                 org_id=auth.org_id,
                 user_id=user_id,
                 amount_usd=payload.amount_usd,
-                expires_at=expires_at,
+                expires_at=db_now + timedelta(hours=payload.duration_hours),
                 reason=payload.reason,
                 granted_by_user_id=auth.user_id,
             )
         )
         await session.flush()
-        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
-
-    return _member_item_from_fields(member, fields)
+        return await _member_quota_item(session, auth.org_id, member)
 
 
 @router.delete("/quotas/{user_id}/bumps", response_model=QuotaMemberItem)
@@ -375,7 +327,6 @@ async def revoke_member_quota_bumps(
     user_id: str,
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
 ) -> QuotaMemberItem:
-    """Revoke all live bumps for a member (idempotent); audit rows survive."""
     async with get_session() as session:
         member = await _get_member_or_404(session, auth.org_id, user_id)
 
@@ -391,9 +342,7 @@ async def revoke_member_quota_bumps(
             .values(revoked_at=utcnow(), updated_at=utcnow())
         )
         await session.flush()
-        fields = await _read_member_quota_fields(session, auth.org_id, user_id)
-
-    return _member_item_from_fields(member, fields)
+        return await _member_quota_item(session, auth.org_id, member)
 
 
 @router.post("/users", response_model=InviteUserResponse)

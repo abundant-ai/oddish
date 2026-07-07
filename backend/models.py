@@ -196,13 +196,6 @@ class QuotaModel(TimestampedMixin, Base):
 
 
 class QuotaBumpModel(TimestampedMixin, Base):
-    """A temporary additive boost to a user's 24h dollar limit.
-
-    Like ``QuotaModel``, deliberately NOT registered for soft delete: every
-    read spells out ``revoked_at IS NULL`` / ``deleted_at IS NULL`` /
-    ``expires_at > NOW()`` instead.
-    """
-
     __tablename__ = "quota_bumps"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
@@ -232,12 +225,8 @@ class QuotaBumpModel(TimestampedMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint(
-            "amount_usd > 0", name="ck_quota_bumps_amount_positive"
-        ),
-        Index(
-            "idx_quota_bumps_org_user_expires", "org_id", "user_id", "expires_at"
-        ),
+        CheckConstraint("amount_usd > 0", name="ck_quota_bumps_amount_positive"),
+        Index("idx_quota_bumps_org_user_expires", "org_id", "user_id", "expires_at"),
     )
 
 
