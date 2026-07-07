@@ -827,8 +827,10 @@ async def _handle_harbor_event(
             trial_id, allow_missing=True, with_for_update=True
         ) as (_session, trial):
             if not trial:
+                live_tail.request_stop(trial_id)
                 return
             if trial.superseded_by_trial_id is not None:
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
                     "(superseded)[/dim]"
@@ -837,6 +839,7 @@ async def _handle_harbor_event(
             if not await _worker_still_owns_trial(
                 _session, trial, worker_id=worker_id, worker_job_id=worker_job_id
             ):
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
                     "(worker no longer owns it)[/dim]"
@@ -852,6 +855,7 @@ async def _handle_harbor_event(
                 TrialEvent.END,
                 TrialEvent.CANCEL,
             ):
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} "
                     f"ignored (cancelled by user)[/dim]"

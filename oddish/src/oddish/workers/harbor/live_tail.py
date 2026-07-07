@@ -112,6 +112,7 @@ class LiveTailer:
         self.carry = b""
         self._stop = asyncio.Event()
         self._last_written: tuple | None = None
+        self.replaced = False
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -160,8 +161,8 @@ class LiveTailer:
             return
         try:
             raw = base64.b64decode(encoded, validate=True)
-        except binascii.Error:
-            return
+        except binascii.Error as exc:
+            raise TailExecError(f"invalid base64 tail output: {exc}") from exc
         lines, self.carry = split_lines(self.carry + raw)
         self.offset += len(raw)
         for line in lines:
@@ -180,7 +181,7 @@ class LiveTailer:
             totals.output_tokens,
             cost,
         )
-        if state == self._last_written:
+        if state == self._last_written or self.replaced:
             return
         values: dict[str, Any] = {
             "input_tokens": totals.input_tokens,
@@ -190,7 +191,7 @@ class LiveTailer:
             "cost_usd": cost,
         }
         async with get_session() as session:
-            await session.execute(
+            result = await session.execute(
                 update(TrialModel)
                 .where(
                     TrialModel.id == self.trial_id,
@@ -198,6 +199,9 @@ class LiveTailer:
                 )
                 .values(**values)
             )
+        if getattr(result, "rowcount", None) == 0:
+            self.request_stop()
+            return
         self._last_written = state
 
 
@@ -222,6 +226,7 @@ def start(
         return
     old = _tailers.pop(trial_id, None)
     if old:
+        old[0].replaced = True
         old[0].request_stop()
         old[1].cancel()
     tailer = LiveTailer(

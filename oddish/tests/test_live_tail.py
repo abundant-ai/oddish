@@ -39,16 +39,23 @@ def b64(raw: bytes) -> FakeResult:
     return FakeResult(stdout=base64.b64encode(raw).decode())
 
 
+class FakeExecuteResult:
+    def __init__(self, rowcount=1):
+        self.rowcount = rowcount
+
+
 class FakeSession:
-    def __init__(self):
+    def __init__(self, rowcount=1):
         self.stmts = []
+        self.rowcount = rowcount
 
     async def execute(self, stmt):
         self.stmts.append(stmt)
+        return FakeExecuteResult(self.rowcount)
 
 
-def patch_db(monkeypatch):
-    session = FakeSession()
+def patch_db(monkeypatch, rowcount=1):
+    session = FakeSession(rowcount)
 
     @contextlib.asynccontextmanager
     async def fake_get_session():
@@ -245,6 +252,36 @@ async def test_stop_triggers_final_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invalid_base64_raises_exec_error():
+    env = FakeEnv([FakeResult(stdout="not-base64!!")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    with pytest.raises(TailExecError):
+        await tailer._tick()
+
+
+@pytest.mark.asyncio
+async def test_zero_rowcount_stops_tailer(monkeypatch):
+    patch_db(monkeypatch, rowcount=0)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    await tailer._tick()
+    assert tailer._stop.is_set()
+    assert tailer._last_written is None
+
+
+@pytest.mark.asyncio
+async def test_replaced_tailer_skips_checkpoint(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer.replaced = True
+    await tailer._tick()
+    assert session.stmts == []
+
+
+@pytest.mark.asyncio
 async def test_start_replaces_existing_tailer(monkeypatch):
     monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
@@ -256,6 +293,7 @@ async def test_start_replaces_existing_tailer(monkeypatch):
     new_tailer, new_task = live_tail._tailers["t1"]
     assert new_tailer is not old_tailer
     assert new_tailer.attempt == 1
+    assert old_tailer.replaced and not new_tailer.replaced
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     assert live_tail._tailers.get("t1") == (new_tailer, new_task)
