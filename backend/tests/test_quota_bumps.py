@@ -33,6 +33,10 @@ from oddish.schemas import TaskSubmission, TrialSpec
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
 
+# Base limit these tests bank on. Derive it from the setting so the assertions
+# don't rot when the workspace default changes (it moved 100 -> 200 in #608).
+BASE = float(settings.default_daily_quota_usd)
+
 
 def _user_auth(*, org_id: str, user_id: str, role: UserRole) -> AuthContext:
     return AuthContext(
@@ -301,9 +305,9 @@ async def test_post_bump_happy_path_returns_member_item_and_persists(
     assert response.status_code == 200
     body = response.json()
     assert body["user_id"] == member_a.id
-    assert body["base_limit_usd"] == pytest.approx(100.0)
+    assert body["base_limit_usd"] == pytest.approx(BASE)
     assert body["bump_usd"] == pytest.approx(expected_bump)
-    assert body["limit_usd"] == pytest.approx(100.0 + expected_bump)
+    assert body["limit_usd"] == pytest.approx(BASE + expected_bump)
     assert body["bump_expires_at"] is not None
 
     rows = await _bump_rows(org_id, member_a.id)
@@ -431,27 +435,27 @@ async def test_bump_lifecycle_revoke_keeps_audit_and_regrant_counts_only_live(
     grant = await client.post(
         f"/quotas/{member_a.id}/bumps", json=_bump_payload("40.00", hours=24)
     )
-    assert grant.json()["limit_usd"] == pytest.approx(140.0)
+    assert grant.json()["limit_usd"] == pytest.approx(BASE + 40.0)
 
     delete = await client.delete(f"/quotas/{member_a.id}/bumps")
     assert delete.status_code == 200
-    assert delete.json()["limit_usd"] == pytest.approx(100.0)
+    assert delete.json()["limit_usd"] == pytest.approx(BASE)
     assert delete.json()["bump_usd"] == pytest.approx(0.0)
     assert delete.json()["bump_expires_at"] is None
 
     again = await client.delete(f"/quotas/{member_a.id}/bumps")
     assert again.status_code == 200
-    assert again.json()["limit_usd"] == pytest.approx(100.0)
+    assert again.json()["limit_usd"] == pytest.approx(BASE)
 
     regrant = await client.post(
         f"/quotas/{member_a.id}/bumps", json=_bump_payload("25.00", hours=12)
     )
     assert regrant.json()["bump_usd"] == pytest.approx(25.0)
-    assert regrant.json()["limit_usd"] == pytest.approx(125.0)
+    assert regrant.json()["limit_usd"] == pytest.approx(BASE + 25.0)
 
     list_response = await client.get("/quotas")
     members_by_id = {m["user_id"]: m for m in list_response.json()["members"]}
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(125.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(BASE + 25.0)
 
     rows = await _bump_rows(org_id, member_a.id)
     assert len(rows) == 2
@@ -486,13 +490,13 @@ async def test_admin_list_members_carry_base_and_bump_fields(admin_client):
     assert response.status_code == 200
     members_by_id = {m["user_id"]: m for m in response.json()["members"]}
     row = members_by_id[member_a.id]
-    assert row["base_limit_usd"] == pytest.approx(100.0)
+    assert row["base_limit_usd"] == pytest.approx(BASE)
     assert row["bump_usd"] == pytest.approx(30.0)
-    assert row["limit_usd"] == pytest.approx(130.0)
+    assert row["limit_usd"] == pytest.approx(BASE + 30.0)
     assert row["bump_expires_at"] is not None
     admin_row = members_by_id[admin_user.id]
     assert admin_row["bump_usd"] == pytest.approx(0.0)
-    assert admin_row["base_limit_usd"] == pytest.approx(100.0)
+    assert admin_row["base_limit_usd"] == pytest.approx(BASE)
     assert admin_row["bump_expires_at"] is None
 
 
@@ -519,7 +523,7 @@ async def test_quotas_me_includes_bump_fields(org_with_member):
     assert response.status_code == 200
     body = response.json()
     assert body["user_id"] == member_a.id
-    assert body["base_limit_usd"] == pytest.approx(100.0)
+    assert body["base_limit_usd"] == pytest.approx(BASE)
     assert body["bump_usd"] == pytest.approx(15.0)
-    assert body["limit_usd"] == pytest.approx(115.0)
+    assert body["limit_usd"] == pytest.approx(BASE + 15.0)
     assert body["bump_expires_at"] is not None
