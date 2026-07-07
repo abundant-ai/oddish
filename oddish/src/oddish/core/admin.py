@@ -1640,7 +1640,8 @@ async def get_cost_breakdown_core(
             name=e["name"],
             org_id=e["org_id"],
             owner_user_id=e["owner_user_id"],
-            owner_label=e["owner"] or task_authors.get(str(e["experiment_id"])),
+            owner_label=_clean_author(e["owner"])
+            or task_authors.get(str(e["experiment_id"])),
             created_at=e["created_at"],
             last_activity_at=e["last_activity_at"],
             trial_count=int(e["trial_count"]),
