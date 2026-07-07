@@ -13,7 +13,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TaskModel, TrialModel, task_experiments, utcnow
+from oddish.core.quotas import (
+    effective_limits_by_org_user_all_orgs,
+    inflight_trial_count_by_org_user_all_orgs,
+    quota_window_start,
+    sum_cost_usd_by_org_user_all_orgs,
+)
+from oddish.db import (
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    TrialStatus,
+    task_experiments,
+    utcnow,
+)
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1064,6 +1077,10 @@ class CostUserBreakdown(BaseModel):
     cost_usd: float
     cost_estimated_usd: float
     models: list[CostModelBreakdown]
+    prev_cost_usd: float | None = None
+    inflight_trial_count: int = 0
+    quota_spent_usd: float | None = None
+    quota_limit_usd: float | None = None
 
 
 class CostExperimentBreakdown(BaseModel):
@@ -1121,6 +1138,12 @@ class CostTotals(BaseModel):
     cost_usd: float
     cost_native_usd: float
     cost_estimated_usd: float
+    prev_cost_usd: float | None = None
+    prev_trial_count: int | None = None
+    prev_user_count: int | None = None
+    failed_cost_usd: float = 0.0
+    failed_trial_count: int = 0
+    prev_failed_cost_usd: float | None = None
 
 
 class CostBreakdownResponse(BaseModel):
@@ -1400,6 +1423,143 @@ async def _primary_task_authors(
     return authors
 
 
+async def _prev_window_costs(
+    session: AsyncSession, *, prev_start: datetime, prev_end: datetime
+) -> tuple[dict[str, float], dict[str, Any]]:
+    """Per-user spend and window totals for the prior adjacent window."""
+    query = (
+        select(
+            TrialModel.billed_user_id.label("billed_user_id"),
+            TrialModel.model.label("model"),
+            func.count(TrialModel.id).label("trial_count"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
+                        else_=0.0,
+                    )
+                ),
+                0.0,
+            ).label("native_cost"),
+            func.coalesce(
+                func.sum(
+                    case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)
+                ),
+                0,
+            ).label("est_input"),
+            func.coalesce(
+                func.sum(
+                    case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)
+                ),
+                0,
+            ).label("est_output"),
+            func.coalesce(
+                func.sum(
+                    case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)
+                ),
+                0,
+            ).label("est_cache"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.isnot(None),
+                            TrialModel.cost_usd,
+                        ),
+                        else_=0.0,
+                    )
+                ),
+                0.0,
+            ).label("failed_native_cost"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.input_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_input"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.output_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_output"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.cache_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_cache"),
+        )
+        .where(
+            TrialModel.billed_user_id.isnot(None),
+            TrialModel.created_at >= prev_start,
+            TrialModel.created_at < prev_end,
+        )
+        .group_by(TrialModel.billed_user_id, TrialModel.model)
+    )
+    rows = (await session.execute(query)).all()
+
+    prev_by_user: dict[str, float] = {}
+    prev_users: set[str] = set()
+    prev_cost = 0.0
+    prev_trials = 0
+    prev_failed_cost = 0.0
+    for row in rows:
+        native = float(row.native_cost or 0.0)
+        estimated = (
+            estimate_cost_usd(
+                row.model,
+                int(row.est_input or 0),
+                int(row.est_output or 0),
+                int(row.est_cache or 0),
+            )
+            or 0.0
+        )
+        cost = native + estimated
+        failed = float(row.failed_native_cost or 0.0) + (
+            estimate_cost_usd(
+                row.model,
+                int(row.failed_est_input or 0),
+                int(row.failed_est_output or 0),
+                int(row.failed_est_cache or 0),
+            )
+            or 0.0
+        )
+        prev_by_user[row.billed_user_id] = prev_by_user.get(row.billed_user_id, 0.0) + cost
+        prev_users.add(row.billed_user_id)
+        prev_cost += cost
+        prev_trials += int(row.trial_count or 0)
+        prev_failed_cost += failed
+    return prev_by_user, {
+        "cost_usd": round(prev_cost, 4),
+        "trial_count": prev_trials,
+        "user_count": len(prev_users),
+        "failed_cost_usd": round(prev_failed_cost, 4),
+    }
+
+
 async def get_cost_breakdown_core(
     session: AsyncSession,
     *,
@@ -1421,6 +1581,7 @@ async def get_cost_breakdown_core(
             TrialModel.experiment_id.label("experiment_id"),
             ExperimentModel.name.label("exp_name"),
             ExperimentModel.org_id.label("exp_org_id"),
+            TrialModel.org_id.label("trial_org_id"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
             ExperimentModel.owner.label("exp_owner"),
             TrialModel.billed_user_id.label("billed_user_id"),
@@ -1468,6 +1629,67 @@ async def get_cost_breakdown_core(
                 ),
                 0,
             ).label("est_cache"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.isnot(None),
+                            TrialModel.cost_usd,
+                        ),
+                        else_=0.0,
+                    )
+                ),
+                0.0,
+            ).label("failed_native_cost"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.input_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_input"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.output_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_output"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (TrialModel.status == TrialStatus.FAILED)
+                            & TrialModel.cost_usd.is_(None),
+                            TrialModel.cache_tokens,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_est_cache"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (TrialModel.status == TrialStatus.FAILED, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("failed_trial_count"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .group_by(
@@ -1476,6 +1698,7 @@ async def get_cost_breakdown_core(
             ExperimentModel.org_id,
             ExperimentModel.owner_user_id,
             ExperimentModel.owner,
+            TrialModel.org_id,
             TrialModel.billed_user_id,
             ExperimentModel.created_at,
             ExperimentModel.last_activity_at,
@@ -1499,6 +1722,8 @@ async def get_cost_breakdown_core(
     total_output = 0
     total_native = 0.0
     total_estimated = 0.0
+    total_failed_cost = 0.0
+    total_failed_trials = 0
 
     for row in rows:
         owner_user_id = _normalize_owner_user_id(row.owner_user_id)
@@ -1520,6 +1745,16 @@ async def get_cost_breakdown_core(
             or 0.0
         )
         cost = native + estimated
+        failed_native = float(row.failed_native_cost or 0.0)
+        failed_estimated = (
+            estimate_cost_usd(
+                row.model,
+                int(row.failed_est_input or 0),
+                int(row.failed_est_output or 0),
+                int(row.failed_est_cache or 0),
+            )
+            or 0.0
+        )
 
         total_trials += trial_count
         total_input += input_tokens
@@ -1527,6 +1762,8 @@ async def get_cost_breakdown_core(
         total_output += output_tokens
         total_native += native
         total_estimated += estimated
+        total_failed_cost += failed_native + failed_estimated
+        total_failed_trials += int(row.failed_trial_count or 0)
 
         _accumulate_model(
             by_model,
@@ -1545,7 +1782,7 @@ async def get_cost_breakdown_core(
             exp = experiments[row.experiment_id] = {
                 "experiment_id": row.experiment_id,
                 "name": row.exp_name,
-                "org_id": row.exp_org_id,
+                "org_id": row.trial_org_id,
                 "owner_user_id": owner_user_id,
                 "owner": row.exp_owner,
                 "created_at": row.exp_created_at,
@@ -1609,6 +1846,21 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
+    if since is None:
+        prev_by_user: dict[str, float] = {}
+        prev_window_totals: dict[str, Any] | None = None
+    else:
+        prev_by_user, prev_window_totals = await _prev_window_costs(
+            session,
+            prev_start=now - 2 * timedelta(days=window_days),
+            prev_end=since,
+        )
+
+    quota_start = quota_window_start(now)
+    quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
+    quota_limits = await effective_limits_by_org_user_all_orgs(session)
+    inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
+
     user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
         :user_limit
     ]
@@ -1624,6 +1876,25 @@ async def get_cost_breakdown_core(
             cost_usd=round(float(u["cost_usd"]), 4),
             cost_estimated_usd=round(float(u["cost_estimated_usd"]), 4),
             models=_model_breakdowns(u["models"], limit=_MAX_MODELS_PER_USER),
+            prev_cost_usd=(
+                None
+                if since is None
+                else round(prev_by_user.get(u["owner_user_id"], 0.0), 4)
+            ),
+            inflight_trial_count=inflight_counts.get(
+                (u["org_id"], u["owner_user_id"]), 0
+            ),
+            quota_spent_usd=(
+                float(quota_spent[(u["org_id"], u["owner_user_id"])])
+                if (u["org_id"], u["owner_user_id"]) in quota_spent
+                else 0.0
+            ),
+            quota_limit_usd=float(
+                quota_limits.get(
+                    (u["org_id"], u["owner_user_id"]),
+                    settings.default_daily_quota_usd,
+                )
+            ),
         )
         for u in user_rows
     ]
@@ -1666,6 +1937,22 @@ async def get_cost_breakdown_core(
         cost_usd=round(total_native + total_estimated, 4),
         cost_native_usd=round(total_native, 4),
         cost_estimated_usd=round(total_estimated, 4),
+        failed_cost_usd=round(total_failed_cost, 4),
+        failed_trial_count=total_failed_trials,
+        prev_cost_usd=(
+            None if prev_window_totals is None else prev_window_totals["cost_usd"]
+        ),
+        prev_trial_count=(
+            None if prev_window_totals is None else prev_window_totals["trial_count"]
+        ),
+        prev_user_count=(
+            None if prev_window_totals is None else prev_window_totals["user_count"]
+        ),
+        prev_failed_cost_usd=(
+            None
+            if prev_window_totals is None
+            else prev_window_totals["failed_cost_usd"]
+        ),
     )
 
     return CostBreakdownResponse(

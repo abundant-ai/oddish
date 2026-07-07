@@ -88,6 +88,42 @@ async def sum_cost_usd_by_user(
     return {user_id: to_money_decimal(total) for user_id, total in rows.all()}
 
 
+async def sum_cost_usd_by_org_user_all_orgs(
+    session: AsyncSession, period_start: datetime
+) -> dict[tuple[str | None, str], Decimal]:
+    """Settled 24h spend keyed the same way admission checks spend."""
+    rows = await session.execute(
+        select(
+            TrialModel.org_id,
+            TrialModel.billed_user_id,
+            func.coalesce(func.sum(_settled_cost_expr()), 0),
+        )
+        .where(
+            TrialModel.finished_at > period_start,
+            TrialModel.billed_user_id.is_not(None),
+        )
+        .group_by(TrialModel.org_id, TrialModel.billed_user_id)
+        .execution_options(include_deleted=True)
+    )
+    out: dict[tuple[str | None, str], Decimal] = {}
+    for org_id, user_id, total in rows.all():
+        out[(org_id, user_id)] = to_money_decimal(total)
+    return out
+
+
+async def effective_limits_by_org_user_all_orgs(
+    session: AsyncSession,
+) -> dict[tuple[str | None, str], Decimal]:
+    """Live quota overrides keyed the same way admission checks limits."""
+    rows = await session.execute(
+        text("SELECT org_id, user_id, limit_usd FROM quotas WHERE deleted_at IS NULL")
+    )
+    out: dict[tuple[str | None, str], Decimal] = {}
+    for org_id, user_id, limit_usd in rows.all():
+        out[(org_id, user_id)] = Decimal(str(limit_usd))
+    return out
+
+
 def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     return [
         TrialModel.org_id == org_id,
@@ -120,6 +156,27 @@ async def inflight_reserved_usd(
             .where(*_inflight_predicates(org_id, billed_user_id))
         )
     )
+
+
+async def inflight_trial_count_by_org_user_all_orgs(
+    session: AsyncSession,
+) -> dict[tuple[str | None, str], int]:
+    """In-flight trial count keyed by the quota admission predicate."""
+    rows = await session.execute(
+        select(TrialModel.org_id, TrialModel.billed_user_id, func.count(TrialModel.id))
+        .where(
+            TrialModel.billed_user_id.is_not(None),
+            TrialModel.finished_at.is_(None),
+            TrialModel.deleted_at.is_(None),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+        )
+        .group_by(TrialModel.org_id, TrialModel.billed_user_id)
+    )
+    out: dict[tuple[str | None, str], int] = {}
+    for org_id, user_id, count in rows.all():
+        out[(org_id, user_id)] = int(count or 0)
+    return out
 
 
 async def get_effective_limit(
