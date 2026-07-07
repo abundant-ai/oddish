@@ -232,11 +232,13 @@ export default function AdminUserCostPage({
   searchParams,
 }: {
   params: Promise<{ userId: string }>;
-  searchParams: Promise<{ org?: string }>;
+  searchParams: Promise<{ org?: string; window_days?: string }>;
 }) {
   const { userId } = use(params);
-  const { org } = use(searchParams);
-  const [windowDays, setWindowDays] = useState("7");
+  const { org, window_days: windowParam } = use(searchParams);
+  const [windowDays, setWindowDays] = useState(() =>
+    WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7",
+  );
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
     `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}${
@@ -346,7 +348,16 @@ export default function AdminUserCostPage({
             </div>
 
             <section className="space-y-2">
-              <h3 className="text-sm font-medium">Cost by experiment</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Cost by experiment</h3>
+                {(data.totals.experiment_count ?? 0) >
+                  (data.experiments?.length ?? 0) && (
+                  <span className="text-muted-foreground text-[11px]">
+                    top {(data.experiments ?? []).length} of{" "}
+                    {(data.totals.experiment_count ?? 0).toLocaleString()}
+                  </span>
+                )}
+              </div>
               <ExperimentTable experiments={data.experiments ?? []} />
             </section>
 

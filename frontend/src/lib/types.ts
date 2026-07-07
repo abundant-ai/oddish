@@ -737,7 +737,13 @@ export interface CostModelBreakdown {
 }
 
 export interface CostUserBreakdown {
+  // Stable grouping key: a user id for billed/submitter rows, else a synthetic
+  // "ghid:"/"ghuser:"/"__unattributed__" key for a label-only fallback row.
+  key: string;
   owner_user_id: string | null;
+  // Precomputed label for a row with no backing user (GitHub handle,
+  // "Unattributed"); null means derive the name from name/email/user id.
+  label: string | null;
   org_id: string | null;
   name: string | null;
   email: string | null;
@@ -848,6 +854,7 @@ interface UserCostTotals {
   window_days: number | null;
   trial_count: number;
   task_count: number;
+  experiment_count?: number;
   cost_usd: number;
   cost_estimated_usd: number;
 }
