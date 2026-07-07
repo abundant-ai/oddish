@@ -49,6 +49,15 @@ from oddish.experiment import generate_experiment_name
 
 console = Console()
 
+# Environments the hosted (Modal-backed) API dispatches directly; any other
+# ``--env`` on that path is coerced to Modal. GKE joins Modal and Daytona so
+# TPU trials reach the GKE backend instead of being forced onto Modal.
+_HOSTED_PASSTHROUGH_ENVIRONMENTS = {
+    EnvironmentType.MODAL,
+    EnvironmentType.DAYTONA,
+    EnvironmentType.GKE,
+}
+
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
     config_path = task_path / "task.toml"
@@ -60,6 +69,16 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     # it unset -> None); treat an absent value as 0 GPUs instead of crashing
     # on ``None > 0``.
     return (task_config.environment.gpus or 0) > 0
+
+
+def _task_config_requests_tpu(task_path: Path) -> bool:
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return False
+    # ``[environment.tpu]`` is an optional table; its presence is the request.
+    return task_config.environment.tpu is not None
 
 
 def _read_harbor_manifest(*candidates: Path | None) -> dict[str, str] | None:
@@ -100,10 +119,15 @@ def _default_cloud_environment_for_task(
 ) -> EnvironmentType:
     from oddish.runtime.routing import default_cloud_environment
 
+    requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
-        return default_cloud_environment(requires_gpu=override_gpus > 0)
+        return default_cloud_environment(
+            requires_gpu=override_gpus > 0, requires_tpu=requires_tpu
+        )
     requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
-    return default_cloud_environment(requires_gpu=requires_gpu)
+    return default_cloud_environment(
+        requires_gpu=requires_gpu, requires_tpu=requires_tpu
+    )
 
 
 def _map_batch_sweep_results(
@@ -781,10 +805,11 @@ def run(
     elif (
         environment is not None
         and is_modal_api
-        and environment not in {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
+        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
+            "--env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
