@@ -658,10 +658,9 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
                         </Badge>
                       </TooltipTrigger>
                       <TooltipContent className="max-w-[260px]">
-                        Real spend that never resolved to an active billed user
-                        (an unlinked GitHub identity, an offboarded submitter, or
-                        no identity at all), so it draws down no quota and has no
-                        per-user drilldown.
+                        The task submitter isn&apos;t connected to an oddish
+                        account, so this cost isn&apos;t billed to anyone&apos;s
+                        quota.
                       </TooltipContent>
                     </Tooltip>
                   </span>
