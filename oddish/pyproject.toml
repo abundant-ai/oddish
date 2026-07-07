@@ -78,6 +78,10 @@ server = [
 ]
 worker = [
     "oddish[server]",
+    # Harbor's GKE extra so hosted workers can run and reap TPU trials on GKE.
+    # Pulls the kubernetes client today; the google-cloud auth clients arrive
+    # with the ADC-native harbor fork. The harbor source pin is unchanged.
+    "harbor[gke]",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
     # Floor is 0.185.0: Harbor's daytona environment imports ``GpuType`` from
     # the daytona SDK, which was only added in 0.185.0. A lower version (e.g.

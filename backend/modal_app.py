@@ -212,6 +212,17 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
+# GCP service-account credentials for GKE TPU trials, materialized into an ADC
+# file by the worker runtime. Modal hydrates named secrets lazily at container
+# start, so gate the append on GKE being configured for this deployment —
+# installs without GKE never reference the secret and still boot.
+if os.environ.get("ODDISH_GKE_CLUSTER_NAME"):
+    runtime_secrets.append(
+        modal.Secret.from_name(
+            "oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT
+        )
+    )
+
 if LOCAL_DOTENV_VARS:
     runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
