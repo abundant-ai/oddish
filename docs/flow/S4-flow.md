@@ -4,7 +4,7 @@
 
 S4 lets an admin **override** the flat per-user daily limit that S3 baked in.
 S3 returned `DEFAULT_DAILY_QUOTA_USD` (`settings.default_daily_quota_usd`,
-`Decimal("200.00")`) for every member. S4 adds a `quotas` table whose rows exist
+`Decimal("100.00")`) for every member. S4 adds a `quotas` table whose rows exist
 **only to override** that default, and a `PUT /quotas/{user_id}` for admins to
 set or clear an override. There is still **no enforcement** — S5 turns the
 effective limit into a gate. S4 only changes *which number* the read paths

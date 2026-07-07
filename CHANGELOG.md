@@ -10,8 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Default user quotas are now enforced at `ODDISH_DEFAULT_DAILY_QUOTA_USD=200.00` unless operators explicitly set `ODDISH_QUOTA_MODE` to `shadow` or `off`.
-- Per-user quotas now use a rolling 24-hour window instead of a UTC-midnight reset. `quota_window_start()` replaces `start_of_today_utc()` in admission and quota usage reads.
+- Per-user quotas now use a rolling 24-hour window instead of a UTC-midnight reset. `quota_window_start()` replaces `start_of_today_utc()` in admission and quota usage reads, while `ODDISH_DEFAULT_DAILY_QUOTA_USD` keeps its existing name and value.
 
 ---
 
