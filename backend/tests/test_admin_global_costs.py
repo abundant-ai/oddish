@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from models import OrganizationModel, QuotaModel, UserModel
+from models import OrganizationModel, OrgQuotaModel, QuotaModel, UserModel
 from oddish.config import settings
 from oddish.core.admin import get_cost_breakdown_core
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
@@ -215,6 +215,24 @@ async def test_month_to_date_cost(global_costs_fixture):
     assert result.totals.month_cost_usd - f.baseline.month_cost_usd == pytest.approx(
         expected
     )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_month_budget_sums_org_overrides(global_costs_fixture):
+    f = global_costs_fixture
+    async with get_session() as session:
+        session.add(OrgQuotaModel(org_id=f.org_id, limit_usd=500))
+    month_start = datetime.now(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+    org_has_month_spend = f.recent >= month_start or f.prior >= month_start
+    expected = 500.0 if org_has_month_spend else 0.0
+    assert (result.totals.month_budget_usd or 0.0) - (
+        f.baseline.month_budget_usd or 0.0
+    ) == pytest.approx(expected)
 
 
 @requires_db

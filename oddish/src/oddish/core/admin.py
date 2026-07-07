@@ -15,6 +15,7 @@ from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.quotas import (
     effective_limits_by_org_user_all_orgs,
+    get_effective_org_limit,
     inflight_trial_count_by_org_user_all_orgs,
     quota_window_start,
     sum_cost_usd_by_org_user_all_orgs,
@@ -1763,6 +1764,24 @@ async def get_cost_breakdown_core(
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     month_cost = await _billed_cost_since(session, since=month_start)
+    month_org_ids = (
+        await session.scalars(
+            select(TrialModel.org_id)
+            .where(
+                TrialModel.billed_user_id.isnot(None),
+                TrialModel.created_at >= month_start,
+            )
+            .distinct()
+        )
+    ).all()
+    month_limits = [
+        limit
+        for limit in [
+            await get_effective_org_limit(session, org_id) for org_id in month_org_ids
+        ]
+        if limit is not None
+    ]
+    month_budget = float(sum(month_limits)) if month_limits else None
 
     quota_start = quota_window_start(now)
     quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
@@ -1847,11 +1866,7 @@ async def get_cost_breakdown_core(
         cost_estimated_usd=round(total_estimated, 4),
         prev_cost_usd=prev_window_cost,
         month_cost_usd=month_cost,
-        month_budget_usd=(
-            None
-            if settings.default_org_monthly_quota_usd is None
-            else float(settings.default_org_monthly_quota_usd)
-        ),
+        month_budget_usd=month_budget,
     )
 
     return CostBreakdownResponse(
