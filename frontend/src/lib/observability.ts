@@ -7,15 +7,11 @@ import * as logfire from "@pydantic/logfire-browser";
 let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
-
-const LOGFIRE_TRACE_URL = "https://logfire-api.pydantic.dev/v1/traces";
+const LOGFIRE_TRACE_URL = "/api/client-traces";
 
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
   if (explicit) return explicit;
-  // Per-PR bucket so previews don't all share one "preview" env. Keyed off
-  // `NEXT_PUBLIC_VERCEL_ENV` not `NODE_ENV` — the latter is "production"
-  // for PR-preview builds too.
   if (process.env.NEXT_PUBLIC_VERCEL_ENV === "production") return "production";
   const pr = process.env.NEXT_PUBLIC_VERCEL_GIT_PULL_REQUEST_ID;
   return pr ? `preview-pr-${pr}` : "preview";
@@ -25,22 +21,15 @@ export function ensureLogfireConfigured(): void {
   if (configured) return;
   if (typeof window === "undefined") return;
 
-  const token = process.env.NEXT_PUBLIC_LOGFIRE_TOKEN;
-  if (!token) return;
-
   try {
     logfire.configure({
       traceUrl: LOGFIRE_TRACE_URL,
-      traceExporterHeaders: () => ({ Authorization: token }),
       serviceName: "oddish-frontend",
       serviceVersion:
         process.env.NEXT_PUBLIC_APP_VERSION ||
         process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA ||
         undefined,
       environment: resolveEnvironment(),
-      // Tighter than the 5s SDK default so the root browser span reaches
-      // Logfire before its backend children, otherwise the trace renders
-      // as "missing its root" until the next flush.
       batchSpanProcessorConfig: {
         scheduledDelayMillis: 1000,
         maxExportBatchSize: 64,
@@ -70,15 +59,10 @@ export function ensureLogfireConfigured(): void {
     configured = true;
     installFlushHandlers();
   } catch (err) {
-    // Never let observability take down the app.
     console.warn("Logfire browser configure failed", err);
   }
 }
 
-// Force-flush on `visibilitychange → hidden` and `pagehide` so in-flight
-// browser spans aren't dropped on navigation / tab close, which would
-// leave their backend children parentless in Logfire. Fire-and-forget —
-// the browser doesn't keep the page alive for the promise.
 function installFlushHandlers(): void {
   if (typeof document === "undefined") return;
 
@@ -101,15 +85,6 @@ function installFlushHandlers(): void {
   window.addEventListener("pagehide", flush);
 }
 
-/**
- * Wrap a user-meaningful action in a top-level span so the click → fetch →
- * backend → worker flow shows up as one trace instead of a bag of
- * disconnected auto-spans. Exceptions are recorded and re-thrown.
- *
- *   await withUserAction("user.cancel_trial", { trial_id }, () =>
- *     fetch(`/api/trials/${trial_id}/cancel`, { method: "POST" }),
- *   );
- */
 export async function withUserAction<T>(
   name: string,
   attributesOrFn:
