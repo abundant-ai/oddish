@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-07]
+
+### Added
+
+- Per-user BYOK: users can save their own Anthropic API key on the settings page, and when the `oddish_byok` Statsig gate is on for them their trials run on that key instead of the platform key. Keys are stored AES-GCM encrypted in a new `user_provider_keys` table (one live row per user); the whole path is fail-open — no gate, no saved key, a decrypt error, or a Bedrock-routed trial all fall back silently to the platform key — and inert until `STATSIG_SERVER_KEY`/`ODDISH_CRED_ENC_KEY` are configured. (#586)
+- Admin per-user cost drilldown: `GET /admin/costs/users/{user_id}` and a new `/admin/users/[userId]` page show one user's billed spend over settled trials (soft-deleted included), with a per-task rollup, by-model time series, and preset windows; linked from the admin Costs and Quotas tables and still reachable for offboarded/deleted users. (#602)
+- Task and experiment cost views now show **Billed spend** alongside **Total cost**: a new `billed_cost_usd` / `billed_trial_count` rollup (plus native/estimated flags), restricted to trials with `billed_user_id` set, so combine/import copies — which duplicate `cost_usd` but carry no billed user — no longer read as double quota spend. `TrialResponse` gains `is_billed`; shown on task cards, task detail, and the experiment summary bar (hidden on public share/read-only views). (#598, #599)
+- Nullable `tasks.api_key_id` audit-only column, stamped from the request's auth context on task creation (single and batch sweep paths, set-once like `created_by_user_id`), so "which API key submitted this?" is answerable per task after the fact. Billing continues to follow `trials.billed_user_id` — this column is provenance only and stays NULL for JWT/dashboard and OSS submissions. (#603)
+
+### Changed
+
+- Renamed the two e2e CI workflow/job display names so status checks read as suite/scenario instead of repeating themselves (`E2E CLI Smoke / Backend e2e CLI smoke` → `E2E: CLI smoke / oddish run → queued trial`; `E2E Dashboard / Full-stack authenticated dashboard e2e` → `E2E: Dashboard / signed-in task view`); no trigger, step, or filename changes. (#601)
+
+### Fixed
+
+- Admin cost dashboard no longer double-counts spend from combine copies and imported trials: both cost queries now filter to `billed_user_id IS NOT NULL` (the billable marker), and per-user attribution/series now key off each trial's `billed_user_id` instead of `experiments.owner_user_id`, so CI/API-key spend no longer collapses into a null/unattributed bucket. (#597)
+- PR preview frontends no longer silently start querying the production API after a frontend-only follow-up push: `MODAL_API_URL` is now set whenever a preview backend is live (deployed this run or a prior run), not only when the backend redeployed on the current push. (#595)
+
+---
+
 ## [2026-07-06]
 
 ### Changed
