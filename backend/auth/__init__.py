@@ -340,8 +340,9 @@ async def require_api_key_creator(
     """
     Require a user that may create API keys.
 
-    API key auth is rejected so one key cannot mint another. Only admins with
-    an @abundant.ai email in the main Abundant org may create keys.
+    API key auth is rejected so one key cannot mint another. Any org admin or
+    member may create keys for their own org (admins get full scope, members get
+    tasks/read).
     """
     if auth.method == AuthMethod.API_KEY:
         raise HTTPException(
@@ -354,10 +355,7 @@ async def require_api_key_creator(
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail=(
-            "API key creation requires an admin with an @abundant.ai email "
-            "in the Abundant org"
-        ),
+        detail="API key creation requires an organization admin or member",
     )
 
 
@@ -367,8 +365,8 @@ async def require_can_manage_quotas(
     """Require a user (never an API key) with the org ADMIN role to manage quotas.
 
     Unlike require_admin, a FULL-scope API key must NOT pass -- quota management
-    is user-auth-only. Unlike require_api_key_creator, it is self-service for
-    every org's admins (not @abundant-gated).
+    is user-auth-only. Unlike require_api_key_creator (any org admin or member),
+    quota management is admin-only.
     """
     if auth.method == AuthMethod.API_KEY:
         raise HTTPException(
