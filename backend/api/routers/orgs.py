@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
@@ -21,6 +22,10 @@ from api.schemas import (
     OrgQuotaResponse,
     OrgUsageResponse,
     QuotaBumpRequest,
+    QuotaGambleItem,
+    QuotaGambleListResponse,
+    QuotaGambleRequest,
+    QuotaGambleResponse,
     QuotaListResponse,
     QuotaMemberItem,
     QuotaUpdateRequest,
@@ -39,6 +44,7 @@ from oddish.config import QuotaMode, settings
 from models import (
     OrgQuotaModel,
     QuotaBumpModel,
+    QuotaGambleModel,
     QuotaModel,
     UserModel,
     UserRole,
@@ -46,16 +52,19 @@ from models import (
 )
 from oddish.core.quotas import (
     get_base_limit,
+    get_effective_limit,
     get_effective_org_limit,
     inflight_reserved_usd,
     live_bump_total,
     live_bump_totals_by_user,
     org_inflight_reserved_usd,
+    quota_gambles_ready,
     quota_window_start,
     start_of_month_utc,
     start_of_today_utc,
     sum_cost_usd,
     sum_cost_usd_by_user,
+    sum_gamble_net_usd,
     sum_org_cost_usd,
 )
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
@@ -204,6 +213,119 @@ async def _read_member_quota_fields(session, org_id: str | None, user_id: str):
     base_limit_usd = await get_base_limit(session, org_id, user_id)
     bump_usd, bump_expires_at = await _bump_total_or_zero(session, org_id, user_id)
     return used_usd, base_limit_usd, bump_usd, bump_expires_at
+
+
+GAMBLE_SIDES = ("heads", "tails")
+
+
+def _flip_coin() -> str:
+    return secrets.choice(GAMBLE_SIDES)
+
+
+def _require_gambler(auth: AuthContext) -> str:
+    # Humans only: an org API key must not be able to gamble someone's quota.
+    if auth.method != AuthMethod.CLERK_JWT or auth.user_id is None:
+        raise HTTPException(
+            status_code=403, detail="User auth required to gamble quota"
+        )
+    return auth.user_id
+
+
+async def _require_gambles_table(session) -> None:
+    if not await quota_gambles_ready(session):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Quota gambling is not available yet (schema is still "
+                "migrating). Try again shortly."
+            ),
+        )
+
+
+@router.post("/quotas/gamble", response_model=QuotaGambleResponse)
+async def gamble_quota(
+    payload: QuotaGambleRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> QuotaGambleResponse:
+    user_id = _require_gambler(auth)
+    async with get_session() as session:
+        await _require_gambles_table(session)
+        limit = await get_effective_limit(session, auth.org_id, user_id)
+        used = await sum_cost_usd(session, auth.org_id, user_id, quota_window_start())
+        reserved = await inflight_reserved_usd(session, auth.org_id, user_id)
+        remaining = limit - used - reserved
+        if payload.wager_usd > remaining:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Wager exceeds remaining quota "
+                    f"(${max(remaining, Decimal(0)):.2f} left to gamble)"
+                ),
+            )
+        result = _flip_coin()
+        won = result == payload.side
+        net = payload.wager_usd if won else -payload.wager_usd
+        session.add(
+            QuotaGambleModel(
+                org_id=auth.org_id,
+                user_id=user_id,
+                wager_usd=payload.wager_usd,
+                net_usd=net,
+                won=won,
+            )
+        )
+    return QuotaGambleResponse(
+        won=won,
+        side=payload.side,
+        result=result,
+        wager_usd=float(payload.wager_usd),
+        net_usd=float(net),
+        limit_usd=float(max(Decimal(0), limit + net)),
+        used_usd=float(used),
+        reserved_usd=float(reserved),
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+    )
+
+
+@router.get("/quotas/gambles", response_model=QuotaGambleListResponse)
+async def list_my_gambles(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> QuotaGambleListResponse:
+    user_id = _require_gambler(auth)
+    window_start = quota_window_start()
+    async with get_session() as session:
+        await _require_gambles_table(session)
+        rows = (
+            (
+                await session.execute(
+                    select(QuotaGambleModel)
+                    .where(
+                        QuotaGambleModel.org_id == auth.org_id,
+                        QuotaGambleModel.user_id == user_id,
+                        QuotaGambleModel.deleted_at.is_(None),
+                        QuotaGambleModel.created_at > window_start,
+                    )
+                    .order_by(QuotaGambleModel.created_at.desc())
+                    .limit(50)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        net = await sum_gamble_net_usd(session, auth.org_id, user_id, window_start)
+    return QuotaGambleListResponse(
+        items=[
+            QuotaGambleItem(
+                id=gamble.id,
+                wager_usd=float(gamble.wager_usd),
+                net_usd=float(gamble.net_usd),
+                won=gamble.won,
+                created_at=gamble.created_at.isoformat(),
+            )
+            for gamble in rows
+        ],
+        net_usd=float(net),
+    )
 
 
 def _quota_member_item(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -115,6 +116,40 @@ class QuotaBumpRequest(BaseModel):
     )
     duration_hours: int = Field(gt=0, le=8760)
     reason: str | None = Field(None, max_length=500)
+
+
+class QuotaGambleRequest(BaseModel):
+    wager_usd: Decimal = Field(
+        gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+    )
+    side: Literal["heads", "tails"] = "heads"
+
+
+class QuotaGambleResponse(BaseModel):
+    won: bool
+    side: str
+    result: str
+    wager_usd: float
+    net_usd: float
+    # Post-flip effective limit; used/reserved are unchanged by the flip.
+    limit_usd: float
+    used_usd: float
+    reserved_usd: float
+    enforced: bool = False
+
+
+class QuotaGambleItem(BaseModel):
+    id: str
+    wager_usd: float
+    net_usd: float
+    won: bool
+    created_at: str
+
+
+class QuotaGambleListResponse(BaseModel):
+    items: list[QuotaGambleItem]
+    # Net over the rolling 24h window (all live rows, not just the page above).
+    net_usd: float
 
 
 class InviteUserRequest(BaseModel):

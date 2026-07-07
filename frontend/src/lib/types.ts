@@ -454,6 +454,32 @@ export interface QuotaBumpCreate {
   reason?: string;
 }
 
+// POST /quotas/gamble — settled double-or-nothing flip against the 24h quota.
+export interface QuotaGambleResult {
+  won: boolean;
+  side: "heads" | "tails";
+  result: "heads" | "tails";
+  wager_usd: number;
+  net_usd: number;
+  limit_usd: number;
+  used_usd: number;
+  reserved_usd: number;
+  enforced: boolean;
+}
+
+export interface QuotaGambleItem {
+  id: string;
+  wager_usd: number;
+  net_usd: number;
+  won: boolean;
+  created_at: string;
+}
+
+export interface QuotaGambleList {
+  items: QuotaGambleItem[];
+  net_usd: number;
+}
+
 // GET /quotas/org — member-visible org monthly budget + adaptive daily goal.
 export interface OrgQuotaUsage {
   org_limit_usd: number | null;

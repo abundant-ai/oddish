@@ -310,4 +310,60 @@ async def get_effective_limit(
 ) -> Decimal:
     base_limit_usd = await get_base_limit(session, org_id, user_id)
     bump_total, _ = await live_bump_total(session, org_id, user_id)
-    return base_limit_usd + bump_total
+    gamble_net = await sum_gamble_net_usd(
+        session, org_id, user_id, quota_window_start()
+    )
+    return max(Decimal(0), base_limit_usd + bump_total + gamble_net)
+
+
+_GAMBLES_TABLE_SEEN = False
+
+
+async def quota_gambles_ready(session: AsyncSession) -> bool:
+    # Cached once true: the table never disappears in a live deploy, and this
+    # keeps the deploy-before-migrate window from aborting admission
+    # transactions with 42P01.
+    global _GAMBLES_TABLE_SEEN
+    if not _GAMBLES_TABLE_SEEN:
+        _GAMBLES_TABLE_SEEN = bool(
+            await session.scalar(
+                text("SELECT to_regclass('quota_gambles') IS NOT NULL")
+            )
+        )
+    return _GAMBLES_TABLE_SEEN
+
+
+async def sum_gamble_net_usd(
+    session: AsyncSession,
+    org_id: str | None,
+    user_id: str,
+    period_start: datetime,
+) -> Decimal:
+    if not await quota_gambles_ready(session):
+        return Decimal(0)
+    return to_money_decimal(
+        await session.scalar(
+            text(
+                "SELECT COALESCE(SUM(net_usd), 0) FROM quota_gambles "
+                "WHERE org_id = :org_id AND user_id = :user_id "
+                "AND deleted_at IS NULL AND created_at > :period_start"
+            ),
+            {"org_id": org_id, "user_id": user_id, "period_start": period_start},
+        )
+    )
+
+
+async def sum_gamble_net_usd_by_user(
+    session: AsyncSession, org_id: str | None, period_start: datetime
+) -> dict[str, Decimal]:
+    if not await quota_gambles_ready(session):
+        return {}
+    rows = await session.execute(
+        text(
+            "SELECT user_id, COALESCE(SUM(net_usd), 0) FROM quota_gambles "
+            "WHERE org_id = :org_id AND deleted_at IS NULL "
+            "AND created_at > :period_start GROUP BY user_id"
+        ),
+        {"org_id": org_id, "period_start": period_start},
+    )
+    return {user_id: to_money_decimal(total) for user_id, total in rows.all()}

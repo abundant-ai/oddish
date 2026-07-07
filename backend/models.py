@@ -271,6 +271,37 @@ class OrgQuotaModel(TimestampedMixin, Base):
     )
 
 
+class QuotaGambleModel(TimestampedMixin, Base):
+    """A settled double-or-nothing coin flip against the owner's 24h quota.
+
+    ``net_usd`` (+wager on a win, -wager on a loss) is summed over the rolling
+    24h window and folded into ``get_effective_limit``, so wins genuinely raise
+    admission headroom and losses lower it until they age out.
+    """
+
+    __tablename__ = "quota_gambles"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    wager_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    net_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    won: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    __table_args__ = (
+        Index("ix_quota_gambles_org_user_created", "org_id", "user_id", "created_at"),
+        CheckConstraint("wager_usd > 0", name="ck_quota_gambles_wager_positive"),
+    )
+
+
 # =============================================================================
 # Chat models
 # =============================================================================
