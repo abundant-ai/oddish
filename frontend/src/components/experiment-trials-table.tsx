@@ -2332,7 +2332,10 @@ export function ExperimentTrialsTable({
                               </span>
                             )}
                             {(() => {
-                              const c = sumTaskTrialCost(task.trials);
+                              // Sum the trials actually rendered in this row's
+                              // matrix (visible agent columns) so the badge
+                              // tracks the grid when agent columns are hidden.
+                              const c = sumTaskTrialCost(orderedTrials);
                               if (c.pricedCount === 0) return null;
                               const marks = costEstimateMarks(
                                 c.hasEstimated,

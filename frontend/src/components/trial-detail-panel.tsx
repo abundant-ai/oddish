@@ -554,7 +554,9 @@ export function TrialDetailPanel({
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
-  const taskCost = sumTaskTrialCost(task?.trials);
+  // Sum the navigable trials for this view (version-scoped in both callers),
+  // not task.trials, which on the task page spans every version.
+  const taskCost = sumTaskTrialCost(orderedTrials);
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
   const sandboxBackend = getSandboxBackend(trial);
