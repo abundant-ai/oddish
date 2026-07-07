@@ -252,6 +252,22 @@ async def test_stop_triggers_final_drain(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cost_is_monotone_across_unpriceable_ticks(monkeypatch):
+    session = patch_db(monkeypatch)
+    prices = iter([0.5, None, 0.4, 0.9])
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: next(prices))
+    chunks = [
+        b64(assistant_line(f"m{i}", {"input_tokens": i + 1}) + b"\n") for i in range(4)
+    ]
+    env = FakeEnv(chunks)
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model="m")
+    for _ in range(4):
+        await tailer._tick()
+    costs = [p["cost_usd"] for p in checkpoint_params(session)]
+    assert costs == [0.5, 0.5, 0.5, 0.9]
+
+
+@pytest.mark.asyncio
 async def test_invalid_base64_raises_exec_error():
     env = FakeEnv([FakeResult(stdout="not-base64!!")])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)

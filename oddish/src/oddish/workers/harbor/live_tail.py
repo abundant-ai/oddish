@@ -112,6 +112,7 @@ class LiveTailer:
         self.carry = b""
         self._stop = asyncio.Event()
         self._last_written: tuple | None = None
+        self._last_cost: float | None = None
         self.replaced = False
 
     def request_stop(self) -> None:
@@ -174,6 +175,10 @@ class LiveTailer:
             return
         totals = self.fold.totals()
         cost = price_totals(totals, self.fallback_model)
+        if cost is None:
+            cost = self._last_cost
+        elif self._last_cost is not None:
+            cost = max(cost, self._last_cost)
         state = (
             totals.input_tokens,
             totals.cache_tokens,
@@ -203,6 +208,7 @@ class LiveTailer:
             self.request_stop()
             return
         self._last_written = state
+        self._last_cost = cost
 
 
 _tailers: dict[str, tuple[LiveTailer, asyncio.Task]] = {}

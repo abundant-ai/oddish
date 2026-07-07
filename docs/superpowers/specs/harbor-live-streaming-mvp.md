@@ -207,7 +207,10 @@ never enter it. The *inflight reservation* does read live cost: it reserves
 admission in real time — a trial that has burned $5 reserves $5 instead of the flat
 floor. This is safe because `GREATEST` only ever *raises* the reservation, never
 loosens it, and the reservation's own docstring ("each stands in at its accumulated
-cost so far") shows it was built to absorb exactly this. At trial end, the
+cost so far") shows it was built to absorb exactly this. The tailer must uphold the
+monotonicity end: checkpointed `cost_usd` never regresses within an attempt — a
+transiently unpriceable tick reuses the previous estimate rather than writing NULL
+(which `COALESCE(cost_usd, 0)` would read as a drop back to the flat floor). At trial end, the
 authoritative outcome extraction (`oddish/src/oddish/workers/harbor/outcome.py`)
 overwrites the checkpoint. The live figure is a LiteLLM estimate while Claude
 Code's final self-reported `total_cost_usd` is authoritative, so expect the UI
