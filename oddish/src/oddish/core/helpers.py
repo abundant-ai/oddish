@@ -1361,20 +1361,38 @@ async def terminate_run_harvest(result: dict) -> int:
     ``worker_targets`` instead of terminating in-transaction (a rollback must
     never leave live rows pointing at destroyed containers). Callers -- routes
     or OSS operators invoking cores directly -- run this exactly once AFTER
-    commit. Pops both keys from ``result`` so responses never leak raw handles;
-    returns the count of Modal function calls cancelled.
+    commit. Pops the handle keys from ``result`` so responses never leak raw
+    handles; returns the count of Modal function calls cancelled.
+
+    ``graceful_modal_function_call_ids`` (user-cancelled TRIAL workers) are
+    cancelled with ``force=False``: the worker container survives, Harbor's
+    cancellation recovery salvages partial agent logs/usage to S3, and
+    Harbor stops the agent sandbox itself. Their sandbox handles arrive as
+    ``deferred_worker_targets`` and are deliberately NOT torn down here --
+    the cleanup sweep's cancelled-sandbox reap and the provider TTLs are
+    the backstops.
     """
     import asyncio
 
     from oddish.dispatch.backends.modal import ModalDispatcher
     from oddish.dispatch.ports import WorkerHandle
 
+    dispatcher = ModalDispatcher()
+
     handles = [
         WorkerHandle(provider=ModalDispatcher.name, queue_key="", id=fc_id)
         for fc_id in result.pop("modal_function_call_ids", [])
         if fc_id
     ]
-    modal_cancelled = await ModalDispatcher().cancel(handles) if handles else 0
+    modal_cancelled = await dispatcher.cancel(handles) if handles else 0
+
+    graceful_handles = [
+        WorkerHandle(provider=ModalDispatcher.name, queue_key="", id=fc_id)
+        for fc_id in result.pop("graceful_modal_function_call_ids", [])
+        if fc_id
+    ]
+    if graceful_handles:
+        modal_cancelled += await dispatcher.cancel(graceful_handles, force=False)
 
     targets = result.pop("worker_targets", [])
     if targets:
@@ -1383,6 +1401,15 @@ async def terminate_run_harvest(result: dict) -> int:
                 cancel_job_by_worker(provider, external_id)
                 for provider, external_id in targets
             )
+        )
+
+    deferred = result.pop("deferred_worker_targets", [])
+    if deferred:
+        logger.info(
+            "terminate_run_harvest: deferred sandbox teardown for %d cancelled "
+            "trial worker(s): %s",
+            len(deferred),
+            deferred,
         )
     return modal_cancelled
 

@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -593,6 +594,22 @@ async def _generate_probe_summary_inline(
         "analysis_started_at": started_at,
         "analysis_finished_at": utcnow(),
     }
+
+
+async def _worker_job_cancelled(worker_job_id: str | None) -> bool:
+    """True when this worker's own job row was cancelled (user cancel)."""
+    if not worker_job_id:
+        return False
+    from oddish.db import get_session
+
+    try:
+        async with get_session() as session:
+            status = await session.scalar(
+                select(WorkerJobModel.status).where(WorkerJobModel.id == worker_job_id)
+            )
+    except Exception:
+        return False
+    return status == WorkerJobStatus.CANCELLED
 
 
 async def _worker_still_owns_trial(
@@ -1238,25 +1255,50 @@ async def run_trial_job(
             ),
         )
 
-        # Upload trial results to S3.
+        # Upload trial results to S3. For cancelled runs this is the harvest
+        # window: the worker survives a cooperative cancel just long enough to
+        # ship Harbor's salvaged partial artifacts (the settle sweep prices
+        # them later), so the upload runs before any nonessential mirrors.
+        was_cancelled = bool(
+            execution.outcome and execution.outcome.exception_type == "CancelledError"
+        )
         trial_s3_key = None
         oddish_uploaded = False
         if should_upload_to_s3 and execution.outcome and execution.outcome.job_dir:
+            upload_started = time.monotonic()
             try:
                 storage = get_storage_client()
-                trial_s3_key = await storage.upload_trial_results(
-                    trial_id,
-                    execution.outcome.job_dir,
-                    authorized_prefix=(
-                        job_scoped_bundle.s3_write_prefix
-                        if job_scoped_bundle is not None
-                        else None
-                    ),
+                trial_s3_key = await asyncio.shield(
+                    storage.upload_trial_results(
+                        trial_id,
+                        execution.outcome.job_dir,
+                        authorized_prefix=(
+                            job_scoped_bundle.s3_write_prefix
+                            if job_scoped_bundle is not None
+                            else None
+                        ),
+                    )
                 )
                 console.print(
                     f"[dim]Uploaded trial results to S3: {trial_s3_key}[/dim]"
                 )
                 oddish_uploaded = True
+                if was_cancelled:
+                    # Sentinel written strictly AFTER the dir upload finishes:
+                    # the settle sweep refuses to price a harvest without it,
+                    # so a partial upload can never settle low forever.
+                    await asyncio.shield(
+                        storage.upload_bytes(
+                            b"{}",
+                            f"{trial_s3_key}harvest-complete.json",
+                            content_type="application/json",
+                        )
+                    )
+                    console.print(
+                        "metric=cancelled_harvest_uploaded "
+                        f"trial_id={trial_id} "
+                        f"upload_seconds={time.monotonic() - upload_started:.1f}"
+                    )
             except Exception as e:
                 console.print(
                     f"[yellow]Failed to upload trial results to S3: {e}[/yellow]"
@@ -1266,8 +1308,10 @@ async def run_trial_job(
         # observability bucket (settings.sauron_s3_bucket) with its own prefix
         # scheme -- a distinct scope from the trial-results prefix, so the
         # job-scoped credential's authorized_prefix intentionally does NOT apply
-        # here (it would refuse every legitimate sauron write).
-        if execution.outcome and execution.outcome.job_dir:
+        # here (it would refuse every legitimate sauron write). Skipped for
+        # cancelled runs: the post-cancel grace is unbounded-by-contract, so
+        # it goes entirely to the salvage upload above.
+        if not was_cancelled and execution.outcome and execution.outcome.job_dir:
             try:
                 from oddish.integrations.sauron import get_sauron_uploader
                 from oddish.integrations.github.client import GitHubMeta
@@ -1298,7 +1342,12 @@ async def run_trial_job(
         # place their summary is produced in the cloud. Must run before the
         # cleanup below prunes job_dir.
         probe_analysis = None
-        if probe_extra_instructions and execution.outcome and execution.outcome.job_dir:
+        if (
+            not was_cancelled
+            and probe_extra_instructions
+            and execution.outcome
+            and execution.outcome.job_dir
+        ):
             probe_analysis = await _generate_probe_summary_inline(
                 trial_id=trial_id,
                 job_dir=execution.outcome.job_dir,
@@ -1321,6 +1370,15 @@ async def run_trial_job(
                 worker_job_id=worker_job_id,
             )
         )
+
+        # A user-cancelled job means the Modal input backing this worker was
+        # cancelled cooperatively; the harvest above is the only reason the
+        # container was allowed to keep running. Re-raise so the drain loop
+        # unwinds instead of claiming new trials inside a cancelled call.
+        # Runtime cancels (worker restart/timeout) leave the job row
+        # non-CANCELLED and keep their existing drain behavior.
+        if was_cancelled and await _worker_job_cancelled(worker_job_id):
+            raise asyncio.CancelledError
     finally:
         # Backstop for the non-happy paths (harness exception, worker
         # cancel, S3 upload failure, or Harbor dying before producing a

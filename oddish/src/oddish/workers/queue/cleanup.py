@@ -20,6 +20,8 @@ flush failed at handler-commit time.
 """
 
 import asyncio
+import json
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import cast
 
@@ -407,12 +409,16 @@ async def cleanup_orphaned_queue_state(
     # remote handles / claim metadata the DB still points at. Best-effort; the
     # provider TTL and the next sweep are the backstops.
     worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
+    cancelled_sandboxes_reaped = await reap_cancelled_trial_sandboxes()
+    cancelled_trial_costs_settled = await settle_cancelled_trial_costs()
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
 
     return {
         "worker_jobs_retried": worker_jobs_retried,
         "worker_jobs_failed": worker_jobs_failed,
         "worker_sandboxes_terminated": worker_sandboxes_terminated,
+        "cancelled_sandboxes_reaped": cancelled_sandboxes_reaped,
+        "cancelled_trial_costs_settled": cancelled_trial_costs_settled,
         "tasks_progressed_to_analysis": tasks_progressed_to_analysis,
         "tasks_progressed_to_verdict": tasks_progressed_to_verdict,
         "verdict_pending_completed": verdict_pending_completed,
@@ -1108,3 +1114,401 @@ async def _terminate_orphaned_sandboxes(worker_targets: set[tuple[str, str]]) ->
         )
     )
     return sum(1 for ok in results if ok)
+
+
+# Gracefully-cancelled TRIAL workers keep their sandbox handle so Harbor's
+# cancellation recovery can pull partial agent logs before stopping the env
+# itself. The reap below is the backstop for workers that died mid-recovery:
+# wait out the harvest window, then tear the sandbox down. The upper bound
+# skips ancient pre-deploy rows whose sandboxes are long dead.
+CANCELLED_SANDBOX_REAP_GRACE_MINUTES = 5
+CANCELLED_SANDBOX_REAP_MAX_AGE_MINUTES = 48 * 60
+CANCELLED_SANDBOX_REAP_BATCH_SIZE = 50
+
+
+async def reap_cancelled_trial_sandboxes(
+    *, batch_size: int = CANCELLED_SANDBOX_REAP_BATCH_SIZE
+) -> int:
+    """Tear down sandboxes of cancelled TRIAL jobs after the harvest grace.
+
+    Claims each row with SKIP LOCKED and clears ``provider``/``external_id``
+    in the same transaction, then terminates post-commit -- a rollback must
+    never leave rows pointing at destroyed sandboxes, and a failed teardown
+    is deliberately not retried (the provider TTL catches it).
+    """
+    targets: set[tuple[str, str]] = set()
+    try:
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    text(
+                        """
+                        WITH victims AS (
+                            SELECT id, provider, external_id
+                            FROM   worker_jobs
+                            WHERE  kind::text = 'TRIAL'
+                              AND  status::text = 'CANCELLED'
+                              AND  provider IS NOT NULL
+                              AND  external_id IS NOT NULL
+                              AND  finished_at IS NOT NULL
+                              AND  finished_at < NOW() - make_interval(mins => :grace_mins)
+                              AND  finished_at > NOW() - make_interval(mins => :max_age_mins)
+                            ORDER BY finished_at
+                            FOR UPDATE SKIP LOCKED
+                            LIMIT :batch_size
+                        )
+                        UPDATE worker_jobs w
+                        SET    provider = NULL,
+                               external_id = NULL
+                        FROM   victims v
+                        WHERE  w.id = v.id
+                        RETURNING v.provider, v.external_id
+                        """
+                    ),
+                    {
+                        "grace_mins": CANCELLED_SANDBOX_REAP_GRACE_MINUTES,
+                        "max_age_mins": CANCELLED_SANDBOX_REAP_MAX_AGE_MINUTES,
+                        "batch_size": batch_size,
+                    },
+                )
+            ).all()
+            targets = {
+                (str(provider), str(external_id)) for provider, external_id in rows
+            }
+    except SQLAlchemyError as exc:
+        console.print(f"[yellow]Cancelled-sandbox reap skipped: {exc}[/yellow]")
+        return 0
+
+    return await _terminate_orphaned_sandboxes(targets)
+
+
+# Cancelled trials settle at the flat ``unpriced_trial_cost_usd`` floor until
+# real usage arrives. The settle pass below upgrades them to measured cost
+# from the artifacts the graceful-cancel harvest uploaded to S3, gated on
+# the ``harvest-complete.json`` sentinel the worker writes strictly after
+# the dir upload finishes (a partial upload must never settle low forever).
+# Candidates are retried every sweep until the lookback expires or the
+# give-up cache caps them; rows whose artifacts never materialize keep the
+# floor.
+CANCELLED_SETTLE_LOOKBACK_HOURS = 24
+CANCELLED_SETTLE_MIN_AGE_MINUTES = 3
+CANCELLED_SETTLE_BATCH_SIZE = 25
+# A candidate that repeatedly yields nothing (no sentinel, fetch failure, or
+# tokenless artifacts) is dropped from candidacy in this container so it
+# can't monopolize the batch head for the whole 24h lookback. Warm reconcile
+# containers persist the cache across ticks; a cold start retries a bounded
+# amount of work.
+CANCELLED_SETTLE_MAX_ATTEMPTS = 5
+_CANCELLED_SETTLE_GIVEUP_CAP = 2000
+_settle_attempts: dict[str, int] = {}
+# Oversized artifacts are skipped rather than loaded into the reconciler's
+# memory; trajectory.json on a long run can reach tens of MB.
+CANCELLED_SETTLE_MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _SalvagedUsage:
+    input_tokens: int | None = None
+    cache_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    output_tokens: int | None = None
+    cost_usd: float | None = None
+    total_steps: int | None = None
+
+    def has_tokens(self) -> bool:
+        # Cache-only salvage is unpriceable and, written alone, would not
+        # break the unsettled predicate -- require a countable token flow.
+        return self.input_tokens is not None or self.output_tokens is not None
+
+
+def _accumulate_agent_result(
+    agent_result, totals: dict[str, int | float | None]
+) -> None:
+    if not isinstance(agent_result, dict):
+        return
+
+    def _acc(field: str, value, cast) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return
+        totals[field] = cast(value) + (totals[field] or 0)
+
+    _acc("input_tokens", agent_result.get("n_input_tokens"), int)
+    _acc("cache_tokens", agent_result.get("n_cache_tokens"), int)
+    _acc("output_tokens", agent_result.get("n_output_tokens"), int)
+    _acc("cost_usd", agent_result.get("cost_usd"), float)
+
+
+def _salvaged_usage_from_artifacts(
+    files: dict[str, str], prefix: str
+) -> _SalvagedUsage:
+    """Extract usage from a cancelled trial's salvaged Harbor attempt dir.
+
+    ``files`` maps S3 key -> JSON text, already scoped to a single attempt
+    dir by ``_fetch_salvaged_artifacts``. Tokens come from the per-trial
+    ``<trial_name>/result.json`` Harbor's cancellation recovery wrote --
+    the trial-level ``agent_result`` plus, for multi-step tasks that only
+    populate per-step contexts, each ``step_results[].agent_result``
+    (mirroring Harbor's ``compute_token_cost_totals``). The job-level
+    ``result.json`` is the runner's debug stub and is skipped by requiring
+    one path segment below the prefix. ``trajectory.json`` supplies the
+    cache-write split, step count, and a token fallback.
+    """
+    from oddish.core.harbor_artifacts import (
+        _cache_write_from_final_metrics,
+        _sum_cache_write_from_steps,
+    )
+
+    totals: dict[str, int | float | None] = {
+        "input_tokens": None,
+        "cache_tokens": None,
+        "output_tokens": None,
+        "cost_usd": None,
+    }
+    for key, body in files.items():
+        relative = key[len(prefix) :]
+        if not (relative.count("/") == 1 and relative.endswith("/result.json")):
+            continue
+        try:
+            doc = json.loads(body)
+        except ValueError:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        agent_result = doc.get("agent_result")
+        if isinstance(agent_result, dict) and any(
+            v is not None for v in agent_result.values()
+        ):
+            _accumulate_agent_result(agent_result, totals)
+        else:
+            step_results = doc.get("step_results")
+            for step in step_results if isinstance(step_results, list) else []:
+                if isinstance(step, dict):
+                    _accumulate_agent_result(step.get("agent_result"), totals)
+
+    cache_write_tokens: int | None = None
+    total_steps: int | None = None
+    fallback_metrics: dict | None = None
+    for key, body in files.items():
+        if not key.endswith("/trajectory.json"):
+            continue
+        try:
+            data = json.loads(body)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        steps = data.get("steps")
+        steps = steps if isinstance(steps, list) else []
+        final_metrics = data.get("final_metrics")
+        final_metrics = final_metrics if isinstance(final_metrics, dict) else {}
+        step_cache_write = _sum_cache_write_from_steps(steps)
+        if step_cache_write is None:
+            step_cache_write = _cache_write_from_final_metrics(final_metrics)
+        if step_cache_write is not None:
+            cache_write_tokens = step_cache_write + (cache_write_tokens or 0)
+        if steps:
+            total_steps = len(steps) + (total_steps or 0)
+        if fallback_metrics is None and final_metrics:
+            fallback_metrics = final_metrics
+
+    input_tokens = totals["input_tokens"]
+    cache_tokens = totals["cache_tokens"]
+    output_tokens = totals["output_tokens"]
+    if input_tokens is None and output_tokens is None and fallback_metrics:
+
+        def _as_count(value) -> int | None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            return int(value)
+
+        input_tokens = _as_count(fallback_metrics.get("total_prompt_tokens"))
+        output_tokens = _as_count(fallback_metrics.get("total_completion_tokens"))
+        cache_tokens = _as_count(fallback_metrics.get("total_cached_tokens"))
+
+    return _SalvagedUsage(
+        input_tokens=int(input_tokens) if input_tokens is not None else None,
+        cache_tokens=int(cache_tokens) if cache_tokens is not None else None,
+        cache_write_tokens=cache_write_tokens,
+        output_tokens=int(output_tokens) if output_tokens is not None else None,
+        cost_usd=totals["cost_usd"],
+        total_steps=total_steps,
+    )
+
+
+async def _fetch_salvaged_artifacts(storage, prefix: str) -> dict[str, str] | None:
+    """Download one attempt's result/trajectory JSONs under a trial prefix.
+
+    Returns ``None`` when the ``harvest-complete.json`` sentinel is absent
+    (upload never happened or is still in flight -- the caller retries next
+    sweep, up to the give-up cap). A retried trial accretes one Harbor
+    attempt dir per upload under the same prefix; only the newest attempt
+    (by its result.json mtime) is read, since summing across attempts
+    double-bills.
+    """
+    objects = await storage.list_objects_all(prefix)
+    by_key = {
+        obj["key"]: obj for obj in objects if isinstance(obj.get("key"), str)
+    }
+    if f"{prefix}harvest-complete.json" not in by_key:
+        return None
+
+    attempt_dirs: dict[str, object] = {}
+    for key, obj in by_key.items():
+        relative = key[len(prefix) :]
+        if relative.count("/") == 1 and relative.endswith("/result.json"):
+            attempt_dirs[key.rsplit("/", 1)[0] + "/"] = obj.get("last_modified")
+    if not attempt_dirs:
+        return {}
+    newest = max(
+        attempt_dirs,
+        key=lambda d: (attempt_dirs[d] is not None, attempt_dirs[d], d),
+    )
+
+    files: dict[str, str] = {}
+    for key, obj in by_key.items():
+        if not key.startswith(newest):
+            continue
+        if not (key.endswith("/result.json") or key.endswith("/trajectory.json")):
+            continue
+        size = obj.get("size")
+        if isinstance(size, int) and size > CANCELLED_SETTLE_MAX_ARTIFACT_BYTES:
+            continue
+        files[key] = await storage.download_text(key)
+    return files
+
+
+def _settle_giveup_ids() -> list[str]:
+    if len(_settle_attempts) > _CANCELLED_SETTLE_GIVEUP_CAP:
+        _settle_attempts.clear()
+    return [
+        trial_id
+        for trial_id, attempts in _settle_attempts.items()
+        if attempts >= CANCELLED_SETTLE_MAX_ATTEMPTS
+    ]
+
+
+async def settle_cancelled_trial_costs(
+    *, batch_size: int = CANCELLED_SETTLE_BATCH_SIZE
+) -> int:
+    """Backfill measured usage/cost onto cancelled trials from S3 artifacts.
+
+    Candidate selection and each write are separate short transactions (the
+    S3 round-trips must not hold row locks). Every write re-checks the FULL
+    cancelled+unsettled predicate under SKIP LOCKED -- a retry can re-claim
+    the trial between the candidate select and the write, and stamping the
+    old attempt's salvage onto a RUNNING row would bill the wrong run. Only
+    usage columns are touched -- status/error/finished_at stay exactly as
+    the cancel wrote them. Deleted trials are included to match quota's
+    settled-cost sums. Rows that repeatedly yield nothing enter the
+    in-memory give-up cache so they can't starve the batch head.
+    """
+    try:
+        from oddish.db.storage import StorageClient, get_storage_client
+
+        storage = get_storage_client()
+    except Exception as exc:
+        console.print(f"[yellow]Cancelled-cost settle skipped (storage): {exc}[/yellow]")
+        return 0
+
+    unsettled = (
+        TrialModel.cost_usd.is_(None),
+        TrialModel.input_tokens.is_(None),
+        TrialModel.output_tokens.is_(None),
+    )
+    still_cancelled = (
+        TrialModel.harbor_stage == "cancelled",
+        TrialModel.started_at.isnot(None),
+        TrialModel.finished_at.isnot(None),
+    )
+    now = utcnow()
+    given_up = _settle_giveup_ids()
+    try:
+        async with get_session() as session:
+            candidate_query = (
+                select(TrialModel.id, TrialModel.model, TrialModel.trial_s3_key)
+                .where(
+                    *still_cancelled,
+                    TrialModel.finished_at
+                    >= now - timedelta(hours=CANCELLED_SETTLE_LOOKBACK_HOURS),
+                    TrialModel.finished_at
+                    <= now - timedelta(minutes=CANCELLED_SETTLE_MIN_AGE_MINUTES),
+                    *unsettled,
+                )
+                .order_by(TrialModel.finished_at)
+                .limit(batch_size)
+                .execution_options(include_deleted=True)
+            )
+            if given_up:
+                candidate_query = candidate_query.where(
+                    TrialModel.id.notin_(given_up)
+                )
+            candidates = (await session.execute(candidate_query)).all()
+    except SQLAlchemyError as exc:
+        console.print(f"[yellow]Cancelled-cost settle skipped: {exc}[/yellow]")
+        return 0
+
+    settled = 0
+    for trial_id, model_name, trial_s3_key in candidates:
+        prefix = trial_s3_key or StorageClient._trial_prefix(trial_id)
+        files = None
+        try:
+            files = await _fetch_salvaged_artifacts(storage, prefix)
+        except Exception as exc:
+            console.print(
+                f"[yellow]Cancelled-cost settle: fetch failed for {trial_id}: {exc}[/yellow]"
+            )
+        usage = (
+            _salvaged_usage_from_artifacts(files, prefix)
+            if files is not None
+            else _SalvagedUsage()
+        )
+        if not usage.has_tokens():
+            _settle_attempts[trial_id] = _settle_attempts.get(trial_id, 0) + 1
+            continue
+
+        cost_usd = usage.cost_usd
+        if cost_usd is None:
+            from oddish.model_pricing import estimate_cost_usd
+
+            cost_usd = estimate_cost_usd(
+                model_name,
+                usage.input_tokens,
+                usage.output_tokens,
+                cached_tokens=usage.cache_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+            )
+
+        try:
+            async with get_session() as session:
+                row = (
+                    await session.execute(
+                        select(TrialModel)
+                        .where(TrialModel.id == trial_id, *still_cancelled, *unsettled)
+                        .with_for_update(skip_locked=True)
+                        .execution_options(include_deleted=True)
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    continue
+                # has_tokens() guarantees input or output is non-NULL, so
+                # this write always breaks the unsettled predicate and the
+                # row exits candidacy even when cost stays unpriceable.
+                row.input_tokens = usage.input_tokens
+                row.cache_tokens = usage.cache_tokens
+                row.cache_write_tokens = usage.cache_write_tokens
+                row.output_tokens = usage.output_tokens
+                if usage.total_steps is not None:
+                    row.total_steps = usage.total_steps
+                row.cost_usd = cost_usd
+                settled += 1
+                _settle_attempts.pop(trial_id, None)
+        except SQLAlchemyError as exc:
+            console.print(
+                f"[yellow]Cancelled-cost settle: write failed for {trial_id}: {exc}[/yellow]"
+            )
+
+    if settled:
+        console.print(
+            f"[green]Settled measured cost for {settled} cancelled trial(s)[/green]"
+        )
+    return settled
