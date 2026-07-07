@@ -479,3 +479,26 @@ S1.1: `pending_trial_reservation_usd` feeds S1's cost-completeness floor and S5'
 ### Rejected
 - Change `cost_usd` to `Numeric` — spec keeps `Float` + Decimal-in-comparison (§6 type note); a hot-column type migration is out of scope.
 - "Column/helpers don't exist yet" findings — expected; this is a build plan, not a diff.
+
+## 21. Addendum (2026-07-06): cancelled-trial harvest + measured-cost settle
+
+Shipped in `feat/cancelled-trial-harvest`. User-cancel of TRIAL worker jobs is
+now **cooperative** (`FunctionCall.cancel(terminate_containers=False)`): the
+worker survives long enough for Harbor's CancelledError recovery to salvage
+partial agent logs, and the existing S3 upload ships them under the trial
+prefix. The cancel core splits harvested handles by kind
+(`graceful_modal_function_call_ids` / `deferred_worker_targets` for TRIAL;
+hard-kill keys for everything else); TRIAL sandbox teardown is deferred to a
+sweep backstop (`reap_cancelled_trial_sandboxes`, 5-min grace) with provider
+TTLs behind it.
+
+A new sweep pass (`settle_cancelled_trial_costs`, every ~4 min) upgrades
+cancelled trials from the §17 `unpriced_trial_cost_usd` floor to **measured**
+cost: it reads the salvaged per-trial `result.json` / `trajectory.json` from
+S3, prices tokens via `estimate_cost_usd` when Harbor's native cost is absent
+(always, on cancel), and writes usage columns only — status/error/finished_at
+stay as the cancel wrote them. Policy: measured cost **replaces** the floor
+even when < $1 (the floor exists for unpriced trials, not as a minimum fee).
+Rows whose artifacts never land keep the floor; the settle window is 24h.
+Harvest is best-effort — Modal documents no post-cancel grace — so the floor
+remains the fail-safe, never $0.

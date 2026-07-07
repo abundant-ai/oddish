@@ -81,6 +81,29 @@ def test_modal_cancel_terminates_function_calls(monkeypatch) -> None:
     assert sorted(cancelled) == [("fc-1", True), ("fc-2", True)]
 
 
+def test_modal_cancel_graceful_leaves_containers_running(monkeypatch) -> None:
+    # force=False must NOT terminate containers, so a cooperatively-cancelled
+    # trial worker survives to harvest partial artifacts before exiting.
+    cancelled: list[tuple[str, bool]] = []
+
+    def _from_id(fc_id: str):
+        async def _cancel_aio(*, terminate_containers: bool):
+            cancelled.append((fc_id, terminate_containers))
+
+        return types.SimpleNamespace(cancel=types.SimpleNamespace(aio=_cancel_aio))
+
+    fake_modal = types.ModuleType("modal")
+    fake_modal.FunctionCall = types.SimpleNamespace(from_id=_from_id)
+    monkeypatch.setitem(sys.modules, "modal", fake_modal)
+
+    dispatcher = ModalDispatcher()
+    handles = [WorkerHandle(provider="modal", queue_key="q", id="fc-1")]
+
+    count = asyncio.run(dispatcher.cancel(handles, force=False))
+    assert count == 1
+    assert cancelled == [("fc-1", False)]
+
+
 def test_modal_cancel_no_ids_returns_zero() -> None:
     dispatcher = ModalDispatcher()
     handles = [WorkerHandle(provider="modal", queue_key="q")]

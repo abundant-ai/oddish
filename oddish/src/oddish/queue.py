@@ -14,7 +14,6 @@ from oddish.core.baseline_gate import (
     GateOutcome,
     evaluate_baseline_gate,
 )
-from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
@@ -82,10 +81,11 @@ async def cancel_tasks_runs(
     analysis / verdict kinds uniformly) and then mirrors the terminal
     state back onto the domain rows for live-UI visibility.
 
-    POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` and
-    ``worker_targets`` are RETURNED, not terminated here -- a rollback must
-    never leave live rows pointing at destroyed containers. The caller
-    (route or OSS operator invoking this directly) must run
+    POST-COMMIT CONTRACT: the harvested ``modal_function_call_ids`` /
+    ``graceful_modal_function_call_ids`` and ``worker_targets`` /
+    ``deferred_worker_targets`` are RETURNED, not terminated here -- a
+    rollback must never leave live rows pointing at destroyed containers.
+    The caller (route or OSS operator invoking this directly) must run
     ``oddish.core.helpers.terminate_run_harvest(result)`` after commit.
     """
     requested_task_ids = list(dict.fromkeys(task_ids))
@@ -97,7 +97,9 @@ async def cancel_tasks_runs(
             "tasks_cancelled": 0,
             "trials_cancelled": 0,
             "modal_function_call_ids": [],
+            "graceful_modal_function_call_ids": [],
             "worker_targets": [],
+            "deferred_worker_targets": [],
         }
 
     query = select(TaskModel).where(TaskModel.id.in_(requested_task_ids))
@@ -164,7 +166,8 @@ async def cancel_tasks_runs(
                    subject_id,
                    modal_function_call_id,
                    provider,
-                   external_id
+                   external_id,
+                   harbor_variant_id
             FROM   worker_jobs
             WHERE  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
               AND  (
@@ -189,7 +192,8 @@ async def cancel_tasks_runs(
                   to_cancel.subject_id,
                   to_cancel.modal_function_call_id,
                   to_cancel.provider,
-                  to_cancel.external_id
+                  to_cancel.external_id,
+                  to_cancel.harbor_variant_id
         """
     )
     cancel_params: dict[str, Any] = {
@@ -201,20 +205,38 @@ async def cancel_tasks_runs(
     canceled_rows = (await session.execute(cancel_sql, cancel_params)).mappings().all()
 
     modal_fc_ids: list[str] = []
+    graceful_fc_ids: list[str] = []
     worker_targets: set[tuple[str, str]] = set()
+    deferred_worker_targets: set[tuple[str, str]] = set()
     canceled_trial_kinds: set[str] = set()
     canceled_verdict_task_ids: set[str] = set()
     canceled_analysis_trial_ids: set[str] = set()
 
     for row in canceled_rows:
+        kind = row["kind"]
+        # TRIAL workers get a cooperative cancel (no container kill) so the
+        # in-flight Harbor run can salvage partial agent logs/usage to S3;
+        # their sandboxes are stopped by Harbor's own recovery, with the
+        # cleanup sweep + provider TTLs as teardown backstops. Everything
+        # else keeps the immediate hard kill -- including TRIAL rows with no
+        # Modal function-call id (OSS dispatchers, fc-lookup edge): no
+        # cooperative CancelledError can ever reach them, so deferring their
+        # sandbox teardown would just let the agent burn tokens post-cancel.
+        # Ephemeral-variant trials run Harbor in a subprocess that dies on
+        # SIGKILL without salvaging, so graceful cancel buys them nothing.
         fc = row.get("modal_function_call_id")
+        graceful = (
+            kind == "TRIAL"
+            and bool(fc)
+            and row.get("harbor_variant_id") != "ephemeral"
+        )
         if fc:
-            modal_fc_ids.append(str(fc))
+            (graceful_fc_ids if graceful else modal_fc_ids).append(str(fc))
         provider = row.get("provider")
         external_id = row.get("external_id")
         if provider and external_id:
-            worker_targets.add((str(provider), str(external_id)))
-        kind = row["kind"]
+            target = (str(provider), str(external_id))
+            (deferred_worker_targets if graceful else worker_targets).add(target)
         subject_id = row["subject_id"]
         if kind == "TRIAL" and subject_id:
             canceled_trial_kinds.add(str(subject_id))
@@ -283,7 +305,9 @@ async def cancel_tasks_runs(
         "tasks_cancelled": tasks_cancelled,
         "trials_cancelled": trials_cancelled,
         "modal_function_call_ids": list(dict.fromkeys(modal_fc_ids)),
+        "graceful_modal_function_call_ids": list(dict.fromkeys(graceful_fc_ids)),
         "worker_targets": sorted(worker_targets),
+        "deferred_worker_targets": sorted(deferred_worker_targets),
     }
 
 

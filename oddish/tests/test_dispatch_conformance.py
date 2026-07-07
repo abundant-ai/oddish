@@ -76,7 +76,7 @@ def _hermetic_modal_dispatcher() -> ModalDispatcher:
 
     spawn_function = types.SimpleNamespace(spawn=types.SimpleNamespace(aio=_spawn_aio))
 
-    async def _cancel_fn(fc_ids: list[str]) -> list[str]:
+    async def _cancel_fn(fc_ids: list[str], force: bool = True) -> list[str]:
         # The cancel contract returns the ids actually cancelled; this fake
         # always succeeds, so it echoes back every id it was handed.
         return list(fc_ids)

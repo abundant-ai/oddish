@@ -8,7 +8,10 @@ Wraps today's two Modal-locked control-plane primitives unchanged:
   into its claimed ``worker_jobs`` row. So ``spawn`` returns **provisional**
   handles with an empty id — the spawner never owns it (spec §5.2/§11).
 * **cancel** — ``modal.FunctionCall.from_id(id).cancel.aio(
-  terminate_containers=True)`` batched (``backend/api/routers/tasks.py``).
+  terminate_containers=...)`` batched (``backend/api/routers/tasks.py``).
+  ``force=True`` (default) terminates the worker container immediately;
+  ``force=False`` delivers a cooperative ``asyncio.CancelledError`` so the
+  worker can harvest partial trial artifacts before exiting.
 
 The Modal ``Function`` to spawn is **injected** so this oddish-package module
 never imports backend code; ``import modal`` stays lazy (confined to ``cancel``)
@@ -30,10 +33,12 @@ MODAL_CANCEL_BATCH_SIZE = 32
 
 # The cancel helper returns the function-call ids it *actually* cancelled, so the
 # dispatcher records only real terminations and leaves failed ones retryable.
-CancelFn = Callable[[list[str]], Awaitable[list[str]]]
+CancelFn = Callable[[list[str], bool], Awaitable[list[str]]]
 
 
-async def _default_cancel_function_calls(fc_ids: list[str]) -> list[str]:
+async def _default_cancel_function_calls(
+    fc_ids: list[str], force: bool = True
+) -> list[str]:
     """Terminate Modal worker containers by function-call id.
 
     Returns the (deduped) function-call ids that were **actually** cancelled — a
@@ -56,7 +61,7 @@ async def _default_cancel_function_calls(fc_ids: list[str]) -> list[str]:
     async def cancel_one(fc_id: str) -> bool:
         try:
             fc = modal.FunctionCall.from_id(fc_id)
-            await fc.cancel.aio(terminate_containers=True)
+            await fc.cancel.aio(terminate_containers=force)
             return True
         except Exception:
             return False
@@ -113,11 +118,13 @@ class ModalDispatcher:
             if handle.id and handle.id not in self._cancelled:
                 yield handle
 
-    async def cancel(self, handles: Sequence[WorkerHandle]) -> int:
+    async def cancel(
+        self, handles: Sequence[WorkerHandle], *, force: bool = True
+    ) -> int:
         fc_ids = [h.id for h in handles if h.id and h.id not in self._cancelled]
         if not fc_ids:
             return 0
-        cancelled = await self._cancel_fn(list(dict.fromkeys(fc_ids)))
+        cancelled = await self._cancel_fn(list(dict.fromkeys(fc_ids)), force)
         # Record only ids whose termination actually succeeded. A swallowed
         # Modal failure leaves its id out of ``cancelled`` (and thus out of
         # ``self._cancelled``), so check_active still surfaces it and a later
