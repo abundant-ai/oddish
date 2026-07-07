@@ -31,6 +31,7 @@ _EXPECTED_EST = estimate_cost_usd(_EST_MODEL, _EST_IN, _EST_OUT, _EST_CACHE)
 
 USER_A = f"costuser-a-{_RUN}"
 USER_B = f"costuser-b-{_RUN}"
+USER_C = f"costuser-c-{_RUN}"
 ORG_1 = f"costorg-1-{_RUN}"
 ORG_2 = f"costorg-2-{_RUN}"
 E1 = f"costexp-1-{_RUN}"
@@ -38,6 +39,8 @@ E2 = f"costexp-2-{_RUN}"
 E3 = f"costexp-3-{_RUN}"
 E4 = f"costexp-deleted-{_RUN}"
 E5 = f"costexp-nonbillable-{_RUN}"
+E6 = f"costexp-noauthor-{_RUN}"
+E7 = f"costexp-twotask-{_RUN}"
 
 
 def _approx(a: float | None, b: float | None, tol: float = 1e-6) -> bool:
@@ -96,26 +99,67 @@ async def seeded_cost_data():
                     created_at=recent,
                     last_activity_at=recent,
                 ),
+                ExperimentModel(
+                    id=E6,
+                    name="cost-exp-noauthor",
+                    org_id=ORG_2,
+                    owner_user_id=None,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
+                ExperimentModel(
+                    id=E7,
+                    name="cost-exp-twotask",
+                    org_id=ORG_2,
+                    owner_user_id=None,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
             ]
         )
+        task_tags = {
+            E2: {"github_username": "e2-tag"},
+            E3: {"github_username": "e3-gh"},
+        }
+        task_users = {E6: "unknown"}
         for exp_id, org_id in (
             (E1, ORG_1),
             (E2, ORG_1),
             (E3, ORG_2),
             (E4, ORG_1),
             (E5, ORG_2),
+            (E6, ORG_2),
         ):
-            tags = {"github_username": "e3-gh"} if exp_id == E3 else None
             session.add(
                 TaskModel(
                     id=f"{exp_id}-task",
                     name=f"{exp_id}-task",
-                    user="test",
+                    user=task_users.get(exp_id, "test"),
                     org_id=org_id,
                     task_path="some/path",
-                    tags=tags,
+                    tags=task_tags.get(exp_id),
                 )
             )
+        session.add_all(
+            [
+                TaskModel(
+                    id=f"{E7}-task-old",
+                    name=f"{E7}-task-old",
+                    user="alice",
+                    org_id=ORG_2,
+                    task_path="some/path",
+                    created_at=old,
+                ),
+                TaskModel(
+                    id=f"{E7}-task-new",
+                    name=f"{E7}-task-new",
+                    user="bob",
+                    org_id=ORG_2,
+                    task_path="some/path",
+                    created_at=recent,
+                ),
+            ]
+        )
         session.add_all(
             [
                 _trial(
@@ -180,18 +224,44 @@ async def seeded_cost_data():
                     billed_user_id=USER_A,
                 ),
                 _trial(E5, 0, model="claude-opus-4-8", cost_usd=4.0, created_at=recent),
+                _trial(
+                    E6,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                ),
+                _trial(
+                    E7,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                    task_id=f"{E7}-task-old",
+                ),
+                _trial(
+                    E7,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                    task_id=f"{E7}-task-new",
+                ),
             ]
         )
 
     yield
 
     async with get_session() as session:
-        for exp_id in (E1, E2, E3, E4, E5):
+        for exp_id in (E1, E2, E3, E4, E5, E6, E7):
             await session.execute(
                 TrialModel.__table__.delete().where(TrialModel.experiment_id == exp_id)
             )
             await session.execute(
-                TaskModel.__table__.delete().where(TaskModel.id == f"{exp_id}-task")
+                TaskModel.__table__.delete().where(TaskModel.id.like(f"{exp_id}-task%"))
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(ExperimentModel.id == exp_id)
@@ -212,11 +282,12 @@ def _trial(
     cache_tokens: int | None = None,
     billed_user_id: str | None = None,
     deleted_at=None,
+    task_id: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
         name=f"{experiment_id}-{index}",
-        task_id=f"{experiment_id}-task",
+        task_id=task_id or f"{experiment_id}-task",
         experiment_id=experiment_id,
         org_id=None,
         agent=agent,
@@ -265,6 +336,8 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E2].owner_label == "gh-octocat", exps[E2].owner_label
     assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
     assert exps[E1].owner_label == "test", exps[E1].owner_label
+    assert exps[E6].owner_label is None, exps[E6].owner_label
+    assert exps[E7].owner_label == "alice", exps[E7].owner_label
 
     by_user = {u.owner_user_id: u for u in result.by_user}
     assert _approx(by_user[USER_A].cost_usd, 3.5)

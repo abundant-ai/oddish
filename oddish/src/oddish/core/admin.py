@@ -1355,33 +1355,49 @@ async def _cost_time_series(
     return by_agent, by_model, by_user
 
 
+def _clean_author(value: str | None) -> str | None:
+    """Ignore blank and placeholder 'unknown' author strings."""
+    cleaned = (value or "").strip()
+    if not cleaned or cleaned.lower() == "unknown":
+        return None
+    return cleaned
+
+
 async def _primary_task_authors(
     session: AsyncSession, experiment_ids: list[str]
 ) -> dict[str, str]:
     """Get each experiment's oldest-task author, used as a fallback owner name."""
     if not experiment_ids:
         return {}
+    exp_tasks = (
+        select(
+            TrialModel.experiment_id.label("experiment_id"),
+            TrialModel.task_id.label("task_id"),
+        )
+        .where(TrialModel.experiment_id.in_(experiment_ids))
+        .distinct()
+        .subquery()
+    )
     github_tag = TaskModel.tags["github_username"].astext
     rows = (
         await session.execute(
             select(
-                TrialModel.experiment_id.label("experiment_id"),
+                exp_tasks.c.experiment_id,
                 github_tag.label("github_username"),
                 TaskModel.user.label("user"),
             )
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(TrialModel.experiment_id.in_(experiment_ids))
+            .join(TaskModel, TaskModel.id == exp_tasks.c.task_id)
             .order_by(
-                TrialModel.experiment_id.asc(),
+                exp_tasks.c.experiment_id.asc(),
                 TaskModel.created_at.asc(),
                 TaskModel.id.asc(),
             )
-            .distinct(TrialModel.experiment_id)
+            .distinct(exp_tasks.c.experiment_id)
         )
     ).all()
     authors: dict[str, str] = {}
     for row in rows:
-        name = row.github_username or row.user
+        name = _clean_author(row.github_username) or _clean_author(row.user)
         if name:
             authors[str(row.experiment_id)] = name
     return authors
