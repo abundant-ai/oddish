@@ -130,6 +130,48 @@ function estimatedPct(cost: number, estimated: number): number {
   return Math.round((estimated / cost) * 100);
 }
 
+function formatSignedCost(value: number): string {
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}${formatCostUsd(Math.abs(value))}`;
+}
+
+// Signed delta vs the prior window. Returns null when there is no prior figure
+// (all-time). `variant` picks the semantics: for cost tiles a rise is bad (red);
+// for counts the delta stays neutral muted.
+function DeltaBadge({
+  current,
+  prev,
+  variant,
+  format,
+}: {
+  current: number;
+  prev: number | null | undefined;
+  variant: "cost" | "count";
+  format: (v: number) => string;
+}) {
+  if (prev == null) return null;
+  const diff = current - prev;
+  const pct =
+    prev === 0
+      ? current > 0
+        ? "new"
+        : null
+      : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
+  const color =
+    variant === "count" || diff === 0
+      ? "text-muted-foreground"
+      : diff > 0
+        ? "text-destructive"
+        : "text-[#5c8e43] dark:text-[#85b85c]";
+  const signed = format(diff);
+  return (
+    <span className={`text-[10px] font-medium tabular-nums ${color}`}>
+      {signed}
+      {pct ? ` · ${pct}` : ""}
+    </span>
+  );
+}
+
 function formatAge(dateStr: string | null): string {
   if (!dateStr) return "—";
   const diffMs = Date.now() - new Date(dateStr).getTime();
@@ -244,7 +286,11 @@ function bucketTickFormatter(bucket: string) {
         hour: "numeric",
         hour12: true,
       });
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
   };
 }
 
@@ -262,7 +308,9 @@ function ChartTooltip(
   const when =
     bucket === "hour"
       ? new Date(String(label)).toLocaleString()
-      : new Date(String(label)).toLocaleDateString();
+      : new Date(String(label)).toLocaleDateString(undefined, {
+          timeZone: "UTC",
+        });
   const entries = payload
     .map((p) => ({
       key: String(p.dataKey),
@@ -453,7 +501,7 @@ type ChartDimension = "agent" | "model" | "user";
 const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
 
 export function CostBreakdownCard() {
-  const [windowDays, setWindowDays] = useState("7");
+  const [windowDays, setWindowDays] = useState("1");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
@@ -561,26 +609,7 @@ export function CostBreakdownCard() {
               <CostChart series={series} bucket={data.bucket} />
             </div>
 
-            <div className="flex flex-wrap gap-2 text-xs">
-              <Badge variant="outline">
-                total {formatCostUsd(data.totals.cost_usd)}
-              </Badge>
-              <Badge variant="outline">
-                native {formatCostUsd(data.totals.cost_native_usd)}
-              </Badge>
-              <Badge variant="outline">
-                estimated {formatCostUsd(data.totals.cost_estimated_usd)}
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.trial_count.toLocaleString()} trials
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.experiment_count.toLocaleString()} experiments
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.user_count.toLocaleString()} users
-              </Badge>
-            </div>
+            <StatTiles totals={data.totals} />
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by user</h3>
@@ -608,6 +637,136 @@ export function CostBreakdownCard() {
   );
 }
 
+function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
+  const failedCost = totals.failed_cost_usd ?? 0;
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(totals.cost_usd)}
+        </div>
+        <div className="text-muted-foreground text-[10px]">Total cost</div>
+        <div className="text-muted-foreground mt-0.5 text-[10px]">
+          {formatCostUsd(totals.cost_native_usd)} native ·{" "}
+          {formatCostUsd(totals.cost_estimated_usd)} est
+        </div>
+        <div className="mt-0.5">
+          <DeltaBadge
+            current={totals.cost_usd}
+            prev={totals.prev_cost_usd}
+            variant="cost"
+            format={formatSignedCost}
+          />
+        </div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-amber-500/25 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(failedCost)}
+        </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="text-muted-foreground cursor-help text-[10px]">
+              Failed spend
+            </div>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-[240px]">
+            Spend on trials that ended FAILED.
+          </TooltipContent>
+        </Tooltip>
+        <div className="mt-0.5">
+          <DeltaBadge
+            current={failedCost}
+            prev={totals.prev_failed_cost_usd}
+            variant="cost"
+            format={formatSignedCost}
+          />
+        </div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {totals.trial_count.toLocaleString()}
+        </div>
+        <div className="text-muted-foreground text-[10px]">Trials</div>
+        <div className="mt-0.5">
+          <DeltaBadge
+            current={totals.trial_count}
+            prev={totals.prev_trial_count}
+            variant="count"
+            format={(v) =>
+              `${v >= 0 ? "+" : "−"}${Math.abs(v).toLocaleString()}`
+            }
+          />
+        </div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#85b85c]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {totals.user_count.toLocaleString()}
+        </div>
+        <div className="text-muted-foreground text-[10px]">Active users</div>
+        <div className="mt-0.5">
+          <DeltaBadge
+            current={totals.user_count}
+            prev={totals.prev_user_count}
+            variant="count"
+            format={(v) =>
+              `${v >= 0 ? "+" : "−"}${Math.abs(v).toLocaleString()}`
+            }
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuotaCell({ user }: { user: CostUserBreakdown }) {
+  const spent = user.quota_spent_usd;
+  const limit = user.quota_limit_usd;
+  if (spent == null || limit == null)
+    return (
+      <TableCell className="text-muted-foreground text-right text-xs">
+        —
+      </TableCell>
+    );
+  const pct = limit > 0 ? (spent / limit) * 100 : spent > 0 ? 100 : 0;
+  const clamped = Math.min(pct, 100);
+  const fill =
+    pct >= 80 ? "bg-destructive" : pct >= 60 ? "bg-amber-500" : "bg-blue-500";
+  return (
+    <TableCell className="text-right">
+      <div className="flex flex-col items-end gap-1">
+        <span className="font-mono text-[11px]">
+          {formatCostUsd(spent)} / {formatCostUsd(limit)}
+          <span
+            className={`ml-1 ${pct >= 100 ? "text-destructive font-bold" : "text-muted-foreground"}`}
+          >
+            {Math.round(pct)}%
+          </span>
+        </span>
+        <div className="bg-muted-foreground/20 h-1.5 w-20 overflow-hidden rounded-full">
+          <div className={`h-full ${fill}`} style={{ width: `${clamped}%` }} />
+        </div>
+      </div>
+    </TableCell>
+  );
+}
+
+function RunningCell({ count }: { count: number }) {
+  if (count <= 0)
+    return (
+      <TableCell className="text-muted-foreground text-right text-xs">
+        —
+      </TableCell>
+    );
+  return (
+    <TableCell className="text-right">
+      <Badge variant="outline" className="gap-1 text-[10px]">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+        {count.toLocaleString()}
+      </Badge>
+    </TableCell>
+  );
+}
+
 function UserTable({ users }: { users: CostUserBreakdown[] }) {
   if (users.length === 0)
     return (
@@ -622,6 +781,19 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
           <TableHead>User</TableHead>
           <TableHead>Org</TableHead>
           <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Δ prior</TableHead>
+          <TableHead className="text-right">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help">24h quota</span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[280px]">
+                Rolling-24h settled spend vs quota limit — the enforcement basis,
+                so it will not match the window cost column.
+              </TooltipContent>
+            </Tooltip>
+          </TableHead>
+          <TableHead className="text-right">Running</TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead className="text-right">Exps</TableHead>
           <TableHead>Top models</TableHead>
@@ -656,6 +828,16 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
               cost={user.cost_usd}
               estimated={user.cost_estimated_usd}
             />
+            <TableCell className="text-right">
+              <DeltaBadge
+                current={user.cost_usd}
+                prev={user.prev_cost_usd}
+                variant="cost"
+                format={formatSignedCost}
+              />
+            </TableCell>
+            <QuotaCell user={user} />
+            <RunningCell count={user.inflight_trial_count ?? 0} />
             <TableCell className="text-right font-mono text-xs">
               {user.trial_count.toLocaleString()}
             </TableCell>
