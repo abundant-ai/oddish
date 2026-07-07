@@ -303,13 +303,41 @@ async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
     old_tailer.seq = 7
     old_tailer.capped = True
     old_tailer.pending_events.append({"seq": 7, "kind": "message", "payload": {}})
-    live_tail.start(**kwargs)
+    live_tail.start(**{**kwargs, "attempt": 1})
     new_tailer, _ = live_tail._tailers["t1"]
     assert new_tailer.seq == 7 and new_tailer.capped
     assert new_tailer.pending_events == [{"seq": 7, "kind": "message", "payload": {}}]
     assert new_tailer.pending_events is not old_tailer.pending_events
     old_tailer._buffer_events([{"kind": "message", "payload": {}}])
     assert len(old_tailer.pending_events) == 1
+    assert new_tailer.offset == 0 and new_tailer.fold is not old_tailer.fold
+
+
+@pytest.mark.asyncio
+async def test_same_attempt_replacement_inherits_read_state(monkeypatch):
+    patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
+    kwargs = dict(
+        trial_id="t1",
+        environment=FakeEnv([]),
+        attempt=2,
+        agent="claude-code",
+        model=None,
+    )
+    live_tail.start(**kwargs)
+    old_tailer, old_task = live_tail._tailers["t1"]
+    old_tailer.offset = 512
+    old_tailer.carry = b'{"partial'
+    old_tailer.fold.usage_by_id["m"] = {"input_tokens": 9}
+    live_tail.start(**kwargs)
+    new_tailer, _ = live_tail._tailers["t1"]
+    assert new_tailer.offset == 512
+    assert new_tailer.carry == b'{"partial'
+    assert new_tailer.fold is old_tailer.fold
+    with contextlib.suppress(asyncio.CancelledError):
+        await old_task
+    await live_tail.shutdown("t1")
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     await live_tail.shutdown("t1")

@@ -249,7 +249,12 @@ top of, the old ones.
 `seq` is a per-attempt dense counter assigned by the tailer — the consumer-facing
 cursor (question 3). Inserts are batched per tick (one `INSERT ... ON CONFLICT DO
 NOTHING`, which also makes replays harmless — idempotency again, this time at the
-storage layer).
+storage layer). One refinement to "dense": on an in-process tailer replacement,
+`seq` continues rather than restarting, and the prior tailer's unflushed events are
+re-homed to the successor (same attempt: same log, offset/fold inherited too;
+attempt bump: fresh log, fresh fold) — restarting seq would collide with inherited
+rows and `ON CONFLICT` would silently drop fresh events. Readers are unaffected:
+the cursor is `seq >`, reset on attempt change.
 
 Volume control: payloads are truncated at write time (tool results to ~2 KiB, etc.)
 and each trial is capped at ~5,000 events; past the cap the tailer keeps updating
@@ -281,7 +286,9 @@ transcript view and re-polls from `after_seq=0` on the new attempt. Note that
 `done` reports current row state and is **not final**: a queue-level auto-retry
 clears `finished_at` after a failed attempt set it, so a client that wants to
 survive retries keys on `attempt`, treating a newer attempt after `done: true` as
-a restart rather than an error. Both the CLI (`oddish logs --follow`) and the dashboard's live tab are thin
+a restart rather than an error. And because `done` is computed independently of
+pagination, a response can carry a full page *and* `done: true` — on `done`,
+drain until an empty page before switching to the post-hoc S3 transcript. Both the CLI (`oddish logs --follow`) and the dashboard's live tab are thin
 clients of this one endpoint.
 
 Why polling and not SSE: our stack (Modal-served FastAPI behind a Next.js proxy)

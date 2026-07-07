@@ -28,8 +28,6 @@ class TailExecError(RuntimeError):
 
 
 def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
-    if b"\n" not in buf:
-        return [], buf
     *lines, rest = buf.split(b"\n")
     return lines, rest
 
@@ -80,7 +78,7 @@ def _render_assistant_blocks(message: dict) -> list[dict[str, Any]]:
                     "kind": "tool_use",
                     "payload": _clipped_payload(
                         "input",
-                        json.dumps(block.get("input") or {}, default=str),
+                        block.get("input") or {},
                         name=str(block.get("name") or ""),
                     ),
                 }
@@ -88,8 +86,7 @@ def _render_assistant_blocks(message: dict) -> list[dict[str, Any]]:
     return rendered
 
 
-def _render_tool_results(event: dict) -> list[dict[str, Any]]:
-    message = event.get("message")
+def _render_tool_results(message: Any) -> list[dict[str, Any]]:
     content = message.get("content") if isinstance(message, dict) else None
     rendered: list[dict[str, Any]] = []
     for block in content if isinstance(content, list) else []:
@@ -130,7 +127,7 @@ class ClaudeUsageFold:
                     self.model = model
             return _render_assistant_blocks(message)
         if event.get("type") == "user":
-            return _render_tool_results(event)
+            return _render_tool_results(event.get("message"))
         if event.get("type") == "result":
             value = event.get("result") or event.get("subtype") or ""
             return [{"kind": "summary", "payload": _clipped_payload("text", value)}]
@@ -256,11 +253,9 @@ class LiveTailer:
         await self._checkpoint()
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
-        if self.replaced:
+        if self.replaced or self.capped:
             return
         for event in rendered:
-            if self.capped:
-                return
             self.seq += 1
             if self.seq > MAX_TRIAL_EVENTS:
                 self.pending_events.append(
@@ -364,6 +359,10 @@ def start(
         tailer.seq = old_tailer.seq
         tailer.capped = old_tailer.capped
         tailer.pending_events = list(old_tailer.pending_events)
+        if old_tailer.attempt == attempt:
+            tailer.offset = old_tailer.offset
+            tailer.carry = old_tailer.carry
+            tailer.fold = old_tailer.fold
     _tailers[trial_id] = (tailer, asyncio.create_task(tailer.run()))
 
 
