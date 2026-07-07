@@ -43,7 +43,9 @@ class UsageTotals:
     model: str | None = None
 
 
-def _clipped_payload(key: str, value: str, **extra: Any) -> dict[str, Any]:
+def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
+    if not isinstance(value, str):
+        value = json.dumps(value, default=str)
     payload: dict[str, Any] = {key: value[:PAYLOAD_CLIP_CHARS], **extra}
     if len(value) > PAYLOAD_CLIP_CHARS:
         payload["truncated"] = True
@@ -198,7 +200,8 @@ class LiveTailer:
             await self._run_loop()
         finally:
             if self.carry:
-                self._buffer_events(self.fold.feed_line(self.carry))
+                with contextlib.suppress(Exception):
+                    self._buffer_events(self.fold.feed_line(self.carry))
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._flush_events())
             with contextlib.suppress(Exception):
@@ -260,6 +263,8 @@ class LiveTailer:
         await self._checkpoint()
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
+        if self.replaced:
+            return
         for event in rendered:
             if self.capped:
                 return
@@ -366,6 +371,7 @@ def start(
         tailer._last_cost = old[0]._last_cost
         tailer.seq = old[0].seq
         tailer.capped = old[0].capped
+        tailer.pending_events = list(old[0].pending_events)
     task = asyncio.create_task(tailer.run())
     entry = (tailer, task)
     _tailers[trial_id] = entry
@@ -383,10 +389,10 @@ def request_stop(trial_id: str) -> None:
         entry[0].request_stop()
 
 
-async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> None:
+async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> int | None:
     entry = _tailers.get(trial_id)
     if not entry:
-        return
+        return None
     tailer, task = entry
     tailer.request_stop()
     try:
@@ -395,13 +401,19 @@ async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> None:
         task.cancel()
     except Exception:
         pass
+    return tailer.attempt
 
 
-async def purge_events(trial_id: str) -> None:
+async def purge_events(trial_id: str, attempt: int | None) -> None:
+    if attempt is None:
+        return
     try:
         async with get_session() as session:
             await session.execute(
-                delete(TrialEventModel).where(TrialEventModel.trial_id == trial_id)
+                delete(TrialEventModel).where(
+                    TrialEventModel.trial_id == trial_id,
+                    TrialEventModel.attempt <= attempt,
+                )
             )
     except Exception as exc:
         console.print(f"[dim]Trial {trial_id} event purge failed: {exc}[/dim]")

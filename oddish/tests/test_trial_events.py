@@ -234,7 +234,8 @@ async def test_replaced_guard_suppresses_event_inserts(monkeypatch):
     tailer.replaced = True
     await tailer._tick()
     assert session.stmts == []
-    assert [e["kind"] for e in tailer.pending_events] == ["message"]
+    assert tailer.pending_events == []
+    assert tailer.seq == 0
 
 
 @pytest.mark.asyncio
@@ -266,6 +267,25 @@ async def test_final_drain_flushes_carry_events(monkeypatch):
     assert insert_rows(insert)[0]["kind"] == "message"
 
 
+def test_feed_line_never_raises_on_typed_garbage():
+    fold = ClaudeUsageFold()
+    garbage = [
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": 5}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": {"a": 1}}]}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": True}]}},
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": 7, "input": 3}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "content": {"x": 1}}]}},
+        {"type": "result", "result": ["a", "b"]},
+    ]
+    rendered = [
+        event
+        for line in garbage
+        for event in fold.feed_line(json.dumps(line).encode())
+    ]
+    assert all(isinstance(e["payload"], dict) for e in rendered)
+    assert len(rendered) == len(garbage)
+
+
 @pytest.mark.asyncio
 async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
     monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
@@ -281,9 +301,14 @@ async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
     old_tailer, old_task = live_tail._tailers["t1"]
     old_tailer.seq = 7
     old_tailer.capped = True
+    old_tailer.pending_events.append({"seq": 7, "kind": "message", "payload": {}})
     live_tail.start(**kwargs)
     new_tailer, _ = live_tail._tailers["t1"]
     assert new_tailer.seq == 7 and new_tailer.capped
+    assert new_tailer.pending_events == [{"seq": 7, "kind": "message", "payload": {}}]
+    assert new_tailer.pending_events is not old_tailer.pending_events
+    old_tailer._buffer_events([{"kind": "message", "payload": {}}])
+    assert len(old_tailer.pending_events) == 1
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     await live_tail.shutdown("t1")
@@ -291,13 +316,21 @@ async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_purge_events_deletes_trial_rows(monkeypatch):
+async def test_purge_events_deletes_rows_bounded_by_attempt(monkeypatch):
     session = patch_db(monkeypatch)
-    await live_tail.purge_events("t1")
+    await live_tail.purge_events("t1", 2)
     [stmt] = session.stmts
     compiled = stmt.compile(dialect=postgresql.dialect())
     assert "DELETE FROM trial_events" in str(compiled)
-    assert compiled.params == {"trial_id_1": "t1"}
+    assert "attempt <=" in str(compiled)
+    assert compiled.params == {"trial_id_1": "t1", "attempt_1": 2}
+
+
+@pytest.mark.asyncio
+async def test_purge_events_skips_without_attempt(monkeypatch):
+    session = patch_db(monkeypatch)
+    await live_tail.purge_events("t1", None)
+    assert session.stmts == []
 
 
 @pytest.mark.asyncio
@@ -308,7 +341,7 @@ async def test_purge_events_swallows_errors(monkeypatch):
         yield
 
     monkeypatch.setattr(live_tail, "get_session", broken)
-    await live_tail.purge_events("t1")
+    await live_tail.purge_events("t1", 0)
 
 
 @pytest.mark.asyncio
@@ -319,6 +352,7 @@ async def test_ttl_sweep_deletes_expired_events(monkeypatch):
     sql = str(stmt)
     assert "DELETE FROM trial_events" in sql
     assert "finished_at IS NOT NULL" in sql
+    assert "finished_at < NOW() - make_interval" in sql
     assert session.params == [{"ttl_hours": cleanup.TRIAL_EVENTS_TTL_HOURS}]
 
 

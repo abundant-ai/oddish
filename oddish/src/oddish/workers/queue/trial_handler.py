@@ -1055,8 +1055,8 @@ async def _execute_trial(
     finally:
         heartbeat_stop.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
-        await live_tail.shutdown(trial_id)
-        await live_tail.purge_events(trial_id)
+        tailed_attempt = await live_tail.shutdown(trial_id)
+        await live_tail.purge_events(trial_id, tailed_attempt)
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
