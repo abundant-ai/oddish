@@ -19,6 +19,7 @@ from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
     get_session,
+    task_experiments,
     utcnow,
 )
 from oddish.model_pricing import estimate_cost_usd  # noqa: E402
@@ -234,15 +235,6 @@ async def seeded_cost_data():
                 ),
                 _trial(
                     E7,
-                    0,
-                    model="claude-opus-4-8",
-                    cost_usd=1.0,
-                    created_at=recent,
-                    billed_user_id=USER_C,
-                    task_id=f"{E7}-task-old",
-                ),
-                _trial(
-                    E7,
                     1,
                     model="claude-opus-4-8",
                     cost_usd=1.0,
@@ -251,6 +243,20 @@ async def seeded_cost_data():
                     task_id=f"{E7}-task-new",
                 ),
             ]
+        )
+        await session.flush()
+        await session.execute(
+            task_experiments.insert(),
+            [
+                {"task_id": f"{E1}-task", "experiment_id": E1},
+                {"task_id": f"{E2}-task", "experiment_id": E2},
+                {"task_id": f"{E3}-task", "experiment_id": E3},
+                {"task_id": f"{E4}-task", "experiment_id": E4},
+                {"task_id": f"{E5}-task", "experiment_id": E5},
+                {"task_id": f"{E6}-task", "experiment_id": E6},
+                {"task_id": f"{E7}-task-old", "experiment_id": E7},
+                {"task_id": f"{E7}-task-new", "experiment_id": E7},
+            ],
         )
 
     yield

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TaskModel, TrialModel, utcnow
+from oddish.db import ExperimentModel, TaskModel, TrialModel, task_experiments, utcnow
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1369,30 +1369,27 @@ async def _primary_task_authors(
     """Get each experiment's oldest-task author, used as a fallback owner name."""
     if not experiment_ids:
         return {}
-    exp_tasks = (
-        select(
-            TrialModel.experiment_id.label("experiment_id"),
-            TrialModel.task_id.label("task_id"),
-        )
-        .where(TrialModel.experiment_id.in_(experiment_ids))
-        .distinct()
-        .subquery()
-    )
     github_tag = TaskModel.tags["github_username"].astext
     rows = (
         await session.execute(
             select(
-                exp_tasks.c.experiment_id,
+                task_experiments.c.experiment_id.label("experiment_id"),
                 github_tag.label("github_username"),
                 TaskModel.user.label("user"),
             )
-            .join(TaskModel, TaskModel.id == exp_tasks.c.task_id)
+            .select_from(
+                task_experiments.join(
+                    TaskModel, TaskModel.id == task_experiments.c.task_id
+                )
+            )
+            .where(task_experiments.c.experiment_id.in_(experiment_ids))
+            .where(task_experiments.c.deleted_at.is_(None))
             .order_by(
-                exp_tasks.c.experiment_id.asc(),
+                task_experiments.c.experiment_id.asc(),
                 TaskModel.created_at.asc(),
                 TaskModel.id.asc(),
             )
-            .distinct(exp_tasks.c.experiment_id)
+            .distinct(task_experiments.c.experiment_id)
         )
     ).all()
     authors: dict[str, str] = {}
