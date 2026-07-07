@@ -68,7 +68,8 @@ class GkeBackend:
             )
         except Exception:
             logger.warning(
-                "GkeBackend.teardown: failed to terminate %s", external_id,
+                "GkeBackend.teardown: failed to terminate %s",
+                external_id,
                 exc_info=True,
             )
             return False

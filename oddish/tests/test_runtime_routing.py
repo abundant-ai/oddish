@@ -131,9 +131,7 @@ def test_default_cloud_environment_tpu_routes_to_tpu_backend(monkeypatch) -> Non
         "ordered_backends",
         lambda: [DaytonaBackend(), ModalBackend(), _StubTpuBackend()],
     )
-    assert (
-        routing.default_cloud_environment(requires_tpu=True) == EnvironmentType.GKE
-    )
+    assert routing.default_cloud_environment(requires_tpu=True) == EnvironmentType.GKE
 
 
 def test_requires_tpu_does_not_disturb_cpu_and_gpu_defaults(monkeypatch) -> None:
