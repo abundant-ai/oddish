@@ -119,7 +119,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).
 HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor-gke"
-HARBOR_DEFAULT_SHA = "a0123a871294882dae11a0326d7f7386f98b12df"
+HARBOR_DEFAULT_SHA = "7c97764f7d42da445f74409d7926ff9d66f99a79"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
