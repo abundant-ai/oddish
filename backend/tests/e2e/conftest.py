@@ -134,17 +134,31 @@ def _wait_ready(proc: subprocess.Popen, base: str, log_path: Path) -> None:
 
 @pytest_asyncio.fixture
 async def seeded(schema):
-    from models import OrganizationModel
+    from models import OrganizationModel, UserModel, UserRole
     from oddish.core.api_keys import create_api_key
     from oddish.db import get_session
 
     suffix = uuid.uuid4().hex[:8]
     org_id = f"org_e2e_{suffix}"
     task_id = f"task_e2e_{suffix}"
-    key_model, raw_key = create_api_key(org_id=org_id, name=f"e2e-{suffix}")
+    user_id = f"user_e2e_{suffix}"
+    key_model, raw_key = create_api_key(
+        org_id=org_id,
+        name=f"e2e-{suffix}",
+        created_by_user_id=user_id,
+        created_by_role=UserRole.MEMBER.value,
+    )
 
     async with get_session() as session:
         session.add(OrganizationModel(id=org_id, name=org_id, slug=org_id))
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email=f"e2e-{suffix}@example.com",
+                role=UserRole.MEMBER,
+            )
+        )
         await session.flush()
         session.add(key_model)
         await session.execute(
@@ -164,6 +178,7 @@ async def seeded(schema):
             "suffix": suffix,
             "org_id": org_id,
             "task_id": task_id,
+            "user_id": user_id,
             "api_key": raw_key,
         }
     finally:
@@ -171,7 +186,7 @@ async def seeded(schema):
 
 
 async def _purge(org_id: str, task_id: str, api_key_id: str) -> None:
-    from models import APIKeyModel, OrganizationModel
+    from models import APIKeyModel, OrganizationModel, UserModel
     from oddish.db import TaskModel, TrialModel, get_session
 
     async with get_session() as session:
@@ -194,6 +209,9 @@ async def _purge(org_id: str, task_id: str, api_key_id: str) -> None:
         )
         await session.execute(
             APIKeyModel.__table__.delete().where(APIKeyModel.id == api_key_id)
+        )
+        await session.execute(
+            UserModel.__table__.delete().where(UserModel.org_id == org_id)
         )
         await session.execute(
             OrganizationModel.__table__.delete().where(OrganizationModel.id == org_id)
