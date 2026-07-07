@@ -16,6 +16,7 @@ const isPublicRoute = createRouteMatcher([
   "/datasets(.*)",
   "/experiments(.*)",
   "/api/public(.*)",
+  "/api/client-traces(.*)",
 ]);
 
 // Emit the active edge span as a `traceparent` value inside Server-Timing

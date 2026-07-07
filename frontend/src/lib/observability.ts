@@ -8,7 +8,10 @@ let configured = false;
 
 const TRACER_NAME = "oddish-frontend";
 
-const LOGFIRE_TRACE_URL = "https://logfire-api.pydantic.dev/v1/traces";
+// Same-origin proxy (app/api/client-traces) — Logfire's API has no CORS
+// allowance for browser origins, and the proxy holds the write token
+// server-side so it never ships in the client bundle.
+const LOGFIRE_TRACE_URL = "/api/client-traces";
 
 function resolveEnvironment(): string {
   const explicit = process.env.NEXT_PUBLIC_LOGFIRE_ENVIRONMENT;
@@ -25,13 +28,9 @@ export function ensureLogfireConfigured(): void {
   if (configured) return;
   if (typeof window === "undefined") return;
 
-  const token = process.env.NEXT_PUBLIC_LOGFIRE_TOKEN;
-  if (!token) return;
-
   try {
     logfire.configure({
       traceUrl: LOGFIRE_TRACE_URL,
-      traceExporterHeaders: () => ({ Authorization: token }),
       serviceName: "oddish-frontend",
       serviceVersion:
         process.env.NEXT_PUBLIC_APP_VERSION ||
