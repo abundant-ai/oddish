@@ -8,12 +8,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select, text
+from sqlalchemy import and_, case, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
-from oddish.db import ExperimentModel, TaskModel, TrialModel, task_experiments, utcnow
+from oddish.db import (
+    ExperimentModel,
+    TaskModel,
+    TrialModel,
+    TrialOrigin,
+    task_experiments,
+    utcnow,
+)
 from oddish.model_pricing import estimate_cost_usd
 
 
@@ -1029,6 +1036,72 @@ async def get_cached_load_snapshot(ttl: float = LOAD_CACHE_TTL_SECONDS) -> LoadS
 _MAX_MODELS_PER_USER = 6
 _MAX_MODELS_PER_EXPERIMENT = 12
 
+_UNATTRIBUTED_KEY = "__unattributed__"
+
+
+def _real_spend_filter():
+    """WHERE clause selecting real, first-party oddish spend, counted once.
+
+    A deliberate superset of the old ``billed_user_id IS NOT NULL`` gate:
+
+    * the first clause keeps everything the quota system bills, including the
+      billed probe runs the old gate already counted; and
+    * the second clause adds oddish-run spend that never resolved to an active
+      payer -- offboarded or unlinked users, pre-quota trials -- so a big
+      *non-registered* spender is grouped and shown instead of silently dropped.
+
+    Still excluded, so spend counts once: imported trials (``origin != ODDISH``
+    -- that spend happened on an external Harbor run) and the trial copies
+    minted by experiment-combine (a ``combine:`` idempotency key; the source
+    trials still carry the spend). The combine guard misses the rare copy whose
+    ``combine:<result>:<source>`` key overflowed 64 chars and was stored NULL --
+    acceptable slack on an internal admin view.
+    """
+    return or_(
+        TrialModel.billed_user_id.isnot(None),
+        and_(
+            TrialModel.origin == TrialOrigin.ODDISH,
+            TrialModel.is_probe.is_(False),
+            or_(
+                TrialModel.idempotency_key.is_(None),
+                TrialModel.idempotency_key.notlike("combine:%"),
+            ),
+        ),
+    )
+
+
+def _spend_identity(
+    billed_user_id: str | None,
+    github_id: str | None,
+    github_username: str | None,
+    submitter_user_id: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Attribute a trial's spend to a payer, falling back past unregistered spend.
+
+    Precedence: the active billed user, else the submitted GitHub identity (id,
+    then handle), else the submitting credential's user, else one Unattributed
+    bucket. Returns ``(key, link_user_id, label)``: ``key`` dedups both the
+    by-user rows and the by-user series; ``link_user_id`` is the user the row may
+    deep-link to (billed rows only -- the per-user drilldown reproduces billed
+    spend alone); ``label`` is a precomputed display label, or None when ``key``
+    is a real user id whose name the enrichment step resolves.
+    """
+    if billed_user_id:
+        return billed_user_id, billed_user_id, None
+    github_id = (github_id or "").strip() or None
+    github_username = (github_username or "").strip() or None
+    if github_id:
+        return (
+            f"ghid:{github_id}",
+            None,
+            f"@{github_username}" if github_username else f"github:{github_id}",
+        )
+    if github_username:
+        return f"ghuser:{github_username.lower()}", None, f"@{github_username}"
+    if submitter_user_id:
+        return submitter_user_id, None, None
+    return _UNATTRIBUTED_KEY, None, "Unattributed"
+
 
 def _series_bucket(window_days: int | None) -> str:
     """Pick a chart bucket size that fits the window."""
@@ -1051,7 +1124,15 @@ class CostModelBreakdown(BaseModel):
 
 
 class CostUserBreakdown(BaseModel):
+    # Stable grouping key: a user id for billed/submitter rows, else a synthetic
+    # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
+    key: str
+    # Deep-link target; set only when the per-user drilldown can reproduce this
+    # row's number (billed rows). None => render the row non-clickable.
     owner_user_id: str | None
+    # Precomputed label for a row with no backing user (GitHub handle,
+    # "Unattributed"); None means fill the display name from the linked user.
+    label: str | None = None
     org_id: str | None
     name: str | None = None
     email: str | None = None
@@ -1254,6 +1335,8 @@ async def _cost_time_series(
     bucket_col = func.date_trunc(bucket, TrialModel.created_at)
     has_native = TrialModel.cost_usd.isnot(None)
     no_native = TrialModel.cost_usd.is_(None)
+    gh_id_col = TaskModel.tags["github_id"].astext
+    gh_user_col = TaskModel.tags["github_username"].astext
 
     query = (
         select(
@@ -1261,6 +1344,9 @@ async def _cost_time_series(
             TrialModel.agent.label("agent"),
             TrialModel.model.label("model"),
             TrialModel.billed_user_id.label("billed_user_id"),
+            gh_id_col.label("gh_id"),
+            gh_user_col.label("gh_user"),
+            TaskModel.created_by_user_id.label("submitter"),
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
@@ -1276,14 +1362,20 @@ async def _cost_time_series(
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        # LEFT join so a soft-deleted task yields NULL tags (the trial's spend
+        # still counts, attributed by the fallback) rather than dropping the row.
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .group_by(
             bucket_col,
             TrialModel.agent,
             TrialModel.model,
             TrialModel.billed_user_id,
+            gh_id_col,
+            gh_user_col,
+            TaskModel.created_by_user_id,
         )
     )
-    query = query.where(TrialModel.billed_user_id.isnot(None))
+    query = query.where(_real_spend_filter())
     if since is not None:
         query = query.where(TrialModel.created_at >= since)
 
@@ -1295,6 +1387,10 @@ async def _cost_time_series(
     model_totals: dict[str, float] = {}
     user_per_bucket: dict[datetime, dict[str, float]] = {}
     user_totals: dict[str, float] = {}
+    # Legend labels for fallback user keys (GitHub handle / "Unattributed").
+    # Billed/submitter keys are real user ids and stay unlabeled here so the
+    # enrichment step resolves them to a name.
+    user_labels: dict[str, str] = {}
     trials_per_bucket: dict[datetime, int] = {}
 
     def _add(
@@ -1319,9 +1415,14 @@ async def _cost_time_series(
             or 0.0
         )
         bstart = row.bucket
+        u_key, _u_link, u_label = _spend_identity(
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+        )
+        if u_label is not None:
+            user_labels[u_key] = u_label
         _add(agent_per_bucket, agent_totals, bstart, row.agent or "unknown", cost)
         _add(model_per_bucket, model_totals, bstart, _model_label(row.model), cost)
-        _add(user_per_bucket, user_totals, bstart, row.billed_user_id, cost)
+        _add(user_per_bucket, user_totals, bstart, u_key, cost)
         trials_per_bucket[bstart] = trials_per_bucket.get(bstart, 0) + int(
             row.trial_count or 0
         )
@@ -1350,7 +1451,7 @@ async def _cost_time_series(
         per_bucket=user_per_bucket,
         totals=user_totals,
         trials_per_bucket=trials_per_bucket,
-        labels={},
+        labels=user_labels,
     )
     return by_agent, by_model, by_user
 
@@ -1416,6 +1517,11 @@ async def get_cost_breakdown_core(
         session, since=since, bucket=bucket
     )
 
+    # Shared expression objects: reused verbatim in SELECT and GROUP BY so the
+    # JSON-key bind params match (two inline copies bind as distinct params and
+    # Postgres then rejects the GROUP BY).
+    gh_id_col = TaskModel.tags["github_id"].astext
+    gh_user_col = TaskModel.tags["github_username"].astext
     detail_query = (
         select(
             TrialModel.experiment_id.label("experiment_id"),
@@ -1424,6 +1530,9 @@ async def get_cost_breakdown_core(
             ExperimentModel.owner_user_id.label("owner_user_id"),
             ExperimentModel.owner.label("exp_owner"),
             TrialModel.billed_user_id.label("billed_user_id"),
+            gh_id_col.label("gh_id"),
+            gh_user_col.label("gh_user"),
+            TaskModel.created_by_user_id.label("submitter"),
             ExperimentModel.created_at.label("exp_created_at"),
             ExperimentModel.last_activity_at.label("exp_last_activity_at"),
             TrialModel.model.label("model"),
@@ -1470,6 +1579,9 @@ async def get_cost_breakdown_core(
             ).label("est_cache"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
+        # LEFT join so a soft-deleted task yields NULL tags (the spend still
+        # counts, attributed by the fallback) rather than dropping the trial.
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .group_by(
             TrialModel.experiment_id,
             ExperimentModel.name,
@@ -1477,13 +1589,16 @@ async def get_cost_breakdown_core(
             ExperimentModel.owner_user_id,
             ExperimentModel.owner,
             TrialModel.billed_user_id,
+            gh_id_col,
+            gh_user_col,
+            TaskModel.created_by_user_id,
             ExperimentModel.created_at,
             ExperimentModel.last_activity_at,
             TrialModel.model,
             TrialModel.provider,
         )
     )
-    detail_query = detail_query.where(TrialModel.billed_user_id.isnot(None))
+    detail_query = detail_query.where(_real_spend_filter())
     if since is not None:
         detail_query = detail_query.where(TrialModel.created_at >= since)
 
@@ -1502,7 +1617,9 @@ async def get_cost_breakdown_core(
 
     for row in rows:
         owner_user_id = _normalize_owner_user_id(row.owner_user_id)
-        billed_user_id = row.billed_user_id
+        user_key, user_link_id, user_label = _spend_identity(
+            row.billed_user_id, row.gh_id, row.gh_user, row.submitter
+        )
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
@@ -1576,10 +1693,12 @@ async def get_cost_breakdown_core(
             cost_estimated_usd=estimated,
         )
 
-        user = by_user.get(billed_user_id)
+        user = by_user.get(user_key)
         if user is None:
-            user = by_user[billed_user_id] = {
-                "owner_user_id": billed_user_id,
+            user = by_user[user_key] = {
+                "key": user_key,
+                "owner_user_id": user_link_id,
+                "label": user_label,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
                 "input_tokens": 0,
@@ -1614,7 +1733,9 @@ async def get_cost_breakdown_core(
     ]
     by_user_out = [
         CostUserBreakdown(
+            key=u["key"],
             owner_user_id=u["owner_user_id"],
+            label=u["label"],
             org_id=u["org_id"],
             trial_count=int(u["trial_count"]),
             experiment_count=len(u["experiment_ids"]),

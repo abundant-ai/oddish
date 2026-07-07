@@ -192,7 +192,9 @@ function ModelMix({ models }: { models: CostModelBreakdown[] }) {
 }
 
 function userLabel(user: CostUserBreakdown): string {
-  return user.name || user.email || user.owner_user_id || "Unattributed";
+  return (
+    user.label || user.name || user.email || user.owner_user_id || "Unattributed"
+  );
 }
 
 // Small inline marker shown next to a cost when part of it was estimated from
@@ -428,10 +430,13 @@ function MethodologyNote() {
             cost means part of it was estimated.
           </li>
           <li>
-            Only billable trials are counted. Imported, combined, and pre-quota
-            trials draw down no budget and are excluded, so totals count real
-            spend once. Per-user figures attribute each trial to its billed user
-            (the experiments table still lists the experiment owner).
+            All first-party spend is counted. Imported trials (external Harbor
+            runs) and experiment-combine copies are excluded so spend counts
+            once. Per-user figures attribute each trial to its billed user;
+            spend that never resolved to an active user — offboarded or unlinked
+            payers — is grouped under its submitted GitHub identity, its
+            submitter, or an <strong>unbilled</strong> &ldquo;Unattributed&rdquo;
+            bucket rather than being dropped.
           </li>
           <li>
             Per-model and per-user are the same per-trial costs grouped
@@ -520,9 +525,10 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Billable trial spend across all organizations. Native runtime cost
-          when reported, otherwise a per-model token estimate — see the info
-          icon for methodology.
+          All first-party trial spend across all organizations, including
+          unbilled spend that never resolved to a registered user. Native
+          runtime cost when reported, otherwise a per-model token estimate — see
+          the info icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -629,7 +635,7 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
       </TableHeader>
       <TableBody>
         {users.map((user) => (
-          <TableRow key={user.owner_user_id ?? "unattributed"}>
+          <TableRow key={user.key}>
             <TableCell>
               <div className="flex flex-col">
                 {user.owner_user_id ? (
@@ -640,7 +646,25 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
                     {userLabel(user)}
                   </Link>
                 ) : (
-                  <span className="text-xs font-medium">{userLabel(user)}</span>
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+                    {userLabel(user)}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Badge
+                          variant="outline"
+                          className="text-muted-foreground cursor-help text-[9px] font-normal"
+                        >
+                          unbilled
+                        </Badge>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-[260px]">
+                        Real spend that never resolved to an active billed user
+                        (an unlinked GitHub identity, an offboarded submitter, or
+                        no identity at all), so it draws down no quota and has no
+                        per-user drilldown.
+                      </TooltipContent>
+                    </Tooltip>
+                  </span>
                 )}
                 {user.email && user.email !== userLabel(user) && (
                   <span className="text-muted-foreground text-[10px]">
