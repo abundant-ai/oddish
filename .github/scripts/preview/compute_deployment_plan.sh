@@ -64,6 +64,13 @@ else
   fi
 fi
 
+# A migrated schema must be boot-tested by the preview backend, and the branch
+# DB password rotated by wait_for_supabase_branch.sh must be re-published to
+# the Modal secret -- so any migration run also redeploys the backend.
+if [ "$run_migrations" = "true" ]; then
+  deploy_backend=true
+fi
+
 any_change=false
 if [ "$deploy_backend" = "true" ] ||
   [ "$run_migrations" = "true" ] ||
@@ -71,11 +78,23 @@ if [ "$deploy_backend" = "true" ] ||
   any_change=true
 fi
 
+# A preview backend is live after this run iff we deploy it now or a prior run
+# already deployed one (BACKEND_BASE is that run's sha). The Vercel job uses this
+# to keep NEXT_PUBLIC_API_URL pointed at the preview backend on frontend-only
+# follow-up pushes -- otherwise a blank MODAL_API_URL falls back to prod and the
+# preview frontend starts querying production. Stays false for frontend-only PRs
+# that never provisioned a backend, so those correctly fall back to prod.
+preview_backend_live=false
+if [ "$deploy_backend" = "true" ] || [ -n "$BACKEND_BASE" ]; then
+  preview_backend_live=true
+fi
+
 {
   echo "deploy_backend=$deploy_backend"
   echo "run_migrations=$run_migrations"
   echo "deploy_frontend=$deploy_frontend"
   echo "any_change=$any_change"
+  echo "preview_backend_live=$preview_backend_live"
 } >> "$GITHUB_OUTPUT"
 
 {

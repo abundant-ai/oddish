@@ -28,6 +28,7 @@ import {
   FileText,
   FolderOpen,
   AlertCircle,
+  CircleSlash,
   ChevronDown,
   ChevronUp,
   ChevronLeft,
@@ -47,6 +48,11 @@ import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
+import {
+  costEstimateMarks,
+  formatCostUsd,
+  sumTaskTrialCost,
+} from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -136,6 +142,7 @@ const OUTCOME_CARD_TONE: Record<MatrixStatus, string> = {
   fail: "border-red-500/30 bg-red-500/10",
   "harness-error": "border-yellow-500/30 bg-yellow-500/10",
   scoreless: "border-slate-500/30 bg-slate-500/10",
+  skipped: "border-slate-500/25 bg-slate-500/5",
   pending: "border-gray-500/30 bg-gray-500/10",
   queued: "border-purple-500/30 bg-purple-500/10",
   running: "border-blue-500/30 bg-blue-500/10",
@@ -547,6 +554,9 @@ export function TrialDetailPanel({
   );
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
+  // Sum the navigable trials for this view (version-scoped in both callers),
+  // not task.trials, which on the task page spans every version.
+  const taskCost = sumTaskTrialCost(orderedTrials);
   const showQueueSnapshot =
     hasLiveQueueSnapshot(trial) && getQueueSnapshotItems(trial).length > 0;
   const sandboxBackend = getSandboxBackend(trial);
@@ -761,6 +771,37 @@ export function TrialDetailPanel({
                 </div>
               </CardContent>
             </Card>
+            {trial.cost_usd != null && (
+              <Card className="min-w-[120px] border">
+                <CardContent className="flex h-full items-center px-2 py-1">
+                  <div className="min-w-0">
+                    <div className="text-muted-foreground text-[8px] leading-none tracking-wider uppercase">
+                      Cost
+                    </div>
+                    <div className="mt-1 flex items-baseline gap-1">
+                      <span className="font-mono text-sm leading-none font-bold tabular-nums">
+                        {trial.cost_is_estimated ? "~" : ""}
+                        {formatCostUsd(trial.cost_usd)}
+                      </span>
+                      {taskCost.pricedCount > 1 &&
+                        (() => {
+                          const marks = costEstimateMarks(
+                            taskCost.hasEstimated,
+                            taskCost.hasNative,
+                          );
+                          return (
+                            <span className="text-muted-foreground text-[9px] leading-none">
+                              of {marks.prefix}
+                              {formatCostUsd(taskCost.costUsd)}
+                              {marks.suffix} task
+                            </span>
+                          );
+                        })()}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
             {canRetry && (
               <Button
                 onClick={handleRetry}
@@ -1009,8 +1050,24 @@ export function TrialDetailPanel({
                 compact
               />
 
+              {/* Skip reason — a skipped trial carries its reason in
+                  error_message, but it never ran, so render it as a neutral
+                  note (CircleSlash + slate) rather than a red error card. */}
+              {trial.error_message && trialStatus === "skipped" && (
+                <Card className="border-slate-500/25 bg-slate-500/5">
+                  <CardContent className="px-4 py-3">
+                    <div className="flex items-start gap-2">
+                      <CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" />
+                      <pre className="min-w-0 flex-1 font-mono text-sm wrap-break-word whitespace-pre-wrap text-slate-600 dark:text-slate-400">
+                        {trial.error_message}
+                      </pre>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Error Card */}
-              {trial.error_message && (
+              {trial.error_message && trialStatus !== "skipped" && (
                 <Card className="border-red-500/30 bg-red-500/5">
                   <CardContent className="px-4 py-3">
                     <div className="flex items-start gap-2">

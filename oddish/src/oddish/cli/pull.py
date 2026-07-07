@@ -539,7 +539,7 @@ def _is_trial_terminal(client: httpx.Client, trial_id: str) -> bool:
     trials = task.get("trials", []) or []
     for trial in trials:
         if trial.get("id") == trial_id:
-            return trial.get("status") in ("success", "failed")
+            return trial.get("status") in ("success", "failed", "skipped")
     return False
 
 

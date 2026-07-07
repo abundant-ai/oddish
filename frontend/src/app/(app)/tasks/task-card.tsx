@@ -58,15 +58,20 @@ function getLatestTrialStatusCounts(task: TaskBrowseItem) {
       counts[status] += 1;
       return counts;
     },
+    // `satisfies` (not `as`) so a missing MatrixStatus key is a compile error:
+    // omitting one made `counts[status]++` do `undefined + 1 = NaN` and dropped
+    // those trials (e.g. skipped/scoreless) from the breakdown silently.
     {
       pass: 0,
       partial: 0,
       fail: 0,
       "harness-error": 0,
+      scoreless: 0,
+      skipped: 0,
       pending: 0,
       queued: 0,
       running: 0,
-    } as Record<ReturnType<typeof getMatrixStatus>, number>,
+    } satisfies Record<ReturnType<typeof getMatrixStatus>, number>,
   );
 }
 
@@ -94,6 +99,9 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
       label: "Harness",
       count: statusCounts["harness-error"],
     },
+    // Skipped is its own bucket (like Harness): a non-pass in the rate, shown
+    // separately. Rendered only when present so it doesn't clutter every card.
+    { key: "skipped", label: "Skipped", count: statusCounts.skipped },
     {
       key: "pending",
       label: "Pending",
@@ -115,7 +123,9 @@ function PassRateCell({ task }: { task: TaskBrowseItem }) {
       </div>
       {task.latest_trials.length > 0 ? (
         <div className="text-muted-foreground flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] leading-none">
-          {summaryItems.map((item) => {
+          {summaryItems
+            .filter((item) => item.key !== "skipped" || item.count > 0)
+            .map((item) => {
             const config = STATUS_CONFIG[item.key];
             return (
               <div
@@ -298,6 +308,14 @@ export function TaskCard({ task }: { task: TaskBrowseItem }) {
               {task.cost_trial_count > 0 ? (
                 <div className="text-muted-foreground text-[11px]">
                   {task.cost_trial_count} of {task.total_trials} priced
+                </div>
+              ) : null}
+              {task.cost_trial_count > 0 ? (
+                <div className="text-muted-foreground text-[11px]">
+                  spent{" "}
+                  {task.billed_trial_count === 0
+                    ? formatCostUsd(0)
+                    : `${task.billed_has_estimated && !task.billed_has_native ? "~" : ""}${formatCostUsd(task.billed_cost_usd)}`}
                 </div>
               ) : null}
             </div>

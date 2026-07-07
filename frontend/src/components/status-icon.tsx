@@ -121,6 +121,24 @@ export function StatusIcon({
       </svg>
     );
   }
+  if (status === "skipped") {
+    // CircleSlash: a circle with a "/" slash. The opposite diagonal from
+    // harness-error's "\", so it stays distinct from ERROR beyond just color.
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2.8}
+        strokeLinecap="round"
+        className={iconClass}
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M6 18L18 6" />
+      </svg>
+    );
+  }
   return (
     <svg
       viewBox="0 0 24 24"

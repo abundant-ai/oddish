@@ -338,6 +338,7 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     trialCount: v.trial_count,
     completed: v.completed_count,
     failed: v.failed_count,
+    skipped: v.skipped_count,
     passCount: v.pass_count,
     partialCount: v.partial_count,
     failCount: v.fail_count,
@@ -349,6 +350,10 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    billedCostUsd: v.billed_cost_usd,
+    billedTrialCount: v.billed_trial_count,
+    billedHasEstimated: v.billed_has_estimated,
+    billedHasNative: v.billed_has_native,
     lastRunAt: v.last_run_at ?? null,
   };
 }
@@ -380,7 +385,10 @@ function VersionSwitcher({
           <ChevronDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-60" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[320px] font-mono">
+      <DropdownMenuContent
+        align="start"
+        className="max-h-[min(60vh,var(--radix-dropdown-menu-content-available-height))] w-[320px] overflow-y-auto font-mono"
+      >
         {versions.map((v) => {
           const label = v.is_current
             ? `v${v.version} · current`
@@ -856,9 +864,9 @@ export function TaskDetailClient({
           }
         />
 
-        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-5">
+        <div className="grid grid-cols-2 overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] md:grid-cols-6">
           <KpiTile
-            label="Total spent (all versions)"
+            label="Total cost (all versions)"
             hint={
               totals && totals.cost_trial_count > 0
                 ? `${totals.cost_trial_count} of ${totals.total_trials} trials priced`
@@ -872,6 +880,24 @@ export function TaskDetailClient({
               trialCount={totals?.cost_trial_count ?? 0}
               hasEstimated={totals?.cost_has_estimated ?? false}
               hasNative={totals?.cost_has_native ?? false}
+              size="lg"
+            />
+          </KpiTile>
+          <KpiTile
+            label="Billed spend"
+            hint={
+              totals && totals.billed_trial_count > 0
+                ? `${totals.billed_trial_count} billed trial${
+                    totals.billed_trial_count === 1 ? "" : "s"
+                  }`
+                : "no billed trials"
+            }
+          >
+            <CostBadge
+              cost={totals?.billed_cost_usd ?? 0}
+              trialCount={totals?.billed_trial_count ?? 0}
+              hasEstimated={totals?.billed_has_estimated ?? false}
+              hasNative={totals?.billed_has_native ?? false}
               size="lg"
             />
           </KpiTile>
@@ -895,7 +921,11 @@ export function TaskDetailClient({
           </KpiTile>
           <KpiTile
             label="Trials"
-            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed`}
+            hint={`${versionSummary.completed} succeeded · ${versionSummary.failed} failed${
+              versionSummary.skipped > 0
+                ? ` · ${versionSummary.skipped} skipped`
+                : ""
+            }`}
           >
             <span className="font-display flex items-baseline gap-2 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]">
               {versionSummary.trialCount}
@@ -965,6 +995,23 @@ export function TaskDetailClient({
               />
             ) : null}
           </div>
+          {selectedVersion?.experiments?.length ? (
+            <div
+              className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-3)]"
+              title="Experiments that ran trials against this version"
+            >
+              <span className="shrink-0">
+                {selectedVersion.experiments.length > 1
+                  ? "experiments"
+                  : "experiment"}
+              </span>
+              <ExperimentsList
+                experiments={selectedVersion.experiments}
+                maxVisible={2}
+                linkClassName="text-[color:var(--paper-ink-2)]"
+              />
+            </div>
+          ) : null}
         </div>
 
         <TaskProbeRunCard

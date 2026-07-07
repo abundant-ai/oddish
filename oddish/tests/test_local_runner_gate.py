@@ -25,7 +25,7 @@ from sqlalchemy import select, update
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.config import settings  # noqa: E402
-from oddish.core.baseline_gate import GATE_SKIP_PREFIX  # noqa: E402
+from oddish.core.baseline_gate import GATE_SKIP_MESSAGE  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
@@ -230,11 +230,11 @@ async def test_local_runner_cancels_llm_on_faulty_baselines(
     await _drain_pending()
 
     assert await _wj_status(llm_id) == WorkerJobStatus.CANCELLED
-    assert await _trial_status(llm_id) == TrialStatus.FAILED
+    assert await _trial_status(llm_id) == TrialStatus.SKIPPED
     async with get_session() as session:
         msg = (
             await session.execute(
                 select(TrialModel.error_message).where(TrialModel.id == llm_id)
             )
         ).scalar_one()
-    assert GATE_SKIP_PREFIX in (msg or "")
+    assert GATE_SKIP_MESSAGE in (msg or "")

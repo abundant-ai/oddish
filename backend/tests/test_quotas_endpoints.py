@@ -21,6 +21,7 @@ from api.app import create_app
 from auth import can_manage_quotas, require_auth, require_can_manage_quotas
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, OrganizationModel, UserModel, UserRole
+from oddish.config import settings
 from oddish.core.api_keys import create_api_key
 from oddish.db import TrialModel, WorkerJobModel, get_session
 from oddish.queue import create_task
@@ -171,7 +172,9 @@ async def test_admin_quota_list_shows_grouped_usage_and_default_limit(org_with_s
 
     assert members_by_id[member_a.id]["used_usd"] == pytest.approx(0.30)
     assert members_by_id[member_b.id]["used_usd"] == pytest.approx(0.0)
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(100.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(
+        float(settings.default_daily_quota_usd)
+    )
 
 
 # --- S3-T4: /quotas/me returns ONLY the caller's usage --------------------------
@@ -197,7 +200,7 @@ async def test_quotas_me_returns_only_callers_usage(org_with_spend):
     body = response.json()
     assert body["user_id"] == member_a.id
     assert body["used_usd"] == pytest.approx(0.30)
-    assert body["limit_usd"] == pytest.approx(100.0)
+    assert body["limit_usd"] == pytest.approx(float(settings.default_daily_quota_usd))
 
 
 # --- S3-T5 (end to end): a FULL-scope API key is rejected by GET /quotas ---------

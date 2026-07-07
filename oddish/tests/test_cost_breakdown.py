@@ -1,24 +1,4 @@
-"""Integration tests for the admin cost breakdown aggregation.
-
-Exercises ``oddish.core.admin.get_cost_breakdown_core`` against a real
-Postgres (``ODDISH_DATABASE_URL``), like the other DB-backed tests in this
-suite. The aggregation is **global** (no org/experiment filter), so the
-assertions key off uniquely-suffixed experiment ids and owner user ids that
-this test creates -- never absolute org-wide totals, which would be perturbed
-by any other rows in a shared test database.
-
-Covered behaviors:
-
-* native ``cost_usd`` is summed, and trials lacking it are priced from token
-  counts via the per-model estimate (the ``cost_estimated_usd`` split);
-* per-user attribution flows through ``experiments.owner_user_id`` (including
-  the unattributed ``None`` owner);
-* soft-deleted experiments (and soft-deleted trials) are excluded;
-* the trailing-window filter bounds the rollups;
-* model ids are normalized so spellings (case/whitespace) collapse onto one row;
-* the time-bucketed ``series`` reconciles with the windowed totals; and
-* experiments rank by descending cost.
-"""
+"""DB-backed tests for the global admin cost breakdown over billable trials."""
 
 from __future__ import annotations
 
@@ -39,29 +19,30 @@ from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
     get_session,
+    task_experiments,
     utcnow,
 )
 from oddish.model_pricing import estimate_cost_usd  # noqa: E402
 
 _RUN = uuid.uuid4().hex[:8]
 
-# A model the pricing table can resolve, so the estimate is deterministic.
 _EST_MODEL = "gpt-5.5-pro"
 _EST_IN, _EST_OUT, _EST_CACHE = 10_000, 4_000, 1_000
 _EXPECTED_EST = estimate_cost_usd(_EST_MODEL, _EST_IN, _EST_OUT, _EST_CACHE)
 
-# Distinct, run-scoped identifiers so the global aggregation can be filtered
-# back down to just this test's rows.
 USER_A = f"costuser-a-{_RUN}"
 USER_B = f"costuser-b-{_RUN}"
+USER_C = f"costuser-c-{_RUN}"
 ORG_1 = f"costorg-1-{_RUN}"
 ORG_2 = f"costorg-2-{_RUN}"
 E1 = f"costexp-1-{_RUN}"
 E2 = f"costexp-2-{_RUN}"
 E3 = f"costexp-3-{_RUN}"
 E4 = f"costexp-deleted-{_RUN}"
-# Owned by the ``__unattributed__`` sentinel: must normalize to the None owner.
-E5 = f"costexp-sentinel-{_RUN}"
+E5 = f"costexp-nonbillable-{_RUN}"
+E6 = f"costexp-noauthor-{_RUN}"
+E7 = f"costexp-twotask-{_RUN}"
+E8 = f"costexp-stamped-unknown-{_RUN}"
 
 
 def _approx(a: float | None, b: float | None, tol: float = 1e-6) -> bool:
@@ -70,12 +51,7 @@ def _approx(a: float | None, b: float | None, tol: float = 1e-6) -> bool:
 
 @pytest_asyncio.fixture
 async def seeded_cost_data():
-    """Insert experiments/tasks/trials, yield, then hard-delete them.
-
-    Cleanup uses Core table deletes (bypassing the ORM soft-delete filter) so
-    the soft-deleted experiment/trial are removed too; the ``trials`` FK
-    cascades, but we delete trials explicitly first to be safe.
-    """
+    """Insert experiments, tasks, and trials, then hard-delete them after."""
     now = utcnow()
     recent = now - timedelta(hours=1)
     old = now - timedelta(days=40)
@@ -96,6 +72,7 @@ async def seeded_cost_data():
                     name="cost-exp-two",
                     org_id=ORG_1,
                     owner_user_id=USER_B,
+                    owner="gh-octocat",
                     created_at=recent,
                     last_activity_at=recent,
                 ),
@@ -103,7 +80,7 @@ async def seeded_cost_data():
                     id=E3,
                     name="cost-exp-three",
                     org_id=ORG_2,
-                    owner_user_id=None,
+                    owner_user_id=EXPERIMENTS_UNATTRIBUTED_OWNER,
                     created_at=recent,
                     last_activity_at=recent,
                 ),
@@ -118,36 +95,101 @@ async def seeded_cost_data():
                 ),
                 ExperimentModel(
                     id=E5,
-                    name="cost-exp-sentinel",
+                    name="cost-exp-nonbillable",
                     org_id=ORG_2,
-                    owner_user_id=EXPERIMENTS_UNATTRIBUTED_OWNER,
+                    owner_user_id=USER_A,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
+                ExperimentModel(
+                    id=E6,
+                    name="cost-exp-noauthor",
+                    org_id=ORG_2,
+                    owner_user_id=None,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
+                ExperimentModel(
+                    id=E7,
+                    name="cost-exp-twotask",
+                    org_id=ORG_2,
+                    owner_user_id=None,
+                    created_at=recent,
+                    last_activity_at=recent,
+                ),
+                ExperimentModel(
+                    id=E8,
+                    name="cost-exp-stamped-unknown",
+                    org_id=ORG_2,
+                    owner_user_id=None,
+                    owner="unknown",
                     created_at=recent,
                     last_activity_at=recent,
                 ),
             ]
         )
+        task_tags = {
+            E2: {"github_username": "e2-tag"},
+            E3: {"github_username": "e3-gh"},
+        }
+        task_users = {E6: "unknown", E8: "e8-runner"}
         for exp_id, org_id in (
             (E1, ORG_1),
             (E2, ORG_1),
             (E3, ORG_2),
             (E4, ORG_1),
             (E5, ORG_2),
+            (E6, ORG_2),
+            (E8, ORG_2),
         ):
             session.add(
                 TaskModel(
                     id=f"{exp_id}-task",
                     name=f"{exp_id}-task",
-                    user="test",
+                    user=task_users.get(exp_id, "test"),
                     org_id=org_id,
                     task_path="some/path",
+                    tags=task_tags.get(exp_id),
                 )
             )
         session.add_all(
             [
-                _trial(E1, 0, model="claude-opus-4-8", cost_usd=2.0, created_at=recent),
-                _trial(E1, 1, model="claude-opus-4-8", cost_usd=3.0, created_at=recent),
-                # No native cost -> priced from tokens. Distinct agent so the
-                # by-agent series has more than one stack.
+                TaskModel(
+                    id=f"{E7}-task-old",
+                    name=f"{E7}-task-old",
+                    user="alice",
+                    org_id=ORG_2,
+                    task_path="some/path",
+                    created_at=old,
+                ),
+                TaskModel(
+                    id=f"{E7}-task-new",
+                    name=f"{E7}-task-new",
+                    user="bob",
+                    org_id=ORG_2,
+                    task_path="some/path",
+                    created_at=recent,
+                ),
+            ]
+        )
+        session.add_all(
+            [
+                _trial(
+                    E1,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=2.0,
+                    created_at=recent,
+                    billed_user_id=USER_A,
+                ),
+                _trial(
+                    E1,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=3.0,
+                    created_at=recent,
+                    billed_user_id=USER_B,
+                ),
                 _trial(
                     E2,
                     0,
@@ -159,14 +201,24 @@ async def seeded_cost_data():
                     output_tokens=_EST_OUT,
                     cache_tokens=_EST_CACHE,
                     created_at=recent,
+                    billed_user_id=USER_B,
                 ),
-                # Mixed-case model id -> must normalize to "claude-opus-4-8".
-                _trial(E3, 0, model="Claude-Opus-4-8", cost_usd=1.5, created_at=recent),
-                # Excluded: trial of a soft-deleted experiment.
                 _trial(
-                    E4, 0, model="claude-opus-4-8", cost_usd=99.0, created_at=recent
+                    E3,
+                    0,
+                    model="Claude-Opus-4-8",
+                    cost_usd=1.5,
+                    created_at=recent,
+                    billed_user_id=USER_A,
                 ),
-                # Excluded: soft-deleted trial.
+                _trial(
+                    E4,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=99.0,
+                    created_at=recent,
+                    billed_user_id=USER_A,
+                ),
                 _trial(
                     E1,
                     2,
@@ -175,23 +227,67 @@ async def seeded_cost_data():
                     created_at=recent,
                     deleted_at=now,
                 ),
-                # Old trial in E1: out of the 7d window, in all-time.
-                _trial(E1, 3, model="claude-opus-4-8", cost_usd=7.0, created_at=old),
-                # Sentinel-owned experiment: its spend must merge into the
-                # unattributed (None) owner bucket, never surface the sentinel.
+                _trial(
+                    E1,
+                    3,
+                    model="claude-opus-4-8",
+                    cost_usd=7.0,
+                    created_at=old,
+                    billed_user_id=USER_A,
+                ),
                 _trial(E5, 0, model="claude-opus-4-8", cost_usd=4.0, created_at=recent),
+                _trial(
+                    E6,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                ),
+                _trial(
+                    E7,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                    task_id=f"{E7}-task-new",
+                ),
+                _trial(
+                    E8,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=1.0,
+                    created_at=recent,
+                    billed_user_id=USER_C,
+                ),
             ]
+        )
+        await session.flush()
+        await session.execute(
+            task_experiments.insert(),
+            [
+                {"task_id": f"{E1}-task", "experiment_id": E1},
+                {"task_id": f"{E2}-task", "experiment_id": E2},
+                {"task_id": f"{E3}-task", "experiment_id": E3},
+                {"task_id": f"{E4}-task", "experiment_id": E4},
+                {"task_id": f"{E5}-task", "experiment_id": E5},
+                {"task_id": f"{E6}-task", "experiment_id": E6},
+                {"task_id": f"{E7}-task-old", "experiment_id": E7},
+                {"task_id": f"{E7}-task-new", "experiment_id": E7},
+                {"task_id": f"{E8}-task", "experiment_id": E8},
+            ],
         )
 
     yield
 
     async with get_session() as session:
-        for exp_id in (E1, E2, E3, E4, E5):
+        for exp_id in (E1, E2, E3, E4, E5, E6, E7, E8):
             await session.execute(
                 TrialModel.__table__.delete().where(TrialModel.experiment_id == exp_id)
             )
             await session.execute(
-                TaskModel.__table__.delete().where(TaskModel.id == f"{exp_id}-task")
+                TaskModel.__table__.delete().where(TaskModel.id.like(f"{exp_id}-task%"))
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(ExperimentModel.id == exp_id)
@@ -210,12 +306,14 @@ def _trial(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     cache_tokens: int | None = None,
+    billed_user_id: str | None = None,
     deleted_at=None,
+    task_id: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
         name=f"{experiment_id}-{index}",
-        task_id=f"{experiment_id}-task",
+        task_id=task_id or f"{experiment_id}-task",
         experiment_id=experiment_id,
         org_id=None,
         agent=agent,
@@ -225,6 +323,7 @@ def _trial(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_tokens=cache_tokens,
+        billed_user_id=billed_user_id,
         cost_usd=cost_usd,
         created_at=created_at,
         deleted_at=deleted_at,
@@ -242,42 +341,42 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
 
     exps = {e.experiment_id: e for e in result.experiments}
 
-    # Soft-deleted experiment's trial is excluded entirely.
     assert E4 not in exps
+    assert E5 not in exps
 
-    # Native cost is summed; the soft-deleted 50.0 trial does not inflate E1.
     assert _approx(exps[E1].cost_usd, 5.0), exps[E1].cost_usd
     assert _approx(exps[E1].cost_estimated_usd, 0.0)
     assert exps[E1].trial_count == 2
     assert exps[E1].models[0].model == "claude-opus-4-8"
     assert _approx(exps[E1].models[0].cost_usd, 5.0)
 
-    # No native cost -> fully estimated from tokens.
     assert _approx(exps[E2].cost_usd, _EXPECTED_EST), exps[E2].cost_usd
     assert _approx(exps[E2].cost_estimated_usd, _EXPECTED_EST)
     assert exps[E2].models[0].model == _EST_MODEL
     assert exps[E2].input_tokens == _EST_IN
 
-    # Unattributed-owner experiment still aggregates, and its mixed-case model
-    # id is normalized to the canonical lowercase form.
     assert _approx(exps[E3].cost_usd, 1.5)
     assert exps[E3].models[0].model == "claude-opus-4-8"
+    assert exps[E3].owner_user_id is None
 
-    # Per-user attribution via experiment ownership.
+    assert exps[E2].owner_label == "gh-octocat", exps[E2].owner_label
+    assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
+    assert exps[E1].owner_label == "test", exps[E1].owner_label
+    assert exps[E6].owner_label is None, exps[E6].owner_label
+    assert exps[E7].owner_label == "alice", exps[E7].owner_label
+    assert exps[E8].owner_label == "e8-runner", exps[E8].owner_label
+
     by_user = {u.owner_user_id: u for u in result.by_user}
-    assert _approx(by_user[USER_A].cost_usd, 5.0)
-    assert by_user[USER_A].experiment_count == 1
+    assert _approx(by_user[USER_A].cost_usd, 3.5)
+    assert by_user[USER_A].experiment_count == 2
     assert by_user[USER_A].trial_count == 2
-    assert _approx(by_user[USER_B].cost_usd, _EXPECTED_EST)
+    assert _approx(by_user[USER_B].cost_usd, 3.0 + _EXPECTED_EST)
+    assert by_user[USER_B].experiment_count == 2
+    assert None not in by_user
 
-    # Experiments are ranked by descending cost.
     costs = [e.cost_usd for e in result.experiments]
     assert costs == sorted(costs, reverse=True)
 
-    # All three chart series (stacked by agent / model / user) reconcile with
-    # the windowed totals (all global over the same window, so this holds
-    # regardless of other rows in a shared DB) and are chronological. Tolerance
-    # covers per-bucket rounding.
     assert result.bucket == "day"
     for series in (
         result.series_by_agent,
@@ -291,36 +390,26 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
         assert sum(b.trial_count for b in series.buckets) == result.totals.trial_count
         starts = [b.bucket_start for b in series.buckets]
         assert starts == sorted(starts)
-        # Each bucket's per-key split sums to that bucket's total.
         for b in series.buckets:
             assert _approx(sum(b.costs.values()), b.cost_usd, tol=0.01)
 
-    # by-agent series splits the two agents used in the fixtures.
     agent_keys = {k.key for k in result.series_by_agent.keys}
     assert "claude-code" in agent_keys and "codex" in agent_keys
 
-    # by-model series keys are normalized (E3's mixed-case model merged in).
     model_keys = {k.key for k in result.series_by_model.keys}
     assert "claude-opus-4-8" in model_keys
     assert "Claude-Opus-4-8" not in model_keys
 
-    # by-user series carries both owners plus the unattributed (E3) bucket.
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
-    assert "__unattributed__" in user_keys
+    assert "__unattributed__" not in user_keys
 
 
 @pytest.mark.asyncio
-async def test_cost_breakdown_sentinel_owner_normalized_to_unattributed(
+async def test_cost_breakdown_excludes_non_billable_and_normalizes_sentinel(
     seeded_cost_data,
 ):
-    """The ``__unattributed__`` sentinel owner never leaks to the cost UI.
-
-    A sentinel-owned experiment (E5) must (1) report a ``None`` owner on its
-    experiment row and (2) fold its spend into the same unattributed bucket as
-    the genuinely-null-owner experiment (E3), rather than minting a distinct
-    ``__unattributed__`` owner row.
-    """
+    """Non-billable trials drop out and the owner sentinel never reaches the UI."""
     async with get_session() as session:
         result = await get_cost_breakdown_core(
             session, window_days=7, experiment_limit=500, user_limit=500
@@ -328,33 +417,16 @@ async def test_cost_breakdown_sentinel_owner_normalized_to_unattributed(
 
     exps = {e.experiment_id: e for e in result.experiments}
 
-    # Both the sentinel-owned (E5) and the genuinely-null-owner (E3) experiment
-    # report a None owner on their rows -- the sentinel is normalized away.
-    assert exps[E5].owner_user_id is None, exps[E5].owner_user_id
-    assert _approx(exps[E5].cost_usd, 4.0)
+    assert E5 not in exps
     assert exps[E3].owner_user_id is None, exps[E3].owner_user_id
+    assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
 
-    # No experiment / by-user row anywhere carries the raw sentinel string
-    # (the assertion that most directly proves the leak is fixed).
     assert all(e.owner_user_id != EXPERIMENTS_UNATTRIBUTED_OWNER for e in exps.values())
     owner_ids = {u.owner_user_id for u in result.by_user}
     assert EXPERIMENTS_UNATTRIBUTED_OWNER not in owner_ids
+    assert None not in owner_ids
 
-    # E3 (null owner) and E5 (sentinel owner) merge into the one unattributed
-    # (None) by-user row. Assert lower bounds only: the aggregation is global,
-    # so a shared DB may carry other unattributed spend/experiments.
-    by_user = {u.owner_user_id: u for u in result.by_user}
-    assert None in by_user
-    assert by_user[None].cost_usd >= 1.5 + 4.0 - 1e-6, by_user[None].cost_usd
-    assert by_user[None].trial_count >= 2
-    assert by_user[None].experiment_count >= 2
-
-    # The by-user series still buckets both under the "Unattributed" label and
-    # never exposes a real sentinel-keyed series.
-    unattributed_keys = [
-        k for k in result.series_by_user.keys if k.key == "__unattributed__"
-    ]
-    assert unattributed_keys and unattributed_keys[0].label == "Unattributed"
+    assert all(k.key != "__unattributed__" for k in result.series_by_user.keys)
 
 
 @pytest.mark.asyncio
@@ -370,10 +442,9 @@ async def test_cost_breakdown_all_time_includes_old_trials(seeded_cost_data):
     e1_windowed = {e.experiment_id: e for e in windowed.experiments}[E1]
     e1_all = {e.experiment_id: e for e in all_time.experiments}[E1]
 
-    # The 40-day-old 7.0 trial is excluded from 7d but included in all-time.
     assert _approx(e1_windowed.cost_usd, 5.0)
     assert _approx(e1_all.cost_usd, 12.0)
     assert e1_all.trial_count == 3
 
     user_a_all = {u.owner_user_id: u for u in all_time.by_user}[USER_A]
-    assert _approx(user_a_all.cost_usd, 12.0)
+    assert _approx(user_a_all.cost_usd, 10.5)

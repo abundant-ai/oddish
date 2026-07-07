@@ -102,6 +102,13 @@ from .runtime import configure_storage_paths, console
 # doing it here makes the startup order explicit for readers.
 ensure_builtin_handlers_registered()
 
+# Let the core trial handler resolve per-user BYOK keys (Statsig-gated) without
+# the core package importing backend. Inert until a user has a key and the gate
+# is on; otherwise trials run on the platform keys as before.
+from .byok_resolver import install_byok_resolver
+
+install_byok_resolver()
+
 
 # Post-success hooks: fired after the worker_jobs row is in SUCCESS state.
 # The QA hook refreshes the whole PR comment (per-trial classifications +

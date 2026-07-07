@@ -244,13 +244,26 @@ async def run_harbor_trial_async(
             model=model,
             raw_harbor_config=raw,
         )
-        agent_config = _build_agent_config(
-            agent=agent,
-            model=model,
-            raw_harbor_config=raw,
-            is_probe=is_probe,
-            probe_oddish_env=extra_agent_env,
-        )
+        # A BYOK user key arrives in the agent env, but claude-code's
+        # direct-vs-Bedrock routing reads os.environ -- both to pick the model
+        # id (in _build_agent_config) and to blank Bedrock creds (below). Surface
+        # the user key as ambient for the build + run so the trial routes to the
+        # direct Anthropic API even on a worker with no platform key; the agent
+        # then authenticates with the user's key.
+        byok_anthropic_env: dict[str, str] = {}
+        if "claude-code" in (agent or "").strip().lower():
+            _byok_key = (extra_agent_env or {}).get("ANTHROPIC_API_KEY")
+            if _byok_key:
+                byok_anthropic_env["ANTHROPIC_API_KEY"] = _byok_key
+
+        with _temporary_env(byok_anthropic_env):
+            agent_config = _build_agent_config(
+                agent=agent,
+                model=model,
+                raw_harbor_config=raw,
+                is_probe=is_probe,
+                probe_oddish_env=extra_agent_env,
+            )
 
         # Stage the org's shared skills (+ global seeds) into a root under the
         # job dir and hand it to Harbor via ``AgentConfig.skills``. Best-effort;
@@ -299,11 +312,17 @@ async def run_harbor_trial_async(
             else {}
         )
         runtime_env = dict(openai_env)
+        # Keep the BYOK key ambient for Job.create/run too, so Harbor's own
+        # os.environ-based Bedrock-mode check agrees with the direct model id.
+        runtime_env.update(byok_anthropic_env)
         is_claude_code = "claude-code" in (agent or "").strip().lower()
-        if is_claude_code and _claude_code_forces_direct_api(is_probe):
+        if is_claude_code and (
+            byok_anthropic_env or _claude_code_forces_direct_api(is_probe)
+        ):
             # Harbor's _is_bedrock_mode() reads os.environ, and the Modal image
-            # bakes in Bedrock credentials. Blank them for this run when
-            # claude-code is forced to the direct Anthropic API.
+            # bakes in Bedrock credentials. Blank them when claude-code runs
+            # against the direct Anthropic API -- platform force-direct, or a
+            # BYOK user key.
             runtime_env.update({var: "" for var in BEDROCK_ENV_VARS})
         with _temporary_env(runtime_env):
             job = await Job.create(config)
