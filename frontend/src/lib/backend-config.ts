@@ -42,19 +42,31 @@ function activeOrgId(payload: Record<string, unknown>): string {
   return typeof org.id === "string" ? org.id : "";
 }
 
+// Key by user + active org (Clerk v1 uses org_id, v2 uses o.id) + template.
+function cacheKeyFor(
+  payload: Record<string, unknown> | null,
+  template: string,
+): string | null {
+  if (!payload || typeof payload.sub !== "string") return null;
+  return `${payload.sub}:${activeOrgId(payload)}:${template}`;
+}
+
 async function mintTemplateToken(
   getToken: GetToken,
   template: string,
-  cacheKey: string | null,
 ): Promise<string | null> {
   try {
     const token = await getToken({ template });
     if (!token) return null;
-    const exp = decodeJwtPayload(token)?.exp;
+    const payload = decodeJwtPayload(token);
+    const exp = payload?.exp;
     const expMs = typeof exp === "number" ? exp * 1000 : 0;
-    if (cacheKey && expMs > Date.now() + TOKEN_EXP_MARGIN_MS) {
+    // Key by the minted token's OWN claims, not the session token's: a hit
+    // can then never return a token scoped to a different org than its key.
+    const key = cacheKeyFor(payload, template);
+    if (key && expMs > Date.now() + TOKEN_EXP_MARGIN_MS) {
       if (tokenCache.size >= TOKEN_CACHE_MAX_SIZE) tokenCache.clear();
-      tokenCache.set(cacheKey, { token, exp: expMs });
+      tokenCache.set(key, { token, exp: expMs });
     }
     return token;
   } catch (error) {
@@ -75,20 +87,20 @@ export async function getClerkToken(
 
   const sessionToken = await getToken();
   if (!sessionToken) return null;
-  const session = decodeJwtPayload(sessionToken);
-  const sub = typeof session?.sub === "string" ? session.sub : null;
-  if (!session || !sub) return mintTemplateToken(getToken, template, null);
+  // Read key from the session token; if it diverges from the minted token's
+  // org, the lookup simply misses and re-mints rather than returning a token
+  // for the wrong org.
+  const readKey = cacheKeyFor(decodeJwtPayload(sessionToken), template);
+  if (!readKey) return mintTemplateToken(getToken, template);
 
-  // Include org: Clerk v1 uses org_id, v2 uses o.id.
-  const cacheKey = `${sub}:${activeOrgId(session)}:${template}`;
-  const hit = tokenCache.get(cacheKey);
+  const hit = tokenCache.get(readKey);
   if (hit && hit.exp - Date.now() > TOKEN_EXP_MARGIN_MS) return hit.token;
 
-  const pending = pendingMints.get(cacheKey);
+  const pending = pendingMints.get(readKey);
   if (pending) return pending;
-  const mint = mintTemplateToken(getToken, template, cacheKey).finally(() => {
-    pendingMints.delete(cacheKey);
+  const mint = mintTemplateToken(getToken, template).finally(() => {
+    pendingMints.delete(readKey);
   });
-  pendingMints.set(cacheKey, mint);
+  pendingMints.set(readKey, mint);
   return mint;
 }

@@ -36,8 +36,11 @@ export async function POST(request: NextRequest) {
   const token = process.env.LOGFIRE_BROWSER_TOKEN || process.env.LOGFIRE_TOKEN;
   if (!token) return new Response(null, { status: 204 });
 
-  const origin = request.headers.get("origin");
-  if (origin && origin !== request.nextUrl.origin) {
+  // Require a same-origin request. Browsers send Origin on all POST/beacon
+  // requests, so real telemetry passes; scripted clients that omit or forge a
+  // different Origin are rejected, keeping the write token from being a public
+  // relay.
+  if (request.headers.get("origin") !== request.nextUrl.origin) {
     return Response.json({ error: "Forbidden" }, { status: 403 });
   }
 
