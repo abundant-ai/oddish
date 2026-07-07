@@ -12,6 +12,9 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+import typer
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from harbor.models.environment_type import EnvironmentType  # noqa: E402
@@ -46,6 +49,20 @@ def _stub_registry_with_gke(monkeypatch):
     )
 
 
+def _stub_registry_without_gke(monkeypatch):
+    # A laptop submitting to Oddish Cloud has no ODDISH_GKE_CLUSTER_NAME, so the
+    # import-time registry never registered GKE -- only Daytona and Modal.
+    import oddish.runtime.routing as routing
+    from oddish.runtime.backends.daytona import DaytonaBackend
+    from oddish.runtime.backends.modal import ModalBackend
+
+    monkeypatch.setattr(
+        routing,
+        "ordered_backends",
+        lambda: [DaytonaBackend(), ModalBackend()],
+    )
+
+
 def test_tpu_present_is_true(tmp_path, monkeypatch):
     (tmp_path / "task.toml").write_text("x")
     _patch_env(monkeypatch, tpu=SimpleNamespace(type="v6e", topology="2x2"))
@@ -73,6 +90,20 @@ def test_tpu_task_default_env_is_gke(tmp_path, monkeypatch):
     )
 
 
+def test_tpu_task_routes_to_gke_without_local_gke_registration(tmp_path, monkeypatch):
+    # A cloud TPU submission must resolve to GKE even when the local registry
+    # lacks GKE (a laptop with no cluster config). The hosted deployment runs
+    # GKE and validates against its own cloud policy; the client must not crash
+    # with NoEligibleBackendError before the sweep is ever sent.
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, gpus=None, tpu=SimpleNamespace(type="v6e"))
+    _stub_registry_without_gke(monkeypatch)
+    assert (
+        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+        == EnvironmentType.GKE
+    )
+
+
 def test_cpu_task_stays_daytona_even_with_gke_available(tmp_path, monkeypatch):
     (tmp_path / "task.toml").write_text("x")
     _patch_env(monkeypatch, gpus=0, tpu=None)
@@ -81,6 +112,31 @@ def test_cpu_task_stays_daytona_even_with_gke_available(tmp_path, monkeypatch):
         run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
         == EnvironmentType.DAYTONA
     )
+
+
+def test_gpu_and_tpu_task_raises_clear_error(tmp_path, monkeypatch):
+    # A task requesting both GPU and TPU cannot be satisfied by any single
+    # backend. It must fail with a clear, actionable message naming the
+    # conflict -- not the opaque NoEligibleBackendError from negotiation.
+    from oddish.runtime.routing import NoEligibleBackendError
+
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, gpus=2, tpu=SimpleNamespace(type="v6e"))
+    _stub_registry_with_gke(monkeypatch)
+    with pytest.raises(typer.BadParameter) as excinfo:
+        run._default_cloud_environment_for_task(tmp_path, override_gpus=None)
+    assert not isinstance(excinfo.value, NoEligibleBackendError)
+    message = str(excinfo.value)
+    assert "GPU" in message and "TPU" in message
+
+
+def test_override_gpus_on_tpu_task_raises_clear_error(tmp_path, monkeypatch):
+    # The conflict can also arise from --override-gpus on a TPU task.
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, gpus=0, tpu=SimpleNamespace(type="v6e"))
+    _stub_registry_with_gke(monkeypatch)
+    with pytest.raises(typer.BadParameter):
+        run._default_cloud_environment_for_task(tmp_path, override_gpus=4)
 
 
 def test_gpu_task_stays_modal_even_with_gke_available(tmp_path, monkeypatch):
