@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -411,6 +412,33 @@ class SubmissionIdempotency(Base):
     )
 
 
+class UserProviderKeyModel(TimestampedMixin, Base):
+    """Per-user BYOK provider API key -- AES-GCM ciphertext, never plaintext."""
+
+    __tablename__ = "user_provider_keys"
+    __table_args__ = (
+        Index(
+            "idx_user_provider_keys_unique_live",
+            "user_id",
+            "vendor",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "vendor IN ('anthropic', 'openai')",
+            name="ck_user_provider_keys_vendor",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(16), nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, default="")
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
@@ -422,4 +450,6 @@ class SubmissionIdempotency(Base):
 # know about backend-only classes.
 from oddish.db.soft_delete import register_soft_delete_models
 
-register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
+register_soft_delete_models(
+    OrganizationModel, UserModel, APIKeyModel, UserProviderKeyModel
+)

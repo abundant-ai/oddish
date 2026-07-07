@@ -146,6 +146,23 @@ class CreateAPIKeyRequest(BaseModel):
 
 
 # =============================================================================
+# BYOK Models
+# =============================================================================
+
+
+class ByokStatusResponse(BaseModel):
+    """BYOK state for the current user -- never the key itself."""
+
+    enabled: bool = False  # whether the oddish_byok gate is on for this user
+    key_set: bool = False
+    key_hint: str = ""  # last 4 chars, for display only
+
+
+class PutByokKeyRequest(BaseModel):
+    key: str
+
+
+# =============================================================================
 # Experiment Sharing Models
 # =============================================================================
 
