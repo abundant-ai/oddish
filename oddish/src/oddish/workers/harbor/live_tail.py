@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+import contextlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -119,6 +120,14 @@ class LiveTailer:
         self._stop.set()
 
     async def run(self) -> None:
+        try:
+            await self._run_loop()
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._checkpoint())
+            raise
+
+    async def _run_loop(self) -> None:
         failures = 0
         while True:
             stopping = self._stop.is_set()

@@ -291,6 +291,28 @@ async def test_stop_path_persists_fold_when_final_tick_fails(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cancelled_tailer_persists_fold_unless_replaced(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+
+    class HangingEnv:
+        async def exec(self, command, timeout_sec=None):
+            await asyncio.Event().wait()
+
+    for replaced, expected_writes in ((False, 1), (True, 0)):
+        session.stmts.clear()
+        tailer = LiveTailer(trial_id="t1", environment=HangingEnv(), attempt=0, model=None)
+        tailer.fold.feed_line(assistant_line("m", {"input_tokens": 4}))
+        tailer.replaced = replaced
+        task = asyncio.ensure_future(tailer.run())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert len(session.stmts) == expected_writes
+
+
+@pytest.mark.asyncio
 async def test_empty_tick_retries_pending_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
