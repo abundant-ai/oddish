@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import ProgrammingError
 
 from api.app import create_app
 from auth import require_auth, require_can_manage_quotas
@@ -527,3 +528,64 @@ async def test_quotas_me_includes_bump_fields(org_with_member):
     assert body["bump_usd"] == pytest.approx(15.0)
     assert body["limit_usd"] == pytest.approx(BASE + 15.0)
     assert body["bump_expires_at"] is not None
+
+
+def _undefined_quota_bumps_error() -> ProgrammingError:
+    class _UndefinedTableError(Exception):
+        sqlstate = "42P01"
+        pgcode = "42P01"
+
+    return ProgrammingError(
+        'SELECT ... FROM quota_bumps',
+        {},
+        _UndefinedTableError('relation "quota_bumps" does not exist'),
+    )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_list_quotas_degrades_when_bump_table_missing(admin_client, monkeypatch):
+    # Deploy-before-migrate: GET /quotas must not 500 when quota_bumps is absent;
+    # members simply read as un-boosted (limit == base).
+    client, _org_id, _admin, member_a = admin_client
+    import api.routers.orgs as orgs_mod
+
+    async def _boom(*_a, **_k):
+        raise _undefined_quota_bumps_error()
+
+    monkeypatch.setattr(orgs_mod, "live_bump_totals_by_user", _boom)
+
+    response = await client.get("/quotas")
+
+    assert response.status_code == 200
+    row = {m["user_id"]: m for m in response.json()["members"]}[member_a.id]
+    assert row["bump_usd"] == pytest.approx(0.0)
+    assert row["bump_expires_at"] is None
+    assert row["limit_usd"] == pytest.approx(row["base_limit_usd"])
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_me_degrades_when_bump_table_missing(org_with_member, monkeypatch):
+    # The savepoint must roll back the failed bump read and leave the request's
+    # transaction usable, so the reserved-usd read after it still succeeds.
+    org_id, _admin, member_a = org_with_member
+    import api.routers.orgs as orgs_mod
+
+    async def _boom(*_a, **_k):
+        raise _undefined_quota_bumps_error()
+
+    monkeypatch.setattr(orgs_mod, "live_bump_total", _boom)
+
+    app = create_app()
+    app.dependency_overrides[require_auth] = lambda: _user_auth(
+        org_id=org_id, user_id=member_a.id, role=UserRole.MEMBER
+    )
+    async with _client(app) as client:
+        response = await client.get("/quotas/me")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bump_usd"] == pytest.approx(0.0)
+    assert body["bump_expires_at"] is None
+    assert body["limit_usd"] == pytest.approx(body["base_limit_usd"])

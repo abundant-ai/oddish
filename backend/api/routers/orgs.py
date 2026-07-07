@@ -3,7 +3,7 @@ from __future__ import annotations
 import calendar
 import logging
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated
 
@@ -202,7 +202,7 @@ async def _get_member_or_404(session, org_id: str | None, user_id: str) -> UserM
 async def _read_member_quota_fields(session, org_id: str | None, user_id: str):
     used_usd = await sum_cost_usd(session, org_id, user_id, quota_window_start())
     base_limit_usd = await get_base_limit(session, org_id, user_id)
-    bump_usd, bump_expires_at = await live_bump_total(session, org_id, user_id)
+    bump_usd, bump_expires_at = await _bump_total_or_zero(session, org_id, user_id)
     return used_usd, base_limit_usd, bump_usd, bump_expires_at
 
 
@@ -296,6 +296,46 @@ async def _org_quota_fields_or_unavailable(org_id) -> dict:
         return await _org_quota_fields_no_cap_table(org_id)
 
 
+async def _bump_totals_or_empty(org_id) -> dict:
+    # quota_bumps can be missing in a deploy-before-migrate window; the boost
+    # feature then reads as "no live boosts" until the migration lands, mirroring
+    # the org-cap fallback above. Own session so a missing table cannot poison a
+    # caller's transaction.
+    try:
+        async with get_session() as session:
+            return await live_bump_totals_by_user(session, org_id)
+    except ProgrammingError as exc:
+        if not _is_undefined_table_error(exc):
+            raise
+        logger.warning(
+            "boosts unavailable (quota_bumps schema not migrated yet); "
+            "treating members as un-boosted",
+            exc_info=True,
+        )
+        return {}
+
+
+async def _bump_total_or_zero(
+    session, org_id, user_id
+) -> tuple[Decimal, datetime | None]:
+    # Savepoint so a missing quota_bumps table (deploy-before-migrate) rolls back
+    # just this read and leaves the caller's transaction usable -- while still
+    # seeing the caller's own uncommitted writes, so POST/DELETE can build their
+    # response from a re-read in the same transaction.
+    try:
+        async with session.begin_nested():
+            return await live_bump_total(session, org_id, user_id)
+    except ProgrammingError as exc:
+        if not _is_undefined_table_error(exc):
+            raise
+        logger.warning(
+            "boost lookup unavailable (quota_bumps schema not migrated yet); "
+            "treating member as un-boosted",
+            exc_info=True,
+        )
+        return Decimal(0), None
+
+
 @router.get("/quotas", response_model=QuotaListResponse)
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
@@ -328,8 +368,7 @@ async def list_member_quotas(
         )
         override_limit_by_user_id = dict(override_rows.all())
 
-        bump_totals_by_user_id = await live_bump_totals_by_user(session, auth.org_id)
-
+    bump_totals_by_user_id = await _bump_totals_or_empty(auth.org_id)
     org_fields = await _org_quota_fields_or_unavailable(auth.org_id)
 
     return QuotaListResponse(
