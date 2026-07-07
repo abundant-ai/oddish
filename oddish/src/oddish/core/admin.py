@@ -1798,7 +1798,9 @@ async def get_cost_breakdown_core(
         window_days=window_days,
         trial_count=total_trials,
         experiment_count=len(experiments),
-        user_count=len(by_user),
+        # Count real users only -- the GitHub-handle and Unattributed fallback
+        # buckets aren't oddish users and would inflate the "N users" figure.
+        user_count=sum(1 for u in by_user.values() if u["real_user_id"]),
         input_tokens=total_input,
         cache_tokens=total_cache,
         output_tokens=total_output,

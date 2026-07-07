@@ -643,6 +643,13 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
     assert by_user[MERGED].owner_user_id is None
     assert by_user[MERGED].label is None
 
+    # The "N users" total counts real users, not the GitHub-handle /
+    # Unattributed fallback rows (which are exactly the labelled rows).
+    assert result.totals.user_count == sum(
+        1 for u in result.by_user if u.label is None
+    )
+    assert by_user["ghuser:octo-ext"].label is not None
+
     # Imported and combine-copy spend is excluded so nothing double-counts.
     exp_ids = {e.experiment_id for e in result.experiments}
     assert FD not in exp_ids
