@@ -3,6 +3,15 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   allowedDevOrigins: ["local.oddish.app"],
   output: "standalone",
+  // Serve forward navigations to recently visited dynamic pages from the
+  // client router cache instead of a fresh server render. Back/forward
+  // already behaves this way; this extends it to Link/router.push
+  // navigations. The segment cache floors the value at 30s.
+  experimental: {
+    staleTimes: {
+      dynamic: 30,
+    },
+  },
   // Expose Vercel git/env vars to the browser bundle so Logfire spans
   // emitted from the browser carry the same PR / commit / branch tags
   // as backend and edge spans.
