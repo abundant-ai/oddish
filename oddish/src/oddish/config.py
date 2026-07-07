@@ -118,8 +118,8 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # --- Configurable Harbor source ----------------------------------------------
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).
-HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
+HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor-gke"
+HARBOR_DEFAULT_SHA = "a0123a871294882dae11a0326d7f7386f98b12df"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -969,10 +969,10 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
-    harbor_source_repo: str = "rishidesai/harbor"
+    harbor_source_repo: str = "abundant-ai/harbor-gke"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "main"
+    harbor_source_ref: str = "feat/gke-tpu-flex-start"
 
     registry_auth_key: str | None = None
 
@@ -982,7 +982,9 @@ class Settings(BaseSettings):
     # Comma-separated case-insensitive URL globs of allowed override sources. The
     # allowlist is the safety boundary: a source outside it is rejected at submit.
     harbor_allowed_sources: str = (
-        "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
+        "https://github.com/abundant-ai/*,"
+        "https://github.com/rishidesai/*,"
+        "https://github.com/dot-agi/*"
     )
 
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
