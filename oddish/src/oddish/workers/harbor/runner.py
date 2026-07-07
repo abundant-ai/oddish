@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 import tempfile
 import time
@@ -47,6 +48,52 @@ from .storage import (
 )
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+
+# Harbor sizes the OUTER environment-build ``wait_for`` as the effective
+# ``environment_build_timeout_multiplier`` times the task's environment
+# ``build_timeout_sec``; this base mirrors Harbor's ``EnvironmentConfig``
+# default (10 minutes), the value used when a task does not override it.
+_ENV_BUILD_TIMEOUT_BASE_SEC = 600.0
+# Headroom the GKE outer wait needs beyond the Pod's ready/capacity wait: it
+# covers Harbor-side environment construction and keeps the outer cap strictly
+# above the inner pod-ready timeout so the more specific inner error surfaces.
+_GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
+
+
+def _sized_environment_build_timeout_multiplier(
+    *,
+    environment: EnvironmentType,
+    environment_build_timeout_multiplier: float | None,
+    timeout_multiplier: float | None,
+    pod_ready_timeout_sec: int,
+) -> float | None:
+    """Grow the environment-build timeout multiplier to cover a GKE Pod's
+    capacity/pod-ready wait; a no-op for every other environment.
+
+    A GKE Pod can sit Pending through a DWS flex-start capacity wait for up to
+    ``pod_ready_timeout_sec`` before it reports ready. Harbor wraps
+    ``environment.start()`` in an outer ``wait_for`` of effective-multiplier
+    times ``_ENV_BUILD_TIMEOUT_BASE_SEC``, so the unscaled ~600s cap deletes the
+    Pending Pod and fails the trial before capacity is ever granted. Raise the
+    multiplier just enough to clear that wait plus build overhead, but never
+    below a larger caller value. Harbor resolves an unset env-build multiplier
+    to the general ``timeout_multiplier``, so that is honoured as the floor too.
+
+    Returns the multiplier to store -- unchanged (possibly ``None``) off GKE.
+    """
+    if environment != EnvironmentType.GKE:
+        return environment_build_timeout_multiplier
+    effective_current = (
+        environment_build_timeout_multiplier
+        if environment_build_timeout_multiplier is not None
+        else (timeout_multiplier if timeout_multiplier is not None else 1.0)
+    )
+    needed = math.ceil(
+        (pod_ready_timeout_sec + _GKE_ENV_BUILD_OVERHEAD_SEC)
+        / _ENV_BUILD_TIMEOUT_BASE_SEC
+    )
+    return float(max(effective_current, needed))
 
 
 def _read_query_cli_text() -> str:
@@ -297,9 +344,17 @@ async def run_harbor_trial_async(
             job_config_kwargs["agent_setup_timeout_multiplier"] = (
                 hc.agent_setup_timeout_multiplier
             )
-        if hc.environment_build_timeout_multiplier is not None:
-            job_config_kwargs["environment_build_timeout_multiplier"] = (
+        env_build_multiplier = _sized_environment_build_timeout_multiplier(
+            environment=environment,
+            environment_build_timeout_multiplier=(
                 hc.environment_build_timeout_multiplier
+            ),
+            timeout_multiplier=hc.timeout_multiplier,
+            pod_ready_timeout_sec=settings.gke_pod_ready_timeout_sec,
+        )
+        if env_build_multiplier is not None:
+            job_config_kwargs["environment_build_timeout_multiplier"] = (
+                env_build_multiplier
             )
         if hc.retry is not None:
             job_config_kwargs["retry"] = hc.retry

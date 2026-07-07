@@ -2116,3 +2116,80 @@ def test_probe_modal_kwargs_returns_empty_for_non_modal_probe(monkeypatch):
         is_probe=True, environment=EnvironmentType.DAYTONA
     )
     assert kwargs == {}
+
+
+def test_gke_env_build_multiplier_covers_pod_ready_wait():
+    # For a GKE trial the outer environment-build wait (multiplier x base) must
+    # clear the pod-ready/capacity wait, or Harbor deletes the Pending Pod early.
+    from harbor.models.environment_type import EnvironmentType
+
+    multiplier = harbor_runner._sized_environment_build_timeout_multiplier(
+        environment=EnvironmentType.GKE,
+        environment_build_timeout_multiplier=None,
+        timeout_multiplier=None,
+        pod_ready_timeout_sec=3600,
+    )
+    assert multiplier is not None
+    assert multiplier * harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC >= 3600
+
+
+def test_gke_env_build_multiplier_never_lowers_caller_value():
+    # A larger caller-supplied env-build multiplier must be preserved, not reduced.
+    from harbor.models.environment_type import EnvironmentType
+
+    multiplier = harbor_runner._sized_environment_build_timeout_multiplier(
+        environment=EnvironmentType.GKE,
+        environment_build_timeout_multiplier=10.0,
+        timeout_multiplier=None,
+        pod_ready_timeout_sec=3600,
+    )
+    assert multiplier == 10.0
+
+
+def test_gke_env_build_multiplier_honors_general_timeout_multiplier_floor():
+    # Harbor resolves an unset env-build multiplier to the general
+    # timeout_multiplier, so a large general multiplier must not be clobbered.
+    from harbor.models.environment_type import EnvironmentType
+
+    multiplier = harbor_runner._sized_environment_build_timeout_multiplier(
+        environment=EnvironmentType.GKE,
+        environment_build_timeout_multiplier=None,
+        timeout_multiplier=100.0,
+        pod_ready_timeout_sec=3600,
+    )
+    assert multiplier == 100.0
+
+
+def test_non_gke_env_build_multiplier_is_untouched():
+    # Non-GKE environments keep exactly what the caller passed (including None).
+    from harbor.models.environment_type import EnvironmentType
+
+    assert (
+        harbor_runner._sized_environment_build_timeout_multiplier(
+            environment=EnvironmentType.MODAL,
+            environment_build_timeout_multiplier=None,
+            timeout_multiplier=None,
+            pod_ready_timeout_sec=3600,
+        )
+        is None
+    )
+    assert (
+        harbor_runner._sized_environment_build_timeout_multiplier(
+            environment=EnvironmentType.DOCKER,
+            environment_build_timeout_multiplier=2.0,
+            timeout_multiplier=5.0,
+            pod_ready_timeout_sec=3600,
+        )
+        == 2.0
+    )
+
+
+def test_env_build_timeout_base_matches_harbor_default():
+    # The sizing base mirrors Harbor's EnvironmentConfig.build_timeout_sec default;
+    # keep them in lockstep so the outer wait is computed against the real base.
+    from harbor.models.task.config import EnvironmentConfig
+
+    assert (
+        harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
+        == EnvironmentConfig.model_fields["build_timeout_sec"].default
+    )
