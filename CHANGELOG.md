@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-06]
+
+### Changed
+
+- Per-user quotas now use a rolling 24-hour window instead of a UTC-midnight reset. `quota_window_start()` replaces `start_of_today_utc()` in admission and quota usage reads, while `ODDISH_DEFAULT_DAILY_QUOTA_USD` keeps its existing name and value.
+
+---
+
 ## [2026-07-02]
 
 ### Added

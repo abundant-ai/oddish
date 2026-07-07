@@ -34,6 +34,9 @@ dependencies = [
     # Clerk webhook verification
     "svix==1.84.1",
 
+    # Feature gating for BYOK
+    "statsig-python-core>=0.19.8",
+
     # File uploads (keep aligned with oddish's pin; backend depends on
     # ``oddish[all]`` which constrains this transitively).
     "python-multipart==0.0.21",
@@ -70,6 +73,7 @@ harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 py-modules = [
     "backfill_github_id",
     "cloud_policy",
+    "crypto",
     "dashboard_attribution",
     "dashboard_owner_backfill",
     "deploy",
@@ -79,6 +83,7 @@ py-modules = [
     "models",
     "observability",
     "serve",
+    "statsig_client",
 ]
 
 [tool.setuptools.packages.find]

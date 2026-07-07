@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -173,13 +174,7 @@ class UserModel(TimestampedMixin, Base):
 
 
 class QuotaModel(TimestampedMixin, Base):
-    """Per-user daily dollar limit OVERRIDE.
-
-    Rows exist only to override the read-time default (DEFAULT_DAILY_QUOTA_USD);
-    a missing row means the member is enforced at that default. Keyed per
-    (org_id, user_id) membership -- the same human carries independent budgets
-    in different orgs.
-    """
+    """A user's 24 hour dollar limit override."""
 
     __tablename__ = "quotas"
 
@@ -198,9 +193,7 @@ class QuotaModel(TimestampedMixin, Base):
     )
     limit_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),
-    )
+    __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_quotas_org_user"),)
 
 
 # =============================================================================
@@ -384,6 +377,33 @@ class SubmissionIdempotency(Base):
     )
 
 
+class UserProviderKeyModel(TimestampedMixin, Base):
+    """Per-user BYOK provider API key -- AES-GCM ciphertext, never plaintext."""
+
+    __tablename__ = "user_provider_keys"
+    __table_args__ = (
+        Index(
+            "idx_user_provider_keys_unique_live",
+            "user_id",
+            "vendor",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "vendor IN ('anthropic', 'openai')",
+            name="ck_user_provider_keys_vendor",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    vendor: Mapped[str] = mapped_column(String(16), nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    key_hint: Mapped[str] = mapped_column(String(8), nullable=False, default="")
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------
@@ -395,4 +415,6 @@ class SubmissionIdempotency(Base):
 # know about backend-only classes.
 from oddish.db.soft_delete import register_soft_delete_models
 
-register_soft_delete_models(OrganizationModel, UserModel, APIKeyModel)
+register_soft_delete_models(
+    OrganizationModel, UserModel, APIKeyModel, UserProviderKeyModel
+)

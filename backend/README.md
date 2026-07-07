@@ -375,10 +375,11 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq
 
 ## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
 
-Per-user daily dollar budgets are enforced at trial-admission time. The operator
-toggle is `shadow` (default) → `enforce` via the `ODDISH_QUOTA_MODE` env var; each
-stage is a config flip, no redeploy of code (`off` stays available as a full
-no-op opt-out, and is also the schema-guard fail-safe below):
+Per-user dollar budgets use a rolling 24-hour window. Spend counts until 24h
+after the trial finished. The operator toggle is `shadow` (default) → `enforce`
+via the `ODDISH_QUOTA_MODE` env var; each stage is a config flip, no redeploy of
+code (`off` stays available as a full no-op opt-out, and is also the
+schema-guard fail-safe below):
 
 1. **`shadow`** (default) — compute the check and emit a structured
    `quota.would_block` event (`metric=quota.would_block reason=… org_id=…

@@ -6,17 +6,17 @@ type TaskStatus =
   | "completed"
   | "failed";
 
-// Trial/job status
-// - "success": Trial executed to completion (regardless of test result)
-// - "failed": Trial encountered an execution error (harness/infrastructure failure)
-// - Test results are stored separately in the `reward` field (0..1 score, null=no result)
 type TrialStatus =
-  "pending" | "queued" | "running" | "success" | "failed" | "retrying";
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed"
+  | "retrying"
+  | "skipped";
 
 export type JobStatus = "pending" | "queued" | "running" | "success" | "failed";
 
-// "qa" is the single task-level QA job; "analysis" is legacy (drains
-// in-flight per-trial rows across a deploy).
 type VisibleJobKind = "trial" | "qa" | "analysis";
 
 type VisibleJobStatus =
@@ -49,7 +49,6 @@ export interface VisibleWorkerJob {
 
 type Priority = "high" | "low";
 
-// Analysis classification for trials (from LLM analysis)
 export type AnalysisClassification =
   | "HARNESS_ERROR"
   | "GOOD_FAILURE"
@@ -73,9 +72,6 @@ export interface TagFilterAST {
   none: string[];
 }
 
-// One row of the Tags page list (GET /api/tags). Mirrors the backend
-// TagListItem: usage_count is the all-scope total; task/version/experiment
-// counts break it down by scope; owner_* is the resolved creator.
 export interface TagSummary {
   id: string;
   key: string;
@@ -97,7 +93,6 @@ export interface TagListResponse {
   items: TagSummary[];
 }
 
-// Trial analysis result
 interface TrialAnalysis {
   trial_name?: string;
   classification: AnalysisClassification;
@@ -116,7 +111,6 @@ interface TrialQueueInfo {
   concurrency_limit: number;
 }
 
-// Trial
 export interface Trial {
   id: string;
   name: string;
@@ -137,10 +131,6 @@ export interface Trial {
   result?: Record<string, unknown> | null;
   analysis_status?: JobStatus | null;
   analysis?: TrialAnalysis | null;
-  // Set when a user-driven retry has replaced this trial with a new
-  // immutable row. Default list endpoints already hide superseded
-  // trials; this field is here so detail views deep-linked directly
-  // can render a "superseded by …" affordance.
   superseded_by_trial_id?: string | null;
   jobs?: VisibleWorkerJob[];
   queue_info?: TrialQueueInfo | null;
@@ -152,6 +142,7 @@ export interface Trial {
   total_steps?: number | null;
   cost_usd?: number | null;
   cost_is_estimated?: boolean | null;
+  is_billed?: boolean;
   has_trajectory?: boolean;
   is_probe?: boolean;
   created_at: string;
@@ -181,7 +172,6 @@ export interface Trial {
   } | null;
 }
 
-// Task verdict result (synthesized from trial analyses)
 interface TaskVerdict {
   is_good: boolean;
   confidence: "high" | "medium" | "low";
@@ -194,7 +184,6 @@ interface TaskVerdict {
   harness_error_count?: number;
 }
 
-// Task with trials
 export interface Task {
   id: string;
   name: string;
@@ -215,6 +204,7 @@ export interface Task {
   total: number;
   completed: number;
   failed: number;
+  skipped?: number;
   progress?: string;
   reward_success?: number | null;
   reward_sum?: number | null;
@@ -266,6 +256,10 @@ export interface TaskBrowseItem {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   latest_trials: TaskBrowseTrial[];
   experiments: TaskBrowseExperiment[];
   user_tags: UserTagRef[];
@@ -298,6 +292,7 @@ export interface TaskVersionSummary {
   trial_count: number;
   completed_count: number;
   failed_count: number;
+  skipped_count: number;
   pass_count: number;
   partial_count: number;
   fail_count: number;
@@ -308,9 +303,13 @@ export interface TaskVersionSummary {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   last_run_at?: string | null;
-  // Direct VERSION-scope tags on this version.
   user_tags?: UserTagRef[];
+  experiments?: { id: string; name: string }[];
 }
 
 interface TaskCostTotals {
@@ -318,6 +317,10 @@ interface TaskCostTotals {
   cost_trial_count: number;
   cost_has_estimated: boolean;
   cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
   total_trials: number;
 }
 
@@ -327,7 +330,6 @@ export interface TaskDetailResponse {
   totals: TaskCostTotals;
 }
 
-// Queue statistics keyed by queue key
 export interface QueueStats {
   [queueKey: string]: {
     pending: number;
@@ -336,18 +338,17 @@ export interface QueueStats {
     success: number;
     failed: number;
     retrying: number;
+    skipped: number;
     recommended_concurrency: number;
   };
 }
 
-// Pipeline statistics (analysis/verdict progress)
 interface PipelineStats {
   trials: Record<string, number>;
   analyses: Record<string, number>;
   verdicts: Record<string, number>;
 }
 
-// Per-model cost & token usage (aggregated from all trials)
 export interface ModelUsage {
   model: string;
   provider: string;
@@ -383,8 +384,6 @@ export interface DashboardExperimentAuthor {
   source: "github" | "api" | "member";
 }
 
-// Organization member, as returned by GET /api/users. Used to populate
-// the dashboard experiments owner filter (member picker).
 export interface OrgUser {
   id: string;
   email: string;
@@ -396,27 +395,14 @@ export interface OrgUser {
   created_at: string;
 }
 
-// =============================================================================
-// User Quotas
-// =============================================================================
-
-// Caller-scoped usage-vs-limit, as returned by GET /api/quotas/me. `limit_usd`
-// is the effective daily limit (COALESCE of the override row and the default);
-// `used_usd` is today's settled spend billed to the caller.
 export interface QuotaUsage {
   user_id: string;
   limit_usd: number;
   used_usd: number;
-  // In-flight reservations; admission blocks when used + reserved >= limit.
-  // Absent on the admin member list.
   reserved_usd?: number;
-  // True only when quota_mode == enforce, i.e. exceeding the limit actually
-  // blocks new billable runs. Absent on the admin member list.
   enforced?: boolean;
 }
 
-// A single member row in the admin GET /api/quotas list. Extends QuotaUsage
-// with the member's identity/role.
 export interface QuotaMember extends QuotaUsage {
   email: string;
   name: string | null;
@@ -428,9 +414,6 @@ export interface QuotaList {
   members: QuotaMember[];
 }
 
-// Body for the admin PUT /api/quotas/{user_id} override. A string value sets an
-// override (e.g. "5.00"); `null` CLEARS it so the member reverts to the
-// workspace default.
 export interface QuotaUpdate {
   limit_usd: string | null;
 }
@@ -444,15 +427,12 @@ export interface DashboardExperiment {
   total_trials: number;
   completed_trials: number;
   failed_trials: number;
+  skipped_trials: number;
   retrying_trials: number;
   active_trials: number;
   reward_success: number;
   reward_sum: number;
   reward_total: number;
-  /**
-   * Mean over tasks of the per-task mean reward across scored trials
-   * (partial credit included), excluding nop/oracle baselines.
-   */
   avg_score: number | null;
   analysis_tasks: number;
   verdict_good: number;
@@ -460,27 +440,16 @@ export interface DashboardExperiment {
   verdict_failed: number;
   verdict_pending: number;
   last_created_at: string | null;
-  /**
-   * Internal owner id (Clerk / API-key user) used by the backend to resolve the
-   * canonical member name into `author`. The `__unattributed__` sentinel is
-   * normalized to null server-side.
-   */
   owner_user_id?: string | null;
-  /**
-   * The latest trial's `billed_user_id` (per-run identity, correct across
-   * appends to shared tasks); the backend resolves it into `last_runner`.
-   */
   last_runner_user_id?: string | null;
   author: DashboardExperimentAuthor | null;
   last_runner: DashboardExperimentAuthor | null;
-  /** @deprecated Use `last_runner`; kept for older clients. */
   last_author: DashboardExperimentAuthor | null;
   last_pr_url: string | null;
   last_pr_title: string | null;
   last_pr_number: string | null;
 }
 
-// Combined dashboard response (single API call)
 export interface DashboardResponse {
   queues: QueueStats;
   pipeline: PipelineStats;
@@ -497,9 +466,6 @@ export interface DashboardResponse {
   cached: boolean;
 }
 
-// =============================================================================
-// ATIF Trajectory Types (for step-by-step agent action viewing)
-// =============================================================================
 
 interface ToolCall {
   tool_call_id: string;
@@ -572,9 +538,6 @@ export interface Trajectory {
   final_metrics: FinalMetrics | null;
 }
 
-// =============================================================================
-// Admin Dashboard Types
-// =============================================================================
 
 interface QueueSlot {
   queue_key: string;
@@ -651,13 +614,7 @@ export interface OrphanedStateResponse {
   timestamp: string;
 }
 
-// ---------------------------------------------------------------------------
-// Unified worker_jobs admin view
-// ---------------------------------------------------------------------------
 
-// Matches `WorkerJobKind` on the backend. Declared as a string union so
-// additional kinds (QA_REVIEW, ...) don't break the type check when the
-// backend starts returning them before the frontend has opinions.
 export type WorkerJobKind =
   "TRIAL" | "QA" | "ANALYSIS" | "VERDICT" | "QA_REVIEW" | (string & {});
 
@@ -710,9 +667,6 @@ export interface WorkerJobsResponse {
   timestamp: string;
 }
 
-// ---------------------------------------------------------------------------
-// Queue health overview
-// ---------------------------------------------------------------------------
 
 interface QueueThroughputStat {
   kind: WorkerJobKind;
@@ -753,9 +707,6 @@ export interface QueueHealthResponse {
   timestamp: string;
 }
 
-// ---------------------------------------------------------------------------
-// Admin cost breakdown (GET /api/admin/costs)
-// ---------------------------------------------------------------------------
 
 export interface CostModelBreakdown {
   model: string;
@@ -765,7 +716,6 @@ export interface CostModelBreakdown {
   cache_tokens: number;
   output_tokens: number;
   cost_usd: number;
-  // Portion of cost_usd derived from token counts (no native cost reported).
   cost_estimated_usd: number;
 }
 
@@ -845,6 +795,41 @@ export interface CostBreakdownResponse {
   by_user: CostUserBreakdown[];
   by_model: CostModelBreakdown[];
   experiments: CostExperimentBreakdown[];
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
+// Admin per-user cost drilldown (GET /api/admin/users/{userId}/costs)
+// ---------------------------------------------------------------------------
+
+export interface UserCostTaskBreakdown {
+  task_id: string;
+  task_name: string | null;
+  trial_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+  models: CostModelBreakdown[];
+}
+
+interface UserCostTotals {
+  window_days: number | null;
+  trial_count: number;
+  task_count: number;
+  cost_usd: number;
+  cost_estimated_usd: number;
+}
+
+export interface UserCostBreakdownResponse {
+  billed_user_id: string;
+  name: string | null;
+  email: string | null;
+  github_username: string | null;
+  org_id: string | null;
+  window_days: number | null;
+  bucket: string;
+  totals: UserCostTotals;
+  tasks: UserCostTaskBreakdown[];
+  series_by_model: CostSeries;
   timestamp: string;
 }
 

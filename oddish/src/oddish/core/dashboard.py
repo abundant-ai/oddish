@@ -430,6 +430,9 @@ def _build_aggregates_for_experiment_ids(
             func.count(case((TrialModel.status == TrialStatus.FAILED, 1))).label(
                 "failed_trials"
             ),
+            func.count(case((TrialModel.status == TrialStatus.SKIPPED, 1))).label(
+                "skipped_trials"
+            ),
             func.count(case((TrialModel.status == TrialStatus.RETRYING, 1))).label(
                 "retrying_trials"
             ),
@@ -1285,6 +1288,7 @@ async def load_dashboard_experiments(
             func.coalesce(trial_agg.c.total_trials, 0).label("total_trials"),
             func.coalesce(trial_agg.c.completed_trials, 0).label("completed_trials"),
             func.coalesce(trial_agg.c.failed_trials, 0).label("failed_trials"),
+            func.coalesce(trial_agg.c.skipped_trials, 0).label("skipped_trials"),
             func.coalesce(trial_agg.c.retrying_trials, 0).label("retrying_trials"),
             func.coalesce(trial_agg.c.active_trials, 0).label("active_trials"),
             func.coalesce(trial_agg.c.reward_success, 0).label("reward_success"),
@@ -1347,6 +1351,7 @@ async def load_dashboard_experiments(
             "total_trials": int(agg["total_trials"]) if agg else 0,
             "completed_trials": int(agg["completed_trials"]) if agg else 0,
             "failed_trials": int(agg["failed_trials"]) if agg else 0,
+            "skipped_trials": int(agg["skipped_trials"]) if agg else 0,
             "retrying_trials": int(agg["retrying_trials"]) if agg else 0,
             "active_trials": int(agg["active_trials"]) if agg else 0,
             "reward_success": int(agg["reward_success"]) if agg else 0,
@@ -1452,6 +1457,7 @@ async def load_dashboard_experiments(
                 "total_trials": int(merged["total_trials"] or 0),
                 "completed_trials": int(merged["completed_trials"] or 0),
                 "failed_trials": int(merged["failed_trials"] or 0),
+                "skipped_trials": int(merged["skipped_trials"] or 0),
                 "retrying_trials": int(merged["retrying_trials"] or 0),
                 "active_trials": int(merged["active_trials"] or 0),
                 "reward_success": int(merged["reward_success"] or 0),

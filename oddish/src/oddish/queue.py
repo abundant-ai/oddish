@@ -1414,12 +1414,12 @@ async def _unblock_worker_jobs_for_trials(
 async def _cancel_gated_llm_trials(
     session: AsyncSession, trial_ids: list[str], reason: str
 ) -> None:
-    """Cancel BLOCKED LLM worker_jobs and mark their trials terminal.
+    """Cancel BLOCKED LLM worker_jobs and mark their trials SKIPPED.
 
-    Gated trials never ran, so there is no sandbox to tear down. They are
-    recorded as FAILED with *reason* on the trial row; this is the single place
-    that decides that representation, so introducing a dedicated SKIPPED status
-    later is a localized change here.
+    Gated trials never ran, so there is no sandbox to tear down. The trial row
+    is marked ``SKIPPED`` (terminal, its own bucket — not a failure) with
+    *reason* on it; this is the single place that decides that representation.
+    SKIPPED counts as a non-pass toward metrics/done and renders distinctly (⊘).
     """
     if not trial_ids:
         return
@@ -1451,10 +1451,13 @@ async def _cancel_gated_llm_trials(
             )
         )
         .values(
-            status=TrialStatus.FAILED,
+            status=TrialStatus.SKIPPED,
             error_message=reason,
             finished_at=utcnow(),
             harbor_stage=CANCELLED_HARBOR_STAGE,
+            # Terminal now — drop any runtime refs so no worker/slot lingers.
+            current_worker_id=None,
+            current_queue_slot=None,
         )
     )
 
@@ -1589,6 +1592,10 @@ async def maybe_advance_legacy_analyzing_task(
             and_(
                 TrialModel.task_id == task_id,
                 TrialModel.superseded_by_trial_id.is_(None),
+                # SKIPPED trials are never analyzed (analysis_status stays NULL),
+                # so they must not count as pending or the task would never
+                # advance out of ANALYZING.
+                TrialModel.status != TrialStatus.SKIPPED,
                 or_(
                     TrialModel.analysis_status.is_(None),
                     TrialModel.analysis_status.in_(
@@ -1628,6 +1635,9 @@ _VALID_QUEUE_STATUSES = {
     "success",
     "failed",
     "retrying",
+    # Gate-skipped trials are terminal; count them (like success/failed) so they
+    # don't vanish from a queue's per-status trial pipeline totals.
+    "skipped",
 }
 
 
@@ -1640,6 +1650,7 @@ def _empty_queue_counts() -> dict[str, int]:
         "success": 0,
         "failed": 0,
         "retrying": 0,
+        "skipped": 0,
     }
 
 

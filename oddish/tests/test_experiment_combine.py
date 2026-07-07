@@ -200,6 +200,63 @@ async def test_combine_copies_terminal_trials_and_links_tasks(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_combine_carries_skipped_trials_as_records_without_artifacts(monkeypatch):
+    experiments = {
+        "exp-A": ExperimentModel(id="exp-A", name="alpha", org_id="org-1"),
+        "exp-B": ExperimentModel(id="exp-B", name="beta", org_id="org-1"),
+    }
+    skipped = _trial("task-1-1", "task-1", TrialStatus.SKIPPED)
+    skipped.error_message = "Trial skipped: nop/oracle validation failed"
+    source_trials = [
+        _trial("task-1-0", "task-1", TrialStatus.SUCCESS, reward=1.0),
+        skipped,
+        _trial("task-1-2", "task-1", TrialStatus.RUNNING),  # in-flight -> not copied
+    ]
+    storage = _FakeStorage(per_call=3)
+    link_calls, bump_calls = _patch_helpers(
+        monkeypatch,
+        experiments=experiments,
+        storage=storage,
+        reserve={"task-1": 5},
+    )
+    session = _FakeCombineSession(
+        linked_task_ids=["task-1"],
+        source_trials=source_trials,
+        task_meta_rows=[("task-1", "task-one", "org-1")],
+    )
+
+    result = await endpoints.combine_experiments_core(
+        session,
+        source_experiment_ids=["exp-A", "exp-B"],
+        name="combined",
+        org_id="org-1",
+        copy_artifacts=True,
+    )
+
+    # SUCCESS + SKIPPED are both carried over; only the still-RUNNING trial is
+    # reported as not-finished.
+    assert result.trials_copied == 2
+    assert result.trials_skipped == 1
+    # Only the success trial has artifacts (3 objects); the skipped trial never
+    # ran, so nothing is duplicated.
+    assert result.artifacts_copied == 3
+
+    new_trials = [obj for obj in session.added if isinstance(obj, TrialModel)]
+    assert [t.status for t in new_trials] == [
+        TrialStatus.SUCCESS,
+        TrialStatus.SKIPPED,
+    ]
+    skipped_copy = new_trials[1]
+    assert skipped_copy.reward is None
+    assert skipped_copy.error_message == "Trial skipped: nop/oracle validation failed"
+    assert skipped_copy.trial_s3_key is None  # no artifacts to copy or reference
+    # Only the success trial's prefix was duplicated server-side.
+    assert storage.calls == [
+        ("tasks/task-1/trials/task-1-0/", "tasks/task-1/trials/task-1-5/"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_combine_shared_artifacts_skips_s3_copy(monkeypatch):
     experiments = {
         "exp-A": ExperimentModel(id="exp-A", name="alpha", org_id="org-1"),

@@ -16,8 +16,9 @@ from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
 )
-from oddish.db import TaskModel, TaskVersionModel, TrialStatus
+from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
 from oddish.schemas import (
+    TaskBrowseExperiment,
     TaskCostTotals,
     TaskDetailResponse,
     TaskVersionResponse,
@@ -122,11 +123,42 @@ async def get_task_detail_core(
         session, task_id=task_id, org_id=org_id, task=task
     )
 
+    billed_trial_ids = {
+        t.id for t in all_trial_models if t.billed_user_id is not None
+    }
     totals, versions_sorted = _aggregate_task_detail_rollups(
         trials=task_status.trials or [],
         version_rows=version_rows,
         current_version_id=task_status.current_version_id,
+        billed_trial_ids=billed_trial_ids,
     )
+
+    # Version-scoped experiments: which experiments ran non-probe trials
+    # against each version (distinct from the task-level all-time list). Names
+    # are resolved straight from the experiments table by the ids the trials
+    # reference, so this doesn't depend on task_experiments membership being
+    # complete (a soft-deleted or unseeded link would otherwise drop a run).
+    referenced_exp_ids = {
+        t.experiment_id
+        for t in all_trial_models
+        if not t.is_probe and t.experiment_id is not None
+    }
+    exp_name_by_id: dict[str, str] = {}
+    if referenced_exp_ids:
+        name_query = select(ExperimentModel.id, ExperimentModel.name).where(
+            ExperimentModel.id.in_(referenced_exp_ids)
+        )
+        if org_id is not None:
+            name_query = name_query.where(ExperimentModel.org_id == org_id)
+        exp_name_by_id = {
+            row.id: row.name
+            for row in (await session.execute(name_query)).all()
+        }
+    experiments_by_version = _experiments_by_version(
+        all_trial_models, exp_name_by_id
+    )
+    for summary in versions_sorted:
+        summary.experiments = experiments_by_version.get(summary.id, [])
 
     # Hydrate effective user tags so the detail page renders the same
     # chips the browse list does.
@@ -172,11 +204,40 @@ async def get_task_detail_core(
     )
 
 
+def _experiments_by_version(
+    trials, exp_name_by_id: dict[str, str]
+) -> dict[str, list[TaskBrowseExperiment]]:
+    """Map version_id -> experiments that ran a non-probe trial against it.
+
+    ``exp_name_by_id`` maps experiment_id -> name for every experiment the
+    trials may reference. Trials that are probes, lack an experiment link, or
+    reference an id missing from the map are ignored. Each version's list is
+    sorted by name for a stable UI order.
+    """
+    ids_by_version: dict[str, set[str]] = {}
+    for t in trials:
+        if getattr(t, "is_probe", False):
+            continue
+        if t.experiment_id is None or t.task_version_id is None:
+            continue
+        if t.experiment_id not in exp_name_by_id:
+            continue
+        ids_by_version.setdefault(t.task_version_id, set()).add(t.experiment_id)
+    return {
+        vid: [
+            TaskBrowseExperiment(id=eid, name=exp_name_by_id[eid])
+            for eid in sorted(ids, key=lambda eid: (exp_name_by_id[eid], eid))
+        ]
+        for vid, ids in ids_by_version.items()
+    }
+
+
 def _aggregate_task_detail_rollups(
     *,
     trials,
     version_rows,
     current_version_id: str | None,
+    billed_trial_ids: set[str] | None = None,
 ) -> tuple[TaskCostTotals, list[TaskVersionSummary]]:
     """Fold trials into a task-wide cost rollup + per-version summaries.
 
@@ -194,9 +255,11 @@ def _aggregate_task_detail_rollups(
         for v in version_rows
     }
 
+    billed_ids = billed_trial_ids or set()
     totals = TaskCostTotals()
     for trial in trials:
         totals.total_trials += 1
+        is_billed = trial.id in billed_ids
         if trial.cost_usd is not None:
             totals.cost_usd += trial.cost_usd
             totals.cost_trial_count += 1
@@ -204,6 +267,13 @@ def _aggregate_task_detail_rollups(
                 totals.cost_has_estimated = True
             else:
                 totals.cost_has_native = True
+            if is_billed:
+                totals.billed_cost_usd += trial.cost_usd
+                totals.billed_trial_count += 1
+                if trial.cost_is_estimated:
+                    totals.billed_has_estimated = True
+                else:
+                    totals.billed_has_native = True
 
         bucket = summary_by_version_id.get(trial.task_version_id or "")
         if bucket is None:
@@ -213,6 +283,8 @@ def _aggregate_task_detail_rollups(
             bucket.completed_count += 1
         elif trial.status == TrialStatus.FAILED:
             bucket.failed_count += 1
+        elif trial.status == TrialStatus.SKIPPED:
+            bucket.skipped_count += 1
 
         if trial.status == TrialStatus.SUCCESS and trial.reward is not None:
             bucket.reward_sum += trial.reward
@@ -223,7 +295,10 @@ def _aggregate_task_detail_rollups(
                 bucket.fail_count += 1
             else:
                 bucket.partial_count += 1
-        elif trial.status != TrialStatus.FAILED:
+        elif trial.status not in (TrialStatus.FAILED, TrialStatus.SKIPPED):
+            # SKIPPED is terminal, not pending — it never ran, so it must not
+            # count as still-in-flight (which would inflate pending_count and
+            # keep the task looking "active").
             bucket.pending_count += 1
 
         if trial.cost_usd is not None:
@@ -233,6 +308,13 @@ def _aggregate_task_detail_rollups(
                 bucket.cost_has_estimated = True
             else:
                 bucket.cost_has_native = True
+            if is_billed:
+                bucket.billed_cost_usd += trial.cost_usd
+                bucket.billed_trial_count += 1
+                if trial.cost_is_estimated:
+                    bucket.billed_has_estimated = True
+                else:
+                    bucket.billed_has_native = True
 
         candidate = trial.finished_at or trial.started_at or trial.created_at
         if candidate is not None and (

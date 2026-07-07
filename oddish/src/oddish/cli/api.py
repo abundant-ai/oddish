@@ -1889,6 +1889,12 @@ def format_trial_status_detail(trial: dict[str, Any]) -> str:
     if error_message_lower in {"cancelled by user", "canceled by user"}:
         return "[yellow]cancelled by user[/yellow]"
 
+    # Gate-skipped trials carry harbor_stage='cancelled'; show "skipped" (with
+    # its reason) rather than a bare "cancelled".
+    if status == "skipped":
+        detail = escape(_format_status_detail_text(error_message or "skipped"))
+        return f"[dim]{detail}[/dim]"
+
     if harbor_stage_lower in {"cancelled", "canceled"}:
         return "[yellow]cancelled[/yellow]"
 
@@ -2239,6 +2245,7 @@ def watch_task(
                 total = len(all_trials)
                 completed = sum(1 for t in all_trials if t.get("status") == "success")
                 failed = sum(1 for t in all_trials if t.get("status") == "failed")
+                skipped = sum(1 for t in all_trials if t.get("status") == "skipped")
 
                 rewards = [
                     float(t["reward"])
@@ -2250,9 +2257,15 @@ def watch_task(
                 reward_partial = sum(1 for reward in rewards if 0 < reward < 1)
 
                 table.add_section()
-                summary_parts = [f"[bold]{completed}/{total}[/bold] done"]
+                # "done" = terminal trials (success + failed + skipped), matching
+                # the server progress string; breakdown shown as annotations.
+                summary_parts = [
+                    f"[bold]{completed + failed + skipped}/{total}[/bold] done"
+                ]
                 if failed > 0:
                     summary_parts.append(f"[red]{failed} failed[/red]")
+                if skipped > 0:
+                    summary_parts.append(f"[dim]{skipped} skipped[/dim]")
                 if rewards:
                     summary_parts.append(
                         f"avg [cyan]{sum(rewards) / len(rewards):.2f}[/cyan]"
@@ -2286,7 +2299,7 @@ def watch_task(
 
                 # Check if done
                 if trial_id_filter is not None or experiment_id:
-                    terminal = {"success", "failed", "cancelled"}
+                    terminal = {"success", "failed", "cancelled", "skipped"}
                     if all_trials and all(
                         t.get("status") in terminal for t in all_trials
                     ):

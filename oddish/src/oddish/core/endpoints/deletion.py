@@ -875,8 +875,14 @@ async def combine_experiments_core(
         for task_id, task_name, task_org in meta_rows.all():
             task_meta[task_id] = (task_name, task_org)
 
-    # 5. Copy the trials.
-    terminal_states = {TrialStatus.SUCCESS, TrialStatus.FAILED}
+    # 5. Copy the trials. Terminal trials — success, failed, and gate-SKIPPED —
+    #    are carried into the combined experiment so the record is complete;
+    #    still-running trials are reported via ``trials_skipped``.
+    terminal_states = {
+        TrialStatus.SUCCESS,
+        TrialStatus.FAILED,
+        TrialStatus.SKIPPED,
+    }
     next_index_for_task: dict[str, int] = {}
     copy_plan: list[tuple[str, str]] = []
     trials_copied = 0
@@ -899,20 +905,26 @@ async def combine_experiments_core(
         task_name, task_org = task_meta.get(task_id, (task_id, source.org_id))
         new_trial_name = f"{task_name}-{index}"
 
-        source_prefix = resolve_trial_s3_prefix(
-            source.id,
-            trial_s3_key=source.trial_s3_key,
-            trial_result_path=source.harbor_result_path,
-        )
-        if copy_artifacts:
-            destination_prefix = StorageClient._trial_prefix(new_trial_id)
-            new_trial_s3_key: str | None = destination_prefix
+        if source.status == TrialStatus.SKIPPED:
+            # Gate-skipped: the trial never ran, so there are no artifacts to
+            # copy or reference. Carry the row over as a record of the skip.
+            new_trial_s3_key: str | None = None
             new_harbor_result_path: str | None = None
-            copy_plan.append((source_prefix, destination_prefix))
         else:
-            # Reference the source artifacts in place.
-            new_trial_s3_key = source_prefix
-            new_harbor_result_path = source.harbor_result_path
+            source_prefix = resolve_trial_s3_prefix(
+                source.id,
+                trial_s3_key=source.trial_s3_key,
+                trial_result_path=source.harbor_result_path,
+            )
+            if copy_artifacts:
+                destination_prefix = StorageClient._trial_prefix(new_trial_id)
+                new_trial_s3_key = destination_prefix
+                new_harbor_result_path = None
+                copy_plan.append((source_prefix, destination_prefix))
+            else:
+                # Reference the source artifacts in place.
+                new_trial_s3_key = source_prefix
+                new_harbor_result_path = source.harbor_result_path
 
         idempotency_key = f"combine:{result.id}:{source.id}"
         if len(idempotency_key) > 64:
