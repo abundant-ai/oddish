@@ -1,12 +1,14 @@
 import re
+import tomllib
 
 from oddish.config import (
     HARBOR_DEFAULT_SHA,
     HARBOR_DEFAULT_SOURCE,
+    Settings,
     parse_harbor_spec,
 )
 
-FORK = "https://github.com/rishidesai/harbor"
+FORK = "https://github.com/abundant-ai/harbor-gke"
 
 
 def test_r3_bare_ref_uses_locked_fork():
@@ -52,6 +54,16 @@ def test_default_sha_matches_uv_lock_pin():
     assert HARBOR_DEFAULT_SHA in lock, "HARBOR_DEFAULT_SHA drifted from oddish/uv.lock"
     assert re.fullmatch(r"[0-9a-f]{40}", HARBOR_DEFAULT_SHA)
     assert HARBOR_DEFAULT_SOURCE == FORK
+
+
+def test_probe_harbor_ref_matches_pyproject_pin():
+    # The probe fetches harbor from ``harbor_source_ref``; it must track the same
+    # branch the dependency is pinned to, or probe trials run different harbor code
+    # than the trials being probed. Derived from pyproject so the two are checked
+    # to move together whenever the pin is re-pointed.
+    with open("pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert Settings().harbor_source_ref == harbor_pin["branch"]
 
 
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():

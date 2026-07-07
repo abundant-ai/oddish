@@ -79,7 +79,7 @@ def assert_allowed(source: str, *, allowed: str) -> None:
 
     Both the source and every glob are case-insensitively normalised (lowercase,
     leading ``git+`` stripped) before matching — the locked default URL is
-    lowercase ``rishidesai``, so a user-typed ``RishiDesai/*`` must still match.
+    lowercase, so a user-typed ``Abundant-AI/*`` must still match.
     """
     norm = _normalize_source(source)
     globs = [_normalize_source(g) for g in allowed.split(",") if g.strip()]

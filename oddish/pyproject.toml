@@ -40,8 +40,8 @@ dependencies = [
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling).
-    # Installed from the rishidesai/harbor fork's main branch via
-    # [tool.uv.sources] below.  When bumping, run
+    # Installed from the abundant-ai/harbor-gke fork's feat/gke-tpu-flex-start
+    # branch via [tool.uv.sources] below.  When bumping, run
     # ``uv lock --upgrade-package harbor`` to refresh the pinned commit.
     "harbor",
     # JSON Schema validation (result_focus structured-output schema checks).
@@ -116,7 +116,7 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+harbor = { git = "https://github.com/abundant-ai/harbor-gke", branch = "feat/gke-tpu-flex-start" }
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]
