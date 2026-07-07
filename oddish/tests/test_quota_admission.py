@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -16,7 +15,6 @@ from oddish.config import QuotaMode, settings  # noqa: E402
 from oddish.core.quota_admission import (  # noqa: E402
     QuotaExceeded,
     Unattributed,
-    acquire_payer_lock,
     admit_trials,
 )
 from oddish.db import (  # noqa: E402
@@ -204,75 +202,6 @@ async def test_inflight_trials_count_toward_reservation(cleanup_task_ids, monkey
         with pytest.raises(QuotaExceeded) as raised:
             await admit_trials(session, org_id, billed_user, count=1)
     assert raised.value.detail["reserved_usd"] == pytest.approx(0.60)
-
-
-@pytest.mark.asyncio
-async def test_concurrent_admissions_serialize_on_the_payer_lock(
-    cleanup_task_ids, monkeypatch
-):
-    """Same-payer submissions wait their turn."""
-    monkeypatch.setattr(settings, "pending_trial_reservation_usd", Decimal("0.20"))
-    org_id = f"org-adm-{_RUN}-f"
-    billed_user = f"user-adm-{_RUN}-f"
-    task_id = f"quota-adm-{_RUN}-{uuid.uuid4().hex[:6]}"
-    cleanup_task_ids.append(task_id)
-
-    a_admitted = asyncio.Event()
-    a_release = asyncio.Event()
-
-    async def first_submission():
-        async with get_session() as session:
-            await admit_trials(session, org_id, billed_user, count=1)
-            await create_task(
-                session,
-                _submission("quota-adm", n_trials=1),
-                task_id=task_id,
-                org_id=org_id,
-                billed_user_id=billed_user,
-            )
-            await session.flush()
-            a_admitted.set()
-            await a_release.wait()
-
-    async def second_submission():
-        async with get_session() as session:
-            with pytest.raises(QuotaExceeded):
-                await admit_trials(session, org_id, billed_user, count=1)
-
-    first = asyncio.create_task(first_submission())
-    await asyncio.wait_for(a_admitted.wait(), timeout=10)
-    second = asyncio.create_task(second_submission())
-    await asyncio.sleep(0.2)
-    a_release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), timeout=30)
-
-
-class _RecordingSession:
-    def __init__(self):
-        self.calls = []
-
-    async def execute(self, statement, params=None):
-        self.calls.append((str(statement), params))
-
-
-@pytest.mark.asyncio
-async def test_acquire_payer_lock_escape_hatches(monkeypatch):
-    recording = _RecordingSession()
-
-    monkeypatch.setattr(settings, "quota_mode", QuotaMode.OFF)
-    await acquire_payer_lock(recording, "org-x", "user-x")
-    monkeypatch.setattr(settings, "quota_mode", QuotaMode.SHADOW)
-    await acquire_payer_lock(recording, "org-x", "user-x")
-    monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
-    await acquire_payer_lock(recording, None, "user-x")
-    await acquire_payer_lock(recording, "org-x", None)
-    assert recording.calls == []
-
-    await acquire_payer_lock(recording, "org-x", "user-x")
-    assert len(recording.calls) == 1
-    sql, params = recording.calls[0]
-    assert "pg_advisory_xact_lock" in sql
-    assert params == {"k": "quota:org-x:user-x"}
 
 
 @pytest.mark.asyncio

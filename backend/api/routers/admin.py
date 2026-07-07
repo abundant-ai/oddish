@@ -100,8 +100,11 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
     user_ids: set[str] = set()
     org_ids: set[str] = set()
     for entry in result.by_user:
-        if entry.owner_user_id:
-            user_ids.add(entry.owner_user_id)
+        # A None label means ``key`` is a real user id (the billed user, or the
+        # submitting credential's user) whose name/email we resolve; a set label
+        # is a self-describing fallback row (GitHub handle / Unattributed).
+        if entry.label is None:
+            user_ids.add(entry.key)
         if entry.org_id:
             org_ids.add(entry.org_id)
     for experiment in result.experiments:
@@ -136,7 +139,7 @@ async def _enrich_cost_breakdown(session, result: CostBreakdownResponse) -> None
             orgs[org_id] = org_name
 
     for entry in result.by_user:
-        user = users.get(entry.owner_user_id) if entry.owner_user_id else None
+        user = users.get(entry.key) if entry.label is None else None
         if user is not None:
             entry.name = user.name
             entry.email = user.email
