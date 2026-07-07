@@ -107,9 +107,10 @@ def test_gke_teardown_returns_false_when_delete_raises(monkeypatch) -> None:
     assert asyncio.run(GkeBackend().teardown("oddish-trials/pod-abc")) is False
 
 
-def test_gke_teardown_never_raises_when_auth_module_absent() -> None:
-    # The currently-pinned harbor has no gke_auth module; the lazy import must
-    # be caught so teardown reports failure rather than propagating.
+def test_gke_teardown_never_raises_when_backend_unconfigured() -> None:
+    # No GKE cluster/region/project is configured, so building the real
+    # gke_auth API client fails; teardown must swallow it and report failure
+    # rather than propagating.
     assert asyncio.run(GkeBackend().teardown("oddish-trials/pod-abc")) is False
 
 
