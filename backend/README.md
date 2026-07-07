@@ -376,21 +376,21 @@ curl -H "Authorization: Bearer $ODDISH_API_KEY" "$ODDISH_API_URL/dashboard" | jq
 ## User quotas — enforcement rollout (`ODDISH_QUOTA_MODE`)
 
 Per-user dollar budgets use a rolling 24-hour window. Spend counts until 24h
-after the trial finished. The operator toggle is `shadow` (default) → `enforce`
-via the `ODDISH_QUOTA_MODE` env var; each stage is a config flip, no redeploy of
-code (`off` stays available as a full no-op opt-out, and is also the
-schema-guard fail-safe below):
+after the trial finished. Enforcement is on by default via
+`ODDISH_QUOTA_MODE=enforce`; `shadow` and `off` remain config-only rollout /
+opt-out modes (`off` is also the schema-guard fail-safe below):
 
-1. **`shadow`** (default) — compute the check and emit a structured
+1. **`enforce`** (default) — over-budget submissions get HTTP **402** with
+   `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
+   unattributable run gets **403**.
+2. **`shadow`** — compute the check and emit a structured
    `quota.would_block` event (`metric=quota.would_block reason=… org_id=…
    billed_user_id=… used=… limit=…`) but never raise. Scrape those logs to
    enumerate who *would* be blocked and which submissions have an unresolved
    payer (`billed_user_id` None — an unlinked GitHub author); notify those users
    to link at oddish.app. `billed_user_id` is stamped at trial creation, so the
    usage data accrues before any enforcement.
-2. **`enforce`** — over-budget submissions get HTTP **402** with
-   `{"detail": {message, used_usd, reserved_usd, limit_usd}}`; an
-   unattributable run gets **403**.
+3. **`off`** — disable quota reads and blocking entirely.
 
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at

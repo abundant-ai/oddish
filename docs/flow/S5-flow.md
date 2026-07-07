@@ -92,17 +92,16 @@ over-budget are caught: the first item that tips `used + reserved` over the cap
 is the one that 402s, and only *its* savepoint rolls back. No separate
 whole-batch pre-sum is needed.
 
-## Rollout: `off → shadow → enforce`
+## Rollout: `enforce` default, `shadow` / `off` opt-outs
 
 One setting, `settings.quota_mode` (`QuotaMode` enum in `config.py`):
 
-- **`off`** (shipped default) — guard 1 short-circuits; zero behavior change,
-  zero DB reads. This is what makes S5 safe to merge dark.
+- **`enforce`** (default) — the would-block cases raise `403` / `402`.
 - **`shadow`** — runs the *full* computation but **never raises**: an
   unattributed or over-budget submission emits a `quota.would_block` warning
   (with `reason`, `used`, `limit`) and admits. This validates the gate against
   real traffic — you can watch what *would* have been blocked before flipping.
-- **`enforce`** — the would-block cases raise `403` / `402`.
+- **`off`** — guard 1 short-circuits; zero behavior change, zero DB reads.
 
 ### Fail-safe startup guard
 

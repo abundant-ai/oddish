@@ -53,7 +53,7 @@ check must be evaluated against a stable, reproducible number, not float slop.
 ## The effective limit
 
 In S3 the effective daily limit is **just the deploy-time default**,
-`settings.default_daily_quota_usd` (`Decimal("100.00")`, `config.py`). Every
+`settings.default_daily_quota_usd` (`Decimal("200.00")`, `config.py`). Every
 endpoint returns `float(settings.default_daily_quota_usd)` for every member —
 there are no per-user overrides yet. S4 introduces the override column and
 changes this to `COALESCE(user's row, default)`; S3 is the flat-default

@@ -318,7 +318,7 @@ async def test_put_revives_soft_deleted_override(org_with_member):
                 f"/quotas/{member_a.id}", json={"limit_usd": "4.00"}
             )
             assert put_response.status_code == 200
-            # Enforced (revived), not the tombstoned 1.00 nor the 100.00 default.
+            # Enforced (revived), not the tombstoned 1.00 nor the configured default.
             assert put_response.json()["limit_usd"] == pytest.approx(4.0)
             list_response = await client.get("/quotas")
     finally:
