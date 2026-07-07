@@ -395,7 +395,24 @@ schema-guard fail-safe below):
 There is **no seed/coverage pre-step**: stamping is already live from the
 attribution slice, and a member with no `quotas` override row is enforced at
 `ODDISH_DEFAULT_DAILY_QUOTA_USD` (default-at-read). When `quota_mode != off`, the
-API startup verifies `trials.billed_user_id` and the `quotas` table exist and
-otherwise forces `off` (fail-safe, never a silent SUM fail-open). Tune
-`ODDISH_DEFAULT_DAILY_QUOTA_USD` and `ODDISH_PENDING_TRIAL_RESERVATION_USD`
-without a code change.
+API startup verifies `trials.billed_user_id` and the `quotas` and `org_quotas`
+tables exist and otherwise forces `off` (fail-safe, never a silent SUM
+fail-open). Tune `ODDISH_DEFAULT_DAILY_QUOTA_USD` and
+`ODDISH_PENDING_TRIAL_RESERVATION_USD` without a code change.
+
+### Org-wide monthly cap
+
+Layered on top of the per-user rolling window is an **org-wide aggregate
+CALENDAR-MONTH (UTC) cap**: the sum of *all* payers' settled spend in an org
+(including unattributed NULL-billed spend) plus its in-flight reservation. It
+resets on the 1st (UTC) to match billing periods. It ships **inert** —
+`ODDISH_DEFAULT_ORG_MONTHLY_QUOTA_USD` is unset (`None` = no org cap) and no
+`org_quotas` override rows exist, so the org check short-circuits until a cap is
+configured. Enable per-org via `PUT /quotas/org` (admin, `require_can_manage_quotas`)
+or globally via the env default. Under `enforce`, an over-cap submission gets
+HTTP **402** (`"Your organization is over its monthly budget …"`); under
+`shadow` it emits `metric=quota.would_block reason=org_over_budget`. Admins see
+month-to-date org usage on `GET /quotas`; any member can read the org budget
+snapshot + adaptive daily goal on `GET /quotas/org`. Advisory-lock order is
+org → payer → row locks (ENFORCE-only, and the org lock is taken only when a cap
+is actually configured).
