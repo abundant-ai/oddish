@@ -192,8 +192,17 @@ function ModelMix({ models }: { models: CostModelBreakdown[] }) {
 }
 
 function userLabel(user: CostUserBreakdown): string {
+  // Synthetic fallback rows (GitHub handle / Unattributed) always carry a
+  // `label`, so `key` is only reached for a real-user row (billed/submitter)
+  // whose name/email enrichment came back empty — the user id beats a bare
+  // "Unattributed" there, and a synthetic key never leaks through.
   return (
-    user.label || user.name || user.email || user.owner_user_id || "Unattributed"
+    user.label ||
+    user.name ||
+    user.email ||
+    user.owner_user_id ||
+    user.key ||
+    "Unattributed"
   );
 }
 
@@ -658,9 +667,8 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
                         </Badge>
                       </TooltipTrigger>
                       <TooltipContent className="max-w-[260px]">
-                        The task submitter isn&apos;t connected to an oddish
-                        account, so this cost isn&apos;t billed to anyone&apos;s
-                        quota.
+                        The task submitter isn&apos;t an active oddish user, so
+                        this cost isn&apos;t billed to anyone&apos;s quota.
                       </TooltipContent>
                     </Tooltip>
                   </span>

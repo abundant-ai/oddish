@@ -482,9 +482,11 @@ FC = f"costfall-sub-{_RUN}"
 FD = f"costfall-imported-{_RUN}"
 FE = f"costfall-combine-{_RUN}"
 FF = f"costfall-probe-{_RUN}"
-_FALL_EXPS = (FA, FB, FC, FD, FE, FF)
+FG = f"costfall-merge-{_RUN}"
+_FALL_EXPS = (FA, FB, FC, FD, FE, FF, FG)
 SUBMITTER = f"costfall-submitter-{_RUN}"
 PAYER = f"costfall-payer-{_RUN}"
+MERGED = f"costfall-merged-{_RUN}"
 
 
 @pytest_asyncio.fixture
@@ -519,6 +521,17 @@ async def seeded_fallback_data():
                     created_by_user_id=SUBMITTER if e == FC else None,
                 )
             )
+        # Second FG task, submitted by MERGED, carries the unbilled half.
+        session.add(
+            TaskModel(
+                id=f"{FG}-task-sub",
+                name=f"{FG}-task-sub",
+                user="runner",
+                org_id=ORG_1,
+                task_path="some/path",
+                created_by_user_id=MERGED,
+            )
+        )
         session.add_all(
             [
                 # Unbilled but real oddish spend -> GitHub-handle fallback.
@@ -555,6 +568,25 @@ async def seeded_fallback_data():
                     billed_user_id=PAYER,
                     is_probe=True,
                 ),
+                # Same user MERGED billed on one trial and the (unbilled)
+                # submitter fallback on another: they merge into one linkable row
+                # whatever order the SQL groups arrive in.
+                _trial(
+                    FG,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=3.0,
+                    created_at=recent,
+                    billed_user_id=MERGED,
+                ),
+                _trial(
+                    FG,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=2.0,
+                    created_at=recent,
+                    task_id=f"{FG}-task-sub",
+                ),
             ]
         )
         await session.flush()
@@ -567,7 +599,7 @@ async def seeded_fallback_data():
                 TrialModel.__table__.delete().where(TrialModel.experiment_id == e)
             )
             await session.execute(
-                TaskModel.__table__.delete().where(TaskModel.id == f"{e}-task")
+                TaskModel.__table__.delete().where(TaskModel.id.like(f"{e}-task%"))
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(ExperimentModel.id == e)
@@ -603,6 +635,12 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
     assert _approx(by_user[PAYER].cost_usd, 7.0)
     assert by_user[PAYER].owner_user_id == PAYER
     assert by_user[PAYER].label is None
+
+    # Billed + submitter-fallback spend for the same user merges into one
+    # linkable, named row (owner_user_id survives regardless of group order).
+    assert _approx(by_user[MERGED].cost_usd, 5.0)
+    assert by_user[MERGED].owner_user_id == MERGED
+    assert by_user[MERGED].label is None
 
     # Imported and combine-copy spend is excluded so nothing double-counts.
     exp_ids = {e.experiment_id for e in result.experiments}

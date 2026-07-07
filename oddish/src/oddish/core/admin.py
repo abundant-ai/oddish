@@ -1709,6 +1709,13 @@ async def get_cost_breakdown_core(
                 "experiment_ids": set(),
                 "models": {},
             }
+        elif user_link_id and not user["owner_user_id"]:
+            # A user key can gather both billed and unbilled groups (e.g. someone
+            # billed while active, then the submitter fallback for a later trial
+            # after they were offboarded). Any billed group makes the row
+            # drilldown-linkable and named, regardless of SQL row order.
+            user["owner_user_id"] = user_link_id
+            user["label"] = None
         user["trial_count"] += trial_count
         user["input_tokens"] += input_tokens
         user["cache_tokens"] += cache_tokens
