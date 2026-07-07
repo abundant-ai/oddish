@@ -12,6 +12,7 @@ export interface TaskTrialCost {
   costUsd: number;
   pricedCount: number;
   hasEstimated: boolean;
+  hasNative: boolean;
 }
 
 // Priced, non-probe, non-superseded trials only — same scope as the experiment
@@ -22,6 +23,7 @@ export function sumTaskTrialCost(
   let costUsd = 0;
   let pricedCount = 0;
   let hasEstimated = false;
+  let hasNative = false;
   for (const trial of trials ?? []) {
     if (trial.is_probe) continue;
     if (trial.superseded_by_trial_id) continue;
@@ -29,8 +31,22 @@ export function sumTaskTrialCost(
     costUsd += trial.cost_usd;
     pricedCount += 1;
     if (trial.cost_is_estimated) hasEstimated = true;
+    else hasNative = true;
   }
-  return { costUsd, pricedCount, hasEstimated };
+  return { costUsd, pricedCount, hasEstimated, hasNative };
+}
+
+// Estimate markers matching the experiment header (#599): "~" prefix when every
+// priced trial was token-estimated, "*" suffix when native and estimated are
+// mixed. Both empty when all native.
+export function costEstimateMarks(
+  hasEstimated: boolean,
+  hasNative: boolean,
+): { prefix: string; suffix: string } {
+  return {
+    prefix: hasEstimated && !hasNative ? "~" : "",
+    suffix: hasEstimated && hasNative ? "*" : "",
+  };
 }
 
 export function formatDurationSec(seconds: number): string {

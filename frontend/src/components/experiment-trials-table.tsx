@@ -55,7 +55,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { Task, Trial, AnalysisClassification } from "@/lib/types";
-import { formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import { costEstimateMarks, formatCostUsd, sumTaskTrialCost } from "@/lib/format";
 import {
   getExperimentAgentKey,
   isBaselineAgentName,
@@ -2334,20 +2334,27 @@ export function ExperimentTrialsTable({
                             {(() => {
                               const c = sumTaskTrialCost(task.trials);
                               if (c.pricedCount === 0) return null;
+                              const marks = costEstimateMarks(
+                                c.hasEstimated,
+                                c.hasNative,
+                              );
                               return (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
                                     <span className="inline-flex shrink-0 items-center font-mono text-[10px] leading-none font-medium tabular-nums text-[color:var(--paper-ink-3)]">
-                                      {c.hasEstimated ? "~" : ""}
+                                      {marks.prefix}
                                       {formatCostUsd(c.costUsd)}
+                                      {marks.suffix}
                                     </span>
                                   </TooltipTrigger>
                                   <TooltipContent>
                                     Total cost across {c.pricedCount} priced trial
                                     {c.pricedCount === 1 ? "" : "s"}
-                                    {c.hasEstimated
-                                      ? " · ~ includes token-estimated pricing"
-                                      : ""}
+                                    {c.hasEstimated && c.hasNative
+                                      ? " · * mixes native + token-estimated pricing"
+                                      : c.hasEstimated
+                                        ? " · ~ token-estimated pricing"
+                                        : ""}
                                   </TooltipContent>
                                 </Tooltip>
                               );

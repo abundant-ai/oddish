@@ -48,7 +48,11 @@ import { cn } from "@/lib/utils";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
-import { formatCostUsd, sumTaskTrialCost } from "@/lib/format";
+import {
+  costEstimateMarks,
+  formatCostUsd,
+  sumTaskTrialCost,
+} from "@/lib/format";
 import {
   formatPartialRewardBadgeValue,
   formatRewardPercent,
@@ -777,12 +781,20 @@ export function TrialDetailPanel({
                         {trial.cost_is_estimated ? "~" : ""}
                         {formatCostUsd(trial.cost_usd)}
                       </span>
-                      {taskCost.pricedCount > 1 && (
-                        <span className="text-muted-foreground text-[9px] leading-none">
-                          of {taskCost.hasEstimated ? "~" : ""}
-                          {formatCostUsd(taskCost.costUsd)} task
-                        </span>
-                      )}
+                      {taskCost.pricedCount > 1 &&
+                        (() => {
+                          const marks = costEstimateMarks(
+                            taskCost.hasEstimated,
+                            taskCost.hasNative,
+                          );
+                          return (
+                            <span className="text-muted-foreground text-[9px] leading-none">
+                              of {marks.prefix}
+                              {formatCostUsd(taskCost.costUsd)}
+                              {marks.suffix} task
+                            </span>
+                          );
+                        })()}
                     </div>
                   </div>
                 </CardContent>
