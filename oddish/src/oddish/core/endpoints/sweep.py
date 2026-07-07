@@ -188,21 +188,8 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.quota_admission import acquire_payer_lock, admit_trials
+    from oddish.core.quota_admission import admit_trials
 
-    # Payer lock FIRST -- before the idempotency insert, the task refresh
-    # FOR UPDATE (append), and any trial inserts (see acquire_payer_lock).
-    await acquire_payer_lock(session, org_id, billed_user_id)
-
-    # Reserve the idempotency slot before doing any work. The fingerprint comes
-    # from the caller's raw pre-mutation snapshot when supplied (the backend
-    # mutates the submission before calling), else from the submission as
-    # received here -- in both cases captured before the link defaulting and
-    # auto-append flip below mutate it, so the original create and a faithful
-    # retry fingerprint identically. ``reserve_idempotency_slot`` raises
-    # ``IdempotencyReplay`` on a matching retry (handled by the route) or
-    # ``IdempotencyConflict`` (mapped to 409 here) on a reused key / in-progress
-    # duplicate.
     reservation: Reservation | None = None
     if idempotency_store is not None and idempotency_key and org_id:
         effective_request_hash = (
@@ -488,36 +475,12 @@ async def create_task_sweep_batch_core(
 ) -> list[TaskSweepBatchItemResult]:
     """Create several task sweeps in one transaction, best-effort.
 
-    Each submission runs inside its own SAVEPOINT (``session.begin_nested()``):
-    if an item fails, only that item is rolled back, leaving sibling items -- and
-    the rows they already inserted -- intact. The caller commits the outer
-    transaction once after this returns. Returns a per-item result list aligned
-    to ``submissions`` by ``index`` (best-effort / 207-style semantics).
-
-    Per-item creation reuses :func:`create_task_sweep_core`, so the same
-    single-statement bulk insert of trials and worker jobs (see
-    ``oddish.queue._bulk_insert_trials`` / ``bulk_enqueue_worker_jobs``) is used
-    here as on the single-sweep path.
-
-    A read-only PRE-LOOP pass runs first, per item: ``prepare`` (caller's
-    identity resolution + attribution + default environment -- the same
-    identity->attribution->owner order as the single route), then
-    ``resolve_billed_user_id``. A failure there becomes that item's failure
-    result; the item is excluded from lock acquisition and creation. The
-    distinct payer advisory locks are then taken in SORTED order before any
-    item runs -- two batches acquiring in item order would deadlock ABBA --
-    and held for the whole batch transaction (accepted for MVP).
-
-    Each surviving submission then runs inside its own SAVEPOINT: a failure
-    rolls back only that item. ``finalize`` (optional) runs inside the
-    savepoint after creation for post-create stamping.
-
-    Per-item idempotency-key replay is intentionally out of scope: this path
-    calls :func:`create_task_sweep_core` without idempotency arguments, so batch
-    items are not deduplicated server-side the way the single ``/tasks/sweep``
-    route is.
+    Each submission runs inside its own SAVEPOINT, so a failing item rolls back
+    alone. A read-only pre-loop resolves each item's environment and billed
+    user; a failure there becomes that item's result. Per-item creation reuses
+    ``create_task_sweep_core`` without idempotency arguments, so batch items are
+    not deduplicated the way the single route is.
     """
-    from oddish.core.quota_admission import acquire_payer_lock
     from oddish.core.sweeps import validate_sweep_submission
 
     def _failure(index: int, exc: Exception) -> TaskSweepBatchItemResult:
@@ -548,15 +511,6 @@ async def create_task_sweep_batch_core(
                 )
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
             pre_failures[index] = _failure(index, exc)
-
-    for payer in sorted(
-        {
-            b
-            for index, b in enumerate(billed_user_ids)
-            if b is not None and index not in pre_failures
-        }
-    ):
-        await acquire_payer_lock(session, org_id, payer)
 
     results: list[TaskSweepBatchItemResult] = []
     for index, submission in enumerate(submissions):
