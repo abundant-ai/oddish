@@ -6,10 +6,11 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import delete, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from oddish.config import settings
-from oddish.db import TrialModel
+from oddish.db import TrialEventModel, TrialModel
 from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
 from oddish.workers.queue.shared import console
@@ -18,6 +19,8 @@ CLAUDE_LOG_PATH = "/logs/agent/claude-code.txt"
 MAX_CHUNK_BYTES = 256 * 1024
 EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5
+MAX_TRIAL_EVENTS = 5000
+PAYLOAD_CLIP_CHARS = 2048
 
 
 class TailExecError(RuntimeError):
@@ -40,32 +43,100 @@ class UsageTotals:
     model: str | None = None
 
 
+def _clipped_payload(key: str, value: str, **extra: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {key: value[:PAYLOAD_CLIP_CHARS], **extra}
+    if len(value) > PAYLOAD_CLIP_CHARS:
+        payload["truncated"] = True
+    return payload
+
+
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict)
+        )
+    return "" if content is None else str(content)
+
+
+def _render_assistant_blocks(message: dict) -> list[dict[str, Any]]:
+    content = message.get("content")
+    rendered: list[dict[str, Any]] = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and block.get("text"):
+            rendered.append(
+                {"kind": "message", "payload": _clipped_payload("text", block["text"])}
+            )
+        elif block.get("type") == "tool_use":
+            rendered.append(
+                {
+                    "kind": "tool_use",
+                    "payload": _clipped_payload(
+                        "input",
+                        json.dumps(block.get("input") or {}, default=str),
+                        name=str(block.get("name") or ""),
+                    ),
+                }
+            )
+    return rendered
+
+
+def _render_tool_results(event: dict) -> list[dict[str, Any]]:
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    rendered: list[dict[str, Any]] = []
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        payload = _clipped_payload("content", _tool_result_text(block.get("content")))
+        if block.get("is_error"):
+            payload["is_error"] = True
+        rendered.append({"kind": "tool_result", "payload": payload})
+    return rendered
+
+
+def _render_result(event: dict) -> list[dict[str, Any]]:
+    text_val = str(event.get("result") or event.get("subtype") or "")
+    return [{"kind": "summary", "payload": _clipped_payload("text", text_val)}]
+
+
 @dataclass
 class ClaudeUsageFold:
     usage_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     model: str | None = None
 
-    def feed_line(self, line: bytes) -> None:
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
         line = line.strip()
         if not line.startswith(b"{"):
-            return
+            return []
         try:
             event = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return
-        if not isinstance(event, dict) or event.get("type") != "assistant":
-            return
-        message = event.get("message")
-        if not isinstance(message, dict):
-            return
-        msg_id = message.get("id")
-        usage = message.get("usage")
-        if not msg_id or not isinstance(usage, dict):
-            return
-        self.usage_by_id[msg_id] = usage
-        model = message.get("model")
-        if isinstance(model, str) and model:
-            self.model = model
+            return []
+        if not isinstance(event, dict):
+            return []
+        if event.get("type") == "assistant":
+            message = event.get("message")
+            if not isinstance(message, dict):
+                return []
+            msg_id = message.get("id")
+            usage = message.get("usage")
+            if msg_id and isinstance(usage, dict):
+                self.usage_by_id[msg_id] = usage
+                model = message.get("model")
+                if isinstance(model, str) and model:
+                    self.model = model
+            return _render_assistant_blocks(message)
+        if event.get("type") == "user":
+            return _render_tool_results(event)
+        if event.get("type") == "result":
+            return _render_result(event)
+        return []
 
     def totals(self) -> UsageTotals:
         t = UsageTotals(model=self.model)
@@ -111,6 +182,9 @@ class LiveTailer:
         self.fold = ClaudeUsageFold()
         self.offset = 0
         self.carry = b""
+        self.seq = 0
+        self.capped = False
+        self.pending_events: list[dict[str, Any]] = []
         self._stop = asyncio.Event()
         self._last_written: tuple | None = None
         self._last_cost: float | None = None
@@ -124,7 +198,9 @@ class LiveTailer:
             await self._run_loop()
         finally:
             if self.carry:
-                self.fold.feed_line(self.carry)
+                self._buffer_events(self.fold.feed_line(self.carry))
+            with contextlib.suppress(Exception):
+                await asyncio.shield(self._flush_events())
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._checkpoint())
 
@@ -169,6 +245,7 @@ class LiveTailer:
             return
         encoded = (result.stdout or "").strip()
         if not encoded:
+            await self._flush_events()
             await self._checkpoint()
             return
         try:
@@ -178,8 +255,44 @@ class LiveTailer:
         lines, self.carry = split_lines(self.carry + raw)
         self.offset += len(raw)
         for line in lines:
-            self.fold.feed_line(line)
+            self._buffer_events(self.fold.feed_line(line))
+        await self._flush_events()
         await self._checkpoint()
+
+    def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
+        for event in rendered:
+            if self.capped:
+                return
+            self.seq += 1
+            if self.seq > MAX_TRIAL_EVENTS:
+                self.pending_events.append(
+                    {
+                        "seq": self.seq,
+                        "kind": "summary",
+                        "payload": {
+                            "capped": True,
+                            "text": (
+                                f"Transcript capped at {MAX_TRIAL_EVENTS} events; "
+                                "further output omitted."
+                            ),
+                        },
+                    }
+                )
+                self.capped = True
+                return
+            self.pending_events.append({"seq": self.seq, **event})
+
+    async def _flush_events(self) -> None:
+        if not self.pending_events or self.replaced:
+            return
+        rows = [
+            {"trial_id": self.trial_id, "attempt": self.attempt, **event}
+            for event in self.pending_events
+        ]
+        stmt = pg_insert(TrialEventModel).values(rows).on_conflict_do_nothing()
+        async with get_session() as session:
+            await session.execute(stmt)
+        self.pending_events.clear()
 
     async def _checkpoint(self) -> None:
         if not self.fold.usage_by_id:
@@ -251,6 +364,8 @@ def start(
     )
     if old:
         tailer._last_cost = old[0]._last_cost
+        tailer.seq = old[0].seq
+        tailer.capped = old[0].capped
     task = asyncio.create_task(tailer.run())
     entry = (tailer, task)
     _tailers[trial_id] = entry
@@ -280,3 +395,13 @@ async def shutdown(trial_id: str, timeout_sec: float = 15.0) -> None:
         task.cancel()
     except Exception:
         pass
+
+
+async def purge_events(trial_id: str) -> None:
+    try:
+        async with get_session() as session:
+            await session.execute(
+                delete(TrialEventModel).where(TrialEventModel.trial_id == trial_id)
+            )
+    except Exception as exc:
+        console.print(f"[dim]Trial {trial_id} event purge failed: {exc}[/dim]")
