@@ -18,6 +18,7 @@ from api.app import create_app
 from auth import require_can_manage_quotas
 from auth.types import AuthContext, AuthMethod
 from models import APIKeyScope, OrganizationModel, UserModel, UserRole
+from oddish.config import settings
 from oddish.core.api_keys import create_api_key
 from oddish.db import get_session
 
@@ -143,14 +144,18 @@ async def test_put_null_clears_override_back_to_default(org_with_member):
                 f"/quotas/{member_a.id}", json={"limit_usd": None}
             )
             assert clear_response.status_code == 200
-            assert clear_response.json()["limit_usd"] == pytest.approx(100.0)
+            assert clear_response.json()["limit_usd"] == pytest.approx(
+                float(settings.default_daily_quota_usd)
+            )
 
             list_response = await client.get("/quotas")
     finally:
         app.dependency_overrides.clear()
 
     members_by_id = {m["user_id"]: m for m in list_response.json()["members"]}
-    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(100.0)
+    assert members_by_id[member_a.id]["limit_usd"] == pytest.approx(
+        float(settings.default_daily_quota_usd)
+    )
 
 
 # --- S4-T4: cross-org PUT 404s; a FULL-scope API key is rejected -----------------
