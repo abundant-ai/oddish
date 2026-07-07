@@ -18,6 +18,7 @@ from oddish.db import (  # noqa: E402
     ExperimentModel,
     TaskModel,
     TrialModel,
+    TrialOrigin,
     get_session,
     task_experiments,
     utcnow,
@@ -309,6 +310,9 @@ def _trial(
     billed_user_id: str | None = None,
     deleted_at=None,
     task_id: str | None = None,
+    origin: TrialOrigin = TrialOrigin.ODDISH,
+    is_probe: bool = False,
+    idempotency_key: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
@@ -327,6 +331,9 @@ def _trial(
         cost_usd=cost_usd,
         created_at=created_at,
         deleted_at=deleted_at,
+        origin=origin,
+        is_probe=is_probe,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -341,8 +348,10 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
 
     exps = {e.experiment_id: e for e in result.experiments}
 
-    assert E4 not in exps
-    assert E5 not in exps
+    assert E4 not in exps  # soft-deleted experiment stays hidden
+    # E5's lone trial is unbilled (no billed_user_id) but real oddish spend, so
+    # it is now counted instead of dropped by the old billed-only gate.
+    assert _approx(exps[E5].cost_usd, 4.0), exps[E5].cost_usd
 
     assert _approx(exps[E1].cost_usd, 5.0), exps[E1].cost_usd
     assert _approx(exps[E1].cost_estimated_usd, 0.0)
@@ -366,13 +375,18 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E7].owner_label == "alice", exps[E7].owner_label
     assert exps[E8].owner_label == "e8-runner", exps[E8].owner_label
 
-    by_user = {u.owner_user_id: u for u in result.by_user}
+    by_user = {u.key: u for u in result.by_user}
     assert _approx(by_user[USER_A].cost_usd, 3.5)
+    assert by_user[USER_A].owner_user_id == USER_A
+    assert by_user[USER_A].label is None
     assert by_user[USER_A].experiment_count == 2
     assert by_user[USER_A].trial_count == 2
     assert _approx(by_user[USER_B].cost_usd, 3.0 + _EXPECTED_EST)
     assert by_user[USER_B].experiment_count == 2
-    assert None not in by_user
+    # Unbilled spend surfaces as its own bucket instead of vanishing.
+    assert _approx(by_user["__unattributed__"].cost_usd, 4.0)
+    assert by_user["__unattributed__"].owner_user_id is None
+    assert by_user["__unattributed__"].label == "Unattributed"
 
     costs = [e.cost_usd for e in result.experiments]
     assert costs == sorted(costs, reverse=True)
@@ -402,14 +416,19 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
 
     user_keys = {k.key for k in result.series_by_user.keys}
     assert USER_A in user_keys and USER_B in user_keys
-    assert "__unattributed__" not in user_keys
+    assert "__unattributed__" in user_keys
+    unattributed_key = next(
+        k for k in result.series_by_user.keys if k.key == "__unattributed__"
+    )
+    assert unattributed_key.label == "Unattributed"
 
 
 @pytest.mark.asyncio
-async def test_cost_breakdown_excludes_non_billable_and_normalizes_sentinel(
+async def test_cost_breakdown_includes_unattributed_and_normalizes_sentinel(
     seeded_cost_data,
 ):
-    """Non-billable trials drop out and the owner sentinel never reaches the UI."""
+    """Unbilled spend surfaces as an Unattributed row; the owner sentinel never
+    reaches the UI (as a link target) even though its spend is now counted."""
     async with get_session() as session:
         result = await get_cost_breakdown_core(
             session, window_days=7, experiment_limit=500, user_limit=500
@@ -417,16 +436,21 @@ async def test_cost_breakdown_excludes_non_billable_and_normalizes_sentinel(
 
     exps = {e.experiment_id: e for e in result.experiments}
 
-    assert E5 not in exps
+    assert E5 in exps  # unbilled but real oddish spend is now counted
     assert exps[E3].owner_user_id is None, exps[E3].owner_user_id
     assert exps[E3].owner_label == "e3-gh", exps[E3].owner_label
 
+    # The internal unattributed-owner sentinel is never a link target.
     assert all(e.owner_user_id != EXPERIMENTS_UNATTRIBUTED_OWNER for e in exps.values())
-    owner_ids = {u.owner_user_id for u in result.by_user}
-    assert EXPERIMENTS_UNATTRIBUTED_OWNER not in owner_ids
-    assert None not in owner_ids
+    link_ids = {u.owner_user_id for u in result.by_user}
+    assert EXPERIMENTS_UNATTRIBUTED_OWNER not in link_ids
+    # Fallback rows carry no link id; the Unattributed row is one such row.
+    assert None in link_ids
+    unattributed = next(u for u in result.by_user if u.key == "__unattributed__")
+    assert unattributed.owner_user_id is None
+    assert unattributed.label == "Unattributed"
 
-    assert all(k.key != "__unattributed__" for k in result.series_by_user.keys)
+    assert any(k.key == "__unattributed__" for k in result.series_by_user.keys)
 
 
 @pytest.mark.asyncio
@@ -446,5 +470,194 @@ async def test_cost_breakdown_all_time_includes_old_trials(seeded_cost_data):
     assert _approx(e1_all.cost_usd, 12.0)
     assert e1_all.trial_count == 3
 
-    user_a_all = {u.owner_user_id: u for u in all_time.by_user}[USER_A]
+    user_a_all = {u.key: u for u in all_time.by_user}[USER_A]
     assert _approx(user_a_all.cost_usd, 10.5)
+
+
+# --- attribution fallbacks + billability predicate ---------------------------
+
+FA = f"costfall-ghuser-{_RUN}"
+FB = f"costfall-ghid-{_RUN}"
+FC = f"costfall-sub-{_RUN}"
+FD = f"costfall-imported-{_RUN}"
+FE = f"costfall-combine-{_RUN}"
+FF = f"costfall-probe-{_RUN}"
+FG = f"costfall-merge-{_RUN}"
+_FALL_EXPS = (FA, FB, FC, FD, FE, FF, FG)
+SUBMITTER = f"costfall-submitter-{_RUN}"
+PAYER = f"costfall-payer-{_RUN}"
+MERGED = f"costfall-merged-{_RUN}"
+
+
+@pytest_asyncio.fixture
+async def seeded_fallback_data():
+    recent = utcnow() - timedelta(hours=1)
+    async with get_session() as session:
+        session.add_all(
+            [
+                ExperimentModel(
+                    id=e,
+                    name=e,
+                    org_id=ORG_1,
+                    created_at=recent,
+                    last_activity_at=recent,
+                )
+                for e in _FALL_EXPS
+            ]
+        )
+        task_tags = {
+            FA: {"github_username": "octo-ext"},
+            FB: {"github_id": "gh-9001", "github_username": "with-id"},
+        }
+        for e in _FALL_EXPS:
+            session.add(
+                TaskModel(
+                    id=f"{e}-task",
+                    name=f"{e}-task",
+                    user="runner",
+                    org_id=ORG_1,
+                    task_path="some/path",
+                    tags=task_tags.get(e),
+                    created_by_user_id=SUBMITTER if e == FC else None,
+                )
+            )
+        # Second FG task, submitted by MERGED, carries the unbilled half.
+        session.add(
+            TaskModel(
+                id=f"{FG}-task-sub",
+                name=f"{FG}-task-sub",
+                user="runner",
+                org_id=ORG_1,
+                task_path="some/path",
+                created_by_user_id=MERGED,
+            )
+        )
+        session.add_all(
+            [
+                # Unbilled but real oddish spend -> GitHub-handle fallback.
+                _trial(FA, 0, model="claude-opus-4-8", cost_usd=10.0, created_at=recent),
+                # Unbilled -> GitHub-id fallback (handle shown when present).
+                _trial(FB, 0, model="claude-opus-4-8", cost_usd=20.0, created_at=recent),
+                # Unbilled, no GitHub -> submitting-credential fallback.
+                _trial(FC, 0, model="claude-opus-4-8", cost_usd=5.0, created_at=recent),
+                # Imported (external Harbor run) -> excluded, no double count.
+                _trial(
+                    FD,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=999.0,
+                    created_at=recent,
+                    origin=TrialOrigin.IMPORTED,
+                ),
+                # Experiment-combine copy -> excluded (originals carry the spend).
+                _trial(
+                    FE,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=888.0,
+                    created_at=recent,
+                    idempotency_key=f"combine:{FE}:src-{_RUN}",
+                ),
+                # Billed probe -> counted (drew budget), attributed to its payer.
+                _trial(
+                    FF,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=7.0,
+                    created_at=recent,
+                    billed_user_id=PAYER,
+                    is_probe=True,
+                ),
+                # Same user MERGED billed on one trial and the (unbilled)
+                # submitter fallback on another: they merge into one linkable row
+                # whatever order the SQL groups arrive in.
+                _trial(
+                    FG,
+                    0,
+                    model="claude-opus-4-8",
+                    cost_usd=3.0,
+                    created_at=recent,
+                    billed_user_id=MERGED,
+                ),
+                _trial(
+                    FG,
+                    1,
+                    model="claude-opus-4-8",
+                    cost_usd=2.0,
+                    created_at=recent,
+                    task_id=f"{FG}-task-sub",
+                ),
+            ]
+        )
+        await session.flush()
+
+    yield
+
+    async with get_session() as session:
+        for e in _FALL_EXPS:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.experiment_id == e)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id.like(f"{e}-task%"))
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(ExperimentModel.id == e)
+            )
+
+
+@pytest.mark.asyncio
+async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallback_data):
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(
+            session, window_days=7, experiment_limit=500, user_limit=500
+        )
+
+    by_user = {u.key: u for u in result.by_user}
+
+    # GitHub-handle fallback: label-only, no drilldown link.
+    assert _approx(by_user["ghuser:octo-ext"].cost_usd, 10.0)
+    assert by_user["ghuser:octo-ext"].label == "@octo-ext"
+    assert by_user["ghuser:octo-ext"].owner_user_id is None
+
+    # GitHub-id fallback keys on the id but shows the handle when present.
+    assert _approx(by_user["ghid:gh-9001"].cost_usd, 20.0)
+    assert by_user["ghid:gh-9001"].label == "@with-id"
+    assert by_user["ghid:gh-9001"].owner_user_id is None
+
+    # Submitting-credential fallback keys on the real user id but is not linkable
+    # (the per-user drilldown reproduces billed spend only) and carries no label.
+    assert _approx(by_user[SUBMITTER].cost_usd, 5.0)
+    assert by_user[SUBMITTER].owner_user_id is None
+    assert by_user[SUBMITTER].label is None
+
+    # Billed probe is kept and attributed to its payer with a drilldown link.
+    assert _approx(by_user[PAYER].cost_usd, 7.0)
+    assert by_user[PAYER].owner_user_id == PAYER
+    assert by_user[PAYER].label is None
+
+    # Billed + submitter-fallback spend for the same user merges into one row
+    # whose total (5.0) outruns the billed-only per-user drilldown (3.0), so the
+    # row is deliberately NOT linkable even though part of it is billed.
+    assert _approx(by_user[MERGED].cost_usd, 5.0)
+    assert by_user[MERGED].owner_user_id is None
+    assert by_user[MERGED].label is None
+
+    # The "N users" total counts real users, not the GitHub-handle /
+    # Unattributed fallback rows (which are exactly the labelled rows).
+    assert result.totals.user_count == sum(
+        1 for u in result.by_user if u.label is None
+    )
+    assert by_user["ghuser:octo-ext"].label is not None
+
+    # Imported and combine-copy spend is excluded so nothing double-counts.
+    exp_ids = {e.experiment_id for e in result.experiments}
+    assert FD not in exp_ids
+    assert FE not in exp_ids
+
+    fall_total = sum(
+        u.cost_usd
+        for u in result.by_user
+        if u.key in {"ghuser:octo-ext", "ghid:gh-9001", SUBMITTER, PAYER}
+    )
+    assert _approx(fall_total, 42.0)
