@@ -240,6 +240,19 @@ async def test_run_disables_after_consecutive_failures(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_failure_cap_persists_pending_fold(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 0.001)
+    env = FakeEnv([RuntimeError("boom")] * 10)
+    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 2}))
+    await asyncio.wait_for(tailer.run(), timeout=5)
+    assert len(env.commands) == live_tail.MAX_CONSECUTIVE_FAILURES
+    assert checkpoint_params(session)[-1]["input_tokens"] == 2
+
+
+@pytest.mark.asyncio
 async def test_stop_triggers_final_drain(monkeypatch):
     session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)

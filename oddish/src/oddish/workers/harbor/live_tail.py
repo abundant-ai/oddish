@@ -122,10 +122,11 @@ class LiveTailer:
     async def run(self) -> None:
         try:
             await self._run_loop()
-        except asyncio.CancelledError:
+        finally:
+            if self.carry:
+                self.fold.feed_line(self.carry)
             with contextlib.suppress(Exception):
                 await asyncio.shield(self._checkpoint())
-            raise
 
     async def _run_loop(self) -> None:
         failures = 0
@@ -145,12 +146,6 @@ class LiveTailer:
                     )
                     return
             if stopping:
-                if self.carry:
-                    self.fold.feed_line(self.carry)
-                try:
-                    await self._checkpoint()
-                except Exception:
-                    pass
                 return
             try:
                 await asyncio.wait_for(
