@@ -933,7 +933,7 @@ class Settings(BaseSettings):
     auto_start_workers: bool = True
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
-    default_daily_quota_usd: Decimal = Decimal("100.00")
+    default_daily_quota_usd: Decimal = Decimal("200.00")
     # Org-wide aggregate CALENDAR-MONTH (UTC) cap, layered on top of the
     # per-user rolling-24h cap. ``None`` means no org cap unless an
     # ``org_quotas`` override row exists for the org (ships inert).
@@ -944,7 +944,7 @@ class Settings(BaseSettings):
     # loop bypass the cap). The trial row itself keeps cost_usd NULL; only the
     # quota SUMs floor it. A genuinely-$0 row (cost_usd = 0) is left untouched.
     unpriced_trial_cost_usd: Decimal = Decimal("1.00")
-    quota_mode: QuotaMode = QuotaMode.SHADOW
+    quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
     # (model key for the job's provider only + an S3 write prefix), replacing the
