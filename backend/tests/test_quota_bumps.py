@@ -107,7 +107,7 @@ def test_quota_bumps_migration_is_ddl_only():
     assert "CHECK (amount_usd > 0)" in source
     assert "DROP TABLE IF EXISTS quota_bumps" in source
     assert "down_revision" in source
-    assert '"taskapikey_be_001"' in source
+    assert '"org_quotas_monthly_001"' in source
 
     uppercased = source.upper()
     assert "INSERT INTO" not in uppercased
