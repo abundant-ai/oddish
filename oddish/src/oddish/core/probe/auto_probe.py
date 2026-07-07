@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import next_probe_model
+from oddish.core.quota_admission import admit_trials
 from oddish.core.sweeps import (
     build_task_submission_from_sweep,
     build_trial_specs_from_sweep,
@@ -101,7 +102,15 @@ async def maybe_enqueue_auto_probe(
         expanded = build_task_submission_from_sweep(
             submission, task_path=task.task_path, trials=trials
         )
-        # Auto-probes always run; their cost still counts toward budget.
+        # Probes are billable and count toward both user and org budgets. Since
+        # they are appended after the parent sweep admission, they need their
+        # own check before any probe trial rows are inserted.
+        await admit_trials(
+            session,
+            org_id,
+            billed_user_id,
+            count=len(expanded.trials),
+        )
         new_trials = await append_trials_to_task(
             session,
             task=task,
