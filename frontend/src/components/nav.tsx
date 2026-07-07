@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { useSWRConfig } from "swr";
 import {
   OrganizationSwitcher,
   SignInButton,
@@ -67,20 +66,23 @@ export function Nav() {
   const { user, isLoaded, isSignedIn } = useUser();
   const { signOut } = useClerk();
   const { organization } = useOrganization();
-  const { mutate } = useSWRConfig();
 
-  // All org-scoped SWR keys are plain URLs with no org id in them, so cached
-  // responses from the previous workspace would otherwise survive a switch.
+  // Full reload on org switch. Org-scoped SWR keys and Next's client router
+  // cache (RSC payloads, kept ~30s by staleTimes.dynamic) are both keyed on
+  // plain URLs with no org id, so previous-workspace data would otherwise
+  // survive a switch. router.refresh() clears only the current route, so a
+  // hard navigation is the reliable way to drop every cached route at once.
   const prevOrgId = useRef(organization?.id);
   useEffect(() => {
     if (
       prevOrgId.current !== undefined &&
       organization?.id !== prevOrgId.current
     ) {
-      mutate(() => true, undefined, { revalidate: true });
+      window.location.assign("/dashboard");
+      return;
     }
     prevOrgId.current = organization?.id;
-  }, [organization?.id, mutate]);
+  }, [organization?.id]);
 
   return (
     <nav className="sticky top-[var(--preview-banner-h,0px)] z-40 border-b border-[#6f88b4]/15 bg-card/80 backdrop-blur-xs">
@@ -176,10 +178,13 @@ export function Nav() {
                     <span className="hidden sm:inline">Docs</span>
                   </a>
                 </Button>
+                {/* No afterSelect/afterCreateOrganizationUrl: Clerk's
+                    client-side navigation would render /dashboard from the
+                    URL-keyed router cache (previous org's payload) before the
+                    org-change effect below fires its hard reload. Routing the
+                    switch solely through that reload avoids the stale flash. */}
                 <OrganizationSwitcher
                   hidePersonal
-                  afterCreateOrganizationUrl="/dashboard"
-                  afterSelectOrganizationUrl="/dashboard"
                   appearance={navSwitcherAppearance}
                 />
                 <DropdownMenu modal={false}>
