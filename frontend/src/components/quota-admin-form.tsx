@@ -119,6 +119,7 @@ export function QuotaAdminForm() {
   const [orgDraft, setOrgDraft] = useState<string | null>(null);
   const [orgSaving, setOrgSaving] = useState(false);
   const [orgError, setOrgError] = useState<string | undefined>(undefined);
+  const [editingBase, setEditingBase] = useState<Record<string, boolean>>({});
 
   if (error) {
     const status = (error as { status?: number }).status;
@@ -312,6 +313,12 @@ export function QuotaAdminForm() {
     setDrafts(({ [userId]: _drop, ...rest }) => rest);
     setRowError(({ [userId]: _drop, ...rest }) => rest);
   };
+  const startEdit = (userId: string) =>
+    setEditingBase((e) => ({ ...e, [userId]: true }));
+  const cancelEdit = (userId: string) => {
+    revertDraft(userId);
+    setEditingBase(({ [userId]: _drop, ...rest }) => rest);
+  };
 
   async function saveAll() {
     if (saving || dirtyMembers.length === 0) return;
@@ -337,7 +344,10 @@ export function QuotaAdminForm() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         }).catch(() => null);
-        return { id, error: await requestQuotaError(res, "Could not save limit.") };
+        return {
+          id,
+          error: await requestQuotaError(res, "Could not save limit."),
+        };
       })
     );
     setSaving(false);
@@ -349,6 +359,9 @@ export function QuotaAdminForm() {
     setRowError(failed);
     setDrafts((d) =>
       Object.fromEntries(Object.entries(d).filter(([id]) => id in failed))
+    );
+    setEditingBase((e) =>
+      Object.fromEntries(Object.entries(e).filter(([id]) => id in failed))
     );
     void mutate();
   }
@@ -438,6 +451,8 @@ export function QuotaAdminForm() {
               const err = rowError[id];
               const busy = bumpBusy[id] ?? false;
               const bumpUsd = member.bump_usd ?? 0;
+              const rowEditing =
+                (editingBase[id] ?? false) || dirty || Boolean(err);
               return (
                 <TableRow key={id} className="border-border/70">
                   <TableCell className="py-2.5 align-top">
@@ -486,30 +501,82 @@ export function QuotaAdminForm() {
                     </div>
                   </TableCell>
                   <TableCell className="py-2.5 text-right align-top">
-                    <div className="flex flex-col items-end gap-1">
-                      <div className="flex items-center justify-end gap-1">
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          inputMode="decimal"
-                          aria-label={`24-hour base limit for ${memberLabel(member)}`}
-                          aria-invalid={err ? true : undefined}
-                          className={`h-8 w-24 text-right font-mono text-xs ${
-                            err
-                              ? "border-destructive focus-visible:ring-destructive"
-                              : dirty
-                                ? "border-primary/50"
-                                : ""
-                          }`}
-                          value={draftValue(member)}
-                          disabled={saving}
-                          onChange={(e) => setDraft(id, e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") void saveAll();
-                            if (e.key === "Escape") revertDraft(id);
-                          }}
-                        />
+                    <div className="flex flex-col items-end gap-1.5">
+                      {rowEditing ? (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            inputMode="decimal"
+                            aria-label={`24-hour base limit for ${memberLabel(member)}`}
+                            aria-invalid={err ? true : undefined}
+                            autoFocus
+                            className={`h-8 w-24 text-right font-mono text-xs ${
+                              err
+                                ? "border-destructive focus-visible:ring-destructive"
+                                : dirty
+                                  ? "border-primary/50"
+                                  : ""
+                            }`}
+                            value={draftValue(member)}
+                            disabled={saving}
+                            onChange={(e) => setDraft(id, e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveAll();
+                              if (e.key === "Escape") cancelEdit(id);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground text-[11px] underline underline-offset-2 disabled:opacity-50"
+                            disabled={saving}
+                            onClick={() => cancelEdit(id)}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className="font-mono text-sm font-semibold tabular-nums">
+                            {formatDollars(member.limit_usd)}
+                          </span>
+                          {bumpUsd > 0 ? (
+                            <span className="text-muted-foreground text-[11px]">
+                              {formatDollars(baseLimit(member))} base
+                              <span className="text-emerald-600 dark:text-emerald-500">
+                                {" "}
+                                + {formatDollars(bumpUsd)} boost
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground text-[11px]">
+                              base limit
+                            </span>
+                          )}
+                          {bumpUsd > 0 && member.bump_expires_at ? (
+                            <span className="text-[11px] text-emerald-600 dark:text-emerald-500">
+                              until {formatBumpExpiry(member.bump_expires_at)}
+                            </span>
+                          ) : null}
+                        </div>
+                      )}
+                      {err ? (
+                        <p className="text-destructive text-right text-[11px]">
+                          {err}
+                        </p>
+                      ) : null}
+                      <div className="flex items-center justify-end gap-3">
+                        {!rowEditing ? (
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground text-[11px] disabled:opacity-50"
+                            disabled={saving}
+                            onClick={() => startEdit(id)}
+                          >
+                            Edit base
+                          </button>
+                        ) : null}
                         <Popover
                           open={bumpOpen[id] ?? false}
                           onOpenChange={(open) =>
@@ -517,18 +584,19 @@ export function QuotaAdminForm() {
                           }
                         >
                           <PopoverTrigger asChild>
-                            <Button
+                            <button
                               type="button"
-                              size="sm"
-                              variant="outline"
-                              className="h-8 px-2 text-xs"
+                              className="text-primary hover:text-primary/80 inline-flex items-center gap-1 text-[11px] disabled:opacity-50"
                               disabled={saving}
                             >
-                              <Zap className="mr-1 size-3" />
-                              Boost
-                            </Button>
+                              <Zap className="size-3" />
+                              {bumpUsd > 0 ? "Add boost" : "Boost"}
+                            </button>
                           </PopoverTrigger>
-                          <PopoverContent align="end" className="w-64 space-y-3">
+                          <PopoverContent
+                            align="end"
+                            className="w-64 space-y-3"
+                          >
                             <div className="space-y-0.5">
                               <p className="text-sm font-medium">
                                 Temporary boost
@@ -561,14 +629,18 @@ export function QuotaAdminForm() {
                                     }));
                                   }}
                                   onKeyDown={(e) => {
-                                    if (e.key === "Enter") void grantBump(member);
+                                    if (e.key === "Enter")
+                                      void grantBump(member);
                                   }}
                                 />
                               </div>
                               <div className="space-y-1">
                                 <Label className="text-xs">Duration</Label>
                                 <Select
-                                  value={bumpDraft[id]?.duration ?? DEFAULT_BUMP_DURATION}
+                                  value={
+                                    bumpDraft[id]?.duration ??
+                                    DEFAULT_BUMP_DURATION
+                                  }
                                   disabled={busy}
                                   onValueChange={(value) =>
                                     setBumpDraft((p) => ({
@@ -617,28 +689,17 @@ export function QuotaAdminForm() {
                             </Button>
                           </PopoverContent>
                         </Popover>
-                      </div>
-                      {err ? (
-                        <p className="text-destructive text-right text-[11px]">
-                          {err}
-                        </p>
-                      ) : null}
-                      {bumpUsd > 0 && member.bump_expires_at ? (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <span className="text-[11px] text-emerald-600 dark:text-emerald-500">
-                            +{formatDollars(bumpUsd)} until{" "}
-                            {formatBumpExpiry(member.bump_expires_at)}
-                          </span>
+                        {bumpUsd > 0 ? (
                           <button
                             type="button"
-                            className="text-muted-foreground hover:text-destructive text-[11px] underline underline-offset-2 disabled:opacity-50"
+                            className="text-muted-foreground hover:text-destructive text-[11px] disabled:opacity-50"
                             disabled={busy}
                             onClick={() => revokeBump(member)}
                           >
                             Revoke
                           </button>
-                        </div>
-                      ) : null}
+                        ) : null}
+                      </div>
                       {!(bumpOpen[id] ?? false) && bumpError[id] ? (
                         <p className="text-destructive text-right text-[11px]">
                           {bumpError[id]}
