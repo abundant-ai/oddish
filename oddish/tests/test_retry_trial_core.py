@@ -119,8 +119,13 @@ class _RecordingSession:
         if "SELECT deleted_at FROM tasks" in sql:
             self.events.append(("scalar", "task_deleted_at"))
             return None  # task still live
-        self.events.append(("scalar", None))
-        return self.registry_auth_enc
+        if "registry_auth_enc" in sql:
+            self.events.append(("scalar", "registry_auth"))
+            return self.registry_auth_enc
+        # Quota reads (org cap override, per-user override, usage SUMs) fired
+        # by admit_trials on the retry path: no override rows, $0 usage.
+        self.events.append(("scalar", "quota_read"))
+        return None
 
     async def get(self, _model, key, **kwargs):
         self.events.append(("get", key, kwargs))

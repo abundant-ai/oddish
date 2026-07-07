@@ -27,19 +27,33 @@ QUOTA_WINDOW = timedelta(hours=24)
 
 
 def quota_window_start(now: datetime | None = None) -> datetime:
-    """Return the start of the last 24 hours."""
     return (now or datetime.now(timezone.utc)) - QUOTA_WINDOW
 
 
-def _settled_cost_predicates(org_id: str | None, period_start: datetime) -> list:
-    return [
-        TrialModel.org_id == org_id,
-        TrialModel.finished_at > period_start,
-    ]
+def start_of_month_utc(now: datetime | None = None) -> datetime:
+    return (now or datetime.now(timezone.utc)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def start_of_today_utc(now: datetime | None = None) -> datetime:
+    return (now or datetime.now(timezone.utc)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def _settled_cost_predicates(
+    org_id: str | None, period_start: datetime, *, inclusive_start: bool = False
+) -> list:
+    boundary = (
+        TrialModel.finished_at >= period_start
+        if inclusive_start
+        else TrialModel.finished_at > period_start
+    )
+    return [TrialModel.org_id == org_id, boundary]
 
 
 def _settled_cost_expr():
-    """Return the cost to count for one finished trial."""
     return func.coalesce(
         TrialModel.cost_usd,
         case(
@@ -52,21 +66,38 @@ def _settled_cost_expr():
     )
 
 
+async def _sum_settled_cost_usd(session: AsyncSession, predicates: list) -> Decimal:
+    return to_money_decimal(
+        await session.scalar(
+            select(func.coalesce(func.sum(_settled_cost_expr()), 0))
+            .where(*predicates)
+            .execution_options(include_deleted=True)
+        )
+    )
+
+
 async def sum_cost_usd(
     session: AsyncSession,
     org_id: str | None,
     user_id: str,
     period_start: datetime,
 ) -> Decimal:
-    return to_money_decimal(
-        await session.scalar(
-            select(func.coalesce(func.sum(_settled_cost_expr()), 0))
-            .where(
-                *_settled_cost_predicates(org_id, period_start),
-                TrialModel.billed_user_id == user_id,
-            )
-            .execution_options(include_deleted=True)
-        )
+    return await _sum_settled_cost_usd(
+        session,
+        [
+            *_settled_cost_predicates(org_id, period_start),
+            TrialModel.billed_user_id == user_id,
+        ],
+    )
+
+
+async def sum_org_cost_usd(
+    session: AsyncSession,
+    org_id: str | None,
+    period_start: datetime,
+) -> Decimal:
+    return await _sum_settled_cost_usd(
+        session, _settled_cost_predicates(org_id, period_start, inclusive_start=True)
     )
 
 
@@ -99,10 +130,17 @@ def _inflight_predicates(org_id: str | None, billed_user_id: str) -> list:
     ]
 
 
-async def inflight_reserved_usd(
-    session: AsyncSession, org_id: str | None, billed_user_id: str
-) -> Decimal:
-    """Return the reserved cost for running trials."""
+def _org_inflight_predicates(org_id: str | None) -> list:
+    return [
+        TrialModel.org_id == org_id,
+        TrialModel.finished_at.is_(None),
+        TrialModel.deleted_at.is_(None),
+        TrialModel.superseded_by_trial_id.is_(None),
+        TrialModel.status.in_(_INFLIGHT_TRIAL_STATUSES),
+    ]
+
+
+async def _sum_inflight_reserved_usd(session: AsyncSession, predicates: list) -> Decimal:
     return to_money_decimal(
         await session.scalar(
             select(
@@ -117,9 +155,38 @@ async def inflight_reserved_usd(
                 )
             )
             .select_from(TrialModel)
-            .where(*_inflight_predicates(org_id, billed_user_id))
+            .where(*predicates)
         )
     )
+
+
+async def inflight_reserved_usd(
+    session: AsyncSession, org_id: str | None, billed_user_id: str
+) -> Decimal:
+    return await _sum_inflight_reserved_usd(
+        session, _inflight_predicates(org_id, billed_user_id)
+    )
+
+
+async def org_inflight_reserved_usd(
+    session: AsyncSession, org_id: str | None
+) -> Decimal:
+    return await _sum_inflight_reserved_usd(session, _org_inflight_predicates(org_id))
+
+
+async def get_effective_org_limit(
+    session: AsyncSession, org_id: str | None
+) -> Decimal | None:
+    override_limit_usd = await session.scalar(
+        text(
+            "SELECT limit_usd FROM org_quotas "
+            "WHERE org_id = :org_id AND deleted_at IS NULL"
+        ),
+        {"org_id": org_id},
+    )
+    if override_limit_usd is not None:
+        return Decimal(str(override_limit_usd))
+    return settings.default_org_monthly_quota_usd
 
 
 async def get_effective_limit(
