@@ -1,7 +1,7 @@
 """add quota_bumps table
 
 Revision ID: add_quota_bumps_001
-Revises: apk_role_backend_001
+Revises: taskapikey_be_001
 Create Date: 2026-07-06 00:00:00.000000
 """
 
@@ -10,7 +10,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "add_quota_bumps_001"
-down_revision: Union[str, Sequence[str], None] = "apk_role_backend_001"
+down_revision: Union[str, Sequence[str], None] = "taskapikey_be_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
