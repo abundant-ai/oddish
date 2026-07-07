@@ -192,7 +192,7 @@ class LiveTailer:
         try:
             await self._run_loop()
         finally:
-            if self.carry:
+            if self.carry and not self.replaced:
                 with contextlib.suppress(Exception):
                     self._buffer_events(self.fold.feed_line(self.carry))
             with contextlib.suppress(Exception):

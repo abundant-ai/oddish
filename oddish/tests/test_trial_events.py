@@ -337,10 +337,8 @@ async def test_same_attempt_replacement_inherits_read_state(monkeypatch):
     assert new_tailer.fold is old_tailer.fold
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
-    await live_tail.shutdown("t1")
-    with contextlib.suppress(asyncio.CancelledError):
-        await old_task
-    await live_tail.shutdown("t1")
+    assert await live_tail.shutdown("t1") == 2
+    assert await live_tail.shutdown("t1") is None
     assert "t1" not in live_tail._tailers
 
 
