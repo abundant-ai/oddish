@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import logging
 import os
 from datetime import timedelta
@@ -11,11 +12,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select, update
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import ProgrammingError
 
 from api.schemas import (
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
+    OrgQuotaResponse,
+    OrgUsageResponse,
     QuotaBumpRequest,
     QuotaListResponse,
     QuotaMemberItem,
@@ -32,15 +36,27 @@ from auth import (
 )
 from auth.verification import invalidate_cached_clerk_auth
 from oddish.config import QuotaMode, settings
-from models import QuotaBumpModel, QuotaModel, UserModel, UserRole, generate_id
+from models import (
+    OrgQuotaModel,
+    QuotaBumpModel,
+    QuotaModel,
+    UserModel,
+    UserRole,
+    generate_id,
+)
 from oddish.core.quotas import (
     get_base_limit,
+    get_effective_org_limit,
     inflight_reserved_usd,
     live_bump_total,
     live_bump_totals_by_user,
+    org_inflight_reserved_usd,
     quota_window_start,
+    start_of_month_utc,
+    start_of_today_utc,
     sum_cost_usd,
     sum_cost_usd_by_user,
+    sum_org_cost_usd,
 )
 from oddish.core.tags.ownership_transfer import transfer_tag_ownership_to_admin
 from oddish.db import get_session, utcnow
@@ -212,6 +228,74 @@ async def _member_quota_item(session, org_id: str | None, member) -> QuotaMember
     return _quota_member_item(member, *fields)
 
 
+def _as_float_or_none(value) -> float | None:
+    return None if value is None else float(value)
+
+
+def _is_undefined_table_error(exc: ProgrammingError) -> bool:
+    error: BaseException | None = exc.orig if exc.orig is not None else exc
+    seen: set[int] = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (
+            getattr(error, "sqlstate", None) == "42P01"
+            or getattr(error, "pgcode", None) == "42P01"
+            or type(error).__name__ == "UndefinedTableError"
+        ):
+            return True
+        error = error.__cause__
+    return False
+
+
+async def _org_trial_usage(session, org_id) -> tuple[Decimal, Decimal]:
+    used = await sum_org_cost_usd(session, org_id, start_of_month_utc())
+    reserved = await org_inflight_reserved_usd(session, org_id)
+    return used, reserved
+
+
+async def _org_quota_fields(session, org_id) -> dict:
+    effective_org_limit = await get_effective_org_limit(session, org_id)
+    org_used, org_reserved = await _org_trial_usage(session, org_id)
+    return {
+        "org_limit_usd": _as_float_or_none(effective_org_limit),
+        "org_used_usd": float(org_used),
+        "org_reserved_usd": float(org_reserved),
+        "org_default_limit_usd": _as_float_or_none(
+            settings.default_org_monthly_quota_usd
+        ),
+    }
+
+
+async def _org_quota_fields_no_cap_table(org_id) -> dict:
+    # org_quotas is missing (deploy-before-migrate): the cap falls back to the
+    # configured default, but month spend + in-flight reservation live on the
+    # trials table and stay readable, so report the real usage, not zero.
+    default = _as_float_or_none(settings.default_org_monthly_quota_usd)
+    async with get_session() as session:
+        org_used, org_reserved = await _org_trial_usage(session, org_id)
+    return {
+        "org_limit_usd": default,
+        "org_used_usd": float(org_used),
+        "org_reserved_usd": float(org_reserved),
+        "org_default_limit_usd": default,
+    }
+
+
+async def _org_quota_fields_or_unavailable(org_id) -> dict:
+    try:
+        async with get_session() as session:
+            return await _org_quota_fields(session, org_id)
+    except ProgrammingError as exc:
+        if not _is_undefined_table_error(exc):
+            raise
+        logger.warning(
+            "GET /quotas org cap unavailable (org_quotas schema not "
+            "migrated yet); degrading limit to default, usage still real",
+            exc_info=True,
+        )
+        return await _org_quota_fields_no_cap_table(org_id)
+
+
 @router.get("/quotas", response_model=QuotaListResponse)
 async def list_member_quotas(
     auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
@@ -246,6 +330,8 @@ async def list_member_quotas(
 
         bump_totals_by_user_id = await live_bump_totals_by_user(session, auth.org_id)
 
+    org_fields = await _org_quota_fields_or_unavailable(auth.org_id)
+
     return QuotaListResponse(
         members=[
             _quota_member_item(
@@ -255,8 +341,119 @@ async def list_member_quotas(
                 *bump_totals_by_user_id.get(member.id, (Decimal(0), None)),
             )
             for member in members
-        ]
+        ],
+        **org_fields,
     )
+
+
+def _org_usage_response(org_fields: dict, org_used_today: Decimal) -> OrgUsageResponse:
+    now = start_of_today_utc()
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    days_remaining = days_in_month - now.day + 1
+
+    limit = org_fields["org_limit_usd"]
+    used_month = Decimal(str(org_fields["org_used_usd"]))
+    reserved = Decimal(str(org_fields["org_reserved_usd"]))
+    daily_goal: float | None = None
+    if limit is not None:
+        remaining_at_day_start = max(
+            Decimal(0),
+            Decimal(str(limit)) - used_month + org_used_today - reserved,
+        )
+        daily_goal = float(remaining_at_day_start / Decimal(days_remaining))
+
+    return OrgUsageResponse(
+        org_limit_usd=limit,
+        org_used_month_usd=float(used_month),
+        org_reserved_usd=org_fields["org_reserved_usd"],
+        org_used_today_usd=float(org_used_today),
+        daily_goal_usd=daily_goal,
+        days_remaining=days_remaining,
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+    )
+
+
+@router.get("/quotas/org", response_model=OrgUsageResponse)
+async def get_org_quota_usage(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> OrgUsageResponse:
+    if auth.org_id is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    try:
+        async with get_session() as session:
+            org_fields = await _org_quota_fields(session, auth.org_id)
+            org_used_today = await sum_org_cost_usd(
+                session, auth.org_id, start_of_today_utc()
+            )
+    except ProgrammingError as exc:
+        if not _is_undefined_table_error(exc):
+            raise
+        logger.warning(
+            "GET /quotas/org cap unavailable (org_quotas schema not migrated "
+            "yet); degrading limit to default, usage still real",
+            exc_info=True,
+        )
+        org_fields = await _org_quota_fields_no_cap_table(auth.org_id)
+        async with get_session() as session:
+            org_used_today = await sum_org_cost_usd(
+                session, auth.org_id, start_of_today_utc()
+            )
+
+    return _org_usage_response(org_fields, org_used_today)
+
+
+@router.put("/quotas/org", response_model=OrgQuotaResponse)
+async def set_org_quota(
+    payload: QuotaUpdateRequest,
+    auth: Annotated[AuthContext, Depends(require_can_manage_quotas)],
+) -> OrgQuotaResponse:
+    try:
+        async with get_session() as session:
+            if payload.limit_usd is None:
+                await session.execute(
+                    OrgQuotaModel.__table__.delete().where(
+                        OrgQuotaModel.org_id == auth.org_id
+                    )
+                )
+            else:
+                await session.execute(
+                    pg_insert(OrgQuotaModel)
+                    .values(
+                        id=generate_id(),
+                        org_id=auth.org_id,
+                        limit_usd=payload.limit_usd,
+                        period_kind="monthly",
+                    )
+                    .on_conflict_do_update(
+                        index_elements=["org_id"],
+                        index_where=OrgQuotaModel.deleted_at.is_(None),
+                        # Clear deleted_at too: get_effective_org_limit / the
+                        # admin display only read live rows, so a PUT over a
+                        # tombstoned override must revive it (the partial unique
+                        # index only spans live rows).
+                        set_={
+                            "limit_usd": payload.limit_usd,
+                            "period_kind": "monthly",
+                            "updated_at": utcnow(),
+                            "deleted_at": None,
+                        },
+                    )
+                )
+
+            org_fields = await _org_quota_fields(session, auth.org_id)
+    except ProgrammingError as exc:
+        if not _is_undefined_table_error(exc):
+            raise
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Org quotas are not available yet (schema is still migrating). "
+                "Try again shortly."
+            ),
+        ) from exc
+
+    return OrgQuotaResponse(**org_fields)
 
 
 @router.put("/quotas/{user_id}", response_model=QuotaMemberItem)

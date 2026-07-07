@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { Gauge } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type { QuotaUsage } from "@/lib/types";
+import { OrgBudgetSection } from "@/components/org-budget-card";
 
 const formatDollars = (value: number) =>
   value.toLocaleString(undefined, {
@@ -80,6 +81,8 @@ export function QuotaUsageCard() {
           </div>
         )}
       </div>
+
+      <OrgBudgetSection />
     </div>
   );
 }

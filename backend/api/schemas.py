@@ -64,6 +64,43 @@ class QuotaMemberItem(BaseModel):
 
 class QuotaListResponse(BaseModel):
     members: list[QuotaMemberItem]
+    # Org-wide aggregate MONTHLY cap. ``org_limit_usd`` is the effective cap
+    # (override row or configured default); ``None`` means no org cap.
+    # ``org_used_usd`` is month-to-date settled org-wide spend.
+    org_limit_usd: float | None = None
+    org_used_usd: float = 0
+    org_reserved_usd: float = 0
+    org_default_limit_usd: float | None = None
+
+
+class OrgQuotaResponse(BaseModel):
+    """Admin-facing org cap fields returned by ``PUT /quotas/org``."""
+
+    org_limit_usd: float | None = None
+    org_used_usd: float = 0
+    org_reserved_usd: float = 0
+    org_default_limit_usd: float | None = None
+
+
+class OrgUsageResponse(BaseModel):
+    """Member-visible org budget snapshot for the dashboard goal bar
+    (``GET /quotas/org``)."""
+
+    # Effective monthly cap (override ?? default ?? null). None = no org cap.
+    org_limit_usd: float | None = None
+    # Settled org-wide spend since the start of the UTC month.
+    org_used_month_usd: float = 0
+    # Org-wide in-flight reservation (not day/month bound).
+    org_reserved_usd: float = 0
+    # Settled org-wide spend since UTC midnight today.
+    org_used_today_usd: float = 0
+    # Adaptive pace target; null when no cap. max(0, limit - spend-before-today)
+    # / days_remaining.
+    daily_goal_usd: float | None = None
+    # Days left in the UTC month, INCLUDING today.
+    days_remaining: int = 0
+    # quota_mode == enforce.
+    enforced: bool = False
 
 
 class QuotaUpdateRequest(BaseModel):
