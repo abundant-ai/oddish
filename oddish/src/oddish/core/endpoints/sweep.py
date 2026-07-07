@@ -188,10 +188,22 @@ async def create_task_sweep_core(
     )
     from oddish.core.tasks import resolve_task_storage
     from oddish.task_timeouts import TaskTimeoutValidationError
-    from oddish.core.quota_admission import acquire_payer_lock, admit_trials
+    from oddish.core.quota_admission import (
+        acquire_org_lock,
+        acquire_payer_lock,
+        admit_trials,
+        reject_unattributed_if_enforced,
+    )
 
-    # Payer lock FIRST -- before the idempotency insert, the task refresh
-    # FOR UPDATE (append), and any trial inserts (see acquire_payer_lock).
+    # An unattributed submission can never be admitted under ENFORCE, so 403
+    # it BEFORE taking any lock -- otherwise a doomed request would hold the
+    # org-wide advisory lock through Harbor/S3 resolution below.
+    reject_unattributed_if_enforced(org_id, billed_user_id)
+
+    # Quota locks FIRST -- before the idempotency insert, the task refresh
+    # FOR UPDATE (append), and any trial inserts. Org lock precedes the payer
+    # lock (see acquire_payer_lock LOCK ORDER).
+    await acquire_org_lock(session, org_id)
     await acquire_payer_lock(session, org_id, billed_user_id)
 
     # Reserve the idempotency slot before doing any work. The fingerprint comes
@@ -517,7 +529,11 @@ async def create_task_sweep_batch_core(
     items are not deduplicated server-side the way the single ``/tasks/sweep``
     route is.
     """
-    from oddish.core.quota_admission import acquire_payer_lock
+    from oddish.core.quota_admission import (
+        acquire_org_lock,
+        acquire_payer_lock,
+        reject_unattributed_if_enforced,
+    )
     from oddish.core.sweeps import validate_sweep_submission
 
     def _failure(index: int, exc: Exception) -> TaskSweepBatchItemResult:
@@ -546,9 +562,19 @@ async def create_task_sweep_batch_core(
                 billed_user_ids[index] = await resolve_billed_user_id(
                     session, submission
                 )
+            # A doomed (unattributed-under-ENFORCE) item must fail HERE, before
+            # the batch takes the org-wide lock below -- it can never be
+            # admitted, so it must not contribute to holding org-wide
+            # serialization for the whole batch transaction.
+            reject_unattributed_if_enforced(org_id, billed_user_ids[index])
         except Exception as exc:  # noqa: BLE001 - per-item isolation is the contract
             pre_failures[index] = _failure(index, exc)
 
+    # Org lock (once for the whole batch) BEFORE the per-payer locks, held for
+    # the batch transaction. Preserves the org -> payer -> row lock order.
+    # Skipped entirely when every item already pre-failed (nothing to admit).
+    if len(pre_failures) < len(submissions):
+        await acquire_org_lock(session, org_id)
     for payer in sorted(
         {
             b

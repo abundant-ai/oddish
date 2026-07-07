@@ -934,6 +934,10 @@ class Settings(BaseSettings):
 
     pending_trial_reservation_usd: Decimal = Decimal("1.00")
     default_daily_quota_usd: Decimal = Decimal("100.00")
+    # Org-wide aggregate CALENDAR-MONTH (UTC) cap, layered on top of the
+    # per-user rolling-24h cap. ``None`` means no org cap unless an
+    # ``org_quotas`` override row exists for the org (ships inert).
+    default_org_monthly_quota_usd: Decimal | None = None
     # Budget stand-in for a FINISHED trial that reported no price (cost_usd NULL):
     # counted toward the daily quota so an unpriced/cancelled/reaped run is never
     # treated as free (an "unknown cost = $0" row would let a start-then-cancel

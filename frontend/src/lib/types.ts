@@ -412,10 +412,27 @@ export interface QuotaMember extends QuotaUsage {
 
 export interface QuotaList {
   members: QuotaMember[];
+  // Org-wide monthly cap fields. Absent in a deploy-before-migrate window;
+  // treat any as undefined => hide the org section entirely.
+  org_limit_usd?: number | null;
+  org_used_usd?: number;
+  org_reserved_usd?: number;
+  org_default_limit_usd?: number | null;
 }
 
 export interface QuotaUpdate {
   limit_usd: string | null;
+}
+
+// GET /quotas/org — member-visible org monthly budget + adaptive daily goal.
+export interface OrgQuotaUsage {
+  org_limit_usd: number | null;
+  org_used_month_usd: number;
+  org_reserved_usd: number;
+  org_used_today_usd: number;
+  daily_goal_usd: number | null;
+  days_remaining: number;
+  enforced: boolean;
 }
 
 export interface DashboardExperiment {
