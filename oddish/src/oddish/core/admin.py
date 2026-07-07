@@ -1080,11 +1080,15 @@ def _spend_identity(
 
     Precedence: the active billed user, else the submitted GitHub identity (id,
     then handle), else the submitting credential's user, else one Unattributed
-    bucket. Returns ``(key, link_user_id, label)``: ``key`` dedups both the
-    by-user rows and the by-user series; ``link_user_id`` is the user the row may
-    deep-link to (billed rows only -- the per-user drilldown reproduces billed
-    spend alone); ``label`` is a precomputed display label, or None when ``key``
-    is a real user id whose name the enrichment step resolves.
+    bucket. Returns ``(key, real_user_id, label)``: ``key`` dedups both the
+    by-user rows and the by-user series; ``real_user_id`` is the actual user
+    whose name labels the row (the billed user or the submitter), or None for a
+    GitHub-handle / Unattributed row; ``label`` is a precomputed display label,
+    or None when ``real_user_id`` supplies the name via the enrichment step.
+
+    Whether a row is drilldown-linkable is decided by the caller, not here: a
+    key can gather both billed and unbilled groups, and only an all-billed row
+    matches the per-user drilldown (which sums billed spend alone).
     """
     if billed_user_id:
         return billed_user_id, billed_user_id, None
@@ -1099,7 +1103,7 @@ def _spend_identity(
     if github_username:
         return f"ghuser:{github_username.lower()}", None, f"@{github_username}"
     if submitter_user_id:
-        return submitter_user_id, None, None
+        return submitter_user_id, submitter_user_id, None
     return _UNATTRIBUTED_KEY, None, "Unattributed"
 
 
@@ -1415,7 +1419,7 @@ async def _cost_time_series(
             or 0.0
         )
         bstart = row.bucket
-        u_key, _u_link, u_label = _spend_identity(
+        u_key, _u_real, u_label = _spend_identity(
             row.billed_user_id, row.gh_id, row.gh_user, row.submitter
         )
         if u_label is not None:
@@ -1617,9 +1621,10 @@ async def get_cost_breakdown_core(
 
     for row in rows:
         owner_user_id = _normalize_owner_user_id(row.owner_user_id)
-        user_key, user_link_id, user_label = _spend_identity(
+        user_key, user_real_id, user_label = _spend_identity(
             row.billed_user_id, row.gh_id, row.gh_user, row.submitter
         )
+        row_billed = row.billed_user_id is not None
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
@@ -1697,8 +1702,14 @@ async def get_cost_breakdown_core(
         if user is None:
             user = by_user[user_key] = {
                 "key": user_key,
-                "owner_user_id": user_link_id,
+                "real_user_id": user_real_id,
                 "label": user_label,
+                # A user key can gather both billed and unbilled groups (someone
+                # billed while active, then the submitter fallback for a later
+                # trial after they were offboarded). The row is drilldown-linkable
+                # only when EVERY group is billed, since the per-user drilldown
+                # sums billed spend alone -- otherwise the row would outrun it.
+                "all_billed": row_billed,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
                 "input_tokens": 0,
@@ -1709,13 +1720,8 @@ async def get_cost_breakdown_core(
                 "experiment_ids": set(),
                 "models": {},
             }
-        elif user_link_id and not user["owner_user_id"]:
-            # A user key can gather both billed and unbilled groups (e.g. someone
-            # billed while active, then the submitter fallback for a later trial
-            # after they were offboarded). Any billed group makes the row
-            # drilldown-linkable and named, regardless of SQL row order.
-            user["owner_user_id"] = user_link_id
-            user["label"] = None
+        else:
+            user["all_billed"] = user["all_billed"] and row_billed
         user["trial_count"] += trial_count
         user["input_tokens"] += input_tokens
         user["cache_tokens"] += cache_tokens
@@ -1741,7 +1747,12 @@ async def get_cost_breakdown_core(
     by_user_out = [
         CostUserBreakdown(
             key=u["key"],
-            owner_user_id=u["owner_user_id"],
+            # Link only an all-billed row: its total equals what the per-user
+            # drilldown reproduces. A row that also holds unbilled spend would
+            # outrun the drilldown, so it stays unlinked.
+            owner_user_id=(
+                u["real_user_id"] if u["all_billed"] and u["real_user_id"] else None
+            ),
             label=u["label"],
             org_id=u["org_id"],
             trial_count=int(u["trial_count"]),

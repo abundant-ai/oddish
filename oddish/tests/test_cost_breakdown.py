@@ -636,10 +636,11 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
     assert by_user[PAYER].owner_user_id == PAYER
     assert by_user[PAYER].label is None
 
-    # Billed + submitter-fallback spend for the same user merges into one
-    # linkable, named row (owner_user_id survives regardless of group order).
+    # Billed + submitter-fallback spend for the same user merges into one row
+    # whose total (5.0) outruns the billed-only per-user drilldown (3.0), so the
+    # row is deliberately NOT linkable even though part of it is billed.
     assert _approx(by_user[MERGED].cost_usd, 5.0)
-    assert by_user[MERGED].owner_user_id == MERGED
+    assert by_user[MERGED].owner_user_id is None
     assert by_user[MERGED].label is None
 
     # Imported and combine-copy spend is excluded so nothing double-counts.
