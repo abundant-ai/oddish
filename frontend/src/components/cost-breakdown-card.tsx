@@ -135,19 +135,14 @@ function formatSignedCost(value: number): string {
   return `${sign}${formatCostUsd(Math.abs(value))}`;
 }
 
-// Signed delta vs the prior window. Returns null when there is no prior figure
-// (all-time). `variant` picks the semantics: for cost tiles a rise is bad (red);
-// for counts the delta stays neutral muted.
+// Signed cost delta vs the prior window; null render when there is no prior
+// figure (all-time). A rise is bad (red), a drop good (green).
 function DeltaBadge({
   current,
   prev,
-  variant,
-  format,
 }: {
   current: number;
   prev: number | null | undefined;
-  variant: "cost" | "count";
-  format: (v: number) => string;
 }) {
   if (prev == null) return null;
   const diff = current - prev;
@@ -158,15 +153,14 @@ function DeltaBadge({
         : null
       : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
   const color =
-    variant === "count" || diff === 0
+    diff === 0
       ? "text-muted-foreground"
       : diff > 0
         ? "text-destructive"
         : "text-[#5c8e43] dark:text-[#85b85c]";
-  const signed = format(diff);
   return (
     <span className={`text-[10px] font-medium tabular-nums ${color}`}>
-      {signed}
+      {formatSignedCost(diff)}
       {pct ? ` · ${pct}` : ""}
     </span>
   );
@@ -528,12 +522,6 @@ export function CostBreakdownCard() {
             <DollarSign className="h-5 w-5" />
             <CardTitle className="text-base">Cost Breakdown</CardTitle>
             <MethodologyNote />
-            {data && (
-              <Badge variant="outline" className="text-xs">
-                {formatCostUsd(data.totals.cost_usd)} ·{" "}
-                {windowLabel.toLowerCase()}
-              </Badge>
-            )}
           </div>
           <div className="flex items-center gap-2">
             <Select value={windowDays} onValueChange={setWindowDays}>
@@ -568,9 +556,8 @@ export function CostBreakdownCard() {
           </div>
         </div>
         <p className="text-muted-foreground text-xs">
-          Billable trial spend across all organizations. Native runtime cost
-          when reported, otherwise a per-model token estimate — see the info
-          icon for methodology.
+          Billable trial spend across all organizations — see the info icon for
+          methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -638,80 +625,80 @@ export function CostBreakdownCard() {
 }
 
 function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
-  const failedCost = totals.failed_cost_usd ?? 0;
+  const prev = totals.prev_cost_usd;
+  const diff = prev == null ? null : totals.cost_usd - prev;
+  const pctLabel =
+    prev == null || diff == null
+      ? null
+      : prev === 0
+        ? totals.cost_usd > 0
+          ? "new"
+          : null
+        : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
+  const monthCost = totals.month_cost_usd ?? 0;
+  const budget = totals.month_budget_usd;
+  const monthPct = budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
+  const monthFill =
+    monthPct != null && monthPct >= 80
+      ? "bg-destructive"
+      : monthPct != null && monthPct >= 60
+        ? "bg-amber-500"
+        : "bg-blue-500";
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
           {formatCostUsd(totals.cost_usd)}
         </div>
         <div className="text-muted-foreground text-[10px]">Total cost</div>
-        <div className="text-muted-foreground mt-0.5 text-[10px]">
-          {formatCostUsd(totals.cost_native_usd)} native ·{" "}
-          {formatCostUsd(totals.cost_estimated_usd)} est
-        </div>
-        <div className="mt-0.5">
-          <DeltaBadge
-            current={totals.cost_usd}
-            prev={totals.prev_cost_usd}
-            variant="cost"
-            format={formatSignedCost}
-          />
-        </div>
-      </div>
-      <div className="bg-background/70 rounded-md border border-amber-500/25 p-2 text-center">
-        <div className="text-base font-bold tabular-nums">
-          {formatCostUsd(failedCost)}
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="text-muted-foreground cursor-help text-[10px]">
-              Failed spend
-            </div>
-          </TooltipTrigger>
-          <TooltipContent className="max-w-[240px]">
-            Spend on trials that ended FAILED.
-          </TooltipContent>
-        </Tooltip>
-        <div className="mt-0.5">
-          <DeltaBadge
-            current={failedCost}
-            prev={totals.prev_failed_cost_usd}
-            variant="cost"
-            format={formatSignedCost}
-          />
-        </div>
       </div>
       <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
         <div className="text-base font-bold tabular-nums">
-          {totals.trial_count.toLocaleString()}
+          {formatCostUsd(monthCost)}
+          {budget != null && (
+            <span className="text-muted-foreground font-normal">
+              {" "}
+              / {formatCostUsd(budget)}
+            </span>
+          )}
         </div>
-        <div className="text-muted-foreground text-[10px]">Trials</div>
-        <div className="mt-0.5">
-          <DeltaBadge
-            current={totals.trial_count}
-            prev={totals.prev_trial_count}
-            variant="count"
-            format={(v) =>
-              `${v >= 0 ? "+" : "−"}${Math.abs(v).toLocaleString()}`
-            }
-          />
+        <div className="text-muted-foreground text-[10px]">
+          Monthly quota
+          {monthPct != null ? ` · ${Math.round(monthPct)}%` : " · month to date"}
         </div>
+        {monthPct != null && (
+          <div className="bg-muted-foreground/20 mx-auto mt-1 h-1.5 w-24 overflow-hidden rounded-full">
+            <div
+              className={`h-full ${monthFill}`}
+              style={{ width: `${Math.min(monthPct, 100)}%` }}
+            />
+          </div>
+        )}
       </div>
-      <div className="bg-background/70 rounded-md border border-[#85b85c]/18 p-2 text-center">
-        <div className="text-base font-bold tabular-nums">
-          {totals.user_count.toLocaleString()}
-        </div>
-        <div className="text-muted-foreground text-[10px]">Active users</div>
-        <div className="mt-0.5">
-          <DeltaBadge
-            current={totals.user_count}
-            prev={totals.prev_user_count}
-            variant="count"
-            format={(v) =>
-              `${v >= 0 ? "+" : "−"}${Math.abs(v).toLocaleString()}`
-            }
-          />
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        {diff == null ? (
+          <div className="text-muted-foreground text-base font-bold">—</div>
+        ) : (
+          <div
+            className={`text-base font-bold tabular-nums ${
+              diff > 0
+                ? "text-destructive"
+                : diff < 0
+                  ? "text-[#5c8e43] dark:text-[#85b85c]"
+                  : ""
+            }`}
+          >
+            {formatSignedCost(diff)}
+            {pctLabel ? (
+              <span className="text-muted-foreground font-normal">
+                {" "}
+                · {pctLabel}
+              </span>
+            ) : null}
+          </div>
+        )}
+        <div className="text-muted-foreground text-[10px]">
+          Δ vs prior period
         </div>
       </div>
     </div>
@@ -801,12 +788,18 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
       </TableHeader>
       <TableBody>
         {users.map((user) => (
-          <TableRow key={user.owner_user_id ?? "unattributed"}>
+          <TableRow
+            key={`${user.org_id ?? "-"}:${user.owner_user_id ?? "unattributed"}`}
+          >
             <TableCell>
               <div className="flex flex-col">
                 {user.owner_user_id ? (
                   <Link
-                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}`}
+                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}${
+                      user.org_id
+                        ? `?org=${encodeURIComponent(user.org_id)}`
+                        : ""
+                    }`}
                     className="text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                   >
                     {userLabel(user)}
@@ -829,12 +822,7 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
               estimated={user.cost_estimated_usd}
             />
             <TableCell className="text-right">
-              <DeltaBadge
-                current={user.cost_usd}
-                prev={user.prev_cost_usd}
-                variant="cost"
-                format={formatSignedCost}
-              />
+              <DeltaBadge current={user.cost_usd} prev={user.prev_cost_usd} />
             </TableCell>
             <QuotaCell user={user} />
             <RunningCell count={user.inflight_trial_count ?? 0} />

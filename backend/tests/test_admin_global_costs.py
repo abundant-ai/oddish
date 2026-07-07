@@ -69,12 +69,14 @@ def _trial(
 
 
 class _Fixture:
-    def __init__(self, org_id, target, other, task_id, baseline):
+    def __init__(self, org_id, target, other, task_id, baseline, recent, prior):
         self.org_id = org_id
         self.target = target
         self.other = other
         self.task_id = task_id
         self.baseline = baseline
+        self.recent = recent
+        self.prior = prior
 
 
 @pytest_asyncio.fixture
@@ -135,7 +137,7 @@ async def global_costs_fixture():
             ]
         )
 
-    fixture = _Fixture(org_id, target, other, task_id, baseline)
+    fixture = _Fixture(org_id, target, other, task_id, baseline, recent, prior)
     try:
         yield fixture
     finally:
@@ -166,20 +168,20 @@ async def global_costs_fixture():
             )
 
 
-def _user_row(result, user_id):
-    return next(u for u in result.by_user if u.owner_user_id == user_id)
+def _user_row(result, user_id, org_id=None):
+    return next(
+        u
+        for u in result.by_user
+        if u.owner_user_id == user_id and (org_id is None or u.org_id == org_id)
+    )
 
 
 @requires_db
 @pytest.mark.asyncio
-async def test_failed_spend_accumulated(global_costs_fixture):
+async def test_window_costs_by_user(global_costs_fixture):
     f = global_costs_fixture
     async with get_session() as session:
         result = await get_cost_breakdown_core(session, window_days=7)
-    assert result.totals.failed_trial_count - f.baseline.failed_trial_count == 1
-    assert result.totals.failed_cost_usd - f.baseline.failed_cost_usd == pytest.approx(
-        0.50
-    )
     row = _user_row(result, f.target.id)
     assert row.cost_usd == pytest.approx(1.50)
     assert row.trial_count == 3
@@ -192,15 +194,27 @@ async def test_prev_window_totals_and_per_user(global_costs_fixture):
     async with get_session() as session:
         result = await get_cost_breakdown_core(session, window_days=7)
     assert result.totals.prev_cost_usd - f.baseline.prev_cost_usd == pytest.approx(4.25)
-    assert result.totals.prev_trial_count - f.baseline.prev_trial_count == 2
-    assert result.totals.prev_user_count - f.baseline.prev_user_count == 1
-    assert (
-        result.totals.prev_failed_cost_usd - f.baseline.prev_failed_cost_usd
-    ) == pytest.approx(0.25)
     row = _user_row(result, f.target.id)
     assert row.prev_cost_usd == pytest.approx(4.25)
     other_row = _user_row(result, f.other.id)
     assert other_row.prev_cost_usd == pytest.approx(0.0)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_month_to_date_cost(global_costs_fixture):
+    f = global_costs_fixture
+    month_start = datetime.now(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    async with get_session() as session:
+        result = await get_cost_breakdown_core(session, window_days=7)
+    expected = (3.50 if f.recent >= month_start else 0.0) + (
+        4.25 if f.prior >= month_start else 0.0
+    )
+    assert result.totals.month_cost_usd - f.baseline.month_cost_usd == pytest.approx(
+        expected
+    )
 
 
 @requires_db
@@ -210,9 +224,6 @@ async def test_prev_fields_none_all_time(global_costs_fixture):
     async with get_session() as session:
         result = await get_cost_breakdown_core(session, window_days=None)
     assert result.totals.prev_cost_usd is None
-    assert result.totals.prev_trial_count is None
-    assert result.totals.prev_user_count is None
-    assert result.totals.prev_failed_cost_usd is None
     row = _user_row(result, f.target.id)
     assert row.prev_cost_usd is None
 
@@ -309,12 +320,21 @@ async def test_quota_limit_uses_same_org_as_enforcement(global_costs_fixture):
         async with get_session() as session:
             result = await get_cost_breakdown_core(session, window_days=7)
 
-        row = _user_row(result, f.target.id)
-        assert row.quota_spent_usd == pytest.approx(1.50)
-        assert row.quota_limit_usd == pytest.approx(
+        home_row = _user_row(result, f.target.id, org_id=f.org_id)
+        assert home_row.cost_usd == pytest.approx(1.50)
+        assert home_row.quota_spent_usd == pytest.approx(1.50)
+        assert home_row.quota_limit_usd == pytest.approx(
             float(settings.default_daily_quota_usd)
         )
-        assert row.inflight_trial_count == 1
+        assert home_row.inflight_trial_count == 1
+
+        foreign_row = _user_row(result, f.target.id, org_id=foreign_org_id)
+        assert foreign_row.cost_usd == pytest.approx(7.00)
+        assert foreign_row.quota_spent_usd == pytest.approx(7.00)
+        assert foreign_row.quota_limit_usd == pytest.approx(99.0)
+        assert foreign_row.inflight_trial_count == 1
+
+        assert result.totals.user_count - f.baseline.user_count == 2
     finally:
         async with get_session() as session:
             await session.execute(
