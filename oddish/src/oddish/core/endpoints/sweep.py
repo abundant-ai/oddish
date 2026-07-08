@@ -32,6 +32,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    HarborConfig,
     TaskResponse,
     TaskSweepBatchItemResult,
     TaskSweepSubmission,
@@ -183,6 +184,72 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+def _infer_tpu_environment(
+    harbor: HarborConfig,
+    effective_environment: EnvironmentType | None,
+) -> EnvironmentType | None:
+    """Resolve a TPU request with NO environment anywhere to GKE.
+
+    The hosted router infers this in its default (get_default_cloud_environment)
+    but an OSS install's sweep handler passes no default -- without this, a TPU
+    submission that omits environment would 422 there instead of routing like
+    the hosted API and the CLI sniff. A RESOLVED environment is never
+    overridden; the guards below judge it.
+    """
+    if effective_environment is None and harbor.environment.override_tpu is not None:
+        return EnvironmentType.GKE
+    return effective_environment
+
+
+def _reject_tpu_without_gke(
+    harbor: "HarborConfig",
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a TPU request resolves to a non-GKE effective environment.
+
+    The schema rejects the explicit-environment case; this covers what only the
+    server can see -- the caller-resolved default and an append's inherited
+    environment.
+    """
+    if (
+        harbor.environment.override_tpu is not None
+        and effective_environment != EnvironmentType.GKE
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TPU requests require the trials' effective environment to be "
+                "gke. Submit with environment=gke."
+            ),
+        )
+
+
+def _reject_mixed_gke_configs(
+    configs,
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a config-level ``environment: gke`` rides a non-GKE submission.
+
+    Per-config environments win in ``build_trial_specs_from_sweep``, but the
+    harbor stamp keys off the SUBMISSION-level effective environment -- so this
+    one mismatch direction would run trials on GKE with the lean default Harbor
+    pin (a broken image). The reverse direction (non-GKE configs under a GKE
+    submission) stays permitted: the gke variant image is a superset and runs
+    those trials correctly.
+    """
+    if effective_environment == EnvironmentType.GKE:
+        return
+    if any(getattr(c, "environment", None) == EnvironmentType.GKE for c in configs):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "configs[].environment=gke requires the submission-level "
+                "environment to be gke so the trials get the GKE-enabled "
+                "Harbor image."
+            ),
+        )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -287,6 +354,11 @@ async def create_task_sweep_core(
     effective_environment = _effective_sweep_environment(
         submission.environment, inherited_environment, default_environment
     )
+    effective_environment = _infer_tpu_environment(
+        submission.harbor, effective_environment
+    )
+    _reject_mixed_gke_configs(submission.configs, effective_environment)
+    _reject_tpu_without_gke(submission.harbor, effective_environment)
     harbor_to_gate = submission.harbor
     if effective_environment is not None:
         harbor_to_gate = stamp_gke_harbor_source(
