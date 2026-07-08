@@ -98,6 +98,24 @@ def test_find_session_dir_falls_back_to_jsonl_dir(tmp_path):
     assert found is not None and found.name == "sess-xyz"
 
 
+def test_find_session_dir_known_id_uses_lone_session(tmp_path):
+    # Known session id, no exact match, but a single session -> safe to use it.
+    capture = tmp_path / "grok-session"
+    _write_session(capture, "sess-actual")
+    found = find_session_dir(capture, "sess-from-stdout")
+    assert found is not None and found.name == "sess-actual"
+
+
+def test_find_session_dir_known_id_refuses_ambiguous(tmp_path):
+    # Known session id, no exact match, multiple sessions -> refuse to guess.
+    capture = tmp_path / "grok-session"
+    _write_session(capture, "sess-a")
+    _write_session(capture, "sess-b")
+    assert find_session_dir(capture, "sess-missing") is None
+    # ...but an exact match still wins even with multiple sessions present.
+    assert find_session_dir(capture, "sess-b").name == "sess-b"
+
+
 def test_extract_token_totals(tmp_path):
     capture = tmp_path / "grok-session"
     session_dir = _write_session(capture, "sess-tok")

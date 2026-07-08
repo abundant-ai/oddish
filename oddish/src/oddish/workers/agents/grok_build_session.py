@@ -89,9 +89,17 @@ def find_session_dir(capture_root: Path, session_id: str | None) -> Path | None:
 
     The capture copies ``$GROK_HOME/sessions`` (and ``logs``) verbatim, so the
     real per-session directory is nested as ``sessions/<enc-cwd>/<session-id>/``.
-    Prefer an exact ``session_id`` match; otherwise fall back to the most
-    recently modified directory that contains an ``updates.jsonl`` or
-    ``events.jsonl``.
+    Prefer an exact ``session_id`` match.
+
+    When ``session_id`` is known but no directory matches it, we must NOT blindly
+    pick the most recent session -- that could attribute a different Grok
+    session's steps/tokens to this trial. A trial runs in a fresh sandbox with a
+    single session, so a lone candidate is unambiguously the trial's session and
+    is safe to use; with multiple candidates and no exact match we refuse to
+    guess (return ``None``) so the caller falls back to the stdout trajectory.
+
+    When ``session_id`` is unknown (``None``), fall back to the most recently
+    modified directory that contains an ``updates.jsonl`` or ``events.jsonl``.
     """
     if not capture_root.is_dir():
         return None
@@ -105,6 +113,10 @@ def find_session_dir(capture_root: Path, session_id: str | None) -> Path | None:
             candidates.append(path)
     if not candidates:
         return None
+    if session_id:
+        # Known session id but no exact directory match: only trust a single
+        # unambiguous session; never guess between several.
+        return candidates[0] if len(candidates) == 1 else None
     candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0]
 
