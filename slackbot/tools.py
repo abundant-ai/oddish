@@ -183,7 +183,7 @@ async def oddish_trial_logs(args: dict) -> dict:
     },
 )
 async def oddish_tasks(args: dict) -> dict:
-    params = {"compact_tasks": True, "include_worker_jobs": False, "limit": args.get("limit", 25)}
+    params = {"compact_tasks": True, "include_worker_jobs": False, "limit": args.get("limit") or 25}
     for k in ("status", "user", "experiment_id"):
         if args.get(k):
             params[k] = args[k]
