@@ -165,6 +165,7 @@ class PreparedTrialRun:
 class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
+    tailed_attempt: int | None = None
 
 
 def _is_agent_timeout_exception(exc: object | None) -> bool:
@@ -998,6 +999,7 @@ async def _execute_trial(
     extra_agent_env: dict[str, str] | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
+    tailed_attempt: int | None = None
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
@@ -1063,13 +1065,21 @@ async def _execute_trial(
     finally:
         heartbeat_stop.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
+        # Stop the tailer (final flush + checkpoint) here, but defer the event
+        # purge to run_trial_job after the trial row is marked terminal. Purging
+        # now -- before _store_trial_results sets finished_at -- would blank the
+        # live transcript while polling clients still observe the trial as
+        # running (read_trial_live reports done via finished_at).
         tailed_attempt = await live_tail.shutdown(trial_id)
-        await live_tail.purge_events(trial_id, tailed_attempt)
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
-    return TrialExecutionResult(outcome=outcome, execution_error=execution_error)
+    return TrialExecutionResult(
+        outcome=outcome,
+        execution_error=execution_error,
+        tailed_attempt=tailed_attempt,
+    )
 
 
 def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
@@ -1227,6 +1237,7 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
 
+    execution: TrialExecutionResult | None = None
     try:
         # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
         # write prefix) and inject its scoped model env into the agent, replacing
@@ -1342,6 +1353,12 @@ async def run_trial_job(
             )
         )
     finally:
+        # Purge the live transcript only now that _store_trial_results has
+        # marked the trial terminal (finished_at set). Doing it inside
+        # _execute_trial's finally would race the S3 upload/store window and
+        # blank the transcript while clients still see the trial running.
+        if execution is not None:
+            await live_tail.purge_events(trial_id, execution.tailed_attempt)
         # Backstop for the non-happy paths (harness exception, worker
         # cancel, S3 upload failure, or Harbor dying before producing a
         # job_dir). On Modal, ``process_single_job`` containers are warm
