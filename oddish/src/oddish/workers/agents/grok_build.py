@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -11,11 +12,22 @@ from harbor.agents.installed.grok_build import GrokBuild
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 
+from .grok_build_session import (
+    GROK_SESSION_CAPTURE_DIRNAME,
+    build_session_trajectory,
+)
 from .grok_build_trajectory import write_grok_build_trajectory_if_richer
+
+from harbor.utils.trajectory_utils import format_trajectory_json
 
 
 _OUTPUT_FILENAME = "grok-build.json"
 _STDERR_FILENAME = "grok-build.stderr.log"
+
+# Where the grok CLI persists its full session store (tool calls + token usage);
+# the headless stdout does not carry these, so we copy this tree into the trial
+# logs so it survives sandbox teardown and can be converted to a trajectory.
+_SESSION_CAPTURE_PATH = f"/logs/agent/{GROK_SESSION_CAPTURE_DIRNAME}"
 
 # Valid xAI transport backends the Grok CLI understands for a ``[model.*]``
 # entry. Grok routes ``responses`` -> ``POST /v1/responses`` and
@@ -183,19 +195,94 @@ class OddishGrokBuild(GrokBuild):
             "exit $rc"
         )
         await self.exec_as_agent(environment, command=command, env=self._xai_env())
+        await self._capture_session(environment)
+
+    async def _capture_session(self, environment: BaseEnvironment) -> None:
+        """Copy the grok session store into the trial logs.
+
+        The headless stdout only carries the assistant's text; the tool calls
+        and per-turn token usage live under ``$GROK_HOME/sessions`` (and
+        ``logs``). Copy that tree into ``/logs/agent/grok-session`` so it is
+        uploaded with the trial and can be turned into a rich trajectory. Fully
+        best-effort: a copy failure must never fail the trial.
+        """
+        capture = shlex.quote(_SESSION_CAPTURE_PATH)
+        command = (
+            "set +e; "
+            f"mkdir -p {capture}; "
+            'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
+            f'cp -a "$GROK_HOME/sessions" {capture}/ 2>/dev/null; '
+            "exit 0"
+        )
+        try:
+            await self.exec_as_agent(environment, command=command)
+        except Exception:
+            self.logger.warning("Failed to capture grok session store", exc_info=True)
+
+    def _session_id_from_output(self) -> str | None:
+        output_path = self.logs_dir / _OUTPUT_FILENAME
+        if not output_path.is_file():
+            return None
+        try:
+            text = output_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+        session_id: str | None = None
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                candidate = event.get("sessionId") or event.get("session_id")
+                if isinstance(candidate, str) and candidate:
+                    session_id = candidate
+        return session_id
 
     def populate_context_post_run(self, context: AgentContext) -> None:
         super().populate_context_post_run(context)
+        trajectory = None
+        # Prefer the on-disk session store (real tool calls + token usage) over
+        # the text-only headless stdout.
         try:
-            trajectory = write_grok_build_trajectory_if_richer(
-                existing_trajectory_path=self.logs_dir / "trajectory.json",
-                output_path=self.logs_dir / _OUTPUT_FILENAME,
+            session_trajectory = build_session_trajectory(
+                self.logs_dir / GROK_SESSION_CAPTURE_DIRNAME,
+                session_id=self._session_id_from_output(),
                 agent_version=getattr(self, "_version", None) or "unknown",
                 model_name=self.model_name,
             )
         except Exception:
-            self.logger.exception("Failed to write Grok Build trajectory fallback")
-            return
+            self.logger.warning(
+                "Failed to build Grok Build session trajectory", exc_info=True
+            )
+            session_trajectory = None
+
+        if session_trajectory and session_trajectory.steps:
+            try:
+                (self.logs_dir / "trajectory.json").write_text(
+                    format_trajectory_json(session_trajectory.to_json_dict()),
+                    encoding="utf-8",
+                )
+                trajectory = session_trajectory
+            except Exception:
+                self.logger.warning(
+                    "Failed to write Grok Build session trajectory", exc_info=True
+                )
+
+        if trajectory is None:
+            try:
+                trajectory = write_grok_build_trajectory_if_richer(
+                    existing_trajectory_path=self.logs_dir / "trajectory.json",
+                    output_path=self.logs_dir / _OUTPUT_FILENAME,
+                    agent_version=getattr(self, "_version", None) or "unknown",
+                    model_name=self.model_name,
+                )
+            except Exception:
+                self.logger.exception("Failed to write Grok Build trajectory fallback")
+                return
 
         if trajectory and trajectory.final_metrics:
             metrics = trajectory.final_metrics
