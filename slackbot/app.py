@@ -77,6 +77,20 @@ def _claim_event(event_id: str | None) -> bool:
     return seen_events.put(event_id, time.time(), skip_if_exists=True)
 
 
+def _release_event(event_id: str | None) -> None:
+    """Undo a claim so a Slack redelivery of the event is reprocessed.
+
+    Called when work fails *after* claiming (spawn error, or the answer
+    worker cannot even post its placeholder) so the event is not left
+    marked "seen" with no visible bot response.
+    """
+    if event_id:
+        try:
+            seen_events.pop(event_id, None)
+        except Exception:
+            log.exception("failed to release event claim event_id=%s", event_id)
+
+
 def _verify_slack(headers: dict[str, str], body: bytes) -> bool:
     ts = headers.get("x-slack-request-timestamp", "")
     sig = headers.get("x-slack-signature", "")
@@ -104,9 +118,6 @@ def _dispatch(payload: dict) -> None:
         thread = event.get("thread_ts") or ts
         user = event.get("user")
         _log("received", event_id=event_id, channel=channel, thread=thread, user=user)
-        if not _claim_event(event_id):
-            _log("duplicate", event_id=event_id)
-            return
 
         allowed = os.environ.get("SLACK_ALLOWED_USERS", "").strip()
         if not allowed:
@@ -123,8 +134,19 @@ def _dispatch(payload: dict) -> None:
             _log("empty_prompt", event_id=event_id, user=user)
             _post(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`")
             return
+        # Claim as the final gate, immediately before handing the event to
+        # the worker, so a failure in any earlier step cannot leave the
+        # event marked "seen" and silently swallow a Slack redelivery.
+        if not _claim_event(event_id):
+            _log("duplicate", event_id=event_id)
+            return
+        try:
+            answer.spawn(channel, thread, cleaned, user, event_id)
+        except Exception:
+            # Spawn failed after claiming; release so the redelivery retries.
+            _release_event(event_id)
+            raise
         _log("claimed", event_id=event_id, channel=channel, thread=thread, user=user)
-        answer.spawn(channel, thread, cleaned, user, event_id)
     except Exception:
         # Runs as a fire-and-forget background task after the HTTP ack, so an
         # unhandled error would otherwise vanish into the server logs untraced.
@@ -210,8 +232,11 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         status_ts = _post(channel, thread, "Thinking…")
     except Exception:
         # If we can't even post the placeholder we have nothing to update later,
-        # so there's no way to surface an answer -- log and bail.
+        # so there's no way to surface an answer. Release the dedup claim so a
+        # Slack redelivery of this event can be reprocessed instead of being
+        # dropped as a duplicate with no visible bot activity.
         log.exception("initial post failed event_id=%s channel=%s", event_id, channel)
+        _release_event(event_id)
         return
     options = ClaudeAgentOptions(
         model=MODEL,
