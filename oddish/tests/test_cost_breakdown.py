@@ -5,13 +5,16 @@ from __future__ import annotations
 import sys
 import uuid
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.config import settings  # noqa: E402
 from oddish.core.admin import get_cost_breakdown_core  # noqa: E402
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER  # noqa: E402
 from oddish.db import (  # noqa: E402
@@ -425,6 +428,72 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
         k for k in result.series_by_user.keys if k.key == "__unattributed__"
     )
     assert unattributed_key.label == "Unattributed"
+
+
+@pytest.mark.asyncio
+async def test_monthly_quota_cost_uses_budgeted_orgs_only(
+    seeded_cost_data, monkeypatch
+):
+    assert _EXPECTED_EST is not None and _EXPECTED_EST > 0
+    monkeypatch.setattr(settings, "default_org_monthly_quota_usd", None)
+
+    async with get_session() as session:
+        await session.execute(
+            text(
+                "INSERT INTO organizations "
+                "(id, name, slug, plan, settings, is_active, created_at, updated_at) "
+                "VALUES (:id, :id, :id, 'free', '{}'::jsonb, true, NOW(), NOW())"
+            ),
+            {"id": ORG_1},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO org_quotas "
+                "(id, org_id, limit_usd, period_kind, created_at, updated_at) "
+                "VALUES (:qid, :org_id, :limit, 'monthly', NOW(), NOW())"
+            ),
+            {"qid": uuid.uuid4().hex[:8], "org_id": ORG_1, "limit": Decimal("10.00")},
+        )
+        await session.execute(
+            text(
+                "UPDATE trials SET org_id = :org_id "
+                "WHERE experiment_id IN (:exp_1, :exp_2)"
+            ),
+            {"org_id": ORG_1, "exp_1": E1, "exp_2": E2},
+        )
+        await session.execute(
+            text(
+                "UPDATE trials SET org_id = :org_id "
+                "WHERE experiment_id IN (:exp_3, :exp_5, :exp_6, :exp_7, :exp_8)"
+            ),
+            {
+                "org_id": ORG_2,
+                "exp_3": E3,
+                "exp_5": E5,
+                "exp_6": E6,
+                "exp_7": E7,
+                "exp_8": E8,
+            },
+        )
+        await session.flush()
+
+    try:
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(
+                session, window_days=7, experiment_limit=500, user_limit=500
+            )
+        assert result.totals.month_budget_usd == 10.0
+        assert _approx(result.totals.month_cost_usd, 5.0 + _EXPECTED_EST)
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                text("DELETE FROM org_quotas WHERE org_id = :org_id"),
+                {"org_id": ORG_1},
+            )
+            await session.execute(
+                text("DELETE FROM organizations WHERE id = :org_id"),
+                {"org_id": ORG_1},
+            )
 
 
 @pytest.mark.asyncio
