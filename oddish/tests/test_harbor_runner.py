@@ -1096,7 +1096,7 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
 
     asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
 
-    run_command = next(c for c in seen if "grok -p" in c)
+    run_command = next(c for c in seen if "PROMPT_ARGS" in c)
     # The session store is captured out-of-band after the grok run.
     assert any("grok-session" in c for c in seen)
     assert "--output-format streaming-json" in run_command
@@ -1105,10 +1105,13 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
     assert "reasoning-effort|reasoning_effort" in run_command
     assert "streaming-json|output-format|no-auto-update" in run_command
     assert ">/logs/agent/grok-build.json" in run_command
-    # The instruction is staged out-of-band and read back inside the sandbox,
-    # never inlined into the exec argv (Modal ARG_MAX guard).
+    # The instruction is staged out-of-band and handed over as a file path,
+    # never inlined into any argv (Modal ARG_MAX guard + pkill -f self-match
+    # guard); the inline "$(cat ...)" form is only the legacy-CLI fallback.
     assert uploads == ["/tmp/oddish-grok-build-prompt.txt"]
-    assert 'grok -p "$(cat /tmp/oddish-grok-build-prompt.txt)"' in run_command
+    assert "PROMPT_ARGS=(--prompt-file /tmp/oddish-grok-build-prompt.txt)" in run_command
+    assert 'PROMPT_ARGS=(-p "$(cat /tmp/oddish-grok-build-prompt.txt)")' in run_command
+    assert 'grok "${PROMPT_ARGS[@]}"' in run_command
     assert "fix it" not in run_command
 
 

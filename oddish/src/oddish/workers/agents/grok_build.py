@@ -41,15 +41,23 @@ _SESSION_CAPTURE_PATH = f"/logs/agent/{GROK_SESSION_CAPTURE_DIRNAME}"
 _VALID_API_BACKENDS = frozenset({"chat_completions", "responses", "messages"})
 _API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 
-# The rendered instruction is staged inside the sandbox as a file and read back
-# via ``"$(cat ...)"`` instead of being inlined into the ``grok -p`` argv. Modal
-# rejects any ``exec`` whose CMD arguments exceed 65536 bytes (ARG_MAX), and a
-# large task instruction -- embedded up to three times across the CLI fallbacks
-# -- blows past that limit and fails the whole trial during image/agent start.
-# Uploading the prompt out-of-band keeps the exec command string tiny; the
-# ``$(cat ...)`` substitution is expanded by the sandbox shell (bound only by
-# the far larger in-sandbox Linux ARG_MAX), so grok still receives the full
-# instruction as its ``-p`` argument.
+# The rendered instruction is staged inside the sandbox as a file and handed to
+# grok via ``--prompt-file`` instead of being inlined into the argv. Two
+# reasons, both fatal in practice:
+#
+# 1. Modal rejects any ``exec`` whose CMD arguments exceed 65536 bytes
+#    (ARG_MAX); a large task instruction embedded across the CLI fallbacks
+#    blows past that limit and fails the trial during agent start.
+# 2. Anything in argv is visible in ``/proc/PID/cmdline`` to every process in
+#    the sandbox. With the old ``-p "$(cat ...)"`` form the sandbox shell
+#    expanded the full instruction into the wrapper's and grok's cmdline, so
+#    when the agent later swept processes with ``pkill -f``/``pgrep -f``
+#    patterns drawn from the task domain (e.g. the dev-server command named in
+#    the instruction), the pattern matched grok itself and killed it mid-run --
+#    observed as ``Command failed (exit 137/143)`` on long-horizon web tasks.
+#
+# The inline ``-p "$(cat ...)"`` form is kept only as a fallback for grok CLIs
+# that predate ``--prompt-file``.
 _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 
@@ -126,10 +134,14 @@ class OddishGrokBuild(GrokBuild):
         await self._write_config(environment)
         await self._stage_prompt(environment, instruction)
 
-        # Read the prompt back inside the sandbox rather than inlining it: the
-        # command substitution is expanded by the sandbox shell, so the argv
-        # sent to the Modal SDK stays small regardless of instruction size.
-        prompt_arg = f'"$(cat {shlex.quote(_PROMPT_PATH)})"'
+        # ``PROMPT_ARGS`` is a bash array so the legacy-CLI fallback below can
+        # switch every subsequent retry branch to the inline ``-p`` form in one
+        # place. The primary ``--prompt-file`` form keeps the instruction text
+        # out of every process argv (see the ``_PROMPT_PATH`` comment).
+        prompt_file_init = (
+            f"PROMPT_ARGS=(--prompt-file {shlex.quote(_PROMPT_PATH)})"
+        )
+        prompt_inline_init = f'PROMPT_ARGS=(-p "$(cat {shlex.quote(_PROMPT_PATH)})")'
         stdout_path = f"/logs/agent/{_OUTPUT_FILENAME}"
         stderr_path = f"/logs/agent/{_STDERR_FILENAME}"
 
@@ -141,8 +153,7 @@ class OddishGrokBuild(GrokBuild):
         ) -> str:
             parts = [
                 "grok",
-                "-p",
-                prompt_arg,
+                '"${PROMPT_ARGS[@]}"',
                 "--always-approve",
                 "--output-format",
                 output_format,
@@ -159,6 +170,12 @@ class OddishGrokBuild(GrokBuild):
             "'(streaming-json|output-format|no-auto-update|unknown option|"
             "unrecognized option|unexpected argument|invalid value|unsupported)'"
         )
+        # Anchored on an option-error phrase so agent tool chatter that merely
+        # mentions "prompt-file" cannot trip a full agent re-run.
+        prompt_file_unsupported_pattern = (
+            "'(unexpected argument|unknown option|unrecognized option|"
+            "invalid value|unsupported).*prompt-file'"
+        )
         # Clear any prior grok sessions before the run so the session store holds
         # exactly one session afterwards. Worker containers are reused across
         # trials; without this the store accumulates multiple sessions and the
@@ -169,9 +186,16 @@ class OddishGrokBuild(GrokBuild):
             'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
             'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; '
             "set +e; "
+            f"{prompt_file_init}; "
             f"{grok_command('streaming-json', no_auto_update=True)} "
             f">{stdout_path} 2>{stderr_path}; "
             "rc=$?; "
+            f"if [ $rc -ne 0 ] && grep -Eqi {prompt_file_unsupported_pattern} {stderr_path}; then "
+            f"{prompt_inline_init}; "
+            f"{grok_command('streaming-json', no_auto_update=True)} "
+            f">{stdout_path} 2>{stderr_path}; "
+            "rc=$?; "
+            "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
             f"{grok_command('streaming-json', no_auto_update=True, include_reasoning_effort=False)} "
             f">{stdout_path} 2>{stderr_path}; "

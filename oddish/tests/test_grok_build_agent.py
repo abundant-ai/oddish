@@ -1,10 +1,14 @@
-"""OddishGrokBuild: keep the instruction out of the Modal exec argv.
+"""OddishGrokBuild: keep the instruction out of every process argv.
 
 Modal rejects any sandbox ``exec`` whose CMD arguments exceed 65536 bytes
 (ARG_MAX). The agent used to inline the (up to 3x embedded) task instruction
 into ``grok -p <instruction>``, so large tasks failed at agent start with
 ``InvalidError: Total length of CMD arguments cannot exceed 65536 bytes``.
-The instruction is now uploaded as a file and read back via ``"$(cat ...)"``.
+The instruction is now uploaded as a file and passed via ``--prompt-file``, so
+it never appears in ``/proc/PID/cmdline`` either -- with ``-p "$(cat ...)"``
+the expanded instruction made grok itself match agent-issued ``pkill -f``/
+``pgrep -f`` patterns from the task domain, killing the agent mid-run
+(exit 137/143). The inline form survives only as a legacy-CLI fallback.
 """
 
 from __future__ import annotations
@@ -97,14 +101,24 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     assert any("chmod" in c and _PROMPT_PATH in c for c in root_commands)
 
     # Exactly one agent exec runs grok, and it never carries the instruction
-    # body -- it reads the staged file instead, so it stays well under ARG_MAX.
-    # (A second agent exec copies the grok session store into the trial logs.)
-    grok_commands = [c for c in agent_commands if "grok -p" in c]
+    # body -- it references the staged file instead, so it stays well under
+    # ARG_MAX. (A second agent exec copies the grok session store into the
+    # trial logs.)
+    grok_commands = [c for c in agent_commands if "PROMPT_ARGS" in c]
     assert len(grok_commands) == 1
     command = grok_commands[0]
     assert "SENTINEL_START" not in command
     assert "payload-line" not in command
-    assert f'"$(cat {_PROMPT_PATH})"' in command
+    # Primary form hands grok the file path, keeping the instruction out of
+    # /proc/PID/cmdline (pkill -f patterns from the task text must not match
+    # the grok process); the inline "$(cat ...)" form exists only in the
+    # legacy-CLI fallback branch.
+    assert f"PROMPT_ARGS=(--prompt-file {_PROMPT_PATH})" in command
+    assert f'PROMPT_ARGS=(-p "$(cat {_PROMPT_PATH})")' in command
+    assert command.index(f"PROMPT_ARGS=(--prompt-file {_PROMPT_PATH})") < command.index(
+        f'PROMPT_ARGS=(-p "$(cat {_PROMPT_PATH})")'
+    )
+    assert '"${PROMPT_ARGS[@]}"' in command
     assert "--reasoning-effort high" in command
     assert len(command.encode("utf-8")) < _MODAL_ARG_MAX_BYTES
 
