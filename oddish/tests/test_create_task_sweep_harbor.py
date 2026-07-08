@@ -181,6 +181,87 @@ async def test_non_gke_environment_stays_on_default_variant():
         assert variants and all(v == "default" for v in variants)
 
 
+async def test_effective_sweep_environment_resolution_is_db_free():
+    # Bug B core logic, provable WITHOUT a DB (the append integration test below
+    # is DB-gated). The harbor stamp must resolve the SAME environment as
+    # build_trial_specs_from_sweep: an explicit submission override wins, else the
+    # environment inherited from an append target's existing trials, else the
+    # caller-resolved default.
+    from harbor.models.environment_type import EnvironmentType as E
+
+    from oddish.core.endpoints.sweep import _effective_sweep_environment
+
+    # Submission override wins over inherited + default.
+    assert _effective_sweep_environment(E.GKE, E.DAYTONA, E.MODAL) == E.GKE
+    # No override -> inherit the append target's environment. THIS is the Bug B
+    # guard: a GKE task appended-to without --env still resolves GKE, so the stamp
+    # binds harbor-gke instead of leaving the trial on the lean default image.
+    assert _effective_sweep_environment(None, E.GKE, E.MODAL) == E.GKE
+    # No override, nothing inherited (create, or empty append target) -> default.
+    assert _effective_sweep_environment(None, None, E.MODAL) == E.MODAL
+    # Nothing anywhere -> None (the stamp is skipped entirely).
+    assert _effective_sweep_environment(None, None, None) is None
+
+
+async def test_append_without_env_inherits_gke_and_routes_to_gke_variant():
+    # Bug B regression: appending trials to an existing GKE task WITHOUT passing
+    # --env must still dispatch onto the gke variant. The appended trials inherit
+    # the task's GKE environment, so the harbor stamp must see GKE too -- otherwise
+    # they classify 'default' and silently run the lean default image.
+    from harbor.models.environment_type import EnvironmentType
+    from sqlalchemy import select
+
+    from oddish.db import WorkerJobModel
+
+    async with get_session() as session:
+        await _cleanup(session, "hsweep-gke-append")
+        session.add(
+            TaskModel(
+                id="hsweep-gke-append",
+                name="hsweep-gke-append",
+                user="t",
+                org_id=None,
+                task_path="p",
+            )
+        )
+        await session.flush()
+        # Seed the task with a GKE trial (submission carries --env gke).
+        await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id="hsweep-gke-append",
+                configs=[AgentModelPair(agent="nop", n_trials=1)],
+                harbor=HarborConfig(),
+                environment=EnvironmentType.GKE,
+            ),
+        )
+        # Append WITHOUT an environment (distinct model so it is not reconciled
+        # away against the seeded trial); it must inherit GKE.
+        _task, new_trials, is_append, _exp = await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id="hsweep-gke-append",
+                configs=[
+                    AgentModelPair(agent="nop", model="distinct-model", n_trials=1)
+                ],
+                harbor=HarborConfig(),
+            ),
+        )
+        assert is_append and new_trials
+        variants = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.harbor_variant_id).where(
+                        WorkerJobModel.subject_id.in_([t.id for t in new_trials])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert variants and all(v == "gke" for v in variants)
+
+
 async def test_disallowed_source_rejected_with_422():
     async with get_session() as session:
         await _cleanup(session, "hsweep-task3")
