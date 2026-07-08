@@ -538,9 +538,15 @@ export function QuotaAdminForm() {
                         </div>
                       ) : (
                         <div className="flex flex-col items-end gap-0.5">
-                          <span className="font-mono text-sm font-semibold tabular-nums">
+                          <button
+                            type="button"
+                            className="text-foreground hover:text-primary font-mono text-sm font-semibold tabular-nums underline-offset-2 hover:underline disabled:opacity-50"
+                            disabled={saving}
+                            aria-label={`Edit 24-hour base limit for ${memberLabel(member)}`}
+                            onClick={() => startEdit(id)}
+                          >
                             {formatDollars(member.limit_usd)}
-                          </span>
+                          </button>
                           {bumpUsd > 0 ? (
                             <span className="text-muted-foreground text-[11px]">
                               {formatDollars(baseLimit(member))} base
@@ -567,16 +573,6 @@ export function QuotaAdminForm() {
                         </p>
                       ) : null}
                       <div className="flex items-center justify-end gap-3">
-                        {!rowEditing ? (
-                          <button
-                            type="button"
-                            className="text-muted-foreground hover:text-foreground text-[11px] disabled:opacity-50"
-                            disabled={saving}
-                            onClick={() => startEdit(id)}
-                          >
-                            Edit base
-                          </button>
-                        ) : null}
                         <Popover
                           open={bumpOpen[id] ?? false}
                           onOpenChange={(open) =>
@@ -715,7 +711,8 @@ export function QuotaAdminForm() {
       </div>
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-xs">
-          Leave a limit empty to revert that member to the workspace default.
+          Click a member&apos;s limit to edit its base; leave it empty to
+          revert to the workspace default.
         </p>
         <div className="flex shrink-0 items-center gap-3">
           {dirtyMembers.length > 0 && !saving ? (
