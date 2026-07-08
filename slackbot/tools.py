@@ -93,10 +93,12 @@ async def oddish_costs(args: dict) -> dict:
         reverse=True,
     )
     if quota:
-        lines += ["", "*Quota (top by utilization; spenders in window only)*"]
+        lines += ["", "*Quota (top by settled 24h utilization; excludes in-flight reservations — v_quota_status has exact)*"]
         for u in quota[:10]:
             spent, limit = u.get("quota_spent_usd") or 0, u["quota_limit_usd"]
-            lines.append(f"• {_user_label(u)}: ${spent:,.2f} / ${limit:,.2f} ({spent / limit:.0%})")
+            inflight = u.get("inflight_trial_count") or 0
+            tail = f" — {inflight} in flight" if inflight else ""
+            lines.append(f"• {_user_label(u)}: ${spent:,.2f} / ${limit:,.2f} ({spent / limit:.0%}){tail}")
     lines.append("")
     lines.append("*Top models by spend*")
     for m in data.get("by_model", [])[:8]:
@@ -244,7 +246,7 @@ async def oddish_tasks(args: dict) -> dict:
     return _text("\n".join(lines))
 
 
-async def _fetch(sql: str) -> list:
+async def _fetch(sql: str, limit: int | None = None) -> list:
     import asyncpg
 
     # statement_cache_size=0: the RO DSN goes through Supavisor transaction-mode
@@ -253,7 +255,13 @@ async def _fetch(sql: str) -> list:
         os.environ["ODDISH_RO_DATABASE_URL"], statement_cache_size=0, timeout=10
     )
     try:
-        return await conn.fetch(sql)
+        if limit is None:
+            return await conn.fetch(sql)
+        # Server-side cursor so a huge result set never materializes client-side;
+        # cursors need an explicit transaction (one backend for its whole span
+        # under transaction pooling, so this stays pooler-safe).
+        async with conn.transaction():
+            return await (await conn.cursor(sql)).fetch(limit)
     finally:
         await conn.close()
 
@@ -296,14 +304,14 @@ async def oddish_run_sql(args: dict) -> dict:
         " ".join(f"{k}={v}" for k, v in _audit.items()),
         sql,
     )
-    rows = await _fetch(sql)
+    rows = await _fetch(sql, limit=_MAX_ROWS + 1)
     if not rows:
         return _text("(0 rows)")
     lines = [" | ".join(rows[0].keys())]
     for r in rows[:_MAX_ROWS]:
         lines.append(" | ".join("∅" if v is None else str(v) for v in r.values()))
     if len(rows) > _MAX_ROWS:
-        lines.append(f"… [{len(rows):,} rows total, showing {_MAX_ROWS}]")
+        lines.append(f"… [truncated at {_MAX_ROWS} rows; add aggregation or LIMIT]")
     return _text("\n".join(lines))
 
 
