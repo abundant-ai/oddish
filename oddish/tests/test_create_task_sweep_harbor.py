@@ -93,6 +93,94 @@ async def test_allowlisted_non_default_pin_is_stamped_on_trials_and_jobs(monkeyp
         assert variants and all(v == "ephemeral" for v in variants)
 
 
+async def test_gke_environment_routes_trials_to_the_gke_variant():
+    # A GKE submission with no explicit Harbor source must dispatch onto the
+    # blessed gke variant (harbor-gke image), not default or ephemeral.
+    from sqlalchemy import select
+
+    from oddish.db import WorkerJobModel
+    from harbor.models.environment_type import EnvironmentType
+
+    async with get_session() as session:
+        await _cleanup(session, "hsweep-gke")
+        session.add(
+            TaskModel(
+                id="hsweep-gke",
+                name="hsweep-gke",
+                user="t",
+                org_id=None,
+                task_path="p",
+            )
+        )
+        await session.flush()
+        _task, trials, _is_append, _exp = await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id="hsweep-gke",
+                configs=[AgentModelPair(agent="nop", n_trials=1)],
+                harbor=HarborConfig(),
+                environment=EnvironmentType.GKE,
+            ),
+        )
+        assert trials
+        variants = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.harbor_variant_id).where(
+                        WorkerJobModel.subject_id.in_([t.id for t in trials])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert variants and all(v == "gke" for v in variants)
+
+
+async def test_non_gke_environment_stays_on_default_variant():
+    # The mirror of the GKE case: a non-GKE submission must never be pointed at
+    # harbor-gke -- it keeps the default variant.
+    from sqlalchemy import select
+
+    from oddish.db import WorkerJobModel
+    from harbor.models.environment_type import EnvironmentType
+
+    async with get_session() as session:
+        await _cleanup(session, "hsweep-daytona")
+        session.add(
+            TaskModel(
+                id="hsweep-daytona",
+                name="hsweep-daytona",
+                user="t",
+                org_id=None,
+                task_path="p",
+            )
+        )
+        await session.flush()
+        _task, trials, _is_append, _exp = await create_task_sweep_core(
+            session,
+            submission=TaskSweepSubmission(
+                task_id="hsweep-daytona",
+                configs=[AgentModelPair(agent="nop", n_trials=1)],
+                harbor=HarborConfig(),
+                environment=EnvironmentType.DAYTONA,
+            ),
+        )
+        assert trials and all(t.harbor_sha == HARBOR_DEFAULT_SHA for t in trials)
+        variants = (
+            (
+                await session.execute(
+                    select(WorkerJobModel.harbor_variant_id).where(
+                        WorkerJobModel.subject_id.in_([t.id for t in trials])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert variants and all(v == "default" for v in variants)
+
+
 async def test_disallowed_source_rejected_with_422():
     async with get_session() as session:
         await _cleanup(session, "hsweep-task3")

@@ -15,6 +15,7 @@ from oddish.core.endpoints._common import (
 from oddish.core.harbor_source import (
     HarborSourceError,
     resolve_and_gate_harbor,
+    stamp_gke_harbor_source,
 )
 from oddish.core.idempotency import (
     SWEEP_ROUTE,
@@ -214,9 +215,23 @@ async def create_task_sweep_core(
     # never half-creates a task. The default pin does no network I/O.
     from oddish.config import settings
 
+    # A GKE (TPU) trial must run the GKE-enabled harbor-gke fork, not the lean
+    # default Harbor. When the submission's effective environment is GKE and the
+    # caller pinned no source, bind it to the blessed gke variant BEFORE
+    # resolution so it classifies onto the gke worker image. The effective
+    # environment mirrors build_trial_specs_from_sweep (submission override, else
+    # the caller-resolved default); a non-GKE submission is left untouched and
+    # keeps the default pin.
+    effective_environment = submission.environment or default_environment
+    harbor_to_gate = submission.harbor
+    if effective_environment is not None:
+        harbor_to_gate = stamp_gke_harbor_source(
+            submission.harbor, effective_environment
+        )
+
     try:
         stamped_harbor, _variant = resolve_and_gate_harbor(
-            submission.harbor, settings=settings
+            harbor_to_gate, settings=settings
         )
     except HarborSourceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

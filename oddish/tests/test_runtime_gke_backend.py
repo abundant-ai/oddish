@@ -49,6 +49,19 @@ def test_gke_backend_name_matches_environment_value() -> None:
     assert GkeBackend().name == "gke"
 
 
+def test_gke_backend_declares_registered_harbor_variant() -> None:
+    # Decoupling completeness: the backend's variant id must resolve to a
+    # registered blessed variant that points at harbor-gke, so a GKE trial
+    # dispatches onto the GKE-enabled image (never the lean default).
+    from oddish.core.harbor_source import HARBOR_VARIANTS
+
+    assert GkeBackend.harbor_variant_id in HARBOR_VARIANTS
+    assert (
+        HARBOR_VARIANTS[GkeBackend.harbor_variant_id].source
+        == "https://github.com/abundant-ai/harbor-gke"
+    )
+
+
 def test_gke_capabilities_are_tpu_only() -> None:
     caps = GkeBackend().capabilities()
     assert caps.gpu is None
