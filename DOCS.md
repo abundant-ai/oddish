@@ -24,6 +24,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish status` - view progress
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
+- `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
 - `oddish pull` - download logs and artifacts
 - `oddish combine` - merge several experiments into a new one
 - `oddish collect` - gather trials from tasks/trial IDs into a shareable read-only collection
@@ -242,6 +243,16 @@ oddish status --queue --json
 # Task status
 oddish status <task_id>
 
+# Single-trial detail (status, tokens, cost, analysis)
+oddish status <trial_id>
+
+# Task version history + per-version cost rollups
+oddish status <task_id> --detail
+
+# Task version list (or a single version)
+oddish status <task_id> --versions
+oddish status <task_id> --versions --version 2
+
 # Experiment status
 oddish status --experiment <experiment_id> --watch
 
@@ -253,8 +264,11 @@ If a positional ID isn't found as a task, `status` automatically retries it as a
 
 Options
 
-- `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
+- `TASK_ID` - Task ID to inspect when not using `--experiment`; a trial ID (`{task_id}-{index}`) shows a single-trial detail view, and an unmatched ID falls back to experiment lookup
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
+- `--detail` - Show a task's version history + per-version cost rollups (`GET /tasks/{id}/detail`; task ID required)
+- `--versions` - Show a task's version list; add `--version N` for a single version
+- `--version INTEGER` - With `--versions`, show only this version number
 - `--queue`, `-Q` - Show queue & worker scheduler diagnostics instead of a task/experiment (see below)
 - `--stale-after INTEGER` - Minutes without a heartbeat before a trial/job counts as stale (with `--queue`; default 15)
 - `--watch`, `-w` - Poll until the task or experiment finishes
@@ -331,6 +345,31 @@ Options
 - `--enable-analysis` - Also set `run_analysis=true` on the affected tasks so future trials auto-analyze.
 - `--json` - Emit machine-readable output.
 - `--api TEXT` - Override the API URL
+
+## View Costs
+
+Use `oddish costs` to see billable-spend accounting **without direct DB access**.
+By default it shows the org-wide breakdown; pass `--user <id>` for one user's
+billed spend. Admin-only on hosted Oddish (a full-scope API key); not available
+on a self-hosted core server.
+
+```bash
+# Org-wide spend over the last 7 days (default)
+oddish costs
+
+# All-time, machine-readable
+oddish costs --window-days 0 --json
+
+# One user's billed spend over 30 days
+oddish costs --user <user_id> --window-days 30
+```
+
+Options
+
+- `--user TEXT` - Show one user's billed spend (by id) instead of the org-wide breakdown
+- `--window-days INTEGER` - Trailing window in days; `0` = all-time (default 7)
+- `--api TEXT` - Override the API URL
+- `--json` - Emit the raw cost breakdown JSON
 
 ## Download Outputs
 
