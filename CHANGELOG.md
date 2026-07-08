@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [2026-07-07]
 
+### Changed
+
+- API key creation is now self-service for every organization, gated on the caller's role in their current org instead of membership in the hardcoded Abundant org. `can_create_api_keys` no longer checks an org-slug/Clerk-org allowlist — any `admin` or `member` (Clerk-JWT auth only) may create keys for their own org, admins minting `full`/`tasks`/`read` and members minting `tasks`/`read`. API-key auth still cannot mint keys, and listing/revoking all org keys stays admin-only. Removed `API_KEY_CREATOR_ORG_SLUGS` / `API_KEY_CREATOR_CLERK_ORG_IDS` and refreshed the stale `@abundant.ai`/Abundant-org wording in the settings UI, endpoint errors, and docs (#617).
+
 ### Fixed
 
 - Admin cost dashboard "Cost by user" rows now link to the per-user drilldown whenever the row resolves to a **real oddish user** (billed user or submitting credential), even when some or all of its trials are unbilled — previously a row was only clickable when *every* trial was billed, so real users with pre-billing spend (e.g. created before quota billing stamping shipped) or offboarded/unlinked spend were shown as non-clickable "unbilled". A new `CostUserBreakdown.has_unbilled_spend` field drives an "unbilled" chip: on a linkable (registered-user) row the tooltip explains the drilldown counts billed spend only, so its total may be less than the row total; GitHub-handle-only / Unattributed rows that are not registered users stay non-clickable with the existing "not a registered user" wording.
