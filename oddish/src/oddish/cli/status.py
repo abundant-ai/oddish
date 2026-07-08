@@ -21,6 +21,7 @@ from oddish.cli.config import (
     print_json,
     require_api_key,
 )
+from oddish.cli.queue_diag import print_queue_diagnostics
 
 console = Console()
 
@@ -136,6 +137,27 @@ def status(
             help="Watch progress until completion (task or experiment)",
         ),
     ] = False,
+    queue: Annotated[
+        bool,
+        typer.Option(
+            "--queue",
+            "-Q",
+            help=(
+                "Show queue & worker scheduler diagnostics (capacity, slot "
+                "leases, stuck/stale trials, worker-job failures). Requires a "
+                "full-scope API key on hosted Oddish."
+            ),
+        ),
+    ] = False,
+    stale_after: Annotated[
+        int,
+        typer.Option(
+            "--stale-after",
+            min=1,
+            max=240,
+            help="Minutes without a heartbeat before a trial/job counts as stale (with --queue).",
+        ),
+    ] = 15,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -161,10 +183,13 @@ def status(
     Without arguments: Shows system health and queue statistics.
     With task_id: Shows specific task progress including pipeline stage.
     With --experiment: Shows all tasks within an experiment.
+    With --queue: Shows queue & worker scheduler diagnostics.
 
     Examples:
         oddish status                   # System overview
         oddish status -v                # System overview with pipeline stats
+        oddish status --queue           # Queue/worker diagnostics
+        oddish status --queue --json    # Machine-readable diagnostics
         oddish status <task_id>         # Task details
         oddish status <task_id> --watch # Live task monitoring
         oddish status --experiment <experiment_id>
@@ -177,6 +202,20 @@ def status(
     if task_id and experiment_id:
         console.print("[red]Provide either a task_id or --experiment, not both.[/red]")
         raise typer.Exit(1)
+
+    # Queue/worker scheduler diagnostics: a system-wide view, so it is mutually
+    # exclusive with a specific task/experiment target.
+    if queue:
+        if task_id or experiment_id:
+            console.print(
+                "[red]--queue shows system-wide diagnostics; do not combine it "
+                "with a task_id or --experiment.[/red]"
+            )
+            raise typer.Exit(1)
+        print_queue_diagnostics(
+            api_url, stale_after=stale_after, json_output=json_output
+        )
+        return
 
     # JSON output mode takes a single snapshot (no live watch) so the result
     # is a single parseable document for CI / agents.
