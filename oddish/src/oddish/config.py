@@ -117,9 +117,12 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 # --- Configurable Harbor source ----------------------------------------------
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock).
-HARBOR_DEFAULT_SOURCE = "https://github.com/abundant-ai/harbor-gke"
-HARBOR_DEFAULT_SHA = "7c97764f7d42da445f74409d7926ff9d66f99a79"
+# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
+# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
+# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
+# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
+HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
+HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
@@ -973,10 +976,10 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
-    harbor_source_repo: str = "abundant-ai/harbor-gke"
+    harbor_source_repo: str = "rishidesai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
     # the harbor dependency pin in pyproject.
-    harbor_source_ref: str = "feat/gke-tpu-flex-start"
+    harbor_source_ref: str = "main"
 
     registry_auth_key: str | None = None
 
