@@ -217,13 +217,11 @@ def harbor_uv_source_rewrite_command(
 # alongside the source rewrite so uv_sync pulls the variant's optional-dependency
 # groups (e.g. gke -> k8s + google-cloud) that the lean default image drops.
 _HARBOR_EXTRAS_REWRITE_PY = (
-    "import sys\n"
+    "import re,sys\n"
     "ex=sys.argv[1]\n"
-    'old="\\"harbor\\","\n'
     'new="\\"harbor["+ex+"]\\","\n'
     "for p in sys.argv[2:]:\n"
     "    s=open(p).read()\n"
-    "    import re\n"
     '    s=re.sub(r"\\"harbor(\\[[^\\]]*\\])?\\",", new, s)\n'
     '    open(p,"w").write(s)'
 )
