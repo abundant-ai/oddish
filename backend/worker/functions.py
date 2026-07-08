@@ -296,6 +296,11 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
     populated, in which case every pin classified to ``<id>`` is routed onto the
     matching Function (built on that variant's hermetic image). Variants run with
     ``min_containers=0`` -- they're rare and shouldn't hold warm capacity.
+
+    ``serialized=True`` because the per-variant entry is a closure over
+    ``variant_id`` (Modal rejects a non-global-scope ``@app.function`` target
+    otherwise); the entry only calls the module-global ``_run_one_job``, so it
+    pickles cleanly and runs the same body as the default worker.
     """
     functions: dict[str, object] = {}
     for variant_id, variant_image in harbor_variant_images().items():
@@ -312,6 +317,7 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
             memory=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
             name=harbor_variant_function_name(variant_id),
+            serialized=True,
         )(_make_variant_entry(variant_id))
     return functions
 

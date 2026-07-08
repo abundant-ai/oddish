@@ -8,6 +8,7 @@ from dotenv import dotenv_values
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
+    harbor_extras_rewrite_command,
     harbor_uv_source_rewrite_command,
 )
 
@@ -383,7 +384,10 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
     When *harbor_override* is set, the harbor git source/rev in the copied
     pyproject(s) is repointed at the variant's commit BEFORE ``uv_sync`` so the
     WHOLE dependency set resolves against that Harbor (an image-variant bakes its
-    own hermetic Harbor). With no override this is the default worker image.
+    own hermetic Harbor); the variant's Harbor extras (e.g. gke -> k8s +
+    google-cloud) are added to the harbor requirement in the same pre-sync step,
+    since the lean default image does not carry them. With no override this is
+    the default worker image.
     """
     img = (
         modal.Image.debian_slim(python_version="3.14")
@@ -424,6 +428,16 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
                 "/oddish/pyproject.toml",
             )
         )
+        # Add the variant's Harbor extras (the default image dropped them) so
+        # uv_sync pulls e.g. harbor[gke]'s k8s + google-cloud clients.
+        if harbor_override.extras:
+            img = img.run_commands(
+                harbor_extras_rewrite_command(
+                    harbor_override.extras,
+                    "/root/pyproject.toml",
+                    "/oddish/pyproject.toml",
+                )
+            )
     return (
         # Install all dependencies (oddish from /oddish, harbor + others resolved)
         img.uv_sync()
