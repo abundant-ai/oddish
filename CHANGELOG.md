@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-08]
+
+### Added
+
+- Admin **Cost Breakdown** now surfaces real first-party spend that previously never resolved to a registered user — `--github-user` submissions, offboarded/unlinked payers, and pre-quota trials are counted instead of silently dropped. Attribution falls back through billed user → submitted GitHub id/handle → submitting credential's user → "Unattributed", and fallback rows render as non-clickable "unbilled" entries in totals, charts, and the by-user table; imported trials and experiment-combine copies stay excluded so spend isn't double-counted. (#615)
+- Per-task and per-trial cost is now shown inside experiments: the trials table gets a cost badge on each task row (summed over the visible, non-probe, non-superseded trials, with a `~` marker for estimated pricing) and the trial detail panel gets a **Cost** card beside **Reward**, showing "of ~$X task" when the task has more than one priced trial. (#607)
+- Tasks now record the API key that submitted them (`tasks.api_key_id`, nullable, audit-only) on single and batch sweep submissions, enabling per-key cost/audit queries; billing continues to key off `trials.billed_user_id`, not this column. (#603)
+
+### Changed
+
+- The task detail page (`tasks/[task_id]`) now streams behind a route-level `loading.tsx` skeleton instead of leaving the previous page frozen with no feedback while its data fetch resolves — the one page in the app missing this pattern. (#614)
+- Clerk backend-auth JWT template tokens are now cached per user+org+template until shortly before expiry (with in-flight request dedup) instead of being re-minted on every server-side data fetch; Next's router cache now reuses a page visited in the last 30 seconds (`staleTimes.dynamic = 30`); switching organizations now triggers a full page reload so no cached page or token from the previous workspace can leak through. (#610)
+- Default per-user daily quota raised from $100 to $200, and default quota enforcement flips from `shadow` to `enforce`. (#608)
+
+### Fixed
+
+- The admin cost dashboard's *Top experiments by cost* table no longer shows a blank Owner cell when `owner_user_id` is null or unattributed; it now falls back to the experiment's stamped owner string, then the oldest linked task's author (GitHub handle, then submitter). (#606)
+
+### Security
+
+- Browser performance-tracing spans no longer POST directly to Logfire with a write token embedded in the public JS bundle; they now route through a new same-origin `/api/client-traces` proxy that holds the token server-side, rejects cross-origin requests, and bounds the request body to 1 MiB. Browser tracing is now explicit opt-in via `NEXT_PUBLIC_LOGFIRE_ENABLED=true`. (#610)
+
+---
+
 ## [2026-07-06]
 
 ### Added
