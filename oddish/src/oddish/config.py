@@ -108,9 +108,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
         _ORACLE_AGENT_PREFIXES
     ):
         return AgentName.ORACLE.value
-    if normalized == AgentName.NOP.value or normalized.startswith(
-        _NOP_AGENT_PREFIXES
-    ):
+    if normalized == AgentName.NOP.value or normalized.startswith(_NOP_AGENT_PREFIXES):
         return AgentName.NOP.value
     return None
 
@@ -119,7 +117,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
 # both uv.lock files (a test asserts it against oddish/uv.lock).
 HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
-HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
+HARBOR_DEFAULT_SHA = "5700ddd8c03887134b13384a2a282050cd6fbf60"
 
 _HARBOR_URL_PREFIXES = ("git+", "http://", "https://", "ssh://")
 
