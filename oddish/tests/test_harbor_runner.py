@@ -951,6 +951,7 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
         agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+    assert agent_config.kwargs["reasoning_effort"] == "high"
     assert "XAI_API_KEY" not in (agent_config.env or {})
     assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
     assert "OPENAI_API_KEY" not in (agent_config.env or {})
@@ -970,6 +971,16 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
         agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
     assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+
+
+def test_build_agent_config_preserves_grok_build_reasoning_override():
+    agent_config = harbor_runner._build_agent_config(
+        agent="grok-build",
+        model="xai/v9m-rl-learnability-tp8",
+        raw_harbor_config={"agent_config": {"kwargs": {"reasoning_effort": "medium"}}},
+    )
+
+    assert agent_config.kwargs["reasoning_effort"] == "medium"
 
 
 def test_convert_grok_build_stream_to_multi_step_trajectory():
@@ -1020,6 +1031,8 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
     run_command = seen[-1]
     assert "--output-format streaming-json" in run_command
     assert "--output-format json" in run_command
+    assert "--reasoning-effort high" in run_command
+    assert "reasoning-effort|reasoning_effort" in run_command
     assert "streaming-json|output-format|no-auto-update" in run_command
     assert ">/logs/agent/grok-build.json" in run_command
     # The instruction is staged out-of-band and read back inside the sandbox,
@@ -1481,7 +1494,9 @@ def _byok_runner_doubles(monkeypatch, seen):
     monkeypatch.setattr(
         harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
     )
-    monkeypatch.setattr(harbor_runner, "validate_task_timeout_config", lambda path: None)
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
     monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
     monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
     monkeypatch.setattr(harbor_runner, "Job", _FakeJob)

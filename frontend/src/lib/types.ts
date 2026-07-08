@@ -483,7 +483,6 @@ export interface DashboardResponse {
   cached: boolean;
 }
 
-
 interface ToolCall {
   tool_call_id: string;
   function_name: string;
@@ -554,7 +553,6 @@ export interface Trajectory {
   notes: string | null;
   final_metrics: FinalMetrics | null;
 }
-
 
 interface QueueSlot {
   queue_key: string;
@@ -631,9 +629,13 @@ export interface OrphanedStateResponse {
   timestamp: string;
 }
 
-
 export type WorkerJobKind =
-  "TRIAL" | "QA" | "ANALYSIS" | "VERDICT" | "QA_REVIEW" | (string & {});
+  | "TRIAL"
+  | "QA"
+  | "ANALYSIS"
+  | "VERDICT"
+  | "QA_REVIEW"
+  | (string & {});
 
 export type WorkerJobStatus =
   | "QUEUED"
@@ -684,7 +686,6 @@ export interface WorkerJobsResponse {
   timestamp: string;
 }
 
-
 interface QueueThroughputStat {
   kind: WorkerJobKind;
   started_5m: number;
@@ -724,7 +725,6 @@ export interface QueueHealthResponse {
   timestamp: string;
 }
 
-
 export interface CostModelBreakdown {
   model: string;
   provider: string;
@@ -740,7 +740,14 @@ export interface CostUserBreakdown {
   // Stable grouping key: a user id for billed/submitter rows, else a synthetic
   // "ghid:"/"ghuser:"/"__unattributed__" key for a label-only fallback row.
   key: string;
+  // Deep-link target: set for any row backed by a real oddish user (billed or
+  // submitter), even if some/all of its spend is unbilled. null for a
+  // GitHub-handle / Unattributed fallback row, which renders non-clickable.
   owner_user_id: string | null;
+  // True when the row includes trials that were never billed to a quota. Drives
+  // the "unbilled" chip; on a linkable row it warns the drilldown total (billed
+  // spend only) may be less than this row's total.
+  has_unbilled_spend: boolean;
   // Precomputed label for a row with no backing user (GitHub handle,
   // "Unattributed"); null means derive the name from name/email/user id.
   label: string | null;
@@ -755,6 +762,10 @@ export interface CostUserBreakdown {
   output_tokens: number;
   cost_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  inflight_trial_count?: number;
+  quota_spent_usd?: number | null;
+  quota_limit_usd?: number | null;
   models: CostModelBreakdown[];
 }
 
@@ -807,6 +818,9 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  month_cost_usd?: number;
+  month_budget_usd?: number | null;
 }
 
 export interface CostBreakdownResponse {
@@ -835,10 +849,19 @@ export interface UserCostTaskBreakdown {
   models: CostModelBreakdown[];
 }
 
+export interface UserCostExperimentBreakdown {
+  experiment_id: string;
+  name: string | null;
+  trial_count: number;
+  cost_usd: number;
+  models: CostModelBreakdown[];
+}
+
 interface UserCostTotals {
   window_days: number | null;
   trial_count: number;
   task_count: number;
+  experiment_count?: number;
   cost_usd: number;
   cost_estimated_usd: number;
 }
@@ -853,6 +876,7 @@ export interface UserCostBreakdownResponse {
   bucket: string;
   totals: UserCostTotals;
   tasks: UserCostTaskBreakdown[];
+  experiments?: UserCostExperimentBreakdown[];
   series_by_model: CostSeries;
   timestamp: string;
 }
