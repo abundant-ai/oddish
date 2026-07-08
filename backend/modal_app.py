@@ -465,6 +465,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "cloud_policy",
             "crypto",
             "dashboard_attribution",
+            "dashboard_cache",
             "dashboard_owner_backfill",
             "endpoints",
             "idempotency_store",

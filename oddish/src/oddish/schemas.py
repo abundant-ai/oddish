@@ -301,6 +301,14 @@ class TaskSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+
+    @model_validator(mode="after")
+    def _no_gpu_tpu_conflict(self) -> "TaskSubmission":
+        _reject_gpu_tpu_conflict(self.harbor)
+        for trial in self.trials:
+            _reject_tpu_on_non_gke_environment(self.harbor, trial.environment)
+        return self
+
     content_hash: str | None = Field(
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
@@ -495,6 +503,13 @@ class TaskSweepSubmission(BaseModel):
         default_factory=HarborConfig,  # type: ignore[arg-type]
         description="Harbor execution config (environment, verifier, artifacts, etc.)",
     )
+
+    @model_validator(mode="after")
+    def _no_gpu_tpu_conflict(self) -> "TaskSweepSubmission":
+        _reject_gpu_tpu_conflict(self.harbor)
+        _reject_tpu_on_non_gke_environment(self.harbor, self.environment)
+        return self
+
     content_hash: str | None = Field(
         None,
         description="Deterministic hash of task directory contents (set by CLI during upload)",
@@ -1019,6 +1034,37 @@ class BackfillQARequest(BaseModel):
     force: bool = False
     enable_analysis: bool = False
     trial_ids: list[str] | None = None
+
+
+def _reject_gpu_tpu_conflict(harbor: HarborConfig) -> None:
+    """No single backend serves both accelerator families (the CLI rejects the
+    combination pre-submit; this guards raw API submissions with the same 422
+    instead of a runtime accelerator error)."""
+    env = harbor.environment
+    if env.override_tpu is not None and (env.override_gpus or 0) > 0:
+        raise ValueError(
+            "A submission cannot request both GPU and TPU resources: no single "
+            "execution backend provides both. Drop override_gpus or override_tpu."
+        )
+
+
+def _reject_tpu_on_non_gke_environment(
+    harbor: HarborConfig, environment: "EnvironmentType | None"
+) -> None:
+    """A TPU request with an EXPLICIT non-GKE environment can never run; reject
+    at submit rather than minutes later at the worker's fast-fail. An unset
+    environment stays permitted here -- the server resolves it (default or
+    append-inheritance) and the sweep gate re-checks the resolved value."""
+    if (
+        harbor.environment.override_tpu is not None
+        and environment is not None
+        and environment != EnvironmentType.GKE
+    ):
+        raise ValueError(
+            f"TPU requests require environment=gke; got environment="
+            f"'{environment.value}'. Drop override_tpu or submit with "
+            f"environment=gke."
+        )
 
 
 class TaskSweepBatchRequest(BaseModel):
