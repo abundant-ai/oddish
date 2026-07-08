@@ -558,7 +558,8 @@ function APIKeysPanel() {
   const canCreateAPIKeys = permissions?.can_create ?? false;
   const canManageAPIKeys = permissions?.can_manage ?? false;
   const allowedScopes = permissions?.allowed_scopes ?? [];
-  const createRestriction = "Only Abundant org members can create API keys.";
+  const createRestriction =
+    "You don't have permission to create API keys in this organization.";
   const visibleKeys = showAllKeys
     ? (keys ?? [])
     : (keys ?? []).slice(0, VISIBLE_API_KEY_LIMIT);
