@@ -12,6 +12,8 @@ export async function GET(
   if (windowDays !== null) query.window_days = windowDays;
   const taskLimit = search.get("task_limit");
   if (taskLimit) query.task_limit = taskLimit;
+  const orgId = search.get("org_id");
+  if (orgId) query.org_id = orgId;
   const qs = new URLSearchParams(query).toString();
   return proxyBackendJson({
     path: `admin/costs/users/${encodeURIComponent(userId)}${qs ? `?${qs}` : ""}`,
