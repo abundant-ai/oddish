@@ -8,8 +8,7 @@ from dotenv import dotenv_values
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
-    harbor_extras_rewrite_command,
-    harbor_uv_source_rewrite_command,
+    harbor_git_requirement,
 )
 
 
@@ -437,32 +436,29 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             copy=True,
         )
     )
+    # Install all dependencies (oddish from /oddish, harbor + others resolved).
+    img = img.uv_sync()
     if harbor_override is not None:
-        # Repoint the harbor pin in both pyprojects (backend's + the editable
-        # oddish's) before the resolve.
-        img = img.run_commands(
-            harbor_uv_source_rewrite_command(
-                harbor_override.source,
-                harbor_override.sha,
-                "/root/pyproject.toml",
-                "/oddish/pyproject.toml",
-            )
+        # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync
+        # stages the LOCAL pyproject.toml + uv.lock at /.uv and runs --frozen, so
+        # editing pyprojects inside the image can never change what it installs
+        # (that approach shipped the lean default Harbor and every GKE trial died
+        # with MissingExtraError: kubernetes). A post-sync sha-pinned install with
+        # the variant's extras replaces harbor and pulls the extras' dependency
+        # stack (e.g. gke -> kubernetes + google-auth) into the same venv, the
+        # exact requirement string the ephemeral out-of-process path already uses.
+        # /.uv/uv and /.uv/.venv are where uv_sync leaves the binary and the venv.
+        requirement = harbor_git_requirement(
+            harbor_override.source,
+            harbor_override.sha,
+            extras=harbor_override.extras,
         )
-        # Add the variant's Harbor extras (the default image dropped them) so
-        # uv_sync pulls e.g. harbor[gke]'s k8s + google-cloud clients.
-        if harbor_override.extras:
-            img = img.run_commands(
-                harbor_extras_rewrite_command(
-                    harbor_override.extras,
-                    "/root/pyproject.toml",
-                    "/oddish/pyproject.toml",
-                )
-            )
+        img = img.run_commands(
+            f"/.uv/uv pip install --python /.uv/.venv/bin/python '{requirement}'"
+        )
     return (
-        # Install all dependencies (oddish from /oddish, harbor + others resolved)
-        img.uv_sync()
         # Add backend-specific Python modules
-        .add_local_python_source(
+        img.add_local_python_source(
             "api",
             "auth",
             "backfill_github_id",

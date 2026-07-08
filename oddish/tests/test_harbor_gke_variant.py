@@ -1,5 +1,5 @@
-"""The blessed GKE Harbor variant: registry pin, classification, submission
-source-stamping, and the image-build extras rewrite.
+"""The blessed GKE Harbor variant: registry pin, classification, and submission
+source-stamping.
 
 GKE (TPU) trials run the GKE-enabled harbor-gke fork on a dedicated blessed
 worker image; every other trial stays on the lean default Harbor. These tests
@@ -10,9 +10,6 @@ trial stays ``default``, and an explicit caller override is never overwritten.
 from __future__ import annotations
 
 import re
-import subprocess
-import tempfile
-from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
 
@@ -21,7 +18,6 @@ from oddish.core.harbor_source import (
     GKE_VARIANT_ID,
     HARBOR_VARIANTS,
     classify_variant,
-    harbor_extras_rewrite_command,
     resolve_and_gate_harbor,
     resolve_harbor_pin,
     stamp_gke_harbor_source,
@@ -162,39 +158,3 @@ def test_default_submission_still_gates_to_default():
     stamped, variant = resolve_and_gate_harbor(HarborConfig(), settings=Settings())
     assert variant == "default"
     assert stamped.resolved_sha == HARBOR_DEFAULT_SHA
-
-
-def test_harbor_extras_rewrite_injects_gke_extra():
-    # The variant image build repoints the harbor dependency to harbor[gke] so
-    # uv_sync pulls the k8s + google-cloud stack the default image drops.
-    sample = (
-        "dependencies = [\n"
-        '    "typer==0.21.1",\n'
-        '    "harbor",\n'
-        "]\n"
-    )
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "pyproject.toml"
-        p.write_text(sample)
-        subprocess.run(
-            harbor_extras_rewrite_command(["gke"], str(p)), shell=True, check=True
-        )
-        out = p.read_text()
-    assert '"harbor[gke]",' in out
-    assert '"harbor",' not in out
-    # An unrelated dependency is untouched.
-    assert '"typer==0.21.1",' in out
-
-
-def test_harbor_extras_rewrite_is_idempotent_on_already_extra_dep():
-    # Re-pointing a dep that already carries an extras group must not nest it.
-    sample = 'dependencies = [\n    "harbor[gke]",\n]\n'
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "pyproject.toml"
-        p.write_text(sample)
-        subprocess.run(
-            harbor_extras_rewrite_command(["gke"], str(p)), shell=True, check=True
-        )
-        out = p.read_text()
-    assert '"harbor[gke]",' in out
-    assert "harbor[gke][gke]" not in out
