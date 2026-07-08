@@ -29,6 +29,19 @@ def _fake_storage_with_text(text: str | None) -> MagicMock:
     return storage
 
 
+def _fake_storage_serving_keys(available: dict[str, str]) -> MagicMock:
+    """Storage double that returns text only for keys present in ``available``."""
+    storage = MagicMock()
+
+    async def _download(key: str) -> str:
+        if key in available:
+            return available[key]
+        raise FileNotFoundError(key)
+
+    storage.download_text = AsyncMock(side_effect=_download)
+    return storage
+
+
 @pytest.mark.asyncio
 async def test_read_trial_instruction_returns_text_when_present():
     from oddish.core.trial_io import read_trial_instruction
@@ -67,3 +80,31 @@ async def test_read_trial_verifier_output_returns_none_when_missing():
     with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
         result = await read_trial_verifier_output(_trial())
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_read_trial_instruction_falls_back_to_trial_0_dir():
+    """Harbor layouts stage artifacts under `trial-0/` even when the trial's
+    name is empty; the reader must still find them."""
+    from oddish.core.trial_io import read_trial_instruction
+
+    trial = SimpleNamespace(id="t-1", name="", trial_s3_key="trials/t-1/")
+    storage = _fake_storage_serving_keys(
+        {"trials/t-1/trial-0/task/instruction.md": "Do the thing."}
+    )
+    with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
+        result = await read_trial_instruction(trial)
+    assert result == "Do the thing."
+
+
+@pytest.mark.asyncio
+async def test_read_trial_verifier_output_falls_back_to_trial_0_dir():
+    from oddish.core.trial_io import read_trial_verifier_output
+
+    trial = SimpleNamespace(id="t-1", name="", trial_s3_key="trials/t-1/")
+    storage = _fake_storage_serving_keys(
+        {"trials/t-1/trial-0/verifier/test-stdout.txt": "PASS\n"}
+    )
+    with patch("oddish.core.trial_io.get_storage_client", return_value=storage):
+        result = await read_trial_verifier_output(trial)
+    assert result == "PASS\n"
