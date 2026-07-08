@@ -649,6 +649,23 @@ async def _reap_stale_worker_jobs(
         external_id = row.get("external_id")
         if provider and external_id:
             worker_targets.add((str(provider), str(external_id)))
+        if row["new_status"] == "RETRYING" and external_id:
+            # The retry must start UNLINKED: a carried-over handle points at
+            # the previous attempt's sandbox, which both misdirects
+            # handle-based teardown and defeats the orphan sweeper's
+            # live-unlinked guard for the new attempt's pod. The old sandbox's
+            # teardown target was already captured above.
+            await session.execute(
+                text(
+                    """
+                    UPDATE worker_jobs
+                    SET    external_id = NULL,
+                           provider = NULL
+                    WHERE  id = :job_id
+                    """
+                ),
+                {"job_id": row["id"]},
+            )
         if committed_trial_id is not None:
             reaped_trial_ids.append(committed_trial_id)
 
