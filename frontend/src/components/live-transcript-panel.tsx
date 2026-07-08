@@ -136,7 +136,7 @@ export function LiveTranscriptPanel({
         setConnected(true);
         setError(null);
         setDone(data.done);
-        timer = setTimeout(poll, POLL_MS);
+        timer = setTimeout(poll, data.events.length ? 0 : POLL_MS);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : "Failed to load");
