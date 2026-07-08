@@ -255,6 +255,23 @@ async def test_task_grouping_and_sort(costs_fixture):
 
 @requires_db
 @pytest.mark.asyncio
+async def test_experiment_grouping_and_sort(costs_fixture):
+    f = costs_fixture
+    resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 7})
+    body = resp.json()
+    experiments = body["experiments"]
+    assert len(experiments) == 2
+    assert experiments[0]["name"] == "exp-a"
+    assert experiments[0]["cost_usd"] == pytest.approx(0.30)
+    assert experiments[0]["trial_count"] == 2
+    assert experiments[1]["name"] == "exp-b"
+    assert experiments[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
+    assert experiments[1]["trial_count"] == 2
+    assert experiments[1]["models"][0]["model"] == _EST_MODEL
+
+
+@requires_db
+@pytest.mark.asyncio
 async def test_series_by_model_shape(costs_fixture):
     f = costs_fixture
     resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 7})

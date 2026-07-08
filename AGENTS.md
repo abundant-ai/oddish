@@ -358,6 +358,25 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
   `XAI_API_KEY`) and must not be persisted on trial rows.
+- `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
+  `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
+  but not every xAI model is served there — some (e.g. newer/unreleased models)
+  live only on Chat Completions and answer a Responses request with a 404
+  `The model <id> does not exist or your team does not have access to it`.
+  `OddishGrokBuild` accepts an `api_backend` kwarg
+  (`chat_completions` | `responses` | `messages`); pass
+  `--agent-kwarg api_backend=chat_completions` to route such a model. When
+  unset, the upstream `responses` default is preserved.
+- `grok-build` trajectories come from the CLI's on-disk **session store**, not
+  its headless stdout. `grok -p --output-format json|streaming-json` only emits
+  the assistant's `text`/`thought` — no tool calls and no token usage — so
+  `OddishGrokBuild` copies `$GROK_HOME/sessions/.../<id>/` into
+  `/logs/agent/grok-session` after the run and converts `updates.jsonl`
+  (ACP `tool_call` / `tool_call_update` / `agent_message_chunk`) plus
+  `events.jsonl` usage into the ATIF trajectory + token `FinalMetrics`
+  (`grok_build_session.py`). If the session store is missing it falls back to
+  the text-only stdout trajectory. Do not "fix" trajectories by parsing stdout —
+  the tool calls are only in the session store.
 
 Storage defaults:
 
@@ -448,11 +467,12 @@ There are exactly two org roles: `admin` (manage users/settings) and `member`
 Auth flow: read token → if `ok_` prefix validate API key → otherwise validate Clerk JWT and resolve org/user → return `AuthContext`.
 
 API key creation is user-auth only (API-key auth is rejected so one key cannot
-mint another) and is available to `admin` and `member` users in the main
-Abundant org (`can_create_api_keys` / `require_api_key_creator`). Admins may
-mint `full`, `tasks`, or `read` keys; members may mint only `tasks` or `read`
-keys. Member-created `tasks` keys can run task/trial workflows and read files,
-and can cancel in-flight runs, but are blocked from broader org mutations such
+mint another) and is self-service for every org — any `admin` or `member` user
+may create keys for their own org (`can_create_api_keys` /
+`require_api_key_creator`). Admins may mint `full`, `tasks`, or `read` keys;
+members may mint only `tasks` or `read` keys. Member-created `tasks` keys can
+run task/trial workflows and read files, and can cancel in-flight runs, but are
+blocked from broader org mutations such
 as tagging, collections, documents, skills, and GitHub webhook updates. The
 creator role is stamped on the API key at mint time so later role changes or
 deleted creator rows do not broaden a member-created key.
