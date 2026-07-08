@@ -8,7 +8,7 @@ from oddish.config import (
     parse_harbor_spec,
 )
 
-FORK = "https://github.com/abundant-ai/harbor-gke"
+FORK = "https://github.com/rishidesai/harbor"
 
 
 def test_r3_bare_ref_uses_locked_fork():

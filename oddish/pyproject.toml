@@ -40,8 +40,8 @@ dependencies = [
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
     # Harbor (task models, agent config, dataset handling).
-    # Installed from the abundant-ai/harbor-gke fork's feat/gke-tpu-flex-start
-    # branch via [tool.uv.sources] below.  When bumping, run
+    # Installed from the rishidesai/harbor fork's main branch via
+    # [tool.uv.sources] below.  When bumping, run
     # ``uv lock --upgrade-package harbor`` to refresh the pinned commit.
     "harbor",
     # JSON Schema validation (result_focus structured-output schema checks).
@@ -78,10 +78,6 @@ server = [
 ]
 worker = [
     "oddish[server]",
-    # Harbor's GKE extra so hosted workers can run and reap TPU trials on GKE.
-    # Pulls the kubernetes client today; the google-cloud auth clients arrive
-    # with the ADC-native harbor fork. The harbor source pin is unchanged.
-    "harbor[gke]",
     # Needed when hosted workers run Harbor with EnvironmentType.DAYTONA.
     # Floor is 0.185.0: Harbor's daytona environment imports ``GpuType`` from
     # the daytona SDK, which was only added in 0.185.0. A lower version (e.g.
@@ -116,7 +112,7 @@ oddish = "oddish.cli:app"
 oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
-harbor = { git = "https://github.com/abundant-ai/harbor-gke", branch = "feat/gke-tpu-flex-start" }
+harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]
