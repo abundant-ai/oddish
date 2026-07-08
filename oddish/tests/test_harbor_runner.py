@@ -2123,14 +2123,33 @@ def test_gke_env_build_multiplier_covers_pod_ready_wait():
     # clear the pod-ready/capacity wait, or Harbor deletes the Pending Pod early.
     from harbor.models.environment_type import EnvironmentType
 
+    base = harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
     multiplier = harbor_runner._sized_environment_build_timeout_multiplier(
         environment=EnvironmentType.GKE,
         environment_build_timeout_multiplier=None,
         timeout_multiplier=None,
         pod_ready_timeout_sec=3600,
+        base_sec=base,
     )
     assert multiplier is not None
-    assert multiplier * harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC >= 3600
+    assert multiplier * base >= 3600
+
+
+def test_gke_env_build_multiplier_sizes_off_the_task_base():
+    # needed is computed against the task's OWN build_timeout_sec, so a task with
+    # a sub-default base still gets an outer wait that clears the pod-ready wait.
+    from harbor.models.environment_type import EnvironmentType
+
+    base = 120.0
+    multiplier = harbor_runner._sized_environment_build_timeout_multiplier(
+        environment=EnvironmentType.GKE,
+        environment_build_timeout_multiplier=None,
+        timeout_multiplier=None,
+        pod_ready_timeout_sec=3600,
+        base_sec=base,
+    )
+    assert multiplier is not None
+    assert multiplier * base >= 3600 + harbor_runner._GKE_ENV_BUILD_OVERHEAD_SEC
 
 
 def test_gke_env_build_multiplier_never_lowers_caller_value():
@@ -2142,6 +2161,7 @@ def test_gke_env_build_multiplier_never_lowers_caller_value():
         environment_build_timeout_multiplier=10.0,
         timeout_multiplier=None,
         pod_ready_timeout_sec=3600,
+        base_sec=harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC,
     )
     assert multiplier == 10.0
 
@@ -2156,12 +2176,14 @@ def test_gke_env_build_multiplier_honors_general_timeout_multiplier_floor():
         environment_build_timeout_multiplier=None,
         timeout_multiplier=100.0,
         pod_ready_timeout_sec=3600,
+        base_sec=harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC,
     )
     assert multiplier == 100.0
 
 
 def test_non_gke_env_build_multiplier_is_untouched():
-    # Non-GKE environments keep exactly what the caller passed (including None).
+    # Non-GKE environments keep exactly what the caller passed (including None),
+    # never sizing off the base even when it is small.
     from harbor.models.environment_type import EnvironmentType
 
     assert (
@@ -2170,6 +2192,7 @@ def test_non_gke_env_build_multiplier_is_untouched():
             environment_build_timeout_multiplier=None,
             timeout_multiplier=None,
             pod_ready_timeout_sec=3600,
+            base_sec=120.0,
         )
         is None
     )
@@ -2179,18 +2202,37 @@ def test_non_gke_env_build_multiplier_is_untouched():
             environment_build_timeout_multiplier=2.0,
             timeout_multiplier=5.0,
             pod_ready_timeout_sec=3600,
+            base_sec=120.0,
         )
         == 2.0
     )
 
 
-def test_env_build_timeout_base_matches_harbor_default():
-    # The sizing base mirrors Harbor's EnvironmentConfig.build_timeout_sec default;
-    # keep them in lockstep so the outer wait is computed against the real base.
+def test_effective_task_build_timeout_reads_task_toml(tmp_path):
+    # The sizing base is the task's OWN build_timeout_sec, read from task.toml.
+    from harbor.models.task.config import EnvironmentConfig
+    from harbor.models.task.config import TaskConfig as _TaskCfg
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    (task_path / "task.toml").write_text(
+        _TaskCfg(
+            environment=EnvironmentConfig(build_timeout_sec=120)
+        ).model_dump_toml(),
+        encoding="utf-8",
+    )
+    assert harbor_runner._effective_task_build_timeout_sec(task_path) == 120.0
+
+
+def test_effective_task_build_timeout_falls_back_to_harbor_default(tmp_path):
+    # An absent/unreadable task.toml must not crash the sizing arithmetic; fall
+    # back to Harbor's default base.
     from harbor.models.task.config import EnvironmentConfig
 
+    task_path = tmp_path / "task"
+    task_path.mkdir()  # no task.toml written
     assert (
-        harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
+        harbor_runner._effective_task_build_timeout_sec(task_path)
         == EnvironmentConfig.model_fields["build_timeout_sec"].default
     )
 
@@ -2318,5 +2360,90 @@ def test_gke_env_build_multiplier_sizes_off_effective_pod_ready_override(
         environment_build_timeout_multiplier=None,
         timeout_multiplier=None,
         pod_ready_timeout_sec=setting,
+        base_sec=harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC,
     )
     assert multiplier > setting_only
+
+
+def test_gke_env_build_multiplier_sizes_off_small_task_build_timeout(
+    monkeypatch, tmp_path
+):
+    # A TPU task may set an environment build_timeout_sec BELOW the 600s default.
+    # Harbor sizes the outer environment-build wait as multiplier x the TASK's own
+    # build_timeout_sec, so the multiplier must be computed against that real base
+    # (not a fixed 600) or the outer wait falls short of the pod-ready timeout and
+    # the still-Pending flex-start Pod is deleted before capacity is granted.
+    from harbor.models.environment_type import EnvironmentType
+    from harbor.models.task.config import EnvironmentConfig
+    from harbor.models.task.config import TaskConfig as _TaskCfg
+    from oddish.runtime.backends.gke import GkeBackend
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    task_base = 120
+    (task_path / "task.toml").write_text(
+        _TaskCfg(
+            environment=EnvironmentConfig(build_timeout_sec=task_base)
+        ).model_dump_toml(),
+        encoding="utf-8",
+    )
+    jobs_dir = tmp_path / "jobs"
+
+    pod_ready = 3600
+    monkeypatch.setattr(harbor_runner.settings, "gke_pod_ready_timeout_sec", pod_ready)
+    monkeypatch.setattr(harbor_runner, "get_backend", lambda name: GkeBackend())
+
+    captured: dict = {}
+
+    class _FakeJob:
+        def __init__(self, config):
+            captured.update(config)
+            self.job_dir = config["jobs_dir"] / "job-1"
+
+        @classmethod
+        async def create(cls, config):
+            return cls(config)
+
+        async def run(self):
+            self.job_dir.mkdir(parents=True, exist_ok=True)
+            (self.job_dir / "result.json").write_text("{}\n", encoding="utf-8")
+            return object()
+
+    monkeypatch.setattr(
+        harbor_runner, "_check_local_storage_preflight", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+    monkeypatch.setattr(harbor_runner, "TaskConfig", lambda path: path)
+    monkeypatch.setattr(harbor_runner, "JobConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(harbor_runner, "Job", _FakeJob)
+    monkeypatch.setattr(
+        harbor_runner,
+        "_extract_outcome_from_job_result",
+        lambda **kwargs: harbor_runner.HarborOutcome(
+            reward=1.0,
+            error=None,
+            exit_code=0,
+            duration_sec=kwargs["duration_sec"],
+            job_result_path=kwargs["job_result_path"],
+            job_dir=kwargs["job_dir"],
+        ),
+    )
+
+    outcome = asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="claude-code",
+            jobs_dir=jobs_dir,
+            model="global.anthropic.claude-sonnet-4-6",
+            environment=EnvironmentType.GKE,
+        )
+    )
+
+    assert outcome.error is None
+    multiplier = captured["environment_build_timeout_multiplier"]
+    # Outer wait = multiplier x the task's OWN base must clear pod_ready + overhead.
+    assert (
+        multiplier * task_base >= pod_ready + harbor_runner._GKE_ENV_BUILD_OVERHEAD_SEC
+    )
