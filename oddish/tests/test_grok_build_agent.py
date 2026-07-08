@@ -98,10 +98,16 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
 
     # Exactly one agent exec runs grok, and it never carries the instruction
     # body -- it reads the staged file instead, so it stays well under ARG_MAX.
-    assert len(agent_commands) == 1
-    command = agent_commands[0]
+    # (A second agent exec copies the grok session store into the trial logs.)
+    grok_commands = [c for c in agent_commands if "grok -p" in c]
+    assert len(grok_commands) == 1
+    command = grok_commands[0]
     assert "SENTINEL_START" not in command
     assert "payload-line" not in command
     assert f'"$(cat {_PROMPT_PATH})"' in command
     assert "--reasoning-effort high" in command
     assert len(command.encode("utf-8")) < _MODAL_ARG_MAX_BYTES
+
+    # The session store is captured out-of-band so tool calls + token usage
+    # (absent from the text-only stdout) survive sandbox teardown.
+    assert any("grok-session" in c for c in agent_commands)

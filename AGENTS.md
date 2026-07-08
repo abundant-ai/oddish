@@ -367,6 +367,16 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
   (`chat_completions` | `responses` | `messages`); pass
   `--agent-kwarg api_backend=chat_completions` to route such a model. When
   unset, the upstream `responses` default is preserved.
+- `grok-build` trajectories come from the CLI's on-disk **session store**, not
+  its headless stdout. `grok -p --output-format json|streaming-json` only emits
+  the assistant's `text`/`thought` — no tool calls and no token usage — so
+  `OddishGrokBuild` copies `$GROK_HOME/sessions/.../<id>/` into
+  `/logs/agent/grok-session` after the run and converts `updates.jsonl`
+  (ACP `tool_call` / `tool_call_update` / `agent_message_chunk`) plus
+  `events.jsonl` usage into the ATIF trajectory + token `FinalMetrics`
+  (`grok_build_session.py`). If the session store is missing it falls back to
+  the text-only stdout trajectory. Do not "fix" trajectories by parsing stdout —
+  the tool calls are only in the session store.
 
 Storage defaults:
 
