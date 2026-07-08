@@ -135,11 +135,7 @@ export function LiveTranscriptPanel({
         setStage(data.harbor_stage);
         setConnected(true);
         setError(null);
-
-        if (data.done && data.events.length === 0) {
-          setDone(true);
-          return;
-        }
+        setDone(data.done);
         timer = setTimeout(poll, POLL_MS);
       } catch (err) {
         if (cancelled) return;
