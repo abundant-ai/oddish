@@ -1028,7 +1028,9 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
 
     asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
 
-    run_command = seen[-1]
+    run_command = next(c for c in seen if "grok -p" in c)
+    # The session store is captured out-of-band after the grok run.
+    assert any("grok-session" in c for c in seen)
     assert "--output-format streaming-json" in run_command
     assert "--output-format json" in run_command
     assert "--reasoning-effort high" in run_command
