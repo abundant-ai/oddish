@@ -147,15 +147,10 @@ def _scan_tokens(obj: Any, totals: dict[str, int]) -> None:
             _scan_tokens(item, totals)
 
 
-def extract_token_totals(session_dir: Path) -> dict[str, int]:
-    """Best-effort per-run token totals summed across turns.
-
-    Each turn re-reports its own usage; we take the max within a turn's payload
-    (via :func:`_scan_tokens`) and sum across the ordered turn/usage records.
-    """
+def _sum_tokens_over(paths: list[Path]) -> dict[str, int]:
     prompt = completion = cache = 0
-    for name in ("events.jsonl", "updates.jsonl", "chat_history.jsonl"):
-        for record in _iter_jsonl(session_dir / name):
+    for path in paths:
+        for record in _iter_jsonl(path):
             per: dict[str, int] = {}
             _scan_tokens(record, per)
             prompt += per.get("prompt", 0)
@@ -163,9 +158,38 @@ def extract_token_totals(session_dir: Path) -> dict[str, int]:
             cache += per.get("cache", 0)
         if prompt or completion or cache:
             # Prefer the first source that carries usage; avoid double counting
-            # the same turns across events + updates + chat_history.
+            # the same turns across multiple files that mirror the same records.
             break
     return {"prompt": prompt, "completion": completion, "cache": cache}
+
+
+def extract_token_totals(
+    session_dir: Path, *, log_dirs: list[Path] | None = None
+) -> dict[str, int]:
+    """Best-effort per-run token totals summed across turns.
+
+    Each turn re-reports its own usage; we take the max within a turn's payload
+    (via :func:`_scan_tokens`) and sum across the ordered turn/usage records.
+    The session stream (``events.jsonl`` / ``updates.jsonl``) sometimes omits
+    split token usage; grok's sampling log under ``$GROK_HOME/logs`` records it
+    per request, so we fall back to any ``*.jsonl`` there.
+    """
+    totals = _sum_tokens_over(
+        [
+            session_dir / "events.jsonl",
+            session_dir / "updates.jsonl",
+            session_dir / "chat_history.jsonl",
+        ]
+    )
+    if totals["prompt"] or totals["completion"] or totals["cache"]:
+        return totals
+    for log_dir in log_dirs or []:
+        if not log_dir.is_dir():
+            continue
+        log_totals = _sum_tokens_over(sorted(log_dir.glob("*.jsonl")))
+        if log_totals["prompt"] or log_totals["completion"] or log_totals["cache"]:
+            return log_totals
+    return totals
 
 
 def _update_payload(record: dict[str, Any]) -> dict[str, Any]:
@@ -199,6 +223,7 @@ def build_trajectory_from_updates(
     session_id: str | None,
     agent_version: str,
     model_name: str | None,
+    log_dirs: list[Path] | None = None,
 ) -> Trajectory | None:
     """Convert ``updates.jsonl`` (ACP session stream) into an ATIF trajectory.
 
@@ -308,7 +333,7 @@ def build_trajectory_from_updates(
     if not steps:
         return None
 
-    totals = extract_token_totals(session_dir)
+    totals = extract_token_totals(session_dir, log_dirs=log_dirs)
     final_metrics = FinalMetrics(
         total_prompt_tokens=totals["prompt"] or None,
         total_completion_tokens=totals["completion"] or None,
@@ -342,12 +367,16 @@ def build_session_trajectory(
     session_dir = find_session_dir(capture_root, session_id)
     if session_dir is None:
         return None
+    # grok writes its sampling log (per-request token usage) under a sibling
+    # ``logs/`` tree; collect any such dirs so token totals can fall back to it.
+    log_dirs = [p for p in capture_root.rglob("logs") if p.is_dir()]
     try:
         return build_trajectory_from_updates(
             session_dir,
             session_id=session_id,
             agent_version=agent_version,
             model_name=model_name,
+            log_dirs=log_dirs,
         )
     except Exception:
         return None
