@@ -247,8 +247,15 @@ if _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS):
         modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
     )
 
-if LOCAL_DOTENV_VARS:
-    runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# Appended UNCONDITIONALLY (an empty dict is a valid secret): this list is
+# recomputed inside the container, where backend/.env does not exist, so an
+# append conditional on the file's presence makes the deploy-time and
+# container-init secret lists disagree and every function crashloops at
+# hydration ("Function has N dependencies but container got N+1 object ids").
+# The secret's values are captured at deploy, so a dotenv still reaches the
+# runtime; in-container the recomputed dict is empty and only keeps the
+# dependency count stable.
+runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
@@ -303,6 +310,19 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # GKE coordinates resolved at deploy time (process env wins over
+    # backend/.env, mirroring _effective_gke_cluster_name), baked into the
+    # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the
+    # workers' pydantic Settings re-read these INSIDE the container, where
+    # neither the deploy shell's env nor backend/.env exists -- without the
+    # bake, a GKE-configured deploy attaches the credential secret at deploy
+    # time but not at container init (dependency-count drift -> hydration
+    # crashloop) and workers boot without the cluster coordinates.
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k.startswith("ODDISH_GKE_")
+    },
 }
 
 
