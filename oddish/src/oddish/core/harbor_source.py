@@ -265,19 +265,28 @@ def classify_variant(source: str, sha: str) -> str:
 def stamp_gke_harbor_source(
     harbor: HarborConfig, environment: EnvironmentType
 ) -> HarborConfig:
-    """Bind a GKE trial to the harbor-gke fork when the caller pinned no source.
+    """Bind a GKE trial to the harbor-gke fork unless it pins a different fork.
 
     harbor-gke is the only Harbor carrying the GKE environment, so a trial routed
-    to GKE MUST run it. When *environment* is GKE and the submission did not pin
-    an explicit source, stamp the blessed gke variant's ``(source, sha)`` — the
-    sha rides as the ref so resolution needs no network and the pin classifies
-    deterministically onto the gke worker image. An explicit caller source is
-    left untouched (the allowlist gates it; a non-merge-sha GKE source runs
-    out-of-process, which installs ``harbor[gke]`` in its own child). Every
-    non-GKE environment is returned unchanged, so a non-GKE trial never resolves
-    to harbor-gke.
+    to GKE MUST run it. When *environment* is GKE and the submission either pinned
+    no source OR pinned the DEFAULT fork, stamp the blessed gke variant's
+    ``(source, sha)`` — the sha rides as the ref so resolution needs no network and
+    the pin classifies deterministically onto the gke worker image. The default
+    fork is treated exactly like an unset source because it carries no GKE support
+    (see the merge checklist above); leaving a GKE trial on it would silently run
+    the lean default image. Only a genuinely different explicit fork is left
+    untouched (the allowlist gates it; a non-merge-sha GKE source runs
+    out-of-process, which installs ``harbor[gke]`` in its own child). Every non-GKE
+    environment is returned unchanged, so a non-GKE trial never resolves to
+    harbor-gke.
     """
-    if environment != EnvironmentType.GKE or harbor.source is not None:
+    if environment != EnvironmentType.GKE:
+        return harbor
+    # A pin of the default fork is treated like an unset source (see docstring):
+    # only a genuinely different fork is left for out-of-process resolution.
+    if harbor.source is not None and _normalize_source(
+        harbor.source
+    ) != _normalize_source(HARBOR_DEFAULT_SOURCE):
         return harbor
     variant = HARBOR_VARIANTS[GKE_VARIANT_ID]
     return harbor.model_copy(update={"source": variant.source, "ref": variant.sha})
