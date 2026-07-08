@@ -179,19 +179,25 @@ def harbor_variant_function_name(variant_id: str) -> str:
     return f"process_single_job__{variant_id}"
 
 
-# A fixed python program (no interpolation -> no shell-injection surface) that
-# repoints the ``[tool.uv.sources]`` harbor inline-table at ``argv[1]@argv[2]``
-# for every pyproject path in ``argv[3:]``. Used in a blessed-variant image build
-# to rewrite the harbor pin BEFORE ``uv_sync`` so the whole dependency set
-# resolves against the variant's commit.
+# A fixed python program (single line -- see below; no single quotes so it
+# survives the shell single-quote wrapper; no interpolation so no injection
+# surface) that repoints the ``[tool.uv.sources]`` harbor inline-table at
+# ``argv[1]@argv[2]`` for every pyproject path in ``argv[3:]``. Used in a
+# blessed-variant image build to rewrite the harbor pin BEFORE ``uv_sync`` so the
+# whole dependency set resolves against the variant's commit.
+#
+# It MUST stay one physical line: Modal runs this as an image-build step rendered
+# as a Dockerfile ``RUN``, where an unescaped newline ends the instruction -- a
+# multi-line program would execute only ``python3 -c 'import re,sys`` and die on
+# the unterminated quote. ``for s in [open(p).read()]`` reads each file BEFORE the
+# truncating ``open(p, "w")`` write-open, keeping the original read-then-write.
 _HARBOR_SOURCE_REWRITE_PY = (
-    "import re,sys\n"
-    "src,sha=sys.argv[1],sys.argv[2]\n"
-    "for p in sys.argv[3:]:\n"
-    "    s=open(p).read()\n"
-    '    s=re.sub(r"harbor = \\{ git = [^}]*\\}", '
-    '"harbor = { git = \\""+src+"\\", rev = \\""+sha+"\\" }", s)\n'
-    '    open(p,"w").write(s)'
+    "import re,sys; "
+    "src,sha=sys.argv[1],sys.argv[2]; "
+    '[open(p,"w").write('
+    're.sub(r"harbor = \\{ git = [^}]*\\}", '
+    '"harbor = { git = \\""+src+"\\", rev = \\""+sha+"\\" }", s)) '
+    "for p in sys.argv[3:] for s in [open(p).read()]]"
 )
 
 
@@ -210,26 +216,24 @@ def harbor_uv_source_rewrite_command(
     return f"python3 -c '{_HARBOR_SOURCE_REWRITE_PY}' {args}"
 
 
-# A fixed python program (no single quotes -> safe inside the shell single-quote
-# wrapper; no interpolation -> no injection surface) that repoints the quoted
+# A fixed python program under the same single-line / no-single-quote /
+# no-interpolation constraints as _HARBOR_SOURCE_REWRITE_PY above (it likewise
+# runs as a Dockerfile ``RUN`` and must not span lines) that repoints the quoted
 # ``"harbor"`` / ``"harbor[...]"`` dependency requirement to ``"harbor[<extras>]"``
 # for every pyproject path in ``argv[2:]``. Used in a blessed-variant image build
 # alongside the source rewrite so uv_sync pulls the variant's optional-dependency
 # groups (e.g. gke -> k8s + google-cloud) that the lean default image drops.
 _HARBOR_EXTRAS_REWRITE_PY = (
-    "import re,sys\n"
-    "ex=sys.argv[1]\n"
-    'new="\\"harbor["+ex+"]\\","\n'
-    "for p in sys.argv[2:]:\n"
-    "    s=open(p).read()\n"
-    '    s=re.sub(r"\\"harbor(\\[[^\\]]*\\])?\\",", new, s)\n'
-    '    open(p,"w").write(s)'
+    "import re,sys; "
+    "ex=sys.argv[1]; "
+    'new="\\"harbor["+ex+"]\\","; '
+    '[open(p,"w").write('
+    're.sub(r"\\"harbor(\\[[^\\]]*\\])?\\",", new, s)) '
+    "for p in sys.argv[2:] for s in [open(p).read()]]"
 )
 
 
-def harbor_extras_rewrite_command(
-    extras: Sequence[str], *pyproject_paths: str
-) -> str:
+def harbor_extras_rewrite_command(extras: Sequence[str], *pyproject_paths: str) -> str:
     """Shell command adding an extras group to the harbor dependency in-place.
 
     Emits ``python3 -c '<fixed program>' <extras> <paths...>`` (mirrors the
