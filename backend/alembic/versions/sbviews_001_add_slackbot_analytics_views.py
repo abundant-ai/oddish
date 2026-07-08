@@ -201,8 +201,9 @@ COMMENT ON VIEW v_daily_spend IS $c$Real spend (admin cost-dashboard
 basis) per UTC day x org x spender x model, bucketed by trial created_at.
 spender falls back like /admin/costs: billed user id, else ghid:<github
 id>, else ghuser:<handle>, else submitter user id, else __unattributed__.
-Unlike /admin/costs, trials whose task was soft-deleted stay counted
-(their identity may degrade to __unattributed__). Examples:
+One divergence from /admin/costs: it blanks a soft-deleted task's tags
+(reporting such unbilled spend as __unattributed__), while this view
+still reads them for attribution. Examples:
 SELECT day, sum(cost_usd) FROM v_daily_spend
   WHERE day > current_date - 14 GROUP BY 1 ORDER BY 1;
 SELECT spender_label, sum(cost_usd), sum(trial_count) FROM v_daily_spend
