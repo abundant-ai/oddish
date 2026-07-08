@@ -46,9 +46,7 @@ def _task(trials: list[TrialSummary]) -> TaskSummary:
 
 
 def _comment(task: TaskSummary) -> str:
-    return formatter.format_experiment_comment(
-        [task], "exp-1", "https://example/exp-1"
-    )
+    return formatter.format_experiment_comment([task], "exp-1", "https://example/exp-1")
 
 
 def test_all_trials_terminal_advances_to_analyzing_with_skipped_excluded_denominator():

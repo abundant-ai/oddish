@@ -14,11 +14,23 @@ _SELECT_ZERO_COST = text(
     SELECT id, model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     FROM trials
     WHERE cost_usd = 0
-      AND (COALESCE(input_tokens, 0) > 0 OR COALESCE(output_tokens, 0) > 0)
+      AND (
+        COALESCE(input_tokens, 0) > 0
+        OR COALESCE(output_tokens, 0) > 0
+        OR COALESCE(cache_write_tokens, 0) > 0
+      )
     """
 )
 
-_UPDATE_COST = text("UPDATE trials SET cost_usd = :cost WHERE id = :id")
+_UPDATE_COST = text(
+    """
+    UPDATE trials
+    SET cost_usd = :cost, cost_is_estimated = TRUE
+    WHERE id = :id AND cost_usd = 0
+    """
+)
+
+_UPDATE_CHUNK_SIZE = 500
 
 
 async def run_backfill(*, apply: bool) -> None:
@@ -33,7 +45,7 @@ async def run_backfill(*, apply: bool) -> None:
         dollars: Counter[str] = Counter()
         skipped: Counter[str] = Counter()
         for row in rows:
-            cost = settle_cost_usd(
+            cost, _ = settle_cost_usd(
                 0.0,
                 model=row.model,
                 input_tokens=row.input_tokens,
@@ -63,8 +75,10 @@ async def run_backfill(*, apply: bool) -> None:
             print("\nDry run complete. Re-run with --apply to execute updates.")
             return
 
-        if updates:
-            await session.execute(_UPDATE_COST, updates)
+        for start in range(0, len(updates), _UPDATE_CHUNK_SIZE):
+            await session.execute(
+                _UPDATE_COST, updates[start : start + _UPDATE_CHUNK_SIZE]
+            )
         print(f"\nBackfill applied: {len(updates)} trials updated.")
 
 

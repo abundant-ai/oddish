@@ -44,6 +44,7 @@ from oddish.db import (
 )
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
+from oddish.model_pricing import settle_cost_usd
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -734,7 +735,13 @@ async def _run_harbor_trial(trial_id: str) -> None:
             trial.cache_tokens = agent_result.n_cache_tokens
             trial.cache_write_tokens = None
             trial.output_tokens = agent_result.n_output_tokens
-            trial.cost_usd = agent_result.cost_usd
+            trial.cost_usd, trial.cost_is_estimated = settle_cost_usd(
+                agent_result.cost_usd,
+                model=trial.model,
+                input_tokens=agent_result.n_input_tokens,
+                output_tokens=agent_result.n_output_tokens,
+                cache_tokens=agent_result.n_cache_tokens,
+            )
         trial.total_steps = _trajectory_total_steps(trajectory)
         trial.has_trajectory = trajectory is not None
         if analyzer_summary is not None:

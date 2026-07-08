@@ -243,9 +243,7 @@ async def test_allow_unattributed_still_hits_org_cap_in_enforce(cleanup_task_ids
 
     async with get_session() as session:
         with pytest.raises(OrgQuotaExceeded):
-            await admit_trials(
-                session, org_id, None, count=1, allow_unattributed=True
-            )
+            await admit_trials(session, org_id, None, count=1, allow_unattributed=True)
 
 
 @pytest.mark.asyncio
@@ -265,7 +263,9 @@ async def test_allow_unattributed_admits_when_org_under_cap(cleanup_task_ids):
 
 
 @pytest.mark.asyncio
-async def test_per_user_block_fires_when_org_under_budget(cleanup_task_ids, monkeypatch):
+async def test_per_user_block_fires_when_org_under_budget(
+    cleanup_task_ids, monkeypatch
+):
     # Tight per-user cap, generous org cap: the per-user gate must still bite.
     monkeypatch.setattr(settings, "default_daily_quota_usd", Decimal("0.30"))
     monkeypatch.setattr(settings, "default_org_monthly_quota_usd", Decimal("1000"))

@@ -26,6 +26,8 @@ class ModelPricing:
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
+    ("glm-4.5-flash", ModelPricing(input=0.0, output=0.0)),
+    ("glm-4.7-flash", ModelPricing(input=0.0, output=0.0)),
     # Anthropic legacy / bare variants.
     (
         "claude-haiku-4",
@@ -185,16 +187,16 @@ def estimate_cost_usd(
 ) -> float | None:
     if not model_name:
         return None
-    input_total = int(input_tokens or 0)
-    output_total = int(output_tokens or 0)
-    cache_write = int(cache_write_tokens or 0)
+    input_total = max(0, int(input_tokens or 0))
+    output_total = max(0, int(output_tokens or 0))
+    cache_write = max(0, int(cache_write_tokens or 0))
     if not (input_total or output_total or cache_write):
         return None
     pricing = _find_pricing(model_name)
     if pricing is None:
         return None
 
-    cached = int(cached_tokens or 0)
+    cached = max(0, int(cached_tokens or 0))
     uncached_input = max(0, input_total - cached - cache_write)
     cache_read_rate = (
         pricing.cache_read if pricing.cache_read is not None else pricing.input
@@ -219,10 +221,13 @@ def settle_cost_usd(
     output_tokens: int | None,
     cache_tokens: int | None = None,
     cache_write_tokens: int | None = None,
-) -> float | None:
+) -> tuple[float | None, bool]:
     """Keep a real harness cost; price the tokens ourselves when it reports $0."""
-    if native_cost_usd or not (input_tokens or output_tokens):
-        return native_cost_usd
-    return estimate_cost_usd(
+    if native_cost_usd or not (input_tokens or output_tokens or cache_write_tokens):
+        return native_cost_usd, False
+    estimated = estimate_cost_usd(
         model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     )
+    if estimated is None:
+        return None, False
+    return estimated, True

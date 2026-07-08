@@ -108,9 +108,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
         _ORACLE_AGENT_PREFIXES
     ):
         return AgentName.ORACLE.value
-    if normalized == AgentName.NOP.value or normalized.startswith(
-        _NOP_AGENT_PREFIXES
-    ):
+    if normalized == AgentName.NOP.value or normalized.startswith(_NOP_AGENT_PREFIXES):
         return AgentName.NOP.value
     return None
 

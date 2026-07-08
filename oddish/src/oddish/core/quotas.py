@@ -176,7 +176,9 @@ def _org_inflight_predicates(org_id: str | None) -> list:
     ]
 
 
-async def _sum_inflight_reserved_usd(session: AsyncSession, predicates: list) -> Decimal:
+async def _sum_inflight_reserved_usd(
+    session: AsyncSession, predicates: list
+) -> Decimal:
     return to_money_decimal(
         await session.scalar(
             select(
