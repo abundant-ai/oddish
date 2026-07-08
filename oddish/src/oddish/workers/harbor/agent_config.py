@@ -245,6 +245,9 @@ def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
 
     agent_config.name = None
     agent_config.import_path = _ODDISH_GROK_BUILD_IMPORT_PATH
+    kwargs = dict(agent_config.kwargs or {})
+    kwargs.setdefault("reasoning_effort", "high")
+    agent_config.kwargs = kwargs
 
 
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
