@@ -668,7 +668,10 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
-            return False
+            # These rows are already terminal (finished_at stamped by the cancel
+            # path / CANCEL hook); report that so the caller runs the terminal
+            # live-event purge instead of leaning on the 24h TTL sweeper.
+            return trial.finished_at is not None
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
