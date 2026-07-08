@@ -169,3 +169,33 @@ def test_tpu_environment_inference_fills_missing_effective_env():
         == EnvironmentType.MODAL
     )
     assert _infer_tpu_environment(HarborConfig(), None) is None
+
+
+def test_resolve_sweep_environments_threads_inference_to_trials():
+    # When the TPU inference fills an all-None environment chain, the inferred
+    # GKE must reach the TRIAL SPECS too (stamp-env == trial-env invariant) --
+    # not just the harbor stamp -- or trials would run the default backend
+    # while carrying the GKE harbor image.
+    from oddish.core.endpoints.sweep import _resolve_sweep_environments
+    from oddish.schemas import HarborConfig
+
+    harbor_tpu = HarborConfig.model_validate(
+        {"environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}}}
+    )
+    assert _resolve_sweep_environments(None, None, None, harbor_tpu) == (
+        EnvironmentType.GKE,
+        EnvironmentType.GKE,
+    )
+    # No TPU request: nothing inferred, defaults untouched.
+    assert _resolve_sweep_environments(None, None, None, HarborConfig()) == (
+        None,
+        None,
+    )
+    # A resolved environment is never overridden (the guards judge it), and
+    # the trial-spec default is left exactly as the caller passed it.
+    assert _resolve_sweep_environments(
+        EnvironmentType.MODAL, None, None, harbor_tpu
+    ) == (EnvironmentType.MODAL, None)
+    assert _resolve_sweep_environments(
+        None, EnvironmentType.GKE, EnvironmentType.MODAL, harbor_tpu
+    ) == (EnvironmentType.GKE, EnvironmentType.MODAL)

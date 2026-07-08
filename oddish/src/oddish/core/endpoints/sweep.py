@@ -184,6 +184,30 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+def _resolve_sweep_environments(
+    submission_environment: EnvironmentType | None,
+    inherited_environment: EnvironmentType | None,
+    default_environment: EnvironmentType | None,
+    harbor: HarborConfig,
+) -> tuple[EnvironmentType | None, EnvironmentType | None]:
+    """Resolve ``(effective_environment, default_for_trial_specs)`` together.
+
+    The TPU inference (an override_tpu whose environment chain is entirely
+    unset resolves to GKE) must reach BOTH values: the effective environment
+    drives the harbor stamp and the guards, while the default feeds
+    ``build_trial_specs_from_sweep`` -- diverging them would stamp the GKE
+    image onto trials that then run the default backend (breaking the
+    stamp-env == trial-env invariant).
+    """
+    effective = _effective_sweep_environment(
+        submission_environment, inherited_environment, default_environment
+    )
+    inferred = _infer_tpu_environment(harbor, effective)
+    if inferred is not effective:
+        return inferred, inferred
+    return effective, default_environment
+
+
 def _infer_tpu_environment(
     harbor: HarborConfig,
     effective_environment: EnvironmentType | None,
@@ -351,12 +375,15 @@ async def create_task_sweep_core(
     # effective environment mirrors build_trial_specs_from_sweep (submission
     # override, else the inherited/caller-resolved default); a non-GKE submission
     # is left untouched and keeps the default pin.
-    effective_environment = _effective_sweep_environment(
-        submission.environment, inherited_environment, default_environment
+    effective_environment, resolved_default = _resolve_sweep_environments(
+        submission.environment,
+        inherited_environment,
+        default_environment,
+        submission.harbor,
     )
-    effective_environment = _infer_tpu_environment(
-        submission.harbor, effective_environment
-    )
+    if resolved_default is not default_environment:
+        default_environment = resolved_default
+        effective_default_env = resolved_default
     _reject_mixed_gke_configs(submission.configs, effective_environment)
     _reject_tpu_without_gke(submission.harbor, effective_environment)
     harbor_to_gate = submission.harbor
