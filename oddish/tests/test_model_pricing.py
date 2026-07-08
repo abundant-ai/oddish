@@ -360,6 +360,21 @@ def test_settle_preserves_native_when_no_tokens() -> None:
     ) == (None, False)
 
 
+def test_settle_treats_nan_and_negative_native_cost_as_junk() -> None:
+    for junk in (float("nan"), float("inf"), -0.01):
+        cost, estimated = settle_cost_usd(
+            junk,
+            model="zai/glm-x-preview[1m]",
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+        )
+        assert cost == pytest.approx(1.32)
+        assert estimated is True
+    assert settle_cost_usd(
+        float("nan"), model="zai/glm-4.6", input_tokens=None, output_tokens=None
+    ) == (None, False)
+
+
 def test_estimate_clamps_negative_token_counts() -> None:
     assert estimate_cost_usd("claude-3-7-sonnet", 1_000, -50) == pytest.approx(
         1_000 * 3e-6

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -222,9 +223,16 @@ def settle_cost_usd(
     cache_tokens: int | None = None,
     cache_write_tokens: int | None = None,
 ) -> tuple[float | None, bool]:
-    """Keep a real harness cost; price the tokens ourselves when it reports $0."""
-    if native_cost_usd or not (input_tokens or output_tokens or cache_write_tokens):
+    """Keep a real harness cost; price the tokens ourselves when it is $0 or junk."""
+    usable = (
+        native_cost_usd is not None
+        and math.isfinite(native_cost_usd)
+        and native_cost_usd >= 0
+    )
+    if usable and native_cost_usd:
         return native_cost_usd, False
+    if not (input_tokens or output_tokens or cache_write_tokens):
+        return (native_cost_usd, False) if usable else (None, False)
     estimated = estimate_cost_usd(
         model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     )
