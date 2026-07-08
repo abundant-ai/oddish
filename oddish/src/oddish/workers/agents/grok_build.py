@@ -159,9 +159,15 @@ class OddishGrokBuild(GrokBuild):
             "'(streaming-json|output-format|no-auto-update|unknown option|"
             "unrecognized option|unexpected argument|invalid value|unsupported)'"
         )
+        # Clear any prior grok sessions before the run so the session store holds
+        # exactly one session afterwards. Worker containers are reused across
+        # trials; without this the store accumulates multiple sessions and the
+        # trajectory capture cannot unambiguously pick this trial's session.
         command = (
             "mkdir -p /logs/agent; "
             'export PATH="$HOME/.local/bin:$HOME/.grok/bin:$PATH"; '
+            'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
+            'rm -rf "$GROK_HOME/sessions" "$GROK_HOME/logs" 2>/dev/null; '
             "set +e; "
             f"{grok_command('streaming-json', no_auto_update=True)} "
             f">{stdout_path} 2>{stderr_path}; "
@@ -207,11 +213,14 @@ class OddishGrokBuild(GrokBuild):
         best-effort: a copy failure must never fail the trial.
         """
         capture = shlex.quote(_SESSION_CAPTURE_PATH)
+        # Copy both sessions/ (tool-call trajectory) and logs/ (the sampling log,
+        # which carries per-request token usage the session stream omits).
         command = (
             "set +e; "
             f"mkdir -p {capture}; "
             'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
             f'cp -a "$GROK_HOME/sessions" {capture}/ 2>/dev/null; '
+            f'cp -a "$GROK_HOME/logs" {capture}/ 2>/dev/null; '
             "exit 0"
         )
         try:
