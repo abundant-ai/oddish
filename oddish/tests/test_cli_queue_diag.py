@@ -154,6 +154,32 @@ def test_queue_diag_json_emits_combined_document():
     assert doc["queue_health"]["totals_running"] == 2
 
 
+def test_queue_diag_total_failure_exits_nonzero_human():
+    # Every endpoint errors (non-auth): must not look like a healthy empty queue.
+    routes = {
+        "/admin/queue-health": (500, {"detail": "boom"}),
+        "/admin/queue-status": (500, {"detail": "boom"}),
+        "/admin/slots": (500, {"detail": "boom"}),
+        "/admin/orphaned-state": (500, {"detail": "boom"}),
+        "/admin/worker-jobs": (500, {"detail": "boom"}),
+    }
+    result, _ = _invoke(routes)
+    assert result.exit_code == 1
+    assert "Could not fetch any queue diagnostics" in result.output
+
+
+def test_queue_diag_total_failure_exits_nonzero_json():
+    routes = {
+        "/admin/queue-health": (500, {"detail": "boom"}),
+        "/admin/queue-status": (500, {"detail": "boom"}),
+        "/admin/slots": (500, {"detail": "boom"}),
+        "/admin/orphaned-state": (500, {"detail": "boom"}),
+        "/admin/worker-jobs": (500, {"detail": "boom"}),
+    }
+    result, _ = _invoke(routes, ["--json"])
+    assert result.exit_code == 1
+
+
 def test_queue_diag_auth_error_exits_nonzero():
     routes = {
         "/admin/queue-health": (403, {"detail": "Admin role required"}),

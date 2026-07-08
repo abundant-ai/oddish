@@ -141,8 +141,12 @@ def try_print_trial_detail(
             data = response.json()
             if isinstance(data, dict):
                 trial = data
-        if trial is None:
-            # Core-server fallback: pull the parent task and find the trial.
+        elif response.status_code == 404:
+            # Only a 404 means "no single-trial route" (self-hosted core server)
+            # or "trial genuinely absent": fall back to the parent task's
+            # embedded trial. A 401/403/5xx is a real failure on a route that
+            # exists, so surface it instead of silently masking it with the
+            # parent-task copy.
             parent = trial_id.rpartition("-")[0]
             task_response = client.get(f"{api_url}/tasks/{parent}")
             if task_response.status_code == 200:
@@ -151,6 +155,9 @@ def try_print_trial_detail(
                     if candidate.get("id") == trial_id:
                         trial = candidate
                         break
+        else:
+            # Genuine error on the single-trial route (auth, server error, ...).
+            _fail(response, json_output, "Failed to get trial")
 
     if trial is None:
         return False
@@ -196,8 +203,11 @@ def print_task_detail(api_url: str, task_id: str, *, json_output: bool) -> None:
             f"[bold]Total cost:[/bold] ${float(cost):.4f} across "
             f"{totals.get('cost_trial_count', 0)} trials{est}"
         )
-        billed = totals.get("billed_cost_usd")
-        if billed:
+        # Gate on the billed trial count, not the amount, so a legitimate
+        # $0.00 across N billed trials still shows (a zero amount is real
+        # accounting, not "nothing billed").
+        if totals.get("billed_trial_count"):
+            billed = totals.get("billed_cost_usd") or 0.0
             console.print(
                 f"[bold]Billed cost:[/bold] ${float(billed):.4f} across "
                 f"{totals.get('billed_trial_count', 0)} trials"

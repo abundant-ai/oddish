@@ -101,6 +101,12 @@ def test_costs_core_server_404_hint():
     assert "hosted Oddish" in cap["result"].output
 
 
+def test_costs_user_404_mentions_user():
+    cap = _invoke(404, {"detail": "User not found"}, ["--user", "u404"])
+    assert cap["result"].exit_code == 1
+    assert "u404" in cap["result"].output
+
+
 def test_costs_json_output():
     cap = _invoke(200, _ORG, ["--json"])
     assert cap["result"].exit_code == 0, cap["result"].output
