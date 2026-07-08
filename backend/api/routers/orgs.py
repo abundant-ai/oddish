@@ -217,6 +217,11 @@ async def _read_member_quota_fields(session, org_id: str | None, user_id: str):
 
 GAMBLE_SIDES = ("heads", "tails")
 
+# Advisory-lock namespace for serializing per-user gamble transactions so
+# concurrent bets cannot both validate against the same remaining-quota
+# snapshot and collectively overspend.
+_GAMBLE_LOCK_NAMESPACE = 0x0DD15
+
 
 def _flip_coin() -> str:
     return secrets.choice(GAMBLE_SIDES)
@@ -250,6 +255,14 @@ async def gamble_quota(
     user_id = _require_gambler(auth)
     async with get_session() as session:
         await _require_gambles_table(session)
+        # Serialize concurrent gambles for the same user: a transaction-scoped
+        # advisory lock guarantees the read-validate-insert below runs to
+        # completion before another bet reads the remaining-quota snapshot,
+        # so two requests can't both pass validation and overspend.
+        await session.execute(
+            sa_text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+            {"ns": _GAMBLE_LOCK_NAMESPACE, "key": f"{auth.org_id}:{user_id}"},
+        )
         limit = await get_effective_limit(session, auth.org_id, user_id)
         used = await sum_cost_usd(session, auth.org_id, user_id, quota_window_start())
         reserved = await inflight_reserved_usd(session, auth.org_id, user_id)
