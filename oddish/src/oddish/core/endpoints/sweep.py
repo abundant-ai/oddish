@@ -184,6 +184,23 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+def _infer_tpu_environment(
+    harbor: HarborConfig,
+    effective_environment: EnvironmentType | None,
+) -> EnvironmentType | None:
+    """Resolve a TPU request with NO environment anywhere to GKE.
+
+    The hosted router infers this in its default (get_default_cloud_environment)
+    but an OSS install's sweep handler passes no default -- without this, a TPU
+    submission that omits environment would 422 there instead of routing like
+    the hosted API and the CLI sniff. A RESOLVED environment is never
+    overridden; the guards below judge it.
+    """
+    if effective_environment is None and harbor.environment.override_tpu is not None:
+        return EnvironmentType.GKE
+    return effective_environment
+
+
 def _reject_tpu_without_gke(
     harbor: "HarborConfig",
     effective_environment: EnvironmentType | None,
@@ -336,6 +353,9 @@ async def create_task_sweep_core(
     # is left untouched and keeps the default pin.
     effective_environment = _effective_sweep_environment(
         submission.environment, inherited_environment, default_environment
+    )
+    effective_environment = _infer_tpu_environment(
+        submission.harbor, effective_environment
     )
     _reject_mixed_gke_configs(submission.configs, effective_environment)
     _reject_tpu_without_gke(submission.harbor, effective_environment)

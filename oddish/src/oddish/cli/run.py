@@ -112,6 +112,26 @@ def _read_harbor_manifest(*candidates: Path | None) -> dict[str, str] | None:
     return None
 
 
+def _validate_explicit_environment_for_task(
+    environment: "EnvironmentType | None",
+    task_path: Path | None,
+) -> None:
+    """Refuse an explicit non-GKE --env on a task that declares a TPU.
+
+    Only GKE serves TPUs, and a task.toml TPU request is invisible to every
+    server-side guard (the tarball never passes through the API) -- the CLI is
+    the last place that can turn this into a pre-submit error instead of a
+    failure minutes into the trial."""
+    if environment is None or environment == EnvironmentType.GKE:
+        return
+    if task_path is not None and _task_config_requests_tpu(task_path):
+        raise typer.BadParameter(
+            f"This task declares '[environment.tpu]' but --env is "
+            f"'{environment.value}'; only gke runs TPUs. Use --env gke or "
+            f"drop --env to auto-route."
+        )
+
+
 def _default_cloud_environment_for_task(
     task_path: Path | None,
     *,
@@ -841,6 +861,7 @@ def run(
 
         task_configs = copy.deepcopy(configs)
         task_environment = environment
+        _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
             task_environment = _default_cloud_environment_for_task(
                 task_path,
