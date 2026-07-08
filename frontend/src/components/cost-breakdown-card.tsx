@@ -306,7 +306,7 @@ function ChartTooltip(
   props: TooltipContentProps<ChartTooltipValue, ChartTooltipName> & {
     bucket: string;
     labels: Record<string, string>;
-  },
+  }
 ) {
   const { active, payload, label, bucket, labels } = props;
   if (!active || !payload || payload.length === 0) return null;
@@ -370,15 +370,15 @@ export function CostChart({
       series.buckets.map((b) => ({
         bucket_start: b.bucket_start,
         ...Object.fromEntries(
-          series.keys.map((k) => [k.key, b.costs[k.key] ?? 0]),
+          series.keys.map((k) => [k.key, b.costs[k.key] ?? 0])
         ),
       })),
-    [series.buckets, series.keys],
+    [series.buckets, series.keys]
   );
 
   const colorByKey = useMemo(
     () => buildSeriesColors(series.keys),
-    [series.keys],
+    [series.keys]
   );
 
   if (series.buckets.length === 0)
@@ -486,8 +486,8 @@ function MethodologyNote() {
             once. Per-user figures attribute each trial to its billed user;
             spend that never resolved to an active user — offboarded or unlinked
             payers — is grouped under its submitted GitHub identity, its
-            submitter, or an <strong>unbilled</strong> &ldquo;Unattributed&rdquo;
-            bucket rather than being dropped.
+            submitter, or an <strong>unbilled</strong>{" "}
+            &ldquo;Unattributed&rdquo; bucket rather than being dropped.
           </li>
           <li>
             Per-model and per-user are the same per-trial costs grouped
@@ -515,7 +515,7 @@ export function CostBreakdownCard() {
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
     `/api/admin/costs?window_days=${windowDays}&experiment_limit=100&user_limit=100`,
     fetcher,
-    { refreshInterval: 30000 },
+    { refreshInterval: 30000 }
   );
 
   const windowLabel =
@@ -813,33 +813,56 @@ function UserTable({
             <TableCell>
               <div className="flex flex-col">
                 {user.owner_user_id ? (
-                  <Link
-                    href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
-                      user.org_id
-                        ? `&org=${encodeURIComponent(user.org_id)}`
-                        : ""
-                    }`}
-                    className="text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
-                  >
-                    {userLabel(user)}
-                  </Link>
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+                    <Link
+                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
+                        user.org_id
+                          ? `&org=${encodeURIComponent(user.org_id)}`
+                          : ""
+                      }`}
+                      className="text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                    >
+                      {userLabel(user)}
+                    </Link>
+                    {user.has_unbilled_spend && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="outline"
+                            className="text-muted-foreground cursor-help text-[9px] font-normal"
+                          >
+                            unbilled
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-[260px]">
+                          This user has unbilled trials — spend that never drew
+                          a quota (e.g. created before billing stamping shipped,
+                          or while they were unlinked). Their drilldown counts
+                          billed spend only, so its total may be less than the
+                          amount shown here.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     {userLabel(user)}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Badge
-                          variant="outline"
-                          className="text-muted-foreground cursor-help text-[9px] font-normal"
-                        >
-                          unbilled
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-[260px]">
-                        The task submitter isn&apos;t an active oddish user, so
-                        this cost isn&apos;t billed to anyone&apos;s quota.
-                      </TooltipContent>
-                    </Tooltip>
+                    {user.has_unbilled_spend && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="outline"
+                            className="text-muted-foreground cursor-help text-[9px] font-normal"
+                          >
+                            unbilled
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-[260px]">
+                          This spender isn&apos;t a registered oddish user, so
+                          this cost isn&apos;t billed to anyone&apos;s quota.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </span>
                 )}
                 {user.email && user.email !== userLabel(user) && (
