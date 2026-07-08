@@ -12,7 +12,11 @@ from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.task.config import MCPServerConfig, TaskConfig as HarborTaskConfig
+from harbor.models.task.config import (
+    EnvironmentConfig,
+    MCPServerConfig,
+    TaskConfig as HarborTaskConfig,
+)
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 
@@ -50,11 +54,12 @@ from .storage import (
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
 
 
-# Harbor sizes the OUTER environment-build ``wait_for`` as the effective
-# ``environment_build_timeout_multiplier`` times the task's environment
-# ``build_timeout_sec``; this base mirrors Harbor's ``EnvironmentConfig``
-# default (10 minutes), the value used when a task does not override it.
-_ENV_BUILD_TIMEOUT_BASE_SEC = 600.0
+# Harbor's default task-environment ``build_timeout_sec`` -- the base it
+# multiplies. Sizing reads each task's own value; this is only the fallback base
+# when a task's task.toml cannot be read. Sourced from Harbor so it cannot drift.
+_ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
+    "build_timeout_sec"
+].default
 # Headroom the GKE outer wait needs beyond the Pod's ready/capacity wait: it
 # covers Harbor-side environment construction and keeps the outer cap strictly
 # above the inner pod-ready timeout so the more specific inner error surfaces.
@@ -67,18 +72,21 @@ def _sized_environment_build_timeout_multiplier(
     environment_build_timeout_multiplier: float | None,
     timeout_multiplier: float | None,
     pod_ready_timeout_sec: int,
+    base_sec: float,
 ) -> float | None:
     """Grow the environment-build timeout multiplier to cover a GKE Pod's
     capacity/pod-ready wait; a no-op for every other environment.
 
     A GKE Pod can sit Pending through a DWS flex-start capacity wait for up to
     ``pod_ready_timeout_sec`` before it reports ready. Harbor wraps
-    ``environment.start()`` in an outer ``wait_for`` of effective-multiplier
-    times ``_ENV_BUILD_TIMEOUT_BASE_SEC``, so the unscaled ~600s cap deletes the
-    Pending Pod and fails the trial before capacity is ever granted. Raise the
-    multiplier just enough to clear that wait plus build overhead, but never
-    below a larger caller value. Harbor resolves an unset env-build multiplier
-    to the general ``timeout_multiplier``, so that is honoured as the floor too.
+    ``environment.start()`` in an outer ``wait_for`` of the effective multiplier
+    times the task's own ``build_timeout_sec`` (``base_sec``). Sizing against a
+    fixed base would fall short whenever a task sets ``build_timeout_sec`` below
+    the default, so the multiplier is computed against the task's real base and
+    the outer wait clears ``pod_ready_timeout_sec`` plus build overhead
+    regardless of how small that base is. Never lower a larger caller value;
+    Harbor resolves an unset env-build multiplier to the general
+    ``timeout_multiplier``, so that is honoured as the floor too.
 
     Returns the multiplier to store -- unchanged (possibly ``None``) off GKE.
     """
@@ -89,10 +97,7 @@ def _sized_environment_build_timeout_multiplier(
         if environment_build_timeout_multiplier is not None
         else (timeout_multiplier if timeout_multiplier is not None else 1.0)
     )
-    needed = math.ceil(
-        (pod_ready_timeout_sec + _GKE_ENV_BUILD_OVERHEAD_SEC)
-        / _ENV_BUILD_TIMEOUT_BASE_SEC
-    )
+    needed = math.ceil((pod_ready_timeout_sec + _GKE_ENV_BUILD_OVERHEAD_SEC) / base_sec)
     return float(max(effective_current, needed))
 
 
@@ -115,6 +120,26 @@ def _effective_pod_ready_timeout_sec(
         return int(raw)
     except (TypeError, ValueError):
         return default_sec
+
+
+def _effective_task_build_timeout_sec(task_path: Path) -> float:
+    """The task's own environment ``build_timeout_sec`` -- the base Harbor
+    multiplies by ``environment_build_timeout_multiplier`` for the outer build
+    wait.
+
+    Read from the task's task.toml so the GKE outer wait is sized against the
+    real base even when a task sets a sub-default ``build_timeout_sec``. Falls
+    back to Harbor's ``EnvironmentConfig`` default when the config cannot be read
+    or is non-positive -- Harbor would fail such a trial at load anyway, so the
+    fallback only needs to keep the sizing arithmetic safe.
+    """
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+        base = float(task_config.environment.build_timeout_sec)
+    except Exception:
+        return _ENV_BUILD_TIMEOUT_BASE_SEC
+    return base if base > 0 else _ENV_BUILD_TIMEOUT_BASE_SEC
 
 
 def _read_query_cli_text() -> str:
@@ -374,6 +399,7 @@ async def run_harbor_trial_async(
             pod_ready_timeout_sec=_effective_pod_ready_timeout_sec(
                 env_config.kwargs, settings.gke_pod_ready_timeout_sec
             ),
+            base_sec=_effective_task_build_timeout_sec(effective_task_path),
         )
         if env_build_multiplier is not None:
             job_config_kwargs["environment_build_timeout_multiplier"] = (
