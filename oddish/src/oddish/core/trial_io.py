@@ -671,12 +671,12 @@ async def read_trial_instruction(trial: TrialModel) -> str | None:
     """
     s3_prefix = trial.trial_s3_key or StorageClient._trial_prefix(trial.id)
     storage = get_storage_client()
-    candidates = [
-        f"{s3_prefix}task/instruction.md",
-    ]
+    candidates = [f"{s3_prefix}task/instruction.md"]
     if trial.name:
         candidates.append(f"{s3_prefix}{trial.name}/task/instruction.md")
-    for key in candidates:
+    # Common Harbor fallback naming convention (mirrors trajectory reads).
+    candidates.append(f"{s3_prefix}trial-0/task/instruction.md")
+    for key in dict.fromkeys(candidates):
         try:
             return await storage.download_text(key)
         except Exception:
@@ -699,7 +699,9 @@ async def read_trial_verifier_output(trial: TrialModel) -> str | None:
     ]
     if trial.name:
         candidates.append(f"{s3_prefix}{trial.name}/verifier/test-stdout.txt")
-    for key in candidates:
+    # Common Harbor fallback naming convention (mirrors trajectory reads).
+    candidates.append(f"{s3_prefix}trial-0/verifier/test-stdout.txt")
+    for key in dict.fromkeys(candidates):
         try:
             return await storage.download_text(key)
         except Exception:
