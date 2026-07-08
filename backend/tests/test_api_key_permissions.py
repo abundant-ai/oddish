@@ -13,7 +13,7 @@ from oddish.schemas import AgentModelPair, TaskSweepSubmission
 def _clerk_auth(
     *,
     role: UserRole,
-    org_slug: str = "abundant",
+    org_slug: str = "customer",
     clerk_org_id: str | None = None,
     email: str = "member@example.com",
 ) -> AuthContext:
@@ -27,14 +27,14 @@ def _clerk_auth(
     )
 
 
-def test_abundant_member_can_create_limited_api_keys_without_abundant_email():
+def test_org_member_can_create_limited_api_keys():
     auth = _clerk_auth(role=UserRole.MEMBER, email="contractor@example.com")
 
     assert can_create_api_keys(auth) is True
     assert allowed_api_key_scopes(auth) == [APIKeyScope.TASKS, APIKeyScope.READ]
 
 
-def test_abundant_admin_can_create_full_api_keys_without_abundant_email():
+def test_org_admin_can_create_full_api_keys():
     auth = _clerk_auth(role=UserRole.ADMIN, email="admin@example.com")
 
     assert can_create_api_keys(auth) is True
@@ -45,11 +45,11 @@ def test_abundant_admin_can_create_full_api_keys_without_abundant_email():
     ]
 
 
-def test_non_abundant_member_cannot_create_api_keys():
-    auth = _clerk_auth(role=UserRole.MEMBER, org_slug="customer")
-
-    assert can_create_api_keys(auth) is False
-    assert allowed_api_key_scopes(auth) == []
+def test_api_key_creation_is_org_agnostic():
+    # No org-slug allowlist: members of any org qualify, not just Abundant.
+    for org_slug in ("abundant", "customer", "acme-labs"):
+        auth = _clerk_auth(role=UserRole.MEMBER, org_slug=org_slug)
+        assert can_create_api_keys(auth) is True
 
 
 def test_api_key_auth_cannot_create_more_api_keys():
