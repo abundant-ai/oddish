@@ -57,7 +57,7 @@ async def oddish_costs(args: dict) -> dict:
         "*Top users by spend*",
     ]
     for u in data.get("by_user", [])[:10]:
-        label = u.get("name") or u.get("email") or u.get("owner_user_id") or "?"
+        label = u.get("name") or u.get("email") or u.get("label") or u.get("key") or "?"
         org = u.get("org_name") or u.get("org_id") or ""
         lines.append(f"• {label} ({org}): ${u.get('cost_usd', 0):,.2f}, {u.get('trial_count', 0)} trials")
     lines.append("")
