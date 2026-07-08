@@ -13,6 +13,7 @@ import {
   useCasino,
   type SfxName,
 } from "../casino-kit";
+import WrestleLocal from "./wrestle-local";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -185,6 +186,7 @@ export default function WrestleGame() {
     shouldRetryOnError: false,
   });
 
+  const [mode, setMode] = useState<"local" | "duel">("local");
   const [fight, setFight] = useState<FightState | null>(null);
   const [phase, setPhase] = useState<"intro" | "live" | "done">("intro");
   const [poseB, setPoseB] = useState<Pose>(() => homePose(-1));
@@ -354,15 +356,31 @@ export default function WrestleGame() {
   const deadBlue = koHit && fight !== null && !fight.win;
   const deadRed = koHit && fight !== null && fight.win;
 
+  if (mode === "local") {
+    return <WrestleLocal onSwitchToDuel={() => setMode("duel")} />;
+  }
+
   return (
     <CinemaShell
       theme="wrestle"
       title="SPRING SLAM"
       tagline="Two engineers. One budget. Settle it with springs."
       hudExtra={
-        <span className="cz-chip">
-          {list ? `${list.incoming.length} callout${list.incoming.length === 1 ? "" : "s"}` : "…"}
-        </span>
+        <>
+          <button
+            className="cz-btn"
+            style={{ fontSize: "0.72rem", padding: "0.35rem 0.7rem" }}
+            onClick={() => {
+              ctx.audio.sfx("click");
+              setMode("local");
+            }}
+          >
+            LOCAL MATCH
+          </button>
+          <span className="cz-chip">
+            {list ? `${list.incoming.length} callout${list.incoming.length === 1 ? "" : "s"}` : "…"}
+          </span>
+        </>
       }
     >
       <style>{`

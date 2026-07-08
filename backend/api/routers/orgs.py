@@ -40,6 +40,8 @@ from api.schemas import (
     QuotaUpdateRequest,
     QuotaUsageResponse,
     UserResponse,
+    WrestleRequest,
+    WrestleResponse,
 )
 from auth import (
     AuthContext,
@@ -562,6 +564,52 @@ async def blackjack_quota(
                 limit + escrow_correction + net, used, reserved
             ),
         )
+
+
+@router.post("/quotas/gamble/wrestle", response_model=WrestleResponse)
+async def wrestle_bet(
+    payload: WrestleRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> WrestleResponse:
+    # LOCAL hot-seat match: the server can't referee a same-keyboard game, so
+    # the win/loss is trust-the-client (deliberate, per the feature owner). No
+    # escrow, no cap -- just double-or-nothing on the reported result.
+    user_id = _require_gambler(auth)
+    async with get_session() as session:
+        await _require_gambles_table(session)
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+            {"ns": _GAMBLE_LOCK_NAMESPACE, "key": f"{auth.org_id}:{user_id}"},
+        )
+        limit = await get_effective_limit(session, auth.org_id, user_id)
+        used = await sum_cost_usd(session, auth.org_id, user_id, quota_window_start())
+        reserved = await inflight_reserved_usd(session, auth.org_id, user_id)
+        if payload.wager_usd > limit - used - reserved:
+            raise HTTPException(
+                status_code=400, detail="Wager exceeds your remaining quota"
+            )
+        net = payload.wager_usd if payload.won else -payload.wager_usd
+        session.add(
+            QuotaGambleModel(
+                org_id=auth.org_id,
+                user_id=user_id,
+                game="wrestle",
+                wager_usd=payload.wager_usd,
+                net_usd=net,
+                multiplier=Decimal("2") if payload.won else Decimal("0"),
+                detail={"outcome": "win" if payload.won else "lose"},
+                won=payload.won,
+            )
+        )
+    return WrestleResponse(
+        won=payload.won,
+        wager_usd=float(payload.wager_usd),
+        net_usd=float(net),
+        limit_usd=float(max(Decimal(0), limit + net)),
+        used_usd=float(used),
+        reserved_usd=float(reserved),
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+    )
 
 
 DUEL_OPEN_LIMIT = 5

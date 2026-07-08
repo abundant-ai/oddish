@@ -527,6 +527,18 @@ export interface QuotaDuelAccept {
   enforced: boolean;
 }
 
+// POST /quotas/gamble/wrestle — local hot-seat match staked against the house.
+// Client reports the winner; quota moves by ±wager. No escrow, no cap.
+export interface WrestleResult {
+  won: boolean;
+  wager_usd: number;
+  net_usd: number;
+  limit_usd: number;
+  used_usd: number;
+  reserved_usd: number;
+  enforced: boolean;
+}
+
 // POST /quotas/gamble/blackjack — interactive hand state machine.
 export interface BlackjackState {
   session_id: string;

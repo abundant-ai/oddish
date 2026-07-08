@@ -246,6 +246,25 @@ class BlackjackStateResponse(BaseModel):
     enforced: bool = False
 
 
+class WrestleRequest(BaseModel):
+    wager_usd: Decimal = Field(
+        gt=0, le=Decimal("500000"), max_digits=12, decimal_places=4
+    )
+    # Client-reported result of a LOCAL hot-seat match (the server can't referee
+    # a same-keyboard game). Deliberately trust-the-client per the feature owner.
+    won: bool
+
+
+class WrestleResponse(BaseModel):
+    won: bool
+    wager_usd: float
+    net_usd: float
+    limit_usd: float
+    used_usd: float
+    reserved_usd: float
+    enforced: bool = False
+
+
 class InviteUserRequest(BaseModel):
     """Request to invite a user to the organization."""
 

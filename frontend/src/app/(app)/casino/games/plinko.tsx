@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { QuotaGambleResult } from "@/lib/types";
 import {
   CinemaShell,
@@ -33,13 +33,24 @@ const APEX = { x: 500, y: Y0 - 40 };
 
 const HOP_MS = 165;
 const LAND_MS = 230;
-const MIN_CHARGE_MS = 700;
+const MIN_CHARGE_MS = 420;
+const LANDED_HOLD_MS = 560;
+const FADE_MS = 340;
+const MAX_BALLS = 40;
 
 type Pt = { x: number; y: number };
-type Phase = "idle" | "charging" | "dropping" | "landed";
+type BallPhase = "charging" | "dropping" | "landed" | "gone";
+type Ball = {
+  id: number;
+  phase: BallPhase;
+  pts: Pt[] | null;
+  rp: number[] | null;
+  bucket: number | null;
+  step: number;
+  result: QuotaGambleResult | null;
+};
 type LogEntry = { id: number; risk: Risk; mult: number; net: number; won: boolean };
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+type Notice = { text: string; tone: "bad" | "dim" };
 
 function bucketColor(i: number): string {
   const t = Math.pow(Math.abs(i - 6) / 6, 1.5);
@@ -71,82 +82,178 @@ function buildPts(path: string, bucket: number): Pt[] {
   return pts;
 }
 
+const isBrutal = (r: QuotaGambleResult) =>
+  !r.won && Math.abs(r.net_usd) >= 0.005 && r.multiplier <= 0.3;
+
 export default function PlinkoGame() {
   const ctx = useCasino();
   const [risk, setRisk] = useState<Risk>("medium");
   const [wager, setWager] = useState("5.00");
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [drop, setDrop] = useState<{ pts: Pt[]; rp: number[]; bucket: number; result: QuotaGambleResult } | null>(null);
-  const [step, setStep] = useState(0);
-  const [round, setRound] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [balls, setBalls] = useState<Ball[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
+  const [lastResult, setLastResult] = useState<QuotaGambleResult | null>(null);
+  const [settleSeq, setSettleSeq] = useState(0);
+  const [shaking, setShaking] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
-  const amount = parseWager(wager, ctx.remaining);
-  const live = phase === "charging" || phase === "dropping";
-  const buckets = PLINKO_TABLES[risk];
-  const last = phase === "landed" && drop ? drop.result : null;
-  const lastPush = last !== null && Math.abs(last.net_usd) < 0.005;
-  const brutal = last !== null && !last.won && !lastPush && last.multiplier <= 0.3;
+  const alive = useRef(true);
+  const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const inFlightRef = useRef(0);
+  const nextId = useRef(1);
+
+  useEffect(() => {
+    alive.current = true;
+    const pool = timers.current;
+    return () => {
+      alive.current = false;
+      pool.forEach(clearTimeout);
+      pool.clear();
+      if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    };
+  }, []);
+
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const id = setTimeout(() => {
+        timers.current.delete(id);
+        resolve();
+      }, ms);
+      timers.current.add(id);
+    });
+
+  const flashNotice = (text: string, tone: Notice["tone"]) => {
+    if (!alive.current) return;
+    setNotice({ text, tone });
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => {
+      if (alive.current) setNotice(null);
+    }, 1600);
+  };
+
+  const triggerShake = () => {
+    if (!alive.current) return;
+    setShaking(true);
+    const id = setTimeout(() => {
+      timers.current.delete(id);
+      if (alive.current) setShaking(false);
+    }, 430);
+    timers.current.add(id);
+  };
+
+  const patch = (id: number, next: Partial<Ball>) =>
+    setBalls((prev) => prev.map((b) => (b.id === id ? { ...b, ...next } : b)));
+
+  const runBall = async (id: number, amount: number, ballRisk: Risk) => {
+    const started = Date.now();
+    let result: QuotaGambleResult;
+    try {
+      result = await ctx.play({ game: "plinko", wager_usd: amount.toFixed(2), risk: ballRisk });
+    } catch (err) {
+      inFlightRef.current = Math.max(0, inFlightRef.current - 1);
+      if (!alive.current) return;
+      setBalls((prev) => prev.filter((b) => b.id !== id));
+      flashNotice(errorMessage(err), "bad");
+      return;
+    }
+    if (!alive.current) return;
+
+    const d = result.detail;
+    const rawBucket = typeof d.bucket === "number" ? d.bucket : 6;
+    const bucket = Math.max(0, Math.min(PLINKO_ROWS, Math.round(rawBucket)));
+    let path = typeof d.path === "string" ? d.path : "";
+    if (path.length !== PLINKO_ROWS) path = "R".repeat(bucket) + "L".repeat(PLINKO_ROWS - bucket);
+
+    await wait(Math.max(0, MIN_CHARGE_MS - (Date.now() - started)));
+    if (!alive.current) return;
+    patch(id, {
+      phase: "dropping",
+      pts: buildPts(path, bucket),
+      rp: rightsPrefix(path),
+      bucket,
+      step: 0,
+      result,
+    });
+
+    for (let s = 1; s <= 12; s++) {
+      patch(id, { step: s });
+      ctx.audio.sfx(s === 12 ? "snap" : "bounce");
+      await wait(s === 12 ? LAND_MS : HOP_MS);
+      if (!alive.current) return;
+    }
+
+    inFlightRef.current = Math.max(0, inFlightRef.current - 1);
+    await wait(120);
+    if (!alive.current) return;
+    patch(id, { phase: "landed" });
+
+    const net = result.net_usd;
+    ctx.audio.sfx(Math.abs(net) < 0.005 ? "push" : result.won ? (net >= 25 ? "bigwin" : "win") : "lose");
+    setLastResult(result);
+    setSettleSeq((n) => n + 1);
+    setLog((l) =>
+      [{ id, risk: ballRisk, mult: result.multiplier, net, won: result.won }, ...l].slice(0, 10),
+    );
+    if (isBrutal(result)) triggerShake();
+
+    await wait(LANDED_HOLD_MS);
+    if (!alive.current) return;
+    patch(id, { phase: "gone" });
+    await wait(FADE_MS);
+    if (!alive.current) return;
+    setBalls((prev) => prev.filter((b) => b.id !== id));
+  };
+
+  const dropBall = () => {
+    ctx.audio.unlock();
+    const amount = parseWager(wager, ctx.remaining);
+    if (amount === null) return;
+    if (inFlightRef.current >= MAX_BALLS) {
+      ctx.audio.sfx("click");
+      flashNotice("Let some land first…", "dim");
+      return;
+    }
+    const id = nextId.current++;
+    inFlightRef.current += 1;
+    ctx.audio.sfx("whoosh");
+    setBalls((prev) => [
+      ...prev,
+      { id, phase: "charging", pts: null, rp: null, bucket: null, step: 0, result: null },
+    ]);
+    void runBall(id, amount, risk);
+  };
 
   const pickRisk = (r: Risk) => {
     ctx.audio.sfx("click");
     setRisk(r);
-    if (phase === "landed") {
-      setPhase("idle");
-      setDrop(null);
-    }
   };
 
-  const dropBall = async () => {
-    if (live || amount === null) return;
-    setPhase("charging");
-    setError(null);
-    setDrop(null);
-    setStep(0);
-    setRound((n) => n + 1);
-    ctx.audio.sfx("whoosh");
-    const started = Date.now();
-    try {
-      const result = await ctx.play({ game: "plinko", wager_usd: amount.toFixed(2), risk });
-      const d = result.detail as Record<string, unknown>;
-      const rawBucket = typeof d.bucket === "number" ? d.bucket : 6;
-      const bucket = Math.max(0, Math.min(PLINKO_ROWS, Math.round(rawBucket)));
-      let path = typeof d.path === "string" ? d.path : "";
-      if (path.length !== PLINKO_ROWS) path = "R".repeat(bucket) + "L".repeat(PLINKO_ROWS - bucket);
-      await sleep(Math.max(0, MIN_CHARGE_MS - (Date.now() - started)));
-      setDrop({ pts: buildPts(path, bucket), rp: rightsPrefix(path), bucket, result });
-      setPhase("dropping");
-      for (let s = 1; s <= 12; s++) {
-        setStep(s);
-        ctx.audio.sfx(s === 12 ? "snap" : "bounce");
-        await sleep(s === 12 ? LAND_MS : HOP_MS);
-      }
-      await sleep(150);
-      setPhase("landed");
-      const net = result.net_usd;
-      ctx.audio.sfx(Math.abs(net) < 0.005 ? "push" : result.won ? (net >= 25 ? "bigwin" : "win") : "lose");
-      setLog((l) =>
-        [{ id: Date.now(), risk, mult: result.multiplier, net, won: result.won }, ...l].slice(0, 7),
-      );
-    } catch (err) {
-      setError(errorMessage(err));
-      setPhase("idle");
-    }
-  };
+  const amount = parseWager(wager, ctx.remaining);
+  const buckets = PLINKO_TABLES[risk];
+  const inFlight = balls.reduce(
+    (n, b) => n + (b.phase === "charging" || b.phase === "dropping" ? 1 : 0),
+    0,
+  );
 
-  const ballPos: Pt | null =
-    phase === "charging" ? APEX : drop && phase !== "idle" ? drop.pts[step] : null;
-  const hitPeg =
-    drop && phase === "dropping" && step >= 1 && step <= 11
-      ? { row: step - 1, j: drop.rp[step - 1] }
-      : null;
+  const activePegs = new Set<string>();
+  const activeBuckets = new Set<number>();
+  for (const b of balls) {
+    if (b.phase === "dropping" && b.rp && b.step >= 1 && b.step <= 11) {
+      activePegs.add(`${b.step - 1}:${b.rp[b.step - 1]}`);
+    }
+    if (b.bucket !== null && b.step === 12 && (b.phase === "dropping" || b.phase === "landed")) {
+      activeBuckets.add(b.bucket);
+    }
+  }
+
+  const last = lastResult;
+  const lastPush = last !== null && Math.abs(last.net_usd) < 0.005;
 
   return (
     <CinemaShell
       theme="plinko"
       title="PLINKO PEAK"
-      tagline="Twelve rows of neon fate. Gravity settles all debts."
+      tagline="Twelve rows of neon fate. Drop as many as you dare."
     >
       <style>{`
         .plk-panel {
@@ -168,7 +275,7 @@ export default function PlinkoGame() {
 
       <div className="mx-auto flex min-h-full max-w-5xl flex-col items-center justify-center gap-4 px-4 py-6">
         <div className="flex w-full flex-wrap items-stretch justify-center gap-5">
-          <div className={`plk-panel w-full max-w-[560px] ${brutal ? "cz-shake" : ""}`}>
+          <div className={`plk-panel w-full max-w-[560px] ${shaking ? "cz-shake" : ""}`}>
             <svg viewBox={`0 0 ${VB_W} ${VB_H}`} className="block h-auto w-full" role="img" aria-label="Plinko board">
               <defs>
                 <radialGradient id="plkBall" cx="35%" cy="30%">
@@ -195,7 +302,7 @@ export default function PlinkoGame() {
 
               {Array.from({ length: PLINKO_ROWS }, (_, r) =>
                 Array.from({ length: r + 1 }, (_, j) => {
-                  const hit = hitPeg !== null && hitPeg.row === r && hitPeg.j === j;
+                  const hit = activePegs.has(`${r}:${j}`);
                   return (
                     <circle
                       key={`${r}-${j}`}
@@ -211,7 +318,7 @@ export default function PlinkoGame() {
 
               {buckets.map((m, i) => {
                 const c = bucketColor(i);
-                const landed = drop !== null && step === 12 && drop.bucket === i && phase !== "idle";
+                const landed = activeBuckets.has(i);
                 return (
                   <g key={`${risk}-${i}`}>
                     <rect
@@ -232,26 +339,38 @@ export default function PlinkoGame() {
                 );
               })}
 
-              {ballPos ? (
-                <g
-                  className="plk-ballwrap"
-                  style={{
-                    transform: `translate(${ballPos.x}px, ${ballPos.y}px)`,
-                    transitionDuration: phase === "dropping" ? (step === 12 ? `${LAND_MS}ms` : `${HOP_MS}ms`) : "0ms",
-                  }}
-                >
-                  <g className={phase === "charging" ? "plk-pulse" : undefined}>
-                    <circle r={27} fill="url(#plkHalo)" />
-                    <circle r={13} fill="url(#plkBall)" />
-                    <circle cx={-4} cy={-5} r={3.4} fill="rgba(255,255,255,0.85)" />
+              {balls.map((b) => {
+                const pos = b.phase === "charging" || !b.pts ? APEX : b.pts[b.step];
+                const dur = b.phase === "dropping" ? (b.step === 12 ? LAND_MS : HOP_MS) : 0;
+                return (
+                  <g
+                    key={b.id}
+                    className="plk-ballwrap"
+                    style={{
+                      transform: `translate(${pos.x}px, ${pos.y}px)`,
+                      transitionDuration: `${dur}ms`,
+                    }}
+                  >
+                    <g
+                      style={{
+                        opacity: b.phase === "gone" ? 0 : 1,
+                        transition: `opacity ${FADE_MS}ms ease-out`,
+                      }}
+                    >
+                      <g className={b.phase === "charging" ? "plk-pulse" : undefined}>
+                        <circle r={27} fill="url(#plkHalo)" />
+                        <circle r={13} fill="url(#plkBall)" />
+                        <circle cx={-4} cy={-5} r={3.4} fill="rgba(255,255,255,0.85)" />
+                      </g>
+                    </g>
                   </g>
-                </g>
-              ) : null}
+                );
+              })}
             </svg>
 
             {last?.won ? (
               <div
-                key={round}
+                key={settleSeq}
                 className="cz-flash"
                 style={{
                   background:
@@ -288,7 +407,7 @@ export default function PlinkoGame() {
           </aside>
         </div>
 
-        <div className="flex min-h-[3.25rem] items-center justify-center text-center">
+        <div className="flex min-h-[3.25rem] flex-col items-center justify-center gap-1 text-center">
           {last ? (
             <div
               className={`cz-pop cz-display text-xl font-bold ${last.won ? "cz-glow" : ""}`}
@@ -304,22 +423,29 @@ export default function PlinkoGame() {
             </div>
           ) : (
             <div className="cz-display text-lg" style={{ color: "var(--cz-dim)" }}>
-              {phase === "charging"
-                ? "The ball hangs at the peak…"
-                : phase === "dropping"
-                  ? "Twelve rows of fate…"
-                  : "Pick your risk. Feed the board."}
+              {inFlight > 0 ? "The board rains fate…" : "Pick your risk. Feed the board."}
             </div>
           )}
+          {inFlight > 0 ? (
+            <div className="cz-display text-xs" style={{ color: "var(--cz-accent2)" }}>
+              {inFlight} in flight
+            </div>
+          ) : null}
         </div>
-        {error ? <div className="text-center text-sm text-red-400">{error}</div> : null}
+        {notice ? (
+          <div
+            className="text-center text-sm"
+            style={{ color: notice.tone === "bad" ? "#f87171" : "var(--cz-dim)" }}
+          >
+            {notice.text}
+          </div>
+        ) : null}
 
         <div className="flex gap-3">
           {RISKS.map((r) => (
             <button
               key={r}
               className={`cz-btn ${risk === r ? "cz-btn-primary" : ""}`}
-              disabled={live}
               onClick={() => pickRisk(r)}
             >
               {r.toUpperCase()} · {RISK_MAX[r]}
@@ -327,16 +453,10 @@ export default function PlinkoGame() {
           ))}
         </div>
 
-        <WagerPanel value={wager} onChange={setWager} disabled={live} />
+        <WagerPanel value={wager} onChange={setWager} />
 
-        <button className="cz-btn cz-btn-primary" disabled={live || amount === null} onClick={dropBall}>
-          {phase === "charging"
-            ? "SUMMONING…"
-            : phase === "dropping"
-              ? "FALLING…"
-              : amount === null
-                ? "ENTER A WAGER"
-                : `DROP FOR ${formatDollars(amount)}`}
+        <button className="cz-btn cz-btn-primary" disabled={amount === null} onClick={dropBall}>
+          {amount === null ? "ENTER A WAGER" : `DROP FOR ${formatDollars(amount)}`}
         </button>
 
         <div className="text-center text-[0.65rem] tracking-widest" style={{ color: "var(--cz-dim)" }}>
