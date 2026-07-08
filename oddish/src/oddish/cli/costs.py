@@ -162,10 +162,16 @@ def costs(
                 f"(got HTTP {response.status_code}).[/red]"
             )
         raise typer.Exit(1)
-    if response.status_code == 404 and not user:
-        # Core server has no /admin/costs route.
+    if response.status_code == 404:
         if json_output:
             print_json({"error": response.text, "status": 404})
+        elif user:
+            # Hosted returns "User not found"; a core server has no route at all.
+            error_console.print(
+                f"[red]No cost data for user '{user}' (HTTP 404): the user was "
+                "not found, or cost accounting is only available on hosted "
+                "Oddish.[/red]"
+            )
         else:
             error_console.print(
                 "[red]Cost accounting is only available on hosted Oddish.[/red]"

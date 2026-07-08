@@ -281,7 +281,10 @@ def status(
 
     # Auto-detect a trial id (``{task_id}-{index}``) and show a single-trial
     # detail view. Falls through to task/experiment lookup if it is not a trial.
-    if task_id and not experiment_id and not watch:
+    # Runs regardless of --watch (a single trial's detail is a static snapshot,
+    # so there is nothing to poll); this stops a trial id from being misrouted
+    # to the task/experiment watch path.
+    if task_id and not experiment_id:
         if try_print_trial_detail(api_url, task_id, json_output=json_output):
             return
 

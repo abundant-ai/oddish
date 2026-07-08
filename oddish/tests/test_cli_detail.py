@@ -104,6 +104,44 @@ def test_status_trial_id_falls_back_to_parent_task_on_core():
     assert "Trial: task-abc-0" in result.output
 
 
+def test_status_trial_id_with_watch_still_shows_detail():
+    # --watch must not misroute a trial id to the task/experiment watch path.
+    routes = {"/trials/task-abc-0": (200, _TRIAL)}
+    result, calls = _invoke(routes, ["task-abc-0", "--watch"])
+    assert result.exit_code == 0, result.output
+    assert "/trials/task-abc-0" in calls
+    assert "Trial: task-abc-0" in result.output
+
+
+def test_status_trial_id_non_404_error_does_not_fall_back():
+    # A 403 on /trials/{id} must surface as an error, not silently show the
+    # parent task's embedded copy.
+    routes = {
+        "/trials/task-abc-0": (403, {"detail": "forbidden"}),
+        "/tasks/task-abc": (200, {"id": "task-abc", "trials": [_TRIAL]}),
+    }
+    result, calls = _invoke(routes, ["task-abc-0"])
+    assert result.exit_code != 0
+    assert "/tasks/task-abc" not in calls
+
+
+def test_status_detail_shows_zero_billed_cost():
+    detail = {
+        "task": {"id": "task-abc", "name": "demo", "status": "completed"},
+        "totals": {
+            "cost_usd": 0.5,
+            "cost_trial_count": 3,
+            "billed_cost_usd": 0.0,
+            "billed_trial_count": 2,
+        },
+        "versions": [],
+    }
+    routes = {"/tasks/task-abc/detail": (200, detail)}
+    result, _ = _invoke(routes, ["task-abc", "--detail"])
+    assert result.exit_code == 0, result.output
+    assert "Billed cost: $0.0000 across 2 trials" in result.output
+
+
 def test_status_detail_renders_versions_and_cost():
     detail = {
         "task": {"id": "task-abc", "name": "demo", "status": "completed", "progress": "1/1 finished"},

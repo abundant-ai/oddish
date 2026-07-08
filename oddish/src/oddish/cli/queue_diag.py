@@ -254,9 +254,16 @@ def print_queue_diagnostics(
     """Fetch and render (or emit as JSON) the queue/worker diagnostics."""
     payload, auth_error = _fetch_admin(api_url, stale_after)
 
+    any_success = any(
+        isinstance(value, dict) and "error" not in value
+        for value in payload.values()
+    )
+
     if json_output:
         print_json(payload)
-        if auth_error:
+        # Non-zero exit on auth rejection or a total fetch failure so scripts
+        # don't treat an unreachable API as a healthy empty queue.
+        if auth_error or not any_success:
             raise typer.Exit(1)
         return
 
@@ -269,21 +276,52 @@ def print_queue_diagnostics(
         )
         raise typer.Exit(1)
 
+    def _ok(value: object) -> bool:
+        return isinstance(value, dict) and "error" not in value
+
+    rendered_any = False
+
     health = payload.get("queue_health")
-    if isinstance(health, dict) and "error" not in health:
+    if _ok(health):
         _render_health(health)
         console.print()
+        rendered_any = True
 
     slots = payload.get("slots")
-    if isinstance(slots, dict) and "error" not in slots:
+    if _ok(slots):
         _render_slots(slots)
         console.print()
+        rendered_any = True
 
     orphaned = payload.get("orphaned_state")
-    if isinstance(orphaned, dict) and "error" not in orphaned:
+    if _ok(orphaned):
         _render_orphaned(orphaned)
         console.print()
+        rendered_any = True
 
     worker_jobs = payload.get("worker_jobs")
-    if isinstance(worker_jobs, dict) and "error" not in worker_jobs:
+    if _ok(worker_jobs):
         _render_worker_jobs(worker_jobs)
+        rendered_any = True
+
+    # If nothing rendered, every endpoint either errored or was unavailable
+    # (e.g. the API is unreachable, or returned non-403 errors). Don't let that
+    # masquerade as a healthy empty queue -- report the failure and exit non-zero.
+    if not rendered_any:
+        errors = {
+            key: value
+            for key, value in payload.items()
+            if isinstance(value, dict) and "error" in value
+        }
+        error_console.print(
+            "[red]Could not fetch any queue diagnostics.[/red] "
+            "The API may be unreachable, or these endpoints are unavailable "
+            "on this deployment."
+        )
+        for key, value in errors.items():
+            status = value.get("status")
+            detail = str(value.get("error", "")).strip()
+            if len(detail) > 120:
+                detail = detail[:117] + "..."
+            error_console.print(f"  [dim]{key}: {status or ''} {detail}[/dim]")
+        raise typer.Exit(1)
