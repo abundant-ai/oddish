@@ -14,9 +14,6 @@ console = Console()
 
 POLL_INTERVAL_SEC = 2.0
 
-_RETRYABLE_STATUS = frozenset({500, 502, 503, 504})
-
-
 class _TransientError(Exception):
     pass
 
@@ -42,12 +39,6 @@ def _render_event(event: dict) -> str | None:
         text = str(payload.get("text") or "").strip()
         return f"[green]{escape(text)}[/green]{tail}" if text else None
     return None
-
-
-def _format_usage(usage: dict) -> str:
-    cost = usage.get("cost_usd") or 0.0
-    tokens = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
-    return f"${cost:.4f} · {tokens:,} tokens"
 
 
 def stream_logs(
@@ -77,27 +68,24 @@ def stream_logs(
             emit("[dim]— trial retried; restarting transcript —[/dim]")
             after_seq = 0
         attempt = resp_attempt
-        events = data.get("events") or []
+        events = data["events"]
         seen += len(events)
         for event in events:
             line = _render_event(event)
             if line is not None:
                 emit(line)
-        if events:
-            after_seq = data.get("next_seq", after_seq)
-            usage = data.get("usage") or {}
-            cost = usage.get("cost_usd")
-            if cost is not None and cost != last_cost:
-                emit(f"[dim]{_format_usage(usage)}[/dim]")
-                last_cost = cost
-        if not follow:
-            if events:
-                continue
-            return seen
-        if data.get("done") and not events:
-            return seen
         if not events:
+            if not follow or data.get("done"):
+                return seen
             sleep(POLL_INTERVAL_SEC)
+            continue
+        after_seq = data["next_seq"]
+        usage = data["usage"]
+        cost = usage.get("cost_usd")
+        if cost is not None and cost != last_cost:
+            tokens = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+            emit(f"[dim]${cost:.4f} · {tokens:,} tokens[/dim]")
+            last_cost = cost
 
 
 def _fetch(
@@ -112,7 +100,7 @@ def _fetch(
             console.print(f"[red]Trial {trial_id} not found[/red]")
             raise typer.Exit(1)
         if response.status_code != 200:
-            if response.status_code in _RETRYABLE_STATUS:
+            if response.status_code in (500, 502, 503, 504):
                 raise _TransientError(str(response.status_code))
             console.print(f"[red]Failed to fetch live logs:[/red] {response.text}")
             raise typer.Exit(1)

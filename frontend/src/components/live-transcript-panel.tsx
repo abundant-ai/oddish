@@ -11,13 +11,10 @@ interface LiveEvent {
   seq: number;
   kind: string;
   payload: Record<string, unknown>;
-  created_at: string;
 }
 
 interface LiveUsage {
   input_tokens: number | null;
-  cache_tokens: number | null;
-  cache_write_tokens: number | null;
   output_tokens: number | null;
   cost_usd: number | null;
 }
@@ -69,17 +66,14 @@ function LiveEventRow({ event }: { event: LiveEvent }) {
     );
   }
 
-  if (kind === "summary") {
-    return (
-      <div className="text-muted-foreground border-border border-t pt-2 text-[11px] italic">
-        {str(payload.text)}
-        {payload.truncated ? " …" : ""}
-      </div>
-    );
-  }
-
   return (
-    <div className="wrap-break-word whitespace-pre-wrap">
+    <div
+      className={
+        kind === "summary"
+          ? "text-muted-foreground border-border border-t pt-2 text-[11px] italic"
+          : "wrap-break-word whitespace-pre-wrap"
+      }
+    >
       {str(payload.text)}
       {payload.truncated ? " …" : ""}
     </div>
@@ -94,10 +88,7 @@ export function LiveTranscriptPanel({
   apiBaseUrl?: string;
 }) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
-  const [usage, setUsage] = useState<LiveUsage | null>(null);
-  const [stage, setStage] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  const [connected, setConnected] = useState(false);
+  const [last, setLast] = useState<LiveResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const attemptRef = useRef<number | null>(null);
@@ -111,14 +102,11 @@ export function LiveTranscriptPanel({
 
     const poll = async () => {
       try {
-        const params = new URLSearchParams({
-          after_seq: String(afterSeqRef.current),
-        });
-        if (attemptRef.current != null) {
-          params.set("attempt", String(attemptRef.current));
-        }
+        const params =
+          `after_seq=${afterSeqRef.current}` +
+          (attemptRef.current != null ? `&attempt=${attemptRef.current}` : "");
         const data = await fetcher<LiveResponse>(
-          `${apiBaseUrl}/trials/${trialId}/live?${params.toString()}`
+          `${apiBaseUrl}/trials/${trialId}/live?${params}`
         );
         if (cancelled) return;
 
@@ -131,11 +119,8 @@ export function LiveTranscriptPanel({
         } else if (data.events.length) {
           setEvents((prev) => [...prev, ...data.events]);
         }
-        setUsage(data.usage);
-        setStage(data.harbor_stage);
-        setConnected(true);
+        setLast(data);
         setError(null);
-        setDone(data.done);
         timer = setTimeout(poll, data.events.length ? 0 : POLL_MS);
       } catch (err) {
         if (cancelled) return;
@@ -163,6 +148,9 @@ export function LiveTranscriptPanel({
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   };
 
+  const usage = last?.usage;
+  const done = last?.done ?? false;
+  const stage = last?.harbor_stage;
   const tokens =
     usage != null ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : 0;
 
@@ -206,7 +194,7 @@ export function LiveTranscriptPanel({
               <>
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 <span>
-                  {connected ? "Waiting for agent output…" : "Connecting…"}
+                  {last != null ? "Waiting for agent output…" : "Connecting…"}
                 </span>
               </>
             )}

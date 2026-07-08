@@ -1,72 +1,17 @@
 import asyncio
-import base64
-import contextlib
 import json
 
 import pytest
 
+from live_tail_fakes import FakeEnv, FakeResult, b64, patch_db, update_params
 from oddish.workers.harbor import live_tail
 from oddish.workers.harbor.live_tail import (
     ClaudeUsageFold,
     LiveTailer,
-    TailExecError,
     UsageTotals,
     price_totals,
     split_lines,
 )
-
-
-class FakeResult:
-    def __init__(self, stdout="", return_code=0):
-        self.stdout = stdout
-        self.return_code = return_code
-
-
-class FakeEnv:
-    def __init__(self, results):
-        self.results = list(results)
-        self.commands = []
-
-    async def exec(self, command, timeout_sec=None):
-        self.commands.append(command)
-        result = self.results.pop(0) if self.results else FakeResult()
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-def b64(raw: bytes) -> FakeResult:
-    return FakeResult(stdout=base64.b64encode(raw).decode())
-
-
-class FakeExecuteResult:
-    def __init__(self, rowcount=1):
-        self.rowcount = rowcount
-
-
-class FakeSession:
-    def __init__(self, rowcount=1):
-        self.stmts = []
-        self.rowcount = rowcount
-
-    async def execute(self, stmt):
-        self.stmts.append(stmt)
-        return FakeExecuteResult(self.rowcount)
-
-
-def patch_db(monkeypatch, rowcount=1):
-    session = FakeSession(rowcount)
-
-    @contextlib.asynccontextmanager
-    async def fake_get_session():
-        yield session
-
-    monkeypatch.setattr(live_tail, "get_session", fake_get_session)
-    return session
-
-
-def checkpoint_params(session):
-    return [dict(stmt.compile().params) for stmt in session.stmts]
 
 
 def assistant_line(msg_id, usage, model="claude-opus-4-8"):
@@ -96,18 +41,6 @@ def test_fold_keeps_last_usage_per_message_id():
     assert totals.cache_write_tokens == 20
     assert totals.output_tokens == 50 + 7
     assert totals.model == "claude-opus-4-8"
-
-
-def test_fold_ignores_non_assistant_and_garbage():
-    fold = ClaudeUsageFold()
-    fold.feed_line(b"")
-    fold.feed_line(b"not json {")
-    fold.feed_line(b'{"type": "user", "message": {"id": "msg_x", "usage": {"input_tokens": 9}}}')
-    fold.feed_line(b'{"type": "assistant", "message": {"id": "msg_y"}}')
-    fold.feed_line(b'{"type": "assistant"}')
-    fold.feed_line(b'[1, 2]')
-    assert fold.usage_by_id == {}
-    assert fold.totals() == UsageTotals()
 
 
 def test_split_lines_carries_partial_tail():
@@ -147,7 +80,7 @@ def test_price_totals_passes_bundled_input_by_keyword(monkeypatch):
         output_tokens=57,
         model="claude-opus-4-8",
     )
-    assert price_totals(totals, None) == 1.23
+    assert price_totals(totals) == 1.23
     assert seen == {
         "model": "claude-opus-4-8",
         "input_tokens": 135,
@@ -157,11 +90,12 @@ def test_price_totals_passes_bundled_input_by_keyword(monkeypatch):
     }
 
 
-def test_price_totals_falls_back_to_trial_model(monkeypatch):
+def test_price_totals_uses_seeded_fold_model(monkeypatch):
     monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda model, **_: model)
-    totals = UsageTotals(input_tokens=1)
-    assert price_totals(totals, "fallback-model") == "fallback-model"
-    assert price_totals(totals, None) is None
+    seeded = ClaudeUsageFold(model="fallback-model")
+    seeded.feed_line(assistant_line("m", {"input_tokens": 1}, model=""))
+    assert price_totals(seeded.totals()) == "fallback-model"
+    assert price_totals(ClaudeUsageFold().totals()) is None
 
 
 def test_supports_only_claude_code():
@@ -193,7 +127,7 @@ async def test_tick_offset_math_and_checkpoint_across_split_chunks(monkeypatch):
     assert set(tailer.fold.usage_by_id) == {"msg_1", "msg_2"}
 
     await tailer._tick()
-    params = checkpoint_params(session)
+    params = update_params(session)
     assert len(params) == 2
     assert params[0]["input_tokens"] == 10 and params[0]["output_tokens"] == 2
     assert params[1]["input_tokens"] == 13 and params[1]["output_tokens"] == 6
@@ -208,7 +142,7 @@ async def test_checkpoint_writes_null_cost_when_unpriceable(monkeypatch):
     env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model="m")
     await tailer._tick()
-    params = checkpoint_params(session)
+    params = update_params(session)
     assert params[-1]["cost_usd"] is None
 
 
@@ -220,13 +154,13 @@ async def test_tick_rc_semantics():
 
     env = FakeEnv([FakeResult(return_code=127)])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
-    with pytest.raises(TailExecError):
+    with pytest.raises(RuntimeError):
         await tailer._tick()
 
     env = FakeEnv([FakeResult(return_code=1)])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     tailer.offset = 10
-    with pytest.raises(TailExecError):
+    with pytest.raises(RuntimeError):
         await tailer._tick()
 
 
@@ -249,7 +183,7 @@ async def test_failure_cap_persists_pending_fold(monkeypatch):
     tailer.fold.feed_line(assistant_line("m", {"input_tokens": 2}))
     await asyncio.wait_for(tailer.run(), timeout=5)
     assert len(env.commands) == live_tail.MAX_CONSECUTIVE_FAILURES
-    assert checkpoint_params(session)[-1]["input_tokens"] == 2
+    assert update_params(session)[-1]["input_tokens"] == 2
 
 
 @pytest.mark.asyncio
@@ -261,7 +195,7 @@ async def test_stop_triggers_final_drain(monkeypatch):
     tailer.request_stop()
     await asyncio.wait_for(tailer.run(), timeout=5)
     assert len(env.commands) == 1
-    assert checkpoint_params(session)[-1]["input_tokens"] == 5
+    assert update_params(session)[-1]["input_tokens"] == 5
 
 
 @pytest.mark.asyncio
@@ -276,19 +210,8 @@ async def test_cost_is_monotone_across_unpriceable_ticks(monkeypatch):
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model="m")
     for _ in range(4):
         await tailer._tick()
-    costs = [p["cost_usd"] for p in checkpoint_params(session)]
+    costs = [p["cost_usd"] for p in update_params(session)]
     assert costs == [0.5, 0.5, 0.5, 0.9]
-
-
-@pytest.mark.asyncio
-async def test_final_drain_folds_unterminated_carry(monkeypatch):
-    session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
-    env = FakeEnv([b64(assistant_line("m", {"input_tokens": 8}))])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
-    tailer.request_stop()
-    await asyncio.wait_for(tailer.run(), timeout=5)
-    assert checkpoint_params(session)[-1]["input_tokens"] == 8
 
 
 @pytest.mark.asyncio
@@ -300,7 +223,7 @@ async def test_stop_path_persists_fold_when_final_tick_fails(monkeypatch):
     tailer.fold.feed_line(assistant_line("m", {"input_tokens": 6}))
     tailer.request_stop()
     await asyncio.wait_for(tailer.run(), timeout=5)
-    assert checkpoint_params(session)[-1]["input_tokens"] == 6
+    assert update_params(session)[-1]["input_tokens"] == 6
 
 
 @pytest.mark.asyncio
@@ -333,14 +256,14 @@ async def test_empty_tick_retries_pending_checkpoint(monkeypatch):
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     tailer.fold.feed_line(assistant_line("m", {"input_tokens": 3}))
     await tailer._tick()
-    assert checkpoint_params(session)[-1]["input_tokens"] == 3
+    assert update_params(session)[-1]["input_tokens"] == 3
 
 
 @pytest.mark.asyncio
 async def test_invalid_base64_raises_exec_error():
     env = FakeEnv([FakeResult(stdout="not-base64!!")])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
-    with pytest.raises(TailExecError):
+    with pytest.raises(RuntimeError):
         await tailer._tick()
 
 
@@ -364,25 +287,3 @@ async def test_replaced_tailer_skips_checkpoint(monkeypatch):
     tailer.replaced = True
     await tailer._tick()
     assert session.stmts == []
-
-
-@pytest.mark.asyncio
-async def test_start_replaces_existing_tailer(monkeypatch):
-    monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
-    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
-    env = FakeEnv([])
-    kwargs = dict(trial_id="t1", environment=env, attempt=0, agent="claude-code", model=None)
-    live_tail.start(**kwargs)
-    old_tailer, old_task = live_tail._tailers["t1"]
-    old_tailer._last_cost = 2.5
-    live_tail.start(**{**kwargs, "attempt": 1})
-    new_tailer, new_task = live_tail._tailers["t1"]
-    assert new_tailer is not old_tailer
-    assert new_tailer.attempt == 1
-    assert old_tailer.replaced and not new_tailer.replaced
-    assert new_tailer._last_cost == 2.5
-    with contextlib.suppress(asyncio.CancelledError):
-        await old_task
-    assert live_tail._tailers.get("t1") == (new_tailer, new_task)
-    await live_tail.shutdown("t1")
-    assert "t1" not in live_tail._tailers

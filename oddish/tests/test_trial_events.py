@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import contextlib
 import json
 
@@ -8,75 +7,14 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import Insert as PGInsert
 from sqlalchemy.exc import SQLAlchemyError
 
+from live_tail_fakes import FakeEnv, b64, patch_db, update_params
 from oddish.workers.harbor import live_tail
-from oddish.workers.harbor.live_tail import ClaudeUsageFold, LiveTailer
+from oddish.workers.harbor.live_tail import ClaudeUsageFold, LiveTailer, UsageTotals
 from oddish.workers.queue import cleanup
-
-
-class FakeResult:
-    def __init__(self, stdout="", return_code=0):
-        self.stdout = stdout
-        self.return_code = return_code
-
-
-class FakeEnv:
-    def __init__(self, results):
-        self.results = list(results)
-        self.commands = []
-
-    async def exec(self, command, timeout_sec=None):
-        self.commands.append(command)
-        result = self.results.pop(0) if self.results else FakeResult()
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-def b64(raw: bytes) -> FakeResult:
-    return FakeResult(stdout=base64.b64encode(raw).decode())
-
-
-class FakeExecuteResult:
-    def __init__(self, rowcount=1):
-        self.rowcount = rowcount
-
-
-class FakeSession:
-    def __init__(self, rowcount=1, fail_inserts=False):
-        self.stmts = []
-        self.params = []
-        self.rowcount = rowcount
-        self.fail_inserts = fail_inserts
-
-    async def execute(self, stmt, params=None):
-        if self.fail_inserts and isinstance(stmt, PGInsert):
-            raise RuntimeError("insert failed")
-        self.stmts.append(stmt)
-        self.params.append(params)
-        return FakeExecuteResult(self.rowcount)
-
-
-def patch_db(monkeypatch, module=live_tail, **kwargs):
-    session = FakeSession(**kwargs)
-
-    @contextlib.asynccontextmanager
-    async def fake_get_session():
-        yield session
-
-    monkeypatch.setattr(module, "get_session", fake_get_session)
-    return session
 
 
 def insert_stmts(session):
     return [s for s in session.stmts if isinstance(s, PGInsert)]
-
-
-def update_params(session):
-    return [
-        dict(s.compile().params)
-        for s in session.stmts
-        if not isinstance(s, PGInsert)
-    ]
 
 
 def insert_rows(stmt):
@@ -137,13 +75,23 @@ def test_feed_line_renders_display_kinds():
     ) == [{"kind": "summary", "payload": {"text": "all done"}}]
 
 
-def test_feed_line_renders_nothing_for_non_transcript_lines():
+def test_feed_line_ignores_non_transcript_and_garbage():
     fold = ClaudeUsageFold()
-    assert fold.feed_line(b"") == []
-    assert fold.feed_line(b"not json {") == []
-    assert fold.feed_line(line({"type": "system"})) == []
-    assert fold.feed_line(line({"type": "user", "message": {"content": "raw"}})) == []
-    assert fold.feed_line(line({"type": "assistant", "message": {"id": "m"}})) == []
+    garbage = [
+        b"",
+        b"not json {",
+        line([1, 2]),
+        line({"type": "system"}),
+        line({"type": "user", "message": {"content": "raw"}}),
+        line({"type": "user", "message": {"id": "msg_x", "usage": {"input_tokens": 9}}}),
+        line({"type": "assistant"}),
+        line({"type": "assistant", "message": {"id": "msg_y"}}),
+        line({"type": "assistant", "message": {"id": "m"}}),
+    ]
+    for raw in garbage:
+        assert fold.feed_line(raw) == []
+    assert fold.usage_by_id == {}
+    assert fold.totals() == UsageTotals()
 
 
 def test_tool_result_payload_truncated():
@@ -256,15 +204,16 @@ async def test_flush_failure_retains_pending_for_retry(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_final_drain_flushes_carry_events(monkeypatch):
+async def test_final_drain_folds_and_flushes_carry(monkeypatch):
     session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
-    env = FakeEnv([b64(text_line("tail", usage={"input_tokens": 1}))])
+    env = FakeEnv([b64(text_line("tail", usage={"input_tokens": 8}))])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     tailer.request_stop()
     await asyncio.wait_for(tailer.run(), timeout=5)
     [insert] = insert_stmts(session)
     assert insert_rows(insert)[0]["kind"] == "message"
+    assert update_params(session)[-1]["input_tokens"] == 8
 
 
 def test_feed_line_never_raises_on_typed_garbage():
@@ -287,7 +236,7 @@ def test_feed_line_never_raises_on_typed_garbage():
 
 
 @pytest.mark.asyncio
-async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
+async def test_start_attempt_bump_replaces_and_reseeds(monkeypatch):
     patch_db(monkeypatch)
     monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
@@ -300,17 +249,27 @@ async def test_start_replacement_inherits_seq_and_cap(monkeypatch):
     )
     live_tail.start(**kwargs)
     old_tailer, old_task = live_tail._tailers["t1"]
+    old_tailer._last_cost = 2.5
     old_tailer.seq = 7
     old_tailer.capped = True
     old_tailer.pending_events.append({"seq": 7, "kind": "message", "payload": {}})
     live_tail.start(**{**kwargs, "attempt": 1})
-    new_tailer, _ = live_tail._tailers["t1"]
+    new_tailer, new_task = live_tail._tailers["t1"]
+    assert new_tailer is not old_tailer
+    assert new_tailer.attempt == 1
+    assert old_tailer.replaced and not new_tailer.replaced
+    assert new_tailer._last_cost == 2.5
     assert new_tailer.seq == 7 and new_tailer.capped
     assert new_tailer.pending_events == [{"seq": 7, "kind": "message", "payload": {}}]
     assert new_tailer.pending_events is not old_tailer.pending_events
     old_tailer._buffer_events([{"kind": "message", "payload": {}}])
     assert len(old_tailer.pending_events) == 1
     assert new_tailer.offset == 0 and new_tailer.fold is not old_tailer.fold
+    with contextlib.suppress(asyncio.CancelledError):
+        await old_task
+    assert live_tail._tailers.get("t1") == (new_tailer, new_task)
+    await live_tail.shutdown("t1")
+    assert "t1" not in live_tail._tailers
 
 
 @pytest.mark.asyncio

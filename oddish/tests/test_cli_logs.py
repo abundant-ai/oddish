@@ -16,13 +16,12 @@ def event(seq, kind="message", **payload):
     return {"seq": seq, "kind": kind, "payload": payload}
 
 
-def page(attempt, events, *, next_seq=None, done=False, cost=0.5):
+def page(attempt, events, *, done=False, cost=0.5):
     return {
         "attempt": attempt,
         "events": events,
-        "next_seq": next_seq if next_seq is not None else (events[-1]["seq"] if events else 0),
+        "next_seq": events[-1]["seq"] if events else 0,
         "usage": {"input_tokens": 100, "output_tokens": 20, "cost_usd": cost},
-        "harbor_stage": "agent_running",
         "done": done,
     }
 
@@ -73,8 +72,8 @@ def test_render_event_escapes_markup():
 def test_single_shot_drains_pages_and_advances_cursor():
     seen, fetch, lines, sleeps = run(
         [
-            page(1, [event(1), event(2), event(3)], next_seq=3),
-            page(1, [], next_seq=3),
+            page(1, [event(1), event(2), event(3)]),
+            page(1, []),
         ],
         follow=False,
     )
@@ -92,8 +91,8 @@ def test_single_shot_no_events_returns_zero():
 def test_newer_attempt_resets_cursor_to_zero():
     seen, fetch, lines, sleeps = run(
         [
-            page(1, [event(1)], next_seq=1),
-            page(2, [], next_seq=0),
+            page(1, [event(1)]),
+            page(2, []),
             page(2, [], done=True),
         ],
         follow=True,
@@ -105,7 +104,7 @@ def test_newer_attempt_resets_cursor_to_zero():
 def test_done_with_full_page_drains_until_empty():
     seen, fetch, lines, sleeps = run(
         [
-            page(1, [event(1), event(2)], next_seq=2, done=True),
+            page(1, [event(1), event(2)], done=True),
             page(1, [], done=True),
         ],
         follow=True,
@@ -118,9 +117,9 @@ def test_done_with_full_page_drains_until_empty():
 def test_follow_sleeps_only_on_empty_live_page():
     seen, fetch, lines, sleeps = run(
         [
-            page(1, [event(1)], next_seq=1, done=False),
-            page(1, [], next_seq=1, done=False),
-            page(1, [event(2)], next_seq=2, done=True),
+            page(1, [event(1)], done=False),
+            page(1, [], done=False),
+            page(1, [event(2)], done=True),
             page(1, [], done=True),
         ],
         follow=True,
@@ -132,10 +131,10 @@ def test_follow_sleeps_only_on_empty_live_page():
 def test_cost_line_printed_once_per_change():
     seen, fetch, lines, sleeps = run(
         [
-            page(1, [event(1)], next_seq=1, cost=0.5),
-            page(1, [event(2)], next_seq=2, cost=0.5),
-            page(1, [event(3)], next_seq=3, cost=0.9),
-            page(1, [], next_seq=3),
+            page(1, [event(1)], cost=0.5),
+            page(1, [event(2)], cost=0.5),
+            page(1, [event(3)], cost=0.9),
+            page(1, []),
         ],
         follow=False,
     )
@@ -148,7 +147,7 @@ def test_follow_rides_out_transient_errors():
         [
             _TransientError("503"),
             httpx.ReadTimeout("boom"),
-            page(1, [event(1)], next_seq=1, done=False),
+            page(1, [event(1)], done=False),
             page(1, [], done=True),
         ],
         follow=True,

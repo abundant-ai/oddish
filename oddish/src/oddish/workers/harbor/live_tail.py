@@ -23,10 +23,6 @@ MAX_TRIAL_EVENTS = 5000
 PAYLOAD_CLIP_CHARS = 2048
 
 
-class TailExecError(RuntimeError):
-    pass
-
-
 def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
     *lines, rest = buf.split(b"\n")
     return lines, rest
@@ -145,8 +141,8 @@ class ClaudeUsageFold:
         return t
 
 
-def price_totals(totals: UsageTotals, fallback_model: str | None) -> float | None:
-    model = totals.model or fallback_model
+def price_totals(totals: UsageTotals) -> float | None:
+    model = totals.model
     if not model:
         return None
     try:
@@ -173,8 +169,7 @@ class LiveTailer:
         self.trial_id = trial_id
         self.environment = environment
         self.attempt = attempt
-        self.fallback_model = model
-        self.fold = ClaudeUsageFold()
+        self.fold = ClaudeUsageFold(model=model)
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -237,14 +232,14 @@ class LiveTailer:
         return_code = getattr(result, "return_code", 0)
         if return_code not in (0, None):
             if return_code == 127 or self.offset > 0:
-                raise TailExecError(f"tail exec failed rc={return_code}")
+                raise RuntimeError(f"tail exec failed rc={return_code}")
             return
         encoded = (result.stdout or "").strip()
         if encoded:
             try:
                 raw = base64.b64decode(encoded, validate=True)
             except binascii.Error as exc:
-                raise TailExecError(f"invalid base64 tail output: {exc}") from exc
+                raise RuntimeError(f"invalid base64 tail output: {exc}") from exc
             lines, self.carry = split_lines(self.carry + raw)
             self.offset += len(raw)
             for line in lines:
@@ -290,7 +285,7 @@ class LiveTailer:
         if not self.fold.usage_by_id:
             return
         totals = self.fold.totals()
-        cost = price_totals(totals, self.fallback_model)
+        cost = price_totals(totals)
         if cost is None:
             cost = self._last_cost
         elif self._last_cost is not None:

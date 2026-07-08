@@ -235,10 +235,7 @@ async def clear_terminal_trial_runtime_refs(
 TRIAL_EVENTS_TTL_HOURS = 24
 
 
-async def purge_stale_trial_events(
-    *,
-    ttl_hours: int = TRIAL_EVENTS_TTL_HOURS,
-) -> int:
+async def purge_stale_trial_events() -> int:
     try:
         async with get_session() as session:
             result = cast(
@@ -253,7 +250,7 @@ async def purge_stale_trial_events(
                           AND t.finished_at < NOW() - make_interval(hours => :ttl_hours)
                         """
                     ),
-                    {"ttl_hours": ttl_hours},
+                    {"ttl_hours": TRIAL_EVENTS_TTL_HOURS},
                 ),
             )
             return int(result.rowcount or 0)

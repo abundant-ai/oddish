@@ -3,11 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from oddish.core.trial_live import (
-    LIVE_EVENTS_PAGE_LIMIT,
-    build_live_response,
-    read_trial_live,
-)
+from oddish.core.trial_live import LIVE_EVENTS_PAGE_LIMIT, read_trial_live
 
 
 def make_trial(**overrides):
@@ -26,11 +22,11 @@ def make_trial(**overrides):
     return SimpleNamespace(**base)
 
 
-def make_event(seq, kind="message", payload=None):
+def make_event(seq, kind="message"):
     return SimpleNamespace(
         seq=seq,
         kind=kind,
-        payload=payload or {"text": f"e{seq}"},
+        payload={"text": f"e{seq}"},
         created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
     )
 
@@ -40,17 +36,17 @@ class FakeSession:
         self.rows = list(rows)
         self.stmts = []
 
-    async def execute(self, stmt):
+    async def scalars(self, stmt):
         self.stmts.append(stmt)
         rows = self.rows
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+        return SimpleNamespace(all=lambda: rows)
 
 
-def test_build_live_response_shape():
+@pytest.mark.asyncio
+async def test_read_trial_live_response_shape():
     trial = make_trial()
-    resp = build_live_response(
-        trial, [make_event(1), make_event(2, kind="tool_use")], after_seq=0
-    )
+    session = FakeSession([make_event(1), make_event(2, kind="tool_use")])
+    resp = await read_trial_live(session, trial, attempt=2, after_seq=0)
     assert resp["attempt"] == 2
     assert [e["seq"] for e in resp["events"]] == [1, 2]
     assert resp["events"][0]["payload"] == {"text": "e1"}
@@ -68,9 +64,11 @@ def test_build_live_response_shape():
     assert resp["done"] is False
 
 
-def test_build_live_response_empty_and_done():
+@pytest.mark.asyncio
+async def test_read_trial_live_empty_and_done():
     trial = make_trial(finished_at=datetime.now(timezone.utc))
-    resp = build_live_response(trial, [], after_seq=17)
+    session = FakeSession([])
+    resp = await read_trial_live(session, trial, after_seq=17)
     assert resp["events"] == []
     assert resp["next_seq"] == 17
     assert resp["done"] is True
@@ -89,7 +87,6 @@ async def test_read_trial_live_queries_current_attempt():
     assert LIVE_EVENTS_PAGE_LIMIT in compiled.params.values()
     sql = str(compiled)
     assert "ORDER BY trial_events.seq" in sql
-    assert "LIMIT" in sql
     assert resp["next_seq"] == 6
     assert [e["seq"] for e in resp["events"]] == [5, 6]
 
