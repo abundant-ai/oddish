@@ -254,6 +254,23 @@ async def run_harbor_trial_async(
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
 
+    # Size the environment-build timeout multiplier BEFORE the dispatch fork so
+    # EVERY path that runs a GKE environment carries it -- the in-process blessed
+    # variant AND the out-of-process ephemeral child. pod_ready is read from the
+    # raw submission kwargs (the same override channel the GKE backend merges
+    # under its platform default), so it matches the value the Pod is actually
+    # given; the task's own build_timeout_sec is the base Harbor multiplies. This
+    # is a no-op (returns the caller's value, possibly None) off GKE.
+    env_build_multiplier = _sized_environment_build_timeout_multiplier(
+        environment=environment,
+        environment_build_timeout_multiplier=hc.environment_build_timeout_multiplier,
+        timeout_multiplier=hc.timeout_multiplier,
+        pod_ready_timeout_sec=_effective_pod_ready_timeout_sec(
+            hc.environment.kwargs, settings.gke_pod_ready_timeout_sec
+        ),
+        base_sec=_effective_task_build_timeout_sec(task_path),
+    )
+
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
     # Harbor than the one baked into this container cannot be swapped in-process
@@ -272,6 +289,7 @@ async def run_harbor_trial_async(
             harbor_config=harbor_config,
             org_id=org_id,
             extra_agent_env=extra_agent_env,
+            environment_build_timeout_multiplier=env_build_multiplier,
         )
 
     # Probes attach to an existing task and inherit its task.toml, which may
@@ -390,17 +408,8 @@ async def run_harbor_trial_async(
             job_config_kwargs["agent_setup_timeout_multiplier"] = (
                 hc.agent_setup_timeout_multiplier
             )
-        env_build_multiplier = _sized_environment_build_timeout_multiplier(
-            environment=environment,
-            environment_build_timeout_multiplier=(
-                hc.environment_build_timeout_multiplier
-            ),
-            timeout_multiplier=hc.timeout_multiplier,
-            pod_ready_timeout_sec=_effective_pod_ready_timeout_sec(
-                env_config.kwargs, settings.gke_pod_ready_timeout_sec
-            ),
-            base_sec=_effective_task_build_timeout_sec(effective_task_path),
-        )
+        # Reuse the multiplier sized before the dispatch fork (identical inputs:
+        # pod_ready from the same submission kwargs, base from the same task).
         if env_build_multiplier is not None:
             job_config_kwargs["environment_build_timeout_multiplier"] = (
                 env_build_multiplier
