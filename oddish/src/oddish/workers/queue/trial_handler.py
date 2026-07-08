@@ -689,6 +689,8 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
+            prev_cost_usd = trial.cost_usd
+
             trial.input_tokens = outcome.input_tokens
             trial.cache_tokens = outcome.cache_tokens
             trial.cache_write_tokens = outcome.cache_write_tokens
@@ -729,6 +731,17 @@ async def _store_trial_results(
                     )
                 elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
+                    # Keep cost_usd monotonic while the trial stays inflight
+                    # (finished_at is not set on retry). The per-attempt
+                    # authoritative extraction can report less than the live
+                    # checkpoints from the same attempt (or None on an early
+                    # failure), and inflight quota -- GREATEST(cost_usd, floor)
+                    # over finished_at IS NULL rows -- must only tighten, never
+                    # loosen, until the trial settles.
+                    if prev_cost_usd is not None and (
+                        trial.cost_usd is None or trial.cost_usd < prev_cost_usd
+                    ):
+                        trial.cost_usd = prev_cost_usd
                     console.print(
                         f"[yellow]Trial {trial_id} re-queued for retry "
                         f"({trial.attempts}/{trial.max_attempts})[/yellow]"
