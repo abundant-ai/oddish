@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { TrialGridSkeleton } from "@/components/trial-grid-skeleton";
 
 const SKELETON_COLUMN_COUNT = 6;
 const SKELETON_ROW_COUNT = 12;
@@ -42,48 +43,10 @@ export function ExperimentPageSkeleton() {
               </div>
             </div>
           </div>
-          <div className="overflow-x-auto p-3">
-            <div className="w-full min-w-[960px] space-y-2">
-              <div
-                className="bg-muted/40 grid gap-2 rounded-md p-2"
-                style={{
-                  gridTemplateColumns: `240px repeat(${SKELETON_COLUMN_COUNT}, minmax(0, 1fr))`,
-                }}
-              >
-                <Skeleton className="h-5 w-24" />
-                {Array.from({ length: SKELETON_COLUMN_COUNT }).map(
-                  (_, index) => (
-                    <Skeleton key={index} className="h-5 w-full" />
-                  ),
-                )}
-              </div>
-              {Array.from({ length: SKELETON_ROW_COUNT }).map((_, rowIndex) => (
-                <div
-                  key={rowIndex}
-                  className="border-border/60 grid gap-2 rounded-md border p-2"
-                  style={{
-                    gridTemplateColumns: `240px repeat(${SKELETON_COLUMN_COUNT}, minmax(0, 1fr))`,
-                  }}
-                >
-                  <div className="flex items-center gap-2">
-                    <Skeleton className="h-4 w-4 rounded-sm" />
-                    <Skeleton className="h-4 w-40" />
-                  </div>
-                  {Array.from({ length: SKELETON_COLUMN_COUNT }).map(
-                    (_, columnIndex) => (
-                      <div
-                        key={columnIndex}
-                        className="flex items-center justify-center gap-1"
-                      >
-                        <Skeleton className="h-5 w-5 rounded-sm" />
-                        <Skeleton className="h-5 w-5 rounded-sm" />
-                      </div>
-                    ),
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+          <TrialGridSkeleton
+            columnCount={SKELETON_COLUMN_COUNT}
+            rowCount={SKELETON_ROW_COUNT}
+          />
         </div>
       </div>
     </div>

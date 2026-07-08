@@ -27,6 +27,8 @@ from oddish.core.experiment_membership import (
     trial_in_experiment,
 )
 from oddish.core.helpers import (
+    SLIM_TRIAL_RESPONSE_COLUMNS,
+    TASK_STATUS_RESPONSE_COLUMNS,
     escape_like,
     parse_search_query,
     _parse_github_meta,
@@ -71,69 +73,6 @@ from oddish.schemas import (
 )
 from oddish.model_pricing import estimate_cost_usd
 from oddish.timing import TimingRecorder, elapsed_ms, now
-
-# Every TaskModel column ``_build_task_status_response`` reads. Shared by the
-# compact /tasks path and the experiment ``task-shells`` / ``slim-tasks``
-# endpoints so none of them can defer a column the builder touches (a deferred
-# access outside the async greenlet 500s with MissingGreenlet). ``verdict`` /
-# ``verdict_error`` stay loaded for that reason even though the experiment
-# grid only renders ``verdict_status``.
-_TASK_STATUS_RESPONSE_COLUMNS = (
-    TaskModel.id,
-    TaskModel.name,
-    TaskModel.status,
-    TaskModel.priority,
-    TaskModel.user,
-    TaskModel.tags,
-    # Read by the experiment page's PR badge (``pickExperimentPr``).
-    TaskModel.link,
-    TaskModel.task_path,
-    TaskModel.current_version_id,
-    TaskModel.run_analysis,
-    # Surfaced as ``run_probe`` on every task response.
-    TaskModel.run_probe,
-    TaskModel.verdict_status,
-    TaskModel.verdict,
-    TaskModel.verdict_error,
-    TaskModel.created_at,
-    TaskModel.started_at,
-    TaskModel.finished_at,
-)
-
-# Exactly what ``build_slim_trial_response`` plus the count/version-scoping
-# helpers (``resolve_effective_version_id`` / ``get_task_status_trials``)
-# read. The large JSONB blobs the grid never shows (``harbor_config``,
-# ``phase_timing``, ``result``) stay deferred and arrive on demand via
-# ``GET /trials/{id}`` when a cell is opened.
-_SLIM_TRIAL_COLUMNS = (
-    TrialModel.id,
-    TrialModel.name,
-    TrialModel.task_id,
-    TrialModel.task_version_id,
-    TrialModel.experiment_id,
-    TrialModel.agent,
-    TrialModel.provider,
-    TrialModel.queue_key,
-    TrialModel.model,
-    TrialModel.status,
-    TrialModel.attempts,
-    TrialModel.max_attempts,
-    TrialModel.reward,
-    TrialModel.error_message,
-    TrialModel.is_probe,
-    TrialModel.analysis,
-    TrialModel.analysis_status,
-    TrialModel.input_tokens,
-    TrialModel.cache_tokens,
-    TrialModel.cache_write_tokens,
-    TrialModel.output_tokens,
-    TrialModel.cost_usd,
-    TrialModel.billed_user_id,
-    TrialModel.superseded_by_trial_id,
-    TrialModel.created_at,
-    TrialModel.started_at,
-    TrialModel.finished_at,
-)
 
 
 def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bool]:
@@ -314,7 +253,7 @@ async def list_tasks_core(
                 ExperimentModel.link,
             )
             query = query.options(
-                load_only(*_TASK_STATUS_RESPONSE_COLUMNS),
+                load_only(*TASK_STATUS_RESPONSE_COLUMNS),
                 trials_loader,
                 experiments_loader,
             )
@@ -575,7 +514,7 @@ async def list_experiment_task_shells_core(
         select(TaskModel)
         .order_by(TaskModel.created_at.desc())
         .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
-        .options(load_only(*_TASK_STATUS_RESPONSE_COLUMNS))
+        .options(load_only(*TASK_STATUS_RESPONSE_COLUMNS))
     )
     if org_id is not None:
         query = query.where(TaskModel.org_id == org_id)
@@ -637,8 +576,8 @@ async def list_experiment_slim_tasks(
     separate so ``list_tasks_core`` / ``/tasks`` stays unchanged.
 
     Both the task and trial queries are projected with ``load_only`` to the
-    columns the slim builders actually read (``_TASK_STATUS_RESPONSE_COLUMNS``
-    / ``_SLIM_TRIAL_COLUMNS``), keeping the large JSONB blobs out of the
+    columns the slim builders actually read (``TASK_STATUS_RESPONSE_COLUMNS``
+    / ``SLIM_TRIAL_RESPONSE_COLUMNS``), keeping the large JSONB blobs out of the
     round trip.
     """
     from sqlalchemy.orm.attributes import set_committed_value
@@ -652,8 +591,8 @@ async def list_experiment_slim_tasks(
         .order_by(TaskModel.created_at.desc())
         .where(TaskModel.experiments.any(ExperimentModel.id == experiment_id))
         .options(
-            load_only(*_TASK_STATUS_RESPONSE_COLUMNS),
-            selectinload(trials_relationship).load_only(*_SLIM_TRIAL_COLUMNS),
+            load_only(*TASK_STATUS_RESPONSE_COLUMNS),
+            selectinload(trials_relationship).load_only(*SLIM_TRIAL_RESPONSE_COLUMNS),
         )
     )
     if org_id is not None:

@@ -4,18 +4,18 @@ import Image from "next/image";
 import dynamic from "next/dynamic";
 import { BadgeCheck, CircleSlash, SearchCheck, Sparkles } from "lucide-react";
 
+import {
+  isNopAgentName,
+  isOracleAgentName,
+  PROBE_AGENT_KEY,
+} from "@/lib/experiment-agent-grouping";
+
 // The @lobehub/icons barrel is ~44KB gzip; keep it out of the initial bundle
 // and let brand glyphs hydrate into a reserved-size box after mount.
 const BrandIcon = dynamic(() => import("./queue-key-brand-icon"), {
   ssr: false,
   loading: () => null,
 });
-
-import {
-  isNopAgentName,
-  isOracleAgentName,
-  PROBE_AGENT_KEY,
-} from "@/lib/experiment-agent-grouping";
 
 type QueueKeyIconProps = {
   queueKey?: string | null;

@@ -795,6 +795,36 @@ def _primary_experiment_for_task(
     return experiments[0]
 
 
+# Every TaskModel column ``_build_task_status_response`` reads. Lives next to
+# the builder so a new field read here is added to the tuple in the same
+# edit — query paths (compact /tasks, experiment ``task-shells`` /
+# ``slim-tasks``) load_only these, and a deferred column the builder touches
+# 500s at runtime with MissingGreenlet. ``verdict`` / ``verdict_error`` stay
+# loaded for that reason even though the experiment grid only renders
+# ``verdict_status``.
+TASK_STATUS_RESPONSE_COLUMNS = (
+    TaskModel.id,
+    TaskModel.name,
+    TaskModel.status,
+    TaskModel.priority,
+    TaskModel.user,
+    TaskModel.tags,
+    # Read by the experiment page's PR badge (``pickExperimentPr``).
+    TaskModel.link,
+    TaskModel.task_path,
+    TaskModel.current_version_id,
+    TaskModel.run_analysis,
+    # Surfaced as ``run_probe`` on every task response.
+    TaskModel.run_probe,
+    TaskModel.verdict_status,
+    TaskModel.verdict,
+    TaskModel.verdict_error,
+    TaskModel.created_at,
+    TaskModel.started_at,
+    TaskModel.finished_at,
+)
+
+
 def _build_task_status_response(
     task: TaskModel,
     *,
@@ -1039,6 +1069,43 @@ def build_task_status_response_compact(
         experiment_context_id=experiment_context_id,
         effective_version_id=effective_version_id,
     )
+
+
+# Every TrialModel column ``build_slim_trial_response`` plus the
+# count/version-scoping helpers (``resolve_effective_version_id`` /
+# ``get_task_status_trials``) read. Lives next to the builder for the same
+# MissingGreenlet reason as ``TASK_STATUS_RESPONSE_COLUMNS``. The large JSONB
+# blobs the grid never shows (``harbor_config``, ``phase_timing``,
+# ``result``) stay deferred and arrive on demand via ``GET /trials/{id}``.
+SLIM_TRIAL_RESPONSE_COLUMNS = (
+    TrialModel.id,
+    TrialModel.name,
+    TrialModel.task_id,
+    TrialModel.task_version_id,
+    TrialModel.experiment_id,
+    TrialModel.agent,
+    TrialModel.provider,
+    TrialModel.queue_key,
+    TrialModel.model,
+    TrialModel.status,
+    TrialModel.attempts,
+    TrialModel.max_attempts,
+    TrialModel.reward,
+    TrialModel.error_message,
+    TrialModel.is_probe,
+    TrialModel.analysis,
+    TrialModel.analysis_status,
+    TrialModel.input_tokens,
+    TrialModel.cache_tokens,
+    TrialModel.cache_write_tokens,
+    TrialModel.output_tokens,
+    TrialModel.cost_usd,
+    TrialModel.billed_user_id,
+    TrialModel.superseded_by_trial_id,
+    TrialModel.created_at,
+    TrialModel.started_at,
+    TrialModel.finished_at,
+)
 
 
 def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:

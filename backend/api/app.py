@@ -249,9 +249,10 @@ def create_app() -> FastAPI:
     # The big JSON list payloads (experiment task-shells / slim-tasks at
     # limit=2000) compress ~10x. Starlette's GZipMiddleware passes
     # ``text/event-stream`` through uncompressed (DEFAULT_EXCLUDED_CONTENT_TYPES),
-    # so the cc_chat SSE endpoint is unaffected. compresslevel=6 keeps CPU
-    # modest on the concurrency-capped API containers.
-    api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
+    # so the cc_chat SSE endpoint is unaffected. compresslevel=1: on this
+    # repetitive JSON the ratio gain from higher levels is marginal but the
+    # CPU cost is not, and API containers are concurrency-capped.
+    api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):
