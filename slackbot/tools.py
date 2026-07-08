@@ -117,9 +117,16 @@ async def oddish_queue_health(args: dict) -> dict:
     data = await _get("/admin/queue-health")
     lines = [
         f"*Queue health*  queued: {data.get('totals_queued', 0)}  running: {data.get('totals_running', 0)}",
-        "",
-        "*Capacity (most pressured first)*",
     ]
+    if data.get("throughput"):
+        lines += ["", "*Throughput (started/finished)*"]
+        for t in data["throughput"]:
+            lines.append(
+                f"• {t.get('kind')}: 5m {t.get('started_5m', 0)}/{t.get('finished_5m', 0)}, "
+                f"15m {t.get('started_15m', 0)}/{t.get('finished_15m', 0)}, "
+                f"60m {t.get('started_60m', 0)}/{t.get('finished_60m', 0)}"
+            )
+    lines += ["", "*Capacity (most pressured first)*"]
     for c in data.get("capacity", [])[:12]:
         fill = c.get("fill")
         fill_s = f"{fill * 100:.0f}%" if fill is not None else "?"
