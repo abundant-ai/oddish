@@ -235,6 +235,10 @@ terminal reason, such as `cancelled by user`.
 # System overview
 oddish status
 
+# Queue & worker scheduler diagnostics
+oddish status --queue
+oddish status --queue --json
+
 # Task status
 oddish status <task_id>
 
@@ -251,10 +255,39 @@ Options
 
 - `TASK_ID` - Task ID to inspect when not using `--experiment`; falls back to experiment lookup if no matching task exists
 - `--experiment`, `-e TEXT` - Inspect an experiment instead of a task
+- `--queue`, `-Q` - Show queue & worker scheduler diagnostics instead of a task/experiment (see below)
+- `--stale-after INTEGER` - Minutes without a heartbeat before a trial/job counts as stale (with `--queue`; default 15)
 - `--watch`, `-w` - Poll until the task or experiment finishes
 - `--verbose`, `-v` - Extra detail in the system overview
 - `--api TEXT` - Override the API URL
 - `--json` - Emit a single JSON snapshot (no live watch)
+
+### Queue & Worker Diagnostics
+
+`oddish status --queue` aggregates the scheduler's `/admin/*` diagnostics so you
+can debug "queued but not running", stuck slots, and zombie/stale workers
+**without direct database access**. It shows:
+
+- **Queue health** — total queued/running, per-queue-key capacity
+  (`Queued` ready, `Sched` waiting on retry backoff, `Running`, `Limit`, `Fill`,
+  oldest-queued age), and the dispatcher/reconciler heartbeat ages (is the
+  scheduler alive?).
+- **Slot leases** — how many `queue_slots` are leased per queue key.
+- **Stuck / orphaned** — trials whose heartbeat has gone stale and tasks left
+  active with no downstream work, including the worker id / slot / last
+  heartbeat for each stale trial sample.
+- **Worker jobs** — per-`(kind, status)` counts and recent failures (hosted
+  Oddish only; omitted on a self-hosted core server).
+
+```bash
+oddish status --queue                  # human-readable panel
+oddish status --queue --json           # combined JSON for agents/scripts
+oddish status --queue --stale-after 30 # widen the stale-heartbeat window
+```
+
+On hosted Oddish these diagnostics require a **full-scope** API key
+(`read`/`tasks` keys get a clear error); a self-hosted core server applies no
+auth.
 
 ## Cancel In-Flight Runs
 
@@ -309,6 +342,10 @@ oddish pull <trial_id>
 
 # Pull an experiment into a custom directory
 oddish pull <experiment_id> --include-task-files --out ./downloads
+
+# Inspect a trial's raw S3 layout instead of downloading (DB key vs actual objects)
+oddish pull <trial_id> --debug-files
+oddish pull <trial_id> --debug-files --json
 ```
 
 By default, files are written to `./.oddish/<target>`. Re-pulling is idempotent — files already on disk that match the remote size are skipped, so `--watch` only downloads new or changed artifacts on each iteration and stops when the target reaches a terminal state.
@@ -322,6 +359,7 @@ Options
 - `--files/--no-files` - Include trial or task artifacts
 - `--structured` - Save structured trial logs in addition to normal logs
 - `--include-task-files` - Include task-level files for task or experiment targets
+- `--debug-files` - List a trial's raw S3 inventory (stored `trial_s3_key` vs computed prefix vs the objects that actually exist) instead of downloading. Trial targets only; useful for diagnosing "did the upload land where the DB thinks it did?"
 - `--watch`, `-w` - Keep pulling while the run is in progress
 - `--interval INTEGER` - Poll interval in seconds for `--watch`
 - `--api TEXT` - Override the API URL
