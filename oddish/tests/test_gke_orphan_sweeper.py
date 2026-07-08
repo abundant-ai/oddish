@@ -244,8 +244,8 @@ class _FakeCursor:
 
     def execute(self, sql: str, params=None):
         self._conn.executed.append((sql, params))
-        if "EXISTS" in sql:
-            self._result = [(self._conn.has_live_unlinked_worker,)]
+        if "environment" in sql:  # the RUNNING-gke-handles guard query
+            self._result = [(h,) for h in self._conn.running_gke_handles]
         else:  # the handle-linkage query
             self._conn.linkage_params = params
             self._result = list(self._conn.rows)
@@ -258,10 +258,13 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, rows, has_live_unlinked_worker=False):
+    def __init__(self, rows, has_live_unlinked_worker=False, running_gke_handles=None):
         # rows: list of (external_id, status, finished_at)
         self.rows = rows
-        self.has_live_unlinked_worker = has_live_unlinked_worker
+        # Legacy knob: True means "one RUNNING gke trial with no handle".
+        if running_gke_handles is None:
+            running_gke_handles = [None] if has_live_unlinked_worker else []
+        self.running_gke_handles = running_gke_handles
         self.executed: list = []
         self.linkage_params = None
 
@@ -370,9 +373,9 @@ def test_resolve_liveness_ignores_stale_alias_handle():
 def test_resolve_liveness_skips_handle_query_when_no_pods():
     conn = _FakeConn(rows=[], has_live_unlinked_worker=False)
     view = sweeper.resolve_liveness(conn, [], namespace="oddish-trials")
-    # Only the EXISTS guard query runs; the linkage query is skipped.
+    # Only the running-handles guard query runs; the linkage query is skipped.
     assert len(conn.executed) == 1
-    assert "EXISTS" in conn.executed[0][0]
+    assert "RUNNING" in conn.executed[0][0]
     assert view.owned_live_pods == frozenset()
     assert view.owned_dead_pods == frozenset()
 
@@ -507,3 +510,40 @@ def test_handle_roundtrip_helpers():
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_stale_running_handle_activates_unlinked_guard():
+    # After a retry, a RUNNING worker_job can still carry the PREVIOUS
+    # attempt's handle. Its new pod is not yet linked -- the guard must treat
+    # a RUNNING trial whose handle points at a NON-EXISTENT pod exactly like
+    # one with no handle at all, or the new pod gets deleted as an orphan.
+    pods = [_pod("attempt-two-pod", age=timedelta(minutes=20))]
+    conn = _FakeConn(
+        rows=[],  # no worker_job references the new pod yet
+        running_gke_handles=["oddish-trials/attempt-one-pod-gone"],
+    )
+    view = sweeper.resolve_liveness(conn, pods, namespace="oddish-trials")
+    assert view.has_live_unlinked_worker is True
+    plan = sweeper.decide_orphan_pods(
+        pods, view, now=NOW, grace_period=timedelta(minutes=10)
+    )
+    assert plan.to_delete == []
+
+
+def test_running_handle_matching_existing_pod_does_not_trip_guard():
+    # A RUNNING trial whose handle matches a CURRENT pod is simply linked;
+    # it must not suppress orphan deletion of unrelated pods.
+    pods = [
+        _pod("linked-pod", age=timedelta(hours=1)),
+        _pod("true-orphan", age=timedelta(hours=1)),
+    ]
+    conn = _FakeConn(
+        rows=[("oddish-trials/linked-pod", "RUNNING", None)],
+        running_gke_handles=["oddish-trials/linked-pod"],
+    )
+    view = sweeper.resolve_liveness(conn, pods, namespace="oddish-trials")
+    assert view.has_live_unlinked_worker is False
+    plan = sweeper.decide_orphan_pods(
+        pods, view, now=NOW, grace_period=timedelta(minutes=10)
+    )
+    assert plan.to_delete == ["true-orphan"]
