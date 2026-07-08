@@ -65,7 +65,7 @@ HARBOR_VARIANTS: dict[str, HarborVariant] = {
     GKE_VARIANT_ID: HarborVariant(
         variant_id=GKE_VARIANT_ID,
         source="https://github.com/abundant-ai/harbor-gke",
-        sha="f913b33332c5dd6a5df9784468fc0d7a84d00f73",
+        sha="bfc3dc4e2210641acc16d293865495541edb7422",
         extras=("gke",),
     ),
 }
@@ -179,73 +179,6 @@ def harbor_variant_function_name(variant_id: str) -> str:
     return f"process_single_job__{variant_id}"
 
 
-# A fixed python program (no interpolation -> no shell-injection surface) that
-# repoints the ``[tool.uv.sources]`` harbor inline-table at ``argv[1]@argv[2]``
-# for every pyproject path in ``argv[3:]``. Used in a blessed-variant image build
-# to rewrite the harbor pin BEFORE ``uv_sync`` so the whole dependency set
-# resolves against the variant's commit.
-_HARBOR_SOURCE_REWRITE_PY = (
-    "import re,sys\n"
-    "src,sha=sys.argv[1],sys.argv[2]\n"
-    "for p in sys.argv[3:]:\n"
-    "    s=open(p).read()\n"
-    '    s=re.sub(r"harbor = \\{ git = [^}]*\\}", '
-    '"harbor = { git = \\""+src+"\\", rev = \\""+sha+"\\" }", s)\n'
-    '    open(p,"w").write(s)'
-)
-
-
-def harbor_uv_source_rewrite_command(
-    source: str, sha: str, *pyproject_paths: str
-) -> str:
-    """Shell command repointing the harbor ``[tool.uv.sources]`` pin in-place.
-
-    Emits ``python3 -c '<fixed program>' <source> <sha> <paths...>`` (python is
-    always present in the image; this is portable where ``sed -i`` is not). The
-    program is fixed and the dynamic values ride as argv, so there's no
-    interpolation/injection surface.
-    """
-    src = _strip_git_prefix(source)
-    args = " ".join([src, sha, *pyproject_paths])
-    return f"python3 -c '{_HARBOR_SOURCE_REWRITE_PY}' {args}"
-
-
-# A fixed python program (no single quotes -> safe inside the shell single-quote
-# wrapper; no interpolation -> no injection surface) that repoints the quoted
-# ``"harbor"`` / ``"harbor[...]"`` dependency requirement to ``"harbor[<extras>]"``
-# for every pyproject path in ``argv[2:]``. Used in a blessed-variant image build
-# alongside the source rewrite so uv_sync pulls the variant's optional-dependency
-# groups (e.g. gke -> k8s + google-cloud) that the lean default image drops.
-_HARBOR_EXTRAS_REWRITE_PY = (
-    "import re,sys\n"
-    "ex=sys.argv[1]\n"
-    'new="\\"harbor["+ex+"]\\","\n'
-    "for p in sys.argv[2:]:\n"
-    "    s=open(p).read()\n"
-    '    s=re.sub(r"\\"harbor(\\[[^\\]]*\\])?\\",", new, s)\n'
-    '    open(p,"w").write(s)'
-)
-
-
-def harbor_extras_rewrite_command(
-    extras: Sequence[str], *pyproject_paths: str
-) -> str:
-    """Shell command adding an extras group to the harbor dependency in-place.
-
-    Emits ``python3 -c '<fixed program>' <extras> <paths...>`` (mirrors the
-    source-rewrite command). Rewrites the quoted ``"harbor"`` (or an existing
-    ``"harbor[...]"``) dependency requirement to ``"harbor[<extras>]"`` so a
-    blessed-variant image installs the variant's Harbor optional-dependency
-    groups; a no-op string is returned for empty extras. Extras are sorted and
-    de-duplicated for a stable command.
-    """
-    unique = sorted({e.strip() for e in extras if e and e.strip()})
-    if not unique:
-        return "true"
-    args = " ".join([",".join(unique), *pyproject_paths])
-    return f"python3 -c '{_HARBOR_EXTRAS_REWRITE_PY}' {args}"
-
-
 def classify_variant(source: str, sha: str) -> str:
     """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'.
 
@@ -265,19 +198,28 @@ def classify_variant(source: str, sha: str) -> str:
 def stamp_gke_harbor_source(
     harbor: HarborConfig, environment: EnvironmentType
 ) -> HarborConfig:
-    """Bind a GKE trial to the harbor-gke fork when the caller pinned no source.
+    """Bind a GKE trial to the harbor-gke fork unless it pins a different fork.
 
     harbor-gke is the only Harbor carrying the GKE environment, so a trial routed
-    to GKE MUST run it. When *environment* is GKE and the submission did not pin
-    an explicit source, stamp the blessed gke variant's ``(source, sha)`` — the
-    sha rides as the ref so resolution needs no network and the pin classifies
-    deterministically onto the gke worker image. An explicit caller source is
-    left untouched (the allowlist gates it; a non-merge-sha GKE source runs
-    out-of-process, which installs ``harbor[gke]`` in its own child). Every
-    non-GKE environment is returned unchanged, so a non-GKE trial never resolves
-    to harbor-gke.
+    to GKE MUST run it. When *environment* is GKE and the submission either pinned
+    no source OR pinned the DEFAULT fork, stamp the blessed gke variant's
+    ``(source, sha)`` — the sha rides as the ref so resolution needs no network and
+    the pin classifies deterministically onto the gke worker image. The default
+    fork is treated exactly like an unset source because it carries no GKE support
+    (see the merge checklist above); leaving a GKE trial on it would silently run
+    the lean default image. Only a genuinely different explicit fork is left
+    untouched (the allowlist gates it; a non-merge-sha GKE source runs
+    out-of-process, which installs ``harbor[gke]`` in its own child). Every non-GKE
+    environment is returned unchanged, so a non-GKE trial never resolves to
+    harbor-gke.
     """
-    if environment != EnvironmentType.GKE or harbor.source is not None:
+    if environment != EnvironmentType.GKE:
+        return harbor
+    # A pin of the default fork is treated like an unset source (see docstring):
+    # only a genuinely different fork is left for out-of-process resolution.
+    if harbor.source is not None and _normalize_source(
+        harbor.source
+    ) != _normalize_source(HARBOR_DEFAULT_SOURCE):
         return harbor
     variant = HARBOR_VARIANTS[GKE_VARIANT_ID]
     return harbor.model_copy(update={"source": variant.source, "ref": variant.sha})

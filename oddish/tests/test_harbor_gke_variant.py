@@ -1,5 +1,5 @@
-"""The blessed GKE Harbor variant: registry pin, classification, submission
-source-stamping, and the image-build extras rewrite.
+"""The blessed GKE Harbor variant: registry pin, classification, and submission
+source-stamping.
 
 GKE (TPU) trials run the GKE-enabled harbor-gke fork on a dedicated blessed
 worker image; every other trial stays on the lean default Harbor. These tests
@@ -10,9 +10,6 @@ trial stays ``default``, and an explicit caller override is never overwritten.
 from __future__ import annotations
 
 import re
-import subprocess
-import tempfile
-from pathlib import Path
 
 from harbor.models.environment_type import EnvironmentType
 
@@ -21,7 +18,6 @@ from oddish.core.harbor_source import (
     GKE_VARIANT_ID,
     HARBOR_VARIANTS,
     classify_variant,
-    harbor_extras_rewrite_command,
     resolve_and_gate_harbor,
     resolve_harbor_pin,
     stamp_gke_harbor_source,
@@ -29,7 +25,7 @@ from oddish.core.harbor_source import (
 from oddish.schemas import HarborConfig
 
 GKE_HARBOR_SOURCE = "https://github.com/abundant-ai/harbor-gke"
-GKE_HARBOR_SHA = "f913b33332c5dd6a5df9784468fc0d7a84d00f73"
+GKE_HARBOR_SHA = "bfc3dc4e2210641acc16d293865495541edb7422"
 
 
 def test_gke_variant_registered_with_expected_pin():
@@ -99,6 +95,54 @@ def test_stamp_respects_explicit_caller_override_on_gke():
     assert stamped.ref == "main"
 
 
+def test_stamp_treats_explicit_default_fork_pin_like_unset_on_gke():
+    # A GKE trial that explicitly pins the DEFAULT fork (e.g. --harbor
+    # rishidesai/harbor) must STILL be redirected to harbor-gke: the default fork
+    # carries no GKE support, so honoring it would silently run GKE on the lean
+    # default image. Treated exactly like source=None, and normalized so git+ /
+    # case spellings of the default are caught too.
+    v = HARBOR_VARIANTS[GKE_VARIANT_ID]
+    for hc in (
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE),
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE, ref=HARBOR_DEFAULT_SHA),
+        HarborConfig(source=f"git+{HARBOR_DEFAULT_SOURCE}"),
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE.upper()),
+    ):
+        stamped = stamp_gke_harbor_source(hc, EnvironmentType.GKE)
+        assert stamped.source == v.source
+        assert stamped.ref == v.sha
+        pin = resolve_harbor_pin(stamped.source, stamped.ref)
+        assert classify_variant(pin.source, pin.sha) == GKE_VARIANT_ID
+
+
+def test_stamp_leaves_genuinely_different_fork_untouched_on_gke():
+    # Only the exact default repo is treated as "unset"; a genuinely different
+    # fork -- even one under the same owner -- is honored and runs out-of-process
+    # (its ephemeral child installs harbor[gke]).
+    for src in (
+        "https://github.com/dot-agi/harbor",
+        "https://github.com/rishidesai/harbor-fork",
+    ):
+        hc = HarborConfig(source=src, ref="main")
+        stamped = stamp_gke_harbor_source(hc, EnvironmentType.GKE)
+        assert stamped.source == src
+        assert stamped.ref == "main"
+
+
+def test_stamp_leaves_default_fork_pin_untouched_on_non_gke():
+    # The default-fork == unset rule is GKE-only: no non-GKE environment is ever
+    # redirected, even when it explicitly pins the default fork.
+    hc = HarborConfig(source=HARBOR_DEFAULT_SOURCE, ref=HARBOR_DEFAULT_SHA)
+    for env in (
+        EnvironmentType.MODAL,
+        EnvironmentType.DAYTONA,
+        EnvironmentType.DOCKER,
+    ):
+        stamped = stamp_gke_harbor_source(hc, env)
+        assert stamped.source == HARBOR_DEFAULT_SOURCE
+        assert stamped.ref == HARBOR_DEFAULT_SHA
+
+
 def test_gke_stamped_submission_gates_to_gke_variant():
     # End-to-end: a GKE default submission stamps to harbor-gke, passes the
     # allowlist, and resolves to the gke variant id on the trial's harbor config.
@@ -114,39 +158,3 @@ def test_default_submission_still_gates_to_default():
     stamped, variant = resolve_and_gate_harbor(HarborConfig(), settings=Settings())
     assert variant == "default"
     assert stamped.resolved_sha == HARBOR_DEFAULT_SHA
-
-
-def test_harbor_extras_rewrite_injects_gke_extra():
-    # The variant image build repoints the harbor dependency to harbor[gke] so
-    # uv_sync pulls the k8s + google-cloud stack the default image drops.
-    sample = (
-        "dependencies = [\n"
-        '    "typer==0.21.1",\n'
-        '    "harbor",\n'
-        "]\n"
-    )
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "pyproject.toml"
-        p.write_text(sample)
-        subprocess.run(
-            harbor_extras_rewrite_command(["gke"], str(p)), shell=True, check=True
-        )
-        out = p.read_text()
-    assert '"harbor[gke]",' in out
-    assert '"harbor",' not in out
-    # An unrelated dependency is untouched.
-    assert '"typer==0.21.1",' in out
-
-
-def test_harbor_extras_rewrite_is_idempotent_on_already_extra_dep():
-    # Re-pointing a dep that already carries an extras group must not nest it.
-    sample = 'dependencies = [\n    "harbor[gke]",\n]\n'
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "pyproject.toml"
-        p.write_text(sample)
-        subprocess.run(
-            harbor_extras_rewrite_command(["gke"], str(p)), shell=True, check=True
-        )
-        out = p.read_text()
-    assert '"harbor[gke]",' in out
-    assert "harbor[gke][gke]" not in out
