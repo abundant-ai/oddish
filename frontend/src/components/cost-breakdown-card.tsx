@@ -130,6 +130,42 @@ function estimatedPct(cost: number, estimated: number): number {
   return Math.round((estimated / cost) * 100);
 }
 
+function formatSignedCost(value: number): string {
+  const sign = value >= 0 ? "+" : "−";
+  return `${sign}${formatCostUsd(Math.abs(value))}`;
+}
+
+// Signed cost delta vs the prior window; null render when there is no prior
+// figure (all-time). A rise is bad (red), a drop good (green).
+function DeltaBadge({
+  current,
+  prev,
+}: {
+  current: number;
+  prev: number | null | undefined;
+}) {
+  if (prev == null) return null;
+  const diff = current - prev;
+  const pct =
+    prev === 0
+      ? current > 0
+        ? "new"
+        : null
+      : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
+  const color =
+    diff === 0
+      ? "text-muted-foreground"
+      : diff > 0
+        ? "text-destructive"
+        : "text-[#5c8e43] dark:text-[#85b85c]";
+  return (
+    <span className={`text-[10px] font-medium tabular-nums ${color}`}>
+      {formatSignedCost(diff)}
+      {pct ? ` · ${pct}` : ""}
+    </span>
+  );
+}
+
 function formatAge(dateStr: string | null): string {
   if (!dateStr) return "—";
   const diffMs = Date.now() - new Date(dateStr).getTime();
@@ -255,7 +291,11 @@ function bucketTickFormatter(bucket: string) {
         hour: "numeric",
         hour12: true,
       });
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return d.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    });
   };
 }
 
@@ -273,7 +313,9 @@ function ChartTooltip(
   const when =
     bucket === "hour"
       ? new Date(String(label)).toLocaleString()
-      : new Date(String(label)).toLocaleDateString();
+      : new Date(String(label)).toLocaleDateString(undefined, {
+          timeZone: "UTC",
+        });
   const entries = payload
     .map((p) => ({
       key: String(p.dataKey),
@@ -467,7 +509,7 @@ type ChartDimension = "agent" | "model" | "user";
 const CHART_DIMENSIONS: ChartDimension[] = ["agent", "model", "user"];
 
 export function CostBreakdownCard() {
-  const [windowDays, setWindowDays] = useState("7");
+  const [windowDays, setWindowDays] = useState("1");
   const [dimension, setDimension] = useState<ChartDimension>("agent");
 
   const { data, error, isLoading, mutate } = useSWR<CostBreakdownResponse>(
@@ -494,12 +536,6 @@ export function CostBreakdownCard() {
             <DollarSign className="h-5 w-5" />
             <CardTitle className="text-base">Cost Breakdown</CardTitle>
             <MethodologyNote />
-            {data && (
-              <Badge variant="outline" className="text-xs">
-                {formatCostUsd(data.totals.cost_usd)} ·{" "}
-                {windowLabel.toLowerCase()}
-              </Badge>
-            )}
           </div>
           <div className="flex items-center gap-2">
             <Select value={windowDays} onValueChange={setWindowDays}>
@@ -535,9 +571,8 @@ export function CostBreakdownCard() {
         </div>
         <p className="text-muted-foreground text-xs">
           All first-party trial spend across all organizations, including
-          unbilled spend that never resolved to a registered user. Native
-          runtime cost when reported, otherwise a per-model token estimate — see
-          the info icon for methodology.
+          unbilled spend that never resolved to a registered user — see the
+          info icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -576,30 +611,11 @@ export function CostBreakdownCard() {
               <CostChart series={series} bucket={data.bucket} />
             </div>
 
-            <div className="flex flex-wrap gap-2 text-xs">
-              <Badge variant="outline">
-                total {formatCostUsd(data.totals.cost_usd)}
-              </Badge>
-              <Badge variant="outline">
-                native {formatCostUsd(data.totals.cost_native_usd)}
-              </Badge>
-              <Badge variant="outline">
-                estimated {formatCostUsd(data.totals.cost_estimated_usd)}
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.trial_count.toLocaleString()} trials
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.experiment_count.toLocaleString()} experiments
-              </Badge>
-              <Badge variant="outline">
-                {data.totals.user_count.toLocaleString()} users
-              </Badge>
-            </div>
+            <StatTiles totals={data.totals} />
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by user</h3>
-              <UserTable users={data.by_user} />
+              <UserTable users={data.by_user} windowDays={windowDays} />
             </section>
 
             <section className="space-y-2">
@@ -623,7 +639,143 @@ export function CostBreakdownCard() {
   );
 }
 
-function UserTable({ users }: { users: CostUserBreakdown[] }) {
+function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
+  const prev = totals.prev_cost_usd;
+  const diff = prev == null ? null : totals.cost_usd - prev;
+  const pctLabel =
+    prev == null || diff == null
+      ? null
+      : prev === 0
+        ? totals.cost_usd > 0
+          ? "new"
+          : null
+        : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
+  const monthCost = totals.month_cost_usd ?? 0;
+  const budget = totals.month_budget_usd;
+  const monthPct = budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
+  const monthFill =
+    monthPct != null && monthPct >= 80
+      ? "bg-destructive"
+      : monthPct != null && monthPct >= 60
+        ? "bg-amber-500"
+        : "bg-blue-500";
+  return (
+    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(totals.cost_usd)}
+        </div>
+        <div className="text-muted-foreground text-[10px]">Total cost</div>
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        <div className="text-base font-bold tabular-nums">
+          {formatCostUsd(monthCost)}
+          {budget != null && (
+            <span className="text-muted-foreground font-normal">
+              {" "}
+              / {formatCostUsd(budget)}
+            </span>
+          )}
+        </div>
+        <div className="text-muted-foreground text-[10px]">
+          Monthly quota
+          {monthPct != null ? ` · ${Math.round(monthPct)}%` : " · month to date"}
+        </div>
+        {monthPct != null && (
+          <div className="bg-muted-foreground/20 mx-auto mt-1 h-1.5 w-24 overflow-hidden rounded-full">
+            <div
+              className={`h-full ${monthFill}`}
+              style={{ width: `${Math.min(monthPct, 100)}%` }}
+            />
+          </div>
+        )}
+      </div>
+      <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
+        {diff == null ? (
+          <div className="text-muted-foreground text-base font-bold">—</div>
+        ) : (
+          <div
+            className={`text-base font-bold tabular-nums ${
+              diff > 0
+                ? "text-destructive"
+                : diff < 0
+                  ? "text-[#5c8e43] dark:text-[#85b85c]"
+                  : ""
+            }`}
+          >
+            {formatSignedCost(diff)}
+            {pctLabel ? (
+              <span className="text-muted-foreground font-normal">
+                {" "}
+                · {pctLabel}
+              </span>
+            ) : null}
+          </div>
+        )}
+        <div className="text-muted-foreground text-[10px]">
+          Δ vs prior period
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function QuotaCell({ user }: { user: CostUserBreakdown }) {
+  const spent = user.quota_spent_usd;
+  const limit = user.quota_limit_usd;
+  if (spent == null || limit == null)
+    return (
+      <TableCell className="text-muted-foreground text-right text-xs">
+        —
+      </TableCell>
+    );
+  const pct = limit > 0 ? (spent / limit) * 100 : spent > 0 ? 100 : 0;
+  const clamped = Math.min(pct, 100);
+  const fill =
+    pct >= 80 ? "bg-destructive" : pct >= 60 ? "bg-amber-500" : "bg-blue-500";
+  return (
+    <TableCell className="text-right">
+      <div className="flex flex-col items-end gap-1">
+        <span className="font-mono text-[11px]">
+          {formatCostUsd(spent)} / {formatCostUsd(limit)}
+          <span
+            className={`ml-1 ${pct >= 100 ? "text-destructive font-bold" : "text-muted-foreground"}`}
+          >
+            {Math.round(pct)}%
+          </span>
+        </span>
+        <div className="bg-muted-foreground/20 h-1.5 w-20 overflow-hidden rounded-full">
+          <div className={`h-full ${fill}`} style={{ width: `${clamped}%` }} />
+        </div>
+      </div>
+    </TableCell>
+  );
+}
+
+function RunningCell({ count }: { count: number }) {
+  if (count <= 0)
+    return (
+      <TableCell className="text-muted-foreground text-right text-xs">
+        —
+      </TableCell>
+    );
+  return (
+    <TableCell className="text-right">
+      <Badge variant="outline" className="gap-1 text-[10px]">
+        <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+        {count.toLocaleString()}
+      </Badge>
+    </TableCell>
+  );
+}
+
+function UserTable({
+  users,
+  windowDays,
+}: {
+  users: CostUserBreakdown[];
+  windowDays: string;
+}) {
   if (users.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -637,6 +789,19 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
           <TableHead>User</TableHead>
           <TableHead>Org</TableHead>
           <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Δ prior</TableHead>
+          <TableHead className="text-right">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="cursor-help">24h quota</span>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-[280px]">
+                Rolling-24h settled spend vs quota limit — the enforcement basis,
+                so it will not match the window cost column.
+              </TooltipContent>
+            </Tooltip>
+          </TableHead>
+          <TableHead className="text-right">Running</TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead className="text-right">Exps</TableHead>
           <TableHead>Top models</TableHead>
@@ -644,16 +809,17 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
       </TableHeader>
       <TableBody>
         {users.map((user) => (
-          <TableRow key={user.key}>
+          <TableRow key={`${user.org_id ?? "-"}:${user.key}`}>
             <TableCell>
               <div className="flex flex-col">
                 {user.owner_user_id ? (
-                  // A real oddish user: link to their drilldown even when part
-                  // of the spend is unbilled. Flag the unbilled portion so the
-                  // reader knows the drilldown (billed-only) may total less.
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     <Link
-                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}`}
+                      href={`/admin/users/${encodeURIComponent(user.owner_user_id)}?window_days=${encodeURIComponent(windowDays)}${
+                        user.org_id
+                          ? `&org=${encodeURIComponent(user.org_id)}`
+                          : ""
+                      }`}
                       className="text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
                     >
                       {userLabel(user)}
@@ -713,6 +879,11 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
               cost={user.cost_usd}
               estimated={user.cost_estimated_usd}
             />
+            <TableCell className="text-right">
+              <DeltaBadge current={user.cost_usd} prev={user.prev_cost_usd} />
+            </TableCell>
+            <QuotaCell user={user} />
+            <RunningCell count={user.inflight_trial_count ?? 0} />
             <TableCell className="text-right font-mono text-xs">
               {user.trial_count.toLocaleString()}
             </TableCell>
