@@ -632,25 +632,29 @@ async def _store_trial_results(
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
-) -> None:
+) -> bool:
+    """Persist the trial outcome. Returns True when the trial is left in a
+    terminal state (SUCCESS/FAILED with finished_at set), False when it stays
+    inflight (RETRYING) or the update was skipped. Callers use this to decide
+    whether the live transcript can be purged."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
         session,
         trial,
     ):
         if not trial:
-            return
+            return False
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
-            return
+            return False
         if not await _worker_still_owns_trial(
             session, trial, worker_id=worker_id, worker_job_id=worker_job_id
         ):
             console.print(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
-            return
+            return False
 
         is_modal_image_build_error = bool(
             outcome and is_modal_image_build_failure(outcome.error)
@@ -664,7 +668,7 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
-            return
+            return False
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -787,6 +791,8 @@ async def _store_trial_results(
                 console.print(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                 )
+
+        return trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
 
 
 async def _upload_probe_assets(
@@ -1256,6 +1262,7 @@ async def run_trial_job(
         )
 
     execution: TrialExecutionResult | None = None
+    trial_terminal = False
     try:
         # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
         # write prefix) and inject its scoped model env into the agent, replacing
@@ -1359,7 +1366,7 @@ async def run_trial_job(
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
-        await asyncio.shield(
+        trial_terminal = await asyncio.shield(
             _store_trial_results(
                 trial_id=trial_id,
                 outcome=execution.outcome,
@@ -1371,11 +1378,15 @@ async def run_trial_job(
             )
         )
     finally:
-        # Purge the live transcript only now that _store_trial_results has
-        # marked the trial terminal (finished_at set). Doing it inside
-        # _execute_trial's finally would race the S3 upload/store window and
-        # blank the transcript while clients still see the trial running.
-        if execution is not None:
+        # Purge the live transcript only once the trial is terminal. Doing it
+        # inside _execute_trial's finally would race the S3 upload/store window
+        # and blank the transcript while clients still see the trial running;
+        # purging on a RETRYING outcome (finished_at still null) would likewise
+        # blank the current attempt's transcript while /live reports it as
+        # running until the next pickup bumps attempts. Prior attempts' events
+        # are covered by the terminal purge (attempt <= tailed_attempt) and the
+        # 24h TTL sweeper.
+        if execution is not None and trial_terminal:
             await live_tail.purge_events(trial_id, execution.tailed_attempt)
         # Backstop for the non-happy paths (harness exception, worker
         # cancel, S3 upload failure, or Harbor dying before producing a
