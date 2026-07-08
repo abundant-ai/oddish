@@ -66,6 +66,16 @@ def test_probe_harbor_ref_matches_pyproject_pin():
     assert Settings().harbor_source_ref == harbor_pin["branch"]
 
 
+def test_pyproject_default_source_matches_config():
+    # pyproject<->config drift guard: the baked default harbor source in
+    # pyproject must equal HARBOR_DEFAULT_SOURCE, so the default worker image
+    # bakes exactly the pin the server classifies as "default" (rishidesai, NOT
+    # harbor-gke -- that is a blessed variant on its own image).
+    with open("pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
+
+
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():
     # A userinfo '@' (user:token@host) must NOT be treated as the ref delimiter;
     # the source URL is kept intact and the ref is empty (default-branch HEAD).
