@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-07]
+
+### Changed
+
+- API key creation is now self-service for every organization, gated on the caller's role in their current org instead of membership in the hardcoded Abundant org. `can_create_api_keys` no longer checks an org-slug/Clerk-org allowlist — any `admin` or `member` (Clerk-JWT auth only) may create keys for their own org, admins minting `full`/`tasks`/`read` and members minting `tasks`/`read`. API-key auth still cannot mint keys, and listing/revoking all org keys stays admin-only. Removed `API_KEY_CREATOR_ORG_SLUGS` / `API_KEY_CREATOR_CLERK_ORG_IDS` and refreshed the stale `@abundant.ai`/Abundant-org wording in the settings UI, endpoint errors, and docs (#617).
+
+---
+
 ## [2026-07-06]
 
 ### Added
