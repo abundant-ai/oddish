@@ -681,20 +681,22 @@ function UserTable({ users }: { users: CostUserBreakdown[] }) {
                 ) : (
                   <span className="inline-flex items-center gap-1.5 text-xs font-medium">
                     {userLabel(user)}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Badge
-                          variant="outline"
-                          className="text-muted-foreground cursor-help text-[9px] font-normal"
-                        >
-                          unbilled
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-[260px]">
-                        This spender isn&apos;t a registered oddish user, so
-                        this cost isn&apos;t billed to anyone&apos;s quota.
-                      </TooltipContent>
-                    </Tooltip>
+                    {user.has_unbilled_spend && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge
+                            variant="outline"
+                            className="text-muted-foreground cursor-help text-[9px] font-normal"
+                          >
+                            unbilled
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-[260px]">
+                          This spender isn&apos;t a registered oddish user, so
+                          this cost isn&apos;t billed to anyone&apos;s quota.
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
                   </span>
                 )}
                 {user.email && user.email !== userLabel(user) && (

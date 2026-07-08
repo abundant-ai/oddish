@@ -1142,7 +1142,7 @@ class CostUserBreakdown(BaseModel):
     # spend created before billing stamping shipped, or an offboarded payer).
     # Drives the "unbilled" chip; for a linkable row it also warns that the
     # per-user drilldown (billed spend only) may total less than this row.
-    has_unbilled_spend: bool = False
+    has_unbilled_spend: bool
     # Precomputed label for a row with no backing user (GitHub handle,
     # "Unattributed"); None means fill the display name from the linked user.
     label: str | None = None

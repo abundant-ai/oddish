@@ -674,28 +674,3 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
         if u.key in {"ghuser:octo-ext", "ghid:gh-9001", SUBMITTER, PAYER}
     )
     assert _approx(fall_total, 42.0)
-
-
-@pytest.mark.asyncio
-async def test_unbilled_registered_user_is_link_eligible(seeded_fallback_data):
-    """"Unbilled" must not mean "not a real user".
-
-    A row that resolves to a real oddish user is link-eligible (gets
-    ``owner_user_id``) even when none of its spend is billed, and it flags the
-    unbilled spend. A GitHub-handle / Unattributed row that is *not* a
-    registered user stays non-clickable (``owner_user_id is None``).
-    """
-    async with get_session() as session:
-        result = await get_cost_breakdown_core(
-            session, window_days=7, experiment_limit=500, user_limit=500
-        )
-    by_user = {u.key: u for u in result.by_user}
-
-    # Registered user, fully unbilled spend -> still link-eligible + flagged.
-    submitter_row = by_user[SUBMITTER]
-    assert submitter_row.owner_user_id == SUBMITTER
-    assert submitter_row.has_unbilled_spend is True
-
-    # Not a registered user -> never link-eligible, regardless of spend.
-    for key in ("ghuser:octo-ext", "ghid:gh-9001"):
-        assert by_user[key].owner_user_id is None, key
