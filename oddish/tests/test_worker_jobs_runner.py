@@ -367,6 +367,11 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
 
     worker_sql, worker_args = connection.calls[1]
     assert "status = 'RETRYING'" in worker_sql
+    # The retry row must start UNLINKED: a kept handle can point at a pod that
+    # still exists, blinding the orphan sweeper's live-unlinked guard while the
+    # next attempt's pod is still unreferenced.
+    assert "external_id = NULL" in worker_sql
+    assert "provider = NULL" in worker_sql
     assert "next_retry_at = $3" in worker_sql
     assert "available_after = COALESCE($3::timestamptz, NOW())" in worker_sql
     assert worker_args[0] == "wj-1"
