@@ -228,6 +228,26 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _assert_tpu_backend(environment, backend, override_tpu) -> None:
+    """Fail fast when a TPU-requesting trial is routed to a TPU-less backend.
+
+    Without this, the trial runs WITHOUT the accelerator and dies minutes later
+    on its own device asserts -- a confusing failure that looks like a workload
+    bug. Only the override_tpu channel is visible here; a TPU declared solely
+    in task.toml is parsed by Harbor after this point.
+    """
+    if override_tpu is None:
+        return
+    if backend is not None and backend.capabilities().tpu is not None:
+        return
+    raise RuntimeError(
+        f"TPU trials must run on the GKE backend: this trial requests a TPU "
+        f"({override_tpu.type}) but is routed to environment "
+        f"'{environment.value}', which has no TPU support. Resubmit with "
+        f"environment=gke ('oddish run' auto-routes TPU tasks)."
+    )
+
+
 async def run_harbor_trial_async(
     task_path: Path,
     agent: str,
@@ -340,6 +360,9 @@ async def run_harbor_trial_async(
         env_config.type = environment
 
         backend = get_backend(environment.value)
+        _assert_tpu_backend(
+            environment, backend, getattr(env_config, "override_tpu", None)
+        )
         if backend is not None:
             env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
         probe_modal = _probe_modal_kwargs(is_probe, environment)
