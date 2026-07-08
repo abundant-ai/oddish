@@ -144,6 +144,45 @@ async def _finalize_sweep(
         )
 
 
+def _effective_sweep_environment(
+    submission_environment: EnvironmentType | None,
+    inherited_environment: EnvironmentType | None,
+    default_environment: EnvironmentType | None,
+) -> EnvironmentType | None:
+    """Environment the sweep's trials will actually run in, for the harbor stamp.
+
+    Mirrors ``build_trial_specs_from_sweep``'s submission-level resolution so the
+    harbor stamp sees the SAME environment as the trials: an explicit submission
+    override wins, else the environment inherited from an append target's existing
+    trials, else the caller-resolved default. Stamping against the submission's own
+    environment alone would leave a GKE append (submitted without ``--env``) on the
+    lean default image instead of harbor-gke.
+    """
+    return submission_environment or inherited_environment or default_environment
+
+
+async def _existing_task_environment(
+    session: AsyncSession, task_id: str
+) -> EnvironmentType | None:
+    """Environment of *task_id*'s oldest non-null trial, or ``None`` if it has none.
+
+    Appended trials inherit this as their default environment, so both the harbor
+    stamp and ``build_trial_specs_from_sweep`` resolve against it. This is a plain
+    read, safe to run before the harbor gate.
+    """
+    result = await session.execute(
+        select(TrialModel.environment)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.environment.is_not(None),
+        )
+        .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        .limit(1)
+    )
+    existing_environment = result.scalar_one_or_none()
+    return EnvironmentType(existing_environment) if existing_environment else None
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -210,19 +249,44 @@ async def create_task_sweep_core(
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
-    # BEFORE any task mutation (append/create) so a disallowed/unresolvable ref
-    # never half-creates a task. The default pin does no network I/O.
     from oddish.config import settings
 
-    # A GKE (TPU) trial must run the GKE-enabled harbor-gke fork, not the lean
-    # default Harbor. When the submission's effective environment is GKE and the
-    # caller pinned no source, bind it to the blessed gke variant BEFORE
-    # resolution so it classifies onto the gke worker image. The effective
-    # environment mirrors build_trial_specs_from_sweep (submission override, else
-    # the caller-resolved default); a non-GKE submission is left untouched and
-    # keeps the default pin.
-    effective_environment = submission.environment or default_environment
+    # Auto-detect append mode if the task already exists in the DB for this org.
+    # Detection and the inherited-environment read below are reads, so resolving
+    # them before the gate keeps the gate BEFORE any task mutation.
+    if not submission.append_to_task:
+        existing = await session.get(TaskModel, submission.task_id)
+        if existing is not None and (org_id is None or existing.org_id == org_id):
+            submission = submission.model_copy(update={"append_to_task": True})
+
+    # Appended trials INHERIT the existing task's environment (its oldest trial).
+    # The stamp below MUST see that inherited environment, or a GKE task appended
+    # to without ``--env`` would stamp against the (non-GKE) default and silently
+    # run the lean default image. Resolved here, and reused by the append branch.
+    inherited_environment: EnvironmentType | None = None
+    if submission.append_to_task:
+        inherited_environment = await _existing_task_environment(
+            session, submission.task_id
+        )
+    effective_default_env = (
+        inherited_environment
+        if inherited_environment is not None
+        else default_environment
+    )
+
+    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
+    # BEFORE any task mutation (the append detection above is a read) so a
+    # disallowed/unresolvable ref never half-creates a task; the default pin does
+    # no network I/O. A GKE (TPU) trial must run the GKE-enabled harbor-gke fork,
+    # not the lean default Harbor, so when the trials' effective environment is GKE
+    # and the caller pinned no source (or the default fork), bind the blessed gke
+    # variant BEFORE resolution so it classifies onto the gke worker image. The
+    # effective environment mirrors build_trial_specs_from_sweep (submission
+    # override, else the inherited/caller-resolved default); a non-GKE submission
+    # is left untouched and keeps the default pin.
+    effective_environment = _effective_sweep_environment(
+        submission.environment, inherited_environment, default_environment
+    )
     harbor_to_gate = submission.harbor
     if effective_environment is not None:
         harbor_to_gate = stamp_gke_harbor_source(
@@ -246,12 +310,6 @@ async def create_task_sweep_core(
         github_meta = GitHubMeta.from_tags(submission.tags)
         if github_meta and github_meta.pr_url:
             submission = submission.model_copy(update={"link": github_meta.pr_url})
-
-    # Auto-detect append mode if the task already exists in the DB for this org.
-    if not submission.append_to_task:
-        existing = await session.get(TaskModel, submission.task_id)
-        if existing is not None and (org_id is None or existing.org_id == org_id):
-            submission = submission.model_copy(update={"append_to_task": True})
 
     if submission.append_to_task:
         task = await get_task_for_org_core(
@@ -314,23 +372,10 @@ async def create_task_sweep_core(
         # Stamp the run's owner + PR link onto the experiment (set-once).
         _stamp_experiment_provenance(experiment, submission)
 
-        # Determine default environment from existing trial, if present.
-        existing_env_result = await session.execute(
-            select(TrialModel.environment)
-            .where(
-                TrialModel.task_id == task.id,
-                TrialModel.environment.is_not(None),
-            )
-            .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
-            .limit(1)
-        )
-        existing_environment = existing_env_result.scalar_one_or_none()
-        effective_default_env = (
-            EnvironmentType(existing_environment)
-            if existing_environment
-            else default_environment
-        )
-
+        # ``effective_default_env`` (this task's inherited environment, else the
+        # caller default) was resolved before the harbor gate so the stamp and
+        # these trials share one environment; build_trial_specs_from_sweep reuses
+        # it below.
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )

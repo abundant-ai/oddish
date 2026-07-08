@@ -8,8 +8,7 @@ from dotenv import dotenv_values
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
-    harbor_extras_rewrite_command,
-    harbor_uv_source_rewrite_command,
+    harbor_git_requirement,
 )
 
 
@@ -247,8 +246,15 @@ if _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS):
         modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
     )
 
-if LOCAL_DOTENV_VARS:
-    runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# Appended UNCONDITIONALLY (an empty dict is a valid secret): this list is
+# recomputed inside the container, where backend/.env does not exist, so an
+# append conditional on the file's presence makes the deploy-time and
+# container-init secret lists disagree and every function crashloops at
+# hydration ("Function has N dependencies but container got N+1 object ids").
+# The secret's values are captured at deploy, so a dotenv still reaches the
+# runtime; in-container the recomputed dict is empty and only keeps the
+# dependency count stable.
+runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
@@ -303,6 +309,19 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # GKE coordinates resolved at deploy time (process env wins over
+    # backend/.env, mirroring _effective_gke_cluster_name), baked into the
+    # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the
+    # workers' pydantic Settings re-read these INSIDE the container, where
+    # neither the deploy shell's env nor backend/.env exists -- without the
+    # bake, a GKE-configured deploy attaches the credential secret at deploy
+    # time but not at container init (dependency-count drift -> hydration
+    # crashloop) and workers boot without the cluster coordinates.
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k.startswith("ODDISH_GKE_")
+    },
 }
 
 
@@ -417,32 +436,29 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             copy=True,
         )
     )
+    # Install all dependencies (oddish from /oddish, harbor + others resolved).
+    img = img.uv_sync()
     if harbor_override is not None:
-        # Repoint the harbor pin in both pyprojects (backend's + the editable
-        # oddish's) before the resolve.
-        img = img.run_commands(
-            harbor_uv_source_rewrite_command(
-                harbor_override.source,
-                harbor_override.sha,
-                "/root/pyproject.toml",
-                "/oddish/pyproject.toml",
-            )
+        # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync
+        # stages the LOCAL pyproject.toml + uv.lock at /.uv and runs --frozen, so
+        # editing pyprojects inside the image can never change what it installs
+        # (that approach shipped the lean default Harbor and every GKE trial died
+        # with MissingExtraError: kubernetes). A post-sync sha-pinned install with
+        # the variant's extras replaces harbor and pulls the extras' dependency
+        # stack (e.g. gke -> kubernetes + google-auth) into the same venv, the
+        # exact requirement string the ephemeral out-of-process path already uses.
+        # /.uv/uv and /.uv/.venv are where uv_sync leaves the binary and the venv.
+        requirement = harbor_git_requirement(
+            harbor_override.source,
+            harbor_override.sha,
+            extras=harbor_override.extras,
         )
-        # Add the variant's Harbor extras (the default image dropped them) so
-        # uv_sync pulls e.g. harbor[gke]'s k8s + google-cloud clients.
-        if harbor_override.extras:
-            img = img.run_commands(
-                harbor_extras_rewrite_command(
-                    harbor_override.extras,
-                    "/root/pyproject.toml",
-                    "/oddish/pyproject.toml",
-                )
-            )
+        img = img.run_commands(
+            f"/.uv/uv pip install --python /.uv/.venv/bin/python '{requirement}'"
+        )
     return (
-        # Install all dependencies (oddish from /oddish, harbor + others resolved)
-        img.uv_sync()
         # Add backend-specific Python modules
-        .add_local_python_source(
+        img.add_local_python_source(
             "api",
             "auth",
             "backfill_github_id",

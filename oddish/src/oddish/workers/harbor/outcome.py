@@ -10,6 +10,7 @@ from oddish.core.harbor_artifacts import (
     detect_trajectory,
     extract_trajectory_metrics,
     extract_trial_result_fields,
+    extract_verifier_metrics,
 )
 
 
@@ -44,6 +45,10 @@ class HarborOutcome:
 
     # Whether an ATIF trajectory file exists
     has_trajectory: bool = False
+
+    # Structured benchmark metrics the task's verifier reported via
+    # ``verifier/metrics.json`` (persisted to ``trials.result``).
+    metrics: dict[str, Any] | None = None
 
     # The Python exception class name (e.g. "AddTestsDirError",
     # "AgentTimeoutError") that ended this trial, sourced from
@@ -111,6 +116,7 @@ def _extract_outcome_from_job_result(
         cost_usd = trajectory.cost_usd
 
     has_trajectory = detect_trajectory(job_dir)
+    metrics = extract_verifier_metrics(job_dir)
 
     def _outcome(reward: float | None) -> HarborOutcome:
         return HarborOutcome(
@@ -128,6 +134,7 @@ def _extract_outcome_from_job_result(
             cost_usd=cost_usd,
             phase_timing=phase_timing,
             has_trajectory=has_trajectory,
+            metrics=metrics,
             exception_type=exception_type,
         )
 

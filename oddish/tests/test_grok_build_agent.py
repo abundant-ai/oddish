@@ -15,6 +15,38 @@ import pytest
 
 from oddish.workers.agents.grok_build import _PROMPT_PATH, OddishGrokBuild
 
+
+def test_build_config_toml_defaults_to_responses_backend(tmp_path):
+    """Without an override the upstream Harbor default is preserved verbatim."""
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9-stickynote")
+    config = agent.build_config_toml()
+    assert 'api_backend = "responses"' in config
+    assert "chat_completions" not in config
+
+
+def test_build_config_toml_applies_api_backend_override(tmp_path):
+    """``api_backend`` rewrites every model block's transport."""
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9-stickynote",
+        api_backend="chat_completions",
+    )
+    config = agent.build_config_toml()
+    # Both the model-specific and the [model.grok-build] blocks are switched.
+    assert config.count('api_backend = "chat_completions"') == 2
+    assert 'api_backend = "responses"' not in config
+    # The requested model still routes through, untouched by the rewrite.
+    assert "v9-stickynote" in config
+
+
+def test_invalid_api_backend_rejected(tmp_path):
+    with pytest.raises(ValueError, match="api_backend"):
+        OddishGrokBuild(
+            logs_dir=tmp_path,
+            model_name="xai/v9-stickynote",
+            api_backend="bogus-endpoint",
+        )
+
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
 # old code embedded this three times, so the exec argv would have been ~600KB.
 _LARGE_INSTRUCTION = "SENTINEL_START " + ("payload-line\n" * 20_000) + " SENTINEL_END"
@@ -66,10 +98,16 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
 
     # Exactly one agent exec runs grok, and it never carries the instruction
     # body -- it reads the staged file instead, so it stays well under ARG_MAX.
-    assert len(agent_commands) == 1
-    command = agent_commands[0]
+    # (A second agent exec copies the grok session store into the trial logs.)
+    grok_commands = [c for c in agent_commands if "grok -p" in c]
+    assert len(grok_commands) == 1
+    command = grok_commands[0]
     assert "SENTINEL_START" not in command
     assert "payload-line" not in command
     assert f'"$(cat {_PROMPT_PATH})"' in command
     assert "--reasoning-effort high" in command
     assert len(command.encode("utf-8")) < _MODAL_ARG_MAX_BYTES
+
+    # The session store is captured out-of-band so tool calls + token usage
+    # (absent from the text-only stdout) survive sandbox teardown.
+    assert any("grok-session" in c for c in agent_commands)
