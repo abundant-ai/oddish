@@ -71,4 +71,5 @@ async def test_run_uploads_prompt_and_keeps_exec_command_small(tmp_path, monkeyp
     assert "SENTINEL_START" not in command
     assert "payload-line" not in command
     assert f'"$(cat {_PROMPT_PATH})"' in command
+    assert "--reasoning-effort high" in command
     assert len(command.encode("utf-8")) < _MODAL_ARG_MAX_BYTES
