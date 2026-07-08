@@ -322,6 +322,12 @@ class _FakeConnection:
         self.calls.append((sql, args))
         return "UPDATE 1"
 
+    async def fetchrow(self, sql: str, *args: Any) -> None:
+        # The retry decision re-reads the current row; None exercises the
+        # snapshot fallback so these tests keep their original semantics.
+        self.calls.append((sql, args))
+        return None
+
     async def close(self) -> None:
         self.closed = True
 
@@ -352,9 +358,14 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     after = datetime.now(timezone.utc)
 
     assert connection.closed is True
-    assert len(connection.calls) == 2
+    assert len(connection.calls) == 3
 
-    worker_sql, worker_args = connection.calls[0]
+    # The retry decision re-reads the current row before choosing.
+    reread_sql, reread_args = connection.calls[0]
+    assert "SELECT attempts, max_attempts" in reread_sql
+    assert reread_args == ("wj-1",)
+
+    worker_sql, worker_args = connection.calls[1]
     assert "status = 'RETRYING'" in worker_sql
     assert "next_retry_at = $3" in worker_sql
     assert "available_after = COALESCE($3::timestamptz, NOW())" in worker_sql
@@ -365,7 +376,7 @@ async def test_record_outcome_requeues_trial_with_backoff_and_mirrors_next_retry
     assert retry_at is not None
     assert before + timedelta(seconds=60) <= retry_at <= after + timedelta(seconds=60)
 
-    trial_sql, trial_args = connection.calls[1]
+    trial_sql, trial_args = connection.calls[2]
     assert "UPDATE trials" in trial_sql
     assert "status = 'RETRYING'" in trial_sql
     assert "error_message = $2" in trial_sql
