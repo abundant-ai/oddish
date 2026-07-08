@@ -23,10 +23,8 @@ class ModelPricing:
 #   * gpt-5.3 bare (litellm has gpt-5.3-codex only).
 #   * Legacy Claude 3.5 with dotted notation (litellm uses dashed form).
 #   * claude-haiku-4 bare (litellm has claude-haiku-4-5 only).
-#   * glm-x-preview (z.ai preview, no published pricing; placeholder below).
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
-    # z.ai GLM-X preview. No published rate; placeholder at glm-5 list price.
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
     # Anthropic legacy / bare variants.
     (
@@ -129,8 +127,6 @@ def _pricing_from_litellm_info(info: dict[str, Any]) -> ModelPricing | None:
     output_cost = info.get("output_cost_per_token")
     if input_cost is None or output_cost is None:
         return None
-    # Some litellm entries are poisoned with 0/0 rates (e.g. glm-4-7-251222).
-    # Treat them as unpriced so lookup falls through to the gap table.
     if not float(input_cost) and not float(output_cost):
         return None
     cache_read_cost = info.get("cache_read_input_token_cost")
@@ -224,16 +220,8 @@ def settle_cost_usd(
     cache_tokens: int | None = None,
     cache_write_tokens: int | None = None,
 ) -> float | None:
-    """Native cost when trustworthy, else a token estimate.
-
-    Claude Code prices models it doesn't know (GLM/MiniMax/Kimi/Fireworks
-    passthroughs) at $0 per message, so zero native cost alongside real token
-    usage means "unpriced", not "free". Estimate from tokens; if the model has
-    no pricing either, return None so quota accounting treats it as unpriced.
-    """
-    if native_cost_usd:
-        return native_cost_usd
-    if not (input_tokens or output_tokens):
+    """Keep a real harness cost; price the tokens ourselves when it reports $0."""
+    if native_cost_usd or not (input_tokens or output_tokens):
         return native_cost_usd
     return estimate_cost_usd(
         model, input_tokens, output_tokens, cache_tokens, cache_write_tokens

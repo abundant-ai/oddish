@@ -268,9 +268,7 @@ def test_local_fallback_prices_brand_new_models_litellm_doesnt_cover() -> None:
 
 
 def test_glm_x_preview_priced_via_gap_table() -> None:
-    """z.ai's GLM-X preview has no litellm entry; the ``[1m]`` suffix would
-    defeat litellm name normalization anyway, so the substring gap table is
-    the only path that can price it."""
+    """The GLM-X preview model is missing from litellm, so our own table prices it."""
     pricing = _find_local_pricing("zai/glm-x-preview[1m]")
     assert pricing is not None
     assert pricing.input == pytest.approx(1e-6)
@@ -285,8 +283,7 @@ def test_zai_glm_models_resolve_via_litellm() -> None:
 
 
 def test_litellm_zero_zero_entries_are_rejected() -> None:
-    """litellm ships poisoned 0/0 rate cards (e.g. glm-4-7-251222); a $0
-    'success' must fall through to the gap table instead."""
+    """A litellm price of $0 in and $0 out is bogus and must not count as a price."""
     assert (
         _pricing_from_litellm_info(
             {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0}
@@ -299,11 +296,6 @@ def test_litellm_zero_zero_entries_are_rejected() -> None:
         )
         is not None
     )
-
-
-# ---------------------------------------------------------------------------
-# settle_cost_usd (native-vs-estimate at ingest)
-# ---------------------------------------------------------------------------
 
 
 def test_settle_keeps_positive_native_cost() -> None:
