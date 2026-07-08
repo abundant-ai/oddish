@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from harbor.models.environment_type import EnvironmentType
+
 from oddish.config import HARBOR_DEFAULT_SHA, HARBOR_DEFAULT_SOURCE
 
 if TYPE_CHECKING:
@@ -31,19 +33,42 @@ class HarborVariant:
 
     ``variant_id`` is the routing id stored on the trial / worker job and used to
     select the per-variant Modal Function. ``source`` / ``sha`` identify the exact
-    Harbor commit the variant image baked.
+    Harbor commit the variant image baked. ``extras`` are Harbor optional-
+    dependency groups the variant image must install on top of the source (the
+    default image does not carry them); e.g. the gke variant needs ``("gke",)``
+    for the k8s + google-cloud stack the lean default Harbor omits.
     """
 
     variant_id: str
     source: str
     sha: str
+    extras: tuple[str, ...] = ()
 
 
-# Blessed source@sha -> image variant. Keyed by ``variant_id``. Empty by default;
-# blessing a pin means adding an entry here and building its image/Function (the
-# Modal side reads this same registry). Any allowlisted pin not registered here
-# runs out-of-process as ``ephemeral``.
-HARBOR_VARIANTS: dict[str, HarborVariant] = {}
+# Routing id for the GKE (TPU) Harbor variant. GKE trials run the GKE-enabled
+# harbor-gke fork, which the lean default Harbor (rishidesai/harbor) does not
+# carry; keeping it a variant means only GKE trials pull the heavy k8s +
+# google-cloud stack, on a dedicated worker image.
+GKE_VARIANT_ID = "gke"
+
+# Blessed source@sha -> image variant. Keyed by ``variant_id``. Blessing a pin
+# means adding an entry here and building its image/Function (the Modal side
+# reads this same registry). Any allowlisted pin not registered here runs
+# out-of-process as ``ephemeral``.
+#
+# MERGE CHECKLIST: once harbor-gke's GKE support merges into the default fork,
+# advance HARBOR_DEFAULT_SOURCE/SHA (config.py) + both pyproject/uv.lock pins to
+# the merged commit and DELETE the gke entry below. The default image then
+# carries GKE natively, GKE trials classify to ``default``, and the per-variant
+# image/Function collapse away with the registry entry.
+HARBOR_VARIANTS: dict[str, HarborVariant] = {
+    GKE_VARIANT_ID: HarborVariant(
+        variant_id=GKE_VARIANT_ID,
+        source="https://github.com/abundant-ai/harbor-gke",
+        sha="7c97764f7d42da445f74409d7926ff9d66f99a79",
+        extras=("gke",),
+    ),
+}
 
 
 class HarborSourceError(Exception):
@@ -185,6 +210,44 @@ def harbor_uv_source_rewrite_command(
     return f"python3 -c '{_HARBOR_SOURCE_REWRITE_PY}' {args}"
 
 
+# A fixed python program (no single quotes -> safe inside the shell single-quote
+# wrapper; no interpolation -> no injection surface) that repoints the quoted
+# ``"harbor"`` / ``"harbor[...]"`` dependency requirement to ``"harbor[<extras>]"``
+# for every pyproject path in ``argv[2:]``. Used in a blessed-variant image build
+# alongside the source rewrite so uv_sync pulls the variant's optional-dependency
+# groups (e.g. gke -> k8s + google-cloud) that the lean default image drops.
+_HARBOR_EXTRAS_REWRITE_PY = (
+    "import sys\n"
+    "ex=sys.argv[1]\n"
+    'old="\\"harbor\\","\n'
+    'new="\\"harbor["+ex+"]\\","\n'
+    "for p in sys.argv[2:]:\n"
+    "    s=open(p).read()\n"
+    "    import re\n"
+    '    s=re.sub(r"\\"harbor(\\[[^\\]]*\\])?\\",", new, s)\n'
+    '    open(p,"w").write(s)'
+)
+
+
+def harbor_extras_rewrite_command(
+    extras: Sequence[str], *pyproject_paths: str
+) -> str:
+    """Shell command adding an extras group to the harbor dependency in-place.
+
+    Emits ``python3 -c '<fixed program>' <extras> <paths...>`` (mirrors the
+    source-rewrite command). Rewrites the quoted ``"harbor"`` (or an existing
+    ``"harbor[...]"``) dependency requirement to ``"harbor[<extras>]"`` so a
+    blessed-variant image installs the variant's Harbor optional-dependency
+    groups; a no-op string is returned for empty extras. Extras are sorted and
+    de-duplicated for a stable command.
+    """
+    unique = sorted({e.strip() for e in extras if e and e.strip()})
+    if not unique:
+        return "true"
+    args = " ".join([",".join(unique), *pyproject_paths])
+    return f"python3 -c '{_HARBOR_EXTRAS_REWRITE_PY}' {args}"
+
+
 def classify_variant(source: str, sha: str) -> str:
     """Return the routing id: 'default' | '<registry-id>' | 'ephemeral'.
 
@@ -199,6 +262,27 @@ def classify_variant(source: str, sha: str) -> str:
         if _normalize_source(variant.source) == norm and variant.sha == sha:
             return variant.variant_id
     return "ephemeral"
+
+
+def stamp_gke_harbor_source(
+    harbor: HarborConfig, environment: EnvironmentType
+) -> HarborConfig:
+    """Bind a GKE trial to the harbor-gke fork when the caller pinned no source.
+
+    harbor-gke is the only Harbor carrying the GKE environment, so a trial routed
+    to GKE MUST run it. When *environment* is GKE and the submission did not pin
+    an explicit source, stamp the blessed gke variant's ``(source, sha)`` — the
+    sha rides as the ref so resolution needs no network and the pin classifies
+    deterministically onto the gke worker image. An explicit caller source is
+    left untouched (the allowlist gates it; a non-merge-sha GKE source runs
+    out-of-process, which installs ``harbor[gke]`` in its own child). Every
+    non-GKE environment is returned unchanged, so a non-GKE trial never resolves
+    to harbor-gke.
+    """
+    if environment != EnvironmentType.GKE or harbor.source is not None:
+        return harbor
+    variant = HARBOR_VARIANTS[GKE_VARIANT_ID]
+    return harbor.model_copy(update={"source": variant.source, "ref": variant.sha})
 
 
 def resolve_and_gate_harbor(
