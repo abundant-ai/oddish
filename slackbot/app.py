@@ -474,6 +474,8 @@ WHERE NOT is_collection
 
 
 async def _check_experiments_finished() -> list[tuple[str, str]]:
+    if not os.environ.get("ODDISH_RO_DATABASE_URL"):
+        return []
     from urllib.parse import quote
 
     from tools import _fetch
