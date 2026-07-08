@@ -22,6 +22,11 @@ from oddish.cli.config import (
     require_api_key,
 )
 from oddish.cli.queue_diag import print_queue_diagnostics
+from oddish.cli.detail import (
+    print_task_detail,
+    print_task_versions,
+    try_print_trial_detail,
+)
 
 console = Console()
 
@@ -158,6 +163,28 @@ def status(
             help="Minutes without a heartbeat before a trial/job counts as stale (with --queue).",
         ),
     ] = 15,
+    detail: Annotated[
+        bool,
+        typer.Option(
+            "--detail",
+            help="Show a task's version history + per-version cost rollups (task_id required).",
+        ),
+    ] = False,
+    versions: Annotated[
+        bool,
+        typer.Option(
+            "--versions",
+            help="Show a task's version list (task_id required); pair with --version N for one.",
+        ),
+    ] = False,
+    version: Annotated[
+        Optional[int],
+        typer.Option(
+            "--version",
+            min=1,
+            help="With --versions: show only this task version number.",
+        ),
+    ] = None,
     verbose: Annotated[
         bool,
         typer.Option(
@@ -182,8 +209,10 @@ def status(
 
     Without arguments: Shows system health and queue statistics.
     With task_id: Shows specific task progress including pipeline stage.
+    With a trial_id: Shows a single trial's detail (status, tokens, cost, analysis).
     With --experiment: Shows all tasks within an experiment.
     With --queue: Shows queue & worker scheduler diagnostics.
+    With --detail / --versions: Shows a task's version history and cost rollups.
 
     Examples:
         oddish status                   # System overview
@@ -191,6 +220,9 @@ def status(
         oddish status --queue           # Queue/worker diagnostics
         oddish status --queue --json    # Machine-readable diagnostics
         oddish status <task_id>         # Task details
+        oddish status <trial_id>        # Single-trial detail
+        oddish status <task_id> --detail    # Version history + cost rollups
+        oddish status <task_id> --versions  # Version list
         oddish status <task_id> --watch # Live task monitoring
         oddish status --experiment <experiment_id>
         oddish status --experiment <experiment_id> --watch
@@ -201,6 +233,10 @@ def status(
 
     if task_id and experiment_id:
         console.print("[red]Provide either a task_id or --experiment, not both.[/red]")
+        raise typer.Exit(1)
+
+    if version is not None and not versions:
+        console.print("[red]--version requires --versions.[/red]")
         raise typer.Exit(1)
 
     # Queue/worker scheduler diagnostics: a system-wide view, so it is mutually
@@ -216,6 +252,38 @@ def status(
             api_url, stale_after=stale_after, json_output=json_output
         )
         return
+
+    # Task detail / version history: task-scoped read-only views.
+    if detail or versions:
+        if experiment_id:
+            console.print(
+                "[red]--detail/--versions inspect a task; use them with a "
+                "task_id, not --experiment.[/red]"
+            )
+            raise typer.Exit(1)
+        if not task_id:
+            console.print(
+                "[red]--detail/--versions require a task_id.[/red]"
+            )
+            raise typer.Exit(1)
+        if detail and versions:
+            console.print(
+                "[red]Provide either --detail or --versions, not both.[/red]"
+            )
+            raise typer.Exit(1)
+        if detail:
+            print_task_detail(api_url, task_id, json_output=json_output)
+        else:
+            print_task_versions(
+                api_url, task_id, version=version, json_output=json_output
+            )
+        return
+
+    # Auto-detect a trial id (``{task_id}-{index}``) and show a single-trial
+    # detail view. Falls through to task/experiment lookup if it is not a trial.
+    if task_id and not experiment_id and not watch:
+        if try_print_trial_detail(api_url, task_id, json_output=json_output):
+            return
 
     # JSON output mode takes a single snapshot (no live watch) so the result
     # is a single parseable document for CI / agents.
