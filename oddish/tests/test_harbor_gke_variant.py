@@ -99,6 +99,54 @@ def test_stamp_respects_explicit_caller_override_on_gke():
     assert stamped.ref == "main"
 
 
+def test_stamp_treats_explicit_default_fork_pin_like_unset_on_gke():
+    # A GKE trial that explicitly pins the DEFAULT fork (e.g. --harbor
+    # rishidesai/harbor) must STILL be redirected to harbor-gke: the default fork
+    # carries no GKE support, so honoring it would silently run GKE on the lean
+    # default image. Treated exactly like source=None, and normalized so git+ /
+    # case spellings of the default are caught too.
+    v = HARBOR_VARIANTS[GKE_VARIANT_ID]
+    for hc in (
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE),
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE, ref=HARBOR_DEFAULT_SHA),
+        HarborConfig(source=f"git+{HARBOR_DEFAULT_SOURCE}"),
+        HarborConfig(source=HARBOR_DEFAULT_SOURCE.upper()),
+    ):
+        stamped = stamp_gke_harbor_source(hc, EnvironmentType.GKE)
+        assert stamped.source == v.source
+        assert stamped.ref == v.sha
+        pin = resolve_harbor_pin(stamped.source, stamped.ref)
+        assert classify_variant(pin.source, pin.sha) == GKE_VARIANT_ID
+
+
+def test_stamp_leaves_genuinely_different_fork_untouched_on_gke():
+    # Only the exact default repo is treated as "unset"; a genuinely different
+    # fork -- even one under the same owner -- is honored and runs out-of-process
+    # (its ephemeral child installs harbor[gke]).
+    for src in (
+        "https://github.com/dot-agi/harbor",
+        "https://github.com/rishidesai/harbor-fork",
+    ):
+        hc = HarborConfig(source=src, ref="main")
+        stamped = stamp_gke_harbor_source(hc, EnvironmentType.GKE)
+        assert stamped.source == src
+        assert stamped.ref == "main"
+
+
+def test_stamp_leaves_default_fork_pin_untouched_on_non_gke():
+    # The default-fork == unset rule is GKE-only: no non-GKE environment is ever
+    # redirected, even when it explicitly pins the default fork.
+    hc = HarborConfig(source=HARBOR_DEFAULT_SOURCE, ref=HARBOR_DEFAULT_SHA)
+    for env in (
+        EnvironmentType.MODAL,
+        EnvironmentType.DAYTONA,
+        EnvironmentType.DOCKER,
+    ):
+        stamped = stamp_gke_harbor_source(hc, env)
+        assert stamped.source == HARBOR_DEFAULT_SOURCE
+        assert stamped.ref == HARBOR_DEFAULT_SHA
+
+
 def test_gke_stamped_submission_gates_to_gke_variant():
     # End-to-end: a GKE default submission stamps to harbor-gke, passes the
     # allowlist, and resolves to the gke variant id on the trial's harbor config.
