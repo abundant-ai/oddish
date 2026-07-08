@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from oddish.config import settings
+from oddish.core.harbor_source import GKE_VARIANT_ID
 from oddish.runtime.ports import Capabilities, ExecutionBackend, TpuSupport
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 class GkeBackend:
     name = "gke"
+
+    # GKE trials run the GKE-enabled harbor-gke fork, which the lean default
+    # Harbor omits. This is the backend that owns that binding: the blessed
+    # ``gke`` variant image bakes harbor-gke, and submission routing stamps a
+    # GKE trial's Harbor source so it dispatches onto that image (see
+    # stamp_gke_harbor_source / HARBOR_VARIANTS).
+    harbor_variant_id = GKE_VARIANT_ID
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
