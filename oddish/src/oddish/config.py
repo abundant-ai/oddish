@@ -974,7 +974,7 @@ class Settings(BaseSettings):
     harbor_environment: str = "daytona"
 
     # Live tail of agent output for running trials (spec: harbor-live-streaming-mvp)
-    live_tail_enabled: bool = False
+    live_tail_enabled: bool = True
     live_tail_interval_sec: float = 5.0
 
     harbor_source_repo: str = "rishidesai/harbor"
