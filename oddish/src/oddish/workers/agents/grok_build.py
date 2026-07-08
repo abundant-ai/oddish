@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import tempfile
+from typing import Any
 
 from harbor.agents.installed.base import with_prompt_template
 from harbor.agents.installed.grok_build import GrokBuild
@@ -29,6 +30,15 @@ _PROMPT_PATH = "/tmp/oddish-grok-build-prompt.txt"
 
 class OddishGrokBuild(GrokBuild):
     """Grok Build wrapper that preserves streaming events for ATIF conversion."""
+
+    def __init__(
+        self,
+        *args: Any,
+        reasoning_effort: str | None = "high",
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.reasoning_effort = reasoning_effort
 
     async def _stage_prompt(
         self, environment: BaseEnvironment, instruction: str
@@ -73,7 +83,12 @@ class OddishGrokBuild(GrokBuild):
         stdout_path = f"/logs/agent/{_OUTPUT_FILENAME}"
         stderr_path = f"/logs/agent/{_STDERR_FILENAME}"
 
-        def grok_command(output_format: str, *, no_auto_update: bool) -> str:
+        def grok_command(
+            output_format: str,
+            *,
+            no_auto_update: bool,
+            include_reasoning_effort: bool = True,
+        ) -> str:
             parts = [
                 "grok",
                 "-p",
@@ -82,10 +97,14 @@ class OddishGrokBuild(GrokBuild):
                 "--output-format",
                 output_format,
             ]
+            reasoning_effort = (self.reasoning_effort or "").strip()
+            if include_reasoning_effort and reasoning_effort:
+                parts.extend(["--reasoning-effort", shlex.quote(reasoning_effort)])
             if no_auto_update:
                 parts.append("--no-auto-update")
             return " ".join(parts)
 
+        reasoning_unsupported_pattern = "'(reasoning-effort|reasoning_effort)'"
         unsupported_pattern = (
             "'(streaming-json|output-format|no-auto-update|unknown option|"
             "unrecognized option|unexpected argument|invalid value|unsupported)'"
@@ -97,14 +116,29 @@ class OddishGrokBuild(GrokBuild):
             f"{grok_command('streaming-json', no_auto_update=True)} "
             f">{stdout_path} 2>{stderr_path}; "
             "rc=$?; "
+            f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
+            f"{grok_command('streaming-json', no_auto_update=True, include_reasoning_effort=False)} "
+            f">{stdout_path} 2>{stderr_path}; "
+            "rc=$?; "
+            "fi; "
             f"if [ $rc -ne 0 ] && grep -Eqi {unsupported_pattern} {stderr_path}; then "
             f"{grok_command('json', no_auto_update=True)} "
+            f">{stdout_path} 2>{stderr_path}; "
+            "rc=$?; "
+            "fi; "
+            f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
+            f"{grok_command('json', no_auto_update=True, include_reasoning_effort=False)} "
             f">{stdout_path} 2>{stderr_path}; "
             "rc=$?; "
             "fi; "
             "if [ $rc -ne 0 ] && grep -Eqi '(no-auto-update|unknown option|"
             f"unrecognized option|unexpected argument)' {stderr_path}; then "
             f"{grok_command('json', no_auto_update=False)} "
+            f">{stdout_path} 2>{stderr_path}; "
+            "rc=$?; "
+            "fi; "
+            f"if [ $rc -ne 0 ] && grep -Eqi {reasoning_unsupported_pattern} {stderr_path}; then "
+            f"{grok_command('json', no_auto_update=False, include_reasoning_effort=False)} "
             f">{stdout_path} 2>{stderr_path}; "
             "rc=$?; "
             "fi; "
