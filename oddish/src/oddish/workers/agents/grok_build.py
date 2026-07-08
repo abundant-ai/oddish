@@ -207,11 +207,14 @@ class OddishGrokBuild(GrokBuild):
         best-effort: a copy failure must never fail the trial.
         """
         capture = shlex.quote(_SESSION_CAPTURE_PATH)
+        # Copy both sessions/ (tool-call trajectory) and logs/ (the sampling log,
+        # which carries per-request token usage the session stream omits).
         command = (
             "set +e; "
             f"mkdir -p {capture}; "
             'GROK_HOME="${GROK_HOME:-$HOME/.grok}"; '
             f'cp -a "$GROK_HOME/sessions" {capture}/ 2>/dev/null; '
+            f'cp -a "$GROK_HOME/logs" {capture}/ 2>/dev/null; '
             "exit 0"
         )
         try:
