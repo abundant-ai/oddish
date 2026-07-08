@@ -418,7 +418,7 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         final = "I hit my step limit before finishing. Try narrowing the question."
     if hit_budget_limit and not final:
         final = f"I hit my ${budget:.2f} cost limit before finishing. Try narrowing the question."
-    body = final or "_(no answer)_"
+    body = final or last_text or "_(no answer)_"
     if partial_note:
         body = f"{body}{partial_note}"
     if cost is not None:
@@ -426,9 +426,11 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
     _log("result", event_id=event_id, channel=channel, thread=thread, user=user, cost=cost, turn_limit=hit_turn_limit, budget_limit=hit_budget_limit)
     if not _deliver(channel, status_ts, thread, body):
         # The answer never reached the user (both first-chunk paths failed), so
-        # replace the placeholder with an error notice. Guard it so the fallback
+        # replace the placeholder with an error notice and release the dedup
+        # claim so a redelivery isn't dropped. Guard the notice so the fallback
         # can never itself raise out of the background worker.
         try:
             _update(channel, status_ts, ":warning: I computed an answer but couldn't post it. Please ask again.")
         except Exception:
             log.exception("delivery-failure fallback failed event_id=%s channel=%s", event_id, channel)
+        _release_event(event_id)
