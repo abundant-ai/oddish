@@ -296,8 +296,11 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         await asyncio.wait_for(run(), _ANSWER_DEADLINE)
     except asyncio.TimeoutError:
         _log("timeout", event_id=event_id, channel=channel, thread=thread, user=user)
-        _update(channel, status_ts, ":hourglass: I ran out of time on this one before finishing.")
-        return
+        if not final:
+            _update(channel, status_ts, ":hourglass: I ran out of time on this one before finishing.")
+            return
+        # A ResultMessage arrived just as we hit the deadline; fall through
+        # and deliver the ready answer instead of discarding it.
     except Exception:
         log.exception("answer failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
         _update(channel, status_ts, ":warning: I hit an error and gave up on this one.")
