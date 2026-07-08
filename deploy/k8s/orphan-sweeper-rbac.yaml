@@ -1,0 +1,33 @@
+# RBAC for the orphaned trial-pod sweeper. Least privilege: it only ever lists
+# and deletes pods, and only in the oddish-trials namespace where trial
+# sandboxes live. No create/patch, no other resources, no cluster scope. Apply
+# before the CronJob.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: oddish-orphan-sweeper
+  namespace: oddish-trials
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oddish-orphan-sweeper
+  namespace: oddish-trials
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oddish-orphan-sweeper
+  namespace: oddish-trials
+subjects:
+  - kind: ServiceAccount
+    name: oddish-orphan-sweeper
+    namespace: oddish-trials
+roleRef:
+  kind: Role
+  name: oddish-orphan-sweeper
+  apiGroup: rbac.authorization.k8s.io
