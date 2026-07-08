@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import tempfile
 from typing import Any
@@ -15,6 +16,18 @@ from .grok_build_trajectory import write_grok_build_trajectory_if_richer
 
 _OUTPUT_FILENAME = "grok-build.json"
 _STDERR_FILENAME = "grok-build.stderr.log"
+
+# Valid xAI transport backends the Grok CLI understands for a ``[model.*]``
+# entry. Grok routes ``responses`` -> ``POST /v1/responses`` and
+# ``chat_completions`` -> ``POST /v1/chat/completions``. The upstream Harbor
+# ``GrokBuild`` hardcodes ``responses``, but not every xAI model is served on
+# the Responses API: some (notably newer / unreleased models) are only exposed
+# on Chat Completions and answer a Responses request with a 404
+# ``The model <id> does not exist or your team does not have access to it``.
+# Making the backend selectable lets a trial route such a model correctly
+# without editing Harbor.
+_VALID_API_BACKENDS = frozenset({"chat_completions", "responses", "messages"})
+_API_BACKEND_RE = re.compile(r'api_backend = "[^"]*"')
 
 # The rendered instruction is staged inside the sandbox as a file and read back
 # via ``"$(cat ...)"`` instead of being inlined into the ``grok -p`` argv. Modal
@@ -35,10 +48,35 @@ class OddishGrokBuild(GrokBuild):
         self,
         *args: Any,
         reasoning_effort: str | None = "high",
+        api_backend: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.reasoning_effort = reasoning_effort
+        normalized_backend = (api_backend or "").strip()
+        if normalized_backend and normalized_backend not in _VALID_API_BACKENDS:
+            raise ValueError(
+                f"Unsupported grok-build api_backend {api_backend!r}; "
+                f"expected one of {sorted(_VALID_API_BACKENDS)}."
+            )
+        self.api_backend = normalized_backend or None
+
+    def build_config_toml(self) -> str:
+        """Emit the grok config, honoring an ``api_backend`` override.
+
+        Upstream Harbor pins every ``[model.*]`` block to
+        ``api_backend = "responses"``. When ``api_backend`` is supplied (via an
+        agent kwarg, e.g. ``--agent-kwarg api_backend=chat_completions``), swap
+        the transport for every model entry so the trial can reach a model that
+        is only served on that endpoint. When unset, the upstream default is
+        preserved verbatim.
+        """
+        config: str = super().build_config_toml()
+        if not self.api_backend:
+            return config
+        return _API_BACKEND_RE.sub(
+            f"api_backend = {self._toml_string(self.api_backend)}", config
+        )
 
     async def _stage_prompt(
         self, environment: BaseEnvironment, instruction: str

@@ -358,6 +358,15 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
   `XAI_API_KEY`) and must not be persisted on trial rows.
+- `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
+  `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
+  but not every xAI model is served there — some (e.g. newer/unreleased models)
+  live only on Chat Completions and answer a Responses request with a 404
+  `The model <id> does not exist or your team does not have access to it`.
+  `OddishGrokBuild` accepts an `api_backend` kwarg
+  (`chat_completions` | `responses` | `messages`); pass
+  `--agent-kwarg api_backend=chat_completions` to route such a model. When
+  unset, the upstream `responses` default is preserved.
 
 Storage defaults:
 

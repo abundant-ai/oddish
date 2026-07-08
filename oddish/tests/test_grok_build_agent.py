@@ -15,6 +15,38 @@ import pytest
 
 from oddish.workers.agents.grok_build import _PROMPT_PATH, OddishGrokBuild
 
+
+def test_build_config_toml_defaults_to_responses_backend(tmp_path):
+    """Without an override the upstream Harbor default is preserved verbatim."""
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9-stickynote")
+    config = agent.build_config_toml()
+    assert 'api_backend = "responses"' in config
+    assert "chat_completions" not in config
+
+
+def test_build_config_toml_applies_api_backend_override(tmp_path):
+    """``api_backend`` rewrites every model block's transport."""
+    agent = OddishGrokBuild(
+        logs_dir=tmp_path,
+        model_name="xai/v9-stickynote",
+        api_backend="chat_completions",
+    )
+    config = agent.build_config_toml()
+    # Both the model-specific and the [model.grok-build] blocks are switched.
+    assert config.count('api_backend = "chat_completions"') == 2
+    assert 'api_backend = "responses"' not in config
+    # The requested model still routes through, untouched by the rewrite.
+    assert "v9-stickynote" in config
+
+
+def test_invalid_api_backend_rejected(tmp_path):
+    with pytest.raises(ValueError, match="api_backend"):
+        OddishGrokBuild(
+            logs_dir=tmp_path,
+            model_name="xai/v9-stickynote",
+            api_backend="bogus-endpoint",
+        )
+
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
 # old code embedded this three times, so the exec argv would have been ~600KB.
 _LARGE_INSTRUCTION = "SENTINEL_START " + ("payload-line\n" * 20_000) + " SENTINEL_END"
