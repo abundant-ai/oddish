@@ -695,6 +695,8 @@ async def _store_trial_results(
             trial.cost_usd = outcome.cost_usd
 
             trial.phase_timing = outcome.phase_timing
+            # Verifier-reported benchmark metrics (the metrics.json contract).
+            trial.result = outcome.metrics
 
             trial.has_trajectory = outcome.has_trajectory
 
