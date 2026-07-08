@@ -15,7 +15,10 @@ from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ProgrammingError
 
+from api import casino_games
 from api.schemas import (
+    BlackjackRequest,
+    BlackjackStateResponse,
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
@@ -45,6 +48,7 @@ from models import (
     OrgQuotaModel,
     QuotaBumpModel,
     QuotaGambleModel,
+    QuotaGambleSessionModel,
     QuotaModel,
     UserModel,
     UserRole,
@@ -275,28 +279,52 @@ async def gamble_quota(
                     f"(${max(remaining, Decimal(0)):.2f} left to gamble)"
                 ),
             )
-        result = _flip_coin()
-        won = result == payload.side
-        net = payload.wager_usd if won else -payload.wager_usd
+        if payload.game == "coinflip":
+            result = _flip_coin()
+            side: str | None = payload.side
+            flip_result: str | None = result
+            multiplier = Decimal("2") if result == payload.side else Decimal("0")
+            detail: dict = {"side": payload.side, "result": result}
+        else:
+            side = flip_result = None
+            try:
+                outcome = casino_games.play(
+                    payload.game,
+                    risk=payload.risk,
+                    bet=payload.bet,
+                    target=payload.target,
+                    rung=payload.rung,
+                )
+            except casino_games.GameError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            multiplier, detail = outcome.multiplier, outcome.detail
+        won = multiplier > 1
+        net = (payload.wager_usd * (multiplier - 1)).quantize(Decimal("0.0001"))
         session.add(
             QuotaGambleModel(
                 org_id=auth.org_id,
                 user_id=user_id,
+                game=payload.game,
                 wager_usd=payload.wager_usd,
                 net_usd=net,
+                multiplier=multiplier,
+                detail=detail,
                 won=won,
             )
         )
     return QuotaGambleResponse(
+        game=payload.game,
         won=won,
-        side=payload.side,
-        result=result,
+        side=side,
+        result=flip_result,
+        multiplier=float(multiplier),
         wager_usd=float(payload.wager_usd),
         net_usd=float(net),
         limit_usd=float(max(Decimal(0), limit + net)),
         used_usd=float(used),
         reserved_usd=float(reserved),
         enforced=settings.quota_mode == QuotaMode.ENFORCE,
+        detail=detail,
     )
 
 
@@ -330,15 +358,202 @@ async def list_my_gambles(
         items=[
             QuotaGambleItem(
                 id=gamble.id,
+                game=gamble.game,
                 wager_usd=float(gamble.wager_usd),
                 net_usd=float(gamble.net_usd),
+                multiplier=None if gamble.multiplier is None else float(gamble.multiplier),
                 won=gamble.won,
                 created_at=gamble.created_at.isoformat(),
+                detail=gamble.detail,
             )
             for gamble in rows
         ],
         net_usd=float(net),
     )
+
+
+def _blackjack_outcome(multiplier: Decimal) -> str:
+    if multiplier == Decimal("0"):
+        return "lose"
+    if multiplier == Decimal("1"):
+        return "push"
+    if multiplier == Decimal("2"):
+        return "win"
+    return "blackjack"
+
+
+def _blackjack_quota_fields(limit: Decimal, used, reserved) -> dict:
+    return {
+        "limit_usd": float(max(Decimal(0), limit)),
+        "used_usd": float(used),
+        "reserved_usd": float(reserved),
+        "enforced": settings.quota_mode == QuotaMode.ENFORCE,
+    }
+
+
+@router.post("/quotas/gamble/blackjack", response_model=BlackjackStateResponse)
+async def blackjack_quota(
+    payload: BlackjackRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> BlackjackStateResponse:
+    user_id = _require_gambler(auth)
+    async with get_session() as session:
+        await _require_gambles_table(session)
+        # Same per-user advisory lock as single-round gambles: deals, actions
+        # and other bets serialize so escrow/settle can't race quota reads.
+        await session.execute(
+            sa_text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+            {"ns": _GAMBLE_LOCK_NAMESPACE, "key": f"{auth.org_id}:{user_id}"},
+        )
+        limit = await get_effective_limit(session, auth.org_id, user_id)
+        used = await sum_cost_usd(session, auth.org_id, user_id, quota_window_start())
+        reserved = await inflight_reserved_usd(session, auth.org_id, user_id)
+        remaining = limit - used - reserved
+
+        if payload.action == "deal":
+            wager = payload.wager_usd
+            if wager is None:
+                raise HTTPException(
+                    status_code=400, detail="wager_usd is required to deal"
+                )
+            if wager > remaining:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Wager exceeds remaining quota "
+                        f"(${max(remaining, Decimal(0)):.2f} left to gamble)"
+                    ),
+                )
+            state = casino_games.blackjack_deal()
+            # Escrow the wager as a loss now so an abandoned hand can't be a
+            # free look at the cards.
+            gamble = QuotaGambleModel(
+                org_id=auth.org_id,
+                user_id=user_id,
+                game="blackjack",
+                wager_usd=wager,
+                net_usd=-wager,
+                multiplier=Decimal(0),
+                detail={"status": "in_play"},
+                won=False,
+            )
+            session.add(gamble)
+            await session.flush()
+            hand = QuotaGambleSessionModel(
+                org_id=auth.org_id,
+                user_id=user_id,
+                game="blackjack",
+                wager_usd=wager,
+                status="active",
+                state=state,
+                gamble_id=gamble.id,
+            )
+            session.add(hand)
+            await session.flush()
+            settle = casino_games.blackjack_initial_settle(state)
+            # `limit` was read before the escrow row existed.
+            escrow_correction = Decimal(0)
+        else:
+            if not payload.session_id:
+                raise HTTPException(status_code=400, detail="session_id is required")
+            hand = (
+                await session.execute(
+                    select(QuotaGambleSessionModel).where(
+                        QuotaGambleSessionModel.id == payload.session_id,
+                        QuotaGambleSessionModel.org_id == auth.org_id,
+                        QuotaGambleSessionModel.user_id == user_id,
+                        QuotaGambleSessionModel.status == "active",
+                        QuotaGambleSessionModel.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if hand is None:
+                raise HTTPException(
+                    status_code=404, detail="No active blackjack hand with that id"
+                )
+            gamble = (
+                await session.execute(
+                    select(QuotaGambleModel).where(
+                        QuotaGambleModel.id == hand.gamble_id
+                    )
+                )
+            ).scalar_one()
+            wager = hand.wager_usd
+            state = dict(hand.state) if isinstance(hand.state, dict) else {}
+            if any(k not in state for k in ("deck", "player", "dealer", "doubled")):
+                raise HTTPException(
+                    status_code=409,
+                    detail="This hand's state is corrupted; deal a new hand",
+                )
+            if payload.action == "double" and wager > remaining:
+                # The original wager is already escrowed into `remaining`;
+                # doubling needs headroom for the second stake.
+                raise HTTPException(
+                    status_code=400, detail="Not enough quota left to double"
+                )
+            try:
+                settle = casino_games.blackjack_act(state, payload.action)
+            except casino_games.GameError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            hand.state = state
+            # `limit` already includes the -wager escrow from the deal.
+            escrow_correction = wager
+
+        total_wager = wager * (2 if state["doubled"] else 1)
+        player_total = casino_games.hand_total(state["player"])[0]
+
+        if settle is None:
+            return BlackjackStateResponse(
+                session_id=hand.id,
+                status="player_turn",
+                player=state["player"],
+                dealer=[state["dealer"][0], "??"],
+                player_total=player_total,
+                can_double=(
+                    len(state["player"]) == 2
+                    and remaining - (wager if payload.action == "deal" else 0)
+                    >= wager
+                ),
+                wager_usd=float(total_wager),
+                **_blackjack_quota_fields(
+                    limit - (wager if payload.action == "deal" else Decimal(0)),
+                    used,
+                    reserved,
+                ),
+            )
+
+        net = (total_wager * (settle - 1)).quantize(Decimal("0.0001"))
+        outcome = _blackjack_outcome(settle)
+        gamble.net_usd = net
+        gamble.multiplier = settle
+        gamble.won = net > 0
+        gamble.detail = {
+            "player": state["player"],
+            "dealer": state["dealer"],
+            "player_total": player_total,
+            "dealer_total": casino_games.hand_total(state["dealer"])[0],
+            "outcome": outcome,
+            "doubled": state["doubled"],
+        }
+        gamble.updated_at = utcnow()
+        hand.status = "settled"
+
+        return BlackjackStateResponse(
+            session_id=hand.id,
+            status="settled",
+            player=state["player"],
+            dealer=state["dealer"],
+            player_total=player_total,
+            dealer_total=casino_games.hand_total(state["dealer"])[0],
+            can_double=False,
+            outcome=outcome,
+            wager_usd=float(total_wager),
+            net_usd=float(net),
+            multiplier=float(settle),
+            **_blackjack_quota_fields(
+                limit + escrow_correction + net, used, reserved
+            ),
+        )
 
 
 def _quota_member_item(

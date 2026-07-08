@@ -119,37 +119,83 @@ class QuotaBumpRequest(BaseModel):
 
 
 class QuotaGambleRequest(BaseModel):
+    # Cap keeps net_usd = wager * (max_multiplier - 1) inside NUMERIC(12, 4)
+    # even at plinko's 170x (500k * 169 < 99,999,999.9999).
     wager_usd: Decimal = Field(
-        gt=0, le=Decimal("99999999.9999"), max_digits=12, decimal_places=4
+        gt=0, le=Decimal("500000"), max_digits=12, decimal_places=4
+    )
+    game: Literal["coinflip", "plinko", "slots", "baccarat", "rocket", "sling"] = (
+        "coinflip"
     )
     side: Literal["heads", "tails"] = "heads"
+    risk: Literal["low", "medium", "high"] = "medium"
+    bet: Literal["player", "banker", "tie"] = "player"
+    target: Decimal | None = Field(None, gt=1, le=Decimal("100"), decimal_places=2)
+    rung: int | None = Field(None, ge=1, le=10)
 
 
 class QuotaGambleResponse(BaseModel):
+    game: str
     won: bool
-    side: str
-    result: str
+    # Coinflip legacy fields; None for every other game.
+    side: str | None = None
+    result: str | None = None
+    multiplier: float
     wager_usd: float
     net_usd: float
-    # Post-flip effective limit; used/reserved are unchanged by the flip.
+    # Post-play effective limit; used/reserved are unchanged by the play.
     limit_usd: float
     used_usd: float
     reserved_usd: float
     enforced: bool = False
+    detail: dict = Field(default_factory=dict)
 
 
 class QuotaGambleItem(BaseModel):
     id: str
+    game: str = "coinflip"
     wager_usd: float
     net_usd: float
+    multiplier: float | None = None
     won: bool
     created_at: str
+    detail: dict | None = None
 
 
 class QuotaGambleListResponse(BaseModel):
     items: list[QuotaGambleItem]
     # Net over the rolling 24h window (all live rows, not just the page above).
     net_usd: float
+
+
+class BlackjackRequest(BaseModel):
+    action: Literal["deal", "hit", "stand", "double"]
+    session_id: str | None = None
+    # Required for action=deal, ignored otherwise. Same overflow cap as
+    # QuotaGambleRequest (worst blackjack outcome is 2x wager at 2.5x).
+    wager_usd: Decimal | None = Field(
+        None, gt=0, le=Decimal("500000"), max_digits=12, decimal_places=4
+    )
+
+
+class BlackjackStateResponse(BaseModel):
+    session_id: str
+    status: Literal["player_turn", "settled"]
+    player: list[str]
+    # Hole card masked as "??" until the hand settles.
+    dealer: list[str]
+    player_total: int
+    dealer_total: int | None = None
+    can_double: bool = False
+    outcome: Literal["win", "lose", "push", "blackjack"] | None = None
+    # Total riding wager (doubles after a double).
+    wager_usd: float
+    net_usd: float | None = None
+    multiplier: float | None = None
+    limit_usd: float
+    used_usd: float
+    reserved_usd: float
+    enforced: bool = False
 
 
 class InviteUserRequest(BaseModel):

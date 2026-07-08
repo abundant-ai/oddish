@@ -454,30 +454,56 @@ export interface QuotaBumpCreate {
   reason?: string;
 }
 
-// POST /quotas/gamble — settled double-or-nothing flip against the 24h quota.
+// POST /quotas/gamble — settled single-round casino wager vs the 24h quota.
 export interface QuotaGambleResult {
+  game: string;
   won: boolean;
-  side: "heads" | "tails";
-  result: "heads" | "tails";
+  // Coinflip only; null for every other game.
+  side: "heads" | "tails" | null;
+  result: "heads" | "tails" | null;
+  multiplier: number;
   wager_usd: number;
   net_usd: number;
   limit_usd: number;
   used_usd: number;
   reserved_usd: number;
   enforced: boolean;
+  detail: Record<string, unknown>;
 }
 
 export interface QuotaGambleItem {
   id: string;
+  game: string;
   wager_usd: number;
   net_usd: number;
+  multiplier: number | null;
   won: boolean;
   created_at: string;
+  detail: Record<string, unknown> | null;
 }
 
 export interface QuotaGambleList {
   items: QuotaGambleItem[];
   net_usd: number;
+}
+
+// POST /quotas/gamble/blackjack — interactive hand state machine.
+export interface BlackjackState {
+  session_id: string;
+  status: "player_turn" | "settled";
+  player: string[];
+  dealer: string[];
+  player_total: number;
+  dealer_total: number | null;
+  can_double: boolean;
+  outcome: "win" | "lose" | "push" | "blackjack" | null;
+  wager_usd: number;
+  net_usd: number | null;
+  multiplier: number | null;
+  limit_usd: number;
+  used_usd: number;
+  reserved_usd: number;
+  enforced: boolean;
 }
 
 // GET /quotas/org — member-visible org monthly budget + adaptive daily goal.

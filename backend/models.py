@@ -272,11 +272,13 @@ class OrgQuotaModel(TimestampedMixin, Base):
 
 
 class QuotaGambleModel(TimestampedMixin, Base):
-    """A settled double-or-nothing coin flip against the owner's 24h quota.
+    """A settled casino wager against the owner's 24h quota.
 
-    ``net_usd`` (+wager on a win, -wager on a loss) is summed over the rolling
-    24h window and folded into ``get_effective_limit``, so wins genuinely raise
-    admission headroom and losses lower it until they age out.
+    ``net_usd`` (wager * (multiplier - 1)) is summed over the rolling 24h
+    window and folded into ``get_effective_limit``, so wins genuinely raise
+    admission headroom and losses lower it until they age out. Multi-step
+    games (blackjack) insert this row as a -wager escrow at deal and update
+    it at settle.
     """
 
     __tablename__ = "quota_gambles"
@@ -292,13 +294,46 @@ class QuotaGambleModel(TimestampedMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
+    game: Mapped[str] = mapped_column(String(32), nullable=False, default="coinflip")
     wager_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     net_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    multiplier: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     won: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     __table_args__ = (
         Index("ix_quota_gambles_org_user_created", "org_id", "user_id", "created_at"),
         CheckConstraint("wager_usd > 0", name="ck_quota_gambles_wager_positive"),
+    )
+
+
+class QuotaGambleSessionModel(TimestampedMixin, Base):
+    """An in-flight multi-step casino hand (blackjack) awaiting settlement."""
+
+    __tablename__ = "quota_gamble_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    game: Mapped[str] = mapped_column(String(32), nullable=False)
+    wager_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    state: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    gamble_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    __table_args__ = (
+        Index("ix_quota_gamble_sessions_org_user", "org_id", "user_id"),
+        CheckConstraint(
+            "status IN ('active', 'settled')", name="ck_quota_gamble_sessions_status"
+        ),
     )
 
 
