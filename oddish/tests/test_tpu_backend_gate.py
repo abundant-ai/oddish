@@ -150,3 +150,22 @@ def test_effective_environment_tpu_guard():
         _reject_tpu_without_gke(harbor_tpu, None)
     _reject_tpu_without_gke(harbor_tpu, EnvironmentType.GKE)
     _reject_tpu_without_gke(HarborConfig(), EnvironmentType.MODAL)
+
+
+def test_tpu_environment_inference_fills_missing_effective_env():
+    # An OSS install's sweep handler passes no default environment; a TPU
+    # request with NO environment anywhere must infer GKE (matching the hosted
+    # default and the CLI sniff) instead of 422ing.
+    from oddish.core.endpoints.sweep import _infer_tpu_environment
+    from oddish.schemas import HarborConfig
+
+    harbor_tpu = HarborConfig.model_validate(
+        {"environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}}}
+    )
+    assert _infer_tpu_environment(harbor_tpu, None) == EnvironmentType.GKE
+    # A resolved environment is never overridden -- the guards judge it.
+    assert (
+        _infer_tpu_environment(harbor_tpu, EnvironmentType.MODAL)
+        == EnvironmentType.MODAL
+    )
+    assert _infer_tpu_environment(HarborConfig(), None) is None
