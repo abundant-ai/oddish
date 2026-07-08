@@ -75,6 +75,7 @@ py-modules = [
     "cloud_policy",
     "crypto",
     "dashboard_attribution",
+    "dashboard_cache",
     "dashboard_owner_backfill",
     "deploy",
     "endpoints",
