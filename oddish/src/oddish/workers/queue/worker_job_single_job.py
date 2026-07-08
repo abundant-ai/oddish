@@ -151,11 +151,13 @@ SET    status = 'RUNNING',
        -- started_at pins to the first attempt so "total elapsed
        -- across retries" is still recoverable. finished_at clears on
        -- re-claim so the duration query (finished_at - claimed_at)
-       -- reflects only the last attempt.
+       -- reflects only the last attempt. error_message deliberately
+       -- survives the claim: it is the only record of what killed the
+       -- previous attempt, and every terminal write below sets its own
+       -- value, so a stale message can never outlive the attempt.
        started_at = COALESCE(started_at, NOW()),
        finished_at = NULL,
-       next_retry_at = NULL,
-       error_message = NULL
+       next_retry_at = NULL
 WHERE  id = (
     SELECT wj.id
     FROM   worker_jobs wj
@@ -395,6 +397,17 @@ async def _record_outcome(
             return True
 
         assert outcome.failure is not None
+        # Decide against the CURRENT row, not the claim-time snapshot: an
+        # operator capping max_attempts (or a reaper racing) mid-attempt must
+        # bind at this decision, or a surgically-capped trial schedules yet
+        # another attempt from the worker's stale in-memory values.
+        current = await connection.fetchrow(
+            "SELECT attempts, max_attempts FROM worker_jobs WHERE id = $1",
+            job_id,
+        )
+        if current is not None:
+            attempts = int(current["attempts"])
+            max_attempts = int(current["max_attempts"])
         retry = outcome.failure.retryable and attempts < max_attempts
         if retry:
             retry_at: datetime | None = None
