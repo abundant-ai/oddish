@@ -1,18 +1,11 @@
-"""A trial that used tokens must never be saved with the harness's fake $0 cost."""
-
 from __future__ import annotations
-
-import sys
-from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from oddish.db import TrialStatus  # noqa: E402
-from oddish.workers.harbor.runner import HarborOutcome  # noqa: E402
-from oddish.workers.queue.trial_handler import _store_trial_results  # noqa: E402
-from test_scoreless_trial_no_retry import _patch_session, _trial  # noqa: E402
+from oddish.db import TrialStatus
+from oddish.workers.harbor.runner import HarborOutcome
+from oddish.workers.queue.trial_handler import _store_trial_results
+from test_scoreless_trial_no_retry import _patch_session, _trial
 
 
 def _outcome(**overrides):

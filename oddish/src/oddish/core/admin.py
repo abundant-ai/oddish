@@ -1078,7 +1078,6 @@ def _real_spend_filter():
 
 
 def _settled_cost_col():
-    """Sum of stored costs that were settled from token estimates at ingest."""
     return func.coalesce(
         func.sum(
             case(

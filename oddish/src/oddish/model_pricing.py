@@ -223,7 +223,6 @@ def settle_cost_usd(
     cache_tokens: int | None = None,
     cache_write_tokens: int | None = None,
 ) -> tuple[float | None, bool]:
-    """Keep a real harness cost; price the tokens ourselves when it is $0 or junk."""
     usable = (
         native_cost_usd is not None
         and math.isfinite(native_cost_usd)
@@ -236,6 +235,6 @@ def settle_cost_usd(
     estimated = estimate_cost_usd(
         model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     )
-    if estimated is None:
+    if estimated is None or not math.isfinite(estimated):
         return None, False
     return estimated, True

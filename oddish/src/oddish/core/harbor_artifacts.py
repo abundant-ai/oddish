@@ -95,7 +95,6 @@ def _cache_write_from_final_metrics(fm: dict) -> int | None:
 
 
 def cache_write_tokens_from_trajectory(data: object) -> int | None:
-    """Read cache-write token usage out of ATIF trajectory data."""
     if not isinstance(data, dict):
         return None
     steps = data.get("steps")

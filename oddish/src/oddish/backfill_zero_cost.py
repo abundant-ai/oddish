@@ -14,11 +14,15 @@ _SELECT_ZERO_COST = text(
     SELECT id, model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     FROM trials
     WHERE cost_usd = 0
+      AND cost_is_estimated IS NOT TRUE
       AND (
         COALESCE(input_tokens, 0) > 0
         OR COALESCE(output_tokens, 0) > 0
         OR COALESCE(cache_write_tokens, 0) > 0
       )
+      AND id > :after
+    ORDER BY id
+    LIMIT :page
     """
 )
 
@@ -30,56 +34,68 @@ _UPDATE_COST = text(
     """
 )
 
+_PAGE_SIZE = 5000
 _UPDATE_CHUNK_SIZE = 500
 
 
 async def run_backfill(*, apply: bool) -> None:
-    async with get_session() as session:
-        rows = (await session.execute(_SELECT_ZERO_COST)).fetchall()
-        if not rows:
-            print("No zero-cost trials with token usage found.")
-            return
+    trials: Counter[str] = Counter()
+    dollars: Counter[str] = Counter()
+    unpriced: Counter[str] = Counter()
+    total_rows = 0
+    after = ""
 
-        updates: list[dict] = []
-        trials: Counter[str] = Counter()
-        dollars: Counter[str] = Counter()
-        unpriced: Counter[str] = Counter()
-        for row in rows:
-            cost, est = settle_cost_usd(
-                0.0,
-                model=row.model,
-                input_tokens=row.input_tokens,
-                output_tokens=row.output_tokens,
-                cache_tokens=row.cache_tokens,
-                cache_write_tokens=row.cache_write_tokens,
-            )
-            model = row.model or "unknown"
-            updates.append({"id": row.id, "cost": cost, "est": est})
-            if cost is None:
-                unpriced[model] += 1
-            else:
-                trials[model] += 1
-                dollars[model] += cost
+    while True:
+        async with get_session() as session:
+            rows = (
+                await session.execute(
+                    _SELECT_ZERO_COST, {"after": after, "page": _PAGE_SIZE}
+                )
+            ).fetchall()
+            if not rows:
+                break
+            after = rows[-1].id
+            total_rows += len(rows)
 
-        print(f"Zero-cost trials with token usage: {len(rows)}")
-        for model, total in dollars.most_common():
-            print(f"  {model}: {trials[model]} trials -> ${total:.2f}")
-        for model, count in unpriced.most_common():
-            print(f"  {model}: {count} trials -> unpriced (bills the flat quota rate)")
-        print(
-            f"Total: {len(updates)} trials, "
-            f"${sum(dollars.values()):.2f} estimated spend"
-        )
+            updates: list[dict] = []
+            for row in rows:
+                cost, est = settle_cost_usd(
+                    0.0,
+                    model=row.model,
+                    input_tokens=row.input_tokens,
+                    output_tokens=row.output_tokens,
+                    cache_tokens=row.cache_tokens,
+                    cache_write_tokens=row.cache_write_tokens,
+                )
+                model = row.model or "unknown"
+                if apply:
+                    updates.append({"id": row.id, "cost": cost, "est": est})
+                if cost is None:
+                    unpriced[model] += 1
+                else:
+                    trials[model] += 1
+                    dollars[model] += cost
 
-        if not apply:
-            print("\nDry run complete. Re-run with --apply to execute updates.")
-            return
+            if updates:
+                for start in range(0, len(updates), _UPDATE_CHUNK_SIZE):
+                    await session.execute(
+                        _UPDATE_COST, updates[start : start + _UPDATE_CHUNK_SIZE]
+                    )
 
-        for start in range(0, len(updates), _UPDATE_CHUNK_SIZE):
-            await session.execute(
-                _UPDATE_COST, updates[start : start + _UPDATE_CHUNK_SIZE]
-            )
-        print(f"\nBackfill applied: {len(updates)} trials updated.")
+    if not total_rows:
+        print("No zero-cost trials with token usage found.")
+        return
+
+    print(f"Zero-cost trials with token usage: {total_rows}")
+    for model, total in dollars.most_common():
+        print(f"  {model}: {trials[model]} trials -> ${total:.2f}")
+    for model, count in unpriced.most_common():
+        print(f"  {model}: {count} trials -> unpriced (bills the flat quota rate)")
+    print(f"Total: {total_rows} trials, ${sum(dollars.values()):.2f} estimated spend")
+    if apply:
+        print("\nBackfill applied.")
+    else:
+        print("\nDry run complete. Re-run with --apply to execute updates.")
 
 
 def main() -> None:
