@@ -183,6 +183,32 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+def _reject_mixed_gke_configs(
+    configs,
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a config-level ``environment: gke`` rides a non-GKE submission.
+
+    Per-config environments win in ``build_trial_specs_from_sweep``, but the
+    harbor stamp keys off the SUBMISSION-level effective environment -- so this
+    one mismatch direction would run trials on GKE with the lean default Harbor
+    pin (a broken image). The reverse direction (non-GKE configs under a GKE
+    submission) stays permitted: the gke variant image is a superset and runs
+    those trials correctly.
+    """
+    if effective_environment == EnvironmentType.GKE:
+        return
+    if any(getattr(c, "environment", None) == EnvironmentType.GKE for c in configs):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "configs[].environment=gke requires the submission-level "
+                "environment to be gke so the trials get the GKE-enabled "
+                "Harbor image."
+            ),
+        )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -287,6 +313,7 @@ async def create_task_sweep_core(
     effective_environment = _effective_sweep_environment(
         submission.environment, inherited_environment, default_environment
     )
+    _reject_mixed_gke_configs(submission.configs, effective_environment)
     harbor_to_gate = submission.harbor
     if effective_environment is not None:
         harbor_to_gate = stamp_gke_harbor_source(

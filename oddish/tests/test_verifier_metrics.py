@@ -70,3 +70,16 @@ def test_outcome_carries_metrics_field_defaulting_none():
         job_dir=None,
     )
     assert outcome.metrics is None
+
+
+def test_invalid_candidate_does_not_mask_later_valid_metrics(tmp_path):
+    # One malformed metrics.json (e.g. a stray nested copy) must not hide a
+    # valid one elsewhere in the tree.
+    bad_dir = tmp_path / "a-trial__x" / "verifier"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "metrics.json").write_text("{broken")
+    good = {"schema_version": 1, "device_count": 4}
+    good_dir = tmp_path / "b-trial__y" / "verifier"
+    good_dir.mkdir(parents=True)
+    good_dir.joinpath("metrics.json").write_text(json.dumps(good))
+    assert extract_verifier_metrics(tmp_path) == good
