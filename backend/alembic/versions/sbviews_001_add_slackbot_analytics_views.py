@@ -295,8 +295,11 @@ WHERE o.deleted_at IS NULL
 V_ORG_QUOTA_STATUS_COMMENT = """
 COMMENT ON VIEW v_org_quota_status IS $c$Calendar-month (UTC) settled
 spend plus in-flight reservations per live org, vs the org monthly cap.
-monthly_limit_usd NULL = uncapped (the default). Same enforcement basis
-as v_quota_status (soft-deleted trials count once settled). Example:
+monthly_limit_usd NULL = no override row; enforcement then falls back to
+the deploy config default_org_monthly_quota_usd, which is unset (= truly
+uncapped) unless overridden -- if that env is ever set, this view's NULL
+understates enforcement. Same enforcement basis as v_quota_status
+(soft-deleted trials count once settled). Example:
 SELECT org_name, used_month_usd, reserved_usd, monthly_limit_usd
   FROM v_org_quota_status ORDER BY used_month_usd DESC;$c$
 """
