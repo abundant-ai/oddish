@@ -434,7 +434,14 @@ async def _record_outcome(
                        available_after = COALESCE($3::timestamptz, NOW()),
                        current_worker_id = NULL,
                        current_queue_slot = NULL,
-                       modal_function_call_id = NULL
+                       modal_function_call_id = NULL,
+                       -- The retry starts UNLINKED (mirrors the reaper's retry
+                       -- transition): a carried-over handle can point at a pod
+                       -- that still exists, which blinds the orphan sweeper's
+                       -- live-unlinked guard while the next attempt's pod is
+                       -- unreferenced. This worker's own teardown already ran.
+                       external_id = NULL,
+                       provider = NULL
                 WHERE  id = $1
                   AND  status = 'RUNNING'::worker_job_status
                   AND  current_worker_id = $4
