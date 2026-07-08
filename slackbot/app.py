@@ -281,12 +281,14 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
     )
 
     final = ""
+    last_text = ""
     last_edit = 0.0
     cost = None
     hit_turn_limit = False
+    partial_note = ""
 
     async def run() -> None:
-        nonlocal final, last_edit, cost, hit_turn_limit
+        nonlocal final, last_text, last_edit, cost, hit_turn_limit
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 status = None
@@ -295,6 +297,7 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
                         status = f"_Running `{block.name.split('__')[-1]}`…_"
                     elif isinstance(block, TextBlock) and block.text.strip():
                         status = block.text.strip()
+                        last_text = status
                 now = time.time()
                 if status and now - last_edit > 2:
                     await asyncio.to_thread(_update, channel, status_ts, _escape(status))
@@ -308,22 +311,33 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         await asyncio.wait_for(run(), _ANSWER_DEADLINE)
     except asyncio.TimeoutError:
         _log("timeout", event_id=event_id, channel=channel, thread=thread, user=user)
-        if not final:
+        if not final and not last_text:
             _update(channel, status_ts, ":hourglass: I ran out of time on this one before finishing.")
             return
-        # A ResultMessage arrived just as we hit the deadline; fall through
-        # and deliver the ready answer instead of discarding it.
+        # A ResultMessage arrived just as we hit the deadline; deliver the
+        # ready answer below. If no result landed but the agent already
+        # streamed some text, deliver that partial text rather than losing
+        # it behind a bare timeout notice.
+        if not final:
+            final = last_text
+            partial_note = "\n\n_:hourglass: I ran out of time; this is what I had so far._"
     except Exception:
         log.exception("answer failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
-        if not final:
+        if not final and not last_text:
             _update(channel, status_ts, ":warning: I hit an error and gave up on this one.")
             return
         # A ResultMessage already produced a complete answer before the error;
-        # deliver it below rather than discarding it behind a generic failure.
+        # deliver it below. If none did but the agent streamed some text,
+        # deliver that partial text rather than discarding it.
+        if not final:
+            final = last_text
+            partial_note = "\n\n_:warning: I hit an error; this is what I had so far._"
 
     if hit_turn_limit and not final:
         final = "I hit my step limit before finishing. Try narrowing the question."
     body = final or "_(no answer)_"
+    if partial_note:
+        body = f"{body}{partial_note}"
     if cost:
         body = f"{body}\n\n_cost: ${cost:.4f}_"
     _log("result", event_id=event_id, channel=channel, thread=thread, user=user, cost=cost, turn_limit=hit_turn_limit)
