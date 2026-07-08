@@ -115,6 +115,13 @@ def _dispatch(payload: dict) -> None:
     claimed = False
     handed_off = False
     try:
+        # Only answer events from the expected workspace when one is configured.
+        # Fails open if SLACK_TEAM_ID is unset so single-workspace installs need
+        # no extra plumbing; when set, events from any other team are dropped.
+        expected_team = os.environ.get("SLACK_TEAM_ID", "").strip()
+        if expected_team and payload.get("team_id") != expected_team:
+            _log("wrong_workspace", event_id=event_id, team_id=payload.get("team_id"))
+            return
         event = payload.get("event") or {}
         if event.get("type") != "app_mention" or event.get("bot_id"):
             return
@@ -142,17 +149,17 @@ def _dispatch(payload: dict) -> None:
         allowed = os.environ.get("SLACK_ALLOWED_USERS", "").strip()
         if not allowed:
             _log("allowlist_unset", event_id=event_id, user=user)
-            _notify(channel, thread, "This bot's allowlist is not configured; refusing to run.")
+            _notify(channel, thread, "This bot's allowlist is not configured; refusing to run.", event_id)
             return
         if not user or user not in {u.strip() for u in allowed.split(",") if u.strip()}:
             _log("unauthorized", event_id=event_id, user=user)
-            _notify(channel, thread, "Sorry, you're not authorized to use this bot.")
+            _notify(channel, thread, "Sorry, you're not authorized to use this bot.", event_id)
             return
 
         cleaned = _strip_mention(event.get("text", ""), _bot_user_id(payload, event))
         if not cleaned:
             _log("empty_prompt", event_id=event_id, user=user)
-            _notify(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`")
+            _notify(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`", event_id)
             return
         answer.spawn(channel, thread, cleaned, user, event_id)
         handed_off = True
@@ -218,33 +225,71 @@ def _escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _split_at(text: str, limit: int) -> int:
+    """Largest cut ``<= limit`` that never lands inside an ``&…;`` entity.
+
+    ``_escape`` expands one source char into a multi-char run (``&amp;`` etc.),
+    so a fixed slice can bisect an entity and render as broken text. Back the
+    cut up out of any unterminated ``&`` (entities are at most 5 chars long).
+    """
+    if len(text) <= limit:
+        return len(text)
+    cut = limit
+    amp = text.rfind("&", cut - 4, cut)
+    if amp != -1 and ";" not in text[amp:cut]:
+        cut = amp
+    return cut
+
+
 def _post(channel: str, thread: str, text: str) -> str:
-    return _client().chat_postMessage(channel=channel, thread_ts=thread, text=text[:_MAX_SLACK])["ts"]
+    return _client().chat_postMessage(channel=channel, thread_ts=thread, text=text[:_split_at(text, _MAX_SLACK)])["ts"]
 
 
-def _notify(channel: str, thread: str, text: str) -> None:
+def _notify(channel: str, thread: str, text: str, event_id: str | None) -> None:
     """Best-effort terminal reply (rejection / hint).
 
     Swallows Slack errors so a failed post cannot bubble into the generic
     dispatch error handler and mask the specific message with a vague one.
+    Releases the dedup claim on failure so a Slack redelivery can retry rather
+    than leaving the user with no reply and the event stuck marked "seen".
     """
     try:
         _post(channel, thread, text)
     except Exception:
         log.exception("failed to post reply channel=%s", channel)
+        _release_event(event_id)
 
 
 def _update(channel: str, ts: str, text: str) -> None:
-    _client().chat_update(channel=channel, ts=ts, text=text[:_MAX_SLACK])
+    _client().chat_update(channel=channel, ts=ts, text=text[:_split_at(text, _MAX_SLACK)])
 
 
-def _deliver(channel: str, ts: str, thread: str, text: str) -> None:
+def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
+    """Replace the placeholder with the answer, spilling overflow into follow-ups.
+
+    Returns ``True`` once the first chunk has been delivered. Overflow posts
+    after that first chunk are best-effort: a failure there is logged but does
+    not undo the message the user already saw. Returns ``False`` only when the
+    very first chunk could not be delivered, so the caller can surface a
+    fallback notice without overwriting an already-delivered answer.
+    """
     text = _escape(text)
-    _update(channel, ts, text[:_MAX_SLACK])
-    rest = text[_MAX_SLACK:]
+    cut = _split_at(text, _MAX_SLACK)
+    try:
+        _update(channel, ts, text[:cut])
+    except Exception:
+        log.exception("first delivery chunk failed channel=%s", channel)
+        return False
+    rest = text[cut:]
     while rest:
-        _post(channel, thread, rest[:_MAX_SLACK])
-        rest = rest[_MAX_SLACK:]
+        cut = _split_at(rest, _MAX_SLACK)
+        try:
+            _post(channel, thread, rest[:cut])
+        except Exception:
+            log.exception("overflow delivery chunk failed channel=%s", channel)
+            break
+        rest = rest[cut:]
+    return True
 
 
 @app.function(image=image, secrets=[secret], timeout=_ANSWER_TIMEOUT)
@@ -271,12 +316,22 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         log.exception("initial post failed event_id=%s channel=%s", event_id, channel)
         _release_event(event_id)
         return
+    try:
+        budget = float(os.environ.get("SLACK_MAX_BUDGET_USD", "1.0"))
+    except ValueError:
+        budget = 1.0
     options = ClaudeAgentOptions(
         model=MODEL,
         mcp_servers={"oddish": build_server()},
         allowed_tools=allowed_tool_names(),
+        # Structurally disable every built-in tool so only the enumerated
+        # mcp__oddish__* tools exist, and refuse any MCP config the CLI would
+        # otherwise auto-load -- defense in depth beyond permission_mode.
+        tools=[],
+        strict_mcp_config=True,
         permission_mode="dontAsk",
         max_turns=25,
+        max_budget_usd=budget,
         system_prompt=SYSTEM_PROMPT,
     )
 
@@ -285,64 +340,91 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
     last_edit = 0.0
     cost = None
     hit_turn_limit = False
+    hit_budget_limit = False
+    status_ok = True
     partial_note = ""
 
     async def run() -> None:
-        nonlocal final, last_text, last_edit, cost, hit_turn_limit
-        async for message in query(prompt=prompt, options=options):
-            if isinstance(message, AssistantMessage):
-                status = None
-                for block in message.content:
-                    if isinstance(block, ToolUseBlock):
-                        status = f"_Running `{block.name.split('__')[-1]}`…_"
-                    elif isinstance(block, TextBlock) and block.text.strip():
-                        status = block.text.strip()
-                        last_text = status
-                now = time.time()
-                if status and now - last_edit > 2:
-                    await asyncio.to_thread(_update, channel, status_ts, _escape(status))
-                    last_edit = now
-            elif isinstance(message, ResultMessage):
-                final = message.result or final
-                cost = getattr(message, "total_cost_usd", None)
-                hit_turn_limit = getattr(message, "subtype", None) == "error_max_turns"
+        nonlocal final, last_text, last_edit, cost, hit_turn_limit, hit_budget_limit, status_ok
+        try:
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    status = None
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            status = f"_Running `{block.name.split('__')[-1]}`…_"
+                        elif isinstance(block, TextBlock) and block.text.strip():
+                            status = block.text.strip()
+                            last_text = status
+                    now = time.time()
+                    if status and status_ok and now - last_edit > 2:
+                        # Best-effort: a failed status edit (e.g. the placeholder
+                        # was deleted) must not abort an otherwise healthy run.
+                        try:
+                            await asyncio.to_thread(_update, channel, status_ts, _escape(status))
+                        except Exception:
+                            status_ok = False
+                            log.exception("status edit failed channel=%s", channel)
+                        last_edit = now
+                elif isinstance(message, ResultMessage):
+                    final = message.result or final
+                    cost = getattr(message, "total_cost_usd", None)
+                    subtype = getattr(message, "subtype", None)
+                    hit_turn_limit = subtype == "error_max_turns"
+                    hit_budget_limit = subtype == "error_max_budget_usd"
+        except Exception:
+            # On the pinned SDK an is_error result (budget/turn limit) is yielded
+            # as a ResultMessage and *then* raised out of the stream. We already
+            # captured everything from it, so swallow that trailing raise and let
+            # the canned limit messages render; propagate anything else.
+            if not (hit_budget_limit or hit_turn_limit):
+                raise
+            log.exception("stream raised after limit result event_id=%s channel=%s", event_id, channel)
 
     try:
         await asyncio.wait_for(run(), _ANSWER_DEADLINE)
-    except asyncio.TimeoutError:
-        _log("timeout", event_id=event_id, channel=channel, thread=thread, user=user)
+    except Exception as e:
+        # One handler for the deadline and agent errors alike: bail with a notice
+        # if nothing was salvageable, else promote the last streamed text to the
+        # final answer with a note. Budget/turn limits never reach here -- run()
+        # swallows their trailing raise so the canned messages below render.
+        timed_out = isinstance(e, asyncio.TimeoutError)
+        if timed_out:
+            _log("timeout", event_id=event_id, channel=channel, thread=thread, user=user)
+            icon, gist = ":hourglass:", "I ran out of time"
+        else:
+            log.exception("answer failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
+            icon, gist = ":warning:", "I hit an error"
         if not final and not last_text:
-            _update(channel, status_ts, ":hourglass: I ran out of time on this one before finishing.")
+            try:
+                _update(channel, status_ts, f"{icon} {gist} and gave up on this one.")
+            except Exception:
+                log.exception("error-notice update failed event_id=%s channel=%s", event_id, channel)
             return
-        # A ResultMessage arrived just as we hit the deadline; deliver the
-        # ready answer below. If no result landed but the agent already
-        # streamed some text, deliver that partial text rather than losing
-        # it behind a bare timeout notice.
         if not final:
             final = last_text
-            partial_note = "\n\n_:hourglass: I ran out of time; this is what I had so far._"
-    except Exception:
-        log.exception("answer failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
-        if not final and not last_text:
-            _update(channel, status_ts, ":warning: I hit an error and gave up on this one.")
-            return
-        # A ResultMessage already produced a complete answer before the error;
-        # deliver it below. If none did but the agent streamed some text,
-        # deliver that partial text rather than discarding it.
-        if not final:
-            final = last_text
-            partial_note = "\n\n_:warning: I hit an error; this is what I had so far._"
+            partial_note = f"\n\n_{icon} {gist}; this is what I had so far._"
 
     if hit_turn_limit and not final:
         final = "I hit my step limit before finishing. Try narrowing the question."
+    if hit_budget_limit and not final:
+        final = f"I hit my ${budget:.2f} cost limit before finishing. Try narrowing the question."
     body = final or "_(no answer)_"
     if partial_note:
         body = f"{body}{partial_note}"
-    if cost:
+    if cost is not None:
         body = f"{body}\n\n_cost: ${cost:.4f}_"
-    _log("result", event_id=event_id, channel=channel, thread=thread, user=user, cost=cost, turn_limit=hit_turn_limit)
-    try:
-        _deliver(channel, status_ts, thread, body)
-    except Exception:
-        log.exception("delivery failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
-        _update(channel, status_ts, ":warning: I computed an answer but couldn't post it. Please ask again.")
+    _log("result", event_id=event_id, channel=channel, thread=thread, user=user, cost=cost, turn_limit=hit_turn_limit, budget_limit=hit_budget_limit)
+    if not _deliver(channel, status_ts, thread, body):
+        # The answer never reached the user (the first chunk failed). The update
+        # path just failed, so try a fresh thread post before falling back to a
+        # notice on the placeholder. Guard both so the fallback can never itself
+        # raise out of the background worker.
+        try:
+            _post(channel, thread, _escape(body))
+        except Exception:
+            log.exception("delivery-failure repost failed event_id=%s channel=%s", event_id, channel)
+            try:
+                _update(channel, status_ts, ":warning: I computed an answer but couldn't post it. Please ask again.")
+            except Exception:
+                log.exception("delivery-failure fallback failed event_id=%s channel=%s", event_id, channel)
