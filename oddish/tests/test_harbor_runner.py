@@ -2447,3 +2447,104 @@ def test_gke_env_build_multiplier_sizes_off_small_task_build_timeout(
     assert (
         multiplier * task_base >= pod_ready + harbor_runner._GKE_ENV_BUILD_OVERHEAD_SEC
     )
+
+
+def test_ephemeral_gke_trial_receives_sized_env_build_multiplier(tmp_path, monkeypatch):
+    # The ephemeral (out-of-process) path runs a GKE environment too, so it MUST
+    # get the same pod-ready-covering env-build multiplier as the in-process path.
+    # The variant early-return used to skip sizing, so a GKE override trial ran
+    # with no multiplier and Harbor deleted the still-Pending flex-start Pod.
+    from harbor.models.environment_type import EnvironmentType
+    import oddish.workers.harbor.ephemeral as harbor_ephemeral
+
+    captured: dict = {}
+
+    async def _fake_ephemeral(**kwargs):
+        captured.update(kwargs)
+        return harbor_runner.HarborOutcome(
+            reward=None,
+            error=None,
+            exit_code=0,
+            duration_sec=0.0,
+            job_result_path=None,
+            job_dir=None,
+        )
+
+    monkeypatch.setattr(
+        harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="nop",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.GKE,
+            harbor_config={
+                "variant_id": "ephemeral",
+                "source": "https://github.com/dot-agi/harbor",
+                "resolved_sha": "a" * 40,
+            },
+        )
+    )
+
+    multiplier = captured["environment_build_timeout_multiplier"]
+    assert multiplier is not None
+    base = harbor_runner._ENV_BUILD_TIMEOUT_BASE_SEC
+    assert (
+        multiplier * base
+        >= harbor_runner.settings.gke_pod_ready_timeout_sec
+        + harbor_runner._GKE_ENV_BUILD_OVERHEAD_SEC
+    )
+
+
+def test_ephemeral_non_gke_trial_passes_caller_env_build_multiplier_through(
+    tmp_path, monkeypatch
+):
+    # Off GKE the ephemeral path must not fabricate a multiplier: the caller's
+    # value (None here) flows straight through, exactly as before the fix.
+    from harbor.models.environment_type import EnvironmentType
+    import oddish.workers.harbor.ephemeral as harbor_ephemeral
+
+    captured: dict = {}
+
+    async def _fake_ephemeral(**kwargs):
+        captured.update(kwargs)
+        return harbor_runner.HarborOutcome(
+            reward=None,
+            error=None,
+            exit_code=0,
+            duration_sec=0.0,
+            job_result_path=None,
+            job_dir=None,
+        )
+
+    monkeypatch.setattr(
+        harbor_ephemeral, "run_ephemeral_harbor_trial", _fake_ephemeral
+    )
+    monkeypatch.setattr(
+        harbor_runner, "validate_task_timeout_config", lambda path: None
+    )
+
+    task_path = tmp_path / "task"
+    task_path.mkdir()
+    asyncio.run(
+        harbor_runner.run_harbor_trial_async(
+            task_path=task_path,
+            agent="nop",
+            jobs_dir=tmp_path / "jobs",
+            environment=EnvironmentType.DAYTONA,
+            harbor_config={
+                "variant_id": "ephemeral",
+                "source": "https://github.com/dot-agi/harbor",
+                "resolved_sha": "a" * 40,
+            },
+        )
+    )
+
+    assert captured["environment_build_timeout_multiplier"] is None
