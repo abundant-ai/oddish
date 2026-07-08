@@ -16,8 +16,10 @@ from oddish.model_pricing import (
     _find_litellm_pricing,
     _find_local_pricing,
     _litellm_candidates,
+    _pricing_from_litellm_info,
     estimate_cost_usd,
     has_pricing,
+    settle_cost_usd,
 )
 
 
@@ -167,10 +169,10 @@ def test_estimate_cost_includes_cache_write_tokens() -> None:
     # input_tokens is the total prompt (1000 raw + 200 read + 400 write = 1600).
     value = estimate_cost_usd("claude-sonnet-4-5", 1600, 500, 200, 400)
     expected = (
-        1000 * 3e-6       # uncached input
-        + 200 * 3e-7      # cache read
-        + 400 * 3.75e-6   # cache write
-        + 500 * 15e-6     # output
+        1000 * 3e-6  # uncached input
+        + 200 * 3e-7  # cache read
+        + 400 * 3.75e-6  # cache write
+        + 500 * 15e-6  # output
     )
     assert value == pytest.approx(expected)
 
@@ -183,7 +185,13 @@ def test_estimate_cost_cache_write_zero_unchanged() -> None:
 
 def test_anthropic_pricing_table_has_cache_write() -> None:
     from oddish.model_pricing import _find_local_pricing
-    for name in ("claude-haiku-4", "claude-3-7-sonnet", "claude-3.5-sonnet", "claude-3.5-haiku"):
+
+    for name in (
+        "claude-haiku-4",
+        "claude-3-7-sonnet",
+        "claude-3.5-sonnet",
+        "claude-3.5-haiku",
+    ):
         p = _find_local_pricing(name)
         assert p is not None, f"No pricing for {name}"
         assert p.cache_write is not None, f"No cache_write for {name}"
@@ -257,3 +265,87 @@ def test_local_fallback_prices_brand_new_models_litellm_doesnt_cover() -> None:
     assert gemini is not None
     assert gemini.input == pytest.approx(2e-6)
     assert gemini.output == pytest.approx(12e-6)
+
+
+def test_glm_x_preview_priced_via_gap_table() -> None:
+    """z.ai's GLM-X preview has no litellm entry; the ``[1m]`` suffix would
+    defeat litellm name normalization anyway, so the substring gap table is
+    the only path that can price it."""
+    pricing = _find_local_pricing("zai/glm-x-preview[1m]")
+    assert pricing is not None
+    assert pricing.input == pytest.approx(1e-6)
+    assert pricing.output == pytest.approx(3.2e-6)
+    assert has_pricing("zai/glm-x-preview[1m]")
+
+
+def test_zai_glm_models_resolve_via_litellm() -> None:
+    assert has_pricing("zai/glm-4.6")
+    assert has_pricing("zai/glm-4.7")
+    assert has_pricing("zai/glm-5")
+
+
+def test_litellm_zero_zero_entries_are_rejected() -> None:
+    """litellm ships poisoned 0/0 rate cards (e.g. glm-4-7-251222); a $0
+    'success' must fall through to the gap table instead."""
+    assert (
+        _pricing_from_litellm_info(
+            {"input_cost_per_token": 0.0, "output_cost_per_token": 0.0}
+        )
+        is None
+    )
+    assert (
+        _pricing_from_litellm_info(
+            {"input_cost_per_token": 0.0, "output_cost_per_token": 2e-6}
+        )
+        is not None
+    )
+
+
+# ---------------------------------------------------------------------------
+# settle_cost_usd (native-vs-estimate at ingest)
+# ---------------------------------------------------------------------------
+
+
+def test_settle_keeps_positive_native_cost() -> None:
+    assert settle_cost_usd(
+        1.23, model="zai/glm-4.6", input_tokens=1_000, output_tokens=10
+    ) == pytest.approx(1.23)
+
+
+def test_settle_estimates_when_native_is_zero_with_tokens() -> None:
+    settled = settle_cost_usd(
+        0.0,
+        model="zai/glm-x-preview[1m]",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+    )
+    assert settled == pytest.approx(1.0 + 0.32)
+
+
+def test_settle_estimates_when_native_is_missing_with_tokens() -> None:
+    settled = settle_cost_usd(
+        None,
+        model="zai/glm-x-preview[1m]",
+        input_tokens=1_000_000,
+        output_tokens=100_000,
+    )
+    assert settled == pytest.approx(1.32)
+
+
+def test_settle_returns_none_for_unpriceable_model() -> None:
+    assert (
+        settle_cost_usd(
+            0.0, model="totally-made-up-model", input_tokens=10, output_tokens=10
+        )
+        is None
+    )
+
+
+def test_settle_preserves_native_when_no_tokens() -> None:
+    assert settle_cost_usd(
+        0.0, model="zai/glm-4.6", input_tokens=None, output_tokens=None
+    ) == pytest.approx(0.0)
+    assert (
+        settle_cost_usd(None, model="zai/glm-4.6", input_tokens=0, output_tokens=0)
+        is None
+    )

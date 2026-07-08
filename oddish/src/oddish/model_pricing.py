@@ -23,13 +23,28 @@ class ModelPricing:
 #   * gpt-5.3 bare (litellm has gpt-5.3-codex only).
 #   * Legacy Claude 3.5 with dotted notation (litellm uses dashed form).
 #   * claude-haiku-4 bare (litellm has claude-haiku-4-5 only).
+#   * glm-x-preview (z.ai preview, no published pricing; placeholder below).
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
+    # z.ai GLM-X preview. No published rate; placeholder at glm-5 list price.
+    ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
     # Anthropic legacy / bare variants.
-    ("claude-haiku-4", ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7, cache_write=1.25e-6)),
-    ("claude-3-7-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
-    ("claude-3.5-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
-    ("claude-3.5-haiku", ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8, cache_write=1e-6)),
+    (
+        "claude-haiku-4",
+        ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7, cache_write=1.25e-6),
+    ),
+    (
+        "claude-3-7-sonnet",
+        ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6),
+    ),
+    (
+        "claude-3.5-sonnet",
+        ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6),
+    ),
+    (
+        "claude-3.5-haiku",
+        ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8, cache_write=1e-6),
+    ),
     # Google bare Gemini 3.x names.
     (
         "gemini-3.1-flash-lite",
@@ -114,6 +129,10 @@ def _pricing_from_litellm_info(info: dict[str, Any]) -> ModelPricing | None:
     output_cost = info.get("output_cost_per_token")
     if input_cost is None or output_cost is None:
         return None
+    # Some litellm entries are poisoned with 0/0 rates (e.g. glm-4-7-251222).
+    # Treat them as unpriced so lookup falls through to the gap table.
+    if not float(input_cost) and not float(output_cost):
+        return None
     cache_read_cost = info.get("cache_read_input_token_cost")
     cache_write_cost = info.get("cache_creation_input_token_cost")
     return ModelPricing(
@@ -181,12 +200,41 @@ def estimate_cost_usd(
 
     cached = int(cached_tokens or 0)
     uncached_input = max(0, input_total - cached - cache_write)
-    cache_read_rate = pricing.cache_read if pricing.cache_read is not None else pricing.input
-    cache_write_rate = pricing.cache_write if pricing.cache_write is not None else pricing.input * 1.25
+    cache_read_rate = (
+        pricing.cache_read if pricing.cache_read is not None else pricing.input
+    )
+    cache_write_rate = (
+        pricing.cache_write if pricing.cache_write is not None else pricing.input * 1.25
+    )
 
     return (
         uncached_input * pricing.input
         + cached * cache_read_rate
         + cache_write * cache_write_rate
         + output_total * pricing.output
+    )
+
+
+def settle_cost_usd(
+    native_cost_usd: float | None,
+    *,
+    model: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+) -> float | None:
+    """Native cost when trustworthy, else a token estimate.
+
+    Claude Code prices models it doesn't know (GLM/MiniMax/Kimi/Fireworks
+    passthroughs) at $0 per message, so zero native cost alongside real token
+    usage means "unpriced", not "free". Estimate from tokens; if the model has
+    no pricing either, return None so quota accounting treats it as unpriced.
+    """
+    if native_cost_usd:
+        return native_cost_usd
+    if not (input_tokens or output_tokens):
+        return native_cost_usd
+    return estimate_cost_usd(
+        model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     )
