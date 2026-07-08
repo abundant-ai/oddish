@@ -70,10 +70,10 @@ different from the existing `require_admin`:
    ("User auth required to manage quotas") the moment `auth.method` is
    `API_KEY`, *before* checking the role. Quota management is **user-auth-only**
    — a key can never enumerate members' spend.
-2. **It is self-service for every org, not @abundant-gated.** `can_manage_quotas`
-   returns `True` for any org `ADMIN`. This is unlike `require_api_key_creator`,
-   which is locked to admins with an `@abundant.ai` email in the Abundant org.
-   Any org's own admin can view that org's quota table.
+2. **It is self-service for every org and admin-only.** `can_manage_quotas`
+   returns `True` for any org `ADMIN`. This is stricter than
+   `require_api_key_creator`, which is self-service for every org but open to any
+   `ADMIN` or `MEMBER`. Any org's own admin can view that org's quota table.
 
 The member endpoint (`/quotas/me`) needs only `require_auth` — it reads your own
 spend, so any authenticated caller (including an API key, scoped to its own

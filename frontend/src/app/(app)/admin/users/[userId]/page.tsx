@@ -32,10 +32,12 @@ import {
 import type {
   CostModelBreakdown,
   UserCostBreakdownResponse,
+  UserCostExperimentBreakdown,
   UserCostTaskBreakdown,
 } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
+import { encodeExperimentRouteParam } from "@/lib/utils";
 import { CostChart } from "@/components/cost-breakdown-card";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { ArrowLeft, DollarSign, Info } from "lucide-react";
@@ -176,16 +178,72 @@ function TaskTable({ tasks }: { tasks: UserCostTaskBreakdown[] }) {
   );
 }
 
+function ExperimentTable({
+  experiments,
+}: {
+  experiments: UserCostExperimentBreakdown[];
+}) {
+  if (experiments.length === 0)
+    return (
+      <p className="text-muted-foreground py-3 text-xs">
+        No trial spend in this window.
+      </p>
+    );
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Experiment</TableHead>
+          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">Trials</TableHead>
+          <TableHead>Models</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {experiments.map((exp) => (
+          <TableRow key={exp.experiment_id}>
+            <TableCell className="max-w-[280px]">
+              <Link
+                href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
+                className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                title={exp.name ?? exp.experiment_id}
+              >
+                {exp.name ?? exp.experiment_id}
+              </Link>
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs font-medium">
+              {formatCostUsd(exp.cost_usd)}
+            </TableCell>
+            <TableCell className="text-right font-mono text-xs">
+              {exp.trial_count.toLocaleString()}
+            </TableCell>
+            <TableCell>
+              <ModelMix models={exp.models} />
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 export default function AdminUserCostPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ userId: string }>;
+  searchParams: Promise<{ org?: string; window_days?: string }>;
 }) {
   const { userId } = use(params);
-  const [windowDays, setWindowDays] = useState("7");
+  const { org, window_days: windowParam } = use(searchParams);
+  const [windowDays, setWindowDays] = useState(() =>
+    WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7",
+  );
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
-    `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}`,
+    `/api/admin/users/${encodeURIComponent(userId)}/costs?window_days=${windowDays}&task_limit=${TASK_LIMIT}${
+      org ? `&org_id=${encodeURIComponent(org)}` : ""
+    }`,
     fetcher,
     { refreshInterval: 30000 },
   );
@@ -288,6 +346,20 @@ export default function AdminUserCostPage({
               <h3 className="text-sm font-medium">Cost over time</h3>
               <CostChart series={data.series_by_model} bucket={data.bucket} />
             </div>
+
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium">Cost by experiment</h3>
+                {(data.totals.experiment_count ?? 0) >
+                  (data.experiments?.length ?? 0) && (
+                  <span className="text-muted-foreground text-[11px]">
+                    top {(data.experiments ?? []).length} of{" "}
+                    {(data.totals.experiment_count ?? 0).toLocaleString()}
+                  </span>
+                )}
+              </div>
+              <ExperimentTable experiments={data.experiments ?? []} />
+            </section>
 
             <section className="space-y-2">
               <div className="flex items-center justify-between">
