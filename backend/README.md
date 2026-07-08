@@ -279,7 +279,7 @@ All routes require auth unless marked public.
 | POST | `/users` | Invite user |
 | DELETE | `/users/{user_id}` | Deactivate user |
 | GET | `/api-keys` | List API keys |
-| POST | `/api-keys` | Create API key (admin with @abundant.ai email in the Abundant org) |
+| POST | `/api-keys` | Create API key (any org admin or member; admins mint full/tasks/read, members mint tasks/read) |
 | GET | `/api-keys/permissions` | Whether the current user may create API keys |
 | DELETE | `/api-keys/{key_id}` | Revoke API key |
 
