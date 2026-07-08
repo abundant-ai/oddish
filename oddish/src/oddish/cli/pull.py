@@ -724,6 +724,65 @@ def _pull_once(
     return run_manifest
 
 
+def _debug_files(
+    api_url: str,
+    target: str,
+    target_type: TargetType | None,
+    *,
+    json_output: bool,
+) -> None:
+    """List the raw S3 inventory for a trial via ``/trials/{id}/debug-files``.
+
+    Answers "did the upload land where the DB thinks it did?" — it returns the
+    trial's stored ``trial_s3_key``, the computed prefix, and the objects that
+    actually exist under the prefix, without downloading anything.
+    """
+    if target_type and target_type != "trial":
+        raise typer.BadParameter("--debug-files only supports trial targets.")
+
+    with _make_client(api_url) as client:
+        if target_type != "trial":
+            resolved_type, _, _ = _resolve_target(client, target, target_type)
+            if resolved_type != "trial":
+                raise typer.BadParameter(
+                    f"--debug-files needs a trial id; '{target}' resolved as "
+                    f"{resolved_type}."
+                )
+        response = client.get(f"/trials/{target}/debug-files")
+
+    if response.status_code != 200:
+        if json_output:
+            print_json({"error": response.text, "status": response.status_code})
+        else:
+            console.print(
+                f"[red]Failed to list debug files:[/red] {response.text}"
+            )
+        raise typer.Exit(1)
+
+    data = response.json()
+    if json_output:
+        print_json(data)
+        return
+
+    console.print(f"[bold]Trial:[/bold] {data.get('trial_id', target)}")
+    console.print(f"[bold]DB trial_s3_key:[/bold] {data.get('trial_s3_key') or '-'}")
+    console.print(f"[bold]Computed prefix:[/bold] {data.get('computed_prefix') or '-'}")
+    console.print(f"[bold]Using prefix:[/bold] {data.get('using_prefix') or '-'}")
+    if data.get("error"):
+        console.print(f"[red]Error:[/red] {data['error']}")
+    files = data.get("files") or []
+    console.print(f"[bold]Objects ({len(files)}):[/bold]")
+    if not files:
+        console.print("  [dim]none found under prefix[/dim]")
+    for key in files:
+        console.print(f"  {key}")
+    trajectory_files = data.get("trajectory_files") or []
+    if trajectory_files:
+        console.print(f"[bold]Trajectory files ({len(trajectory_files)}):[/bold]")
+        for key in trajectory_files:
+            console.print(f"  {key}")
+
+
 def pull(
     target: Annotated[
         str,
@@ -763,6 +822,16 @@ def pull(
             help="Include task-level files when target is task/experiment.",
         ),
     ] = False,
+    debug_files: Annotated[
+        bool,
+        typer.Option(
+            "--debug-files",
+            help=(
+                "List the raw S3 inventory for a trial (DB key vs computed "
+                "prefix vs actual objects) instead of downloading. Trial only."
+            ),
+        ),
+    ] = False,
     watch: Annotated[
         bool,
         typer.Option("--watch", "-w", help="Keep pulling while run is in progress."),
@@ -780,13 +849,21 @@ def pull(
         ),
     ] = False,
 ):
-    """Pull logs and artifacts from Oddish remote to local files."""
+    """Pull logs and artifacts from Oddish remote to local files.
+
+    Use ``--debug-files <trial_id>`` to instead list a trial's raw S3 inventory
+    (stored key vs computed prefix vs actual objects) without downloading.
+    """
     if not api_url:
         api_url = get_api_url()
     require_api_key(api_url)
 
     if interval < 1:
         raise typer.BadParameter("--interval must be >= 1")
+
+    if debug_files:
+        _debug_files(api_url, target, target_type, json_output=json_output)
+        return
 
     with _make_client(api_url) as client:
         resolved_type, resolved_id, cached_data = _resolve_target(
