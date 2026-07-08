@@ -1615,7 +1615,22 @@ async def _prev_window_costs(
     return prev_by_user, round(prev_cost, 4)
 
 
-async def _billed_cost_since(session: AsyncSession, *, since: datetime) -> float:
+def _org_id_predicate(org_ids: set[str | None]):
+    non_null_org_ids = [org_id for org_id in org_ids if org_id is not None]
+    predicates = []
+    if non_null_org_ids:
+        predicates.append(TrialModel.org_id.in_(non_null_org_ids))
+    if None in org_ids:
+        predicates.append(TrialModel.org_id.is_(None))
+    return or_(*predicates)
+
+
+async def _billed_cost_since(
+    session: AsyncSession,
+    *,
+    since: datetime,
+    org_ids: set[str | None] | None = None,
+) -> float:
     """Total dashboard spend from ``since`` to now, on the breakdown's basis."""
     query = (
         select(
@@ -1656,6 +1671,10 @@ async def _billed_cost_since(session: AsyncSession, *, since: datetime) -> float
         )
         .group_by(TrialModel.model)
     )
+    if org_ids is not None:
+        if not org_ids:
+            return 0.0
+        query = query.where(_org_id_predicate(org_ids))
     rows = (await session.execute(query)).all()
     total = 0.0
     for row in rows:
@@ -1922,7 +1941,6 @@ async def get_cost_breakdown_core(
         )
 
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    month_cost = await _billed_cost_since(session, since=month_start)
     month_org_ids = (
         await session.scalars(
             select(TrialModel.org_id)
@@ -1935,14 +1953,22 @@ async def get_cost_breakdown_core(
             .distinct()
         )
     ).all()
+    month_limits_by_org = {
+        org_id: await get_effective_org_limit(session, org_id)
+        for org_id in month_org_ids
+    }
+    budgeted_month_org_ids = {
+        org_id for org_id, limit in month_limits_by_org.items() if limit is not None
+    }
     month_limits = [
-        limit
-        for limit in [
-            await get_effective_org_limit(session, org_id) for org_id in month_org_ids
-        ]
-        if limit is not None
+        limit for limit in month_limits_by_org.values() if limit is not None
     ]
     month_budget = float(sum(month_limits)) if month_limits else None
+    month_cost = await _billed_cost_since(
+        session,
+        since=month_start,
+        org_ids=budgeted_month_org_ids if month_budget is not None else None,
+    )
 
     quota_start = quota_window_start(now)
     quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
