@@ -267,11 +267,12 @@ def _update(channel: str, ts: str, text: str) -> None:
 def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
     """Replace the placeholder with the answer, spilling overflow into follow-ups.
 
-    Returns ``True`` once the first chunk has been delivered. Overflow posts
-    after that first chunk are best-effort: a failure there is logged but does
-    not undo the message the user already saw. Returns ``False`` only when the
-    very first chunk could not be delivered, so the caller can surface a
-    fallback notice without overwriting an already-delivered answer.
+    Returns ``True`` once the first chunk has been delivered — via the
+    placeholder update, or a fresh thread post when that update fails.
+    Overflow posts after the first chunk are best-effort: a failure there is
+    logged but does not undo what the user already saw. Returns ``False`` only
+    when the first chunk could not be delivered either way, so the caller can
+    surface a fallback notice without overwriting a delivered answer.
     """
     text = _escape(text)
     cut = _split_at(text, _MAX_SLACK)
@@ -279,7 +280,11 @@ def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
         _update(channel, ts, text[:cut])
     except Exception:
         log.exception("first delivery chunk failed channel=%s", channel)
-        return False
+        try:
+            _post(channel, thread, text[:cut])
+        except Exception:
+            log.exception("first-chunk repost failed channel=%s", channel)
+            return False
     rest = text[cut:]
     while rest:
         cut = _split_at(rest, _MAX_SLACK)
@@ -416,15 +421,10 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         body = f"{body}\n\n_cost: ${cost:.4f}_"
     _log("result", event_id=event_id, channel=channel, thread=thread, user=user, cost=cost, turn_limit=hit_turn_limit, budget_limit=hit_budget_limit)
     if not _deliver(channel, status_ts, thread, body):
-        # The answer never reached the user (the first chunk failed). The update
-        # path just failed, so try a fresh thread post before falling back to a
-        # notice on the placeholder. Guard both so the fallback can never itself
-        # raise out of the background worker.
+        # The answer never reached the user (both first-chunk paths failed), so
+        # replace the placeholder with an error notice. Guard it so the fallback
+        # can never itself raise out of the background worker.
         try:
-            _post(channel, thread, _escape(body))
+            _update(channel, status_ts, ":warning: I computed an answer but couldn't post it. Please ask again.")
         except Exception:
-            log.exception("delivery-failure repost failed event_id=%s channel=%s", event_id, channel)
-            try:
-                _update(channel, status_ts, ":warning: I computed an answer but couldn't post it. Please ask again.")
-            except Exception:
-                log.exception("delivery-failure fallback failed event_id=%s channel=%s", event_id, channel)
+            log.exception("delivery-failure fallback failed event_id=%s channel=%s", event_id, channel)
