@@ -303,8 +303,9 @@ def resolve_liveness(
     have created it (see :func:`_dead_owner_owns_pod`). Live always wins.
 
     ``has_live_unlinked_worker`` is decided separately: a ``RUNNING``
-    GKE-environment trial that has not yet recorded a handle could own an
-    as-yet-unlinked pod. It is keyed off ``trials.environment = 'gke'`` (not the
+    GKE-environment trial that has not yet recorded a handle -- or whose
+    recorded handle points at a pod that no longer exists (a retry's stale
+    handle from a previous attempt) -- could own an as-yet-unlinked pod. It is keyed off ``trials.environment = 'gke'`` (not the
     variant id) so it also covers a GKE trial that ran on an out-of-process
     Harbor.
     """
@@ -336,20 +337,24 @@ def resolve_liveness(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT EXISTS (
-                SELECT 1
-                FROM worker_jobs wj
-                JOIN trials t
-                  ON t.id = wj.subject_id AND wj.subject_table = 'trials'
-                WHERE wj.kind = 'TRIAL'
-                  AND wj.status = 'RUNNING'
-                  AND wj.external_id IS NULL
-                  AND t.environment = 'gke'
-            )
+            SELECT wj.external_id
+            FROM worker_jobs wj
+            JOIN trials t
+              ON t.id = wj.subject_id AND wj.subject_table = 'trials'
+            WHERE wj.kind = 'TRIAL'
+              AND wj.status = 'RUNNING'
+              AND t.environment = 'gke'
             """
         )
-        row = cur.fetchone()
-        has_live_unlinked_worker = bool(row and row[0])
+        running_handles = [r[0] for r in cur.fetchall()]
+    # A RUNNING trial with NO handle -- or with a handle pointing at a pod that
+    # no longer exists (a retry can carry the PREVIOUS attempt's handle until
+    # the new attempt's hook write lands) -- may own one of the unreferenced
+    # pods as its not-yet-linked sandbox. Both cases must arm the guard, or a
+    # retried trial's fresh pod gets deleted as an orphan.
+    has_live_unlinked_worker = any(
+        handle is None or handle not in by_handle for handle in running_handles
+    )
 
     return LivenessView(
         owned_live_pods=frozenset(live),
