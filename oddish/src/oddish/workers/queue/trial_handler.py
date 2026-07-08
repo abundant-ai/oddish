@@ -731,13 +731,18 @@ async def _store_trial_results(
                     )
                 elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
-                    # Keep cost_usd monotonic while the trial stays inflight
-                    # (finished_at is not set on retry). The per-attempt
-                    # authoritative extraction can report less than the live
-                    # checkpoints from the same attempt (or None on an early
-                    # failure), and inflight quota -- GREATEST(cost_usd, floor)
-                    # over finished_at IS NULL rows -- must only tighten, never
-                    # loosen, until the trial settles.
+                    # A RETRYING trial is still inflight: the END/CANCEL hook may
+                    # have stamped finished_at on the failed attempt, but the row
+                    # will be re-run. Clear it so inflight quota (finished_at IS
+                    # NULL) still reserves for it and /live keeps reporting the
+                    # trial as running rather than done.
+                    trial.finished_at = None
+                    # Keep cost_usd monotonic while the trial stays inflight.
+                    # The per-attempt authoritative extraction can report less
+                    # than the live checkpoints from the same attempt (or None on
+                    # an early failure), and inflight quota --
+                    # GREATEST(cost_usd, floor) over finished_at IS NULL rows --
+                    # must only tighten, never loosen, until the trial settles.
                     if prev_cost_usd is not None and (
                         trial.cost_usd is None or trial.cost_usd < prev_cost_usd
                     ):
