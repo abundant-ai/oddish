@@ -5,6 +5,7 @@ from oddish.cli.backfill_analysis import backfill_analysis
 from oddish.cli.cancel import cancel
 from oddish.cli.collect import collect
 from oddish.cli.combine import combine
+from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
 from oddish.cli.ls import ls
@@ -28,6 +29,7 @@ app.command(name="ls")(ls)
 app.command()(status)
 app.command()(cancel)
 app.command()(combine)
+app.command()(costs)
 app.command()(collect)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
