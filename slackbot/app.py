@@ -285,6 +285,10 @@ def _deliver(channel: str, ts: str, thread: str, text: str) -> bool:
         except Exception:
             log.exception("first-chunk repost failed channel=%s", channel)
             return False
+        try:
+            _update(channel, ts, ":arrow_down: Answer posted below.")
+        except Exception:
+            log.exception("stale placeholder left channel=%s", channel)
     rest = text[cut:]
     while rest:
         cut = _split_at(rest, _MAX_SLACK)
