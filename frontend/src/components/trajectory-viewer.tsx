@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
+import { TrajectorySummary } from "@/components/trajectory-summary";
 import {
   Tooltip,
   TooltipContent,
@@ -875,6 +876,14 @@ export function TrajectoryViewer({
 
   return (
     <div className="p-4">
+      <TrajectorySummary
+        trialId={trialId}
+        apiBaseUrl={apiBaseUrl}
+        stepIdToIndex={(stepId) =>
+          trajectory.steps.findIndex((s) => s.step_id === stepId)
+        }
+        onStepSelect={handleStepClick}
+      />
       <Card>
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center justify-between text-sm font-medium">
