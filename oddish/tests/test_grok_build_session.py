@@ -145,6 +145,46 @@ def test_build_trajectory_has_tool_calls_and_tokens(tmp_path):
     assert fm.total_steps == len(traj.steps)
 
 
+def test_tokens_fall_back_to_sampling_log(tmp_path):
+    # Session stream has no usage; grok's logs/unified.jsonl (sampling log) does.
+    capture = tmp_path / "grok-session"
+    session_dir = capture / "sessions" / "%2Fapp" / "sess-log"
+    session_dir.mkdir(parents=True)
+    (session_dir / "updates.jsonl").write_text(
+        json.dumps(
+            {
+                "params": {
+                    "update": {
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "c1",
+                        "title": "run_terminal_command",
+                        "rawInput": {"command": "ls"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    logs = capture / "logs"
+    logs.mkdir(parents=True)
+    (logs / "unified.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"msg": "sampling_log", "prompt_tokens": 500}),
+                json.dumps({"msg": "sampling_log", "completion_tokens": 120}),
+                json.dumps({"msg": "sampling_log", "prompt_tokens": 700}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    traj = build_session_trajectory(
+        capture, session_id="sess-log", agent_version="x", model_name="xai/v9"
+    )
+    assert traj is not None
+    assert traj.final_metrics.total_prompt_tokens == 1200
+    assert traj.final_metrics.total_completion_tokens == 120
+
+
 def test_missing_capture_returns_none(tmp_path):
     assert (
         build_session_trajectory(
