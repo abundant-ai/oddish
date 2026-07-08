@@ -54,6 +54,12 @@ def test_default_sha_matches_uv_lock_pin():
     assert HARBOR_DEFAULT_SHA in lock, "HARBOR_DEFAULT_SHA drifted from oddish/uv.lock"
     assert re.fullmatch(r"[0-9a-f]{40}", HARBOR_DEFAULT_SHA)
     assert HARBOR_DEFAULT_SOURCE == FORK
+    # The backend mirrors oddish's harbor pin; guard it too so a future re-pin
+    # that updates only oddish can't silently split the two workers' harbor.
+    backend_lock = open("../backend/uv.lock", encoding="utf-8").read()
+    assert HARBOR_DEFAULT_SHA in backend_lock, (
+        "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
+    )
 
 
 def test_probe_harbor_ref_matches_pyproject_pin():
