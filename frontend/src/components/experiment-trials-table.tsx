@@ -34,7 +34,6 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TagPicker } from "@/components/tag-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -104,6 +103,15 @@ const PassAtKGraph = dynamic(
 const PassAtOneLeaderboard = dynamic(
   () =>
     import("./pass-at-one-leaderboard").then((mod) => mod.PassAtOneLeaderboard),
+  {
+    ssr: false,
+  },
+);
+
+// Only rendered inside the bulk-tag Dialog, so cmdk stays out of the route's
+// initial bundle and loads on first open.
+const TagPicker = dynamic(
+  () => import("@/components/tag-picker").then((mod) => mod.TagPicker),
   {
     ssr: false,
   },
@@ -948,6 +956,11 @@ export function ExperimentTrialsTable({
     getScrollElement: () => tableContainerRef.current,
     estimateSize: () => 46,
     overscan: 4,
+    // Without this, getVirtualItems() is empty until the scroll container
+    // mounts on the client, so SSR HTML ships zero rows and the table (the
+    // LCP element) can't paint until hydration. A fixed viewport-sized rect
+    // lets the server render the first window of rows.
+    initialRect: { width: 1280, height: 720 },
   });
 
   const shouldVirtualize = filteredTasks.length >= VIRTUALIZATION_THRESHOLD;

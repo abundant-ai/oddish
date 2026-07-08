@@ -1,11 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import dynamic from "next/dynamic";
 import { Tag, X } from "lucide-react";
 
 import { TagChip } from "@/components/tag-chip";
 import { TagChipEditor } from "@/components/tag-chip-editor";
-import { TagPicker, type TagPickerItem } from "@/components/tag-picker";
+import type { TagPickerItem } from "@/components/tag-picker";
+
+// Only rendered once the editor is opened, so cmdk stays out of the route's
+// initial bundle and loads on first use.
+const TagPicker = dynamic(
+  () => import("@/components/tag-picker").then((mod) => mod.TagPicker),
+  {
+    ssr: false,
+  },
+);
 import { Button } from "@/components/ui/button";
 import type { UserTagRef } from "@/lib/types";
 

@@ -101,6 +101,9 @@ interface ExperimentDetailViewProps {
   headerRight?: React.ReactNode;
   headerDescription?: React.ReactNode;
   inlineAlert?: React.ReactNode;
+  // Rendered below the trials table; use for content that mounts/unmounts on
+  // its own (e.g. trial-load progress) so it never shifts the grid above it.
+  tableFooter?: React.ReactNode;
   readOnly?: boolean;
   allowRetry?: boolean;
   showAnalysis?: boolean;
@@ -799,6 +802,7 @@ export function ExperimentDetailView({
   headerRight,
   headerDescription,
   inlineAlert,
+  tableFooter,
   readOnly = false,
   allowRetry = true,
   showAnalysis = true,
@@ -1300,6 +1304,7 @@ export function ExperimentDetailView({
                   });
                 }}
               />
+              {tableFooter}
             </div>
           )}
         </div>

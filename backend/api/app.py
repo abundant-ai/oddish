@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from observability import (
     instrument_fastapi,
@@ -244,6 +245,13 @@ def create_app() -> FastAPI:
             "RateLimit-Policy",
         ],
     )
+
+    # The big JSON list payloads (experiment task-shells / slim-tasks at
+    # limit=2000) compress ~10x. Starlette's GZipMiddleware passes
+    # ``text/event-stream`` through uncompressed (DEFAULT_EXCLUDED_CONTENT_TYPES),
+    # so the cc_chat SSE endpoint is unaffected. compresslevel=6 keeps CPU
+    # modest on the concurrency-capped API containers.
+    api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=6)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):

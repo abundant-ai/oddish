@@ -1,6 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  use,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import useSWR from "swr";
 import useSWRInfinite from "swr/infinite";
 import { useAuth } from "@clerk/nextjs";
@@ -15,6 +23,7 @@ import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
+import { ExperimentPageSkeleton } from "./experiment-skeleton";
 
 const TRIALS_BATCH_SIZE = 250;
 const TRIALS_PREFETCH_PAGES = 2;
@@ -78,13 +87,28 @@ async function fetchExperimentTasksPage(url: string): Promise<Task[]> {
 
 type ExperimentClientPageProps = {
   experimentId: string;
-  initialTasks?: Task[] | null;
+  initialTasksPromise: Promise<Task[] | null>;
 };
 
 export function ExperimentClientPage({
   experimentId,
-  initialTasks,
+  initialTasksPromise,
 }: ExperimentClientPageProps) {
+  return (
+    <Suspense key={experimentId} fallback={<ExperimentPageSkeleton />}>
+      <ExperimentContent
+        experimentId={experimentId}
+        initialTasksPromise={initialTasksPromise}
+      />
+    </Suspense>
+  );
+}
+
+function ExperimentContent({
+  experimentId,
+  initialTasksPromise,
+}: ExperimentClientPageProps) {
+  const initialTasks = use(initialTasksPromise);
   const { orgRole } = useAuth();
 
   const [isEditingName, setIsEditingName] = useState(false);
@@ -572,46 +596,49 @@ export function ExperimentClientPage({
             ) : null
           }
           inlineAlert={
-            <>
-              {nameError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>Rename failed</AlertTitle>
-                  <AlertDescription>{nameError}</AlertDescription>
-                </Alert>
-              ) : null}
-              {remainingTrialTaskCount > 0 ? (
-                <Alert>
-                  <AlertTitle>Trial details are loading on demand</AlertTitle>
-                  <AlertDescription className="flex flex-wrap items-center gap-2">
-                    <span>
-                      Loaded compact trial data for {trialsLoadedCount}/
-                      {totalTaskCount} tasks.
-                    </span>
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadMoreTrials}
-                      disabled={!canLoadMoreTrials}
-                    >
-                      Load next{" "}
-                      {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7"
-                      onClick={loadAllTrials}
-                      disabled={!canLoadAllTrials}
-                    >
-                      Load all
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              ) : null}
-            </>
+            nameError ? (
+              <Alert variant="destructive">
+                <AlertTitle>Rename failed</AlertTitle>
+                <AlertDescription>{nameError}</AlertDescription>
+              </Alert>
+            ) : null
+          }
+          // Below the table (not above) so mounting/unmounting never shifts
+          // the grid: the effect-driven prefetch would otherwise unmount an
+          // alert above the LCP element and score as CLS.
+          tableFooter={
+            remainingTrialTaskCount > 0 ? (
+              <Alert>
+                <AlertTitle>Trial details are loading on demand</AlertTitle>
+                <AlertDescription className="flex flex-wrap items-center gap-2">
+                  <span>
+                    Loaded compact trial data for {trialsLoadedCount}/
+                    {totalTaskCount} tasks.
+                  </span>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="h-7"
+                    onClick={loadMoreTrials}
+                    disabled={!canLoadMoreTrials}
+                  >
+                    Load next{" "}
+                    {Math.min(TRIALS_BATCH_SIZE, remainingTrialTaskCount)}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7"
+                    onClick={loadAllTrials}
+                    disabled={!canLoadAllTrials}
+                  >
+                    Load all
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : null
           }
           readOnly={false}
           allowRetry
