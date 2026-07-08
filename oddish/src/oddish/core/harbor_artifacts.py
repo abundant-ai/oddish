@@ -54,11 +54,12 @@ def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
     for metrics_path in sorted(path.rglob("verifier/metrics.json")):
         try:
             if metrics_path.stat().st_size > VERIFIER_METRICS_MAX_BYTES:
-                return None
+                continue
             payload = json.loads(metrics_path.read_text())
         except (OSError, ValueError):
-            return None
-        return cast(dict[str, Any], payload) if isinstance(payload, dict) else None
+            continue
+        if isinstance(payload, dict):
+            return cast(dict[str, Any], payload)
     return None
 
 

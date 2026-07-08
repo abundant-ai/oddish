@@ -155,3 +155,30 @@ def test_gke_is_hosted_passthrough_environment():
     assert EnvironmentType.GKE in run._HOSTED_PASSTHROUGH_ENVIRONMENTS
     assert EnvironmentType.MODAL in run._HOSTED_PASSTHROUGH_ENVIRONMENTS
     assert EnvironmentType.DAYTONA in run._HOSTED_PASSTHROUGH_ENVIRONMENTS
+
+
+def test_explicit_non_gke_env_on_tpu_task_raises_clear_error(tmp_path, monkeypatch):
+    # An explicit --env modal/daytona on a task declaring [environment.tpu]
+    # would run the TPU workload on a backend without TPU support; the CLI
+    # knows both facts pre-submit and must refuse, mirroring the GPU+TPU
+    # conflict error.
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, tpu=SimpleNamespace(type="v6e", topology="2x2"))
+
+    with pytest.raises(typer.BadParameter, match="gke"):
+        run._validate_explicit_environment_for_task(EnvironmentType.MODAL, tmp_path)
+
+
+def test_explicit_gke_or_unset_env_on_tpu_task_passes(tmp_path, monkeypatch):
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, tpu=SimpleNamespace(type="v6e", topology="2x2"))
+
+    run._validate_explicit_environment_for_task(EnvironmentType.GKE, tmp_path)
+    run._validate_explicit_environment_for_task(None, tmp_path)
+
+
+def test_explicit_non_gke_env_on_non_tpu_task_passes(tmp_path, monkeypatch):
+    (tmp_path / "task.toml").write_text("x")
+    _patch_env(monkeypatch, tpu=None)
+
+    run._validate_explicit_environment_for_task(EnvironmentType.MODAL, tmp_path)
