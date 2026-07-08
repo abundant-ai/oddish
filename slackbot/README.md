@@ -8,10 +8,12 @@ using read-only MCP tools that call the oddish backend REST API.
 
 ## What it can answer
 
-Global and per-user spend, queue health, task/experiment status, and why a
-specific trial failed. **Quota questions are not supported** — the `/quotas`
-endpoint is user-auth-only and rejects the bot's API key, so use the dashboard
-for quota limits and usage.
+Global and per-user spend, quota status (limit/used/utilization), queue health,
+task/experiment status, and why a specific trial failed. For anything the fixed
+tools don't cover (arbitrary aggregates, filters, joins), the agent can run
+read-only SQL against curated analytics views (see *SQL access*). Quota
+*changes* stay in the dashboard: the backend rejects API-key auth on every
+quota write, so the bot can only link the page.
 
 ## Architecture
 
@@ -42,6 +44,43 @@ All live in one Modal secret named `oddish-slackbot`:
 | `ANTHROPIC_API_KEY` | Credential the `claude-agent-sdk` uses to call Claude. |
 | `SLACK_TEAM_ID` | *Optional.* Slack workspace (team) ID. When set, events from any other workspace are dropped; unset means single-workspace mode with no team check. |
 | `SLACK_MAX_BUDGET_USD` | *Optional.* Per-prompt cost ceiling for one agent run (USD). Defaults to `1.00`. |
+| `ODDISH_RO_DATABASE_URL` | *Optional.* Plain `postgresql://` DSN for the `slackbot_ro` role (see *SQL access*). Unset disables the SQL tools gracefully. Never reuse `oddish-prod` credentials — that role is full-RW. |
+| `SLACK_ALERT_CHANNEL` | *Optional.* Channel ID for scheduled `watch` alerts. Unset disables them. |
+| `ODDISH_DASHBOARD_URL` | *Optional.* Dashboard base for deep links. Defaults to `https://www.oddish.app`. |
+
+## SQL access
+
+Two extra tools, `oddish_list_views` and `oddish_run_sql`, let the agent answer
+questions the fixed tools can't. Raw SQL against the base tables would lie
+(soft-delete is ORM-enforced, spend/quota predicates live in app code), so the
+tools only see curated views — `v_trials`, `v_experiment_summary`,
+`v_daily_spend`, `v_quota_status`, `v_org_quota_status`, `v_queue_state`,
+`v_runtime_status` — that bake those semantics in once. Each view carries a
+`COMMENT` with column semantics and example queries; `oddish_list_views`
+surfaces them so the schema self-documents.
+
+Grants are the security boundary (no SELECT-regex or keyword blocklists):
+
+1. Views ship in backend migration `sbviews_001` (applied with the normal
+   migration flow).
+2. Run `role_setup.sql` once as an admin **through the session pooler (port
+   5432)** to create `slackbot_ro`, grant it the views, and pin role-level
+   GUCs (`default_transaction_read_only`, 5s statement timeout, UTC). The GUCs
+   must live on the role because Supavisor transaction pooling drops
+   client-supplied settings.
+3. Add `ODDISH_RO_DATABASE_URL` to the `oddish-slackbot` secret.
+
+Every `oddish_run_sql` call logs the query with the Slack asker/thread for
+audit. One statement per call (asyncpg extended protocol), 200 rows returned.
+
+## Scheduled alerts
+
+`watch` runs every 5 minutes (`modal.Period`) when `SLACK_ALERT_CHANNEL` is
+set, iterating a `CHECKS` table of deterministic checks with templated
+output — no agent, no raw log text, so nothing prompt-injectable runs
+unattended. Alert-once dedupe lives in the `oddish-slackbot-watch-state`
+Dict. Current checks: experiment finished (pass rate, cost, link) and
+dispatcher/reconciler heartbeat stale (re-arms after recovery).
 
 ## Deploy steps
 
@@ -50,6 +89,8 @@ All live in one Modal secret named `oddish-slackbot`:
    (`settings.event_subscriptions.request_url`, keeping the `/slack/events` path).
 3. Create the Slack app from `manifest.yaml`, install it into the workspace, and
    invite the bot into the channels where it should answer.
+4. Optional: wire up SQL access (see above) and set `SLACK_ALERT_CHANNEL` for
+   scheduled alerts.
 
 ## Limitations
 

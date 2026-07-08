@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from urllib.parse import quote
 
@@ -8,6 +9,21 @@ from claude_agent_sdk import create_sdk_mcp_server, tool
 
 _MAX_CHARS = 12000
 _LOG_TAIL_CHARS = 6000
+_MAX_ROWS = 200
+
+log = logging.getLogger("oddish-slackbot.tools")
+
+_audit: dict = {}
+
+
+def set_audit_context(**fields) -> None:
+    """Identify the Slack asker/thread in ``run_sql`` audit log lines.
+
+    The ``answer`` worker handles one input at a time (no ``modal.concurrent``),
+    so a module global cannot race across runs.
+    """
+    _audit.clear()
+    _audit.update({k: v for k, v in fields.items() if v is not None})
 
 
 def _cfg() -> tuple[str, dict]:
@@ -35,10 +51,19 @@ async def _get(path: str, params: dict | None = None) -> dict:
         return r.json()
 
 
+def _user_label(u: dict) -> str:
+    label = u.get("name") or u.get("email") or u.get("label") or u.get("key") or "?"
+    org = u.get("org_name") or u.get("org_id") or ""
+    return f"{label} ({org})" if org else label
+
+
 @tool(
     "oddish_costs",
-    "Global cost/spend breakdown across all orgs, users, models, and experiments. "
-    "Optional window_days (default 7, 0=all-time).",
+    "Global cost/spend breakdown across all orgs, users, models, and experiments, "
+    "plus per-user quota status (limit/used/utilization). "
+    "Optional window_days (default 7, 0=all-time). Caveats: user rows are the top "
+    "spenders by cost in the window (max 500), so a low-spend user near their quota "
+    "limit can be missing; quota fields are absent on unbilled/unregistered rows.",
     {
         "type": "object",
         "properties": {"window_days": {"type": "integer"}},
@@ -46,7 +71,10 @@ async def _get(path: str, params: dict | None = None) -> dict:
     },
 )
 async def oddish_costs(args: dict) -> dict:
-    data = await _get("/admin/costs", {"window_days": args.get("window_days", 7)})
+    data = await _get(
+        "/admin/costs",
+        {"window_days": args.get("window_days", 7), "user_limit": 500},
+    )
     t = data.get("totals", {})
     lines = [
         f"*Cost totals* ({_window(data.get('window_days'))})",
@@ -56,10 +84,19 @@ async def oddish_costs(args: dict) -> dict:
         "",
         "*Top users by spend*",
     ]
-    for u in data.get("by_user", [])[:10]:
-        label = u.get("name") or u.get("email") or u.get("label") or u.get("key") or "?"
-        org = u.get("org_name") or u.get("org_id") or ""
-        lines.append(f"• {label} ({org}): ${u.get('cost_usd', 0):,.2f}, {u.get('trial_count', 0)} trials")
+    users = data.get("by_user", [])
+    for u in users[:10]:
+        lines.append(f"• {_user_label(u)}: ${u.get('cost_usd', 0):,.2f}, {u.get('trial_count', 0)} trials")
+    quota = sorted(
+        (u for u in users if u.get("quota_limit_usd")),
+        key=lambda u: (u.get("quota_spent_usd") or 0) / u["quota_limit_usd"],
+        reverse=True,
+    )
+    if quota:
+        lines += ["", "*Quota (top by utilization; spenders in window only)*"]
+        for u in quota[:10]:
+            spent, limit = u.get("quota_spent_usd") or 0, u["quota_limit_usd"]
+            lines.append(f"• {_user_label(u)}: ${spent:,.2f} / ${limit:,.2f} ({spent / limit:.0%})")
     lines.append("")
     lines.append("*Top models by spend*")
     for m in data.get("by_model", [])[:8]:
@@ -147,7 +184,8 @@ async def oddish_queue_health(args: dict) -> dict:
 @tool(
     "oddish_trial_logs",
     "Structured logs for a trial (agent commands, verifier stdout/stderr, exception). "
-    "Use to diagnose why a trial failed.",
+    "Use to diagnose why a trial failed. Org-scoped to the bot key's org (unlike the "
+    "global cost/queue tools): a real trial in another org returns not-found.",
     {
         "type": "object",
         "properties": {"trial_id": {"type": "string"}},
@@ -177,7 +215,9 @@ async def oddish_trial_logs(args: dict) -> dict:
 
 @tool(
     "oddish_tasks",
-    "List tasks (evals) with status and progress. Optional status, user, experiment_id filters and limit.",
+    "List tasks (evals) with status and progress. Optional status, user, experiment_id "
+    "filters and limit. Org-scoped to the bot key's org (unlike the global cost/queue "
+    "tools): tasks in other orgs are missing from results.",
     {
         "type": "object",
         "properties": {
@@ -204,6 +244,69 @@ async def oddish_tasks(args: dict) -> dict:
     return _text("\n".join(lines))
 
 
+async def _fetch(sql: str) -> list:
+    import asyncpg
+
+    # statement_cache_size=0: the RO DSN goes through Supavisor transaction-mode
+    # pooling, where server-side prepared statements outlive their backend.
+    conn = await asyncpg.connect(
+        os.environ["ODDISH_RO_DATABASE_URL"], statement_cache_size=0, timeout=10
+    )
+    try:
+        return await conn.fetch(sql)
+    finally:
+        await conn.close()
+
+
+@tool(
+    "oddish_list_views",
+    "List the curated read-only SQL views available to oddish_run_sql, with their "
+    "column semantics and example queries. Call this before writing SQL.",
+    {"type": "object", "properties": {}, "required": []},
+)
+async def oddish_list_views(args: dict) -> dict:
+    if not os.environ.get("ODDISH_RO_DATABASE_URL"):
+        return _text("SQL access is not configured (ODDISH_RO_DATABASE_URL missing).")
+    rows = await _fetch(
+        "SELECT c.relname AS view, obj_description(c.oid) AS comment"
+        " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+        " WHERE c.relkind = 'v' AND n.nspname = 'public'"
+        " AND has_table_privilege(current_user, c.oid, 'SELECT')"
+        " ORDER BY c.relname"
+    )
+    if not rows:
+        return _text("No views granted to this role.")
+    return _text("\n\n".join(f"*{r['view']}*\n{r['comment'] or '(no comment)'}" for r in rows))
+
+
+@tool(
+    "oddish_run_sql",
+    "Run one read-only SQL statement against the curated views (oddish_list_views "
+    "lists them; only those views are readable, never base tables). Postgres "
+    "dialect, one statement per call, 5s statement timeout, first 200 rows "
+    "returned. Use for any aggregate/filter/join the fixed tools don't cover.",
+    {"type": "object", "properties": {"sql": {"type": "string"}}, "required": ["sql"]},
+)
+async def oddish_run_sql(args: dict) -> dict:
+    if not os.environ.get("ODDISH_RO_DATABASE_URL"):
+        return _text("SQL access is not configured (ODDISH_RO_DATABASE_URL missing).")
+    sql = args["sql"]
+    log.info(
+        "run_sql %s sql=%r",
+        " ".join(f"{k}={v}" for k, v in _audit.items()),
+        sql,
+    )
+    rows = await _fetch(sql)
+    if not rows:
+        return _text("(0 rows)")
+    lines = [" | ".join(rows[0].keys())]
+    for r in rows[:_MAX_ROWS]:
+        lines.append(" | ".join("∅" if v is None else str(v) for v in r.values()))
+    if len(rows) > _MAX_ROWS:
+        lines.append(f"… [{len(rows):,} rows total, showing {_MAX_ROWS}]")
+    return _text("\n".join(lines))
+
+
 SERVER_NAME = "oddish"
 
 _TOOLS = [
@@ -212,6 +315,8 @@ _TOOLS = [
     oddish_queue_health,
     oddish_trial_logs,
     oddish_tasks,
+    oddish_list_views,
+    oddish_run_sql,
 ]
 
 

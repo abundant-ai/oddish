@@ -35,6 +35,7 @@ image = (
         "fastapi[standard]",
         "slack_sdk",
         "httpx",
+        "asyncpg",
     )
     .add_local_python_source("tools")
 )
@@ -42,14 +43,35 @@ image = (
 app = modal.App("oddish-slackbot")
 secret = modal.Secret.from_name(SECRET_NAME)
 seen_events = modal.Dict.from_name("oddish-slackbot-seen-events", create_if_missing=True)
+watch_state = modal.Dict.from_name("oddish-slackbot-watch-state", create_if_missing=True)
 
 SYSTEM_PROMPT = (
-    "You answer teammates' questions about the oddish eval platform (spend, "
+    "You answer teammates' questions about the oddish eval platform (spend, quotas, "
     "queue health, why a trial failed) using the provided read-only tools. Be concise. "
     "Format for Slack mrkdwn (*bold*, `code`, • bullets; never markdown headings or tables). "
     "Always include concrete numbers. Call tools rather than guessing. Today's date and all "
     "live data come from the tools and environment."
 )
+
+
+def _dashboard_url() -> str:
+    return os.environ.get("ODDISH_DASHBOARD_URL", "https://www.oddish.app").rstrip("/")
+
+
+def _prompt_extras() -> str:
+    dash = _dashboard_url()
+    return (
+        " For aggregates or filters the fixed tools don't cover, call oddish_list_views "
+        "then oddish_run_sql. "
+        "End answers with the relevant dashboard link when one exists: experiment "
+        f"{dash}/experiments/<id percent-encoded twice>, task {dash}/tasks/<id>, admin "
+        f"costs and quotas {dash}/admin. Trials have no page of their own; link the "
+        "parent task or experiment. "
+        "You cannot change quotas or anything else (the backend rejects API-key writes); "
+        f"for a quota change link {dash}/admin and name the Quotas tab. "
+        "When a question turns into an investigation (digging through code or many "
+        "logs), point at the Chat button on that task/experiment page instead."
+    )
 
 
 def _log(event: str, **fields) -> None:
@@ -241,7 +263,7 @@ def _split_at(text: str, limit: int) -> int:
     return cut
 
 
-def _post(channel: str, thread: str, text: str) -> str:
+def _post(channel: str, thread: str | None, text: str) -> str:
     return _client().chat_postMessage(channel=channel, thread_ts=thread, text=text[:_split_at(text, _MAX_SLACK)])["ts"]
 
 
@@ -312,9 +334,10 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         query,
     )
 
-    from tools import allowed_tool_names, build_server
+    from tools import allowed_tool_names, build_server, set_audit_context
 
     _log("spawned", event_id=event_id, channel=channel, thread=thread, user=user)
+    set_audit_context(user=user, channel=channel, thread=thread, event_id=event_id)
     try:
         status_ts = _post(channel, thread, "Thinking…")
     except Exception:
@@ -341,7 +364,7 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         permission_mode="dontAsk",
         max_turns=25,
         max_budget_usd=budget,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT + _prompt_extras(),
     )
 
     final = ""
@@ -434,3 +457,95 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         except Exception:
             log.exception("delivery-failure fallback failed event_id=%s channel=%s", event_id, channel)
         _release_event(event_id)
+
+
+_WATCH_INTERVAL_SECONDS = 300
+# Dispatcher beats ~180s, reconciler ~240s; 900s ≈ 4 missed beats.
+_HEARTBEAT_STALE_SECONDS = 900
+
+_EXPERIMENT_DONE_SQL = """
+SELECT experiment_id, name, total_trials, pass_count, pass_rate, cost_usd
+FROM v_experiment_summary
+WHERE NOT is_collection
+  AND total_trials > 0
+  AND active_trials = 0
+  AND last_finished_at > NOW() - INTERVAL '2 hours'
+"""
+
+
+async def _check_experiments_finished() -> list[tuple[str, str]]:
+    from urllib.parse import quote
+
+    from tools import _fetch
+
+    dash = _dashboard_url()
+    alerts = []
+    for r in await _fetch(_EXPERIMENT_DONE_SQL):
+        url = f"{dash}/experiments/{quote(quote(r['experiment_id'], safe=''), safe='')}"
+        alerts.append((
+            f"exp_done:{r['experiment_id']}",
+            f":checkered_flag: *{_escape(r['name'] or r['experiment_id'])}* finished — "
+            f"{r['pass_count']}/{r['total_trials']} passed ({float(r['pass_rate'] or 0):.0f}%), "
+            f"${float(r['cost_usd'] or 0):,.2f} · {url}",
+        ))
+    return alerts
+
+
+async def _check_heartbeats() -> list[tuple[str, str]]:
+    from tools import _get
+
+    data = await _get("/admin/queue-health")
+    alerts = []
+    for comp in ("dispatcher", "reconciler"):
+        age = (data.get(comp) or {}).get("age_seconds")
+        key = f"hb_stale:{comp}"
+        if age is None or age > _HEARTBEAT_STALE_SECONDS:
+            gist = "has no recorded heartbeat" if age is None else f"last beat {age:.0f}s ago"
+            alerts.append((key, f":rotating_light: *{comp}* looks down — {gist}."))
+        else:
+            # Recovered: re-arm so the next stale episode alerts again.
+            try:
+                watch_state.pop(key, None)
+            except Exception:
+                log.exception("failed to re-arm heartbeat alert key=%s", key)
+    return alerts
+
+
+CHECKS = [
+    ("experiment_finished", _check_experiments_finished),
+    ("heartbeat_stale", _check_heartbeats),
+]
+
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    timeout=120,
+    max_containers=1,
+    schedule=modal.Period(seconds=_WATCH_INTERVAL_SECONDS),
+)
+async def watch() -> None:
+    """Deterministic checks -> templated Slack alerts. No agent, no log text.
+
+    Alert-once dedupe lives in ``watch_state``; post before claiming so a
+    failed post repeats next tick rather than vanishing (max_containers=1,
+    so no concurrent duplicate risk).
+    """
+    channel = os.environ.get("SLACK_ALERT_CHANNEL", "").strip()
+    if not channel:
+        _log("watch_skipped", reason="SLACK_ALERT_CHANNEL unset")
+        return
+    for name, check in CHECKS:
+        try:
+            alerts = await check()
+        except Exception:
+            log.exception("watch check failed check=%s", name)
+            continue
+        for key, text in alerts:
+            try:
+                if watch_state.get(key) is None:
+                    _post(channel, None, text)
+                    watch_state.put(key, time.time())
+                    _log("watch_alert", check=name, key=key)
+            except Exception:
+                log.exception("watch alert failed check=%s key=%s", name, key)
