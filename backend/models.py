@@ -307,6 +307,49 @@ class QuotaGambleModel(TimestampedMixin, Base):
     )
 
 
+class QuotaDuelModel(TimestampedMixin, Base):
+    """A 1v1 quota wager between two org members (wrestle duel).
+
+    Open duels are pure intents (no escrow); accepting rolls the winner
+    server-side and settles both stakes as two quota_gambles rows in the
+    same transaction. Open duels older than 24h are treated as expired at
+    read time.
+    """
+
+    __tablename__ = "quota_duels"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    org_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    challenger_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    opponent_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    wager_usd: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
+    winner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fight: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    __table_args__ = (
+        Index("ix_quota_duels_org_challenger", "org_id", "challenger_user_id"),
+        Index("ix_quota_duels_org_opponent", "org_id", "opponent_user_id"),
+        CheckConstraint(
+            "status IN ('open', 'settled', 'declined', 'cancelled')",
+            name="ck_quota_duels_status",
+        ),
+        CheckConstraint("wager_usd > 0", name="ck_quota_duels_wager_positive"),
+    )
+
+
 class QuotaGambleSessionModel(TimestampedMixin, Base):
     """An in-flight multi-step casino hand (blackjack) awaiting settlement."""
 

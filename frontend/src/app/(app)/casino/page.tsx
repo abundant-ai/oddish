@@ -6,6 +6,7 @@ import { Dices, History } from "lucide-react";
 import { fetcher } from "@/lib/api";
 import type {
   BlackjackState,
+  QuotaDuelList,
   QuotaGambleList,
   QuotaGambleResult,
   QuotaUsage,
@@ -26,6 +27,7 @@ import PlinkoGame from "./games/plinko";
 import RocketGame from "./games/rocket";
 import SlingGame from "./games/sling";
 import SlotsGame from "./games/slots";
+import WrestleGame from "./games/wrestle";
 
 const GAMES: {
   id: CasinoGameId;
@@ -42,6 +44,7 @@ const GAMES: {
   { id: "baccarat", name: "Salon Privé", blurb: "Player, banker, destiny", glyph: "🥂", gradient: "linear-gradient(135deg, #831843, #f472b6)", Component: BaccaratGame },
   { id: "rocket", name: "Escape Velocity", blurb: "Cash out before the crash", glyph: "🚀", gradient: "linear-gradient(135deg, #1e1b4b, #fb923c)", Component: RocketGame },
   { id: "sling", name: "Sling King", blurb: "Climb the jungle wall", glyph: "🐒", gradient: "linear-gradient(135deg, #365314, #a3e635)", Component: SlingGame },
+  { id: "wrestle", name: "Spring Slam", blurb: "1v1 a coworker for quota", glyph: "🤼", gradient: "linear-gradient(135deg, #7f1d1d, #1d4ed8)", Component: WrestleGame },
 ];
 
 const GAME_NAMES: Record<string, string> = Object.fromEntries(
@@ -56,6 +59,11 @@ export default function CasinoPage() {
   } = useSWR<QuotaUsage>("/api/quotas/me", fetcher);
   const { data: history, error: historyError, mutate: mutateHistory } =
     useSWR<QuotaGambleList>("/api/quotas/gambles", fetcher);
+  const { data: duels } = useSWR<QuotaDuelList>("/api/quotas/duels", fetcher, {
+    refreshInterval: 30000,
+    shouldRetryOnError: false,
+  });
+  const incomingDuels = duels?.incoming.length ?? 0;
 
   const audio = useCasinoAudio();
   const [active, setActive] = useState<CasinoGameId | null>(null);
@@ -100,6 +108,10 @@ export default function CasinoPage() {
     [post, refresh],
   );
 
+  const recordNet = useCallback((net: number) => {
+    setSessionNet((n) => n + net);
+  }, []);
+
   const playBlackjack = useCallback(
     async (body: Record<string, unknown>): Promise<BlackjackState> => {
       const data = (await post("/api/quotas/gamble/blackjack", body)) as BlackjackState;
@@ -127,11 +139,12 @@ export default function CasinoPage() {
       sessionNet,
       play,
       playBlackjack,
+      recordNet,
       refresh,
       audio,
       exit,
     }),
-    [quota, history, remaining, sessionNet, play, playBlackjack, refresh, audio, exit],
+    [quota, history, remaining, sessionNet, play, playBlackjack, recordNet, refresh, audio, exit],
   );
 
   const activeGame = GAMES.find((g) => g.id === active);
@@ -209,6 +222,11 @@ export default function CasinoPage() {
                       }}
                     >
                       <span className="floor-glyph">{game.glyph}</span>
+                      {game.id === "wrestle" && incomingDuels > 0 ? (
+                        <span className="absolute top-2 right-2 rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold">
+                          {incomingDuels} 🥊
+                        </span>
+                      ) : null}
                       <span className="floor-marquee mt-2 block text-sm font-bold tracking-wide uppercase">
                         {game.name}
                       </span>

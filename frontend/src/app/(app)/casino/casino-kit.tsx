@@ -26,7 +26,8 @@ export type CasinoGameId =
   | "blackjack"
   | "baccarat"
   | "rocket"
-  | "sling";
+  | "sling"
+  | "wrestle";
 
 export const formatDollars = (value: number) =>
   value.toLocaleString(undefined, {
@@ -76,6 +77,7 @@ const MUSIC: Record<CasinoGameId, MusicSpec> = {
   baccarat: { bpm: 66, bass: [36, 43, 41, 43], arp: [60, 64, 67, 71], bassWave: "sine", arpWave: "sine", drone: 36 },
   rocket: { bpm: 140, bass: [40, 40, 40, 42], arp: [64, 67, 71, 74, 76, 74, 71, 67], bassWave: "sawtooth", arpWave: "sawtooth", hat: true, kick: true },
   sling: { bpm: 108, bass: [45, 48, 45, 43], arp: [69, 74, 76, 81], bassWave: "triangle", arpWave: "square", kick: true },
+  wrestle: { bpm: 132, bass: [40, 40, 47, 45], arp: [64, 67, 71, 67, 64, 71], bassWave: "square", arpWave: "square", hat: true, kick: true },
 };
 
 const midiHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
@@ -308,6 +310,9 @@ export type CasinoCtx = {
   sessionNet: number;
   play: (body: Record<string, unknown>) => Promise<QuotaGambleResult>;
   playBlackjack: (body: Record<string, unknown>) => Promise<BlackjackState>;
+  // For games that settle outside play()/playBlackjack() (duels): fold a
+  // result into the session-net HUD chip.
+  recordNet: (net: number) => void;
   refresh: () => void;
   audio: CasinoAudio;
   exit: () => void;
@@ -416,6 +421,17 @@ export const THEMES: Record<CasinoGameId, Theme> = {
     text: "#f7fee7",
     dim: "rgba(247,254,231,0.55)",
     fontDisplay: "'Arial Rounded MT Bold', 'Trebuchet MS', sans-serif",
+    fontBody: "'Trebuchet MS', sans-serif",
+  },
+  wrestle: {
+    bg: "#0b0f2a",
+    layers:
+      "radial-gradient(900px 600px at 0% 100%, rgba(248,113,113,0.20), transparent 55%), radial-gradient(900px 600px at 100% 100%, rgba(96,165,250,0.20), transparent 55%), radial-gradient(1200px 500px at 50% -10%, rgba(250,204,21,0.10), transparent 60%)",
+    accent: "#f87171",
+    accent2: "#60a5fa",
+    text: "#f8fafc",
+    dim: "rgba(248,250,252,0.55)",
+    fontDisplay: "'Impact', 'Arial Black', sans-serif",
     fontBody: "'Trebuchet MS', sans-serif",
   },
 };

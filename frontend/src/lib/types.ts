@@ -487,6 +487,46 @@ export interface QuotaGambleList {
   net_usd: number;
 }
 
+// /quotas/duels — 1v1 wrestle wagers between org members.
+export interface DuelMember {
+  user_id: string;
+  label: string;
+}
+
+export interface DuelFight {
+  seed: number;
+  winner_role: "challenger" | "opponent";
+}
+
+export interface QuotaDuel {
+  id: string;
+  status: "open" | "settled" | "declined" | "cancelled";
+  role: "challenger" | "opponent";
+  challenger: DuelMember;
+  opponent: DuelMember;
+  wager_usd: number;
+  winner_user_id: string | null;
+  i_won: boolean | null;
+  my_net_usd: number | null;
+  fight: DuelFight | null;
+  created_at: string;
+}
+
+export interface QuotaDuelList {
+  incoming: QuotaDuel[];
+  outgoing: QuotaDuel[];
+  recent: QuotaDuel[];
+  members: DuelMember[];
+}
+
+export interface QuotaDuelAccept {
+  duel: QuotaDuel;
+  limit_usd: number;
+  used_usd: number;
+  reserved_usd: number;
+  enforced: boolean;
+}
+
 // POST /quotas/gamble/blackjack — interactive hand state machine.
 export interface BlackjackState {
   session_id: string;

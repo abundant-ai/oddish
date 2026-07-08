@@ -168,6 +168,54 @@ class QuotaGambleListResponse(BaseModel):
     net_usd: float
 
 
+class DuelMember(BaseModel):
+    user_id: str
+    label: str
+
+
+class DuelFight(BaseModel):
+    # Deterministic replay seed; both players render the same fight.
+    seed: int
+    winner_role: Literal["challenger", "opponent"]
+
+
+class DuelCreateRequest(BaseModel):
+    opponent_user_id: str
+    wager_usd: Decimal = Field(
+        gt=0, le=Decimal("500000"), max_digits=12, decimal_places=4
+    )
+
+
+class DuelItem(BaseModel):
+    id: str
+    status: Literal["open", "settled", "declined", "cancelled"]
+    # The CALLER's role in this duel.
+    role: Literal["challenger", "opponent"]
+    challenger: DuelMember
+    opponent: DuelMember
+    wager_usd: float
+    winner_user_id: str | None = None
+    i_won: bool | None = None
+    my_net_usd: float | None = None
+    fight: DuelFight | None = None
+    created_at: str
+
+
+class DuelListResponse(BaseModel):
+    incoming: list[DuelItem]
+    outgoing: list[DuelItem]
+    recent: list[DuelItem]
+    members: list[DuelMember]
+
+
+class DuelAcceptResponse(BaseModel):
+    duel: DuelItem
+    limit_usd: float
+    used_usd: float
+    reserved_usd: float
+    enforced: bool = False
+
+
 class BlackjackRequest(BaseModel):
     action: Literal["deal", "hit", "stand", "double"]
     session_id: str | None = None

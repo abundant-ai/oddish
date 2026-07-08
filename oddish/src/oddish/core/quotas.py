@@ -333,6 +333,20 @@ async def quota_gambles_ready(session: AsyncSession) -> bool:
     return _GAMBLES_TABLE_SEEN
 
 
+_DUELS_TABLE_SEEN = False
+
+
+async def quota_duels_ready(session: AsyncSession) -> bool:
+    global _DUELS_TABLE_SEEN
+    if not _DUELS_TABLE_SEEN:
+        _DUELS_TABLE_SEEN = bool(
+            await session.scalar(
+                text("SELECT to_regclass('quota_duels') IS NOT NULL")
+            )
+        )
+    return _DUELS_TABLE_SEEN
+
+
 async def sum_gamble_net_usd(
     session: AsyncSession,
     org_id: str | None,

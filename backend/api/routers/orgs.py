@@ -19,6 +19,12 @@ from api import casino_games
 from api.schemas import (
     BlackjackRequest,
     BlackjackStateResponse,
+    DuelAcceptResponse,
+    DuelCreateRequest,
+    DuelFight,
+    DuelItem,
+    DuelListResponse,
+    DuelMember,
     InviteUserRequest,
     InviteUserResponse,
     OrganizationResponse,
@@ -47,6 +53,7 @@ from oddish.config import QuotaMode, settings
 from models import (
     OrgQuotaModel,
     QuotaBumpModel,
+    QuotaDuelModel,
     QuotaGambleModel,
     QuotaGambleSessionModel,
     QuotaModel,
@@ -62,6 +69,7 @@ from oddish.core.quotas import (
     live_bump_total,
     live_bump_totals_by_user,
     org_inflight_reserved_usd,
+    quota_duels_ready,
     quota_gambles_ready,
     quota_window_start,
     start_of_month_utc,
@@ -554,6 +562,351 @@ async def blackjack_quota(
                 limit + escrow_correction + net, used, reserved
             ),
         )
+
+
+DUEL_OPEN_LIMIT = 5
+
+
+async def _lock_gamble_users(session, org_id, *user_ids: str) -> None:
+    # Same lock keys as the single-user gamble path, taken in sorted order so
+    # a duel settlement can't deadlock against solo bets or another duel.
+    for user_id in sorted(set(user_ids)):
+        await session.execute(
+            sa_text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+            {"ns": _GAMBLE_LOCK_NAMESPACE, "key": f"{org_id}:{user_id}"},
+        )
+
+
+def _pick_duel_winner(challenger_user_id: str, opponent_user_id: str) -> str:
+    return secrets.choice((challenger_user_id, opponent_user_id))
+
+
+async def _require_duels_table(session) -> None:
+    await _require_gambles_table(session)
+    if not await quota_duels_ready(session):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Duels are not available yet (schema is still migrating). "
+                "Try again shortly."
+            ),
+        )
+
+
+def _duel_member(user) -> DuelMember:
+    return DuelMember(
+        user_id=user.id,
+        label=user.name or user.github_username or user.email,
+    )
+
+
+def _duel_member_or_ghost(user_id: str, users_by_id: dict) -> DuelMember:
+    user = users_by_id.get(user_id)
+    if user is None:
+        return DuelMember(user_id=user_id, label="departed member")
+    return _duel_member(user)
+
+
+def _duel_fight(duel) -> DuelFight | None:
+    if not isinstance(duel.fight, dict):
+        return None
+    seed = duel.fight.get("seed")
+    winner_role = duel.fight.get("winner_role")
+    if not isinstance(seed, int) or winner_role not in ("challenger", "opponent"):
+        return None
+    return DuelFight(seed=seed, winner_role=winner_role)
+
+
+def _duel_item(duel, me: str, users_by_id: dict) -> DuelItem:
+    role = "challenger" if duel.challenger_user_id == me else "opponent"
+    settled = duel.status == "settled"
+    i_won = (duel.winner_user_id == me) if settled else None
+    wager = float(duel.wager_usd)
+    return DuelItem(
+        id=duel.id,
+        status=duel.status,
+        role=role,
+        challenger=_duel_member_or_ghost(duel.challenger_user_id, users_by_id),
+        opponent=_duel_member_or_ghost(duel.opponent_user_id, users_by_id),
+        wager_usd=wager,
+        winner_user_id=duel.winner_user_id,
+        i_won=i_won,
+        my_net_usd=(wager if i_won else -wager) if settled else None,
+        fight=_duel_fight(duel) if settled else None,
+        created_at=duel.created_at.isoformat(),
+    )
+
+
+async def _duel_users(session, org_id, *user_ids: str) -> dict:
+    rows = (
+        (
+            await session.execute(
+                select(UserModel).where(
+                    UserModel.org_id == org_id, UserModel.id.in_(set(user_ids))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {u.id: u for u in rows}
+
+
+@router.get("/quotas/duels", response_model=DuelListResponse)
+async def list_my_duels(
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> DuelListResponse:
+    me = _require_gambler(auth)
+    window_start = quota_window_start()
+    async with get_session() as session:
+        await _require_duels_table(session)
+        duels = (
+            (
+                await session.execute(
+                    select(QuotaDuelModel)
+                    .where(
+                        QuotaDuelModel.org_id == auth.org_id,
+                        QuotaDuelModel.deleted_at.is_(None),
+                        (QuotaDuelModel.challenger_user_id == me)
+                        | (QuotaDuelModel.opponent_user_id == me),
+                        QuotaDuelModel.created_at > window_start,
+                    )
+                    .order_by(QuotaDuelModel.created_at.desc())
+                    .limit(100)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        roster = (
+            (
+                await session.execute(
+                    select(UserModel)
+                    .where(
+                        UserModel.org_id == auth.org_id,
+                        UserModel.is_active.is_(True),
+                        UserModel.id != me,
+                    )
+                    .order_by(UserModel.created_at.asc())
+                )
+            )
+            .scalars()
+            .all()
+        )
+        user_ids = {d.challenger_user_id for d in duels} | {
+            d.opponent_user_id for d in duels
+        } | {me}
+        users_by_id = await _duel_users(session, auth.org_id, *user_ids)
+    items = [
+        _duel_item(d, me, users_by_id)
+        for d in duels
+        if d.challenger_user_id in users_by_id and d.opponent_user_id in users_by_id
+    ]
+    return DuelListResponse(
+        incoming=[
+            i for i in items if i.status == "open" and i.role == "opponent"
+        ],
+        outgoing=[
+            i for i in items if i.status == "open" and i.role == "challenger"
+        ],
+        recent=[i for i in items if i.status == "settled"],
+        members=[_duel_member(u) for u in roster],
+    )
+
+
+@router.post("/quotas/duels", response_model=DuelItem)
+async def create_duel(
+    payload: DuelCreateRequest,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> DuelItem:
+    me = _require_gambler(auth)
+    if payload.opponent_user_id == me:
+        raise HTTPException(
+            status_code=400, detail="You cannot wrestle yourself. Seek help."
+        )
+    async with get_session() as session:
+        await _require_duels_table(session)
+        opponent = (
+            await session.execute(
+                select(UserModel).where(
+                    UserModel.id == payload.opponent_user_id,
+                    UserModel.org_id == auth.org_id,
+                    UserModel.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+        if opponent is None:
+            raise HTTPException(status_code=404, detail="Opponent not found in this org")
+        open_count = await session.scalar(
+            select(func.count(QuotaDuelModel.id)).where(
+                QuotaDuelModel.org_id == auth.org_id,
+                QuotaDuelModel.challenger_user_id == me,
+                QuotaDuelModel.status == "open",
+                QuotaDuelModel.deleted_at.is_(None),
+                QuotaDuelModel.created_at > quota_window_start(),
+            )
+        )
+        if (open_count or 0) >= DUEL_OPEN_LIMIT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"You already have {DUEL_OPEN_LIMIT} open challenges. Settle some.",
+            )
+        limit = await get_effective_limit(session, auth.org_id, me)
+        used = await sum_cost_usd(session, auth.org_id, me, quota_window_start())
+        reserved = await inflight_reserved_usd(session, auth.org_id, me)
+        if payload.wager_usd > limit - used - reserved:
+            raise HTTPException(
+                status_code=400, detail="Wager exceeds your remaining quota"
+            )
+        duel = QuotaDuelModel(
+            org_id=auth.org_id,
+            challenger_user_id=me,
+            opponent_user_id=opponent.id,
+            wager_usd=payload.wager_usd,
+            status="open",
+        )
+        session.add(duel)
+        await session.flush()
+        users_by_id = await _duel_users(session, auth.org_id, me, opponent.id)
+        return _duel_item(duel, me, users_by_id)
+
+
+@router.post("/quotas/duels/{duel_id}/accept", response_model=DuelAcceptResponse)
+async def accept_duel(
+    duel_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> DuelAcceptResponse:
+    me = _require_gambler(auth)
+    async with get_session() as session:
+        await _require_duels_table(session)
+        duel = (
+            await session.execute(
+                select(QuotaDuelModel).where(
+                    QuotaDuelModel.id == duel_id,
+                    QuotaDuelModel.org_id == auth.org_id,
+                    QuotaDuelModel.opponent_user_id == me,
+                    QuotaDuelModel.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        if duel is None:
+            raise HTTPException(status_code=404, detail="No such challenge for you")
+        await _lock_gamble_users(session, auth.org_id, duel.challenger_user_id, me)
+        # CAS under the locks: a concurrent cancel/second-accept loses cleanly.
+        claimed = await session.execute(
+            QuotaDuelModel.__table__.update()
+            .where(
+                QuotaDuelModel.id == duel.id,
+                QuotaDuelModel.status == "open",
+            )
+            .values(status="settled", updated_at=utcnow())
+        )
+        if claimed.rowcount != 1:
+            raise HTTPException(status_code=409, detail="This challenge is gone")
+        if duel.created_at <= quota_window_start():
+            raise HTTPException(
+                status_code=409, detail="This challenge expired (24h). Rematch?"
+            )
+        window_start = quota_window_start()
+        my_limit = await get_effective_limit(session, auth.org_id, me)
+        my_used = await sum_cost_usd(session, auth.org_id, me, window_start)
+        my_reserved = await inflight_reserved_usd(session, auth.org_id, me)
+        if duel.wager_usd > my_limit - my_used - my_reserved:
+            raise HTTPException(
+                status_code=400, detail="You can't cover the stake right now"
+            )
+        rival = duel.challenger_user_id
+        rival_remaining = (
+            await get_effective_limit(session, auth.org_id, rival)
+            - await sum_cost_usd(session, auth.org_id, rival, window_start)
+            - await inflight_reserved_usd(session, auth.org_id, rival)
+        )
+        if duel.wager_usd > rival_remaining:
+            raise HTTPException(
+                status_code=409,
+                detail="The challenger can no longer cover the stake",
+            )
+        users_by_id = await _duel_users(session, auth.org_id, rival, me)
+        if rival not in users_by_id:
+            raise HTTPException(
+                status_code=409, detail="The challenger is no longer in this org"
+            )
+        winner = _pick_duel_winner(rival, me)
+        fight = {
+            "seed": secrets.randbelow(2**31),
+            "winner_role": "challenger" if winner == rival else "opponent",
+        }
+        duel.status = "settled"
+        duel.winner_user_id = winner
+        duel.fight = fight
+        duel.updated_at = utcnow()
+        for user_id in (rival, me):
+            won = user_id == winner
+            other = users_by_id[me if user_id == rival else rival]
+            session.add(
+                QuotaGambleModel(
+                    org_id=auth.org_id,
+                    user_id=user_id,
+                    game="wrestle",
+                    wager_usd=duel.wager_usd,
+                    net_usd=duel.wager_usd if won else -duel.wager_usd,
+                    multiplier=Decimal("2") if won else Decimal("0"),
+                    detail={
+                        "duel_id": duel.id,
+                        "opponent": _duel_member(other).label,
+                        "seed": fight["seed"],
+                    },
+                    won=won,
+                )
+            )
+        my_net = duel.wager_usd if winner == me else -duel.wager_usd
+        item = _duel_item(duel, me, users_by_id)
+    return DuelAcceptResponse(
+        duel=item,
+        limit_usd=float(max(Decimal(0), my_limit + my_net)),
+        used_usd=float(my_used),
+        reserved_usd=float(my_reserved),
+        enforced=settings.quota_mode == QuotaMode.ENFORCE,
+    )
+
+
+@router.post("/quotas/duels/{duel_id}/dismiss", response_model=DuelItem)
+async def dismiss_duel(
+    duel_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> DuelItem:
+    me = _require_gambler(auth)
+    async with get_session() as session:
+        await _require_duels_table(session)
+        duel = (
+            await session.execute(
+                select(QuotaDuelModel).where(
+                    QuotaDuelModel.id == duel_id,
+                    QuotaDuelModel.org_id == auth.org_id,
+                    QuotaDuelModel.deleted_at.is_(None),
+                    (QuotaDuelModel.challenger_user_id == me)
+                    | (QuotaDuelModel.opponent_user_id == me),
+                )
+            )
+        ).scalar_one_or_none()
+        if duel is None:
+            raise HTTPException(status_code=404, detail="No such challenge for you")
+        new_status = "cancelled" if duel.challenger_user_id == me else "declined"
+        claimed = await session.execute(
+            QuotaDuelModel.__table__.update()
+            .where(
+                QuotaDuelModel.id == duel.id,
+                QuotaDuelModel.status == "open",
+            )
+            .values(status=new_status, updated_at=utcnow())
+        )
+        if claimed.rowcount != 1:
+            raise HTTPException(status_code=409, detail="This challenge is gone")
+        duel.status = new_status
+        users_by_id = await _duel_users(
+            session, auth.org_id, duel.challenger_user_id, duel.opponent_user_id
+        )
+        return _duel_item(duel, me, users_by_id)
 
 
 def _quota_member_item(
