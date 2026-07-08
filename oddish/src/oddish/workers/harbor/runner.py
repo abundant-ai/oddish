@@ -293,6 +293,15 @@ async def run_harbor_trial_async(
 
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
+    # The TPU gate runs BEFORE the ephemeral early-return so BOTH engines get
+    # the fast-fail: an out-of-process trial with override_tpu on a TPU-less
+    # backend would otherwise skip it entirely.
+    _assert_tpu_backend(
+        environment,
+        get_backend(environment.value),
+        getattr(hc.environment, "override_tpu", None),
+    )
+
     # Harbor than the one baked into this container cannot be swapped in-process
     # (sys.modules caches it), so route to the child-interpreter engine.
     if hc.variant_id == "ephemeral":
@@ -360,9 +369,6 @@ async def run_harbor_trial_async(
         env_config.type = environment
 
         backend = get_backend(environment.value)
-        _assert_tpu_backend(
-            environment, backend, getattr(env_config, "override_tpu", None)
-        )
         if backend is not None:
             env_config.kwargs = backend.harbor_env_kwargs(env_config.kwargs)
         probe_modal = _probe_modal_kwargs(is_probe, environment)
