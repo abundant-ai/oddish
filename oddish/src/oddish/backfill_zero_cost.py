@@ -25,7 +25,7 @@ _SELECT_ZERO_COST = text(
 _UPDATE_COST = text(
     """
     UPDATE trials
-    SET cost_usd = :cost, cost_is_estimated = TRUE
+    SET cost_usd = :cost, cost_is_estimated = :est
     WHERE id = :id AND cost_usd = 0
     """
 )
@@ -43,9 +43,9 @@ async def run_backfill(*, apply: bool) -> None:
         updates: list[dict] = []
         trials: Counter[str] = Counter()
         dollars: Counter[str] = Counter()
-        skipped: Counter[str] = Counter()
+        unpriced: Counter[str] = Counter()
         for row in rows:
-            cost, _ = settle_cost_usd(
+            cost, est = settle_cost_usd(
                 0.0,
                 model=row.model,
                 input_tokens=row.input_tokens,
@@ -54,18 +54,18 @@ async def run_backfill(*, apply: bool) -> None:
                 cache_write_tokens=row.cache_write_tokens,
             )
             model = row.model or "unknown"
+            updates.append({"id": row.id, "cost": cost, "est": est})
             if cost is None:
-                skipped[model] += 1
-                continue
-            updates.append({"id": row.id, "cost": cost})
-            trials[model] += 1
-            dollars[model] += cost
+                unpriced[model] += 1
+            else:
+                trials[model] += 1
+                dollars[model] += cost
 
         print(f"Zero-cost trials with token usage: {len(rows)}")
         for model, total in dollars.most_common():
             print(f"  {model}: {trials[model]} trials -> ${total:.2f}")
-        for model, count in skipped.most_common():
-            print(f"  {model}: {count} trials skipped (no pricing)")
+        for model, count in unpriced.most_common():
+            print(f"  {model}: {count} trials -> unpriced (bills the flat quota rate)")
         print(
             f"Total: {len(updates)} trials, "
             f"${sum(dollars.values()):.2f} estimated spend"

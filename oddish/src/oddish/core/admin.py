@@ -1077,6 +1077,19 @@ def _real_spend_filter():
     )
 
 
+def _settled_cost_col():
+    """Sum of stored costs that were settled from token estimates at ingest."""
+    return func.coalesce(
+        func.sum(
+            case(
+                (TrialModel.cost_is_estimated.is_(True), TrialModel.cost_usd),
+                else_=0.0,
+            )
+        ),
+        0.0,
+    ).label("settled_cost")
+
+
 def _spend_identity(
     billed_user_id: str | None,
     github_id: str | None,
@@ -1758,6 +1771,7 @@ async def get_cost_breakdown_core(
                 ),
                 0.0,
             ).label("native_cost"),
+            _settled_cost_col(),
             func.coalesce(
                 func.sum(
                     case(
@@ -1836,8 +1850,9 @@ async def get_cost_breakdown_core(
         input_tokens = int(row.input_tokens or 0)
         cache_tokens = int(row.cache_tokens or 0)
         output_tokens = int(row.output_tokens or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
+        settled = float(row.settled_cost or 0.0)
+        native = float(row.native_cost or 0.0) - settled
+        estimated = settled + (
             estimate_cost_usd(
                 row.model,
                 int(row.est_input or 0),
@@ -2190,6 +2205,7 @@ async def get_user_cost_breakdown_core(
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
+            _settled_cost_col(),
             func.coalesce(
                 func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
             ).label("est_input"),
@@ -2280,8 +2296,9 @@ async def get_user_cost_breakdown_core(
         input_tokens = int(row.input_tokens or 0)
         cache_tokens = int(row.cache_tokens or 0)
         output_tokens = int(row.output_tokens or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
+        settled = float(row.settled_cost or 0.0)
+        native = float(row.native_cost or 0.0) - settled
+        estimated = settled + (
             estimate_cost_usd(
                 row.model,
                 int(row.est_input or 0),
@@ -2349,6 +2366,7 @@ async def get_user_cost_breakdown_core(
             func.coalesce(
                 func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
             ).label("native_cost"),
+            _settled_cost_col(),
             func.coalesce(
                 func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
             ).label("est_input"),
@@ -2381,8 +2399,9 @@ async def get_user_cost_breakdown_core(
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
+        settled = float(row.settled_cost or 0.0)
+        native = float(row.native_cost or 0.0) - settled
+        estimated = settled + (
             estimate_cost_usd(
                 row.model,
                 int(row.est_input or 0),
