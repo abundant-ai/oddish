@@ -1086,9 +1086,11 @@ def _spend_identity(
     GitHub-handle / Unattributed row; ``label`` is a precomputed display label,
     or None when ``real_user_id`` supplies the name via the enrichment step.
 
-    Whether a row is drilldown-linkable is decided by the caller, not here: a
-    key can gather both billed and unbilled groups, and only an all-billed row
-    matches the per-user drilldown (which sums billed spend alone).
+    Whether a row is drilldown-linkable is decided by the caller, not here: any
+    row with a ``real_user_id`` links to that user's drilldown, even when it
+    also holds unbilled spend. The per-user drilldown sums billed spend alone,
+    so an unbilled row's drilldown total may fall short of the row total -- the
+    caller flags that with ``has_unbilled_spend`` rather than dropping the link.
     """
     if billed_user_id:
         return billed_user_id, billed_user_id, None
@@ -1131,9 +1133,16 @@ class CostUserBreakdown(BaseModel):
     # Stable grouping key: a user id for billed/submitter rows, else a synthetic
     # ``ghid:``/``ghuser:``/``__unattributed__`` key for label-only fallback rows.
     key: str
-    # Deep-link target; set only when the per-user drilldown can reproduce this
-    # row's number (billed rows). None => render the row non-clickable.
+    # Deep-link target: set whenever the row resolves to a real oddish user (the
+    # billed user or the submitting credential's user), even if some/all of its
+    # trials are unbilled. None => the row is a GitHub-handle / Unattributed
+    # fallback that is not a registered user, so it renders non-clickable.
     owner_user_id: str | None
+    # True when the row includes trials that were never billed to a quota (e.g.
+    # spend created before billing stamping shipped, or an offboarded payer).
+    # Drives the "unbilled" chip; for a linkable row it also warns that the
+    # per-user drilldown (billed spend only) may total less than this row.
+    has_unbilled_spend: bool
     # Precomputed label for a row with no backing user (GitHub handle,
     # "Unattributed"); None means fill the display name from the linked user.
     label: str | None = None
@@ -1706,9 +1715,10 @@ async def get_cost_breakdown_core(
                 "label": user_label,
                 # A user key can gather both billed and unbilled groups (someone
                 # billed while active, then the submitter fallback for a later
-                # trial after they were offboarded). The row is drilldown-linkable
-                # only when EVERY group is billed, since the per-user drilldown
-                # sums billed spend alone -- otherwise the row would outrun it.
+                # trial after they were offboarded, or pre-billing spend that was
+                # never stamped). ``all_billed`` tracks whether EVERY group is
+                # billed so the row can flag unbilled spend; it no longer gates
+                # linkability (a real user's row links regardless).
                 "all_billed": row_billed,
                 "org_id": row.exp_org_id,
                 "trial_count": 0,
@@ -1747,12 +1757,14 @@ async def get_cost_breakdown_core(
     by_user_out = [
         CostUserBreakdown(
             key=u["key"],
-            # Link only an all-billed row: its total equals what the per-user
-            # drilldown reproduces. A row that also holds unbilled spend would
-            # outrun the drilldown, so it stays unlinked.
-            owner_user_id=(
-                u["real_user_id"] if u["all_billed"] and u["real_user_id"] else None
-            ),
+            # Link whenever the row resolves to a real oddish user, even if it
+            # holds unbilled spend: "unbilled" doesn't mean "not a real user"
+            # (e.g. pre-billing spend). GitHub-handle / Unattributed fallback
+            # rows have no real_user_id and stay non-clickable.
+            owner_user_id=u["real_user_id"],
+            # Flag any row carrying unbilled spend. On a linkable row this warns
+            # the drilldown (billed-only) may total less than this row.
+            has_unbilled_spend=not u["all_billed"],
             label=u["label"],
             org_id=u["org_id"],
             trial_count=int(u["trial_count"]),

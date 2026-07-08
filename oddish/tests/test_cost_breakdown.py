@@ -378,14 +378,18 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     by_user = {u.key: u for u in result.by_user}
     assert _approx(by_user[USER_A].cost_usd, 3.5)
     assert by_user[USER_A].owner_user_id == USER_A
+    # All of USER_A's in-window spend is billed, so no unbilled flag.
+    assert by_user[USER_A].has_unbilled_spend is False
     assert by_user[USER_A].label is None
     assert by_user[USER_A].experiment_count == 2
     assert by_user[USER_A].trial_count == 2
     assert _approx(by_user[USER_B].cost_usd, 3.0 + _EXPECTED_EST)
     assert by_user[USER_B].experiment_count == 2
-    # Unbilled spend surfaces as its own bucket instead of vanishing.
+    # Unbilled spend surfaces as its own bucket instead of vanishing; it is not
+    # a registered user, so it stays non-clickable and flags the unbilled spend.
     assert _approx(by_user["__unattributed__"].cost_usd, 4.0)
     assert by_user["__unattributed__"].owner_user_id is None
+    assert by_user["__unattributed__"].has_unbilled_spend is True
     assert by_user["__unattributed__"].label == "Unattributed"
 
     costs = [e.cost_usd for e in result.experiments]
@@ -615,32 +619,41 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
 
     by_user = {u.key: u for u in result.by_user}
 
-    # GitHub-handle fallback: label-only, no drilldown link.
+    # GitHub-handle fallback: label-only, not a registered oddish user, so it
+    # stays non-clickable; the spend is unbilled.
     assert _approx(by_user["ghuser:octo-ext"].cost_usd, 10.0)
     assert by_user["ghuser:octo-ext"].label == "@octo-ext"
     assert by_user["ghuser:octo-ext"].owner_user_id is None
+    assert by_user["ghuser:octo-ext"].has_unbilled_spend is True
 
-    # GitHub-id fallback keys on the id but shows the handle when present.
+    # GitHub-id fallback keys on the id but shows the handle when present; also
+    # not a registered user, so non-clickable and unbilled.
     assert _approx(by_user["ghid:gh-9001"].cost_usd, 20.0)
     assert by_user["ghid:gh-9001"].label == "@with-id"
     assert by_user["ghid:gh-9001"].owner_user_id is None
+    assert by_user["ghid:gh-9001"].has_unbilled_spend is True
 
-    # Submitting-credential fallback keys on the real user id but is not linkable
-    # (the per-user drilldown reproduces billed spend only) and carries no label.
+    # Submitting-credential fallback keys on the real user id: the spend is
+    # unbilled but it IS a real oddish user, so the row links to their drilldown
+    # and flags the unbilled spend. It carries no label.
     assert _approx(by_user[SUBMITTER].cost_usd, 5.0)
-    assert by_user[SUBMITTER].owner_user_id is None
+    assert by_user[SUBMITTER].owner_user_id == SUBMITTER
+    assert by_user[SUBMITTER].has_unbilled_spend is True
     assert by_user[SUBMITTER].label is None
 
-    # Billed probe is kept and attributed to its payer with a drilldown link.
+    # Billed probe is kept and attributed to its payer with a drilldown link;
+    # all of its spend is billed, so no unbilled flag.
     assert _approx(by_user[PAYER].cost_usd, 7.0)
     assert by_user[PAYER].owner_user_id == PAYER
+    assert by_user[PAYER].has_unbilled_spend is False
     assert by_user[PAYER].label is None
 
-    # Billed + submitter-fallback spend for the same user merges into one row
-    # whose total (5.0) outruns the billed-only per-user drilldown (3.0), so the
-    # row is deliberately NOT linkable even though part of it is billed.
+    # Billed + submitter-fallback spend for the same real user merges into one
+    # row (total 5.0). It links to the user's drilldown and flags the unbilled
+    # half, since the billed-only drilldown (3.0) totals less than this row.
     assert _approx(by_user[MERGED].cost_usd, 5.0)
-    assert by_user[MERGED].owner_user_id is None
+    assert by_user[MERGED].owner_user_id == MERGED
+    assert by_user[MERGED].has_unbilled_spend is True
     assert by_user[MERGED].label is None
 
     # The "N users" total counts real users, not the GitHub-handle /
