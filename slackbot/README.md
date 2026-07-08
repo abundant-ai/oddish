@@ -53,8 +53,20 @@ All live in one Modal secret named `oddish-slackbot`:
   in `_dispatch`.
 - **Single shared identity.** Every backend call is attributed to the one admin
   API key regardless of who asked; the Slack asker is captured in the logs only.
+- **Mixed scoping.** The cost and queue-health tools hit admin endpoints that are
+  global across orgs, but the trial-log and task-list tools use org-scoped
+  endpoints resolved from the API key's org. Trials or tasks in other orgs can
+  therefore surface as "not found" or be missing from lists even though the bot
+  otherwise speaks platform-wide. Point the key at the org whose runs you ask
+  about, or use the dashboard for cross-org trial/task detail.
 
 ## Residual risk
+
+If the Modal `answer` worker is terminated before it runs its timeout/error
+handlers (e.g. an infra SIGKILL), the thread can stay on the "Thinking…"
+placeholder while `seen_events` still holds the claim, so a re-mention (a new
+`event_id`) is the recovery path rather than an automatic retry of the same
+event.
 
 The end-to-end permission-gate behavior (that `allowed_tools` +
 `permission_mode="dontAsk"` denies every non-oddish tool on the shipped

@@ -63,7 +63,14 @@ def _strip_mention(text: str, bot_user_id: str | None) -> str:
 
 
 def _bot_user_id(payload: dict, event: dict) -> str | None:
-    for auth in payload.get("authorizations") or []:
+    authorizations = payload.get("authorizations") or []
+    # Prefer the authorization Slack flags as the bot; only fall back to the
+    # first entry (or the leading mention in the text) when none is flagged,
+    # so multi-authorization payloads don't strip the wrong user id.
+    for auth in authorizations:
+        if auth.get("is_bot") and auth.get("user_id"):
+            return auth["user_id"]
+    for auth in authorizations:
         uid = auth.get("user_id")
         if uid:
             return uid
@@ -102,6 +109,11 @@ def _verify_slack(headers: dict[str, str], body: bytes) -> bool:
 
 
 def _dispatch(payload: dict) -> None:
+    event_id = payload.get("event_id")
+    channel: str | None = None
+    thread: str | None = None
+    claimed = False
+    handed_off = False
     try:
         event = payload.get("event") or {}
         if event.get("type") != "app_mention" or event.get("bot_id"):
@@ -109,7 +121,6 @@ def _dispatch(payload: dict) -> None:
         # Ignore edits/deletions of an existing mention; only act on the original.
         if event.get("subtype") or event.get("edited"):
             return
-        event_id = payload.get("event_id")
         channel = event.get("channel")
         ts = event.get("ts")
         if not channel or not ts:
@@ -118,6 +129,15 @@ def _dispatch(payload: dict) -> None:
         thread = event.get("thread_ts") or ts
         user = event.get("user")
         _log("received", event_id=event_id, channel=channel, thread=thread, user=user)
+        # Claim up front so *every* outcome -- including the rejection replies
+        # below -- is deduplicated and a Slack redelivery of the same event_id
+        # is never answered twice. The outer handler releases the claim if we
+        # fail before successfully handing the event to the worker, so a
+        # transient error still leaves the redelivery free to retry.
+        if not _claim_event(event_id):
+            _log("duplicate", event_id=event_id)
+            return
+        claimed = True
 
         allowed = os.environ.get("SLACK_ALLOWED_USERS", "").strip()
         if not allowed:
@@ -134,23 +154,24 @@ def _dispatch(payload: dict) -> None:
             _log("empty_prompt", event_id=event_id, user=user)
             _post(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`")
             return
-        # Claim as the final gate, immediately before handing the event to
-        # the worker, so a failure in any earlier step cannot leave the
-        # event marked "seen" and silently swallow a Slack redelivery.
-        if not _claim_event(event_id):
-            _log("duplicate", event_id=event_id)
-            return
-        try:
-            answer.spawn(channel, thread, cleaned, user, event_id)
-        except Exception:
-            # Spawn failed after claiming; release so the redelivery retries.
-            _release_event(event_id)
-            raise
+        answer.spawn(channel, thread, cleaned, user, event_id)
+        handed_off = True
         _log("claimed", event_id=event_id, channel=channel, thread=thread, user=user)
     except Exception:
         # Runs as a fire-and-forget background task after the HTTP ack, so an
         # unhandled error would otherwise vanish into the server logs untraced.
-        log.exception("dispatch failed event_id=%s", payload.get("event_id"))
+        # Slack already got its 200 and will not retry on its own, so release
+        # the dedup claim (only if we made one but never handed off the work)
+        # and surface the failure in-thread instead of leaving the user with
+        # no response at all.
+        log.exception("dispatch failed event_id=%s", event_id)
+        if claimed and not handed_off:
+            _release_event(event_id)
+        if channel and thread:
+            try:
+                _post(channel, thread, ":warning: I hit an error handling that mention. Please try again.")
+            except Exception:
+                log.exception("failed to post dispatch error event_id=%s", event_id)
 
 
 @app.function(image=image, secrets=[secret], min_containers=1)
