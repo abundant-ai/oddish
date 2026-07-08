@@ -142,17 +142,17 @@ def _dispatch(payload: dict) -> None:
         allowed = os.environ.get("SLACK_ALLOWED_USERS", "").strip()
         if not allowed:
             _log("allowlist_unset", event_id=event_id, user=user)
-            _post(channel, thread, "This bot's allowlist is not configured; refusing to run.")
+            _notify(channel, thread, "This bot's allowlist is not configured; refusing to run.")
             return
         if not user or user not in {u.strip() for u in allowed.split(",") if u.strip()}:
             _log("unauthorized", event_id=event_id, user=user)
-            _post(channel, thread, "Sorry, you're not authorized to use this bot.")
+            _notify(channel, thread, "Sorry, you're not authorized to use this bot.")
             return
 
         cleaned = _strip_mention(event.get("text", ""), _bot_user_id(payload, event))
         if not cleaned:
             _log("empty_prompt", event_id=event_id, user=user)
-            _post(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`")
+            _notify(channel, thread, "Ask me a question after the mention, e.g. `@Oddish Claude why did trial abc123 fail?`")
             return
         answer.spawn(channel, thread, cleaned, user, event_id)
         handed_off = True
@@ -220,6 +220,18 @@ def _escape(text: str) -> str:
 
 def _post(channel: str, thread: str, text: str) -> str:
     return _client().chat_postMessage(channel=channel, thread_ts=thread, text=text[:_MAX_SLACK])["ts"]
+
+
+def _notify(channel: str, thread: str, text: str) -> None:
+    """Best-effort terminal reply (rejection / hint).
+
+    Swallows Slack errors so a failed post cannot bubble into the generic
+    dispatch error handler and mask the specific message with a vague one.
+    """
+    try:
+        _post(channel, thread, text)
+    except Exception:
+        log.exception("failed to post reply channel=%s", channel)
 
 
 def _update(channel: str, ts: str, text: str) -> None:
@@ -303,8 +315,11 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
         # and deliver the ready answer instead of discarding it.
     except Exception:
         log.exception("answer failed event_id=%s channel=%s thread=%s", event_id, channel, thread)
-        _update(channel, status_ts, ":warning: I hit an error and gave up on this one.")
-        return
+        if not final:
+            _update(channel, status_ts, ":warning: I hit an error and gave up on this one.")
+            return
+        # A ResultMessage already produced a complete answer before the error;
+        # deliver it below rather than discarding it behind a generic failure.
 
     if hit_turn_limit and not final:
         final = "I hit my step limit before finishing. Try narrowing the question."
