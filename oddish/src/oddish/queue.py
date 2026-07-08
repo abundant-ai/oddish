@@ -14,7 +14,6 @@ from oddish.core.baseline_gate import (
     GateOutcome,
     evaluate_baseline_gate,
 )
-from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.enqueue import enqueue_tag_project_worker_job
 from oddish.core.tags.projection import recompute_task_browse_projection
 from oddish.db import (
@@ -1378,7 +1377,9 @@ async def _resolve_baseline_gate_for_scope(
             )
         )
     ).all()
-    outcome, reason = evaluate_baseline_gate(list(baseline_rows))
+    outcome, reason = evaluate_baseline_gate(
+        [(agent, reward) for agent, reward in baseline_rows]
+    )
 
     if outcome == GateOutcome.VALID:
         await _unblock_worker_jobs_for_trials(session, list(blocked_trial_ids))
