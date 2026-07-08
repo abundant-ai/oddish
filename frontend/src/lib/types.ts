@@ -762,6 +762,10 @@ export interface CostUserBreakdown {
   output_tokens: number;
   cost_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  inflight_trial_count?: number;
+  quota_spent_usd?: number | null;
+  quota_limit_usd?: number | null;
   models: CostModelBreakdown[];
 }
 
@@ -814,6 +818,9 @@ interface CostTotals {
   cost_usd: number;
   cost_native_usd: number;
   cost_estimated_usd: number;
+  prev_cost_usd?: number | null;
+  month_cost_usd?: number;
+  month_budget_usd?: number | null;
 }
 
 export interface CostBreakdownResponse {
@@ -842,10 +849,19 @@ export interface UserCostTaskBreakdown {
   models: CostModelBreakdown[];
 }
 
+export interface UserCostExperimentBreakdown {
+  experiment_id: string;
+  name: string | null;
+  trial_count: number;
+  cost_usd: number;
+  models: CostModelBreakdown[];
+}
+
 interface UserCostTotals {
   window_days: number | null;
   trial_count: number;
   task_count: number;
+  experiment_count?: number;
   cost_usd: number;
   cost_estimated_usd: number;
 }
@@ -860,6 +876,7 @@ export interface UserCostBreakdownResponse {
   bucket: string;
   totals: UserCostTotals;
   tasks: UserCostTaskBreakdown[];
+  experiments?: UserCostExperimentBreakdown[];
   series_by_model: CostSeries;
   timestamp: string;
 }
