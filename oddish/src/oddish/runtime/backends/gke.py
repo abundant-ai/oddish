@@ -51,6 +51,12 @@ class GkeBackend:
             "registry_name": settings.gke_registry_name,
             "flex_start": settings.gke_flex_start,
             "pod_ready_timeout_sec": settings.gke_pod_ready_timeout_sec,
+            # Refuse the trial-time gcloud Cloud Build fallback on a task-image
+            # miss: it shells out to a subprocess and surfaces a raw
+            # FileNotFoundError. With this set Harbor raises an actionable
+            # "image not found" instead. The hosted model builds/pushes task
+            # images ahead of the run, so a miss is an error, not a build cue.
+            "require_prebuilt_image": True,
             **base_kwargs,
         }
 

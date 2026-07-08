@@ -92,6 +92,21 @@ def test_gke_env_kwargs_caller_overrides_win() -> None:
     assert merged["extra"] == "x"
 
 
+def test_gke_env_kwargs_require_prebuilt_image_defaults_true() -> None:
+    # The hosted GKE path must NOT fall back to a trial-time gcloud Cloud Build
+    # on a task-image miss (opaque FileNotFoundError); require a prebuilt image
+    # so Harbor raises an actionable error instead.
+    merged = GkeBackend().harbor_env_kwargs({})
+    assert merged["require_prebuilt_image"] is True
+
+
+def test_gke_env_kwargs_caller_can_override_require_prebuilt_image() -> None:
+    # Caller-wins: a submission that explicitly opts back into Cloud Build keeps
+    # its value, same spread as every other GKE default.
+    merged = GkeBackend().harbor_env_kwargs({"require_prebuilt_image": False})
+    assert merged["require_prebuilt_image"] is False
+
+
 def test_gke_teardown_parses_handle_and_deletes_pod(monkeypatch) -> None:
     api = MagicMock()
     build_core_api = _install_fake_gke_auth(monkeypatch, api)
