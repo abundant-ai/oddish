@@ -94,9 +94,59 @@ def test_ephemeral_path_hits_tpu_gate_before_dispatch(monkeypatch):
                 environment=EnvironmentType.MODAL,
                 harbor_config={
                     "variant_id": "ephemeral",
-                    "environment": {
-                        "override_tpu": {"type": "v5e", "topology": "2x2"}
-                    },
+                    "environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}},
                 },
             )
         )
+
+
+def test_override_tpu_with_explicit_non_gke_environment_rejected_at_schema():
+    # An explicit non-GKE environment + a TPU request can never run; reject at
+    # submit instead of minutes later at the worker fast-fail.
+    from pydantic import ValidationError
+
+    from oddish.schemas import AgentModelPair, HarborConfig, TaskSweepSubmission
+
+    with pytest.raises(ValidationError, match="environment=gke"):
+        TaskSweepSubmission(
+            task_id="t1",
+            environment=EnvironmentType.MODAL,
+            configs=[AgentModelPair(agent="oracle")],
+            harbor=HarborConfig.model_validate(
+                {"environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}}}
+            ),
+        )
+
+
+def test_override_tpu_with_gke_or_unset_environment_passes_schema():
+    from oddish.schemas import AgentModelPair, HarborConfig, TaskSweepSubmission
+
+    harbor = HarborConfig.model_validate(
+        {"environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}}}
+    )
+    for env in (EnvironmentType.GKE, None):
+        TaskSweepSubmission(
+            task_id="t1",
+            environment=env,
+            configs=[AgentModelPair(agent="oracle")],
+            harbor=harbor,
+        )
+
+
+def test_effective_environment_tpu_guard():
+    # The sweep-level guard covers what the schema cannot see: the effective
+    # environment resolved from the server default or an append's inheritance.
+    from fastapi import HTTPException
+
+    from oddish.core.endpoints.sweep import _reject_tpu_without_gke
+    from oddish.schemas import HarborConfig
+
+    harbor_tpu = HarborConfig.model_validate(
+        {"environment": {"override_tpu": {"type": "v5e", "topology": "2x2"}}}
+    )
+    with pytest.raises(HTTPException):
+        _reject_tpu_without_gke(harbor_tpu, EnvironmentType.MODAL)
+    with pytest.raises(HTTPException):
+        _reject_tpu_without_gke(harbor_tpu, None)
+    _reject_tpu_without_gke(harbor_tpu, EnvironmentType.GKE)
+    _reject_tpu_without_gke(HarborConfig(), EnvironmentType.MODAL)

@@ -32,6 +32,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.schemas import (
+    HarborConfig,
     TaskResponse,
     TaskSweepBatchItemResult,
     TaskSweepSubmission,
@@ -183,6 +184,29 @@ async def _existing_task_environment(
     return EnvironmentType(existing_environment) if existing_environment else None
 
 
+def _reject_tpu_without_gke(
+    harbor: "HarborConfig",
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a TPU request resolves to a non-GKE effective environment.
+
+    The schema rejects the explicit-environment case; this covers what only the
+    server can see -- the caller-resolved default and an append's inherited
+    environment.
+    """
+    if (
+        harbor.environment.override_tpu is not None
+        and effective_environment != EnvironmentType.GKE
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TPU requests require the trials' effective environment to be "
+                "gke. Submit with environment=gke."
+            ),
+        )
+
+
 def _reject_mixed_gke_configs(
     configs,
     effective_environment: EnvironmentType | None,
@@ -314,6 +338,7 @@ async def create_task_sweep_core(
         submission.environment, inherited_environment, default_environment
     )
     _reject_mixed_gke_configs(submission.configs, effective_environment)
+    _reject_tpu_without_gke(submission.harbor, effective_environment)
     harbor_to_gate = submission.harbor
     if effective_environment is not None:
         harbor_to_gate = stamp_gke_harbor_source(
