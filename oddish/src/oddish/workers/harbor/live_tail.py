@@ -62,6 +62,13 @@ def _parse_json_line(line: bytes) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
     if not isinstance(value, str):
         value = json.dumps(value, default=str)
@@ -290,10 +297,14 @@ def _render_cursor_tool_call(event: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
         result = call.get("result")
-        if result is not None:
-            rendered.append(
-                {"kind": "tool_result", "payload": _clipped_payload("content", result)}
-            )
+        rendered.append(
+            {
+                "kind": "tool_result",
+                "payload": _clipped_payload(
+                    "content", "" if result is None else result
+                ),
+            }
+        )
     return rendered
 
 
@@ -313,7 +324,11 @@ class CursorUsageFold:
         return self._seen_usage
 
     def on_truncate(self) -> None:
-        return None
+        self.input_tokens = 0
+        self.cache_tokens = 0
+        self.cache_write_tokens = 0
+        self.output_tokens = 0
+        self._seen_usage = False
 
     def feed_line(self, line: bytes) -> list[dict[str, Any]]:
         event = _parse_json_line(line)
@@ -337,10 +352,10 @@ class CursorUsageFold:
     def _feed_result(self, event: dict[str, Any]) -> list[dict[str, Any]]:
         usage = event.get("usage")
         if isinstance(usage, dict):
-            self.input_tokens += int(usage.get("inputTokens") or 0)
-            self.cache_tokens += int(usage.get("cacheReadTokens") or 0)
-            self.cache_write_tokens += int(usage.get("cacheWriteTokens") or 0)
-            self.output_tokens += int(usage.get("outputTokens") or 0)
+            self.input_tokens += _as_int(usage.get("inputTokens"))
+            self.cache_tokens += _as_int(usage.get("cacheReadTokens"))
+            self.cache_write_tokens += _as_int(usage.get("cacheWriteTokens"))
+            self.output_tokens += _as_int(usage.get("outputTokens"))
             self._seen_usage = True
         result = event.get("result")
         if not result:
@@ -361,17 +376,17 @@ class CursorUsageFold:
 
 def _mini_message_usage(message: dict[str, Any]) -> tuple[int, int, int]:
     """Reads a mini-swe message's input, output, and cached token counts."""
-    usage = ((message.get("extra") or {}).get("response") or {}).get("usage") or {}
+    extra = message.get("extra")
+    response = extra.get("response") if isinstance(extra, dict) else None
+    usage = response.get("usage") if isinstance(response, dict) else None
     if not usage and message.get("object") == "response":
-        usage = message.get("usage") or {}
+        usage = message.get("usage")
     if not isinstance(usage, dict):
         return 0, 0, 0
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    details = (
-        usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
-    )
-    cached = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+    prompt = _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
+    completion = _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    cached = _as_int(details.get("cached_tokens")) if isinstance(details, dict) else 0
     return prompt, completion, cached
 
 
@@ -392,7 +407,8 @@ def _render_mini_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     for tc in message.get("tool_calls") or []:
         if not isinstance(tc, dict):
             continue
-        func = tc.get("function") or {}
+        func = tc.get("function")
+        func = func if isinstance(func, dict) else {}
         name = str(func.get("name") or "bash")
         args = _tool_call_arguments(func.get("arguments", {}))
         rendered.append(
@@ -407,7 +423,6 @@ class MiniSweUsageFold:
 
     model: str | None = None
     emitted: int = 0
-    seen_first_user: bool = False
     _totals: UsageTotals = field(default_factory=UsageTotals)
     _has_usage: bool = False
 
@@ -431,15 +446,27 @@ class MiniSweUsageFold:
         if isinstance(model, str) and model:
             self.model = model
         self._recompute_usage(messages)
+        if len(messages) < self.emitted:
+            self.emitted = 0
+        task_index = next(
+            (
+                i
+                for i, m in enumerate(messages)
+                if isinstance(m, dict) and m.get("role") == "user"
+            ),
+            None,
+        )
         rendered: list[dict[str, Any]] = []
-        for message in messages[self.emitted :]:
+        for i in range(self.emitted, len(messages)):
+            message = messages[i]
             if isinstance(message, dict):
-                rendered.extend(self._render_message(message))
-        self.emitted = max(self.emitted, len(messages))
+                rendered.extend(self._render_message(message, is_task=i == task_index))
+        self.emitted = len(messages)
         return rendered
 
     def _recompute_usage(self, messages: list[Any]) -> None:
         input_tokens = output_tokens = cache_tokens = 0
+        any_tokens = False
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -448,15 +475,18 @@ class MiniSweUsageFold:
             output_tokens += completion
             cache_tokens += cached
             if prompt or completion:
-                self._has_usage = True
+                any_tokens = True
         self._totals = UsageTotals(
             input_tokens=input_tokens,
             cache_tokens=cache_tokens,
             output_tokens=output_tokens,
             model=self.model,
         )
+        self._has_usage = any_tokens
 
-    def _render_message(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+    def _render_message(
+        self, message: dict[str, Any], *, is_task: bool
+    ) -> list[dict[str, Any]]:
         role = message.get("role")
         content = _tool_result_text(message.get("content"))
         if role == "assistant":
@@ -467,8 +497,7 @@ class MiniSweUsageFold:
                 )
             rendered.extend(_render_mini_tool_calls(message))
             return rendered
-        if role == "user" and not self.seen_first_user:
-            self.seen_first_user = True
+        if role == "user" and is_task:
             return []
         if role in ("tool", "user"):
             return [

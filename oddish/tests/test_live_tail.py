@@ -741,6 +741,145 @@ async def test_snapshot_tick_raises_on_invalid_base64():
 
 
 @pytest.mark.asyncio
+async def test_snapshot_tick_raises_on_nonzero_rc():
+    env = FakeEnv([FakeResult(return_code=1)])
+    tailer = make_tailer(env, agent="mini-swe-agent")
+    with pytest.raises(RuntimeError):
+        await tailer._tick()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_tick_tolerates_empty_output(monkeypatch):
+    session = patch_db(monkeypatch)
+    env = FakeEnv([FakeResult(stdout="")])
+    tailer = make_tailer(env, agent="mini-swe-agent")
+    await tailer._tick()
+    assert update_params(session) == []
+
+
+def test_cursor_completed_tool_call_without_result_emits_empty():
+    fold = CursorUsageFold()
+    assert fold.feed_line(
+        cursor_line(
+            {
+                "type": "tool_call",
+                "subtype": "completed",
+                "call_id": "c1",
+                "tool_call": {"shell": {"args": {"command": "true"}, "result": None}},
+            }
+        )
+    ) == [
+        {
+            "kind": "tool_use",
+            "payload": {"input": json.dumps({"command": "true"}), "name": "shell"},
+        },
+        {"kind": "tool_result", "payload": {"content": ""}},
+    ]
+
+
+def test_cursor_fold_survives_non_numeric_usage():
+    fold = CursorUsageFold(model="composer-2.5")
+    fold.feed_line(
+        cursor_line(
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "",
+                "usage": {"inputTokens": "bad", "outputTokens": None},
+            }
+        )
+    )
+    assert fold.has_usage
+    assert fold.totals() == UsageTotals(model="composer-2.5")
+
+
+def test_cursor_on_truncate_resets_summed_usage():
+    fold = CursorUsageFold(model="composer-2.5")
+
+    def result(inp, out):
+        return cursor_line(
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "",
+                "usage": {"inputTokens": inp, "outputTokens": out},
+            }
+        )
+
+    fold.feed_line(result(10, 3))
+    fold.on_truncate()
+    assert not fold.has_usage
+    assert fold.totals() == UsageTotals(model="composer-2.5")
+    fold.feed_line(result(10, 3))
+    assert fold.totals().input_tokens == 10
+    assert fold.totals().output_tokens == 3
+
+
+def test_mini_swe_fold_reemits_after_snapshot_shrink():
+    fold = MiniSweUsageFold()
+    fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant("a"),
+                mini_assistant("b"),
+            ]
+        )
+    )
+    reset = fold.feed_line(
+        mini_trajectory([{"role": "user", "content": "new"}, mini_assistant("c")])
+    )
+    assert reset == [{"kind": "message", "payload": {"text": "c"}}]
+
+
+def test_mini_swe_fold_has_usage_tracks_current_snapshot():
+    fold = MiniSweUsageFold()
+    fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant("a", usage={"prompt_tokens": 5, "completion_tokens": 1}),
+            ]
+        )
+    )
+    assert fold.has_usage
+    fold.feed_line(mini_trajectory([{"role": "user", "content": "fresh"}]))
+    assert not fold.has_usage
+
+
+def test_mini_swe_fold_renders_later_user_as_observation():
+    fold = MiniSweUsageFold()
+    rendered = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant("look"),
+                {"role": "user", "content": "observation"},
+            ]
+        )
+    )
+    assert rendered == [
+        {"kind": "message", "payload": {"text": "look"}},
+        {"kind": "tool_result", "payload": {"content": "observation"}},
+    ]
+
+
+def test_mini_swe_fold_survives_malformed_messages():
+    fold = MiniSweUsageFold()
+    rendered = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                {"role": "assistant", "content": "x", "extra": "bad"},
+                {"role": "assistant", "tool_calls": [{"function": "bad"}]},
+            ]
+        )
+    )
+    assert {e["kind"] for e in rendered} <= {"message", "tool_use"}
+    assert not fold.has_usage
+
+
+@pytest.mark.asyncio
 async def test_tick_rc_semantics():
     env = FakeEnv([FakeResult(return_code=1)])
     tailer = make_tailer(env)
