@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { CodeBlock } from "@/components/code-block";
 import { TrajectorySummary } from "@/components/trajectory-summary";
+import { TrajectoryActivity } from "@/components/trajectory-activity";
 import {
   Tooltip,
   TooltipContent,
@@ -878,6 +879,15 @@ export function TrajectoryViewer({
     <div className="p-4">
       <TrajectorySummary
         trialId={trialId}
+        apiBaseUrl={apiBaseUrl}
+        stepIdToIndex={(stepId) =>
+          trajectory.steps.findIndex((s) => s.step_id === stepId)
+        }
+        onStepSelect={handleStepClick}
+      />
+      <TrajectoryActivity
+        trialId={trialId}
+        steps={trajectory.steps}
         apiBaseUrl={apiBaseUrl}
         stepIdToIndex={(stepId) =>
           trajectory.steps.findIndex((s) => s.step_id === stepId)
