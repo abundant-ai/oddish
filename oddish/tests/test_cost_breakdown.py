@@ -357,16 +357,21 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
 
     exps = {e.experiment_id: e for e in result.experiments}
 
-    assert E4 not in exps  # soft-deleted experiment stays hidden
+    # Historical spend remains visible after deletion and is explicitly marked.
+    assert _approx(exps[E4].cost_usd, 99.0)
+    assert exps[E4].is_deleted is True
+    assert exps[E4].has_deleted_spend is True
     # E5's lone trial is unbilled (no billed_user_id) but real oddish spend, so
     # it is now counted instead of dropped by the old billed-only gate.
     assert _approx(exps[E5].cost_usd, 4.0), exps[E5].cost_usd
 
-    assert _approx(exps[E1].cost_usd, 5.0), exps[E1].cost_usd
+    assert _approx(exps[E1].cost_usd, 55.0), exps[E1].cost_usd
     assert _approx(exps[E1].cost_estimated_usd, 0.0)
-    assert exps[E1].trial_count == 2
+    assert exps[E1].trial_count == 3
+    assert exps[E1].is_deleted is False
+    assert exps[E1].has_deleted_spend is True
     assert exps[E1].models[0].model == "claude-opus-4-8"
-    assert _approx(exps[E1].models[0].cost_usd, 5.0)
+    assert _approx(exps[E1].models[0].cost_usd, 55.0)
 
     assert _approx(exps[E2].cost_usd, _EXPECTED_EST), exps[E2].cost_usd
     assert _approx(exps[E2].cost_estimated_usd, _EXPECTED_EST)
@@ -385,18 +390,18 @@ async def test_cost_breakdown_window_attribution_and_soft_delete(seeded_cost_dat
     assert exps[E8].owner_label == "e8-runner", exps[E8].owner_label
 
     by_user = {u.key: u for u in result.by_user}
-    assert _approx(by_user[USER_A].cost_usd, 3.5)
+    assert _approx(by_user[USER_A].cost_usd, 102.5)
     assert by_user[USER_A].owner_user_id == USER_A
     # All of USER_A's in-window spend is billed, so no unbilled flag.
     assert by_user[USER_A].has_unbilled_spend is False
     assert by_user[USER_A].label is None
-    assert by_user[USER_A].experiment_count == 2
-    assert by_user[USER_A].trial_count == 2
+    assert by_user[USER_A].experiment_count == 3
+    assert by_user[USER_A].trial_count == 3
     assert _approx(by_user[USER_B].cost_usd, 3.0 + _EXPECTED_EST)
     assert by_user[USER_B].experiment_count == 2
     # Unbilled spend surfaces as its own bucket instead of vanishing; it is not
     # a registered user, so it stays non-clickable and flags the unbilled spend.
-    assert _approx(by_user["__unattributed__"].cost_usd, 4.0)
+    assert _approx(by_user["__unattributed__"].cost_usd, 54.0)
     assert by_user["__unattributed__"].owner_user_id is None
     assert by_user["__unattributed__"].has_unbilled_spend is True
     assert by_user["__unattributed__"].label == "Unattributed"
@@ -489,7 +494,7 @@ async def test_monthly_quota_cost_uses_budgeted_orgs_only(
                 session, window_days=7, experiment_limit=500, user_limit=500
             )
         assert result.totals.month_budget_usd == 10.0
-        assert _approx(result.totals.month_cost_usd, 5.0 + _EXPECTED_EST)
+        assert _approx(result.totals.month_cost_usd, 55.0 + _EXPECTED_EST)
     finally:
         async with get_session() as session:
             await session.execute(
@@ -545,12 +550,12 @@ async def test_cost_breakdown_all_time_includes_old_trials(seeded_cost_data):
     e1_windowed = {e.experiment_id: e for e in windowed.experiments}[E1]
     e1_all = {e.experiment_id: e for e in all_time.experiments}[E1]
 
-    assert _approx(e1_windowed.cost_usd, 5.0)
-    assert _approx(e1_all.cost_usd, 12.0)
-    assert e1_all.trial_count == 3
+    assert _approx(e1_windowed.cost_usd, 55.0)
+    assert _approx(e1_all.cost_usd, 62.0)
+    assert e1_all.trial_count == 4
 
     user_a_all = {u.key: u for u in all_time.by_user}[USER_A]
-    assert _approx(user_a_all.cost_usd, 10.5)
+    assert _approx(user_a_all.cost_usd, 109.5)
 
 
 # --- attribution fallbacks + billability predicate ---------------------------
