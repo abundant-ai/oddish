@@ -973,7 +973,7 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
-    # Live tail of agent output for running trials (spec: harbor-live-streaming-mvp)
+    # Live tail of agent output for running trials
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 5.0
 
