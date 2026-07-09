@@ -212,7 +212,18 @@ def _effective_gke_cluster_name(
     workers that lack ``GOOGLE_APPLICATION_CREDENTIALS_JSON`` and every such
     trial would authenticate-fail.
     """
-    return environ.get(_GKE_CLUSTER_ENV) or dotenv_vars.get(_GKE_CLUSTER_ENV)
+    explicit = environ.get(_GKE_CLUSTER_ENV) or dotenv_vars.get(_GKE_CLUSTER_ENV)
+    if explicit:
+        return explicit
+    # Modal-parity derived default (mirrors Settings._derive_gke_cluster_name):
+    # a GKE-configured deploy without an explicit name uses <app>-trials, so
+    # secret attachment stays in lockstep with runtime registration.
+    project = environ.get("ODDISH_GKE_PROJECT_ID") or dotenv_vars.get(
+        "ODDISH_GKE_PROJECT_ID"
+    )
+    if project:
+        return f"{MODAL_APP_NAME}-trials"
+    return None
 
 
 runtime_secret = modal.Secret.from_name(

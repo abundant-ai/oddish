@@ -1020,10 +1020,11 @@ class Settings(BaseSettings):
     cc_chat_daytona_snapshot: str = ""
 
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
-    # coordinates are unset by default; setting gke_cluster_name registers the
-    # backend and makes ``--env gke`` available. Deployment targets region
-    # us-east5 (zone us-east5-b), the only location with preemptible TPU v6e
-    # DWS flex-start capacity.
+    # coordinates are unset by default; configuring GKE (project id, or an
+    # explicit cluster name) registers the backend and makes ``--env gke``
+    # available. When no cluster name is given it derives from the deployment
+    # ("<MODAL_APP_NAME>-trials", Modal-parity naming) and auto-provisioning
+    # materializes it on demand.
     gke_cluster_name: str | None = None
     gke_region: str | None = None
     gke_project_id: str | None = None
@@ -1042,6 +1043,10 @@ class Settings(BaseSettings):
     # First trial on cold infrastructure pays the ~10 minute Autopilot
     # creation inside its ready window.
     gke_auto_provision_cluster: bool = True
+    # Idle-cluster reaper TTL: delete the (harbor-managed) cluster after this
+    # many hours without GKE trial activity. <=0 disables. Recreation is
+    # automatic on the next trial, so deletion only trades a cold-start.
+    gke_idle_cluster_ttl_hours: float = 3.0
     gke_pod_ready_timeout_sec: int = 3600
 
     # API server
@@ -1210,6 +1215,13 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Helper methods
     # ==========================================================================
+
+    @model_validator(mode="after")
+    def _derive_gke_cluster_name(self) -> "Settings":
+        if self.gke_project_id and not self.gke_cluster_name:
+            app_name = os.environ.get("MODAL_APP_NAME", "oddish")
+            self.gke_cluster_name = f"{app_name}-trials"
+        return self
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
