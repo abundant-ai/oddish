@@ -32,6 +32,7 @@ TASK_TOML = 'version = "1.0"\n[task]\nname = "oddish/pt2jax-nano-adder"\n'
 @pytest.fixture
 def gke_settings(monkeypatch):
     monkeypatch.setattr(gib.settings, "gke_project_id", "proj")
+    monkeypatch.setattr(gib.settings, "gke_region", "us-east5")
     monkeypatch.setattr(gib.settings, "gke_registry_location", "us-east5")
     monkeypatch.setattr(gib.settings, "gke_registry_name", "oddish-envs")
 
@@ -112,3 +113,8 @@ def test_short_name_matches_harbor_task_config():
     if not hasattr(type(cfg), "short_name"):
         pytest.skip("this harbor pin lacks TaskConfig.short_name (fork-only)")
     assert gib._task_short_name({"task": {"name": cfg.name}}) == cfg.short_name
+
+
+async def test_missing_region_is_noop(monkeypatch, gke_settings):
+    monkeypatch.setattr(gib.settings, "gke_region", None)
+    assert await gib.ensure_task_image("t", 1) == "no-gke-config"
