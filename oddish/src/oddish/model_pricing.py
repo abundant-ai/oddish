@@ -111,6 +111,14 @@ _CLAUDE_CODE_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+def untrusted_native_cost_providers(*, agent: str | None) -> frozenset[str]:
+    """Providers whose native cost cannot be trusted for this agent."""
+    normalized_agent = (agent or "").strip().lower()
+    if "claude-code" not in normalized_agent:
+        return frozenset()
+    return _CLAUDE_CODE_PASSTHROUGH_PROVIDERS
+
+
 def is_native_cost_trusted(*, agent: str | None, provider: str | None) -> bool:
     """Whether a harness-reported native cost is authoritative.
 
@@ -118,12 +126,8 @@ def is_native_cost_trusted(*, agent: str | None, provider: str | None) -> bool:
     native Fireworks cost. Only Claude Code's third-party compatibility routes
     use an Anthropic-only client-side price table for a non-Anthropic model.
     """
-    normalized_agent = (agent or "").strip().lower()
     normalized_provider = (provider or "").strip().lower()
-    return not (
-        "claude-code" in normalized_agent
-        and normalized_provider in _CLAUDE_CODE_PASSTHROUGH_PROVIDERS
-    )
+    return normalized_provider not in untrusted_native_cost_providers(agent=agent)
 
 
 def _litellm_candidates(model_name: str) -> list[str]:
