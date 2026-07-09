@@ -535,7 +535,11 @@ _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
 
 async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
     from worker.gke_image_build import ensure_task_image
+    from worker.runtime import _materialize_gcp_adc_credentials
 
+    # Same ADC bootstrap the trial workers run: the oddish-gcp secret ships
+    # inline JSON that Google SDKs can only consume from a file path.
+    _materialize_gcp_adc_credentials()
     outcome = await ensure_task_image(task_id, version)
     console.print(
         f"[cyan]GKE image build[/cyan] task={task_id} v{version}: {outcome}"
