@@ -401,6 +401,9 @@ export interface QuotaUsage {
   used_usd: number;
   reserved_usd?: number;
   enforced?: boolean;
+  base_limit_usd?: number;
+  bump_usd?: number;
+  bump_expires_at?: string | null;
 }
 
 export interface QuotaMember extends QuotaUsage {
@@ -422,6 +425,12 @@ export interface QuotaList {
 
 export interface QuotaUpdate {
   limit_usd: string | null;
+}
+
+export interface QuotaBumpCreate {
+  amount_usd: string;
+  duration_hours: number;
+  reason?: string;
 }
 
 // GET /quotas/org — member-visible org monthly budget + adaptive daily goal.
