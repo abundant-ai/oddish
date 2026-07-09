@@ -132,6 +132,35 @@ function userLabel(data: UserCostBreakdownResponse): string {
   return data.name || data.email || data.github_username || data.billed_user_id;
 }
 
+function DeletedSpendBadge({
+  isDeleted,
+  hasDeletedSpend,
+  entity,
+}: {
+  isDeleted: boolean;
+  hasDeletedSpend: boolean;
+  entity: "task" | "experiment";
+}) {
+  if (!hasDeletedSpend) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="text-muted-foreground cursor-help text-[9px] font-normal"
+        >
+          {isDeleted ? "deleted" : "includes deleted"}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[280px]">
+        {isDeleted
+          ? `This ${entity} was deleted, but its historical spend still counts.`
+          : `This ${entity} includes historical spend from deleted related records.`}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function TaskTable({ tasks }: { tasks: UserCostTaskBreakdown[] }) {
   if (tasks.length === 0)
     return (
@@ -153,13 +182,29 @@ function TaskTable({ tasks }: { tasks: UserCostTaskBreakdown[] }) {
         {tasks.map((task) => (
           <TableRow key={task.task_id}>
             <TableCell className="max-w-[280px]">
-              <Link
-                href={`/tasks/${encodeURIComponent(task.task_id)}`}
-                className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
-                title={task.task_name ?? task.task_id}
-              >
-                {task.task_name ?? task.task_id}
-              </Link>
+              <span className="inline-flex items-center gap-1.5">
+                {task.is_deleted ? (
+                  <span
+                    className="truncate text-xs font-medium"
+                    title={task.task_name ?? task.task_id}
+                  >
+                    {task.task_name ?? task.task_id}
+                  </span>
+                ) : (
+                  <Link
+                    href={`/tasks/${encodeURIComponent(task.task_id)}`}
+                    className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                    title={task.task_name ?? task.task_id}
+                  >
+                    {task.task_name ?? task.task_id}
+                  </Link>
+                )}
+                <DeletedSpendBadge
+                  isDeleted={task.is_deleted}
+                  hasDeletedSpend={task.has_deleted_spend}
+                  entity="task"
+                />
+              </span>
             </TableCell>
             <CostCell
               cost={task.cost_usd}
@@ -203,13 +248,29 @@ function ExperimentTable({
         {experiments.map((exp) => (
           <TableRow key={exp.experiment_id}>
             <TableCell className="max-w-[280px]">
-              <Link
-                href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
-                className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
-                title={exp.name ?? exp.experiment_id}
-              >
-                {exp.name ?? exp.experiment_id}
-              </Link>
+              <span className="inline-flex items-center gap-1.5">
+                {exp.is_deleted ? (
+                  <span
+                    className="truncate text-xs font-medium"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </span>
+                ) : (
+                  <Link
+                    href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
+                    className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </Link>
+                )}
+                <DeletedSpendBadge
+                  isDeleted={exp.is_deleted}
+                  hasDeletedSpend={exp.has_deleted_spend}
+                  entity="experiment"
+                />
+              </span>
             </TableCell>
             <TableCell className="text-right font-mono text-xs font-medium">
               {formatCostUsd(exp.cost_usd)}
@@ -237,7 +298,7 @@ export default function AdminUserCostPage({
   const { userId } = use(params);
   const { org, window_days: windowParam } = use(searchParams);
   const [windowDays, setWindowDays] = useState(() =>
-    WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7",
+    WINDOW_OPTIONS.some((o) => o.value === windowParam) ? windowParam! : "7"
   );
 
   const { data, error, isLoading } = useSWR<UserCostBreakdownResponse>(
@@ -245,7 +306,7 @@ export default function AdminUserCostPage({
       org ? `&org_id=${encodeURIComponent(org)}` : ""
     }`,
     fetcher,
-    { refreshInterval: 30000 },
+    { refreshInterval: 30000 }
   );
 
   const windowLabel =
@@ -282,7 +343,11 @@ export default function AdminUserCostPage({
               </SelectContent>
             </Select>
             <Link href="/admin">
-              <Button variant="outline" size="sm" className="h-8 gap-1.5 text-xs">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs"
+              >
                 <ArrowLeft className="h-3.5 w-3.5" />
                 Admin
               </Button>
@@ -293,8 +358,9 @@ export default function AdminUserCostPage({
           {data?.email && <span>{data.email}</span>}
         </div>
         <p className="text-muted-foreground text-xs">
-          Spend billed to this user, calculated by finish time. Excludes spend
-          on experiments registered to the user but unbilled at creation.
+          Spend billed to this user, calculated by finish time and retained
+          after deletion. Excludes spend on experiments registered to the user
+          but unbilled at creation.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
