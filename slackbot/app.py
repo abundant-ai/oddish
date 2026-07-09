@@ -472,6 +472,11 @@ WHERE NOT is_collection
   AND last_finished_at > NOW() - INTERVAL '2 hours'
 """
 
+_EXPERIMENT_ACTIVE_SQL = """
+SELECT experiment_id FROM v_experiment_summary
+WHERE NOT is_collection AND active_trials > 0
+"""
+
 
 async def _check_experiments_finished() -> list[tuple[str, str]]:
     if not os.environ.get("ODDISH_RO_DATABASE_URL"):
@@ -479,6 +484,15 @@ async def _check_experiments_finished() -> list[tuple[str, str]]:
     from urllib.parse import quote
 
     from tools import _fetch
+
+    # Re-arm experiments that went active again (new/retried trials), so each
+    # activity wave can alert once on its next completion -- mirrors the
+    # heartbeat recovery re-arm.
+    for r in await _fetch(_EXPERIMENT_ACTIVE_SQL):
+        try:
+            watch_state.pop(f"exp_done:{r['experiment_id']}", None)
+        except Exception:
+            log.exception("failed to re-arm experiment alert id=%s", r["experiment_id"])
 
     dash = _dashboard_url()
     alerts = []
