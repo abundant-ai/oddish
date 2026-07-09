@@ -92,6 +92,9 @@ async def _assert_quota_schema_or_force_off() -> None:
                         WHERE table_name = 'quotas'
                     ) AND EXISTS (
                         SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'quota_bumps'
+                    ) AND EXISTS (
+                        SELECT 1 FROM information_schema.tables
                         WHERE table_name = 'org_quotas'
                     )
                     """
@@ -107,7 +110,8 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
     logger.error(
         "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
-        "column or the backend quotas/org_quotas tables are missing -- the "
+        "column or the backend quotas / quota_bumps / org_quotas tables are "
+        "missing -- the "
         "oddish and backend alembic trees migrate separately); forcing "
         "quota_mode=off to avoid a fail-open SUM or a 500 on every admission",
         settings.quota_mode,
