@@ -44,7 +44,9 @@ import {
   Package,
   Trash2,
 } from "lucide-react";
+import { preload } from "swr";
 import { cn } from "@/lib/utils";
+import { fetcher } from "@/lib/api";
 import { TimingBreakdownBar } from "@/components/timing-breakdown-bar";
 import { CodeBlock } from "@/components/code-block";
 import type { Trial, Task } from "@/lib/types";
@@ -400,6 +402,19 @@ export function TrialDetailPanel({
       window.history.replaceState(window.history.state, "", url);
     }
   }, [isOpen, activeTab, filesTargetPath, searchParams]);
+
+  // Warm the trajectory data the moment the drawer opens, so the (slow) Claude
+  // summary generation is already in flight before the user opens the
+  // Trajectory tab. The tab's TrajectoryViewer/Summary/Activity read these
+  // exact SWR keys, so they pick up the in-flight/cached result — no duplicate
+  // fetch (SWR dedupes) and no duplicate generation (backend locks per trial).
+  const trialId = trial?.id;
+  const trialHasTrajectory = trial?.has_trajectory;
+  useEffect(() => {
+    if (!isOpen || !trialId || !trialHasTrajectory) return;
+    preload(`${apiBaseUrl}/trials/${trialId}/trajectory/summary`, fetcher);
+    preload(`${apiBaseUrl}/trials/${trialId}/trajectory`, fetcher);
+  }, [isOpen, trialId, trialHasTrajectory, apiBaseUrl]);
 
   const canRetry =
     allowRetry && (trial?.status === "failed" || trial?.status === "success");
