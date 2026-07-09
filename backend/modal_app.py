@@ -40,6 +40,9 @@ RUNTIME_SECRET_NAME = "oddish-prod"
 # the historical "api" label; previews derive a unique one from the app name.
 API_WEBHOOK_LABEL = "api" if MODAL_APP_NAME == "oddish" else f"{MODAL_APP_NAME}-api"
 ENABLE_BACKGROUND_WORKERS = _env_flag("ODDISH_ENABLE_MODAL_WORKERS", True)
+ENABLE_SLACK_EXPENSE_NOTIFICATIONS = MODAL_APP_NAME == "oddish" and _env_flag(
+    "ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS", True
+)
 API_MIN_CONTAINERS = _env_int("ODDISH_MODAL_API_MIN_CONTAINERS", 1)
 API_BUFFER_CONTAINERS = _env_int("ODDISH_MODAL_API_BUFFER_CONTAINERS", 16)
 # Per-container request concurrency bounds the OOM *blast radius* -- it is
@@ -408,6 +411,7 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             "modal_app",
             "models",
             "observability",
+            "slack_notifications",
             "statsig_client",
             "worker",
             copy=True,
