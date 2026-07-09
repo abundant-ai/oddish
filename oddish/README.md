@@ -60,6 +60,7 @@ reference. The main commands are:
 - `oddish run` — submit local tasks, registry datasets, sweeps, retries, and task-level QA retries.
 - `oddish upload` — register task bundles or import off-oddish Harbor trial results.
 - `oddish ls` / `oddish status` — browse tasks (name/tag filters) and inspect progress. `oddish status <trial_id>` shows single-trial detail; `--detail`/`--versions` show a task's version history and cost rollups; `--queue` shows queue & worker scheduler diagnostics.
+- `oddish logs` — stream a running trial's live transcript and cost estimate (`--follow` to poll until it ends); finished trials are served by `oddish pull` instead.
 - `oddish costs` — billable-spend accounting (org-wide, or per-user with `--user`).
 - `oddish cancel` — cancel active runs or task-level QA.
 - `oddish pull` — download logs, results, trajectories, and artifacts; `--debug-files` lists a trial's raw S3 inventory instead.
@@ -69,7 +70,7 @@ reference. The main commands are:
 - `oddish publish` / `oddish unpublish` — toggle public read-only experiment sharing.
 - `oddish backfill-analysis` and `oddish probe` — specialized QA/probe tools.
 
-Every command supports `--json` for machine-readable output.
+Every command except `oddish logs` supports `--json` for machine-readable output.
 
 ## Typical Workflow
 
