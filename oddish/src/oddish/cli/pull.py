@@ -740,14 +740,12 @@ def _debug_files(
     if target_type and target_type != "trial":
         raise typer.BadParameter("--debug-files only supports trial targets.")
 
+    # Hit the debug-files endpoint directly rather than pre-resolving through the
+    # parent task's embedded trial list: the endpoint is authoritative for
+    # whether the trial exists, so a valid trial that isn't in the parent's
+    # (possibly compacted) embedded list is not falsely rejected. A non-trial id
+    # simply comes back 404 and is surfaced below.
     with _make_client(api_url) as client:
-        if target_type != "trial":
-            resolved_type, _, _ = _resolve_target(client, target, target_type)
-            if resolved_type != "trial":
-                raise typer.BadParameter(
-                    f"--debug-files needs a trial id; '{target}' resolved as "
-                    f"{resolved_type}."
-                )
         response = client.get(f"/trials/{target}/debug-files")
 
     if response.status_code != 200:

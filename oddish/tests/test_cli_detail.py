@@ -179,6 +179,47 @@ def test_status_single_version():
     assert "first" in result.output
 
 
+def _call_try_trial(routes: dict[str, tuple[int, object]]):
+    """Call try_print_trial_detail directly against faked routes."""
+    import importlib
+
+    detail = importlib.import_module("oddish.cli.detail")
+    calls: list[str] = []
+    fake = _make_client(routes, calls)
+    with patch("oddish.cli.detail.httpx.Client", fake):
+        with patch("oddish.cli.detail.get_auth_headers", return_value={}):
+            handled = detail.try_print_trial_detail(
+                "http://localhost", "abc-0", json_output=True
+            )
+    return handled, calls
+
+
+def test_trial_detail_yields_to_real_task_with_trial_shaped_id():
+    # `abc-0` is itself a task (not a trial): must NOT be shadowed by task
+    # `abc`'s embedded trial 0. try_print_trial_detail returns False so normal
+    # task-status handling runs.
+    routes = {
+        "/trials/abc-0": (404, {"detail": "Not Found"}),
+        "/tasks/abc-0": (200, {"id": "abc-0", "name": "real-task", "trials": []}),
+        "/tasks/abc": (200, {"id": "abc", "trials": [{"id": "abc-0"}]}),
+    }
+    handled, calls = _call_try_trial(routes)
+    assert handled is False
+    assert "/tasks/abc-0" in calls  # checked task identity before parent fallback
+
+
+def test_trial_detail_core_fallback_when_not_a_task():
+    # `abc-0` is a genuine trial on a core server (no /trials route, and no task
+    # with that exact id): fall back to the parent task's embedded trial.
+    routes = {
+        "/trials/abc-0": (404, {"detail": "Not Found"}),
+        "/tasks/abc-0": (404, {"detail": "Not Found"}),
+        "/tasks/abc": (200, {"id": "abc", "trials": [{"id": "abc-0", "task_id": "abc", "agent": "x", "provider": "y", "queue_key": "q", "status": "success", "attempts": 1, "max_attempts": 6}]}),
+    }
+    handled, _ = _call_try_trial(routes)
+    assert handled is True
+
+
 def test_status_detail_requires_task_id():
     result, _ = _invoke({}, ["--detail"])
     assert result.exit_code != 0

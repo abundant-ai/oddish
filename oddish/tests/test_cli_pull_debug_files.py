@@ -92,6 +92,28 @@ def test_debug_files_json_output():
     assert doc["files"] == ["tasks/task-abc/trials/task-abc-0/result.json"]
 
 
+def test_debug_files_hits_endpoint_directly_without_type():
+    # No --type: must hit the debug-files endpoint directly (no parent-task
+    # embedded-list pre-resolution that could falsely reject a valid trial).
+    import importlib
+
+    pull_module = importlib.import_module("oddish.cli.pull")
+    calls: list[str] = []
+    fake = _make_client(200, _DEBUG_PAYLOAD, calls)
+    app = typer.Typer()
+    app.command()(pull_module.pull)
+    runner = CliRunner()
+    with patch("oddish.cli.pull.httpx.Client", fake):
+        with patch("oddish.cli.pull.require_api_key"):
+            with patch("oddish.cli.pull.get_api_url", return_value="http://localhost"):
+                with patch("oddish.cli.pull.get_auth_headers", return_value={}):
+                    result = runner.invoke(app, ["task-abc-0", "--debug-files"])
+    assert result.exit_code == 0, result.output
+    assert any(c.endswith("/trials/task-abc-0/debug-files") for c in calls)
+    # Only the debug-files endpoint is called; no /tasks/{parent} resolution.
+    assert not any(c.endswith("/tasks/task-abc") for c in calls)
+
+
 def test_debug_files_rejects_non_trial_type():
     import importlib
 

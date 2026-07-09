@@ -142,11 +142,14 @@ def try_print_trial_detail(
             if isinstance(data, dict):
                 trial = data
         elif response.status_code == 404:
-            # Only a 404 means "no single-trial route" (self-hosted core server)
-            # or "trial genuinely absent": fall back to the parent task's
-            # embedded trial. A 401/403/5xx is a real failure on a route that
-            # exists, so surface it instead of silently masking it with the
-            # parent-task copy.
+            # A 404 means "no single-trial route" (self-hosted core server) or
+            # "trial genuinely absent". Before treating the id as a trial of its
+            # parent, check whether it is itself a task: a distinct task whose id
+            # happens to match the `{parent}-{index}` shape must resolve to its
+            # own task status, not get shadowed by parent-task-{index}'s trial.
+            if client.get(f"{api_url}/tasks/{trial_id}").status_code == 200:
+                return False  # it's a task; let normal status handling show it
+            # Core-server fallback: pull the parent task and find the trial.
             parent = trial_id.rpartition("-")[0]
             task_response = client.get(f"{api_url}/tasks/{parent}")
             if task_response.status_code == 200:
@@ -226,7 +229,9 @@ def print_task_detail(api_url: str, task_id: str, *, json_output: bool) -> None:
             passes = int(version.get("pass_count") or 0)
             reward_str = f"{passes}/{reward_total}" if reward_total else "-"
             vcost = version.get("cost_usd")
-            cost_str = f"${float(vcost):.4f}" if vcost else "-"
+            # Show a real $0.0000 (a version with only free/zero-cost trials);
+            # only "-" when cost is genuinely absent.
+            cost_str = f"${float(vcost):.4f}" if vcost is not None else "-"
             table.add_row(
                 str(version.get("version", "-")),
                 "*" if version.get("is_current") else "",
