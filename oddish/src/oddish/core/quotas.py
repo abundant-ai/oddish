@@ -286,7 +286,16 @@ async def live_bump_totals_by_user(
 async def live_bump_totals_by_org_user_all_orgs(
     session: AsyncSession,
 ) -> dict[tuple[str | None, str], Decimal]:
-    """Live bump totals keyed the same way admission checks limits."""
+    """Live bump totals keyed the same way admission checks limits.
+
+    Degrades to no bumps when ``quota_bumps`` is absent (deploy-before-migrate
+    or an OSS DB without the backend bump migration), mirroring the quota
+    endpoints, so a missing table never 500s the admin cost page. Probes the
+    table first to avoid poisoning the caller's shared transaction.
+    """
+    exists = await session.scalar(text("SELECT to_regclass('quota_bumps')"))
+    if exists is None:
+        return {}
     rows = await session.execute(
         text(
             "SELECT org_id, user_id, COALESCE(SUM(amount_usd), 0) "
