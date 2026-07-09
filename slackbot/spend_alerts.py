@@ -19,18 +19,16 @@ def experiment_is_expensive(row: Mapping[str, Any], threshold_usd: float) -> boo
     return float(row.get("cost_usd") or 0) >= threshold_usd
 
 
-def user_is_expensive(
+def trial_is_expensive(
     row: Mapping[str, Any],
     minimum_usd: float,
     average_multiplier: float,
 ) -> bool:
     spend_usd = float(row.get("cost_usd") or 0)
-    average_usd = float(row.get("average_cost_usd") or 0)
-    return (
-        average_usd > 0
-        and spend_usd >= minimum_usd
-        and spend_usd >= average_usd * average_multiplier
-    )
+    average_usd = row.get("other_trial_average_usd")
+    if spend_usd <= minimum_usd:
+        return False
+    return average_usd is None or spend_usd > float(average_usd) * average_multiplier
 
 
 def expensive_experiment_alert(
@@ -54,25 +52,31 @@ def expensive_experiment_alert(
     return key, text
 
 
-def expensive_user_alert(
+def expensive_trial_alert(
     row: Mapping[str, Any],
     minimum_usd: float,
     average_multiplier: float,
     dashboard_url: str,
 ) -> tuple[str, str]:
-    org_id = str(row["org_id"])
-    spender = str(row["spender"])
-    label = _escape(str(row.get("spender_label") or spender))
+    trial_id = str(row["id"])
+    task_id = str(row["task_id"])
+    owner = _escape(str(row.get("spender_label") or row.get("spender") or "Unknown"))
     spend_usd = float(row.get("cost_usd") or 0)
-    average_usd = float(row.get("average_cost_usd") or 0)
-    multiple = spend_usd / average_usd if average_usd > 0 else 0
-    url = f"{dashboard_url.rstrip('/')}/admin"
-    key = f"expensive_user:{org_id}:{spender}:{minimum_usd:g}:{average_multiplier:g}"
+    average_usd = row.get("other_trial_average_usd")
+    if average_usd is None:
+        comparison = "first priced trial"
+    elif float(average_usd) == 0:
+        comparison = "the experiment's other trials average $0"
+    else:
+        comparison = (
+            f"{spend_usd / float(average_usd):.1f}× the experiment's "
+            f"${float(average_usd):,.2f} average"
+        )
+    url = f"{dashboard_url.rstrip('/')}/tasks/{quote(task_id, safe='')}"
+    key = f"expensive_trial:{trial_id}:{minimum_usd:g}:{average_multiplier:g}"
     text = (
-        f":moneybag: *High user spend:* *{label}* spent *${spend_usd:,.2f}* "
-        f"in the trailing 7 days — *{multiple:.1f}×* the org spender average "
-        f"(${average_usd:,.2f}); alerts require ${minimum_usd:,.0f}+ and "
-        f"{average_multiplier:.1f}×+ average. · <{url}|open admin costs>"
+        f":warning: *Expensive trial:* `{_escape(trial_id)}` cost *${spend_usd:,.2f}* — "
+        f"{comparison} · owner: *{owner}* · <{url}|open task>"
     )
     return key, text
 

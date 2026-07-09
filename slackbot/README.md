@@ -47,8 +47,8 @@ All live in one Modal secret named `oddish-slackbot`:
 | `ODDISH_RO_DATABASE_URL` | *Optional.* Plain `postgresql://` DSN for the `slackbot_ro` role (see *SQL access*). Unset disables the SQL tools gracefully. Never reuse `oddish-prod` credentials — that role is full-RW. |
 | `SLACK_ALERT_CHANNEL` | *Optional.* Channel ID for scheduled `watch` alerts. Unset disables them. |
 | `SLACK_EXPENSIVE_EXPERIMENT_USD` | *Optional.* Experiment-spend alert threshold. Defaults to `2000`. |
-| `SLACK_EXPENSIVE_USER_7D_USD` | *Optional.* Seven-day user-spend floor. Defaults to `1000`. |
-| `SLACK_USER_AVERAGE_MULTIPLIER` | *Optional.* User spend must also exceed this multiple of the org's seven-day per-user average. Defaults to `1.5`. |
+| `SLACK_EXPENSIVE_TRIAL_USD` | *Optional.* Trial-spend floor. Defaults to `100`. |
+| `SLACK_TRIAL_AVERAGE_MULTIPLIER` | *Optional.* Trial spend must exceed this multiple of the experiment's other priced trials. Defaults to `2`. |
 | `ODDISH_DASHBOARD_URL` | *Optional.* Dashboard base for deep links. Defaults to `https://www.oddish.app`. |
 
 ## SQL access
@@ -82,7 +82,7 @@ audit. One statement per call (asyncpg extended protocol), 200 rows returned.
 set, iterating a `CHECKS` table of deterministic checks with templated
 output — no agent, no raw log text, so nothing prompt-injectable runs
 unattended. Alert-once dedupe lives in the `oddish-slackbot-watch-state`
-Dict. It intentionally covers only experiment and user spend; Catfish owns
+Dict. It intentionally covers only experiment and trial spend; Catfish owns
 model and total-spend alerts.
 
 Current checks:
@@ -90,14 +90,13 @@ Current checks:
 - Experiments at or above $2,000. A recent trial completion can trigger this
   while other trials are still running; otherwise the final completion catches
   it. The alert includes the experiment owner and dashboard link.
-- Users with at least $1,000 over the trailing seven days who are also
-  at least 1.5× the average among registered org users with spend in that
-  window. The alert re-arms after the user drops below either condition.
+- Finished trials over $100 whose cost is also over 2× the average of the
+  experiment's other priced trials. The first priced trial alerts when it is
+  over $100.
 
-Both checks use `/admin/costs`, so native and token-estimated spend match the
-dashboard. Thresholds are configurable with the secret keys above. Alerts are
-emitted once per entity and threshold, and recent-activity filters avoid
-replaying old expensive runs when the watcher is first deployed.
+Experiment totals use `/admin/costs`; trial alerts use persisted native trial
+costs and skip trials without one. Thresholds are configurable with the secret
+keys above. Alerts are emitted once per entity and threshold.
 
 ## Deploy steps
 
