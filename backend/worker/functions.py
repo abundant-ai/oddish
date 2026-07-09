@@ -541,9 +541,7 @@ async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
     # inline JSON that Google SDKs can only consume from a file path.
     _materialize_gcp_adc_credentials()
     outcome = await ensure_task_image(task_id, version)
-    console.print(
-        f"[cyan]GKE image build[/cyan] task={task_id} v{version}: {outcome}"
-    )
+    console.print(f"[cyan]GKE image build[/cyan] task={task_id} v{version}: {outcome}")
     return outcome
 
 
@@ -571,6 +569,36 @@ def build_gke_image_builder_function(modal_app) -> object | None:
 
 
 GKE_IMAGE_BUILDER: object | None = build_gke_image_builder_function(app)
+
+
+async def _reap_idle_gke_cluster_entry() -> str:
+    from worker.gke_cluster_reaper import reap_idle_cluster
+
+    outcome = await reap_idle_cluster()
+    console.print(f"[cyan]GKE cluster reaper[/cyan]: {outcome}")
+    return outcome
+
+
+def build_gke_cluster_reaper_function(modal_app) -> object | None:
+    """Hourly idle-cluster reaper (the delete half of zero-touch GKE)."""
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        schedule=modal.Period(hours=1),
+        min_containers=0,
+        buffer_containers=0,
+        timeout=600,
+        cpu=1.0,
+        memory=2048,
+        name="reap_idle_gke_cluster",
+        serialized=True,
+    )(_reap_idle_gke_cluster_entry)
+
+
+GKE_CLUSTER_REAPER: object | None = build_gke_cluster_reaper_function(app)
 
 
 @app.function(
