@@ -17,6 +17,8 @@ def _configure(monkeypatch, **overrides):
         "ODDISH_GKE_CLUSTER_NAME": "oddish-tpu-use5",
         "ODDISH_GKE_REGION": "us-east5",
         "ODDISH_GKE_PROJECT_ID": "abundant-default",
+        # The gate only hard-checks when zero-touch provisioning is off.
+        "ODDISH_GKE_AUTO_PROVISION_CLUSTER": "false",
     }
     cfg.update(overrides)
     for key, value in cfg.items():
@@ -119,3 +121,15 @@ def test_existing_cluster_passes(monkeypatch, capsys):
     monkeypatch.setattr(subprocess, "run", fake_run)
     modal_app.assert_gke_cluster_exists()
     assert "verified" in capsys.readouterr().out
+
+
+def test_auto_provision_skips_the_existence_gate(monkeypatch, capsys):
+    _configure(monkeypatch, ODDISH_GKE_AUTO_PROVISION_CLUSTER="true")
+    import shutil
+
+    def must_not_run(_):
+        raise AssertionError("gcloud must not run when auto-provision is on")
+
+    monkeypatch.setattr(shutil, "which", must_not_run)
+    modal_app.assert_gke_cluster_exists()
+    assert "auto-provisioned on demand" in capsys.readouterr().out

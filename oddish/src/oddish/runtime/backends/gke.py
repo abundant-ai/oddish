@@ -51,6 +51,7 @@ class GkeBackend:
             "registry_name": settings.gke_registry_name,
             "flex_start": settings.gke_flex_start,
             "auto_build_missing_image": settings.gke_auto_build_missing_image,
+            "auto_provision_cluster": settings.gke_auto_provision_cluster,
             "pod_ready_timeout_sec": settings.gke_pod_ready_timeout_sec,
             # Refuse the trial-time gcloud Cloud Build fallback on a task-image
             # miss: it shells out to a subprocess and surfaces a raw
