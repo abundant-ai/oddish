@@ -16,6 +16,8 @@ export type TrialAggregate = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  tokenCount: number;
+  tokenTrialCount: number;
   billedCostUsd: number;
   billedTrialCount: number;
   billedHasEstimated: boolean;
@@ -39,6 +41,8 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   costTrialCount: 0,
   costHasEstimated: false,
   costHasNative: false,
+  tokenCount: 0,
+  tokenTrialCount: 0,
   billedCostUsd: 0,
   billedTrialCount: 0,
   billedHasEstimated: false,
@@ -48,6 +52,10 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
 
 export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
   acc.trialCount += 1;
+  if (trial.input_tokens != null || trial.output_tokens != null) {
+    acc.tokenCount += (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
+    acc.tokenTrialCount += 1;
+  }
   if (trial.cost_usd != null) {
     acc.costUsd += trial.cost_usd;
     acc.costTrialCount += 1;

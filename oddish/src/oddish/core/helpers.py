@@ -1126,6 +1126,8 @@ def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialRespons
         error_message=trial.error_message,
         result=None,
         is_probe=trial.is_probe,
+        input_tokens=trial.input_tokens,
+        output_tokens=trial.output_tokens,
         cost_usd=cost_usd,
         cost_is_estimated=cost_is_estimated,
         is_billed=trial.billed_user_id is not None,
