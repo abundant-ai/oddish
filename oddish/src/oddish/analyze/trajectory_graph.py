@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -520,9 +521,26 @@ _TROUBLE_WORDS = (
 )
 
 
+# Drop benign negated mentions ("no error", "0 failures", "without exceptions")
+# before scanning, so they don't flag a phase as a snag.
+_NEG_TROUBLE_RE = re.compile(
+    r"\b(?:no|not|without|zero|0|never)\s+"
+    r"(?:more\s+)?(?:errors?|failures?|exceptions?|issues?|problems?)\b",
+    re.IGNORECASE,
+)
+
+
 def _is_trouble(text: str) -> bool:
-    low = (text or "").lower()
-    return any(w in low for w in _TROUBLE_WORDS)
+    low = _NEG_TROUBLE_RE.sub(" ", (text or "").lower())
+    for w in _TROUBLE_WORDS:
+        # Word-boundary match for alphabetic markers (so "error" doesn't fire on
+        # "terror"); plain substring for phrases / symbols like "✗".
+        if w.isalpha():
+            if re.search(rf"\b{re.escape(w)}", low):
+                return True
+        elif w in low:
+            return True
+    return False
 
 
 def _graph_from_summary(
@@ -567,11 +585,18 @@ def _graph_from_summary(
     if outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR):
         steps[-1]["status"] = "error"
 
+    # The terminal describes the agent's ACTUAL last action (final ATIF step),
+    # not the last summary highlight — highlights are ordered by ascending
+    # step_id and may omit the closing steps.
     last_action = ""
-    if highlights and isinstance(highlights[-1], dict):
+    if digest:
+        la = _last_action(digest)
+        if la and la != "No recorded action":
+            last_action = la
+    if not last_action and highlights and isinstance(highlights[-1], dict):
         last_action = _clip(highlights[-1].get("title"), 120)
     if not last_action:
-        last_action = _last_action(digest)
+        last_action = "No recorded action"
 
     headline = _clip(summary.get("summary"), 200) or (
         f"{ctx.get('agent_name') or 'agent'} on {ctx.get('task_name') or 'task'}: {outcome}"
@@ -617,12 +642,14 @@ async def build_trajectory_graph(
     ctx["model"] = model
     outcome = _infer_outcome(ctx)
 
-    if not digest:
-        return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
-
-    # Preferred: reuse the already-generated phase segmentation.
+    # Preferred: reuse the already-generated phase segmentation, even when the
+    # ATIF trajectory didn't parse into steps here (a persisted summary still
+    # describes the run) -- so a summarized trial never falls to "No trajectory".
     if summary and isinstance(summary.get("phases"), list) and summary["phases"]:
         return _graph_from_summary(summary, ctx, outcome, digest)
+
+    if not digest:
+        return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
 
     if not model:
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
