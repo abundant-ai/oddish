@@ -206,6 +206,13 @@ export function TasksFilterSidebar() {
       case "created":
         set({ createdAfter: null, createdBefore: null, createdWithin: null });
         break;
+      case "trialFinished":
+        set({
+          trialFinishedAfter: null,
+          trialFinishedBefore: null,
+          trialFinishedWithin: null,
+        });
+        break;
       case "tokens":
         set({ minTokens: null, maxTokens: null });
         break;
@@ -537,7 +544,7 @@ function FilterControl({
     case "boolean":
       return <BooleanControl fieldKey={def.key} values={values} set={set} />;
     case "daterange":
-      return <DateRange values={values} set={set} />;
+      return <DateRange fieldKey={def.key} values={values} set={set} />;
     case "numrange":
       return <NumRange fieldKey={def.key} values={values} set={set} />;
     case "rewardthreshold":
@@ -999,17 +1006,31 @@ const DATE_INPUT_CLASS = cn(
 );
 
 function DateRange({
+  fieldKey,
   values,
   set,
 }: {
+  fieldKey: string;
   values: FilterValues;
   set: (patch: Partial<FilterValues>) => void;
 }) {
-  const hasCustom =
-    values.createdAfter !== null || values.createdBefore !== null;
-  const hasValue = hasCustom || values.createdWithin !== null;
+  const trialFinished = fieldKey === "trialFinished";
+  const afterField: keyof FilterValues = trialFinished
+    ? "trialFinishedAfter"
+    : "createdAfter";
+  const beforeField: keyof FilterValues = trialFinished
+    ? "trialFinishedBefore"
+    : "createdBefore";
+  const withinField: keyof FilterValues = trialFinished
+    ? "trialFinishedWithin"
+    : "createdWithin";
+  const after = values[afterField] as string | null;
+  const before = values[beforeField] as string | null;
+  const within = values[withinField] as CreatedPreset | null;
+  const hasCustom = after !== null || before !== null;
+  const hasValue = hasCustom || within !== null;
   const [mode, setMode] = useState<DateMode>(
-    values.createdWithin ?? (hasCustom ? "custom" : ""),
+    within ?? (hasCustom ? "custom" : ""),
   );
 
   // Drop a stale preset highlight if the dates were cleared elsewhere (e.g.
@@ -1021,18 +1042,24 @@ function DateRange({
   const applyPreset = (key: CreatedPreset) => {
     if (mode === key) {
       setMode("");
-      set({ createdWithin: null });
+      set({ [withinField]: null } as Partial<FilterValues>);
       return;
     }
     setMode(key);
     // Store the preset as a rolling token; the absolute custom bounds are cleared.
-    set({ createdWithin: key, createdAfter: null, createdBefore: null });
+    set({
+      [withinField]: key,
+      [afterField]: null,
+      [beforeField]: null,
+    } as Partial<FilterValues>);
   };
 
   const openCustom = () => {
     setMode("custom");
     // Leaving a rolling preset for an explicit range — drop the token.
-    if (values.createdWithin !== null) set({ createdWithin: null });
+    if (within !== null) {
+      set({ [withinField]: null } as Partial<FilterValues>);
+    }
   };
 
   const tabClass = (active: boolean) =>
@@ -1047,15 +1074,15 @@ function DateRange({
   // dates are held locally (as the picker's "YYYY-MM-DD") and only committed —
   // converted to UTC day bounds — on Apply/Enter. Presets stay instant.
   const appliedDates = {
-    from: values.createdAfter ? isoToLocalDateInput(values.createdAfter) : "",
-    to: values.createdBefore ? isoToLocalDateInput(values.createdBefore) : "",
+    from: after ? isoToLocalDateInput(after) : "",
+    to: before ? isoToLocalDateInput(before) : "",
   };
   const commitDates = (d: { from: string; to: string }) =>
     set({
-      createdAfter: d.from ? localDayStartIso(d.from) : null,
-      createdBefore: d.to ? localDayEndIso(d.to) : null,
-      createdWithin: null,
-    });
+      [afterField]: d.from ? localDayStartIso(d.from) : null,
+      [beforeField]: d.to ? localDayEndIso(d.to) : null,
+      [withinField]: null,
+    } as Partial<FilterValues>);
   const validateDates = (d: { from: string; to: string }) =>
     d.from && d.to && d.from > d.to ? "From can't be after To" : null;
   const {

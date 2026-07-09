@@ -49,7 +49,10 @@ export interface FilterValues {
   trialIsProbe: boolean | null;
   createdAfter: string | null; // ISO datetime (custom From)
   createdBefore: string | null; // ISO datetime (custom To)
-  createdWithin: CreatedPreset | null; // rolling preset (24h/7d/30d)
+  createdWithin: CreatedPreset | null; // rolling preset (24h/7d/30d/90d)
+  trialFinishedAfter: string | null;
+  trialFinishedBefore: string | null;
+  trialFinishedWithin: CreatedPreset | null;
   minAttempts: number | null;
   minTokens: number | null;
   maxTokens: number | null;
@@ -257,6 +260,12 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Trial",
     control: "multiselect",
     facet: "models",
+  },
+  {
+    key: "trialFinished",
+    label: "Trial finished",
+    group: "Trial",
+    control: "daterange",
   },
   {
     key: "tags",
@@ -679,6 +688,12 @@ export function isFilterActive(key: string, f: FilterValues): boolean {
         f.createdBefore !== null ||
         f.createdWithin !== null
       );
+    case "trialFinished":
+      return (
+        f.trialFinishedAfter !== null ||
+        f.trialFinishedBefore !== null ||
+        f.trialFinishedWithin !== null
+      );
     case "minAttempts":
       return f.minAttempts !== null;
     case "tokens":
@@ -763,6 +778,12 @@ export function filterParams(f: FilterValues): [string, string][] {
   if (f.createdAfter) out.push(["created_after", f.createdAfter]);
   if (f.createdBefore) out.push(["created_before", f.createdBefore]);
   if (f.createdWithin) out.push(["created_within", f.createdWithin]);
+  if (f.trialFinishedAfter)
+    out.push(["trial_finished_after", f.trialFinishedAfter]);
+  if (f.trialFinishedBefore)
+    out.push(["trial_finished_before", f.trialFinishedBefore]);
+  if (f.trialFinishedWithin)
+    out.push(["trial_finished_within", f.trialFinishedWithin]);
   num("min_attempts", f.minAttempts);
   num("min_tokens", f.minTokens);
   num("max_tokens", f.maxTokens);
@@ -842,6 +863,9 @@ export const FILTER_PARAM_KEYS = [
   "created_after",
   "created_before",
   "created_within",
+  "trial_finished_after",
+  "trial_finished_before",
+  "trial_finished_within",
   "min_attempts",
   "min_tokens",
   "max_tokens",
@@ -937,6 +961,12 @@ export function searchParamsToFilters(sp: URLSearchParams): FilterValues {
     createdBefore: sp.get("created_before"),
     createdWithin: ((): CreatedPreset | null => {
       const v = sp.get("created_within");
+      return v && v in PRESET_MS ? (v as CreatedPreset) : null;
+    })(),
+    trialFinishedAfter: sp.get("trial_finished_after"),
+    trialFinishedBefore: sp.get("trial_finished_before"),
+    trialFinishedWithin: ((): CreatedPreset | null => {
+      const v = sp.get("trial_finished_within");
       return v && v in PRESET_MS ? (v as CreatedPreset) : null;
     })(),
     minAttempts: num("min_attempts"),

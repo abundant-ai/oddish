@@ -71,7 +71,7 @@ from oddish.schemas import (
     TaskStatusResponse,
     UserTagRef,
 )
-from oddish.model_pricing import estimate_cost_usd
+from oddish.model_pricing import estimate_cost_usd, get_model_pricing
 from oddish.timing import TimingRecorder, elapsed_ms, now
 
 
@@ -85,7 +85,11 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
     cost = row["cost_usd"]
     if cost is not None:
         return float(cost), False
-    if row["input_tokens"] is None and row["output_tokens"] is None:
+    if (
+        row["input_tokens"] is None
+        and row["output_tokens"] is None
+        and not row.get("cache_write_tokens")
+    ):
         return None, False
     from oddish.config import settings
 
@@ -953,7 +957,52 @@ def _top_performer_predicate(
     )
 
 
-def _task_metrics_subquery(org_id: str | None) -> Any:
+def _trial_cost_sort_expression(models: Sequence[str] | None) -> Any:
+    nonnegative_input = func.greatest(func.coalesce(TrialModel.input_tokens, 0), 0)
+    nonnegative_output = func.greatest(func.coalesce(TrialModel.output_tokens, 0), 0)
+    nonnegative_cache = func.greatest(func.coalesce(TrialModel.cache_tokens, 0), 0)
+    nonnegative_cache_write = func.greatest(
+        func.coalesce(TrialModel.cache_write_tokens, 0), 0
+    )
+    uncached_input = func.greatest(
+        nonnegative_input - nonnegative_cache - nonnegative_cache_write, 0
+    )
+    estimated_by_model = []
+    for model in models or ():
+        pricing = get_model_pricing(model)
+        if pricing is None:
+            continue
+        cache_read_rate = (
+            pricing.cache_read if pricing.cache_read is not None else pricing.input
+        )
+        cache_write_rate = (
+            pricing.cache_write
+            if pricing.cache_write is not None
+            else pricing.input * 1.25
+        )
+        estimated_by_model.append(
+            (
+                TrialModel.model == model,
+                uncached_input * pricing.input
+                + nonnegative_cache * cache_read_rate
+                + nonnegative_cache_write * cache_write_rate
+                + nonnegative_output * pricing.output,
+            )
+        )
+    return case(
+        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
+        *estimated_by_model,
+        else_=0.0,
+    )
+
+
+def _task_metrics_subquery(
+    org_id: str | None,
+    *,
+    cost_models: Sequence[str] | None = None,
+    cost_finished_after: datetime | None = None,
+    cost_finished_before: datetime | None = None,
+) -> Any:
     """One GROUP BY over the scoped trials, aggregated per (task, version).
 
     Grouped by ``(task_id, task_version_id)`` and joined later on the task's
@@ -966,12 +1015,23 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
     # unfinished / not-yet-started trials (shared with the Phase 2.1 comparison).
     runtime_seconds = _trial_runtime_seconds()
     bucket = _trial_bucket_label()
+    cost_scope = []
+    if cost_models:
+        cost_scope.append(TrialModel.model.in_(list(cost_models)))
+    if cost_finished_after is not None:
+        cost_scope.append(TrialModel.finished_at >= cost_finished_after)
+    if cost_finished_before is not None:
+        cost_scope.append(TrialModel.finished_at <= cost_finished_before)
+    trial_cost = _trial_cost_sort_expression(cost_models)
+    scoped_trial_cost = (
+        case((and_(*cost_scope), trial_cost), else_=0.0) if cost_scope else trial_cost
+    )
     stmt = select(
         TrialModel.task_id.label("task_id"),
         TrialModel.task_version_id.label("task_version_id"),
         func.avg(TrialModel.reward).label("avg_reward"),
         func.sum(total_tokens).label("total_tokens"),
-        func.sum(TrialModel.cost_usd).label("cost_usd"),
+        func.sum(scoped_trial_cost).label("cost_usd"),
         func.count(TrialModel.id).label("total_trials"),
         func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
             "completed_trials"
@@ -1063,6 +1123,8 @@ async def browse_tasks_core(
     run_probe: bool | None = None,
     created_after: datetime | None = None,
     created_before: datetime | None = None,
+    trial_finished_after: datetime | None = None,
+    trial_finished_before: datetime | None = None,
     experiment_ids: Sequence[str] | None = None,
     agents: Sequence[str] | None = None,
     models: Sequence[str] | None = None,
@@ -1128,7 +1190,7 @@ async def browse_tasks_core(
       ``has_link``, ``run_analysis``, ``run_probe``, ``created_after`` /
       ``created_before``, ``experiment_ids``) are plain ``WHERE`` predicates on
       the ``tasks`` row.
-    * Trial-level filters (``agents``, ``models``, ``providers``,
+    * Trial-level filters (``agents``, ``models``, ``trial_finished_*``, ``providers``,
       ``environments``, ``trial_statuses``, ``origins``, ``trial_is_probe``,
       ``harbor_*``, ``analysis_classifications``, ``has_error``,
       ``has_trajectory``, ``min_attempts``, token / step / reward ranges) are
@@ -1143,7 +1205,7 @@ async def browse_tasks_core(
       GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
       predicates before pagination. There is NO supporting index or roll-up; this
       is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
-      uses persisted trial costs; still-unsettled NULL costs sort as absent.
+      uses persisted costs plus the same token estimates shown on task cards.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1273,9 +1335,20 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.where(
             _trial_exists(TrialModel.agent.in_(list(agents)))
         )
+    model_and_finished_predicates = []
     if models:
+        model_and_finished_predicates.append(TrialModel.model.in_(list(models)))
+    if trial_finished_after is not None:
+        model_and_finished_predicates.append(
+            TrialModel.finished_at >= trial_finished_after
+        )
+    if trial_finished_before is not None:
+        model_and_finished_predicates.append(
+            TrialModel.finished_at <= trial_finished_before
+        )
+    if model_and_finished_predicates:
         ranked_tasks = ranked_tasks.where(
-            _trial_exists(TrialModel.model.in_(list(models)))
+            _trial_exists(*model_and_finished_predicates)
         )
     if agent_models:
         # Each token is "agent:model" (model = everything after the first colon;
@@ -1437,7 +1510,12 @@ async def browse_tasks_core(
     )
     task_metrics = None
     if aggregate_filter_active or aggregate_sort_active or groups_use_aggregates:
-        task_metrics = _task_metrics_subquery(org_id)
+        task_metrics = _task_metrics_subquery(
+            org_id,
+            cost_models=models,
+            cost_finished_after=trial_finished_after,
+            cost_finished_before=trial_finished_before,
+        )
         ranked_tasks = ranked_tasks.add_columns(
             task_metrics.c.avg_reward.label("avg_reward"),
             task_metrics.c.total_tokens.label("total_tokens"),
@@ -1897,6 +1975,7 @@ async def browse_tasks_core(
     # but no native cost_usd). Folded into the trials loop below to avoid an
     # extra query. Mirrors the task-detail TaskCostTotals fields.
     cost_by_task: dict[str, dict[str, Any]] = {}
+    cost_scope_active = sort == "cost_desc"
     task_version_pairs = [
         (str(row["task_id"]), str(row["current_version_id"]))
         for row in visible_rows
@@ -2002,6 +2081,7 @@ async def browse_tasks_core(
                 TrialModel.cache_tokens.label("cache_tokens"),
                 TrialModel.cache_write_tokens.label("cache_write_tokens"),
                 TrialModel.billed_user_id.label("billed_user_id"),
+                TrialModel.finished_at.label("finished_at"),
             )
             .where(
                 TrialModel.superseded_by_trial_id.is_(None),
@@ -2037,6 +2117,18 @@ async def browse_tasks_core(
                     error_message=trial_row["error_message"],
                 )
             )
+            if cost_scope_active:
+                if models and trial_row["model"] not in models:
+                    continue
+                finished_at = trial_row["finished_at"]
+                if trial_finished_after is not None and (
+                    finished_at is None or finished_at < trial_finished_after
+                ):
+                    continue
+                if trial_finished_before is not None and (
+                    finished_at is None or finished_at > trial_finished_before
+                ):
+                    continue
             resolved_cost, cost_estimated = _resolve_browse_trial_cost(trial_row)
             if resolved_cost is not None:
                 cost_agg: dict[str, Any] = cost_by_task.setdefault(
