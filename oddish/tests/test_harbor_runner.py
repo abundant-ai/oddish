@@ -735,6 +735,74 @@ def test_build_agent_config_probe_sets_subagent_model(monkeypatch):
     assert agent_config.model_name == "claude-sonnet-4-6"
 
 
+def test_build_agent_config_litellm_agent_claude_gets_anthropic_prefix(monkeypatch):
+    """A litellm-based agent (mini-swe) needs a "provider/model" id. Even in the
+    workers' default Bedrock mode, Claude must be handed as
+    "anthropic/<api-id>" — the bare Bedrock inference-profile id claude-code
+    consumes has no provider prefix and Harbor's mini-swe rejects it with
+    "Model name must be in the format provider/model_name"."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+
+    # Trial rows persist the canonicalized Bedrock id.
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="global.anthropic.claude-opus-4-8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "anthropic/claude-opus-4-8"
+
+
+def test_build_agent_config_litellm_agent_bare_claude_gets_anthropic_prefix(
+    monkeypatch,
+):
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="claude-opus-4-8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "anthropic/claude-opus-4-8"
+
+
+def test_build_agent_config_litellm_agent_non_claude_model_unchanged(monkeypatch):
+    """The litellm prefix rule only rewrites Claude ids; other providers already
+    carry their own prefix and must pass through untouched."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="gemini-3-pro",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "gemini-3-pro"
+
+
+def test_build_agent_config_claude_code_keeps_bare_bedrock_id(monkeypatch):
+    """Contrast with the litellm agents: claude-code still gets the bare Bedrock
+    inference-profile id for its InvokeModel transport."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-bearer-token")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="claude-code",
+        model="claude-opus-4-8",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.model_name == "global.anthropic.claude-opus-4-8"
+
+
 def test_build_agent_config_non_probe_omits_subagent_model(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
 
@@ -1028,7 +1096,9 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
 
     asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
 
-    run_command = seen[-1]
+    run_command = next(c for c in seen if "grok -p" in c)
+    # The session store is captured out-of-band after the grok run.
+    assert any("grok-session" in c for c in seen)
     assert "--output-format streaming-json" in run_command
     assert "--output-format json" in run_command
     assert "--reasoning-effort high" in run_command
