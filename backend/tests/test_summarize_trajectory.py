@@ -679,3 +679,58 @@ async def test_get_or_generate_fetches_trajectory_and_context_in_parallel():
     # Both started before either finished -> parallel
     assert {started[0], started[1]} == {"trajectory", "context"}
     assert len(finished) == 2
+
+
+# ---------------------------------------------------------------------------
+# _normalize_phases
+# ---------------------------------------------------------------------------
+
+def test_normalize_phases_coalesces_and_preserves_recurrence():
+    from api.services.summarize_trajectory import _normalize_phases
+
+    raw = [
+        {"label": "Diagnose", "step_ids": [1, 2], "gist": "look"},
+        {"label": "Fix", "step_ids": [3], "gist": "patch"},
+        {"label": "Diagnose", "step_ids": [4], "gist": "look again"},
+    ]
+    segments = _normalize_phases(raw, [1, 2, 3, 4])
+    assert [(s["label"], s["step_ids"]) for s in segments] == [
+        ("Diagnose", [1, 2]),
+        ("Fix", [3]),
+        ("Diagnose", [4]),
+    ]
+    # gist is shared per label (first non-empty seen)
+    assert segments[0]["gist"] == "look"
+
+
+def test_normalize_phases_drops_unknown_step_ids():
+    from api.services.summarize_trajectory import _normalize_phases
+
+    raw = [{"label": "A", "step_ids": [1, 999], "gist": ""}]
+    segments = _normalize_phases(raw, [1, 2])
+    # 999 is not a real step; step 2 was untagged -> carries forward "A"
+    assert segments == [{"label": "A", "gist": "", "step_ids": [1, 2]}]
+
+
+def test_normalize_phases_carries_forward_untagged_gap():
+    from api.services.summarize_trajectory import _normalize_phases
+
+    raw = [
+        {"label": "Explore", "step_ids": [1], "gist": ""},
+        {"label": "Verify", "step_ids": [4], "gist": ""},
+    ]
+    segments = _normalize_phases(raw, [1, 2, 3, 4])
+    # 2,3 untagged -> carry "Explore"; 4 -> "Verify"
+    assert [(s["label"], s["step_ids"]) for s in segments] == [
+        ("Explore", [1, 2, 3]),
+        ("Verify", [4]),
+    ]
+
+
+def test_normalize_phases_empty_when_nothing_usable():
+    from api.services.summarize_trajectory import _normalize_phases
+
+    assert _normalize_phases(None, [1, 2]) == []
+    assert _normalize_phases([], [1, 2]) == []
+    assert _normalize_phases([{"label": "", "step_ids": [1]}], [1, 2]) == []
+    assert _normalize_phases([{"label": "A", "step_ids": [1]}], []) == []
