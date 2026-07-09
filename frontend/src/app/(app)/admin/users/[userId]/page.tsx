@@ -293,10 +293,8 @@ export default function AdminUserCostPage({
           {data?.email && <span>{data.email}</span>}
         </div>
         <p className="text-muted-foreground text-xs">
-          Spend billed to this user, summed over settled trials (deleted runs
-          included) by finish time. Totals can differ from the Costs tab
-          (submission-time axis, live trials only) and from the quota Used
-          figure (which floors unpriced trials instead of estimating).
+          Spend billed to this user, calculated by finish time. Excludes spend
+          on experiments registered to the user but unbilled at creation.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">

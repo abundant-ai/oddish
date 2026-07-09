@@ -16,7 +16,9 @@ from oddish.core.quotas import (  # noqa: E402
     quota_window_start,
     sum_cost_usd,
     sum_cost_usd_by_user,
+    to_money_decimal,
 )
+from oddish.model_pricing import estimate_cost_usd  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
@@ -126,42 +128,101 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
 
 
 @pytest.mark.asyncio
-async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
-    """Unpriced finished trials count at the safety floor."""
+async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
+    cleanup_task_ids, monkeypatch
+):
+    """Token-bearing trials are estimated, same-model tokenless trials are
+    floored individually, and cancelled unpriced trials remain free."""
     task_id = f"quota-unpriced-{_RUN}"
     cleanup_task_ids.append(task_id)
     org_id = f"org-quota-unpriced-{_RUN}"
     billed_user = f"user-unpriced-{_RUN}"
     now = datetime.now(timezone.utc)
-    floor = settings.unpriced_trial_cost_usd
+    # A model with deterministic local pricing so the estimate is stable.
+    model = "gpt-5.3"
+    est = estimate_cost_usd(model, 1_000_000, 500_000, 0)
+    assert est and est > 0  # guard the fixture: pricing must resolve
+    uncached_est = estimate_cost_usd(model, 100_000, 0, 0)
+    overcached_est = estimate_cost_usd(model, 100_000, 0, 200_000)
+    assert uncached_est is not None and overcached_est is not None
+    monkeypatch.setattr(settings, "unpriced_trial_cost_usd", Decimal("1.00"))
 
     async with get_session() as session:
         await create_task(
             session,
-            _submission("quota-unpriced", n_trials=4),
+            _submission("quota-unpriced", n_trials=8),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=billed_user,
         )
         await session.flush()
 
-        unpriced = await session.get(TrialModel, f"{task_id}-0")
-        unpriced.started_at = now
-        unpriced.finished_at = now
-        unpriced.cost_usd = None
+        # Unpriced but with tokens -> token estimate.
+        estimated = await session.get(TrialModel, f"{task_id}-0")
+        estimated.started_at = now
+        estimated.finished_at = now
+        estimated.cost_usd = None
+        estimated.model = model
+        estimated.input_tokens = 1_000_000
+        estimated.output_tokens = 500_000
+        estimated.cache_tokens = 0
 
+        # Priced -> native cost.
         priced = await session.get(TrialModel, f"{task_id}-1")
         priced.finished_at = now
         priced.cost_usd = 0.25
 
+        # Free (cost 0) -> 0.
         free = await session.get(TrialModel, f"{task_id}-2")
         free.finished_at = now
         free.cost_usd = 0.0
 
-        never_started = await session.get(TrialModel, f"{task_id}-3")
-        never_started.started_at = None
-        never_started.finished_at = now
-        never_started.cost_usd = None
+        # Same-model unpriced trial with NO tokens -> one fallback floor.
+        no_tokens = await session.get(TrialModel, f"{task_id}-3")
+        no_tokens.started_at = now
+        no_tokens.finished_at = now
+        no_tokens.cost_usd = None
+        no_tokens.model = model
+
+        # Cancelled (harbor_stage='cancelled') unpriced WITH tokens -> $0.
+        cancelled = await session.get(TrialModel, f"{task_id}-4")
+        cancelled.started_at = now
+        cancelled.finished_at = now
+        cancelled.cost_usd = None
+        cancelled.model = model
+        cancelled.input_tokens = 1_000_000
+        cancelled.output_tokens = 500_000
+        cancelled.harbor_stage = "cancelled"
+
+        # Cache-read tokens alone do not make a trial estimatable: the estimator
+        # requires input, output, or cache-write usage, so this gets one floor
+        # and its cache tokens must not leak into the sibling trial's estimate.
+        cache_only = await session.get(TrialModel, f"{task_id}-5")
+        cache_only.started_at = now
+        cache_only.finished_at = now
+        cache_only.cost_usd = None
+        cache_only.model = model
+        cache_only.cache_tokens = 500_000
+
+        # These two rows prove grouped pricing preserves the estimator's
+        # per-trial uncached-input clamp. Pooling their raw input/cache totals
+        # would incorrectly let this over-cached row consume its sibling's
+        # uncached input and understate spend.
+        uncached = await session.get(TrialModel, f"{task_id}-6")
+        uncached.started_at = now
+        uncached.finished_at = now
+        uncached.cost_usd = None
+        uncached.model = model
+        uncached.input_tokens = 100_000
+        uncached.cache_tokens = 0
+
+        overcached = await session.get(TrialModel, f"{task_id}-7")
+        overcached.started_at = now
+        overcached.finished_at = now
+        overcached.cost_usd = None
+        overcached.model = model
+        overcached.input_tokens = 100_000
+        overcached.cache_tokens = 200_000
 
         await session.flush()
 
@@ -170,6 +231,6 @@ async def test_unpriced_finished_trial_counts_at_the_floor(cleanup_task_ids):
         )
         grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    expected = floor + Decimal("0.25")
+    expected = to_money_decimal(est + uncached_est + overcached_est + 0.25 + 2.00)
     assert settled == expected
     assert grouped[billed_user] == expected
