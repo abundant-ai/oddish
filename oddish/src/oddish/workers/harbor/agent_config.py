@@ -58,6 +58,24 @@ def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
 
 
+def _to_litellm_claude_model_id(model: str | None) -> str | None:
+    """Provider-prefix a Claude id for litellm-based (non claude-code) agents.
+
+    claude-code consumes the bare Bedrock inference-profile id via its own
+    InvokeModel transport; every other Harbor agent (mini-swe, ...) runs the
+    model through litellm, which requires a ``provider/model`` id. Route Claude
+    to the direct Anthropic API (``ANTHROPIC_API_KEY``, which Harbor forwards
+    into the agent sandbox for ``anthropic/`` models) as ``anthropic/<api-id>``.
+    Non-Claude and already-prefixed ids pass through unchanged.
+    """
+    api_id = to_anthropic_api_model_id(model)
+    if not api_id or "/" in api_id:
+        return api_id
+    if "claude" in api_id.lower():
+        return f"anthropic/{api_id}"
+    return api_id
+
+
 def _apply_anthropic_compat_env(
     agent_config: AgentConfig,
     *,
@@ -388,6 +406,10 @@ def _build_agent_config(
         agent_config.model_name = to_minimax_model_id(agent_config.model_name)
     elif is_moonshot_model(agent_config.model_name):
         agent_config.model_name = to_moonshot_model_id(agent_config.model_name)
+    elif not _is_claude_code_agent(agent_config):
+        # litellm-based agents need a "provider/model" id; claude-code is the
+        # only agent that consumes the bare Bedrock inference-profile id.
+        agent_config.model_name = _to_litellm_claude_model_id(agent_config.model_name)
     elif _claude_code_forces_direct_api(is_probe):
         agent_config.model_name = to_anthropic_api_model_id(agent_config.model_name)
     elif _agent_uses_bedrock():
