@@ -140,7 +140,41 @@ def test_graph_from_summary_reuses_phases_and_flags_trouble():
     assert g["steps"][0]["status"] == "ok"
     assert g["steps"][-1]["status"] == "error"
     assert g["terminal"]["outcome"] == tg.OUTCOME_FAILURE
-    assert g["terminal"]["last_action"] == "Tests failed"
+    # terminal describes the actual final ATIF step (a bash call), not the last
+    # highlight (which may predate the closing steps)
+    assert g["terminal"]["last_action"] == "Called bash"
+
+
+def test_is_trouble_word_boundary_and_negation():
+    assert tg._is_trouble("raised an exception")
+    assert tg._is_trouble("the build failed")
+    assert tg._is_trouble("retried three times")  # startswith 'retr...'
+    assert not tg._is_trouble("no terror here")  # 'error' not at a word boundary
+    # negated / benign mentions must NOT flag a snag
+    assert not tg._is_trouble("completed with no errors")
+    assert not tg._is_trouble("0 failures, all green")
+    assert not tg._is_trouble("ran to completion")  # no trouble marker present
+
+
+def test_summary_used_even_with_empty_digest():
+    # has_trajectory but the ATIF didn't parse into steps here; a persisted
+    # summary must still drive the graph, not "No trajectory recorded".
+    summary = {
+        "phases": [{"label": "Investigate", "step_ids": [1], "gist": "looked"}],
+        "highlights": [{"step_id": 1, "title": "Checked metrics", "why": "ok"}],
+    }
+    g = asyncio.run(
+        tg.build_trajectory_graph(
+            {"steps": []},
+            {"status": "success", "reward": 0.0, "task_name": "t", "agent_name": "a"},
+            model=None,
+            summary=summary,
+        )
+    )
+    assert g["source"] == "summary"
+    assert [s["title"] for s in g["steps"]] == ["Investigate"]
+    # no digest -> falls back to the last highlight for the action
+    assert g["terminal"]["last_action"] == "Checked metrics"
 
 
 def test_summary_without_phases_falls_back():
