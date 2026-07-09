@@ -41,7 +41,9 @@ def test_partial_billed_user_spend_index_exists():
 
 def test_billed_user_migration_is_ddl_only_with_concurrent_index():
     versions_dir = Path(__file__).resolve().parents[1] / "alembic" / "versions"
-    matching_migrations = list(versions_dir.glob("billed_user_*add_trials_billed_user_id.py"))
+    matching_migrations = list(
+        versions_dir.glob("billed_user_*add_trials_billed_user_id.py")
+    )
     assert len(matching_migrations) == 1
 
     migration_source = matching_migrations[0].read_text()
@@ -179,8 +181,12 @@ async def _run_retry(monkeypatch, session, *, billed_user_id):
     async def fake_enqueue_trial_worker_job(_session, **kwargs):
         return None
 
-    monkeypatch.setattr(queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index)
-    monkeypatch.setattr(queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job)
+    monkeypatch.setattr(
+        queue_mod, "reserve_next_trial_index", fake_reserve_next_trial_index
+    )
+    monkeypatch.setattr(
+        queue_mod, "enqueue_trial_worker_job", fake_enqueue_trial_worker_job
+    )
 
     try:
         result = await endpoints.retry_trial_core(
@@ -228,20 +234,30 @@ async def test_auto_probe_forwards_billed_user_id_to_append(monkeypatch):
     async def fake_probed_version_count(session, org_id):
         return 0
 
-    async def fake_append_trials_to_task(session, *, task, submission, experiment_id=None, billed_user_id=None):
+    async def fake_append_trials_to_task(
+        session, *, task, submission, experiment_id=None, billed_user_id=None
+    ):
         captured_append_kwargs["billed_user_id"] = billed_user_id
         return []
 
-    monkeypatch.setattr(auto_probe_module, "_version_already_probed", fake_version_already_probed)
-    monkeypatch.setattr(auto_probe_module, "_probed_version_count", fake_probed_version_count)
+    monkeypatch.setattr(
+        auto_probe_module, "_version_already_probed", fake_version_already_probed
+    )
+    monkeypatch.setattr(
+        auto_probe_module, "_probed_version_count", fake_probed_version_count
+    )
     monkeypatch.setattr(auto_probe_module, "next_probe_model", lambda count: "gpt-5")
-    monkeypatch.setattr(auto_probe_module, "build_trial_specs_from_sweep", lambda submission: [])
+    monkeypatch.setattr(
+        auto_probe_module, "build_trial_specs_from_sweep", lambda submission: []
+    )
     monkeypatch.setattr(
         auto_probe_module,
         "build_task_submission_from_sweep",
         lambda submission, task_path, trials: SimpleNamespace(trials=trials),
     )
-    monkeypatch.setattr(auto_probe_module, "append_trials_to_task", fake_append_trials_to_task)
+    monkeypatch.setattr(
+        auto_probe_module, "append_trials_to_task", fake_append_trials_to_task
+    )
 
     probed_task = SimpleNamespace(
         current_version_id="task-1-v1",

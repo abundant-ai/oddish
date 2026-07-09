@@ -108,12 +108,12 @@ async def test_new_model_gets_full_n_trials(seeded_task_id):
         after_first_a = await _trials_for_model(s, seeded_task_id, MODEL_A)
         after_first_b = await _trials_for_model(s, seeded_task_id, MODEL_B)
 
-    assert (
-        len(after_first_a) == N_TRIALS
-    ), f"expected {N_TRIALS} trials for model A after first submit, got {len(after_first_a)}"
-    assert (
-        len(after_first_b) == 0
-    ), f"expected 0 trials for model B before it was added, got {len(after_first_b)}"
+    assert len(after_first_a) == N_TRIALS, (
+        f"expected {N_TRIALS} trials for model A after first submit, got {len(after_first_a)}"
+    )
+    assert len(after_first_b) == 0, (
+        f"expected 0 trials for model B before it was added, got {len(after_first_b)}"
+    )
 
     submission_ab = TaskSweepSubmission(
         task_id=seeded_task_id,
@@ -162,9 +162,9 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
         await create_task_sweep_core(s, submission=submission_exp_a, org_id=None)
     async with get_session() as s:
         after_exp_a = await _trials_for_model(s, seeded_task_id, MODEL_A)
-    assert (
-        len(after_exp_a) == N_TRIALS
-    ), f"expected {N_TRIALS} trials in exp-a, got {len(after_exp_a)}"
+    assert len(after_exp_a) == N_TRIALS, (
+        f"expected {N_TRIALS} trials in exp-a, got {len(after_exp_a)}"
+    )
 
     submission_exp_b = TaskSweepSubmission(
         task_id=seeded_task_id,
@@ -203,9 +203,9 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
         exp_a_obj = await get_or_create_experiment(s, exp_a, org_id=None)
         exp_b_obj = await get_or_create_experiment(s, exp_b, org_id=None)
 
-    assert (
-        counts_by_exp[exp_a_obj.id] == N_TRIALS
-    ), f"exp-a should still have {N_TRIALS} trials, got {counts_by_exp[exp_a_obj.id]}"
+    assert counts_by_exp[exp_a_obj.id] == N_TRIALS, (
+        f"exp-a should still have {N_TRIALS} trials, got {counts_by_exp[exp_a_obj.id]}"
+    )
     assert counts_by_exp[exp_b_obj.id] == N_TRIALS, (
         f"exp-b should have {N_TRIALS} trials (new experiment = 0 existing), "
         f"got {counts_by_exp[exp_b_obj.id]}"

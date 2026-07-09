@@ -911,8 +911,8 @@ class TrialResponse(BaseModel):
         description=(
             "True when ``cost_usd`` was derived from the static model "
             "pricing table because the agent runtime did not report a "
-            "native cost. False when the cost came directly from the "
-            "runtime. Null when no cost is available."
+            "usable native cost. False when the cost came directly from "
+            "the runtime. Null when no cost is available."
         ),
     )
     is_billed: bool = Field(

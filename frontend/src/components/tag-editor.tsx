@@ -5,7 +5,8 @@ import { Tag, X } from "lucide-react";
 
 import { TagChip } from "@/components/tag-chip";
 import { TagChipEditor } from "@/components/tag-chip-editor";
-import { TagPicker, type TagPickerItem } from "@/components/tag-picker";
+import type { TagPickerItem } from "@/components/tag-picker";
+import { TagPicker } from "@/components/tag-picker-lazy";
 import { Button } from "@/components/ui/button";
 import type { UserTagRef } from "@/lib/types";
 

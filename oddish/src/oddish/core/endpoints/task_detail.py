@@ -123,9 +123,7 @@ async def get_task_detail_core(
         session, task_id=task_id, org_id=org_id, task=task
     )
 
-    billed_trial_ids = {
-        t.id for t in all_trial_models if t.billed_user_id is not None
-    }
+    billed_trial_ids = {t.id for t in all_trial_models if t.billed_user_id is not None}
     totals, versions_sorted = _aggregate_task_detail_rollups(
         trials=task_status.trials or [],
         version_rows=version_rows,
@@ -151,12 +149,9 @@ async def get_task_detail_core(
         if org_id is not None:
             name_query = name_query.where(ExperimentModel.org_id == org_id)
         exp_name_by_id = {
-            row.id: row.name
-            for row in (await session.execute(name_query)).all()
+            row.id: row.name for row in (await session.execute(name_query)).all()
         }
-    experiments_by_version = _experiments_by_version(
-        all_trial_models, exp_name_by_id
-    )
+    experiments_by_version = _experiments_by_version(all_trial_models, exp_name_by_id)
     for summary in versions_sorted:
         summary.experiments = experiments_by_version.get(summary.id, [])
 

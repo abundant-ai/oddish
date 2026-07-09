@@ -372,9 +372,7 @@ def status(
                         skipped_trials = sum(
                             t.get("skipped", 0) or 0 for t in exp_tasks
                         )
-                        failed_trials = sum(
-                            t.get("failed", 0) or 0 for t in exp_tasks
-                        )
+                        failed_trials = sum(t.get("failed", 0) or 0 for t in exp_tasks)
                         reward_success = sum(
                             t.get("reward_success", 0) or 0 for t in exp_tasks
                         )

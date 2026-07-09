@@ -75,6 +75,11 @@ def authorize_s3_key(key: str, prefix: str) -> bool:
 _OPENAI_FAMILY = {"openai", "azure", "azure_openai"}
 
 
+def _agent_is_claude_code(agent: str | None) -> bool:
+    """Mirror ``agent_config._is_claude_code_agent`` by agent name."""
+    return "claude-code" in (agent or "").strip().lower()
+
+
 def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[str, str]:
     """Least-privilege model env for the job's provider only.
 
@@ -93,9 +98,17 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
         key = getattr(settings, "anthropic_api_key", None)
         return {"ANTHROPIC_API_KEY": key} if key else {}
     if provider == "bedrock":
-        # Bedrock authenticates with AWS creds, not a single API key; scoping
-        # those needs STS (a future enhancement). Carry only the routing flag;
-        # the worker's dual-read keeps the ambient AWS creds for the rest.
+        # Non-claude-code (litellm) agents run a Bedrock-classified Claude model
+        # over the direct Anthropic API as ``anthropic/<id>`` (see
+        # _to_litellm_claude_model_id), so scope the matching ANTHROPIC_API_KEY
+        # rather than the Bedrock routing flag they can't use.
+        if not _agent_is_claude_code(agent):
+            key = getattr(settings, "anthropic_api_key", None)
+            return {"ANTHROPIC_API_KEY": key} if key else {}
+        # claude-code invokes Bedrock directly (InvokeModel) with AWS creds, not
+        # a single API key; scoping those needs STS (a future enhancement).
+        # Carry only the routing flag; the worker's dual-read keeps the ambient
+        # AWS creds for the rest.
         return {"CLAUDE_CODE_USE_BEDROCK": "1"}
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)
