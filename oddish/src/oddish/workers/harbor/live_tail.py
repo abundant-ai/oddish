@@ -17,6 +17,11 @@ from oddish.model_pricing import estimate_cost_usd
 from oddish.workers.queue.shared import console
 
 MAX_CHUNK_BYTES = 256 * 1024
+# Whole-file snapshot adapters (mini-swe-agent) re-read the entire trajectory
+# file every tick. Cap the read so a runaway file can't blow up the exec
+# payload; past the cap the JSON is truncated and simply won't parse (the live
+# view freezes, post-hoc extraction is unaffected).
+SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024
 EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5
 MAX_TRIAL_EVENTS = 5000
@@ -75,9 +80,7 @@ def _tool_result_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         return "\n".join(
-            str(block.get("text", ""))
-            for block in content
-            if isinstance(block, dict)
+            str(block.get("text", "")) for block in content if isinstance(block, dict)
         )
     return "" if content is None else str(content)
 
@@ -161,7 +164,9 @@ class ClaudeUsageFold:
         for usage in self.usage_by_id.values():
             cache_read = int(usage.get("cache_read_input_tokens") or 0)
             cache_write = int(usage.get("cache_creation_input_tokens") or 0)
-            t.input_tokens += int(usage.get("input_tokens") or 0) + cache_read + cache_write
+            t.input_tokens += (
+                int(usage.get("input_tokens") or 0) + cache_read + cache_write
+            )
             t.cache_tokens += cache_read
             t.cache_write_tokens += cache_write
             t.output_tokens += int(usage.get("output_tokens") or 0)
@@ -231,7 +236,9 @@ class CodexUsageFold:
         if event_type == "turn.failed":
             error = event.get("error")
             message = (
-                error.get("message") if isinstance(error, dict) else event.get("message")
+                error.get("message")
+                if isinstance(error, dict)
+                else event.get("message")
             )
             if not message:
                 return []
@@ -256,11 +263,301 @@ class CodexUsageFold:
         )
 
 
+def _cursor_message_text(message: Any) -> str:
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        return "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ).strip()
+    return "" if content is None else str(content)
+
+
+def _render_cursor_tool_call(event: dict[str, Any]) -> list[dict[str, Any]]:
+    # cursor-agent emits a "started" then a "completed" tool_call; the completed
+    # one carries both arguments and result, so only render that (mirrors the
+    # post-hoc parser skipping "started").
+    if event.get("subtype") != "completed":
+        return []
+    tool_call = event.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return []
+    rendered: list[dict[str, Any]] = []
+    for name, call in tool_call.items():
+        if not isinstance(call, dict):
+            continue
+        args = call.get("args")
+        rendered.append(
+            {
+                "kind": "tool_use",
+                "payload": _clipped_payload(
+                    "input",
+                    args if isinstance(args, dict) else {},
+                    name=str(name),
+                ),
+            }
+        )
+        result = call.get("result")
+        if result is not None:
+            rendered.append(
+                {
+                    "kind": "tool_result",
+                    "payload": _clipped_payload("content", result),
+                }
+            )
+    return rendered
+
+
+@dataclass
+class CursorUsageFold:
+    """Fold for cursor-agent ``--output-format=stream-json`` teed stdout.
+
+    Usage lands only on ``result`` events (typically one, at the very end of a
+    ``--print`` run) and is *summed* across them, matching the post-hoc parser.
+    Input tokens are reported split from cache, so the cache-inclusive total the
+    pricing convention expects is ``input + cacheRead + cacheWrite``.
+    """
+
+    model: str | None = None
+    input_tokens: int = 0
+    cache_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+    _seen_usage: bool = False
+
+    @property
+    def has_usage(self) -> bool:
+        return self._seen_usage
+
+    def on_truncate(self) -> None:
+        # cursor-agent tees a single append-only run and never re-tees, so the
+        # tailer's shrink-reset never fires here. No banking is needed (and a
+        # plain re-read would double-count the summed result usage, so if this
+        # harness ever gained a re-tee, this would need Codex-style banking).
+        return None
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        event_type = event.get("type")
+        if event_type == "assistant":
+            text = _cursor_message_text(event.get("message"))
+            if not text:
+                return []
+            return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+        if event_type == "thinking":
+            if event.get("subtype") != "completed":
+                return []
+            text = event.get("text")
+            if not text:
+                return []
+            return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+        if event_type == "tool_call":
+            return _render_cursor_tool_call(event)
+        if event_type == "result":
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self.input_tokens += int(usage.get("inputTokens") or 0)
+                self.cache_tokens += int(usage.get("cacheReadTokens") or 0)
+                self.cache_write_tokens += int(usage.get("cacheWriteTokens") or 0)
+                self.output_tokens += int(usage.get("outputTokens") or 0)
+                self._seen_usage = True
+            result = event.get("result")
+            if not result:
+                return []
+            return [{"kind": "summary", "payload": _clipped_payload("text", result)}]
+        return []
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(
+            input_tokens=self.input_tokens
+            + self.cache_tokens
+            + self.cache_write_tokens,
+            cache_tokens=self.cache_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            output_tokens=self.output_tokens,
+            model=self.model,
+        )
+
+
+def _mini_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text", "")))
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    return str(content)
+
+
+def _mini_message_usage(message: dict[str, Any]) -> tuple[int, int, int]:
+    """Return (prompt_tokens, completion_tokens, cached_tokens) for a message.
+
+    Mirrors Harbor's mini-swe-agent reader, handling both the chat-completions
+    (``extra.response.usage``) and Responses-API (top-level ``usage``) shapes.
+    ``prompt_tokens`` is the cache-inclusive input total.
+    """
+    usage = ((message.get("extra") or {}).get("response") or {}).get("usage") or {}
+    if not usage and message.get("object") == "response":
+        usage = message.get("usage") or {}
+    if not isinstance(usage, dict):
+        return 0, 0, 0
+    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    details = (
+        usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    )
+    cached = int(details.get("cached_tokens") or 0) if isinstance(details, dict) else 0
+    return prompt, completion, cached
+
+
+def _render_mini_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    rendered: list[dict[str, Any]] = []
+    for tc in message.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        func = tc.get("function") or {}
+        name = str(func.get("name") or "bash")
+        raw_args = func.get("arguments", {})
+        if isinstance(raw_args, str):
+            try:
+                args: Any = json.loads(raw_args)
+            except (json.JSONDecodeError, TypeError):
+                args = {"command": raw_args}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            args = {"command": str(raw_args)}
+        rendered.append(
+            {
+                "kind": "tool_use",
+                "payload": _clipped_payload(
+                    "input",
+                    args if isinstance(args, dict) else {"command": str(args)},
+                    name=name,
+                ),
+            }
+        )
+    return rendered
+
+
+@dataclass
+class MiniSweUsageFold:
+    """Fold for mini-swe-agent's native ``mini-swe-agent.trajectory.json``.
+
+    Unlike the JSONL harnesses, mini-swe-agent's ``save()`` rewrites the whole
+    file after every step, so this is a *snapshot* fold: the tailer feeds the
+    entire file each tick and the fold emits only messages beyond the ones it
+    has already rendered, recomputing token totals from the full document.
+    """
+
+    model: str | None = None
+    emitted: int = 0
+    seen_first_user: bool = False
+    _totals: UsageTotals = field(default_factory=UsageTotals)
+    _has_usage: bool = False
+
+    @property
+    def has_usage(self) -> bool:
+        return self._has_usage
+
+    def on_truncate(self) -> None:
+        return None
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        document = _parse_json_line(line)
+        if document is None:
+            return []
+        messages = document.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+
+        model = (
+            ((document.get("info") or {}).get("config") or {}).get("model") or {}
+        ).get("model_name")
+        if isinstance(model, str) and model:
+            self.model = model
+
+        self._recompute_usage(messages)
+
+        rendered: list[dict[str, Any]] = []
+        for message in messages[self.emitted :]:
+            if isinstance(message, dict):
+                rendered.extend(self._render_message(message))
+        self.emitted = max(self.emitted, len(messages))
+        return rendered
+
+    def _recompute_usage(self, messages: list[Any]) -> None:
+        input_tokens = output_tokens = cache_tokens = 0
+        any_tokens = False
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            prompt, completion, cached = _mini_message_usage(message)
+            input_tokens += prompt
+            output_tokens += completion
+            cache_tokens += cached
+            if prompt or completion:
+                any_tokens = True
+        self._totals = UsageTotals(
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+        )
+        if any_tokens:
+            self._has_usage = True
+
+    def _render_message(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        role = message.get("role")
+        content = _mini_content_text(message.get("content"))
+        if role == "assistant":
+            rendered: list[dict[str, Any]] = []
+            if content:
+                rendered.append(
+                    {"kind": "message", "payload": _clipped_payload("text", content)}
+                )
+            rendered.extend(_render_mini_tool_calls(message))
+            return rendered
+        if role == "tool":
+            return [
+                {"kind": "tool_result", "payload": _clipped_payload("content", content)}
+            ]
+        if role == "user":
+            # The first user turn is the task prompt, not an observation.
+            if not self.seen_first_user:
+                self.seen_first_user = True
+                return []
+            return [
+                {"kind": "tool_result", "payload": _clipped_payload("content", content)}
+            ]
+        return []
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(
+            input_tokens=self._totals.input_tokens,
+            cache_tokens=self._totals.cache_tokens,
+            output_tokens=self._totals.output_tokens,
+            model=self.model,
+        )
+
+
 @dataclass(frozen=True)
 class Adapter:
     matches: Callable[[str], bool]
     log_path: str
     make_fold: Callable[[str | None], Fold]
+    # "append": byte-offset tail of an append-only JSONL stream (claude/codex/
+    # cursor). "snapshot": re-read the whole file each tick (mini-swe-agent
+    # rewrites its trajectory every step).
+    mode: str = "append"
 
 
 ADAPTERS: tuple[Adapter, ...] = (
@@ -273,6 +570,17 @@ ADAPTERS: tuple[Adapter, ...] = (
         matches=lambda agent: "codex" in agent,
         log_path="/logs/agent/codex.txt",
         make_fold=lambda model: CodexUsageFold(model=model),
+    ),
+    Adapter(
+        matches=lambda agent: "cursor-cli" in agent,
+        log_path="/logs/agent/cursor-cli.txt",
+        make_fold=lambda model: CursorUsageFold(model=model),
+    ),
+    Adapter(
+        matches=lambda agent: "mini-swe-agent" in agent,
+        log_path="/logs/agent/mini-swe-agent.trajectory.json",
+        make_fold=lambda model: MiniSweUsageFold(model=model),
+        mode="snapshot",
     ),
 )
 
@@ -313,12 +621,14 @@ class LiveTailer:
         attempt: int,
         log_path: str,
         fold: Fold,
+        mode: str = "append",
     ):
         self.trial_id = trial_id
         self.environment = environment
         self.attempt = attempt
         self.log_path = log_path
         self.fold = fold
+        self.mode = mode
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -371,6 +681,9 @@ class LiveTailer:
                 pass
 
     async def _tick(self) -> None:
+        if self.mode == "snapshot":
+            await self._tick_snapshot()
+            return
         command = (
             f"set -o pipefail; wc -c < '{self.log_path}' 2>/dev/null || echo -1; "
             f"tail -c +{self.offset + 1} '{self.log_path}'"
@@ -405,6 +718,30 @@ class LiveTailer:
             self.offset += len(raw)
             for line in lines:
                 self._buffer_events(self.fold.feed_line(line))
+        await self._flush_events()
+        await self._checkpoint()
+
+    async def _tick_snapshot(self) -> None:
+        # Whole-file re-read: mini-swe-agent rewrites its trajectory each step,
+        # so there is no append-only offset to advance. The fold is fed the
+        # entire document and emits only the messages it has not rendered yet.
+        command = (
+            f"tail -c +1 '{self.log_path}' 2>/dev/null"
+            f" | head -c {SNAPSHOT_MAX_BYTES} | base64 | tr -d '\\n'"
+        )
+        result = await self.environment.exec(
+            command=command, timeout_sec=EXEC_TIMEOUT_SEC
+        )
+        return_code = getattr(result, "return_code", 0)
+        if return_code not in (0, None):
+            raise RuntimeError(f"snapshot exec failed rc={return_code}")
+        encoded = (result.stdout or "").strip()
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except binascii.Error as exc:
+                raise RuntimeError(f"invalid base64 snapshot output: {exc}") from exc
+            self._buffer_events(self.fold.feed_line(raw))
         await self._flush_events()
         await self._checkpoint()
 
@@ -499,6 +836,7 @@ def start(
         attempt=attempt,
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
+        mode=adapter.mode,
     )
     old = _tailers.pop(trial_id, None)
     if old:
