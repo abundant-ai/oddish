@@ -618,7 +618,10 @@ function ExperimentSummaryBar({
           </span>
         </span>
       </KpiTile>
-      <KpiTile label="Cost">
+      <KpiTile
+        label="Cost"
+        labelInfo="Total cost it took to run all tasks in this experiment."
+      >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
@@ -655,7 +658,10 @@ function ExperimentSummaryBar({
         </span>
       </KpiTile>
       {showBilledSpend && (
-        <KpiTile label="Billed spend">
+        <KpiTile
+          label="New spend"
+          labelInfo="Total new spend for this experiment."
+        >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
             title={
