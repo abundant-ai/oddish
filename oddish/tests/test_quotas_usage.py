@@ -139,15 +139,18 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
     billed_user = f"user-unpriced-{_RUN}"
     now = datetime.now(timezone.utc)
     # A model with deterministic local pricing so the estimate is stable.
-    model = "gpt-5.5-pro"
+    model = "gpt-5.3"
     est = estimate_cost_usd(model, 1_000_000, 500_000, 0)
     assert est and est > 0  # guard the fixture: pricing must resolve
+    uncached_est = estimate_cost_usd(model, 100_000, 0, 0)
+    overcached_est = estimate_cost_usd(model, 100_000, 0, 200_000)
+    assert uncached_est is not None and overcached_est is not None
     monkeypatch.setattr(settings, "unpriced_trial_cost_usd", Decimal("1.00"))
 
     async with get_session() as session:
         await create_task(
             session,
-            _submission("quota-unpriced", n_trials=6),
+            _submission("quota-unpriced", n_trials=8),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=billed_user,
@@ -201,6 +204,26 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
         cache_only.model = model
         cache_only.cache_tokens = 500_000
 
+        # These two rows prove grouped pricing preserves the estimator's
+        # per-trial uncached-input clamp. Pooling their raw input/cache totals
+        # would incorrectly let this over-cached row consume its sibling's
+        # uncached input and understate spend.
+        uncached = await session.get(TrialModel, f"{task_id}-6")
+        uncached.started_at = now
+        uncached.finished_at = now
+        uncached.cost_usd = None
+        uncached.model = model
+        uncached.input_tokens = 100_000
+        uncached.cache_tokens = 0
+
+        overcached = await session.get(TrialModel, f"{task_id}-7")
+        overcached.started_at = now
+        overcached.finished_at = now
+        overcached.cost_usd = None
+        overcached.model = model
+        overcached.input_tokens = 100_000
+        overcached.cache_tokens = 200_000
+
         await session.flush()
 
         settled = await sum_cost_usd(
@@ -208,6 +231,6 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
         )
         grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    expected = to_money_decimal(est + 0.25 + 2.00)
+    expected = to_money_decimal(est + uncached_est + overcached_est + 0.25 + 2.00)
     assert settled == expected
     assert grouped[billed_user] == expected

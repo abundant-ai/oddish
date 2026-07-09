@@ -75,6 +75,22 @@ def settled_cost_columns() -> list:
     """
     estimatable = _estimatable()
     has_tokens = _has_estimatable_tokens()
+    nonnegative_input = func.greatest(func.coalesce(TrialModel.input_tokens, 0), 0)
+    nonnegative_output = func.greatest(func.coalesce(TrialModel.output_tokens, 0), 0)
+    nonnegative_cache = func.greatest(func.coalesce(TrialModel.cache_tokens, 0), 0)
+    nonnegative_cache_write = func.greatest(
+        func.coalesce(TrialModel.cache_write_tokens, 0), 0
+    )
+    uncached_input = func.greatest(
+        nonnegative_input - nonnegative_cache - nonnegative_cache_write,
+        0,
+    )
+    # ``estimate_cost_usd`` decomposes input into uncached/cache-read/cache-write
+    # after aggregating. Recompose each trial first so its per-trial clamp is
+    # preserved when many rows are grouped: sum(max(input-cache-cache_write, 0))
+    # is not generally equal to
+    # max(sum(input)-sum(cache)-sum(cache_write), 0).
+    estimator_input = uncached_input + nonnegative_cache + nonnegative_cache_write
     return [
         func.coalesce(
             func.sum(
@@ -83,16 +99,16 @@ def settled_cost_columns() -> list:
             0.0,
         ).label("native_cost"),
         func.coalesce(
-            func.sum(case((has_tokens, TrialModel.input_tokens), else_=0)), 0
+            func.sum(case((has_tokens, estimator_input), else_=0)), 0
         ).label("est_input"),
         func.coalesce(
-            func.sum(case((has_tokens, TrialModel.output_tokens), else_=0)), 0
+            func.sum(case((has_tokens, nonnegative_output), else_=0)), 0
         ).label("est_output"),
         func.coalesce(
-            func.sum(case((has_tokens, TrialModel.cache_tokens), else_=0)), 0
+            func.sum(case((has_tokens, nonnegative_cache), else_=0)), 0
         ).label("est_cache"),
         func.coalesce(
-            func.sum(case((has_tokens, TrialModel.cache_write_tokens), else_=0)), 0
+            func.sum(case((has_tokens, nonnegative_cache_write), else_=0)), 0
         ).label("est_cache_write"),
         func.coalesce(func.sum(case((estimatable, 1), else_=0)), 0).label("est_trials"),
         func.coalesce(func.sum(case((has_tokens, 1), else_=0)), 0).label(
