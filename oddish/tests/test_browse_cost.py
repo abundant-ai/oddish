@@ -7,7 +7,15 @@ report tokens but no native cost), else unpriceable.
 
 from __future__ import annotations
 
-from oddish.core.endpoints.tasks_query import _resolve_browse_trial_cost
+from datetime import datetime, timezone
+
+from sqlalchemy.dialects import postgresql
+
+from oddish.core.endpoints.tasks_query import (
+    _AGGREGATE_SORTS,
+    _resolve_browse_trial_cost,
+    _task_metrics_subquery,
+)
 
 
 def _row(**kw):
@@ -16,6 +24,7 @@ def _row(**kw):
         "input_tokens": None,
         "output_tokens": None,
         "cache_tokens": None,
+        "cache_write_tokens": None,
         "agent": "codex",
         "model": None,
     }
@@ -61,3 +70,46 @@ def test_tokens_with_unknown_model_is_unpriceable() -> None:
     )
     assert cost is None
     assert estimated is False
+
+
+def test_cache_write_tokens_with_known_model_are_estimated() -> None:
+    cost, estimated = _resolve_browse_trial_cost(
+        _row(
+            model="gpt-5.5-codex",
+            cache_write_tokens=1_000_000,
+        )
+    )
+    assert cost is not None and abs(cost - 6.25) < 1e-9
+    assert estimated is True
+
+
+def test_cache_read_tokens_without_input_are_unpriceable() -> None:
+    cost, estimated = _resolve_browse_trial_cost(
+        _row(
+            model="gpt-5.5-codex",
+            input_tokens=0,
+            output_tokens=0,
+            cache_tokens=1_000_000,
+        )
+    )
+    assert cost is None
+    assert estimated is False
+
+
+def test_cost_desc_scopes_persisted_and_estimated_cost_to_model_and_finish_time() -> None:
+    metrics = _task_metrics_subquery(
+        "org-1",
+        cost_models=["gpt-5.5-codex"],
+        cost_finished_after=datetime(2026, 7, 2, tzinfo=timezone.utc),
+    )
+    sql = str(
+        metrics.select().compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    ).lower()
+
+    assert _AGGREGATE_SORTS["cost_desc"] == ("cost_usd", True)
+    assert "trials.model in ('gpt-5.5-codex')" in sql
+    assert "trials.finished_at >= '2026-07-02" in sql
+    assert "trials.cost_usd is not null" in sql
+    assert "trials.cache_write_tokens" in sql
