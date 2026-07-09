@@ -232,9 +232,7 @@ def ls(
         ),
     ] = None,
     # --- Per-trial numeric ranges ---
-    min_attempts: Annotated[
-        int | None, typer.Option("--min-attempts", min=1)
-    ] = None,
+    min_attempts: Annotated[int | None, typer.Option("--min-attempts", min=1)] = None,
     min_tokens: Annotated[int | None, typer.Option("--min-tokens", min=0)] = None,
     max_tokens: Annotated[int | None, typer.Option("--max-tokens", min=0)] = None,
     min_steps: Annotated[int | None, typer.Option("--min-steps", min=0)] = None,

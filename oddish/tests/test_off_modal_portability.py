@@ -135,9 +135,9 @@ def test_off_modal_run_records_verdict_without_modal() -> None:
             text=True,
             env=env,
         )
-        assert (
-            proof.returncode == 0
-        ), f"proof failed\nstdout:\n{proof.stdout}\nstderr:\n{proof.stderr}"
+        assert proof.returncode == 0, (
+            f"proof failed\nstdout:\n{proof.stdout}\nstderr:\n{proof.stderr}"
+        )
         assert "STATUS=SUCCESS" in proof.stdout, proof.stdout
         assert "MODAL_IMPORTED=False" in proof.stdout, proof.stdout
     finally:

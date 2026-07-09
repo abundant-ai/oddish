@@ -23,9 +23,9 @@ async def test_apply_overlay_does_not_stage_query_cli_in_work_dir(tmp_path):
         probe_scope="experiment",
     )
 
-    assert not (
-        tmp_path / "oddish-query"
-    ).exists(), "oddish-query must NOT be staged in the work dir (delivered via stage_cli_mount)"
+    assert not (tmp_path / "oddish-query").exists(), (
+        "oddish-query must NOT be staged in the work dir (delivered via stage_cli_mount)"
+    )
 
 
 @pytest.mark.asyncio

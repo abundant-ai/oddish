@@ -121,6 +121,19 @@ def _cache_write_from_final_metrics(fm: dict) -> int | None:
     return None
 
 
+def cache_write_tokens_from_trajectory(data: object) -> int | None:
+    if not isinstance(data, dict):
+        return None
+    steps = data.get("steps")
+    total = _sum_cache_write_from_steps(steps) if isinstance(steps, list) else None
+    if total is not None:
+        return total
+    final_metrics = data.get("final_metrics")
+    if isinstance(final_metrics, dict):
+        return _cache_write_from_final_metrics(final_metrics)
+    return None
+
+
 def extract_trajectory_metrics(path: Path) -> HarborTrajectoryMetrics:
     """Read token, step, and cost metrics from ATIF trajectory data."""
     if not path or not path.exists():

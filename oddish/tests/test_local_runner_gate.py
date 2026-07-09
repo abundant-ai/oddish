@@ -186,9 +186,7 @@ async def test_local_runner_releases_llm_on_valid_baselines(
             .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
         )
         await session.execute(
-            update(TrialModel)
-            .where(TrialModel.id == oracle_id)
-            .values(reward=1.0)
+            update(TrialModel).where(TrialModel.id == oracle_id).values(reward=1.0)
         )
 
     await run_trial_locally(oracle_id, dry_run=True)
@@ -221,9 +219,7 @@ async def test_local_runner_cancels_llm_on_faulty_baselines(
             .values(status=TrialStatus.SUCCESS, reward=0.0, finished_at=utcnow())
         )
         await session.execute(
-            update(TrialModel)
-            .where(TrialModel.id == oracle_id)
-            .values(reward=0.0)
+            update(TrialModel).where(TrialModel.id == oracle_id).values(reward=0.0)
         )
 
     await run_trial_locally(oracle_id, dry_run=True)
