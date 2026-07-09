@@ -533,6 +533,42 @@ async def precompute_dashboard_stats():
 _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
 
 
+async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
+    from worker.gke_image_build import ensure_task_image
+
+    outcome = await ensure_task_image(task_id, version)
+    console.print(
+        f"[cyan]GKE image build[/cyan] task={task_id} v{version}: {outcome}"
+    )
+    return outcome
+
+
+def build_gke_image_builder_function(modal_app) -> object | None:
+    """Register the upload-time image builder on the gke variant image.
+
+    Returns None on GKE-less deploys (no variant image, nothing to build
+    with); the API route guards on that. Uses the variant image so the
+    name/tag derivation runs the exact harbor code the trial will use.
+    """
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        min_containers=0,
+        buffer_containers=0,
+        timeout=3600,
+        cpu=2.0,
+        memory=4096,
+        name="build_gke_task_image",
+        serialized=True,
+    )(_build_gke_task_image_entry)
+
+
+GKE_IMAGE_BUILDER: object | None = build_gke_image_builder_function(app)
+
+
 @app.function(
     image=image,
     volumes=worker_volumes,
