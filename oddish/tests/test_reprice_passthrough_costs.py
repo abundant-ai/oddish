@@ -70,6 +70,42 @@ def test_unpriceable_passthrough_cost_is_reported_without_a_write() -> None:
     assert not plan.should_update
 
 
+def test_unpriceable_fake_zero_is_cleared_to_null() -> None:
+    plan = _plan_reprice(
+        agent="claude-code",
+        provider="moonshot",
+        model="moonshot/unknown-model",
+        existing_cost=0.0,
+        input_tokens=1_000,
+        cache_tokens=0,
+        cache_write_tokens=0,
+        output_tokens=100,
+    )
+
+    assert plan.estimated_cost is None
+    assert plan.skip_reason is None
+    assert plan.clear_to_null
+    assert plan.should_update
+
+
+def test_unpriceable_existing_null_is_skipped_without_churn() -> None:
+    plan = _plan_reprice(
+        agent="claude-code",
+        provider="moonshot",
+        model="moonshot/unknown-model",
+        existing_cost=None,
+        input_tokens=1_000,
+        cache_tokens=0,
+        cache_write_tokens=0,
+        output_tokens=100,
+    )
+
+    assert plan.estimated_cost is None
+    assert plan.skip_reason == "unpriceable"
+    assert not plan.clear_to_null
+    assert not plan.should_update
+
+
 @pytest.mark.parametrize(
     ("agent", "provider"),
     [

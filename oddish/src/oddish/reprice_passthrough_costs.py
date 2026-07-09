@@ -68,6 +68,7 @@ SkipReason = Literal["trusted-native-cost", "unpriceable", "unchanged"]
 class RepricePlan:
     estimated_cost: float | None
     skip_reason: SkipReason | None
+    clear_to_null: bool = False
 
     @property
     def should_update(self) -> bool:
@@ -120,6 +121,11 @@ def _plan_reprice(
         cache_write_tokens=cache_write_tokens,
     )
     if estimated_cost is None:
+        if existing_cost == 0.0:
+            # Preserve backfill_zero_cost semantics: a harness's fake $0 must
+            # not masquerade as authoritative. NULL keeps the row on the
+            # explicit unpriced path until a rate becomes available.
+            return RepricePlan(None, None, clear_to_null=True)
         return RepricePlan(None, "unpriceable")
     if existing_cost == estimated_cost:
         return RepricePlan(estimated_cost, "unchanged")
@@ -194,6 +200,18 @@ async def run_reprice(
                 old_cost = _finite_cost_or_zero(row.cost_usd)
                 summary.row_count += 1
                 summary.old_recorded_total += old_cost
+
+                if plan.clear_to_null:
+                    summary.unpriceable_count += 1
+                    summary.planned_update_count += 1
+                    updates.append(
+                        {
+                            "id": row.id,
+                            "old_cost": row.cost_usd,
+                            "new_cost": None,
+                        }
+                    )
+                    continue
 
                 if plan.skip_reason == "unpriceable":
                     summary.unpriceable_count += 1
