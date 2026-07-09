@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import time
 import types
 
 import pytest
@@ -10,9 +9,9 @@ import app
 from spend_alerts import (
     environment_float,
     expensive_experiment_alert,
-    expensive_user_alert,
+    expensive_trial_alert,
     experiment_is_expensive,
-    user_is_expensive,
+    trial_is_expensive,
 )
 
 tools = types.ModuleType("tools")
@@ -69,42 +68,43 @@ def test_expensive_experiment_alert_identifies_owner_phase_and_link() -> None:
 @pytest.mark.parametrize(
     ("spend_usd", "average_usd", "expected"),
     [
-        (1000, 666.66, True),
-        (999.99, 500, False),
-        (1000, 666.67, False),
-        (5000, 0, False),
+        (100.01, None, True),
+        (100, None, False),
+        (201, 100, True),
+        (200, 100, False),
+        (500, 0, True),
     ],
 )
-def test_expensive_user_requires_absolute_and_relative_thresholds(
+def test_expensive_trial_requires_floor_and_double_other_trial_average(
     spend_usd: float,
-    average_usd: float,
+    average_usd: float | None,
     expected: bool,
 ) -> None:
-    row = {"cost_usd": spend_usd, "average_cost_usd": average_usd}
+    row = {"cost_usd": spend_usd, "other_trial_average_usd": average_usd}
 
-    assert user_is_expensive(row, 1000, 1.5) is expected
+    assert trial_is_expensive(row, 100, 2) is expected
 
 
-def test_expensive_user_alert_reports_cohort_comparison() -> None:
-    key, text = expensive_user_alert(
+def test_expensive_trial_alert_reports_experiment_comparison() -> None:
+    key, text = expensive_trial_alert(
         {
-            "org_id": "org-1",
-            "spender": "user-1",
+            "id": "trial<1>",
+            "task_id": "task/1",
             "spender_label": "Pat <pat@example.com>",
-            "cost_usd": 1500,
-            "average_cost_usd": 750,
+            "cost_usd": 250,
+            "other_trial_average_usd": 100,
         },
-        1000,
-        1.5,
+        100,
+        2,
         "https://www.oddish.app/",
     )
 
-    assert key == "expensive_user:org-1:user-1:1000:1.5"
-    assert "*Pat &lt;pat@example.com&gt;*" in text
-    assert "*$1,500.00*" in text
-    assert "*2.0×*" in text
-    assert "($750.00)" in text
-    assert "<https://www.oddish.app/admin|open admin costs>" in text
+    assert key == "expensive_trial:trial<1>:100:2"
+    assert "`trial&lt;1&gt;`" in text
+    assert "*$250.00*" in text
+    assert "2.5× the experiment's $100.00 average" in text
+    assert "owner: *Pat &lt;pat@example.com&gt;*" in text
+    assert "<https://www.oddish.app/tasks/task%2F1|open task>" in text
 
 
 @pytest.mark.asyncio
@@ -150,70 +150,39 @@ async def test_expensive_experiment_check_filters_below_threshold(
 
 
 @pytest.mark.asyncio
-async def test_expensive_user_check_rearms_after_condition_clears(
+async def test_expensive_trial_check_filters_by_floor_and_average(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ODDISH_RO_DATABASE_URL", "configured")
-    cleared_key = "expensive_user:org-1:cleared:1000:1.5"
-    stale_breach_key = "expensive_user:org-1:stale-breach:1000:1.5"
-    truncated_key = "expensive_user:org-1:not-returned:1000:1.5"
-
-    class FakeWatchState(dict):
-        def keys(self):
-            return iter(list(dict.keys(self)))
-
-    fake_watch_state = FakeWatchState(
-        {
-            cleared_key: 123,
-            stale_breach_key: 123,
-            truncated_key: time.time(),
-        }
-    )
-    monkeypatch.setattr(app, "watch_state", fake_watch_state)
 
     async def fake_fetch(sql: str) -> list[dict]:
-        assert sql == app._RECENT_USER_SPEND_SQL
+        assert sql == app._RECENT_TRIAL_SPEND_SQL
         return [
             {
-                "org_id": "org-1",
-                "spender": "breached",
+                "id": "first",
+                "task_id": "task",
+                "cost_usd": 101,
+                "other_trial_average_usd": None,
+            },
+            {
+                "id": "double",
+                "task_id": "task",
+                "cost_usd": 200,
+                "other_trial_average_usd": 100,
+            },
+            {
+                "id": "over-double",
+                "task_id": "task",
+                "cost_usd": 201,
+                "other_trial_average_usd": 100,
             },
         ]
 
-    async def fake_get(path: str, params: dict) -> dict:
-        assert path == "/admin/costs"
-        assert params == {"window_days": 7, "experiment_limit": 1, "user_limit": 500}
-        return {
-            "by_user": [
-                {
-                    "org_id": "org-1",
-                    "key": "stale-breach",
-                    "owner_user_id": "stale-breach",
-                    "cost_usd": 1500,
-                },
-                {
-                    "org_id": "org-1",
-                    "key": "breached",
-                    "owner_user_id": "breached",
-                    "cost_usd": 1500,
-                },
-                {
-                    "org_id": "org-1",
-                    "key": "baseline",
-                    "owner_user_id": "baseline",
-                    "cost_usd": 0,
-                },
-            ]
-        }
-
     monkeypatch.setattr(tools, "_fetch", fake_fetch, raising=False)
-    monkeypatch.setattr(tools, "_get", fake_get, raising=False)
 
-    alerts = await app._check_expensive_users()
+    alerts = await app._check_expensive_trials()
 
-    assert cleared_key not in fake_watch_state
-    assert stale_breach_key in fake_watch_state
-    assert truncated_key in fake_watch_state
     assert [key for key, _ in alerts] == [
-        "expensive_user:org-1:breached:1000:1.5"
+        "expensive_trial:first:100:2",
+        "expensive_trial:over-double:100:2",
     ]

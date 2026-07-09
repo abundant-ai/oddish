@@ -119,7 +119,7 @@ non-probe non-combine-copy. Most metrics should add NOT is_superseded.
 spender/spender_label use the same billed-user, submitted-GitHub,
 submitter, unattributed fallback as the cost dashboard.
 cost_usd is persisted native cost only; /admin/costs adds token-priced
-estimates when this column is NULL.
+estimates when this column is NULL; trial-spend alerts skip NULL costs.
 Examples:
 SELECT outcome, count(*) FROM v_trials
   WHERE finished_at > now() - interval '1 day' AND NOT is_superseded
@@ -214,7 +214,6 @@ SELECT
     ) AS spender_label,
     t.model,
     t.provider,
-    MAX(COALESCE(t.finished_at, t.created_at)) AS last_spend_at,
     COUNT(*) AS trial_count,
     SUM(COALESCE(t.cost_usd, 0)) AS cost_usd,
     SUM(COALESCE(t.input_tokens, 0)) AS input_tokens,
@@ -240,9 +239,7 @@ V_DAILY_SPEND_COMMENT = """
 COMMENT ON VIEW v_daily_spend IS $c$Real spend (admin cost-dashboard
 basis) per UTC day x org x spender x model, bucketed by trial created_at.
 cost_usd is persisted native cost only; /admin/costs adds token-priced
-estimates when it is NULL and is the source for spend alerts.
-last_spend_at is the latest finish time in the bucket, falling back to
-creation time for unfinished trials.
+estimates when it is NULL.
 spender falls back like /admin/costs: billed user id, else ghid:<github
 id>, else ghuser:<handle>, else submitter user id, else __unattributed__.
 One divergence from /admin/costs: it blanks a soft-deleted task's tags

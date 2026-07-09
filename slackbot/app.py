@@ -473,12 +473,35 @@ WHERE NOT is_collection
   )
 """
 
-_RECENT_USER_SPEND_SQL = """
-SELECT org_id, spender
-FROM v_daily_spend
-WHERE spender <> '__unattributed__'
-  AND last_spend_at > NOW() - INTERVAL '2 hours'
-GROUP BY org_id, spender
+_RECENT_TRIAL_SPEND_SQL = """
+WITH priced_trials AS (
+    SELECT
+        id,
+        task_id,
+        experiment_id,
+        spender,
+        spender_label,
+        cost_usd,
+        finished_at,
+        COUNT(*) OVER (PARTITION BY experiment_id) AS experiment_trial_count,
+        SUM(cost_usd) OVER (PARTITION BY experiment_id) AS experiment_cost_usd
+    FROM v_trials
+    WHERE is_real_spend
+      AND finished_at IS NOT NULL
+      AND cost_usd IS NOT NULL
+)
+SELECT
+    id,
+    task_id,
+    spender,
+    spender_label,
+    cost_usd,
+    CASE
+        WHEN experiment_trial_count = 1 THEN NULL
+        ELSE (experiment_cost_usd - cost_usd) / (experiment_trial_count - 1)
+    END AS other_trial_average_usd
+FROM priced_trials
+WHERE finished_at > NOW() - INTERVAL '2 hours'
 """
 
 
@@ -525,82 +548,34 @@ async def _check_expensive_experiments() -> list[tuple[str, str]]:
     ]
 
 
-async def _check_expensive_users() -> list[tuple[str, str]]:
+async def _check_expensive_trials() -> list[tuple[str, str]]:
     if not os.environ.get("ODDISH_RO_DATABASE_URL"):
         return []
 
-    from spend_alerts import environment_float, expensive_user_alert, user_is_expensive
-    from tools import _fetch, _get
-
-    minimum_usd = environment_float("SLACK_EXPENSIVE_USER_7D_USD", 1000)
-    average_multiplier = environment_float("SLACK_USER_AVERAGE_MULTIPLIER", 1.5)
-    recent_rows, cost_data = await asyncio.gather(
-        _fetch(_RECENT_USER_SPEND_SQL),
-        _get(
-            "/admin/costs",
-            {"window_days": 7, "experiment_limit": 1, "user_limit": 500},
-        ),
+    from spend_alerts import (
+        environment_float,
+        expensive_trial_alert,
+        trial_is_expensive,
     )
-    recent_spenders = {
-        (str(row.get("org_id") or ""), str(row["spender"])) for row in recent_rows
-    }
-    user_rows = [
-        row
-        for row in cost_data.get("by_user", [])
-        if row.get("owner_user_id") and row.get("key") != "__unattributed__"
-    ]
-    costs_by_org: dict[str, list[float]] = {}
-    for row in user_rows:
-        org_id = str(row.get("org_id") or "")
-        costs_by_org.setdefault(org_id, []).append(float(row.get("cost_usd") or 0))
+    from tools import _fetch
 
-    alerts = []
-    breached_keys = set()
-    evaluated_keys = set()
-    for cost_row in user_rows:
-        org_id = str(cost_row.get("org_id") or "")
-        spender = str(cost_row["key"])
-        org_costs = costs_by_org[org_id]
-        row = {
-            "org_id": org_id,
-            "spender": spender,
-            "spender_label": cost_row.get("name")
-            or cost_row.get("email")
-            or cost_row.get("label")
-            or spender,
-            "cost_usd": cost_row.get("cost_usd"),
-            "average_cost_usd": sum(org_costs) / len(org_costs),
-        }
-        key, text = expensive_user_alert(
+    minimum_usd = environment_float("SLACK_EXPENSIVE_TRIAL_USD", 100)
+    average_multiplier = environment_float("SLACK_TRIAL_AVERAGE_MULTIPLIER", 2)
+    return [
+        expensive_trial_alert(
             row,
             minimum_usd,
             average_multiplier,
             _dashboard_url(),
         )
-        evaluated_keys.add(key)
-        if user_is_expensive(row, minimum_usd, average_multiplier):
-            breached_keys.add(key)
-            if (org_id, spender) in recent_spenders:
-                alerts.append((key, text))
-
-    for key in list(watch_state.keys()):
-        if not key.startswith("expensive_user:") or key in breached_keys:
-            continue
-        alerted_at = watch_state.get(key)
-        state_expired = isinstance(alerted_at, (int, float)) and (
-            time.time() - alerted_at > 8 * 24 * 60 * 60
-        )
-        if key in evaluated_keys or state_expired:
-            try:
-                watch_state.pop(key, None)
-            except Exception:
-                log.exception("failed to re-arm user spend alert key=%s", key)
-    return alerts
+        for row in await _fetch(_RECENT_TRIAL_SPEND_SQL)
+        if trial_is_expensive(row, minimum_usd, average_multiplier)
+    ]
 
 
 CHECKS = [
     ("expensive_experiment", _check_expensive_experiments),
-    ("expensive_user", _check_expensive_users),
+    ("expensive_trial", _check_expensive_trials),
 ]
 
 
