@@ -44,3 +44,14 @@ def test_mappers_mark_unbilled_trials():
     assert build_trial_response(unbilled, task_path="p").is_billed is False
     assert build_compact_trial_response(unbilled, task_path="p").is_billed is False
     assert build_slim_trial_response(unbilled, task_path="p").is_billed is False
+
+
+def test_slim_mapper_includes_input_and_output_tokens():
+    trial = _trial(billed_user_id=None)
+    trial.input_tokens = 123
+    trial.output_tokens = 45
+
+    response = build_slim_trial_response(trial, task_path="p")
+
+    assert response.input_tokens == 123
+    assert response.output_tokens == 45

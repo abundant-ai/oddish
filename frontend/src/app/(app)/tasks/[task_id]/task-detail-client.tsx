@@ -36,6 +36,7 @@ import {
 import {
   formatCostUsd,
   formatDurationSec,
+  formatTokenCount,
   trialDurationSec,
 } from "@/lib/format";
 import {
@@ -350,6 +351,8 @@ function summaryFromVersion(v: TaskVersionSummary): TrialAggregate {
     costTrialCount: v.cost_trial_count,
     costHasEstimated: v.cost_has_estimated,
     costHasNative: v.cost_has_native,
+    tokenCount: 0,
+    tokenTrialCount: 0,
     billedCostUsd: v.billed_cost_usd,
     billedTrialCount: v.billed_trial_count,
     billedHasEstimated: v.billed_has_estimated,
@@ -672,6 +675,10 @@ export function TaskDetailClient({
     if (selectedVersion) return summaryFromVersion(selectedVersion);
     return summarizeTrials(trialsForVersion);
   }, [selectedVersion, trialsForVersion]);
+  const allVersionsSummary = useMemo(
+    () => summarizeTrials(task?.trials ?? []),
+    [task?.trials],
+  );
 
   const tasksForGrouping = useMemo<Task[]>(
     () =>
@@ -882,6 +889,11 @@ export function TaskDetailClient({
               hasNative={totals?.cost_has_native ?? false}
               size="lg"
             />
+            {allVersionsSummary.tokenTrialCount > 0 && (
+              <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+                {formatTokenCount(allVersionsSummary.tokenCount)}
+              </span>
+            )}
           </KpiTile>
           <KpiTile
             label="Billed spend"
