@@ -222,10 +222,35 @@ def test_normalize_coerces_bad_llm_output():
         "terminal": {"last_action": "ran tests", "reason": "grader failed"},
     }
     g = tg._normalize_graph(raw, ctx, tg.OUTCOME_FAILURE, tg._digest_steps(_traj()))
-    assert [s["status"] for s in g["steps"]] == ["ok", "ok"]
+    # invalid status coerced to ok; then, since a FAILURE had no error phase, the
+    # last phase is forced to error (all paths guarantee this).
+    assert [s["status"] for s in g["steps"]] == ["ok", "error"]
     assert g["steps"][0]["id"] == "s0"
     # authoritative outcome is stamped regardless of what the LLM said
     assert g["terminal"]["outcome"] == tg.OUTCOME_FAILURE
+
+
+def test_llm_path_respects_located_error_phase():
+    # the model already marked an EARLIER phase as the error -> don't override it
+    ctx = {"status": "success", "reward": 0.0, "task_name": "t", "agent_name": "a", "model": "m"}
+    raw = {
+        "headline": "h",
+        "steps": [
+            {"title": "wrong turn", "detail": "chased a red herring", "status": "error"},
+            {"title": "gave up", "detail": "ran out of ideas", "status": "ok"},
+        ],
+        "terminal": {"last_action": "stopped", "reason": "x"},
+    }
+    g = tg._normalize_graph(raw, ctx, tg.OUTCOME_FAILURE, tg._digest_steps(_traj()))
+    assert [s["status"] for s in g["steps"]] == ["error", "ok"]  # not forced onto the last
+
+
+def test_reward_out_of_band_is_partial():
+    # matches getRewardMatrixStatus: only exactly 1 passes, only exactly 0 fails
+    assert tg._reward_outcome(1.5) == tg.OUTCOME_PARTIAL
+    assert tg._reward_outcome(-0.2) == tg.OUTCOME_PARTIAL
+    assert tg._reward_outcome(1.0) == tg.OUTCOME_SUCCESS
+    assert tg._reward_outcome(0.0) == tg.OUTCOME_FAILURE
 
 
 # --- persistence layer ---
@@ -294,6 +319,7 @@ def test_generate_and_store_persists_and_stamps(monkeypatch):
         name="demo/task",
         agent="codex",
         trajectory_graph=None,
+        trajectory_summary=None,
     )
     session = _FakeSession()
     graph = asyncio.run(
@@ -304,6 +330,35 @@ def test_generate_and_store_persists_and_stamps(monkeypatch):
     assert "generated_at" in graph
     assert session.committed is True
     assert len(session.executed) == 1
+
+
+def test_generate_falls_back_to_persisted_summary(monkeypatch):
+    # No summary passed by the caller (e.g. self-hosted server) -> reuse the
+    # trial's own persisted trajectory_summary phases instead of re-segmenting.
+    async def _fake_read_trajectory(trial):
+        return {"steps": [{"step_id": "1", "source": "agent", "tool_calls": [{"function_name": "bash"}]}]}
+
+    async def _none(trial):
+        return None
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _fake_read_trajectory)
+    monkeypatch.setattr(trial_io, "read_trial_instruction", _none)
+    monkeypatch.setattr(trial_io, "read_trial_verifier_output", _none)
+
+    trial = SimpleNamespace(
+        id="trial-3", status="success", reward=1.0, error_message=None,
+        name="t", agent="a", trajectory_graph=None,
+        trajectory_summary={
+            "phases": [{"label": "Explore", "step_ids": [1], "gist": "looked"}],
+            "highlights": [],
+        },
+    )
+    session = _FakeSession()
+    graph = asyncio.run(
+        trial_io.generate_and_store_trajectory_graph(session, trial)
+    )
+    assert graph["source"] == "summary"
+    assert [s["title"] for s in graph["steps"]] == ["Explore"]
 
 
 def test_generate_returns_cached_when_fresh_and_not_refresh(monkeypatch):
@@ -317,6 +372,7 @@ def test_generate_returns_cached_when_fresh_and_not_refresh(monkeypatch):
 
     fresh = {"schema_version": tg.GRAPH_SCHEMA_VERSION, "steps": [], "terminal": {}}
     trial = SimpleNamespace(
+        trajectory_summary=None,
         id="trial-2", status="success", reward=1.0, error_message=None,
         name="t", agent="a", trajectory_graph=fresh,
     )

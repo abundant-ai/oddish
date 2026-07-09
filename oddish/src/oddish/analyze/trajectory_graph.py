@@ -103,13 +103,30 @@ _GRAPH_SCHEMA: dict[str, Any] = {
 
 
 def _reward_outcome(reward: float) -> str:
-    """Reward -> outcome, matching the app's ``getRewardMatrixStatus``:
-    exactly 1.0 is a pass, 0 is a failure, anything between is partial credit."""
-    if reward >= 1:
+    """Reward -> outcome, matching the app's ``getRewardMatrixStatus`` EXACTLY:
+    reward == 1 is a pass, reward == 0 is a failure, everything else (including
+    out-of-band values like 1.5 or -0.2) is partial. Kept identical so the graph
+    terminal never disagrees with the trial matrix."""
+    if reward == 1:
         return OUTCOME_SUCCESS
-    if reward <= 0:
+    if reward == 0:
         return OUTCOME_FAILURE
     return OUTCOME_PARTIAL
+
+
+def _mark_terminal_phase(steps: list[dict[str, Any]], outcome: str) -> None:
+    """For a failing outcome, ensure SOME phase is flagged as the error.
+
+    Respects an error the model already located (so the LLM path can point at an
+    earlier phase where it went wrong); only when nothing is flagged does it fall
+    back to marking the final phase. Applied on every path so a failed run never
+    renders all-green phases. Partial/scoreless are not painted red."""
+    if (
+        steps
+        and outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR)
+        and not any(s.get("status") == "error" for s in steps)
+    ):
+        steps[-1]["status"] = "error"
 
 
 def _infer_outcome(ctx: dict[str, Any]) -> str:
@@ -372,8 +389,7 @@ def _heuristic_graph(
                 "status": "warn",
             }
         ]
-    if steps and outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR):
-        steps[-1]["status"] = "error"
+    _mark_terminal_phase(steps, outcome)
     return {
         "headline": f"{ctx.get('agent_name') or 'agent'} on {ctx.get('task_name') or 'task'}: {outcome}",
         "steps": steps,
@@ -425,6 +441,10 @@ def _normalize_graph(
         )
     if not steps:
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
+
+    # Same guarantee as the other paths: a failing run can't render all-green
+    # phases. Respects an error phase the model already located.
+    _mark_terminal_phase(steps, outcome)
 
     terminal_in = raw.get("terminal") if isinstance(raw, dict) else None
     terminal_in = terminal_in if isinstance(terminal_in, dict) else {}
@@ -582,8 +602,7 @@ def _graph_from_summary(
     # emit a stepless "summary" graph.
     if not steps:
         return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
-    if outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR):
-        steps[-1]["status"] = "error"
+    _mark_terminal_phase(steps, outcome)
 
     # The terminal describes the agent's ACTUAL last action (final ATIF step),
     # not the last summary highlight — highlights are ordered by ascending

@@ -746,11 +746,14 @@ async def generate_and_store_trajectory_graph(
         ctx = _trial_graph_ctx(trial)
         ctx["task_instruction"] = instruction
         ctx["verifier_output"] = verifier_output
+        # Reuse the trial's own persisted summary phases when the caller didn't
+        # supply a fresher one (e.g. the self-hosted server passes none), so the
+        # graph stays consistent with the Summary tab instead of re-segmenting.
         graph = await build_trajectory_graph(
             trajectory,
             ctx,
             model=settings.analysis_model,
-            summary=summary,
+            summary=summary if summary is not None else trial.trajectory_summary,
         )
         graph["generated_at"] = datetime.now(timezone.utc).isoformat()
 
