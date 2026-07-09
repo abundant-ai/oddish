@@ -83,3 +83,42 @@ def test_invalid_candidate_does_not_mask_later_valid_metrics(tmp_path):
     good_dir.mkdir(parents=True)
     good_dir.joinpath("metrics.json").write_text(json.dumps(good))
     assert extract_verifier_metrics(tmp_path) == good
+
+
+def test_merged_result_passthrough_without_exception():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    assert merged_trial_result({"a": 1}, None, None) == {"a": 1}
+    assert merged_trial_result(None, None, None) is None
+
+
+def test_merged_result_marks_quiet_exception():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    merged = merged_trial_result(
+        {"gates": {}, "failure_reason": "port.py missing"},
+        "Command failed (exit 1): gemini --model=bad",
+        "NonZeroAgentExitCodeError",
+    )
+    assert merged["gates"] == {}
+    assert merged["harbor_exception"]["exception_type"] == "NonZeroAgentExitCodeError"
+    assert "exit 1" in merged["harbor_exception"]["error"]
+
+
+def test_merged_result_marker_only_when_no_metrics():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    merged = merged_trial_result(None, "boom", "AgentSetupTimeoutError")
+    assert merged == {
+        "harbor_exception": {
+            "exception_type": "AgentSetupTimeoutError",
+            "error": "boom",
+        }
+    }
+
+
+def test_merged_result_truncates_long_errors():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    merged = merged_trial_result(None, "x" * 1000, "SomeError")
+    assert len(merged["harbor_exception"]["error"]) == 300
