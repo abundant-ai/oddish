@@ -51,6 +51,7 @@ import type { Trial, Task } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
+  formatTokenCount,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -772,7 +773,9 @@ export function TrialDetailPanel({
                 </div>
               </CardContent>
             </Card>
-            {trial.cost_usd != null && (
+            {(trial.cost_usd != null ||
+              trial.input_tokens != null ||
+              trial.output_tokens != null) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -781,10 +784,17 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_is_estimated ? "~" : ""}
-                        {formatCostUsd(trial.cost_usd)}
+                        {trial.cost_usd != null ? (
+                          <>
+                            {trial.cost_is_estimated ? "~" : ""}
+                            {formatCostUsd(trial.cost_usd)}
+                          </>
+                        ) : (
+                          "—"
+                        )}
                       </span>
-                      {taskCost.pricedCount > 1 &&
+                      {trial.cost_usd != null &&
+                        taskCost.pricedCount > 1 &&
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
@@ -799,6 +809,15 @@ export function TrialDetailPanel({
                           );
                         })()}
                     </div>
+                    {(trial.input_tokens != null ||
+                      trial.output_tokens != null) && (
+                      <div className="text-muted-foreground mt-1 font-mono text-[9px] leading-none">
+                        {formatTokenCount(
+                          (trial.input_tokens ?? 0) +
+                            (trial.output_tokens ?? 0),
+                        )}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
