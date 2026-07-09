@@ -73,6 +73,32 @@ def test_scoped_model_env_openai_only_carries_openai() -> None:
     assert "ANTHROPIC_API_KEY" not in env
 
 
+def test_scoped_model_env_litellm_claude_scopes_anthropic_key() -> None:
+    # A Bedrock-classified Claude model on a non-claude-code (litellm) agent runs
+    # as anthropic/<id>, so the scoped bundle must carry ANTHROPIC_API_KEY, not
+    # the CLAUDE_CODE_USE_BEDROCK routing flag it can't use.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="mini-swe-agent",
+        model="global.anthropic.claude-opus-4-8",
+        settings=settings,
+    )
+    assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:
+    # claude-code invokes Bedrock directly and keeps the routing-flag behavior.
+    settings = _fake_settings(anthropic_api_key="sk-ant")
+    settings.get_provider_for_trial = lambda agent, model: "bedrock"
+    env = job_tokens.scoped_model_env(
+        agent="claude-code",
+        model="global.anthropic.claude-opus-4-8",
+        settings=settings,
+    )
+    assert env == {"CLAUDE_CODE_USE_BEDROCK": "1"}
+
+
 def test_s3_write_prefix_scopes_to_the_trial() -> None:
     prefix = job_tokens.s3_write_prefix_for("task_abc-0")
     assert prefix == "tasks/task_abc/trials/task_abc-0/"
