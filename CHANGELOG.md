@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-09]
+
+### Added
+
+- Orphan-pod sweeper backstop for GKE trial sandboxes: a standalone CronJob deletes GKE trial pods whose owning trial is no longer live, closing teardown gaps left when a worker dies before persisting the sandbox handle or when cancel/stale-worker cleanup runs on the harbor-gke-less default worker image. Liveness is decided from the `worker_jobs` database state (RUNNING-only, with a 10-minute grace period and a live-unlinked guard) rather than pod age, runs with least-privilege namespace-scoped RBAC and a read-only DB connection, and supports a dry-run mode. Queue cleanup now clears `external_id`/`provider` on stale-reap so a retry doesn't fool the sweeper with the previous attempt's handle. (#629)
+- Grok Build trials now capture the CLI's on-disk session store (`$GROK_HOME/sessions`) instead of relying on headless stdout, converting the ACP `updates.jsonl`/`events.jsonl` stream into full ATIF trajectories with real tool calls and token totals; falls back to the old text-only trajectory when the session store is absent. (#626)
+- `grok-build` accepts a new `api_backend` agent kwarg (`chat_completions` | `responses` | `messages`) so trials can route xAI models that are only served on Chat Completions instead of the Harbor-hardcoded Responses API (`--agent-kwarg api_backend=chat_completions`). (#625)
+- Admin Costs tab is now a daily spend dashboard: stat tiles for total cost, calendar-month-to-date spend vs an optional org budget with a progress bar, and delta vs the prior window; the cost-by-user table adds per-(org, user) delta, 24h quota utilization, and in-flight trial counts, and the user drilldown gains a "Cost by experiment" section. Day/week chart ticks are now formatted in UTC instead of local time, fixing daily bars that were labeled one day early west of UTC. (#616)
+- `zai/glm-5.2` added to the default backend model-concurrency overrides, capped at 64 concurrent trials. (#636)
+
+### Fixed
+
+- Claude models now run correctly on litellm-based Harbor agents (mini-swe-agent, aider, swe-agent, openhands): non-claude-code agents get the model as `anthropic/<id>`, routed to the direct Anthropic API, instead of the bare Bedrock inference-profile id that only claude-code's InvokeModel transport understands, and job-scoped credentials now carry `ANTHROPIC_API_KEY` for those agents. `to_bedrock_model_id` also accepts the dotted marketing spelling (`claude-opus-4.8`) as an alias for the canonical dashed model key, fixing a 500 at trial submit. (#633)
+- Grok Build trajectory capture is more robust: the session store is cleared before each run so worker-container reuse across trials can't leave multiple ambiguous sessions behind (previously causing ~20% of trials to fall back to a degenerate 1-step trajectory), and token totals now fall back to scanning grok's sampling log (`$GROK_HOME/logs`) when the session stream carries no usage. (#628)
+- Grok Build trials now default to xAI `reasoning_effort=high` (`--reasoning-effort high`), with per-trial overrides preserved and automatic retry without the flag against older CLI builds that reject it. (#623)
+- Quota admin table: the base 24-hour limit is now edited by clicking the displayed limit amount directly; the separate "Edit base" button is removed. (#624)
+
+---
+
 ## [2026-07-07]
 
 ### Changed
