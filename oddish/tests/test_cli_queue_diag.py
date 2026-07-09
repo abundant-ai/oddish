@@ -99,7 +99,10 @@ _ORPHANED = {
     "timestamp": "t",
 }
 _STATUS = {
-    "queues": [],
+    "queues": [
+        {"kind": "TRIAL", "queue_key": "openai/gpt-5.3-codex", "queued": 1, "running": 1},
+        {"kind": "QA", "queue_key": "qa", "queued": 2, "running": 0},
+    ],
     "trial_queues": [],
     "analysis_queued": 0,
     "analysis_running": 0,
@@ -130,6 +133,36 @@ def test_queue_diag_hits_all_admin_endpoints_and_tolerates_worker_jobs_404():
     # Rendered capacity should include the queue key (may be width-truncated).
     assert "Capacity by queue" in result.output
     assert "openai/gpt" in result.output
+    # queue-status is rendered in human mode (per-kind rollup), not just --json.
+    assert "Jobs by kind" in result.output
+    assert "QA" in result.output
+
+
+def test_queue_diag_partial_error_exits_nonzero_human():
+    # One endpoint errors, others succeed: must surface the partial failure and
+    # exit non-zero rather than silently dropping the failed section.
+    routes = {
+        "/admin/queue-health": (200, _HEALTH),
+        "/admin/queue-status": (200, _STATUS),
+        "/admin/slots": (500, {"detail": "boom"}),
+        "/admin/orphaned-state": (200, _ORPHANED),
+        "/admin/worker-jobs": (404, {}),
+    }
+    result, _ = _invoke(routes)
+    assert result.exit_code == 1
+    assert "Some queue diagnostics could not be fetched" in result.output
+
+
+def test_queue_diag_partial_error_exits_nonzero_json():
+    routes = {
+        "/admin/queue-health": (200, _HEALTH),
+        "/admin/queue-status": (200, _STATUS),
+        "/admin/slots": (500, {"detail": "boom"}),
+        "/admin/orphaned-state": (200, _ORPHANED),
+        "/admin/worker-jobs": (404, {}),
+    }
+    result, _ = _invoke(routes, ["--json"])
+    assert result.exit_code == 1
 
 
 def test_queue_diag_json_emits_combined_document():

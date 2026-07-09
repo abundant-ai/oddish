@@ -144,6 +144,46 @@ def _render_health(health: dict[str, Any]) -> None:
         console.print(table)
 
 
+def _render_queue_status(status: dict[str, Any]) -> None:
+    """Per-kind queued/running rollup from ``/admin/queue-status``.
+
+    ``queue_health`` covers per-queue-key capacity (keyed by model); this adds
+    the *kind* dimension (TRIAL / QA / TASK_EXPAND / ...) plus the legacy
+    analysis/verdict aggregates, which are otherwise only in ``--json``.
+    """
+    queues = status.get("queues") or []
+    by_kind: dict[str, dict[str, int]] = {}
+    for row in queues:
+        kind = str(row.get("kind", "TRIAL"))
+        bucket = by_kind.setdefault(kind, {"queued": 0, "running": 0})
+        bucket["queued"] += int(row.get("queued", 0) or 0)
+        bucket["running"] += int(row.get("running", 0) or 0)
+
+    console.print("[bold cyan]Jobs by kind[/bold cyan]")
+    if by_kind:
+        table = Table(show_header=True, box=None, padding=(0, 2))
+        table.add_column("Kind", style="cyan")
+        table.add_column("Queued", justify="right")
+        table.add_column("Running", justify="right", style="blue")
+        for kind in sorted(by_kind):
+            bucket = by_kind[kind]
+            table.add_row(kind, str(bucket["queued"]), str(bucket["running"]))
+        console.print(table)
+    else:
+        console.print("  [dim]no active jobs[/dim]")
+
+    # Legacy aggregate counters (kept for older deployments / drain-only kinds).
+    analysis_q = int(status.get("analysis_queued", 0) or 0)
+    analysis_r = int(status.get("analysis_running", 0) or 0)
+    verdict_q = int(status.get("verdict_queued", 0) or 0)
+    verdict_r = int(status.get("verdict_running", 0) or 0)
+    if analysis_q or analysis_r or verdict_q or verdict_r:
+        console.print(
+            f"  [dim]analysis[/dim] queued {analysis_q} running {analysis_r}   "
+            f"[dim]verdict/qa[/dim] queued {verdict_q} running {verdict_r}"
+        )
+
+
 def _render_slots(slots: dict[str, Any]) -> None:
     queue_keys = slots.get("queue_keys") or []
     console.print(
@@ -258,12 +298,21 @@ def print_queue_diagnostics(
         isinstance(value, dict) and "error" not in value
         for value in payload.values()
     )
+    # Endpoints that returned a real error (network / non-403 HTTP). A 404 maps
+    # to None (endpoint absent, e.g. worker-jobs on the core server) and is not
+    # counted as an error.
+    errored = {
+        key: value
+        for key, value in payload.items()
+        if isinstance(value, dict) and "error" in value
+    }
 
     if json_output:
         print_json(payload)
-        # Non-zero exit on auth rejection or a total fetch failure so scripts
-        # don't treat an unreachable API as a healthy empty queue.
-        if auth_error or not any_success:
+        # Non-zero exit on auth rejection, ANY failed endpoint, or a total fetch
+        # failure so scripts never treat a partial/unreachable result as a
+        # healthy empty queue.
+        if auth_error or errored or not any_success:
             raise typer.Exit(1)
         return
 
@@ -287,6 +336,12 @@ def print_queue_diagnostics(
         console.print()
         rendered_any = True
 
+    queue_status = payload.get("queue_status")
+    if _ok(queue_status):
+        _render_queue_status(queue_status)
+        console.print()
+        rendered_any = True
+
     slots = payload.get("slots")
     if _ok(slots):
         _render_slots(slots)
@@ -304,24 +359,31 @@ def print_queue_diagnostics(
         _render_worker_jobs(worker_jobs)
         rendered_any = True
 
-    # If nothing rendered, every endpoint either errored or was unavailable
-    # (e.g. the API is unreachable, or returned non-403 errors). Don't let that
-    # masquerade as a healthy empty queue -- report the failure and exit non-zero.
-    if not rendered_any:
-        errors = {
-            key: value
-            for key, value in payload.items()
-            if isinstance(value, dict) and "error" in value
-        }
-        error_console.print(
-            "[red]Could not fetch any queue diagnostics.[/red] "
-            "The API may be unreachable, or these endpoints are unavailable "
-            "on this deployment."
-        )
-        for key, value in errors.items():
+    def _summarize_errors() -> None:
+        for key, value in errored.items():
             status = value.get("status")
             detail = str(value.get("error", "")).strip()
             if len(detail) > 120:
                 detail = detail[:117] + "..."
             error_console.print(f"  [dim]{key}: {status or ''} {detail}[/dim]")
+
+    # If nothing rendered, every endpoint either errored or was unavailable
+    # (e.g. the API is unreachable). Don't let that masquerade as a healthy
+    # empty queue -- report the failure and exit non-zero.
+    if not rendered_any:
+        error_console.print(
+            "[red]Could not fetch any queue diagnostics.[/red] "
+            "The API may be unreachable, or these endpoints are unavailable "
+            "on this deployment."
+        )
+        _summarize_errors()
+        raise typer.Exit(1)
+
+    # Some sections rendered but others failed: surface the partial failure and
+    # exit non-zero so the missing data isn't silently ignored.
+    if errored:
+        error_console.print(
+            "[yellow]Some queue diagnostics could not be fetched:[/yellow]"
+        )
+        _summarize_errors()
         raise typer.Exit(1)
