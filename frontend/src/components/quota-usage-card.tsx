@@ -20,9 +20,10 @@ export function QuotaUsageCard() {
   const used = data?.used_usd ?? 0;
   const reserved = data?.reserved_usd ?? 0;
   const limit = data?.limit_usd ?? 0;
-  const pct =
-    limit > 0 ? Math.min(100, ((used + reserved) / limit) * 100) : data ? 100 : 0;
-  const over = limit <= 0 || used + reserved >= limit;
+  const bump = data?.bump_usd ?? 0;
+  const total = used + reserved;
+  const pct = limit > 0 ? Math.min(100, (total / limit) * 100) : data ? 100 : 0;
+  const over = limit <= 0 || total >= limit;
   const blocked = over && data?.enforced === true;
 
   return (
@@ -50,6 +51,12 @@ export function QuotaUsageCard() {
                 </span>
               ) : null}
             </p>
+            {bump > 0 && data.bump_expires_at ? (
+              <p className="text-muted-foreground text-xs">
+                Includes a temporary +{formatDollars(bump)} boost until{" "}
+                {new Date(data.bump_expires_at).toLocaleString()}
+              </p>
+            ) : null}
             <div className="bg-muted-foreground/20 h-2 w-full overflow-hidden rounded-full">
               <div
                 className={
