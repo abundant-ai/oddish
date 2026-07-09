@@ -621,10 +621,10 @@ def test_render_prompt_truncates_long_instruction_and_verifier():
     assert prompt.count(marker_prefix) >= 2
 
 
-def test_schema_version_is_two():
+def test_schema_version_is_three():
     from api.services.summarize_trajectory import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == "2"
+    assert SCHEMA_VERSION == "3"
 
 
 @pytest.mark.asyncio
@@ -734,3 +734,48 @@ def test_normalize_phases_empty_when_nothing_usable():
     assert _normalize_phases([], [1, 2]) == []
     assert _normalize_phases([{"label": "", "step_ids": [1]}], [1, 2]) == []
     assert _normalize_phases([{"label": "A", "step_ids": [1]}], []) == []
+
+
+@pytest.mark.asyncio
+async def test_generate_returns_normalized_phases():
+    from api.services.summarize_trajectory import generate
+
+    payload = json.dumps(
+        {
+            "summary": "s",
+            "highlights": [],
+            "phases": [
+                {"label": "Explore", "step_ids": [1, 2], "gist": "look around"},
+                {"label": "Fix", "step_ids": [3], "gist": "patch"},
+            ],
+        }
+    )
+    fake = _fake_client_returning(payload)
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
+
+    assert [(p["label"], p["step_ids"]) for p in result["phases"]] == [
+        ("Explore", [1, 2]),
+        ("Fix", [3]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_phases_absent_yields_empty_list():
+    from api.services.summarize_trajectory import generate
+
+    payload = json.dumps({"summary": "s", "highlights": []})
+    fake = _fake_client_returning(payload)
+    with patch("anthropic.AsyncAnthropic", return_value=fake):
+        result = await generate(_trajectory_with_steps([1, 2]), _minimal_ctx())
+
+    assert result["phases"] == []
+    assert result["summary"] == "s"
+
+
+def test_render_prompt_requests_phases():
+    from api.services.summarize_trajectory import _render_prompt
+
+    prompt = _render_prompt({"steps": [{"step_id": 1}]}, _minimal_ctx())
+    assert '"phases"' in prompt
+    assert "assign EVERY step" in prompt

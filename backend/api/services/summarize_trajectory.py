@@ -35,7 +35,7 @@ MAX_TEXT_CHARS = 2000
 TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 MODEL = "claude-sonnet-4-6"
 
 
@@ -175,6 +175,12 @@ def _render_prompt(trajectory: dict, task_context: "TaskContext") -> str:
         "a strategy was committed, a key tool call landed, an error "
         "redirected the work, or the final verdict was reached. Skip "
         "filler.\n\n"
+        "Also segment the run into phases: assign EVERY step to exactly one "
+        "short phase label naming the intent of that stretch of work (for "
+        'example "Explore", "Reproduce", "Diagnose", "Implement fix", '
+        '"Verify"). Reuse the same label when that kind of work resumes later '
+        "in the run, and give each phase a one-sentence gist. Cover all steps "
+        "in order.\n\n"
         "Respond with ONLY a JSON object (no preamble, no code fences) "
         "matching this exact shape:\n"
         "{\n"
@@ -182,9 +188,14 @@ def _render_prompt(trajectory: dict, task_context: "TaskContext") -> str:
         '  "highlights": [\n'
         '    {"step_id": <int>, "title": "<short label>", '
         '"why": "<one sentence>"}\n'
+        "  ],\n"
+        '  "phases": [\n'
+        '    {"label": "<short phase name>", "step_ids": [<int>, ...], '
+        '"gist": "<one sentence>"}\n'
         "  ]\n"
         "}\n"
-        "Highlights must be ordered by step_id ascending.\n\n"
+        "Highlights must be ordered by step_id ascending. Phases must cover "
+        "the steps in order.\n\n"
         f"<trajectory>\n{json.dumps(preprocess(trajectory))}\n</trajectory>"
     )
 
@@ -305,12 +316,20 @@ async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
                 }
             )
 
+    ordered_step_ids = [
+        step.get("step_id")
+        for step in (trajectory.get("steps") or [])
+        if isinstance(step.get("step_id"), int)
+    ]
+    phases = _normalize_phases(parsed.get("phases"), ordered_step_ids)
+
     return {
         "schema_version": SCHEMA_VERSION,
         "model": MODEL,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "highlights": highlights,
+        "phases": phases,
     }
 
 
