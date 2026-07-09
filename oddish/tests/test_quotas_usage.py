@@ -11,6 +11,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from oddish.config import settings  # noqa: E402
 from oddish.core.quotas import (  # noqa: E402
     quota_window_start,
     sum_cost_usd,
@@ -127,9 +128,11 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
 
 
 @pytest.mark.asyncio
-async def test_unpriced_finished_trial_is_token_estimated(cleanup_task_ids):
-    """Unpriced finished trials are token-estimated (not floored); a cancelled
-    unpriced trial and an unpriced trial with no tokens both count $0."""
+async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
+    cleanup_task_ids, monkeypatch
+):
+    """Token-bearing trials are estimated, same-model tokenless trials are
+    floored individually, and cancelled unpriced trials remain free."""
     task_id = f"quota-unpriced-{_RUN}"
     cleanup_task_ids.append(task_id)
     org_id = f"org-quota-unpriced-{_RUN}"
@@ -139,6 +142,7 @@ async def test_unpriced_finished_trial_is_token_estimated(cleanup_task_ids):
     model = "gpt-5.5-pro"
     est = estimate_cost_usd(model, 1_000_000, 500_000, 0)
     assert est and est > 0  # guard the fixture: pricing must resolve
+    monkeypatch.setattr(settings, "unpriced_trial_cost_usd", Decimal("1.00"))
 
     async with get_session() as session:
         await create_task(
@@ -170,11 +174,12 @@ async def test_unpriced_finished_trial_is_token_estimated(cleanup_task_ids):
         free.finished_at = now
         free.cost_usd = 0.0
 
-        # Unpriced with NO tokens -> $0 (the floor defaults to $0).
+        # Same-model unpriced trial with NO tokens -> one fallback floor.
         no_tokens = await session.get(TrialModel, f"{task_id}-3")
         no_tokens.started_at = now
         no_tokens.finished_at = now
         no_tokens.cost_usd = None
+        no_tokens.model = model
 
         # Cancelled (harbor_stage='cancelled') unpriced WITH tokens -> $0.
         cancelled = await session.get(TrialModel, f"{task_id}-4")
@@ -193,6 +198,6 @@ async def test_unpriced_finished_trial_is_token_estimated(cleanup_task_ids):
         )
         grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    expected = to_money_decimal(est + 0.25)
+    expected = to_money_decimal(est + 0.25 + 1.00)
     assert settled == expected
     assert grouped[billed_user] == expected

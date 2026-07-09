@@ -30,7 +30,9 @@ def _row(
     est_input=0,
     est_output=0,
     est_cache=0,
+    est_cache_write=0,
     est_trials=0,
+    est_token_trials=0,
 ):
     return SimpleNamespace(
         model=model,
@@ -38,7 +40,9 @@ def _row(
         est_input=est_input,
         est_output=est_output,
         est_cache=est_cache,
+        est_cache_write=est_cache_write,
         est_trials=est_trials,
+        est_token_trials=est_token_trials,
     )
 
 
@@ -53,7 +57,13 @@ def test_unpriced_with_tokens_is_token_estimated():
     expected = estimate_cost_usd(model, 1_000_000, 500_000, 0)
     assert expected and expected > 0
     native, estimated = settled_cost_parts(
-        _row(model=model, est_input=1_000_000, est_output=500_000, est_trials=1)
+        _row(
+            model=model,
+            est_input=1_000_000,
+            est_output=500_000,
+            est_trials=1,
+            est_token_trials=1,
+        )
     )
     assert native == 0.0
     assert estimated == expected
@@ -71,12 +81,54 @@ def test_floor_re_enables_when_configured(monkeypatch):
     assert estimated == 3.0
 
 
+def test_floor_applies_to_tokenless_trials_in_mixed_model_group(monkeypatch):
+    monkeypatch.setattr(settings, "unpriced_trial_cost_usd", Decimal("1.00"))
+    model = "gpt-5.5-pro"
+    token_estimate = estimate_cost_usd(model, 1_000_000, 500_000, 0)
+    assert token_estimate is not None
+
+    _, estimated = settled_cost_parts(
+        _row(
+            model=model,
+            est_input=1_000_000,
+            est_output=500_000,
+            est_trials=3,
+            est_token_trials=1,
+        )
+    )
+
+    assert estimated == token_estimate + 2.0
+
+
+def test_cache_write_tokens_are_estimated():
+    model = "claude-3-7-sonnet"
+    expected = estimate_cost_usd(model, 0, 0, 0, 400_000)
+    assert expected is not None
+
+    _, estimated = settled_cost_parts(
+        _row(
+            model=model,
+            est_cache_write=400_000,
+            est_trials=1,
+            est_token_trials=1,
+        )
+    )
+
+    assert estimated == expected
+
+
 def test_sum_and_from_row_combine_native_plus_estimate():
     model = "gpt-5.5-pro"
     est = estimate_cost_usd(model, 1_000_000, 500_000, 0)
     rows = [
         _row(native_cost=0.25),
-        _row(model=model, est_input=1_000_000, est_output=500_000, est_trials=1),
+        _row(
+            model=model,
+            est_input=1_000_000,
+            est_output=500_000,
+            est_trials=1,
+            est_token_trials=1,
+        ),
     ]
     assert settled_cost_from_row(rows[0]) == 0.25
     assert sum_settled_cost(rows) == 0.25 + est

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from sqlalchemy import and_, case, func
+from sqlalchemy import and_, case, func, or_
 
 from oddish.config import settings
 from oddish.db import TrialModel
@@ -54,6 +54,18 @@ def _estimatable():
     )
 
 
+def _has_estimatable_tokens():
+    """Rows whose token fields can produce a per-trial estimate."""
+    return and_(
+        _estimatable(),
+        or_(
+            func.coalesce(TrialModel.input_tokens, 0) > 0,
+            func.coalesce(TrialModel.output_tokens, 0) > 0,
+            func.coalesce(TrialModel.cache_write_tokens, 0) > 0,
+        ),
+    )
+
+
 def settled_cost_columns() -> list:
     """Labeled SQL columns decomposing settled cost for a model-grouped SELECT.
 
@@ -62,6 +74,7 @@ def settled_cost_columns() -> list:
     carry ``TrialModel.model``) with :func:`settled_cost_parts`.
     """
     estimatable = _estimatable()
+    has_tokens = _has_estimatable_tokens()
     return [
         func.coalesce(
             func.sum(
@@ -78,7 +91,13 @@ def settled_cost_columns() -> list:
         func.coalesce(
             func.sum(case((estimatable, TrialModel.cache_tokens), else_=0)), 0
         ).label("est_cache"),
+        func.coalesce(
+            func.sum(case((estimatable, TrialModel.cache_write_tokens), else_=0)), 0
+        ).label("est_cache_write"),
         func.coalesce(func.sum(case((estimatable, 1), else_=0)), 0).label("est_trials"),
+        func.coalesce(func.sum(case((has_tokens, 1), else_=0)), 0).label(
+            "est_token_trials"
+        ),
     ]
 
 
@@ -95,11 +114,21 @@ def settled_cost_parts(row) -> tuple[float, float]:
         int(row.est_input or 0),
         int(row.est_output or 0),
         int(row.est_cache or 0),
+        int(row.est_cache_write or 0),
     )
+    estimatable_trials = int(row.est_trials or 0)
     if estimated is None:
-        estimated = int(getattr(row, "est_trials", 0) or 0) * float(
-            settings.unpriced_trial_cost_usd
+        estimated = 0.0
+        fallback_trials = estimatable_trials
+    else:
+        # Aggregating by model is valid for the linear token rates, but fallback
+        # pricing is per trial. Keep charging tokenless siblings even when other
+        # trials in the same model group produced an estimate.
+        fallback_trials = max(
+            estimatable_trials - int(row.est_token_trials or 0),
+            0,
         )
+    estimated += fallback_trials * float(settings.unpriced_trial_cost_usd)
     return native, estimated
 
 
