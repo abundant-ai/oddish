@@ -39,7 +39,6 @@ async def test_zero_harness_cost_settles_to_token_estimate(monkeypatch):
     trial = _trial(agent="claude-code", model="zai/glm-x-preview[1m]")
     await _store(monkeypatch, trial, _outcome())
     assert trial.cost_usd == pytest.approx(1.32)
-    assert trial.cost_is_estimated is True
     assert trial.status == TrialStatus.SUCCESS
 
 
@@ -48,7 +47,6 @@ async def test_positive_native_cost_is_kept_verbatim(monkeypatch):
     trial = _trial(agent="claude-code", model="claude-opus-4-7")
     await _store(monkeypatch, trial, _outcome(cost_usd=4.56))
     assert trial.cost_usd == pytest.approx(4.56)
-    assert trial.cost_is_estimated is False
 
 
 @pytest.mark.asyncio
@@ -56,4 +54,3 @@ async def test_zero_cost_unpriceable_model_settles_to_none(monkeypatch):
     trial = _trial(agent="claude-code", model="totally-made-up-model")
     await _store(monkeypatch, trial, _outcome())
     assert trial.cost_usd is None
-    assert trial.cost_is_estimated is False

@@ -737,7 +737,7 @@ async def _run_harbor_trial(trial_id: str) -> None:
             trial.cache_tokens = agent_result.n_cache_tokens
             trial.cache_write_tokens = cache_write_tokens
             trial.output_tokens = agent_result.n_output_tokens
-            trial.cost_usd, trial.cost_is_estimated = settle_cost_usd(
+            trial.cost_usd = settle_cost_usd(
                 agent_result.cost_usd,
                 model=trial.model,
                 input_tokens=agent_result.n_input_tokens,

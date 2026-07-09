@@ -14,7 +14,6 @@ _SELECT_ZERO_COST = text(
     SELECT id, model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     FROM trials
     WHERE cost_usd = 0
-      AND cost_is_estimated IS NOT TRUE
       AND (
         COALESCE(input_tokens, 0) > 0
         OR COALESCE(output_tokens, 0) > 0
@@ -29,7 +28,7 @@ _SELECT_ZERO_COST = text(
 _UPDATE_COST = text(
     """
     UPDATE trials
-    SET cost_usd = :cost, cost_is_estimated = :est
+    SET cost_usd = :cost
     WHERE id = :id AND cost_usd = 0
     """
 )
@@ -59,7 +58,7 @@ async def run_backfill(*, apply: bool) -> None:
 
             updates: list[dict] = []
             for row in rows:
-                cost, est = settle_cost_usd(
+                cost = settle_cost_usd(
                     0.0,
                     model=row.model,
                     input_tokens=row.input_tokens,
@@ -69,7 +68,7 @@ async def run_backfill(*, apply: bool) -> None:
                 )
                 model = row.model or "unknown"
                 if apply:
-                    updates.append({"id": row.id, "cost": cost, "est": est})
+                    updates.append({"id": row.id, "cost": cost})
                 if cost is None:
                     unpriced[model] += 1
                 else:

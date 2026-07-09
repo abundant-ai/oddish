@@ -862,7 +862,6 @@ class TrialModel(TimestampedMixin, Base):
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_steps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    cost_is_estimated: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     # Per-phase timing breakdown (from Harbor's TrialResult TimingInfo)
     phase_timing: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

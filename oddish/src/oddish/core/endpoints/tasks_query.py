@@ -84,7 +84,7 @@ def _resolve_browse_trial_cost(row: Mapping[str, Any]) -> tuple[float | None, bo
     """
     cost = row["cost_usd"]
     if cost is not None:
-        return float(cost), bool(row.get("cost_is_estimated"))
+        return float(cost), False
     if row["input_tokens"] is None and row["output_tokens"] is None:
         return None, False
     from oddish.config import settings
@@ -1995,7 +1995,6 @@ async def browse_tasks_core(
                 TrialModel.agent.label("agent"),
                 TrialModel.model.label("model"),
                 TrialModel.cost_usd.label("cost_usd"),
-                TrialModel.cost_is_estimated.label("cost_is_estimated"),
                 TrialModel.input_tokens.label("input_tokens"),
                 TrialModel.output_tokens.label("output_tokens"),
                 TrialModel.cache_tokens.label("cache_tokens"),

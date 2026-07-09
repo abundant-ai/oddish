@@ -71,7 +71,7 @@ def _resolve_trial_cost(
     have token counts and a known model.
     """
     if trial.cost_usd is not None:
-        return float(trial.cost_usd), bool(trial.cost_is_estimated)
+        return float(trial.cost_usd), False
     if trial.input_tokens is None and trial.output_tokens is None:
         return None, None
     estimated = estimate_cost_usd(

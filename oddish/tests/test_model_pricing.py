@@ -297,35 +297,34 @@ def test_litellm_zero_zero_entries_are_rejected() -> None:
 
 
 def test_settle_keeps_positive_native_cost() -> None:
-    assert settle_cost_usd(
-        1.23, model="zai/glm-4.6", input_tokens=1_000, output_tokens=10
-    ) == (1.23, False)
+    assert (
+        settle_cost_usd(1.23, model="zai/glm-4.6", input_tokens=1_000, output_tokens=10)
+        == 1.23
+    )
 
 
 def test_settle_estimates_when_native_is_zero_with_tokens() -> None:
-    cost, estimated = settle_cost_usd(
+    cost = settle_cost_usd(
         0.0,
         model="zai/glm-x-preview[1m]",
         input_tokens=1_000_000,
         output_tokens=100_000,
     )
     assert cost == pytest.approx(1.0 + 0.32)
-    assert estimated is True
 
 
 def test_settle_estimates_when_native_is_missing_with_tokens() -> None:
-    cost, estimated = settle_cost_usd(
+    cost = settle_cost_usd(
         None,
         model="zai/glm-x-preview[1m]",
         input_tokens=1_000_000,
         output_tokens=100_000,
     )
     assert cost == pytest.approx(1.32)
-    assert estimated is True
 
 
 def test_settle_estimates_cache_write_only_trials() -> None:
-    cost, estimated = settle_cost_usd(
+    cost = settle_cost_usd(
         0.0,
         model="claude-3-7-sonnet",
         input_tokens=0,
@@ -333,44 +332,53 @@ def test_settle_estimates_cache_write_only_trials() -> None:
         cache_write_tokens=400_000,
     )
     assert cost == pytest.approx(400_000 * 3.75e-6)
-    assert estimated is True
 
 
 def test_settle_keeps_free_tier_models_at_zero() -> None:
-    assert settle_cost_usd(
-        0.0, model="zai/glm-4.5-flash", input_tokens=50_000, output_tokens=5_000
-    ) == (0.0, True)
+    assert (
+        settle_cost_usd(
+            0.0, model="zai/glm-4.5-flash", input_tokens=50_000, output_tokens=5_000
+        )
+        == 0.0
+    )
     assert has_pricing("zai/glm-4.7-flash")
 
 
 def test_settle_returns_none_for_unpriceable_model() -> None:
-    assert settle_cost_usd(
-        0.0, model="totally-made-up-model", input_tokens=10, output_tokens=10
-    ) == (None, False)
+    assert (
+        settle_cost_usd(
+            0.0, model="totally-made-up-model", input_tokens=10, output_tokens=10
+        )
+        is None
+    )
 
 
 def test_settle_preserves_native_when_no_tokens() -> None:
-    assert settle_cost_usd(
-        0.0, model="zai/glm-4.6", input_tokens=None, output_tokens=None
-    ) == (0.0, False)
-    assert settle_cost_usd(
-        None, model="zai/glm-4.6", input_tokens=0, output_tokens=0
-    ) == (None, False)
+    assert (
+        settle_cost_usd(0.0, model="zai/glm-4.6", input_tokens=None, output_tokens=None)
+        == 0.0
+    )
+    assert (
+        settle_cost_usd(None, model="zai/glm-4.6", input_tokens=0, output_tokens=0)
+        is None
+    )
 
 
 def test_settle_treats_nan_and_negative_native_cost_as_junk() -> None:
     for junk in (float("nan"), float("inf"), -0.01):
-        cost, estimated = settle_cost_usd(
+        cost = settle_cost_usd(
             junk,
             model="zai/glm-x-preview[1m]",
             input_tokens=1_000_000,
             output_tokens=100_000,
         )
         assert cost == pytest.approx(1.32)
-        assert estimated is True
-    assert settle_cost_usd(
-        float("nan"), model="zai/glm-4.6", input_tokens=None, output_tokens=None
-    ) == (None, False)
+    assert (
+        settle_cost_usd(
+            float("nan"), model="zai/glm-4.6", input_tokens=None, output_tokens=None
+        )
+        is None
+    )
 
 
 def test_estimate_clamps_negative_token_counts() -> None:

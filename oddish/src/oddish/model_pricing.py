@@ -222,19 +222,19 @@ def settle_cost_usd(
     output_tokens: int | None,
     cache_tokens: int | None = None,
     cache_write_tokens: int | None = None,
-) -> tuple[float | None, bool]:
+) -> float | None:
     usable = (
         native_cost_usd is not None
         and math.isfinite(native_cost_usd)
         and native_cost_usd >= 0
     )
     if usable and native_cost_usd:
-        return native_cost_usd, False
+        return native_cost_usd
     if not (input_tokens or output_tokens or cache_write_tokens):
-        return (native_cost_usd, False) if usable else (None, False)
+        return native_cost_usd if usable else None
     estimated = estimate_cost_usd(
         model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
     )
     if estimated is None or not math.isfinite(estimated):
-        return None, False
-    return estimated, True
+        return None
+    return estimated

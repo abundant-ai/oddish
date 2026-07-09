@@ -467,7 +467,6 @@ async def _prepare_trial_run(
         trial.output_tokens = None
         trial.total_steps = None
         trial.cost_usd = None
-        trial.cost_is_estimated = None
         trial.phase_timing = None
         trial.has_trajectory = False
         trial.attempts += 1
@@ -694,7 +693,7 @@ async def _store_trial_results(
             trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
-            trial.cost_usd, trial.cost_is_estimated = settle_cost_usd(
+            trial.cost_usd = settle_cost_usd(
                 outcome.cost_usd,
                 model=trial.model,
                 input_tokens=outcome.input_tokens,
