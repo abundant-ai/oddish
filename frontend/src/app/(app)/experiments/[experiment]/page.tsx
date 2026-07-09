@@ -86,12 +86,12 @@ export default async function ExperimentDetailPage({
 }) {
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
-  const initialTasks = await getInitialTasks(experimentId);
+  const initialTasksPromise = getInitialTasks(experimentId);
 
   return (
     <ExperimentClientPage
       experimentId={experimentId}
-      initialTasks={initialTasks}
+      initialTasksPromise={initialTasksPromise}
     />
   );
 }
