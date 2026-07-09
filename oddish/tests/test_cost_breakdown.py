@@ -631,6 +631,7 @@ async def seeded_fallback_data():
                     cost_usd=999.0,
                     created_at=recent,
                     origin=TrialOrigin.IMPORTED,
+                    billed_user_id=PAYER,
                 ),
                 # Experiment-combine copy -> excluded (originals carry the spend).
                 _trial(
@@ -640,6 +641,7 @@ async def seeded_fallback_data():
                     cost_usd=888.0,
                     created_at=recent,
                     idempotency_key=f"combine:{FE}:src-{_RUN}",
+                    billed_user_id=PAYER,
                 ),
                 # Billed probe -> counted (drew budget), attributed to its payer.
                 _trial(

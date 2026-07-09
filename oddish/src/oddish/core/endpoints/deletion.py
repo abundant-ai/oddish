@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Collection
 
 from fastapi import HTTPException
@@ -747,6 +748,15 @@ _COMBINE_TRIAL_RESULT_FIELDS = (
 )
 
 
+def _combine_idempotency_key(result_id: str, source_id: str) -> str:
+    """Return an always-marked, bounded key for a materialized trial copy."""
+    readable = f"combine:{result_id}:{source_id}"
+    if len(readable) <= 64:
+        return readable
+    digest = hashlib.sha256(f"{result_id}\0{source_id}".encode()).hexdigest()
+    return f"combine:{digest[:56]}"
+
+
 async def combine_experiments_core(
     session: AsyncSession,
     *,
@@ -926,9 +936,7 @@ async def combine_experiments_core(
                 new_trial_s3_key = source_prefix
                 new_harbor_result_path = source.harbor_result_path
 
-        idempotency_key = f"combine:{result.id}:{source.id}"
-        if len(idempotency_key) > 64:
-            idempotency_key = None
+        idempotency_key = _combine_idempotency_key(result.id, source.id)
 
         # The copy belongs to the result experiment, so it inherits that
         # experiment's org. ``org_id`` is None only on the single-tenant

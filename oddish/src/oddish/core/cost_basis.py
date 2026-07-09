@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from sqlalchemy import and_, case, func, or_
 
 from oddish.config import settings
-from oddish.db import TrialModel
+from oddish.db import TrialModel, TrialOrigin
 from oddish.model_pricing import estimate_cost_usd
 
 # ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
@@ -40,6 +40,23 @@ from oddish.model_pricing import estimate_cost_usd
 # runs is the intent. Trials have no CANCELLED status, so this stage is the
 # canonical "cancelled" signal on the row.
 CANCELLED_HARBOR_STAGE = "cancelled"
+
+
+def first_party_spend_filter():
+    """Select actual Oddish executions, excluding non-spend materializations.
+
+    Imported trials were paid for outside Oddish. Experiment-combine rows copy
+    an existing trial's result and cost, so counting them would charge the same
+    execution twice. Keep this eligibility rule shared by quota accounting and
+    cost reporting so both surfaces count the same execution population.
+    """
+    return and_(
+        TrialModel.origin == TrialOrigin.ODDISH,
+        or_(
+            TrialModel.idempotency_key.is_(None),
+            TrialModel.idempotency_key.notlike("combine:%"),
+        ),
+    )
 
 
 def _estimatable():
