@@ -34,7 +34,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TagPicker } from "@/components/tag-picker";
+import { TagPicker } from "@/components/tag-picker-lazy";
+import { TrialGridSkeleton } from "@/components/trial-grid-skeleton";
 import {
   Tooltip,
   TooltipContent,
@@ -948,6 +949,7 @@ export function ExperimentTrialsTable({
     getScrollElement: () => tableContainerRef.current,
     estimateSize: () => 46,
     overscan: 4,
+    initialRect: { width: 1280, height: 720 },
   });
 
   const shouldVirtualize = filteredTasks.length >= VIRTUALIZATION_THRESHOLD;
@@ -1497,51 +1499,10 @@ export function ExperimentTrialsTable({
             </div>
           </div>
 
-          <div className="overflow-x-auto p-3">
-            <div className="w-full min-w-[960px] space-y-2">
-              <div
-                className="bg-muted/40 grid gap-2 rounded-md p-2"
-                style={{
-                  gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
-                }}
-              >
-                <Skeleton className="h-5 w-24" />
-                {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
-                  (_, index) => (
-                    <Skeleton key={index} className="h-5 w-full" />
-                  ),
-                )}
-              </div>
-
-              {Array.from({ length: INITIAL_LOADING_ROW_COUNT }).map(
-                (_, rowIndex) => (
-                  <div
-                    key={rowIndex}
-                    className="border-border/60 grid gap-2 rounded-md border p-2"
-                    style={{
-                      gridTemplateColumns: `240px repeat(${INITIAL_LOADING_COLUMN_COUNT}, minmax(0, 1fr))`,
-                    }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Skeleton className="h-4 w-4 rounded-sm" />
-                      <Skeleton className="h-4 w-40" />
-                    </div>
-                    {Array.from({ length: INITIAL_LOADING_COLUMN_COUNT }).map(
-                      (_, columnIndex) => (
-                        <div
-                          key={columnIndex}
-                          className="flex items-center justify-center gap-1"
-                        >
-                          <Skeleton className="h-5 w-5 rounded-sm" />
-                          <Skeleton className="h-5 w-5 rounded-sm" />
-                        </div>
-                      ),
-                    )}
-                  </div>
-                ),
-              )}
-            </div>
-          </div>
+          <TrialGridSkeleton
+            columnCount={INITIAL_LOADING_COLUMN_COUNT}
+            rowCount={INITIAL_LOADING_ROW_COUNT}
+          />
         </div>
       </div>
     );
