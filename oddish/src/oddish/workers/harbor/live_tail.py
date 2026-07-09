@@ -3,7 +3,6 @@ import base64
 import binascii
 import contextlib
 import json
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -22,6 +21,11 @@ EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5
 MAX_TRIAL_EVENTS = 5000
 PAYLOAD_CLIP_CHARS = 2048
+_SKIP_TICK = object()
+
+
+class TailExecError(RuntimeError):
+    pass
 
 
 def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
@@ -62,6 +66,13 @@ def _parse_json_line(line: bytes) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _decode_base64(encoded: str, *, source: str) -> bytes:
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except binascii.Error as exc:
+        raise TailExecError(f"invalid base64 {source} output: {exc}") from exc
+
+
 def _as_int(value: Any) -> int:
     try:
         return int(value)
@@ -76,6 +87,10 @@ def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
     if len(value) > PAYLOAD_CLIP_CHARS:
         payload["truncated"] = True
     return payload
+
+
+def _event(kind: str, key: str, value: Any, **extra: Any) -> dict[str, Any]:
+    return {"kind": kind, "payload": _clipped_payload(key, value, **extra)}
 
 
 def _tool_result_text(content: Any) -> str:
@@ -95,19 +110,15 @@ def _render_assistant_blocks(message: dict) -> list[dict[str, Any]]:
         if not isinstance(block, dict):
             continue
         if block.get("type") == "text" and block.get("text"):
-            rendered.append(
-                {"kind": "message", "payload": _clipped_payload("text", block["text"])}
-            )
+            rendered.append(_event("message", "text", block["text"]))
         elif block.get("type") == "tool_use":
             rendered.append(
-                {
-                    "kind": "tool_use",
-                    "payload": _clipped_payload(
-                        "input",
-                        block.get("input") or {},
-                        name=str(block.get("name") or ""),
-                    ),
-                }
+                _event(
+                    "tool_use",
+                    "input",
+                    block.get("input") or {},
+                    name=str(block.get("name") or ""),
+                )
             )
     return rendered
 
@@ -159,7 +170,7 @@ class ClaudeUsageFold:
             return _render_tool_results(event.get("message"))
         if event.get("type") == "result":
             value = event.get("result") or event.get("subtype") or ""
-            return [{"kind": "summary", "payload": _clipped_payload("text", value)}]
+            return [_event("summary", "text", value)]
         return []
 
     def totals(self) -> UsageTotals:
@@ -184,21 +195,19 @@ def _render_codex_item(item: Any) -> list[dict[str, Any]]:
         text = item.get("text")
         if not text:
             return []
-        return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+        return [_event("message", "text", text)]
     if item_type == "command_execution":
         result = _clipped_payload("content", item.get("aggregated_output") or "")
         exit_code = item.get("exit_code")
         if isinstance(exit_code, int) and exit_code != 0:
             result["is_error"] = True
         return [
-            {
-                "kind": "tool_use",
-                "payload": _clipped_payload(
-                    "input",
-                    {"command": str(item.get("command") or "")},
-                    name="shell",
-                ),
-            },
+            _event(
+                "tool_use",
+                "input",
+                {"command": str(item.get("command") or "")},
+                name="shell",
+            ),
             {"kind": "tool_result", "payload": result},
         ]
     return []
@@ -245,7 +254,7 @@ class CodexUsageFold:
             )
             if not message:
                 return []
-            return [{"kind": "summary", "payload": _clipped_payload("text", message)}]
+            return [_event("summary", "text", message)]
         return []
 
     def _session_totals(self) -> UsageTotals:
@@ -289,12 +298,12 @@ def _render_cursor_tool_call(event: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         args = call.get("args")
         rendered.append(
-            {
-                "kind": "tool_use",
-                "payload": _clipped_payload(
-                    "input", args if isinstance(args, dict) else {}, name=str(name)
-                ),
-            }
+            _event(
+                "tool_use",
+                "input",
+                args if isinstance(args, dict) else {},
+                name=str(name),
+            )
         )
         result = call.get("result")
         rendered.append(
@@ -313,10 +322,7 @@ class CursorUsageFold:
     """Reads cursor-agent's streamed messages and token usage."""
 
     model: str | None = None
-    input_tokens: int = 0
-    cache_tokens: int = 0
-    cache_write_tokens: int = 0
-    output_tokens: int = 0
+    _totals: UsageTotals = field(default_factory=UsageTotals)
     _seen_usage: bool = False
 
     @property
@@ -324,10 +330,7 @@ class CursorUsageFold:
         return self._seen_usage
 
     def on_truncate(self) -> None:
-        self.input_tokens = 0
-        self.cache_tokens = 0
-        self.cache_write_tokens = 0
-        self.output_tokens = 0
+        self._totals = UsageTotals(model=self.model)
         self._seen_usage = False
 
     def feed_line(self, line: bytes) -> list[dict[str, Any]]:
@@ -347,29 +350,29 @@ class CursorUsageFold:
             return []
         if not text:
             return []
-        return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+        return [_event("message", "text", text)]
 
     def _feed_result(self, event: dict[str, Any]) -> list[dict[str, Any]]:
         usage = event.get("usage")
         if isinstance(usage, dict):
-            self.input_tokens += _as_int(usage.get("inputTokens"))
-            self.cache_tokens += _as_int(usage.get("cacheReadTokens"))
-            self.cache_write_tokens += _as_int(usage.get("cacheWriteTokens"))
-            self.output_tokens += _as_int(usage.get("outputTokens"))
+            self._totals.input_tokens += _as_int(usage.get("inputTokens"))
+            self._totals.cache_tokens += _as_int(usage.get("cacheReadTokens"))
+            self._totals.cache_write_tokens += _as_int(usage.get("cacheWriteTokens"))
+            self._totals.output_tokens += _as_int(usage.get("outputTokens"))
             self._seen_usage = True
         result = event.get("result")
         if not result:
             return []
-        return [{"kind": "summary", "payload": _clipped_payload("text", result)}]
+        return [_event("summary", "text", result)]
 
     def totals(self) -> UsageTotals:
         return UsageTotals(
-            input_tokens=self.input_tokens
-            + self.cache_tokens
-            + self.cache_write_tokens,
-            cache_tokens=self.cache_tokens,
-            cache_write_tokens=self.cache_write_tokens,
-            output_tokens=self.output_tokens,
+            input_tokens=self._totals.input_tokens
+            + self._totals.cache_tokens
+            + self._totals.cache_write_tokens,
+            cache_tokens=self._totals.cache_tokens,
+            cache_write_tokens=self._totals.cache_write_tokens,
+            output_tokens=self._totals.output_tokens,
             model=self.model,
         )
 
@@ -411,9 +414,7 @@ def _render_mini_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
         func = func if isinstance(func, dict) else {}
         name = str(func.get("name") or "bash")
         args = _tool_call_arguments(func.get("arguments", {}))
-        rendered.append(
-            {"kind": "tool_use", "payload": _clipped_payload("input", args, name=name)}
-        )
+        rendered.append(_event("tool_use", "input", args, name=name))
     return rendered
 
 
@@ -491,17 +492,13 @@ class MiniSweUsageFold:
         if role == "assistant":
             rendered: list[dict[str, Any]] = []
             if content:
-                rendered.append(
-                    {"kind": "message", "payload": _clipped_payload("text", content)}
-                )
+                rendered.append(_event("message", "text", content))
             rendered.extend(_render_mini_tool_calls(message))
             return rendered
         if role == "user" and is_task:
             return []
         if role in ("tool", "user"):
-            return [
-                {"kind": "tool_result", "payload": _clipped_payload("content", content)}
-            ]
+            return [_event("tool_result", "content", content)]
         return []
 
     def totals(self) -> UsageTotals:
@@ -510,32 +507,26 @@ class MiniSweUsageFold:
 
 @dataclass(frozen=True)
 class Adapter:
-    matches: Callable[[str], bool]
+    agent_fragment: str
     log_path: str
-    make_fold: Callable[[str | None], Fold]
+    fold_type: type
     snapshot: bool = False
+
+    def matches(self, agent: str) -> bool:
+        return self.agent_fragment in agent
+
+    def make_fold(self, model: str | None) -> Fold:
+        return self.fold_type(model=model)
 
 
 ADAPTERS: tuple[Adapter, ...] = (
+    Adapter("claude-code", "/logs/agent/claude-code.txt", ClaudeUsageFold),
+    Adapter("codex", "/logs/agent/codex.txt", CodexUsageFold),
+    Adapter("cursor-cli", "/logs/agent/cursor-cli.txt", CursorUsageFold),
     Adapter(
-        matches=lambda agent: "claude-code" in agent,
-        log_path="/logs/agent/claude-code.txt",
-        make_fold=lambda model: ClaudeUsageFold(model=model),
-    ),
-    Adapter(
-        matches=lambda agent: "codex" in agent,
-        log_path="/logs/agent/codex.txt",
-        make_fold=lambda model: CodexUsageFold(model=model),
-    ),
-    Adapter(
-        matches=lambda agent: "cursor-cli" in agent,
-        log_path="/logs/agent/cursor-cli.txt",
-        make_fold=lambda model: CursorUsageFold(model=model),
-    ),
-    Adapter(
-        matches=lambda agent: "mini-swe-agent" in agent,
-        log_path="/logs/agent/mini-swe-agent.trajectory.json",
-        make_fold=lambda model: MiniSweUsageFold(model=model),
+        "mini-swe-agent",
+        "/logs/agent/mini-swe-agent.trajectory.json",
+        MiniSweUsageFold,
         snapshot=True,
     ),
 )
@@ -606,9 +597,7 @@ class LiveTailer:
                 with contextlib.suppress(Exception):
                     self._buffer_events(self.fold.feed_line(self.carry))
             with contextlib.suppress(Exception):
-                await asyncio.shield(self._flush_events())
-            with contextlib.suppress(Exception):
-                await asyncio.shield(self._checkpoint())
+                await asyncio.shield(self._persist_tick())
 
     async def _run_loop(self) -> None:
         failures = 0
@@ -638,22 +627,26 @@ class LiveTailer:
 
     async def _tick(self) -> None:
         if self.snapshot:
-            await self._tick_snapshot()
-            return
+            raw = await self._read_snapshot()
+            if raw:
+                self._buffer_events(self.fold.feed_line(raw))
+        else:
+            raw = await self._read_tail()
+            if raw is _SKIP_TICK:
+                return
+            if raw:
+                self._feed_tail_chunk(raw)
+        await self._persist_tick()
+
+    async def _read_tail(self) -> bytes | object | None:
         command = (
             f"set -o pipefail; wc -c < '{self.log_path}' 2>/dev/null || echo -1; "
             f"tail -c +{self.offset + 1} '{self.log_path}'"
             f" 2>/dev/null | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
         )
-        result = await self.environment.exec(
-            command=command, timeout_sec=EXEC_TIMEOUT_SEC
-        )
-        return_code = getattr(result, "return_code", 0)
-        if return_code not in (0, None):
-            if return_code == 127 or self.offset > 0:
-                raise RuntimeError(f"tail exec failed rc={return_code}")
-            return
-        stdout = (result.stdout or "").strip()
+        stdout = await self._exec(command, source="tail", tolerate_missing=True)
+        if stdout is None:
+            return _SKIP_TICK
         size_line, _, encoded = stdout.partition("\n")
         try:
             size = int(size_line.strip())
@@ -663,40 +656,36 @@ class LiveTailer:
             self.fold.on_truncate()
             self.offset = 0
             self.carry = b""
-            return
+            return _SKIP_TICK
         encoded = encoded.strip()
-        if encoded:
-            try:
-                raw = base64.b64decode(encoded, validate=True)
-            except binascii.Error as exc:
-                raise RuntimeError(f"invalid base64 tail output: {exc}") from exc
-            lines, self.carry = split_lines(self.carry + raw)
-            self.offset += len(raw)
-            for line in lines:
-                self._buffer_events(self.fold.feed_line(line))
-        await self._flush_events()
-        await self._checkpoint()
+        return _decode_base64(encoded, source="tail") if encoded else None
 
-    async def _tick_snapshot(self) -> None:
+    async def _read_snapshot(self) -> bytes | None:
         command = (
             f"tail -c +1 '{self.log_path}' 2>/dev/null"
             f" | head -c {SNAPSHOT_MAX_BYTES} | base64 | tr -d '\\n'"
         )
+        encoded = await self._exec(command, source="snapshot")
+        return _decode_base64(encoded, source="snapshot") if encoded else None
+
+    async def _exec(
+        self, command: str, *, source: str, tolerate_missing: bool = False
+    ) -> str | None:
         result = await self.environment.exec(
             command=command, timeout_sec=EXEC_TIMEOUT_SEC
         )
         return_code = getattr(result, "return_code", 0)
         if return_code not in (0, None):
-            raise RuntimeError(f"snapshot exec failed rc={return_code}")
-        encoded = (result.stdout or "").strip()
-        if encoded:
-            try:
-                raw = base64.b64decode(encoded, validate=True)
-            except binascii.Error as exc:
-                raise RuntimeError(f"invalid base64 snapshot output: {exc}") from exc
-            self._buffer_events(self.fold.feed_line(raw))
-        await self._flush_events()
-        await self._checkpoint()
+            if tolerate_missing and return_code != 127 and self.offset == 0:
+                return None
+            raise TailExecError(f"{source} exec failed rc={return_code}")
+        return (result.stdout or "").strip()
+
+    def _feed_tail_chunk(self, raw: bytes) -> None:
+        lines, self.carry = split_lines(self.carry + raw)
+        self.offset += len(raw)
+        for line in lines:
+            self._buffer_events(self.fold.feed_line(line))
 
     def _buffer_events(self, rendered: list[dict[str, Any]]) -> None:
         if self.replaced or self.capped:
@@ -720,7 +709,15 @@ class LiveTailer:
                 return
             self.pending_events.append({"seq": self.seq, **event})
 
-    async def _flush_events(self) -> None:
+    async def _persist_tick(self) -> None:
+        checkpoint = self._checkpoint_values()
+        if (not self.pending_events or self.replaced) and checkpoint is None:
+            return
+        async with get_session() as session:
+            await self._flush_events(session)
+            await self._checkpoint(session, checkpoint)
+
+    async def _flush_events(self, session) -> None:
         if not self.pending_events or self.replaced:
             return
         rows = [
@@ -728,13 +725,12 @@ class LiveTailer:
             for event in self.pending_events
         ]
         stmt = pg_insert(TrialEventModel).values(rows).on_conflict_do_nothing()
-        async with get_session() as session:
-            await session.execute(stmt)
+        await session.execute(stmt)
         self.pending_events.clear()
 
-    async def _checkpoint(self) -> None:
+    def _checkpoint_values(self) -> tuple[dict[str, Any], tuple, float | None] | None:
         if not self.fold.has_usage:
-            return
+            return None
         totals = self.fold.totals()
         cost = price_totals(totals)
         if cost is None:
@@ -750,16 +746,25 @@ class LiveTailer:
         }
         state = tuple(values.values())
         if state == self._last_written or self.replaced:
+            return None
+        return values, state, cost
+
+    async def _checkpoint(
+        self,
+        session,
+        checkpoint: tuple[dict[str, Any], tuple, float | None] | None,
+    ) -> None:
+        if checkpoint is None:
             return
-        async with get_session() as session:
-            result = await session.execute(
-                update(TrialModel)
-                .where(
-                    TrialModel.id == self.trial_id,
-                    TrialModel.finished_at.is_(None),
-                )
-                .values(**values)
+        values, state, cost = checkpoint
+        result = await session.execute(
+            update(TrialModel)
+            .where(
+                TrialModel.id == self.trial_id,
+                TrialModel.finished_at.is_(None),
             )
+            .values(**values)
+        )
         if getattr(result, "rowcount", None) == 0:
             self.request_stop()
             return

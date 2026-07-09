@@ -55,6 +55,7 @@ class FakeSession:
     def __init__(self, rowcount=1, fail_inserts=False):
         self.stmts = []
         self.params = []
+        self.context_entries = 0
         self.rowcount = rowcount
         self.fail_inserts = fail_inserts
 
@@ -71,6 +72,7 @@ def patch_db(monkeypatch, module=live_tail, price=None, **kwargs):
 
     @contextlib.asynccontextmanager
     async def fake_get_session():
+        session.context_entries += 1
         yield session
 
     monkeypatch.setattr(module, "get_session", fake_get_session)
