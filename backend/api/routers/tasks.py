@@ -61,10 +61,19 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
     if not task_ids:
         return
     try:
-        from worker.functions import GKE_IMAGE_BUILDER
+        import os
 
-        if GKE_IMAGE_BUILDER is None:
-            return
+        import modal
+
+        # Spawn by name: importing worker.functions here would re-run Modal
+        # function registration inside the API container. from_name resolves
+        # the deployed function directly; GKE-less deploys never register it
+        # and the NotFoundError lands in the catch below.
+        builder = modal.Function.from_name(
+            os.environ.get("MODAL_APP_NAME", "oddish"),
+            "build_gke_task_image",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+        )
         from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
 
         # Scoped to trials ON the task's current version: stale GKE trials
@@ -87,7 +96,7 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
             .distinct()
         )
         for task_id, version in gke_rows:
-            await GKE_IMAGE_BUILDER.spawn.aio(task_id=task_id, version=version)
+            await builder.spawn.aio(task_id=task_id, version=version)
             logger.info(
                 "spawned GKE image build for task %s v%s", task_id, version
             )
