@@ -80,6 +80,7 @@ async def ensure_task_image(task_id: str, version: int) -> str:
     """
     if not (
         settings.gke_project_id
+        and settings.gke_region
         and settings.gke_registry_location
         and settings.gke_registry_name
     ):

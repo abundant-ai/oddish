@@ -97,11 +97,11 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
         )
         for task_id, version in gke_rows:
             await builder.spawn.aio(task_id=task_id, version=version)
-            logger.info(
-                "spawned GKE image build for task %s v%s", task_id, version
-            )
+            logger.info("spawned GKE image build for task %s v%s", task_id, version)
     except Exception:
         logger.exception("GKE image build spawn failed (non-fatal)")
+
+
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -211,7 +211,6 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
         if fc_id
     ]
     return await ModalDispatcher().cancel(handles)
-
 
 
 # =============================================================================
@@ -340,8 +339,16 @@ async def create_task_sweep(
             )
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and
-            # skip the owner-stamping / publish side effects below.
-            return TaskResponse.model_validate(replay.response_json)
+            # skip the owner-stamping / publish side effects below. The image
+            # build spawn IS retried though -- it is best-effort on the
+            # original request and the builder is idempotent (checks the
+            # registry first), so a replay is the natural recovery hook when
+            # the original spawn failed.
+            response = TaskResponse.model_validate(replay.response_json)
+            replay_task_id = getattr(response, "id", None)
+            if replay_task_id:
+                await _spawn_gke_image_builds(session, [replay_task_id])
+            return response
 
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
@@ -889,9 +896,7 @@ async def combine_experiments(
     into it. The sources are org-scoped and left untouched; append-only,
     so this needs only the ``tasks`` scope rather than admin.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         result = await combine_experiments_core(
@@ -917,9 +922,7 @@ async def create_trial_collection(
     Trials keep their home experiment; membership is additive via
     ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         result = await create_trial_collection_core(
@@ -1236,9 +1239,7 @@ async def retry_task_qa(
 ) -> dict:
     """(Re)run the single task-level QA job: classify every trial, then
     synthesize the task verdict."""
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
@@ -1256,9 +1257,7 @@ async def backfill_task_qa(
     (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
     into analysis going forward.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await backfill_task_analysis_core(
