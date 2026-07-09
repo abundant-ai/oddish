@@ -547,3 +547,18 @@ def test_running_handle_matching_existing_pod_does_not_trip_guard():
         pods, view, now=NOW, grace_period=timedelta(minutes=10)
     )
     assert plan.to_delete == ["true-orphan"]
+
+
+def test_dead_owner_compare_survives_naive_timestamps():
+    from datetime import datetime, timezone
+
+    pod = PodSnapshot(
+        name="p",
+        phase="Running",
+        creation_time=datetime(2026, 7, 9, 12, 0, tzinfo=timezone.utc),
+        labels={"app": "sandbox", "session": "p"},
+    )
+    naive_after = datetime(2026, 7, 9, 13, 0)  # naive, after creation
+    naive_before = datetime(2026, 7, 9, 11, 0)  # naive, before creation
+    assert sweeper._dead_owner_owns_pod(pod, naive_after) is True
+    assert sweeper._dead_owner_owns_pod(pod, naive_before) is False

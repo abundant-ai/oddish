@@ -16,7 +16,7 @@ from fastapi import (
     status,
 )
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,7 +91,13 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
             .where(
                 TrialModel.task_id.in_(task_ids),
                 TrialModel.task_version_id == TaskModel.current_version_id,
-                TrialModel.harbor_config["variant_id"].astext == "gke",
+                # Environment is the routing truth: allowlisted harbor-gke
+                # pins at non-blessed SHAs classify as the ephemeral variant
+                # yet still run on GKE and need the prebuilt image.
+                or_(
+                    TrialModel.environment == "gke",
+                    TrialModel.harbor_config["variant_id"].astext == "gke",
+                ),
             )
             .distinct()
         )
