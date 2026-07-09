@@ -44,9 +44,9 @@ def _current_prior_head() -> str:
         "A stale or mis-chained down_revision forks the graph."
     )
     down = script.get_revision(REVISION).down_revision
-    assert isinstance(
-        down, str
-    ), f"mca01 must have a single string parent, got {down!r}"
+    assert isinstance(down, str), (
+        f"mca01 must have a single string parent, got {down!r}"
+    )
     return down
 
 

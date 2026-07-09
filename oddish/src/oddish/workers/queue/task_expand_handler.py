@@ -215,7 +215,7 @@ async def _migrate_loose_task_files(
                     "size": int(cast(int, entry.get("size") or 0)),
                     "skipped": True,
                     "skip_reason": (
-                        f"upload_failed: {type(exc).__name__}: " f"{str(exc)[:200]}"
+                        f"upload_failed: {type(exc).__name__}: {str(exc)[:200]}"
                     ),
                     "source_key": source_key,
                 }
@@ -496,7 +496,7 @@ async def run_task_expand_job(
                     # encoded bytes) shouldn't bury a 300-file task.
                     return (
                         idx,
-                        (f"upload_failed: {type(exc).__name__}: " f"{str(exc)[:200]}"),
+                        (f"upload_failed: {type(exc).__name__}: {str(exc)[:200]}"),
                     )
 
         failures = await asyncio.gather(*(_upload_one(*item) for item in upload_plan))

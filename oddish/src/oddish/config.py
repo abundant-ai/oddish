@@ -108,9 +108,7 @@ def nop_oracle_kind(agent: str | None) -> str | None:
         _ORACLE_AGENT_PREFIXES
     ):
         return AgentName.ORACLE.value
-    if normalized == AgentName.NOP.value or normalized.startswith(
-        _NOP_AGENT_PREFIXES
-    ):
+    if normalized == AgentName.NOP.value or normalized.startswith(_NOP_AGENT_PREFIXES):
         return AgentName.NOP.value
     return None
 
@@ -658,6 +656,11 @@ def to_bedrock_model_id(model: str | None) -> str | None:
             if key.endswith(version_suffix):
                 key = key[: -len(version_suffix)]
                 break
+
+    # Accept the marketing spelling with a dotted minor version
+    # ("claude-opus-4.8") as an alias for the canonical dashed table key
+    # ("claude-opus-4-8"); a bare dotted id has no Bedrock mapping otherwise.
+    key = key.replace(".", "-")
 
     bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(key)
     if bedrock_id is None:

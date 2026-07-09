@@ -1,11 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { MarkdownRenderer } from "@/components/renderers/markdown-renderer";
+
+const MarkdownRenderer = dynamic(() =>
+  import("@/components/renderers/markdown-renderer").then(
+    (mod) => mod.MarkdownRenderer,
+  ),
+);
 
 interface ExperimentDescriptionProps {
   /** Required to edit; omit (or pass readOnly) for the public view. */

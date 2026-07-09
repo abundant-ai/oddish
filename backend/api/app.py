@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from observability import (
     instrument_fastapi,
@@ -92,6 +93,9 @@ async def _assert_quota_schema_or_force_off() -> None:
                         WHERE table_name = 'quotas'
                     ) AND EXISTS (
                         SELECT 1 FROM information_schema.tables
+                        WHERE table_name = 'quota_bumps'
+                    ) AND EXISTS (
+                        SELECT 1 FROM information_schema.tables
                         WHERE table_name = 'org_quotas'
                     )
                     """
@@ -107,7 +111,8 @@ async def _assert_quota_schema_or_force_off() -> None:
         return
     logger.error(
         "quota_mode=%s but the quota schema is incomplete (trials.billed_user_id "
-        "column or the backend quotas/org_quotas tables are missing -- the "
+        "column or the backend quotas / quota_bumps / org_quotas tables are "
+        "missing -- the "
         "oddish and backend alembic trees migrate separately); forcing "
         "quota_mode=off to avoid a fail-open SUM or a 500 on every admission",
         settings.quota_mode,
@@ -244,6 +249,8 @@ def create_app() -> FastAPI:
             "RateLimit-Policy",
         ],
     )
+
+    api.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=1)
 
     @api.middleware("http")
     async def add_server_timing_header(request: Request, call_next):

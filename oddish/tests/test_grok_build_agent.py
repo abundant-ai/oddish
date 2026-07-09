@@ -47,6 +47,7 @@ def test_invalid_api_backend_rejected(tmp_path):
             api_backend="bogus-endpoint",
         )
 
+
 # Comfortably larger than ARG_MAX and than a single realistic instruction; the
 # old code embedded this three times, so the exec argv would have been ~600KB.
 _LARGE_INSTRUCTION = "SENTINEL_START " + ("payload-line\n" * 20_000) + " SENTINEL_END"

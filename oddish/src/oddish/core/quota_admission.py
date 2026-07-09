@@ -70,7 +70,9 @@ class Unattributed(HTTPException):
         )
 
 
-def _log_would_block(org_id, billed_user_id, used, reserved, limit, *, reason: str) -> None:
+def _log_would_block(
+    org_id, billed_user_id, used, reserved, limit, *, reason: str
+) -> None:
     logger.warning(
         "metric=quota.would_block reason=%s org_id=%s billed_user_id=%s "
         "used=%s reserved=%s limit=%s",
@@ -84,7 +86,15 @@ def _log_would_block(org_id, billed_user_id, used, reserved, limit, *, reason: s
 
 
 def _raise_or_log_over_budget(
-    org_id, billed_user_id, used, reserved, limit, *, enforce: bool, exc_type, reason: str
+    org_id,
+    billed_user_id,
+    used,
+    reserved,
+    limit,
+    *,
+    enforce: bool,
+    exc_type,
+    reason: str,
 ) -> None:
     if used + reserved < limit:
         return
@@ -94,7 +104,12 @@ def _raise_or_log_over_budget(
 
 
 async def _check_user_quota(
-    session: AsyncSession, org_id: str, billed_user_id: str, count: int, *, enforce: bool
+    session: AsyncSession,
+    org_id: str,
+    billed_user_id: str,
+    count: int,
+    *,
+    enforce: bool,
 ) -> None:
     limit = await get_effective_limit(session, org_id, billed_user_id)
     used = await sum_cost_usd(session, org_id, billed_user_id, quota_window_start())
@@ -103,13 +118,24 @@ async def _check_user_quota(
         + count * settings.pending_trial_reservation_usd
     )
     _raise_or_log_over_budget(
-        org_id, billed_user_id, used, reserved, limit,
-        enforce=enforce, exc_type=QuotaExceeded, reason="over_budget",
+        org_id,
+        billed_user_id,
+        used,
+        reserved,
+        limit,
+        enforce=enforce,
+        exc_type=QuotaExceeded,
+        reason="over_budget",
     )
 
 
 async def _check_org_quota(
-    session: AsyncSession, org_id: str, billed_user_id: str | None, count: int, *, enforce: bool
+    session: AsyncSession,
+    org_id: str,
+    billed_user_id: str | None,
+    count: int,
+    *,
+    enforce: bool,
 ) -> None:
     limit = await get_effective_org_limit(session, org_id)
     if limit is None:
@@ -120,8 +146,14 @@ async def _check_org_quota(
         + count * settings.pending_trial_reservation_usd
     )
     _raise_or_log_over_budget(
-        org_id, billed_user_id, used, reserved, limit,
-        enforce=enforce, exc_type=OrgQuotaExceeded, reason="org_over_budget",
+        org_id,
+        billed_user_id,
+        used,
+        reserved,
+        limit,
+        enforce=enforce,
+        exc_type=OrgQuotaExceeded,
+        reason="org_over_budget",
     )
 
 
