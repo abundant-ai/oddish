@@ -17,6 +17,7 @@ from oddish.model_pricing import estimate_cost_usd
 from oddish.workers.queue.shared import console
 
 MAX_CHUNK_BYTES = 256 * 1024
+SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024
 EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5
 MAX_TRIAL_EVENTS = 5000
@@ -61,6 +62,13 @@ def _parse_json_line(line: bytes) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _as_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
     if not isinstance(value, str):
         value = json.dumps(value, default=str)
@@ -75,9 +83,7 @@ def _tool_result_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         return "\n".join(
-            str(block.get("text", ""))
-            for block in content
-            if isinstance(block, dict)
+            str(block.get("text", "")) for block in content if isinstance(block, dict)
         )
     return "" if content is None else str(content)
 
@@ -161,7 +167,9 @@ class ClaudeUsageFold:
         for usage in self.usage_by_id.values():
             cache_read = int(usage.get("cache_read_input_tokens") or 0)
             cache_write = int(usage.get("cache_creation_input_tokens") or 0)
-            t.input_tokens += int(usage.get("input_tokens") or 0) + cache_read + cache_write
+            t.input_tokens += (
+                int(usage.get("input_tokens") or 0) + cache_read + cache_write
+            )
             t.cache_tokens += cache_read
             t.cache_write_tokens += cache_write
             t.output_tokens += int(usage.get("output_tokens") or 0)
@@ -231,7 +239,9 @@ class CodexUsageFold:
         if event_type == "turn.failed":
             error = event.get("error")
             message = (
-                error.get("message") if isinstance(error, dict) else event.get("message")
+                error.get("message")
+                if isinstance(error, dict)
+                else event.get("message")
             )
             if not message:
                 return []
@@ -256,11 +266,254 @@ class CodexUsageFold:
         )
 
 
+def _cursor_text(message: Any) -> str:
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(block.get("text", ""))
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+
+
+def _render_cursor_tool_call(event: dict[str, Any]) -> list[dict[str, Any]]:
+    if event.get("subtype") != "completed":
+        return []
+    tool_call = event.get("tool_call")
+    if not isinstance(tool_call, dict):
+        return []
+    rendered: list[dict[str, Any]] = []
+    for name, call in tool_call.items():
+        if not isinstance(call, dict):
+            continue
+        args = call.get("args")
+        rendered.append(
+            {
+                "kind": "tool_use",
+                "payload": _clipped_payload(
+                    "input", args if isinstance(args, dict) else {}, name=str(name)
+                ),
+            }
+        )
+        result = call.get("result")
+        rendered.append(
+            {
+                "kind": "tool_result",
+                "payload": _clipped_payload(
+                    "content", "" if result is None else result
+                ),
+            }
+        )
+    return rendered
+
+
+@dataclass
+class CursorUsageFold:
+    """Reads cursor-agent's streamed messages and token usage."""
+
+    model: str | None = None
+    input_tokens: int = 0
+    cache_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
+    _seen_usage: bool = False
+
+    @property
+    def has_usage(self) -> bool:
+        return self._seen_usage
+
+    def on_truncate(self) -> None:
+        self.input_tokens = 0
+        self.cache_tokens = 0
+        self.cache_write_tokens = 0
+        self.output_tokens = 0
+        self._seen_usage = False
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        event_type = event.get("type")
+        if event_type == "assistant":
+            text: Any = _cursor_text(event.get("message"))
+        elif event_type == "thinking":
+            text = event.get("text") if event.get("subtype") == "completed" else None
+        elif event_type == "tool_call":
+            return _render_cursor_tool_call(event)
+        elif event_type == "result":
+            return self._feed_result(event)
+        else:
+            return []
+        if not text:
+            return []
+        return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+
+    def _feed_result(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            self.input_tokens += _as_int(usage.get("inputTokens"))
+            self.cache_tokens += _as_int(usage.get("cacheReadTokens"))
+            self.cache_write_tokens += _as_int(usage.get("cacheWriteTokens"))
+            self.output_tokens += _as_int(usage.get("outputTokens"))
+            self._seen_usage = True
+        result = event.get("result")
+        if not result:
+            return []
+        return [{"kind": "summary", "payload": _clipped_payload("text", result)}]
+
+    def totals(self) -> UsageTotals:
+        return UsageTotals(
+            input_tokens=self.input_tokens
+            + self.cache_tokens
+            + self.cache_write_tokens,
+            cache_tokens=self.cache_tokens,
+            cache_write_tokens=self.cache_write_tokens,
+            output_tokens=self.output_tokens,
+            model=self.model,
+        )
+
+
+def _mini_message_usage(message: dict[str, Any]) -> tuple[int, int, int]:
+    """Reads a mini-swe message's input, output, and cached token counts."""
+    extra = message.get("extra")
+    response = extra.get("response") if isinstance(extra, dict) else None
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if not usage and message.get("object") == "response":
+        usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return 0, 0, 0
+    prompt = _as_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
+    completion = _as_int(usage.get("completion_tokens") or usage.get("output_tokens"))
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    cached = _as_int(details.get("cached_tokens")) if isinstance(details, dict) else 0
+    return prompt, completion, cached
+
+
+def _tool_call_arguments(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {"command": raw}
+        return parsed if isinstance(parsed, dict) else {"command": raw}
+    return {"command": str(raw)}
+
+
+def _render_mini_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+    rendered: list[dict[str, Any]] = []
+    for tc in message.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        func = tc.get("function")
+        func = func if isinstance(func, dict) else {}
+        name = str(func.get("name") or "bash")
+        args = _tool_call_arguments(func.get("arguments", {}))
+        rendered.append(
+            {"kind": "tool_use", "payload": _clipped_payload("input", args, name=name)}
+        )
+    return rendered
+
+
+@dataclass
+class MiniSweUsageFold:
+    """Reads mini-swe-agent's whole trajectory file that is rewritten each step."""
+
+    model: str | None = None
+    emitted: int = 0
+    _totals: UsageTotals = field(default_factory=UsageTotals)
+    _has_usage: bool = False
+
+    @property
+    def has_usage(self) -> bool:
+        return self._has_usage
+
+    def on_truncate(self) -> None:
+        return None
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        document = _parse_json_line(line)
+        if document is None:
+            return []
+        messages = document.get("messages")
+        if not isinstance(messages, list):
+            messages = []
+        model = (
+            ((document.get("info") or {}).get("config") or {}).get("model") or {}
+        ).get("model_name")
+        if isinstance(model, str) and model:
+            self.model = model
+        self._recompute_usage(messages)
+        task_index = next(
+            (
+                i
+                for i, m in enumerate(messages)
+                if isinstance(m, dict) and m.get("role") == "user"
+            ),
+            None,
+        )
+        rendered: list[dict[str, Any]] = []
+        for i in range(self.emitted, len(messages)):
+            message = messages[i]
+            if isinstance(message, dict):
+                rendered.extend(self._render_message(message, is_task=i == task_index))
+        self.emitted = max(self.emitted, len(messages))
+        return rendered
+
+    def _recompute_usage(self, messages: list[Any]) -> None:
+        input_tokens = output_tokens = cache_tokens = 0
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            prompt, completion, cached = _mini_message_usage(message)
+            input_tokens += prompt
+            output_tokens += completion
+            cache_tokens += cached
+        prior = self._totals.input_tokens + self._totals.output_tokens
+        if input_tokens + output_tokens < prior:
+            return
+        self._totals = UsageTotals(
+            input_tokens=input_tokens,
+            cache_tokens=cache_tokens,
+            output_tokens=output_tokens,
+            model=self.model,
+        )
+        if input_tokens or output_tokens:
+            self._has_usage = True
+
+    def _render_message(
+        self, message: dict[str, Any], *, is_task: bool
+    ) -> list[dict[str, Any]]:
+        role = message.get("role")
+        content = _tool_result_text(message.get("content"))
+        if role == "assistant":
+            rendered: list[dict[str, Any]] = []
+            if content:
+                rendered.append(
+                    {"kind": "message", "payload": _clipped_payload("text", content)}
+                )
+            rendered.extend(_render_mini_tool_calls(message))
+            return rendered
+        if role == "user" and is_task:
+            return []
+        if role in ("tool", "user"):
+            return [
+                {"kind": "tool_result", "payload": _clipped_payload("content", content)}
+            ]
+        return []
+
+    def totals(self) -> UsageTotals:
+        return self._totals
+
+
 @dataclass(frozen=True)
 class Adapter:
     matches: Callable[[str], bool]
     log_path: str
     make_fold: Callable[[str | None], Fold]
+    snapshot: bool = False
 
 
 ADAPTERS: tuple[Adapter, ...] = (
@@ -273,6 +526,17 @@ ADAPTERS: tuple[Adapter, ...] = (
         matches=lambda agent: "codex" in agent,
         log_path="/logs/agent/codex.txt",
         make_fold=lambda model: CodexUsageFold(model=model),
+    ),
+    Adapter(
+        matches=lambda agent: "cursor-cli" in agent,
+        log_path="/logs/agent/cursor-cli.txt",
+        make_fold=lambda model: CursorUsageFold(model=model),
+    ),
+    Adapter(
+        matches=lambda agent: "mini-swe-agent" in agent,
+        log_path="/logs/agent/mini-swe-agent.trajectory.json",
+        make_fold=lambda model: MiniSweUsageFold(model=model),
+        snapshot=True,
     ),
 )
 
@@ -313,12 +577,14 @@ class LiveTailer:
         attempt: int,
         log_path: str,
         fold: Fold,
+        snapshot: bool = False,
     ):
         self.trial_id = trial_id
         self.environment = environment
         self.attempt = attempt
         self.log_path = log_path
         self.fold = fold
+        self.snapshot = snapshot
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -371,6 +637,9 @@ class LiveTailer:
                 pass
 
     async def _tick(self) -> None:
+        if self.snapshot:
+            await self._tick_snapshot()
+            return
         command = (
             f"set -o pipefail; wc -c < '{self.log_path}' 2>/dev/null || echo -1; "
             f"tail -c +{self.offset + 1} '{self.log_path}'"
@@ -405,6 +674,27 @@ class LiveTailer:
             self.offset += len(raw)
             for line in lines:
                 self._buffer_events(self.fold.feed_line(line))
+        await self._flush_events()
+        await self._checkpoint()
+
+    async def _tick_snapshot(self) -> None:
+        command = (
+            f"tail -c +1 '{self.log_path}' 2>/dev/null"
+            f" | head -c {SNAPSHOT_MAX_BYTES} | base64 | tr -d '\\n'"
+        )
+        result = await self.environment.exec(
+            command=command, timeout_sec=EXEC_TIMEOUT_SEC
+        )
+        return_code = getattr(result, "return_code", 0)
+        if return_code not in (0, None):
+            raise RuntimeError(f"snapshot exec failed rc={return_code}")
+        encoded = (result.stdout or "").strip()
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except binascii.Error as exc:
+                raise RuntimeError(f"invalid base64 snapshot output: {exc}") from exc
+            self._buffer_events(self.fold.feed_line(raw))
         await self._flush_events()
         await self._checkpoint()
 
@@ -499,6 +789,7 @@ def start(
         attempt=attempt,
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
+        snapshot=adapter.snapshot,
     )
     old = _tailers.pop(trial_id, None)
     if old:

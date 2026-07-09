@@ -37,7 +37,13 @@ def make_tailer(env, agent="claude-code", model=None, trial_id="t1", attempt=0):
         attempt=attempt,
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
+        snapshot=adapter.snapshot,
     )
+
+
+def b64_raw(raw: bytes) -> FakeResult:
+    """Snapshot tick reply: base64 with no size line."""
+    return FakeResult(stdout=base64.b64encode(raw).decode())
 
 
 class FakeExecuteResult:
@@ -75,7 +81,5 @@ def patch_db(monkeypatch, module=live_tail, price=None, **kwargs):
 
 def update_params(session):
     return [
-        dict(s.compile().params)
-        for s in session.stmts
-        if not isinstance(s, PGInsert)
+        dict(s.compile().params) for s in session.stmts if not isinstance(s, PGInsert)
     ]
