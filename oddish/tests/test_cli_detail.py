@@ -92,15 +92,17 @@ def test_status_trial_id_uses_single_trial_route():
     assert json.loads(result.output)["id"] == "task-abc-0"
 
 
-def test_status_trial_id_falls_back_to_parent_task_on_core():
-    # Core server has no /trials/{id}: 404 -> pull parent task and find the trial.
+def test_status_trial_id_falls_back_to_trial_by_index_on_core():
+    # Core server has no /trials/{id}: 404 -> fetch the trial by index, which
+    # returns the exact trial (incl. superseded / old versions).
     routes = {
         "/trials/task-abc-0": (404, {"detail": "Not Found"}),
-        "/tasks/task-abc": (200, {"id": "task-abc", "trials": [_TRIAL]}),
+        "/tasks/task-abc-0": (404, {"detail": "Not Found"}),
+        "/tasks/task-abc/trials/0": (200, _TRIAL),
     }
     result, calls = _invoke(routes, ["task-abc-0"])
     assert result.exit_code == 0, result.output
-    assert "/tasks/task-abc" in calls
+    assert "/tasks/task-abc/trials/0" in calls
     assert "Trial: task-abc-0" in result.output
 
 
@@ -208,16 +210,18 @@ def test_trial_detail_yields_to_real_task_with_trial_shaped_id():
     assert "/tasks/abc-0" in calls  # checked task identity before parent fallback
 
 
-def test_trial_detail_core_fallback_when_not_a_task():
+def test_trial_detail_core_fallback_uses_trial_by_index():
     # `abc-0` is a genuine trial on a core server (no /trials route, and no task
-    # with that exact id): fall back to the parent task's embedded trial.
+    # with that exact id): fall back to the by-index route (works for superseded
+    # trials that a parent task's embedded list would omit).
     routes = {
         "/trials/abc-0": (404, {"detail": "Not Found"}),
         "/tasks/abc-0": (404, {"detail": "Not Found"}),
-        "/tasks/abc": (200, {"id": "abc", "trials": [{"id": "abc-0", "task_id": "abc", "agent": "x", "provider": "y", "queue_key": "q", "status": "success", "attempts": 1, "max_attempts": 6}]}),
+        "/tasks/abc/trials/0": (200, {"id": "abc-0", "task_id": "abc", "agent": "x", "provider": "y", "queue_key": "q", "status": "success", "attempts": 1, "max_attempts": 6}),
     }
-    handled, _ = _call_try_trial(routes)
+    handled, calls = _call_try_trial(routes)
     assert handled is True
+    assert "/tasks/abc/trials/0" in calls
 
 
 def test_status_detail_requires_task_id():
