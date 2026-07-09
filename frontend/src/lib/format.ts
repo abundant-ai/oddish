@@ -8,6 +8,15 @@ export function formatCostUsd(value: number): string {
   return `$${value.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 }
 
+export function formatTokenCount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 tokens";
+  const rounded = Math.round(value);
+  if (rounded >= 1e9) return `${(rounded / 1e9).toFixed(1)}B tokens`;
+  if (rounded >= 1e6) return `${(rounded / 1e6).toFixed(1)}M tokens`;
+  if (rounded >= 1e3) return `${(rounded / 1e3).toFixed(1)}k tokens`;
+  return `${rounded.toLocaleString()} tokens`;
+}
+
 export interface TaskTrialCost {
   costUsd: number;
   pricedCount: number;
