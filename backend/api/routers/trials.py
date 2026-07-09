@@ -19,6 +19,7 @@ from oddish.core.trial_io import (
     read_trial_probe_artifacts,
     read_trial_result,
     read_trial_trajectory,
+    read_trial_trajectory_graph,
 )
 from oddish.core.ingest.trial_imports import (
     complete_trial_import,
@@ -333,6 +334,39 @@ async def get_trial_trajectory(
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
     return await read_trial_trajectory(trial)
+
+
+@router.get("/trials/{trial_id}/trajectory/graph")
+async def get_trial_trajectory_graph(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    refresh: bool = False,
+) -> dict:
+    """Condensed agent-graph summary of a trial's trajectory.
+
+    Distills the full ATIF trajectory into a handful of general phases plus a
+    terminal node (last action + why the run ended). Reuses the trajectory
+    summary's phase segmentation when available so the Agent Graph and Summary
+    stay consistent. ``?refresh=true`` recomputes.
+    """
+    auth.require_scope(APIKeyScope.READ)
+    trial = await _get_authorized_trial(trial_id, auth)
+
+    # Best-effort: reuse the shipped trajectory-summary phases. If the summary
+    # can't be produced (no trajectory, LLM error), fall through to the graph's
+    # own segmentation rather than failing the graph request.
+    summary: dict | None = None
+    try:
+        async with get_session() as session:
+            attached_trial = await session.get(TrialModel, trial.id)
+            if attached_trial is not None:
+                summary = await get_or_generate_summary(session, attached_trial)
+    except SummaryGenerationError as e:
+        logger.warning("Trajectory summary unavailable for graph %s: %s", trial_id, e)
+
+    return await read_trial_trajectory_graph(
+        trial, refresh=refresh, summary=summary
+    )
 
 
 @router.get("/trials/{trial_id}/trajectory/summary")

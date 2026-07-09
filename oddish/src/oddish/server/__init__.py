@@ -50,6 +50,7 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
+    read_trial_trajectory_graph,
 )
 from oddish.schemas import TrialRetryRequest
 from oddish.core.admin import (
@@ -705,6 +706,13 @@ async def get_trial_trajectory(trial_id: str):
     """Get ATIF trajectory.json for a trial (step-by-step agent actions)."""
     trial = await _get_detached_trial(trial_id)
     return await read_trial_trajectory(trial)
+
+
+@api.get("/trials/{trial_id}/trajectory/graph")
+async def get_trial_trajectory_graph(trial_id: str, refresh: bool = False):
+    """Condensed agent-graph summary of a trial's trajectory."""
+    trial = await _get_detached_trial(trial_id)
+    return await read_trial_trajectory_graph(trial, refresh=refresh)
 
 
 @api.get("/trials/{trial_id}/result")
