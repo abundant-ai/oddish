@@ -944,12 +944,15 @@ class Settings(BaseSettings):
     # per-user rolling-24h cap. ``None`` means no org cap unless an
     # ``org_quotas`` override row exists for the org (ships inert).
     default_org_monthly_quota_usd: Decimal | None = None
-    # Budget stand-in for a FINISHED trial that reported no price (cost_usd NULL):
-    # counted toward the daily quota so an unpriced/cancelled/reaped run is never
-    # treated as free (an "unknown cost = $0" row would let a start-then-cancel
-    # loop bypass the cap). The trial row itself keeps cost_usd NULL; only the
-    # quota SUMs floor it. A genuinely-$0 row (cost_usd = 0) is left untouched.
-    unpriced_trial_cost_usd: Decimal = Decimal("1.00")
+    # Fallback price for a FINISHED trial that reported no ``cost_usd`` AND whose
+    # tokens/pricing yield no LiteLLM estimate. Quota SUMs and the cost
+    # dashboards now token-estimate unpriced trials (see ``core/cost_basis.py``),
+    # so this is only the last-resort floor when there is nothing to estimate.
+    # Default $0: unpriced/cancelled runs are not floored. Raise it (via
+    # ``ODDISH_UNPRICED_TRIAL_COST_USD``) to re-enable a per-trial floor that
+    # stops a start-then-cancel loop from bypassing the cap. A genuinely-$0 row
+    # (cost_usd = 0) is always left untouched.
+    unpriced_trial_cost_usd: Decimal = Decimal("0.00")
     quota_mode: QuotaMode = QuotaMode.ENFORCE
 
     # Issue a short-lived, least-privilege job-scoped credential bundle at claim
