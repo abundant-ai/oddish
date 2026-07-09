@@ -963,7 +963,7 @@ function BooleanControl({
   );
 }
 
-type DateMode = "" | "24h" | "7d" | "30d" | "custom";
+type DateMode = "" | CreatedPreset | "custom";
 
 // A `type="date"` picker yields a local calendar day ("YYYY-MM-DD"). Convert it
 // to a UTC instant anchored to the START / END of that day in the user's local
@@ -1072,7 +1072,7 @@ function DateRange({
   return (
     <div className="space-y-2">
       <div className="flex overflow-hidden rounded-md border border-[#6f88b4]/20">
-        {(["24h", "7d", "30d"] as const).map((key) => (
+        {(["24h", "7d", "30d", "90d"] as const).map((key) => (
           <button
             key={key}
             type="button"

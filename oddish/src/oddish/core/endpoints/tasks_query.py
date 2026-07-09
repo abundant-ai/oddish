@@ -971,6 +971,7 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
         TrialModel.task_version_id.label("task_version_id"),
         func.avg(TrialModel.reward).label("avg_reward"),
         func.sum(total_tokens).label("total_tokens"),
+        func.sum(TrialModel.cost_usd).label("cost_usd"),
         func.count(TrialModel.id).label("total_trials"),
         func.count(case((TrialModel.status == TrialStatus.SUCCESS, 1))).label(
             "completed_trials"
@@ -1004,6 +1005,7 @@ def _task_metrics_subquery(org_id: str | None) -> Any:
 # Aggregate sort tokens -> (metrics column label added to ranked_tasks, descending).
 # The column labels must match the ``add_columns`` labels in browse_tasks_core.
 _AGGREGATE_SORTS: dict[str, tuple[str, bool]] = {
+    "cost_desc": ("cost_usd", True),
     "avg_score_desc": ("avg_reward", True),
     "avg_score_asc": ("avg_reward", False),
     "total_tokens_desc": ("total_tokens", True),
@@ -1140,9 +1142,8 @@ async def browse_tasks_core(
       ``sort``) are computed on the fly by ``_task_metrics_subquery`` — a single
       GROUP BY over the same scoped trial set — and applied as HAVING-equivalent
       predicates before pagination. There is NO supporting index or roll-up; this
-      is the deliberately-slow path that full Phase 1.2 will denormalize. Cost-based
-      aggregates stay deferred (cost is partly Python-estimated, so a pure-SQL sum
-      would silently miss the estimated trials).
+      is the deliberately-slow path that full Phase 1.2 will denormalize. Cost sort
+      uses persisted trial costs; still-unsettled NULL costs sort as absent.
     """
 
     current_version = aliased(TaskVersionModel)
@@ -1440,6 +1441,7 @@ async def browse_tasks_core(
         ranked_tasks = ranked_tasks.add_columns(
             task_metrics.c.avg_reward.label("avg_reward"),
             task_metrics.c.total_tokens.label("total_tokens"),
+            task_metrics.c.cost_usd.label("cost_usd"),
             task_metrics.c.total_trials.label("agg_total_trials"),
             task_metrics.c.completed_trials.label("agg_completed_trials"),
             task_metrics.c.failed_trials.label("agg_failed_trials"),

@@ -645,9 +645,10 @@ async def browse_tasks(
     sort: str | None = Query(
         None,
         description=(
-            "Aggregate sort: one of avg_score_(asc|desc), total_tokens_(asc|desc), "
-            "runtime_total_(asc|desc), runtime_avg_(asc|desc). Unknown/absent "
-            "keeps the default recency order."
+            "Aggregate sort: cost_desc, avg_score_(asc|desc), "
+            "total_tokens_(asc|desc), runtime_total_(asc|desc), or "
+            "runtime_avg_(asc|desc). Unknown/absent keeps the default recency "
+            "order."
         ),
     ),
     # --- Phase 2.1 agent/model comparison (computed on the fly) ---

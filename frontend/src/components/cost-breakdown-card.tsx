@@ -177,11 +177,37 @@ function formatAge(dateStr: string | null): string {
   return `${Math.floor(totalSeconds / 86400)}d`;
 }
 
-function ModelLabel({ model }: { model: CostModelBreakdown }) {
+function modelTasksHref(model: string, windowDays: string): string {
+  const params = new URLSearchParams({
+    models: model,
+    sort: "cost_desc",
+  });
+  const createdWithin =
+    windowDays === "1"
+      ? "24h"
+      : ["7", "30", "90"].includes(windowDays)
+        ? `${windowDays}d`
+        : null;
+  if (createdWithin) params.set("created_within", createdWithin);
+  return `/tasks?${params.toString()}`;
+}
+
+function ModelLabel({
+  model,
+  windowDays,
+}: {
+  model: CostModelBreakdown;
+  windowDays: string;
+}) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <QueueKeyIcon model={model.model} size={13} />
-      <span className="font-mono text-[11px]">{model.model}</span>
+      <Link
+        href={modelTasksHref(model.model, windowDays)}
+        className="font-mono text-[11px] text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+      >
+        {model.model}
+      </Link>
       <span className="text-muted-foreground text-[10px]">
         {model.provider}
       </span>
@@ -610,7 +636,7 @@ export function CostBreakdownCard() {
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={data.by_model} />
+              <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
             <section className="space-y-2">
@@ -890,7 +916,13 @@ function UserTable({
   );
 }
 
-function ModelTable({ models }: { models: CostModelBreakdown[] }) {
+function ModelTable({
+  models,
+  windowDays,
+}: {
+  models: CostModelBreakdown[];
+  windowDays: string;
+}) {
   if (models.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -912,7 +944,7 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
         {models.map((model) => (
           <TableRow key={`${model.model}-${model.provider}`}>
             <TableCell>
-              <ModelLabel model={model} />
+              <ModelLabel model={model} windowDays={windowDays} />
             </TableCell>
             <CostCell
               cost={model.cost_usd}
@@ -951,7 +983,20 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">New spend</TableHead>
+          <TableHead className="text-right">
+            <span className="inline-flex items-center gap-1">
+              New spend
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3 w-3 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[260px]">
+                  Cost from all trials run during the analysis period, not full
+                  experiment cost.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>

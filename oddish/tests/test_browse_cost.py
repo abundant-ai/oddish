@@ -7,7 +7,13 @@ report tokens but no native cost), else unpriceable.
 
 from __future__ import annotations
 
-from oddish.core.endpoints.tasks_query import _resolve_browse_trial_cost
+from sqlalchemy.dialects import postgresql
+
+from oddish.core.endpoints.tasks_query import (
+    _AGGREGATE_SORTS,
+    _resolve_browse_trial_cost,
+    _task_metrics_subquery,
+)
 
 
 def _row(**kw):
@@ -61,3 +67,11 @@ def test_tokens_with_unknown_model_is_unpriceable() -> None:
     )
     assert cost is None
     assert estimated is False
+
+
+def test_cost_desc_sorts_by_persisted_trial_cost_sum() -> None:
+    metrics = _task_metrics_subquery("org-1")
+    sql = str(metrics.select().compile(dialect=postgresql.dialect())).lower()
+
+    assert _AGGREGATE_SORTS["cost_desc"] == ("cost_usd", True)
+    assert "sum(trials.cost_usd)" in sql

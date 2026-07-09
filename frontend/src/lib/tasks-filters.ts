@@ -7,6 +7,7 @@ export const PRESET_MS = {
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
+  "90d": 90 * 24 * 60 * 60 * 1000,
 } as const;
 
 export type CreatedPreset = keyof typeof PRESET_MS;
@@ -208,6 +209,7 @@ export const COMPARE_MARGIN_UNIT_OPTIONS: Option[] = [
 
 // Aggregate sort tokens (kept in sync with backend ``_AGGREGATE_SORTS``).
 export const SORT_OPTIONS: Option[] = [
+  { value: "cost_desc", label: "Cost (high → low)" },
   { value: "avg_score_desc", label: "Avg score (high → low)" },
   { value: "avg_score_asc", label: "Avg score (low → high)" },
   { value: "total_tokens_desc", label: "Total tokens (high → low)" },
@@ -248,6 +250,13 @@ export const FILTER_DEFS: FilterDef[] = [
     group: "Trial",
     control: "agentmodel",
     pinned: true,
+  },
+  {
+    key: "models",
+    label: "Model",
+    group: "Trial",
+    control: "multiselect",
+    facet: "models",
   },
   {
     key: "tags",
