@@ -44,6 +44,20 @@ SELECT
     t.experiment_id,
     t.org_id,
     t.billed_user_id,
+    COALESCE(
+        t.billed_user_id,
+        'ghid:' || NULLIF(btrim(tk.tags ->> 'github_id'), ''),
+        'ghuser:' || lower(NULLIF(btrim(tk.tags ->> 'github_username'), '')),
+        tk.created_by_user_id,
+        '__unattributed__'
+    ) AS spender,
+    COALESCE(
+        u.name,
+        u.email,
+        '@' || NULLIF(btrim(tk.tags ->> 'github_username'), ''),
+        tk.created_by_user_id,
+        'Unattributed'
+    ) AS spender_label,
     t.billed_user_id IS NOT NULL AS is_billed,
     t.is_probe,
     t.superseded_by_trial_id IS NOT NULL AS is_superseded,
@@ -91,6 +105,8 @@ SELECT
     t.started_at,
     t.finished_at
 FROM trials t
+LEFT JOIN tasks tk ON tk.id = t.task_id
+LEFT JOIN users u ON u.id = t.billed_user_id AND u.deleted_at IS NULL
 WHERE t.deleted_at IS NULL
 """
 
@@ -100,6 +116,10 @@ outcome buckets match the dashboard matrix: pass/partial/fail (scored),
 harness (infra/agent error), scoreless, skipped, other (not finished).
 is_real_spend is the admin cost-dashboard basis: billed, or native
 non-probe non-combine-copy. Most metrics should add NOT is_superseded.
+spender/spender_label use the same billed-user, submitted-GitHub,
+submitter, unattributed fallback as the cost dashboard.
+cost_usd is persisted native cost only; /admin/costs adds token-priced
+estimates when this column is NULL.
 Examples:
 SELECT outcome, count(*) FROM v_trials
   WHERE finished_at > now() - interval '1 day' AND NOT is_superseded
@@ -116,6 +136,14 @@ SELECT
     e.name,
     e.org_id,
     e.owner_user_id,
+    COALESCE(
+        owner.name,
+        owner.email,
+        '@' || NULLIF(owner.github_username, ''),
+        NULLIF(btrim(e.owner), ''),
+        e.owner_user_id,
+        'Unknown'
+    ) AS owner_label,
     e.is_collection,
     e.created_at,
     COUNT(t.id) AS total_trials,
@@ -130,23 +158,34 @@ SELECT
     ROUND((COUNT(*) FILTER (WHERE t.outcome = 'pass')) * 100.0
           / NULLIF(COUNT(t.id), 0), 1) AS pass_rate,
     AVG(t.reward) AS avg_reward,
-    SUM(t.cost_usd) FILTER (WHERE t.is_real_spend) AS cost_usd,
+    spend.cost_usd,
     MIN(t.created_at) AS first_trial_at,
     MAX(t.finished_at) AS last_finished_at
 FROM experiments e
 LEFT JOIN v_trials t ON t.experiment_id = e.id AND NOT t.is_superseded
+LEFT JOIN users owner ON owner.id = e.owner_user_id AND owner.deleted_at IS NULL
+LEFT JOIN (
+    SELECT experiment_id, SUM(cost_usd) AS cost_usd
+    FROM v_trials
+    WHERE is_real_spend
+    GROUP BY experiment_id
+) spend ON spend.experiment_id = e.id
 WHERE e.deleted_at IS NULL
-GROUP BY e.id
+GROUP BY e.id, owner.name, owner.email, owner.github_username, spend.cost_usd
 """
 
 V_EXPERIMENT_SUMMARY_COMMENT = """
 COMMENT ON VIEW v_experiment_summary IS $c$One row per live experiment,
-aggregated over its own non-superseded trials (probes included, matching
-the dashboard; trials gathered into collections are NOT counted here).
-cost_usd uses the admin real-spend basis (billed probes count, unbilled
-probes/imports/combine-copies do not). pass_rate = pass_count as % of all
-counted trials. An experiment is "finished" when total_trials > 0 AND
-active_trials = 0. Examples:
+outcome metrics aggregate its own non-superseded trials (probes included,
+matching the dashboard; trials gathered into collections are NOT counted
+here). cost_usd includes every actual attempt, including superseded
+retries, on the real-spend predicate, but is persisted native cost only;
+/admin/costs adds token-priced estimates and is the source for spend
+alerts. Billed probes count; unbilled probes/imports/combine-copies do
+not. pass_rate = pass_count as % of all counted trials. An experiment is
+"finished" when total_trials > 0 AND active_trials = 0. owner_label
+identifies the live owner or falls back to the experiment's provenance
+owner, then user id. Examples:
 SELECT name, pass_rate, cost_usd, total_trials FROM v_experiment_summary
   ORDER BY created_at DESC LIMIT 20;
 SELECT name, active_trials, failed_trials FROM v_experiment_summary
@@ -175,6 +214,7 @@ SELECT
     ) AS spender_label,
     t.model,
     t.provider,
+    MAX(COALESCE(t.finished_at, t.created_at)) AS last_spend_at,
     COUNT(*) AS trial_count,
     SUM(COALESCE(t.cost_usd, 0)) AS cost_usd,
     SUM(COALESCE(t.input_tokens, 0)) AS input_tokens,
@@ -199,6 +239,10 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7
 V_DAILY_SPEND_COMMENT = """
 COMMENT ON VIEW v_daily_spend IS $c$Real spend (admin cost-dashboard
 basis) per UTC day x org x spender x model, bucketed by trial created_at.
+cost_usd is persisted native cost only; /admin/costs adds token-priced
+estimates when it is NULL and is the source for spend alerts.
+last_spend_at is the latest finish time in the bucket, falling back to
+creation time for unfinished trials.
 spender falls back like /admin/costs: billed user id, else ghid:<github
 id>, else ghuser:<handle>, else submitter user id, else __unattributed__.
 One divergence from /admin/costs: it blanks a soft-deleted task's tags
