@@ -384,7 +384,8 @@ def test_settle_keeps_positive_native_cost() -> None:
 
 
 @pytest.mark.parametrize(
-    "provider", ["fireworks", "zai", "minimax", "moonshot", "openrouter"]
+    "provider",
+    ["fireworks", "fireworks_ai", "zai", "minimax", "moonshot", "openrouter"],
 )
 def test_native_cost_policy_rejects_claude_code_passthrough(provider: str) -> None:
     assert not is_native_cost_trusted(agent="claude-code", provider=provider)
