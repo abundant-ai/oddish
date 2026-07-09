@@ -294,9 +294,9 @@ export default function AdminUserCostPage({
         </div>
         <p className="text-muted-foreground text-xs">
           Spend billed to this user, summed over settled trials (deleted runs
-          included) by finish time. Totals can differ from the Costs tab
-          (submission-time axis, live trials only) and from the quota Used
-          figure (which floors unpriced trials instead of estimating).
+          included) by finish time. Uses the same finish-time, token-estimate
+          basis as the Costs tab and the quota Used figure, so totals line up
+          except where a Costs row also folds in unbilled spend.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">

@@ -316,6 +316,8 @@ def _trial(
     origin: TrialOrigin = TrialOrigin.ODDISH,
     is_probe: bool = False,
     idempotency_key: str | None = None,
+    finished_at=None,
+    harbor_stage: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
@@ -333,6 +335,10 @@ def _trial(
         billed_user_id=billed_user_id,
         cost_usd=cost_usd,
         created_at=created_at,
+        # The cost dashboards key off settlement time; default a seeded trial to
+        # finished at its created_at so it lands in the same window as before.
+        finished_at=created_at if finished_at is None else finished_at,
+        harbor_stage=harbor_stage,
         deleted_at=deleted_at,
         origin=origin,
         is_probe=is_probe,

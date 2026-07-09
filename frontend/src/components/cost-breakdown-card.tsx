@@ -493,6 +493,12 @@ function MethodologyNote() {
             Per-model and per-user are the same per-trial costs grouped
             differently, so each view sums back to the same total.
           </li>
+          <li>
+            Every figure — the chart, the window totals, and the monthly figure
+            — counts a trial by its <strong>finish time</strong> (settlement),
+            the same basis as quota Used; still-running trials are excluded until
+            they finish, and a cancelled run with no reported cost counts as $0.
+          </li>
           <li>Figures span all organizations.</li>
         </ul>
       </PopoverContent>
