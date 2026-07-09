@@ -560,12 +560,19 @@ export interface TrajectoryHighlight {
   why: string;
 }
 
+export interface TrajectoryPhase {
+  label: string;
+  gist: string;
+  step_ids: number[];
+}
+
 export interface TrajectorySummary {
   schema_version: string;
   model: string;
   generated_at: string;
   summary: string;
   highlights: TrajectoryHighlight[];
+  phases: TrajectoryPhase[];
 }
 
 interface QueueSlot {
