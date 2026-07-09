@@ -83,16 +83,16 @@ def settled_cost_columns() -> list:
             0.0,
         ).label("native_cost"),
         func.coalesce(
-            func.sum(case((estimatable, TrialModel.input_tokens), else_=0)), 0
+            func.sum(case((has_tokens, TrialModel.input_tokens), else_=0)), 0
         ).label("est_input"),
         func.coalesce(
-            func.sum(case((estimatable, TrialModel.output_tokens), else_=0)), 0
+            func.sum(case((has_tokens, TrialModel.output_tokens), else_=0)), 0
         ).label("est_output"),
         func.coalesce(
-            func.sum(case((estimatable, TrialModel.cache_tokens), else_=0)), 0
+            func.sum(case((has_tokens, TrialModel.cache_tokens), else_=0)), 0
         ).label("est_cache"),
         func.coalesce(
-            func.sum(case((estimatable, TrialModel.cache_write_tokens), else_=0)), 0
+            func.sum(case((has_tokens, TrialModel.cache_write_tokens), else_=0)), 0
         ).label("est_cache_write"),
         func.coalesce(func.sum(case((estimatable, 1), else_=0)), 0).label("est_trials"),
         func.coalesce(func.sum(case((has_tokens, 1), else_=0)), 0).label(

@@ -147,7 +147,7 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
     async with get_session() as session:
         await create_task(
             session,
-            _submission("quota-unpriced", n_trials=5),
+            _submission("quota-unpriced", n_trials=6),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=billed_user,
@@ -191,6 +191,16 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
         cancelled.output_tokens = 500_000
         cancelled.harbor_stage = "cancelled"
 
+        # Cache-read tokens alone do not make a trial estimatable: the estimator
+        # requires input, output, or cache-write usage, so this gets one floor
+        # and its cache tokens must not leak into the sibling trial's estimate.
+        cache_only = await session.get(TrialModel, f"{task_id}-5")
+        cache_only.started_at = now
+        cache_only.finished_at = now
+        cache_only.cost_usd = None
+        cache_only.model = model
+        cache_only.cache_tokens = 500_000
+
         await session.flush()
 
         settled = await sum_cost_usd(
@@ -198,6 +208,6 @@ async def test_unpriced_finished_trial_uses_estimate_then_per_trial_floor(
         )
         grouped = await sum_cost_usd_by_user(session, org_id, quota_window_start(now))
 
-    expected = to_money_decimal(est + 0.25 + 1.00)
+    expected = to_money_decimal(est + 0.25 + 2.00)
     assert settled == expected
     assert grouped[billed_user] == expected
