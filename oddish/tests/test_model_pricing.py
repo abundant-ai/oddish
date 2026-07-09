@@ -266,27 +266,25 @@ def test_canonical_fireworks_ids_resolve_litellm_rates(
 
 def test_direct_passthrough_pricing_coverage_is_provider_specific() -> None:
     # Existing authoritative coverage: z.ai GLM-5.2 uses Oddish's documented
-    # gap entry, and MiniMax-M3 resolves LiteLLM's mixed-case provider key.
+    # gap entry, MiniMax-M3 resolves LiteLLM's mixed-case provider key, and
+    # direct Moonshot K2.7 uses Kimi API Platform's published USD rate card.
     assert get_model_pricing("zai/glm-5.2") == ModelPricing(
         input=1.4e-6, output=4.4e-6, cache_read=2.6e-7
     )
     assert _find_litellm_pricing("minimax/minimax-m3") == ModelPricing(
         input=3e-7, output=1.2e-6, cache_read=6e-8
     )
-
-    # LiteLLM 1.83.14 has Kimi K2.7 rates for Fireworks, but no direct Moonshot
-    # K2.7 entry. Do not borrow another provider's price.
-    assert get_model_pricing("moonshot/kimi-k2.7-code") is None
-    assert (
-        settle_cost_usd(
-            99.0,
-            native_cost_trusted=False,
-            model="moonshot/kimi-k2.7-code",
-            input_tokens=1_000,
-            output_tokens=100,
-        )
-        is None
+    assert get_model_pricing("moonshot/kimi-k2.7-code") == ModelPricing(
+        input=9.5e-7, output=4e-6, cache_read=1.9e-7
     )
+    assert settle_cost_usd(
+        99.0,
+        native_cost_trusted=False,
+        model="moonshot/kimi-k2.7-code",
+        input_tokens=2_000_000,
+        cache_tokens=1_000_000,
+        output_tokens=100_000,
+    ) == pytest.approx(1_000_000 * 9.5e-7 + 1_000_000 * 1.9e-7 + 100_000 * 4e-6)
 
 
 def test_litellm_returns_none_for_unknown_model() -> None:

@@ -27,10 +27,18 @@ class ModelPricing:
 #   * glm-5.2 (litellm's zai/ catalog stops at zai/glm-5.1; our stored id is
 #     zai/glm-5.2). z.ai list price: docs.z.ai/guides/overview/pricing (2026-07)
 #     = $1.4/M in, $4.4/M out, $0.26/M cached input.
+#   * kimi-k2.7-code direct Moonshot route (litellm has the Fireworks listing,
+#     but no ``moonshot/`` entry). Kimi API Platform list price:
+#     platform.kimi.ai/docs/pricing/chat-k27-code (2026-07)
+#     = $0.95/M in, $4/M out, $0.19/M cached input.
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
     ("glm-5.2", ModelPricing(input=1.4e-6, output=4.4e-6, cache_read=2.6e-7)),
+    (
+        "moonshot/kimi-k2.7-code",
+        ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.9e-7),
+    ),
     ("glm-4.5-flash", ModelPricing(input=0.0, output=0.0)),
     ("glm-4.7-flash", ModelPricing(input=0.0, output=0.0)),
     # Anthropic legacy / bare variants.
