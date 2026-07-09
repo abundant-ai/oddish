@@ -25,7 +25,7 @@ from oddish.core.harbor_source import (
 from oddish.schemas import HarborConfig
 
 GKE_HARBOR_SOURCE = "https://github.com/abundant-ai/harbor-gke"
-GKE_HARBOR_SHA = "78a666027ba095bb677df5c2b542c1cfefb63400"
+GKE_HARBOR_SHA = "d81ce6e3d502ca83ad2ad5b93f71c9dfe8178761"
 
 
 def test_gke_variant_registered_with_expected_pin():

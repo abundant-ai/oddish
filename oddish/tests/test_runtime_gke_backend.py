@@ -83,6 +83,7 @@ def test_gke_env_kwargs_inject_settings_defaults() -> None:
     assert merged["registry_location"] == settings.gke_registry_location
     assert merged["registry_name"] == settings.gke_registry_name
     assert merged["flex_start"] == settings.gke_flex_start
+    assert merged["auto_build_missing_image"] == settings.gke_auto_build_missing_image
     assert merged["pod_ready_timeout_sec"] == settings.gke_pod_ready_timeout_sec
 
 
