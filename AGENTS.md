@@ -526,7 +526,8 @@ sweep):
    basis and contains no agent/LLM path. It is on by default for the production
    app and off by default on preview apps; a preview opts in by setting
    `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
-   `SLACK_EXPENSE_WEBHOOK_URL`.
+   `SLACK_EXPENSE_WEBHOOK_URL`, optionally through a preview-only named secret
+   selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks

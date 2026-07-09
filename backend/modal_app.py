@@ -34,6 +34,10 @@ def _env_float(name: str, default: float) -> float:
 
 MODAL_APP_NAME = os.environ.get("MODAL_APP_NAME", "oddish")
 MODAL_SECRET_ENVIRONMENT = os.environ.get("MODAL_SECRET_ENVIRONMENT", "main")
+SLACK_EXPENSE_SECRET_NAME = os.environ.get("ODDISH_SLACK_EXPENSE_SECRET_NAME", "")
+SLACK_EXPENSE_SECRET_ENVIRONMENT = os.environ.get(
+    "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT", MODAL_SECRET_ENVIRONMENT
+)
 RUNTIME_SECRET_NAME = "oddish-prod"
 # Per-app webhook label so PR previews don't collide on the shared
 # `{workspace}-{environment}--{label}.modal.run` subdomain. Production keeps
@@ -228,6 +232,15 @@ if MODAL_APP_NAME.startswith("oddish-pr-"):
         )
     )
 
+slack_notification_secrets = list(runtime_secrets)
+if SLACK_EXPENSE_SECRET_NAME:
+    slack_notification_secrets.append(
+        modal.Secret.from_name(
+            SLACK_EXPENSE_SECRET_NAME,
+            environment_name=SLACK_EXPENSE_SECRET_ENVIRONMENT,
+        )
+    )
+
 # Queue-key concurrency default for Modal runtime.
 # Example:
 # ODDISH_MODEL_CONCURRENCY_OVERRIDES='{"openai/gpt-5.2": 64, "anthropic/claude-3.7-sonnet": 32}'
@@ -257,6 +270,8 @@ ENV_VARS = {
     # deploy host did (the per-PR secret gate above depends on it).
     "MODAL_APP_NAME": MODAL_APP_NAME,
     "MODAL_ENVIRONMENT": os.environ.get("MODAL_ENVIRONMENT", "main"),
+    "ODDISH_SLACK_EXPENSE_SECRET_NAME": SLACK_EXPENSE_SECRET_NAME,
+    "ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT": SLACK_EXPENSE_SECRET_ENVIRONMENT,
     # Oddish cloud settings — configures pydantic-settings fields in
     # oddish.config.Settings via ODDISH_* env vars.  Per-function DB pool
     # sizes are set in the entry modules (endpoints.py, worker/functions.py).

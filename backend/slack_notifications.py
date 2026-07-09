@@ -11,7 +11,7 @@ import modal
 from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from modal_app import app, image, runtime_secrets
+from modal_app import app, image, slack_notification_secrets
 from models import SlackExpenseAlertModel
 from oddish.core.admin import _real_spend_filter
 from oddish.core.cost_basis import settled_cost_columns, settled_cost_from_row
@@ -303,7 +303,7 @@ async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
 
 @app.function(
     image=image,
-    secrets=runtime_secrets,
+    secrets=slack_notification_secrets,
     timeout=120,
     max_containers=1,
     schedule=modal.Period(seconds=300),
