@@ -118,3 +118,14 @@ async def test_orchestration_skips_blind_when_pod_probe_fails(monkeypatch):
     monkeypatch.setattr(google.cloud, "container_v1", fake_container, raising=False)
     out = await reaper.reap_idle_cluster()
     assert "refusing to reap blind" in out
+
+
+def test_parse_cluster_created_accepts_string_datetime_and_junk():
+    from worker.gke_cluster_reaper import _parse_cluster_created
+
+    s = _parse_cluster_created("2026-07-09T15:30:00Z")
+    assert s is not None and s.tzinfo is not None
+    d = _parse_cluster_created(datetime(2026, 7, 9, 15, 30))
+    assert d is not None and d.tzinfo is not None  # naive -> UTC
+    assert _parse_cluster_created("") is None
+    assert _parse_cluster_created(None) is None

@@ -65,6 +65,22 @@ def decide(
     return ReapDecision("reap", f"idle {idle} >= ttl {ttl_hours}h")
 
 
+def _parse_cluster_created(value) -> datetime | None:
+    """Cluster create_time is an RFC3339 STRING in container_v1; accept a
+    datetime too in case a future client returns one. Naive values are UTC."""
+    parsed: datetime | None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
 async def _gke_trial_activity() -> tuple[int, datetime | None]:
     async with get_session() as session:
         # Environment is the routing truth: harbor-gke pins at non-blessed
@@ -127,10 +143,7 @@ async def reap_idle_cluster() -> str:
         cluster_managed = (
             dict(cluster.resource_labels or {}).get("harbor-managed") == "true"
         )
-        try:
-            created_at = datetime.fromisoformat(cluster.create_time)
-        except (TypeError, ValueError):
-            created_at = None
+        created_at = _parse_cluster_created(cluster.create_time)
 
     live, last_activity = await _gke_trial_activity()
     now = datetime.now(timezone.utc)
