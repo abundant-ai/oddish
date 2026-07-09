@@ -1,8 +1,3 @@
-"""S5-T9: the startup schema guard forces quota_mode=off (never crashes) when
-the quota schema is incomplete -- covering BOTH the trials column (oddish
-alembic tree) and the backend quotas table, which migrate separately.
-"""
-
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -17,9 +12,11 @@ class _FakeSession:
     def __init__(self, schema_ready):
         self._schema_ready = schema_ready
         self.scalar_calls = 0
+        self.sql = ""
 
-    async def scalar(self, *args, **kwargs):
+    async def scalar(self, statement, *args, **kwargs):
         self.scalar_calls += 1
+        self.sql = str(statement)
         if self._schema_ready is _RAISE:
             raise RuntimeError("DB unavailable at startup")
         return self._schema_ready
@@ -47,13 +44,21 @@ async def test_guard_forces_off_when_schema_incomplete(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_guard_leaves_enforce_when_schema_ready(monkeypatch):
+async def test_guard_leaves_enforce_when_schema_ready_and_probes_all_objects(
+    monkeypatch,
+):
     monkeypatch.setattr(settings, "quota_mode", QuotaMode.ENFORCE)
-    _patch_session(monkeypatch, _FakeSession(schema_ready=True))
+    session = _FakeSession(schema_ready=True)
+    _patch_session(monkeypatch, session)
 
     await _assert_quota_schema_or_force_off()
 
     assert settings.quota_mode == QuotaMode.ENFORCE
+    assert session.scalar_calls == 1
+    assert "table_name = 'trials'" in session.sql
+    assert "column_name = 'billed_user_id'" in session.sql
+    assert "table_name = 'quotas'" in session.sql
+    assert "table_name = 'quota_bumps'" in session.sql
 
 
 @pytest.mark.asyncio
