@@ -600,6 +600,8 @@ export interface TrajectoryGraph {
   source: "summary" | "llm" | "heuristic";
   model: string | null;
   num_steps: number | null;
+  schema_version?: string;
+  generated_at?: string;
 }
 
 export interface TrajectoryPhase {

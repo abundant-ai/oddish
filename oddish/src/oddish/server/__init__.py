@@ -50,7 +50,8 @@ from oddish.core.trial_io import (
     read_trial_logs_structured,
     read_trial_result,
     read_trial_trajectory,
-    read_trial_trajectory_graph,
+    read_persisted_trajectory_graph,
+    generate_and_store_trajectory_graph,
 )
 from oddish.schemas import TrialRetryRequest
 from oddish.core.admin import (
@@ -709,10 +710,29 @@ async def get_trial_trajectory(trial_id: str):
 
 
 @api.get("/trials/{trial_id}/trajectory/graph")
-async def get_trial_trajectory_graph(trial_id: str, refresh: bool = False):
-    """Condensed agent-graph summary of a trial's trajectory."""
+async def get_trial_trajectory_graph(trial_id: str):
+    """Return the STORED agent graph for a trial (never generates)."""
     trial = await _get_detached_trial(trial_id)
-    return await read_trial_trajectory_graph(trial, refresh=refresh)
+    graph = read_persisted_trajectory_graph(trial)
+    if graph is None:
+        return {"status": "not_generated"}
+    return graph
+
+
+@api.post("/trials/{trial_id}/trajectory/graph")
+async def generate_trial_trajectory_graph(trial_id: str, refresh: bool = False):
+    """Generate (and persist) the condensed agent step-graph for a trial."""
+    async with get_session() as session:
+        trial = await session.get(TrialModel, trial_id)
+        if trial is None:
+            raise HTTPException(status_code=404, detail="Trial not found")
+        if not trial.has_trajectory:
+            raise HTTPException(
+                status_code=404, detail="No trajectory available for this trial"
+            )
+        return await generate_and_store_trajectory_graph(
+            session, trial, refresh=refresh
+        )
 
 
 @api.get("/trials/{trial_id}/result")

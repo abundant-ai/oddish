@@ -19,7 +19,8 @@ from oddish.core.trial_io import (
     read_trial_probe_artifacts,
     read_trial_result,
     read_trial_trajectory,
-    read_trial_trajectory_graph,
+    read_persisted_trajectory_graph,
+    generate_and_store_trajectory_graph,
 )
 from oddish.core.ingest.trial_imports import (
     complete_trial_import,
@@ -340,33 +341,61 @@ async def get_trial_trajectory(
 async def get_trial_trajectory_graph(
     trial_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
-    refresh: bool = False,
 ) -> dict:
-    """Condensed agent-graph summary of a trial's trajectory.
+    """Return the STORED agent graph for a trial, or ``{"status":
+    "not_generated"}`` when none exists yet.
 
-    Distills the full ATIF trajectory into a handful of general phases plus a
-    terminal node (last action + why the run ended). Reuses the trajectory
-    summary's phase segmentation when available so the Agent Graph and Summary
-    stay consistent. ``?refresh=true`` recomputes.
+    Read-only and free — never runs the LLM. Generation is an explicit POST to
+    the same path (the "Generate agent graph" / "Rebuild" button).
     """
     auth.require_scope(APIKeyScope.READ)
     trial = await _get_authorized_trial(trial_id, auth)
+    graph = read_persisted_trajectory_graph(trial)
+    if graph is None:
+        return {"status": "not_generated"}
+    return graph
 
-    # Best-effort: reuse the shipped trajectory-summary phases. If the summary
-    # can't be produced (no trajectory, LLM error), fall through to the graph's
-    # own segmentation rather than failing the graph request.
-    summary: dict | None = None
-    try:
-        async with get_session() as session:
-            attached_trial = await session.get(TrialModel, trial.id)
-            if attached_trial is not None:
-                summary = await get_or_generate_summary(session, attached_trial)
-    except SummaryGenerationError as e:
-        logger.warning("Trajectory summary unavailable for graph %s: %s", trial_id, e)
 
-    return await read_trial_trajectory_graph(
-        trial, refresh=refresh, summary=summary
-    )
+@router.post("/trials/{trial_id}/trajectory/graph")
+async def generate_trial_trajectory_graph(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    refresh: bool = False,
+) -> dict:
+    """Generate (and persist) the condensed agent step-graph for a trial.
+
+    Distills the full ATIF trajectory into a handful of general phases plus a
+    terminal node (last action + why the run ended), reusing the trajectory
+    summary's phase segmentation when available so Agent Graph and Summary stay
+    consistent. ``?refresh=true`` regenerates even if one is already stored.
+    """
+    auth.require_scope(APIKeyScope.TASKS)
+    trial = await _get_authorized_trial(trial_id, auth)
+
+    async with get_session() as session:
+        attached_trial = await session.get(TrialModel, trial.id)
+        if attached_trial is None:
+            raise HTTPException(status_code=404, detail="Trial not found")
+
+        if not attached_trial.has_trajectory:
+            raise HTTPException(
+                status_code=404, detail="No trajectory available for this trial"
+            )
+
+        # Best-effort: reuse the shipped trajectory-summary phases. If the
+        # summary can't be produced (no trajectory, LLM error), fall through to
+        # the graph's own segmentation rather than failing the request.
+        summary: dict | None = None
+        try:
+            summary = await get_or_generate_summary(session, attached_trial)
+        except SummaryGenerationError as e:
+            logger.warning(
+                "Trajectory summary unavailable for graph %s: %s", trial_id, e
+            )
+
+        return await generate_and_store_trajectory_graph(
+            session, attached_trial, refresh=refresh, summary=summary
+        )
 
 
 @router.get("/trials/{trial_id}/trajectory/summary")
