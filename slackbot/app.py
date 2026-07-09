@@ -38,6 +38,7 @@ image = (
         "asyncpg",
     )
     .add_local_python_source("tools")
+    .add_local_python_source("spend_alerts")
 )
 
 app = modal.App("oddish-slackbot")
@@ -460,76 +461,146 @@ async def answer(channel: str, thread: str, prompt: str, user: str | None, event
 
 
 _WATCH_INTERVAL_SECONDS = 300
-# Dispatcher beats ~180s, reconciler ~240s; 900s ≈ 4 missed beats.
-_HEARTBEAT_STALE_SECONDS = 900
 
-_EXPERIMENT_DONE_SQL = """
-SELECT experiment_id, name, total_trials, pass_count, pass_rate, cost_usd
+_RECENT_EXPERIMENT_SPEND_SQL = """
+SELECT experiment_id, name, owner_user_id, owner_label, active_trials
 FROM v_experiment_summary
 WHERE NOT is_collection
   AND total_trials > 0
-  AND active_trials = 0
-  AND last_finished_at > NOW() - INTERVAL '2 hours'
+  AND (
+    active_trials > 0
+    OR last_finished_at > NOW() - INTERVAL '2 hours'
+  )
 """
 
-_EXPERIMENT_ACTIVE_SQL = """
-SELECT experiment_id FROM v_experiment_summary
-WHERE NOT is_collection AND active_trials > 0
+_RECENT_USER_SPEND_SQL = """
+SELECT org_id, spender
+FROM v_daily_spend
+WHERE spender <> '__unattributed__'
+  AND last_spend_at > NOW() - INTERVAL '2 hours'
+GROUP BY org_id, spender
 """
 
 
-async def _check_experiments_finished() -> list[tuple[str, str]]:
+async def _check_expensive_experiments() -> list[tuple[str, str]]:
     if not os.environ.get("ODDISH_RO_DATABASE_URL"):
         return []
-    from urllib.parse import quote
 
-    from tools import _fetch
+    from spend_alerts import (
+        environment_float,
+        expensive_experiment_alert,
+        experiment_is_expensive,
+    )
+    from tools import _fetch, _get
 
-    # Re-arm experiments that went active again (new/retried trials), so each
-    # activity wave can alert once on its next completion -- mirrors the
-    # heartbeat recovery re-arm.
-    for r in await _fetch(_EXPERIMENT_ACTIVE_SQL):
-        try:
-            watch_state.pop(f"exp_done:{r['experiment_id']}", None)
-        except Exception:
-            log.exception("failed to re-arm experiment alert id=%s", r["experiment_id"])
+    threshold_usd = environment_float("SLACK_EXPENSIVE_EXPERIMENT_USD", 2000)
+    recent_rows, cost_data = await asyncio.gather(
+        _fetch(_RECENT_EXPERIMENT_SPEND_SQL),
+        _get(
+            "/admin/costs",
+            {"window_days": 0, "experiment_limit": 500, "user_limit": 1},
+        ),
+    )
+    costs_by_experiment = {
+        str(row["experiment_id"]): row for row in cost_data.get("experiments", [])
+    }
+    rows = []
+    for recent_row in recent_rows:
+        cost_row = costs_by_experiment.get(str(recent_row["experiment_id"]))
+        if cost_row:
+            rows.append(
+                {
+                    **dict(recent_row),
+                    "cost_usd": cost_row.get("cost_usd"),
+                    "owner_label": cost_row.get("owner_name")
+                    or cost_row.get("owner_email")
+                    or cost_row.get("owner_label")
+                    or recent_row.get("owner_label"),
+                }
+            )
+    return [
+        expensive_experiment_alert(row, threshold_usd, _dashboard_url())
+        for row in rows
+        if experiment_is_expensive(row, threshold_usd)
+    ]
 
-    dash = _dashboard_url()
+
+async def _check_expensive_users() -> list[tuple[str, str]]:
+    if not os.environ.get("ODDISH_RO_DATABASE_URL"):
+        return []
+
+    from spend_alerts import environment_float, expensive_user_alert, user_is_expensive
+    from tools import _fetch, _get
+
+    minimum_usd = environment_float("SLACK_EXPENSIVE_USER_7D_USD", 1000)
+    average_multiplier = environment_float("SLACK_USER_AVERAGE_MULTIPLIER", 1.5)
+    recent_rows, cost_data = await asyncio.gather(
+        _fetch(_RECENT_USER_SPEND_SQL),
+        _get(
+            "/admin/costs",
+            {"window_days": 7, "experiment_limit": 1, "user_limit": 500},
+        ),
+    )
+    recent_spenders = {
+        (str(row.get("org_id") or ""), str(row["spender"])) for row in recent_rows
+    }
+    user_rows = [
+        row
+        for row in cost_data.get("by_user", [])
+        if row.get("owner_user_id") and row.get("key") != "__unattributed__"
+    ]
+    costs_by_org: dict[str, list[float]] = {}
+    for row in user_rows:
+        org_id = str(row.get("org_id") or "")
+        costs_by_org.setdefault(org_id, []).append(float(row.get("cost_usd") or 0))
+
     alerts = []
-    for r in await _fetch(_EXPERIMENT_DONE_SQL):
-        url = f"{dash}/experiments/{quote(quote(r['experiment_id'], safe=''), safe='')}"
-        alerts.append((
-            f"exp_done:{r['experiment_id']}",
-            f":checkered_flag: *{_escape(r['name'] or r['experiment_id'])}* finished — "
-            f"{r['pass_count']}/{r['total_trials']} passed ({float(r['pass_rate'] or 0):.0f}%), "
-            f"${float(r['cost_usd'] or 0):,.2f} · {url}",
-        ))
-    return alerts
+    breached_keys = set()
+    evaluated_keys = set()
+    for cost_row in user_rows:
+        org_id = str(cost_row.get("org_id") or "")
+        spender = str(cost_row["key"])
+        org_costs = costs_by_org[org_id]
+        row = {
+            "org_id": org_id,
+            "spender": spender,
+            "spender_label": cost_row.get("name")
+            or cost_row.get("email")
+            or cost_row.get("label")
+            or spender,
+            "cost_usd": cost_row.get("cost_usd"),
+            "average_cost_usd": sum(org_costs) / len(org_costs),
+        }
+        key, text = expensive_user_alert(
+            row,
+            minimum_usd,
+            average_multiplier,
+            _dashboard_url(),
+        )
+        evaluated_keys.add(key)
+        if user_is_expensive(row, minimum_usd, average_multiplier):
+            breached_keys.add(key)
+            if (org_id, spender) in recent_spenders:
+                alerts.append((key, text))
 
-
-async def _check_heartbeats() -> list[tuple[str, str]]:
-    from tools import _get
-
-    data = await _get("/admin/queue-health")
-    alerts = []
-    for comp in ("dispatcher", "reconciler"):
-        age = (data.get(comp) or {}).get("age_seconds")
-        key = f"hb_stale:{comp}"
-        if age is None or age > _HEARTBEAT_STALE_SECONDS:
-            gist = "has no recorded heartbeat" if age is None else f"last beat {age:.0f}s ago"
-            alerts.append((key, f":rotating_light: *{comp}* looks down — {gist}."))
-        else:
-            # Recovered: re-arm so the next stale episode alerts again.
+    for key in list(watch_state.keys()):
+        if not key.startswith("expensive_user:") or key in breached_keys:
+            continue
+        alerted_at = watch_state.get(key)
+        state_expired = isinstance(alerted_at, (int, float)) and (
+            time.time() - alerted_at > 8 * 24 * 60 * 60
+        )
+        if key in evaluated_keys or state_expired:
             try:
                 watch_state.pop(key, None)
             except Exception:
-                log.exception("failed to re-arm heartbeat alert key=%s", key)
+                log.exception("failed to re-arm user spend alert key=%s", key)
     return alerts
 
 
 CHECKS = [
-    ("experiment_finished", _check_experiments_finished),
-    ("heartbeat_stale", _check_heartbeats),
+    ("expensive_experiment", _check_expensive_experiments),
+    ("expensive_user", _check_expensive_users),
 ]
 
 
