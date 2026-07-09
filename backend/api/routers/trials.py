@@ -20,7 +20,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
-from oddish.core.trial_live import read_trial_live
+from oddish.core.trial_live import read_trial_live_for_id
 from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
@@ -238,11 +238,12 @@ async def get_trial_live(
     """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
     auth.require_scope(APIKeyScope.READ)
     async with get_session() as session:
-        trial = await get_trial_for_org_core(
-            session, trial_id=trial_id, org_id=auth.org_id
-        )
-        return await read_trial_live(
-            session, trial, attempt=attempt, after_seq=after_seq
+        return await read_trial_live_for_id(
+            session,
+            trial_id=trial_id,
+            org_id=auth.org_id,
+            attempt=attempt,
+            after_seq=after_seq,
         )
 
 

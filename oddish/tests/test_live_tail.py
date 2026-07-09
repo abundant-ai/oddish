@@ -304,6 +304,7 @@ async def test_codex_tick_tails_codex_log_and_checkpoints(monkeypatch):
     tailer = make_tailer(env, agent="codex", model="gpt-5.3-codex")
     await tailer._tick()
     assert "'/logs/agent/codex.txt'" in env.commands[0]
+    assert session.context_entries == 1
     params = update_params(session)
     assert params[-1]["input_tokens"] == 7
     assert params[-1]["cache_tokens"] == 2

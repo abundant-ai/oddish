@@ -3,9 +3,17 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oddish.core.endpoints._common import get_trial_for_org_core
 from oddish.db import TrialEventModel, TrialModel
 
 LIVE_EVENTS_PAGE_LIMIT = 500
+
+
+async def read_trial_live_for_id(
+    session: AsyncSession, *, trial_id: str, org_id: str | None = None, **cursor
+) -> dict:
+    trial = await get_trial_for_org_core(session, trial_id=trial_id, org_id=org_id)
+    return await read_trial_live(session, trial, **cursor)
 
 
 async def read_trial_live(
