@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import text
 
 from models import (
     OrganizationModel,
@@ -18,6 +19,7 @@ from models import (
 )
 from oddish.config import settings
 from oddish.core.admin import get_cost_breakdown_core
+from oddish.core.quotas import live_bump_totals_by_org_user_all_orgs
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
@@ -392,3 +394,86 @@ async def test_quota_limit_uses_same_org_as_enforcement(global_costs_fixture):
                     OrganizationModel.id == foreign_org_id
                 )
             )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_quota_gauge_present_on_mixed_billed_unbilled_row(global_costs_fixture):
+    # A real user whose row mixes billed and unbilled spend must still show the
+    # quota gauge: linkability/gauge follow ``real_user_id``, not ``all_billed``.
+    # An unbilled trial resolves back to ``target`` via the task submitter, so it
+    # lands in the same by_user bucket and flips ``all_billed`` to False. If the
+    # gate were reverted to ``all_billed and real_user_id`` the gauge would go
+    # None and this test would fail.
+    f = global_costs_fixture
+    unbilled_task_id = f"task_unbilled_{uuid.uuid4().hex[:8]}"
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    try:
+        async with get_session() as session:
+            session.add(
+                ExperimentModel(
+                    id=f"exp_{unbilled_task_id}", name="unbilled exp", org_id=f.org_id
+                )
+            )
+            session.add(
+                TaskModel(
+                    id=unbilled_task_id,
+                    name="unbilled task",
+                    org_id=f.org_id,
+                    user="x",
+                    task_path="s3://test-bucket/unbilled",
+                    created_by_user_id=f.target.id,
+                )
+            )
+            await session.flush()
+            session.add(
+                _trial(
+                    unbilled_task_id,
+                    0,
+                    org_id=f.org_id,
+                    billed_user_id=None,
+                    created_at=recent,
+                    finished_at=recent,
+                    cost_usd=3.00,
+                )
+            )
+
+        async with get_session() as session:
+            result = await get_cost_breakdown_core(session, window_days=7)
+
+        row = _user_row(result, f.target.id, org_id=f.org_id)
+        assert row.has_unbilled_spend is True
+        assert row.quota_limit_usd is not None
+        assert row.quota_spent_usd is not None
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(
+                    TrialModel.task_id == unbilled_task_id
+                )
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == unbilled_task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id == f"exp_{unbilled_task_id}"
+                )
+            )
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_bump_totals_degrade_when_table_missing():
+    # /admin/costs must not 500 when quota_bumps is absent (deploy-before-migrate
+    # or an OSS DB without the backend bump migration): the helper degrades to no
+    # bumps. Rename the table inside a savepoint so the probe sees it gone, then
+    # roll back to leave the schema intact for other tests.
+    async with get_session() as session:
+        async with session.begin_nested() as savepoint:
+            await session.execute(
+                text("ALTER TABLE quota_bumps RENAME TO quota_bumps__hidden")
+            )
+            totals = await live_bump_totals_by_org_user_all_orgs(session)
+            assert totals == {}
+            await savepoint.rollback()
