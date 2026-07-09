@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Upload } from "lucide-react";
-import { TagPicker } from "@/components/tag-picker";
+import { TagPicker } from "@/components/tag-picker-lazy";
 
 type ImportTrial = {
   job_name: string;

@@ -1,23 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import {
-  Anthropic,
-  Baichuan,
-  Cohere,
-  Cursor,
-  DeepSeek,
-  Inflection,
-  Liquid,
-  Meta,
-  Mistral,
-  NousResearch,
-  OpenAI,
-  OpenRouter,
-  Qwen,
-  XAI,
-  Yi,
-} from "@lobehub/icons";
+import dynamic from "next/dynamic";
 import { BadgeCheck, CircleSlash, SearchCheck, Sparkles } from "lucide-react";
 
 import {
@@ -25,6 +9,11 @@ import {
   isOracleAgentName,
   PROBE_AGENT_KEY,
 } from "@/lib/experiment-agent-grouping";
+
+const BrandIcon = dynamic(() => import("./queue-key-brand-icon"), {
+  ssr: false,
+  loading: () => null,
+});
 
 type QueueKeyIconProps = {
   queueKey?: string | null;
@@ -263,91 +252,57 @@ export function QueueKeyIcon({
 
   const resolvedProvider = resolveProvider({ queueKey, model, agent });
 
-  if (resolvedProvider === "openai") {
-    return <OpenAI size={size} className={className} />;
+  switch (resolvedProvider) {
+    case "gemini":
+      return (
+        <ProviderLogoImage
+          src="/google-gemini.svg"
+          alt="Google Gemini"
+          size={size}
+          className={className}
+        />
+      );
+    case "zai":
+      return (
+        <ProviderLogoImage
+          src="/zai-logo.png"
+          alt="Z.ai"
+          size={size}
+          className={className}
+        />
+      );
+    case "kimi":
+      return (
+        <ProviderLogoImage
+          src="/kimi-k-only.svg"
+          alt="Kimi"
+          size={size}
+          className={className}
+        />
+      );
+    case "minimax":
+      return (
+        <ProviderLogoImage
+          src="/minimax-vertical.svg"
+          alt="MiniMax"
+          size={size}
+          className={className}
+        />
+      );
+    case "unknown":
+      return <Sparkles size={size} className={className} />;
+    default:
+      return (
+        <span
+          className="inline-flex items-center justify-center"
+          style={{ width: size, height: size }}
+        >
+          <BrandIcon
+            provider={resolvedProvider}
+            size={size}
+            className={className}
+          />
+        </span>
+      );
   }
-  if (resolvedProvider === "anthropic") {
-    return <Anthropic size={size} className={className} />;
-  }
-  if (resolvedProvider === "gemini") {
-    return (
-      <ProviderLogoImage
-        src="/google-gemini.svg"
-        alt="Google Gemini"
-        size={size}
-        className={className}
-      />
-    );
-  }
-  if (resolvedProvider === "deepseek") {
-    return <DeepSeek size={size} className={className} />;
-  }
-  if (resolvedProvider === "cursor") {
-    return <Cursor size={size} className={className} />;
-  }
-  if (resolvedProvider === "mistral") {
-    return <Mistral size={size} className={className} />;
-  }
-  if (resolvedProvider === "xai") {
-    return <XAI size={size} className={className} />;
-  }
-  if (resolvedProvider === "meta") {
-    return <Meta size={size} className={className} />;
-  }
-  if (resolvedProvider === "cohere") {
-    return <Cohere size={size} className={className} />;
-  }
-  if (resolvedProvider === "qwen") {
-    return <Qwen size={size} className={className} />;
-  }
-  if (resolvedProvider === "zai") {
-    return (
-      <ProviderLogoImage
-        src="/zai-logo.png"
-        alt="Z.ai"
-        size={size}
-        className={className}
-      />
-    );
-  }
-  if (resolvedProvider === "kimi") {
-    return (
-      <ProviderLogoImage
-        src="/kimi-k-only.svg"
-        alt="Kimi"
-        size={size}
-        className={className}
-      />
-    );
-  }
-  if (resolvedProvider === "minimax") {
-    return (
-      <ProviderLogoImage
-        src="/minimax-vertical.svg"
-        alt="MiniMax"
-        size={size}
-        className={className}
-      />
-    );
-  }
-  if (resolvedProvider === "yi") {
-    return <Yi size={size} className={className} />;
-  }
-  if (resolvedProvider === "baichuan") {
-    return <Baichuan size={size} className={className} />;
-  }
-  if (resolvedProvider === "nous") {
-    return <NousResearch size={size} className={className} />;
-  }
-  if (resolvedProvider === "inflection") {
-    return <Inflection size={size} className={className} />;
-  }
-  if (resolvedProvider === "liquid") {
-    return <Liquid size={size} className={className} />;
-  }
-  if (resolvedProvider === "openrouter") {
-    return <OpenRouter size={size} className={className} />;
-  }
-
-  return <Sparkles size={size} className={className} />;
 }
