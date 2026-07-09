@@ -151,8 +151,7 @@ export function LiveTranscriptPanel({
   const usage = last?.usage;
   const done = last?.done ?? false;
   const stage = last?.harbor_stage;
-  const tokens =
-    usage != null ? (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : 0;
+  const tokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
 
   return (
     <div className="flex h-full flex-col">

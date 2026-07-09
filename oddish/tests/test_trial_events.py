@@ -119,7 +119,6 @@ def test_message_text_truncated():
 @pytest.mark.asyncio
 async def test_seq_dense_per_attempt_across_ticks(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     tick1 = (
         text_line("a", usage={"input_tokens": 1})
         + b"\n"
@@ -147,7 +146,6 @@ async def test_seq_dense_per_attempt_across_ticks(monkeypatch):
 @pytest.mark.asyncio
 async def test_cap_writes_one_summary_row_and_keeps_checkpoints(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     monkeypatch.setattr(live_tail, "MAX_TRIAL_EVENTS", 2)
     tick1 = b"".join(
         text_line(f"m{i}", msg_id=f"msg_{i}", usage={"input_tokens": i + 1}) + b"\n"
@@ -176,7 +174,6 @@ async def test_cap_writes_one_summary_row_and_keeps_checkpoints(monkeypatch):
 @pytest.mark.asyncio
 async def test_replaced_guard_suppresses_event_inserts(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(text_line("hi", usage={"input_tokens": 1}) + b"\n")])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     tailer.replaced = True
@@ -189,7 +186,6 @@ async def test_replaced_guard_suppresses_event_inserts(monkeypatch):
 @pytest.mark.asyncio
 async def test_flush_failure_retains_pending_for_retry(monkeypatch):
     session = patch_db(monkeypatch, fail_inserts=True)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(text_line("hi", usage={"input_tokens": 1}) + b"\n")])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     with pytest.raises(RuntimeError):
@@ -206,7 +202,6 @@ async def test_flush_failure_retains_pending_for_retry(monkeypatch):
 @pytest.mark.asyncio
 async def test_final_drain_folds_and_flushes_carry(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(text_line("tail", usage={"input_tokens": 8}))])
     tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
     tailer.request_stop()
