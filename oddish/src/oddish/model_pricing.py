@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -25,11 +26,26 @@ class ModelPricing:
 #   * claude-haiku-4 bare (litellm has claude-haiku-4-5 only).
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
+    ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
+    ("glm-4.5-flash", ModelPricing(input=0.0, output=0.0)),
+    ("glm-4.7-flash", ModelPricing(input=0.0, output=0.0)),
     # Anthropic legacy / bare variants.
-    ("claude-haiku-4", ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7, cache_write=1.25e-6)),
-    ("claude-3-7-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
-    ("claude-3.5-sonnet", ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6)),
-    ("claude-3.5-haiku", ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8, cache_write=1e-6)),
+    (
+        "claude-haiku-4",
+        ModelPricing(input=1e-6, output=5e-6, cache_read=1e-7, cache_write=1.25e-6),
+    ),
+    (
+        "claude-3-7-sonnet",
+        ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6),
+    ),
+    (
+        "claude-3.5-sonnet",
+        ModelPricing(input=3e-6, output=15e-6, cache_read=3e-7, cache_write=3.75e-6),
+    ),
+    (
+        "claude-3.5-haiku",
+        ModelPricing(input=8e-7, output=4e-6, cache_read=8e-8, cache_write=1e-6),
+    ),
     # Google bare Gemini 3.x names.
     (
         "gemini-3.1-flash-lite",
@@ -114,6 +130,8 @@ def _pricing_from_litellm_info(info: dict[str, Any]) -> ModelPricing | None:
     output_cost = info.get("output_cost_per_token")
     if input_cost is None or output_cost is None:
         return None
+    if not float(input_cost) and not float(output_cost):
+        return None
     cache_read_cost = info.get("cache_read_input_token_cost")
     cache_write_cost = info.get("cache_creation_input_token_cost")
     return ModelPricing(
@@ -170,19 +188,23 @@ def estimate_cost_usd(
 ) -> float | None:
     if not model_name:
         return None
-    input_total = int(input_tokens or 0)
-    output_total = int(output_tokens or 0)
-    cache_write = int(cache_write_tokens or 0)
+    input_total = max(0, int(input_tokens or 0))
+    output_total = max(0, int(output_tokens or 0))
+    cache_write = max(0, int(cache_write_tokens or 0))
     if not (input_total or output_total or cache_write):
         return None
     pricing = _find_pricing(model_name)
     if pricing is None:
         return None
 
-    cached = int(cached_tokens or 0)
+    cached = max(0, int(cached_tokens or 0))
     uncached_input = max(0, input_total - cached - cache_write)
-    cache_read_rate = pricing.cache_read if pricing.cache_read is not None else pricing.input
-    cache_write_rate = pricing.cache_write if pricing.cache_write is not None else pricing.input * 1.25
+    cache_read_rate = (
+        pricing.cache_read if pricing.cache_read is not None else pricing.input
+    )
+    cache_write_rate = (
+        pricing.cache_write if pricing.cache_write is not None else pricing.input * 1.25
+    )
 
     return (
         uncached_input * pricing.input
@@ -190,3 +212,29 @@ def estimate_cost_usd(
         + cache_write * cache_write_rate
         + output_total * pricing.output
     )
+
+
+def settle_cost_usd(
+    native_cost_usd: float | None,
+    *,
+    model: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
+) -> float | None:
+    usable = (
+        native_cost_usd is not None
+        and math.isfinite(native_cost_usd)
+        and native_cost_usd >= 0
+    )
+    if usable and native_cost_usd:
+        return native_cost_usd
+    if not (input_tokens or output_tokens or cache_write_tokens):
+        return native_cost_usd if usable else None
+    estimated = estimate_cost_usd(
+        model, input_tokens, output_tokens, cache_tokens, cache_write_tokens
+    )
+    if estimated is None or not math.isfinite(estimated):
+        return None
+    return estimated

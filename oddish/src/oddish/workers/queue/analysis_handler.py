@@ -83,9 +83,7 @@ async def classify_trial_and_store(
         if not trial:
             raise RuntimeError(f"Trial {trial_id} not found in database")
         if trial.deleted_at is not None:
-            console.print(
-                f"[dim]Trial {trial_id} was deleted, skipping analysis[/dim]"
-            )
+            console.print(f"[dim]Trial {trial_id} was deleted, skipping analysis[/dim]")
             return None
 
         # Skip if already analyzed

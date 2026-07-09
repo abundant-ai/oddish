@@ -172,9 +172,10 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
 
         org_total = await sum_org_cost_usd(session, org_id, start_of_month_utc(now))
 
-    assert org_total == Decimal("0.10") + Decimal("0.20") + Decimal("7.00") + Decimal(
-        "9.00"
-    ) + floor
+    assert (
+        org_total
+        == Decimal("0.10") + Decimal("0.20") + Decimal("7.00") + Decimal("9.00") + floor
+    )
 
 
 @pytest.mark.asyncio

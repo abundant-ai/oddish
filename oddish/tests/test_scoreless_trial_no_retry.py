@@ -70,7 +70,9 @@ def _outcome(reward=None, error=None):
 
 def _patch_session(monkeypatch, trial):
     @asynccontextmanager
-    async def _fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
+    async def _fake_trial_session(
+        trial_id, *, allow_missing=False, with_for_update=False
+    ):
         yield object(), trial
 
     monkeypatch.setattr(th, "_trial_session", _fake_trial_session)

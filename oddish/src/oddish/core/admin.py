@@ -1557,19 +1557,28 @@ async def _prev_window_costs(
             ).label("native_cost"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.input_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_input"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.output_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_output"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.cache_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_cache"),
@@ -1646,19 +1655,28 @@ async def _billed_cost_since(
             ).label("native_cost"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.input_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_input"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.output_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_output"),
             func.coalesce(
                 func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)
+                    case(
+                        (TrialModel.cost_usd.is_(None), TrialModel.cache_tokens),
+                        else_=0,
+                    )
                 ),
                 0,
             ).label("est_cache"),
