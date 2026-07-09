@@ -13,6 +13,8 @@ import {
   RefreshCw,
   GitBranch,
   Sparkles,
+  CircleSlash,
+  CircleDashed,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +72,12 @@ const OUTCOME_STYLE: Record<
     label: "Passed",
     tone: "text-emerald-600 dark:text-emerald-400",
   },
+  partial: {
+    ring: "border-amber-500/50 bg-amber-500/10",
+    icon: <CircleSlash className="h-5 w-5 text-amber-500" />,
+    label: "Partial credit",
+    tone: "text-amber-600 dark:text-amber-400",
+  },
   failure: {
     ring: "border-red-500/50 bg-red-500/10",
     icon: <XCircle className="h-5 w-5 text-red-500" />,
@@ -86,6 +94,12 @@ const OUTCOME_STYLE: Record<
     ring: "border-slate-500/50 bg-slate-500/10",
     icon: <AlertTriangle className="h-5 w-5 text-slate-500" />,
     label: "Harness error",
+    tone: "text-slate-600 dark:text-slate-300",
+  },
+  scoreless: {
+    ring: "border-slate-500/40 bg-slate-500/5",
+    icon: <CircleDashed className="h-5 w-5 text-slate-500" />,
+    label: "No score",
     tone: "text-slate-600 dark:text-slate-300",
   },
   skipped: {

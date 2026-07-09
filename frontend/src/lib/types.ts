@@ -574,9 +574,11 @@ export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
 
 export type TrajectoryGraphOutcome =
   | "success"
+  | "partial"
   | "failure"
   | "timeout"
   | "error"
+  | "scoreless"
   | "skipped"
   | "running";
 

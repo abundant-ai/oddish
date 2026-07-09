@@ -724,9 +724,16 @@ async def generate_and_store_trajectory_graph(
 
     lock = _get_lock(_TRAJECTORY_GRAPH_LOCKS, trial.id)
     async with lock:
-        # Re-check inside the lock — another coroutine may have populated it.
-        if not refresh and _graph_is_fresh(trial.trajectory_graph):
-            return trial.trajectory_graph  # type: ignore[return-value]
+        # Re-check inside the lock — another coroutine (this container or, via
+        # the committed column, another) may have populated it. Reload the
+        # column from the DB first so we don't rebuild over a fresh write.
+        if not refresh:
+            try:
+                await session.refresh(trial, attribute_names=["trajectory_graph"])
+            except Exception:
+                pass  # detached/expired instance — fall through to rebuild
+            if _graph_is_fresh(trial.trajectory_graph):
+                return trial.trajectory_graph  # type: ignore[return-value]
 
         # Fetch the trajectory alongside the goal (instruction) and the grader
         # output (verifier stdout) so the graph can judge phases against the
