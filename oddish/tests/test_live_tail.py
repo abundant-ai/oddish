@@ -349,6 +349,7 @@ async def test_tick_offset_math_and_checkpoint_across_split_chunks(monkeypatch):
     assert params[1]["input_tokens"] == 13 and params[1]["output_tokens"] == 6
     assert params[1]["cost_usd"] == 0.5
     assert "+1 " in env.commands[0] and f"+{len(raw1) + 1} " in env.commands[1]
+    assert f"head -c {live_tail.MAX_CHUNK_BYTES}" in env.commands[0]
 
 
 @pytest.mark.asyncio

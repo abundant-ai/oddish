@@ -15,7 +15,9 @@ from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
 from oddish.workers.queue.shared import console
 
-MAX_CHUNK_BYTES = 256 * 1024
+# Keep the same ~51 KiB/s drain capacity as the original 256 KiB / 5s
+# cadence while making six times fewer sandbox exec calls.
+MAX_CHUNK_BYTES = 1536 * 1024
 SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024
 EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5

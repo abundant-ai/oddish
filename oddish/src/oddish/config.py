@@ -981,7 +981,7 @@ class Settings(BaseSettings):
 
     # Live tail of agent output for running trials
     live_tail_enabled: bool = True
-    live_tail_interval_sec: float = 5.0
+    live_tail_interval_sec: float = 30.0
 
     harbor_source_repo: str = "rishidesai/harbor"
     # Pinned harbor ref the probe `harbor src` command fetches. Keep in sync with
