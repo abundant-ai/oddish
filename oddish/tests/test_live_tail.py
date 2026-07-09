@@ -815,36 +815,22 @@ def test_cursor_on_truncate_resets_summed_usage():
     assert fold.totals().output_tokens == 3
 
 
-def test_mini_swe_fold_reemits_after_snapshot_shrink():
-    fold = MiniSweUsageFold()
-    fold.feed_line(
-        mini_trajectory(
-            [
-                {"role": "user", "content": "task"},
-                mini_assistant("a"),
-                mini_assistant("b"),
-            ]
-        )
-    )
-    reset = fold.feed_line(
-        mini_trajectory([{"role": "user", "content": "new"}, mini_assistant("c")])
-    )
-    assert reset == [{"kind": "message", "payload": {"text": "c"}}]
-
-
-def test_mini_swe_fold_has_usage_tracks_current_snapshot():
+def test_mini_swe_fold_totals_are_monotonic_on_shrink():
     fold = MiniSweUsageFold()
     fold.feed_line(
         mini_trajectory(
             [
                 {"role": "user", "content": "task"},
                 mini_assistant("a", usage={"prompt_tokens": 5, "completion_tokens": 1}),
+                mini_assistant("b", usage={"prompt_tokens": 5, "completion_tokens": 1}),
             ]
         )
     )
+    high_water = fold.totals()
+    shrunk = fold.feed_line(mini_trajectory([{"role": "user", "content": "new"}]))
+    assert shrunk == []
     assert fold.has_usage
-    fold.feed_line(mini_trajectory([{"role": "user", "content": "fresh"}]))
-    assert not fold.has_usage
+    assert fold.totals() == high_water
 
 
 def test_mini_swe_fold_renders_later_user_as_observation():

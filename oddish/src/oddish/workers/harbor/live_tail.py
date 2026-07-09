@@ -446,8 +446,6 @@ class MiniSweUsageFold:
         if isinstance(model, str) and model:
             self.model = model
         self._recompute_usage(messages)
-        if len(messages) < self.emitted:
-            self.emitted = 0
         task_index = next(
             (
                 i
@@ -461,12 +459,11 @@ class MiniSweUsageFold:
             message = messages[i]
             if isinstance(message, dict):
                 rendered.extend(self._render_message(message, is_task=i == task_index))
-        self.emitted = len(messages)
+        self.emitted = max(self.emitted, len(messages))
         return rendered
 
     def _recompute_usage(self, messages: list[Any]) -> None:
         input_tokens = output_tokens = cache_tokens = 0
-        any_tokens = False
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -474,15 +471,17 @@ class MiniSweUsageFold:
             input_tokens += prompt
             output_tokens += completion
             cache_tokens += cached
-            if prompt or completion:
-                any_tokens = True
+        prior = self._totals.input_tokens + self._totals.output_tokens
+        if input_tokens + output_tokens < prior:
+            return
         self._totals = UsageTotals(
             input_tokens=input_tokens,
             cache_tokens=cache_tokens,
             output_tokens=output_tokens,
             model=self.model,
         )
-        self._has_usage = any_tokens
+        if input_tokens or output_tokens:
+            self._has_usage = True
 
     def _render_message(
         self, message: dict[str, Any], *, is_task: bool
