@@ -283,6 +283,24 @@ async def live_bump_totals_by_user(
     }
 
 
+async def live_bump_totals_by_org_user_all_orgs(
+    session: AsyncSession,
+) -> dict[tuple[str | None, str], Decimal]:
+    """Live bump totals keyed the same way admission checks limits."""
+    rows = await session.execute(
+        text(
+            "SELECT org_id, user_id, COALESCE(SUM(amount_usd), 0) "
+            "FROM quota_bumps "
+            f"WHERE {_LIVE_BUMP} "
+            "GROUP BY org_id, user_id"
+        )
+    )
+    return {
+        (org_id, user_id): to_money_decimal(total)
+        for org_id, user_id, total in rows.all()
+    }
+
+
 async def get_base_limit(
     session: AsyncSession, org_id: str | None, user_id: str
 ) -> Decimal:

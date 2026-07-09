@@ -9,7 +9,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pytest_asyncio
 
-from models import OrganizationModel, OrgQuotaModel, QuotaModel, UserModel
+from models import (
+    OrganizationModel,
+    OrgQuotaModel,
+    QuotaBumpModel,
+    QuotaModel,
+    UserModel,
+)
 from oddish.config import settings
 from oddish.core.admin import get_cost_breakdown_core
 from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
@@ -266,10 +272,18 @@ async def test_quota_spent_and_limit(global_costs_fixture):
         session.add(
             QuotaModel(org_id=f.org_id, user_id=f.target.id, limit_usd=42)
         )
+        session.add(
+            QuotaBumpModel(
+                org_id=f.org_id,
+                user_id=f.target.id,
+                amount_usd=8,
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
     async with get_session() as session:
         result = await get_cost_breakdown_core(session, window_days=7)
     row = _user_row(result, f.target.id)
-    assert row.quota_limit_usd == pytest.approx(42.0)
+    assert row.quota_limit_usd == pytest.approx(50.0)
     assert row.quota_spent_usd == pytest.approx(1.50)
     other_row = _user_row(result, f.other.id)
     assert other_row.quota_limit_usd is not None

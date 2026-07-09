@@ -17,6 +17,7 @@ from oddish.core.quotas import (
     effective_limits_by_org_user_all_orgs,
     get_effective_org_limit,
     inflight_trial_count_by_org_user_all_orgs,
+    live_bump_totals_by_org_user_all_orgs,
     quota_window_start,
     sum_cost_usd_by_org_user_all_orgs,
 )
@@ -1973,6 +1974,7 @@ async def get_cost_breakdown_core(
     quota_start = quota_window_start(now)
     quota_spent = await sum_cost_usd_by_org_user_all_orgs(session, quota_start)
     quota_limits = await effective_limits_by_org_user_all_orgs(session)
+    quota_bumps = await live_bump_totals_by_org_user_all_orgs(session)
     inflight_counts = await inflight_trial_count_by_org_user_all_orgs(session)
 
     user_rows = sorted(by_user.values(), key=lambda u: u["cost_usd"], reverse=True)[
@@ -2006,12 +2008,12 @@ async def get_cost_breakdown_core(
             ),
             inflight_trial_count=(
                 inflight_counts.get((u["org_id"], u["real_user_id"]), 0)
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else 0
             ),
             quota_spent_usd=(
                 float(quota_spent.get((u["org_id"], u["real_user_id"]), 0.0))
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else None
             ),
             quota_limit_usd=(
@@ -2020,8 +2022,9 @@ async def get_cost_breakdown_core(
                         (u["org_id"], u["real_user_id"]),
                         settings.default_daily_quota_usd,
                     )
+                    + quota_bumps.get((u["org_id"], u["real_user_id"]), 0)
                 )
-                if u["all_billed"] and u["real_user_id"]
+                if u["real_user_id"]
                 else None
             ),
         )
