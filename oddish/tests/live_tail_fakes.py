@@ -37,12 +37,12 @@ def make_tailer(env, agent="claude-code", model=None, trial_id="t1", attempt=0):
         attempt=attempt,
         log_path=adapter.log_path,
         fold=adapter.make_fold(model),
-        mode=adapter.mode,
+        snapshot=adapter.snapshot,
     )
 
 
 def b64_raw(raw: bytes) -> FakeResult:
-    """A snapshot-mode tick response: base64 with no size-prefix line."""
+    """Snapshot tick reply: base64 with no size line."""
     return FakeResult(stdout=base64.b64encode(raw).decode())
 
 

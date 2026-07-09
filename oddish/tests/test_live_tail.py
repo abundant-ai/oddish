@@ -122,7 +122,7 @@ def test_adapter_dispatch():
     assert not live_tail.supports(None)
     claude = live_tail._adapter_for("glm-claude-code")
     assert claude.log_path == "/logs/agent/claude-code.txt"
-    assert claude.mode == "append"
+    assert claude.snapshot is False
     assert isinstance(claude.make_fold(None), ClaudeUsageFold)
     codex = live_tail._adapter_for("codex")
     assert live_tail._adapter_for("codex-api-key-no-search") is codex
@@ -132,11 +132,11 @@ def test_adapter_dispatch():
     cursor = live_tail._adapter_for("cursor-cli")
     assert live_tail._adapter_for("cursor-cli-api-key-no-search") is cursor
     assert cursor.log_path == "/logs/agent/cursor-cli.txt"
-    assert cursor.mode == "append"
+    assert cursor.snapshot is False
     assert isinstance(cursor.make_fold("m"), CursorUsageFold)
     mini = live_tail._adapter_for("mini-swe-agent")
     assert mini.log_path == "/logs/agent/mini-swe-agent.trajectory.json"
-    assert mini.mode == "snapshot"
+    assert mini.snapshot is True
     assert isinstance(mini.make_fold("m"), MiniSweUsageFold)
 
 
@@ -443,7 +443,6 @@ def test_cursor_fold_renders_display_kinds():
     assert fold.feed_line(
         cursor_line({"type": "thinking", "subtype": "completed", "text": "pondering"})
     ) == [{"kind": "message", "payload": {"text": "pondering"}}]
-    # streaming delta thinking is skipped to avoid flooding the transcript
     assert (
         fold.feed_line(
             cursor_line({"type": "thinking", "subtype": "delta", "text": "part"})
@@ -469,7 +468,6 @@ def test_cursor_fold_renders_display_kinds():
         },
         {"kind": "tool_result", "payload": {"content": "out"}},
     ]
-    # a "started" tool_call is redundant with "completed" and is dropped
     assert (
         fold.feed_line(
             cursor_line(
@@ -511,7 +509,6 @@ def test_cursor_fold_sums_result_usage():
     assert fold.feed_line(result(20, 4, 1, 6)) == []
     assert fold.has_usage
     totals = fold.totals()
-    # cache-inclusive input total = raw input + cache read + cache write
     assert totals.input_tokens == (10 + 20) + (5 + 4) + (2 + 1)
     assert totals.cache_tokens == 5 + 4
     assert totals.cache_write_tokens == 2 + 1
@@ -610,7 +607,6 @@ def test_mini_swe_fold_emits_new_messages_only():
             "payload": {"input": json.dumps({"command": "ls"}), "name": "bash"},
         },
     ]
-    # re-reading the same snapshot yields nothing new
     assert (
         fold.feed_line(
             mini_trajectory(
@@ -623,7 +619,6 @@ def test_mini_swe_fold_emits_new_messages_only():
         )
         == []
     )
-    # a grown snapshot emits only the appended messages
     grown = fold.feed_line(
         mini_trajectory(
             [
@@ -673,7 +668,6 @@ def test_mini_swe_fold_accumulates_usage_from_snapshot():
     assert totals.input_tokens == 150
     assert totals.cache_tokens == 60
     assert totals.output_tokens == 15
-    # model is picked up from the trajectory config, overriding the seed
     assert totals.model == "anthropic/claude-opus-4-8"
 
 
