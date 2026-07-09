@@ -6,12 +6,15 @@ import logging
 import mimetypes
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import MutableMapping, TypeVar
 
 from fastapi import HTTPException
 from harbor.models.trial.paths import TrialPaths
 from harbor.viewer.scanner import JobScanner
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.db import TrialModel, get_storage_client
@@ -30,10 +33,12 @@ _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[str, tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
-_TRAJECTORY_GRAPH_CACHE: dict[str, tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
+# Per-trial generation lock so two concurrent POSTs don't both compute the same
+# graph. Process-local (each Modal container has its own) — a cross-container
+# race just costs a duplicate build; the JSONB write is idempotent.
 _TRAJECTORY_GRAPH_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
 
@@ -678,36 +683,50 @@ def _trial_graph_ctx(trial: TrialModel) -> dict:
     }
 
 
-async def read_trial_trajectory_graph(
+def _graph_is_fresh(graph: dict | None) -> bool:
+    from oddish.analyze.trajectory_graph import GRAPH_SCHEMA_VERSION
+
+    return (
+        isinstance(graph, dict)
+        and graph.get("schema_version") == GRAPH_SCHEMA_VERSION
+    )
+
+
+def read_persisted_trajectory_graph(trial: TrialModel) -> dict | None:
+    """Return the stored agent graph for a trial, or None if absent/stale.
+
+    Pure read of ``trials.trajectory_graph`` — never generates. The GET endpoint
+    uses this so viewing the tab has no LLM cost; generation is an explicit POST.
+    """
+    graph = trial.trajectory_graph
+    return graph if _graph_is_fresh(graph) else None
+
+
+async def generate_and_store_trajectory_graph(
+    session: AsyncSession,
     trial: TrialModel,
     *,
     refresh: bool = False,
     summary: dict | None = None,
 ) -> dict:
-    """Summarize a trial's ATIF trajectory into a condensed step graph.
+    """Generate the condensed agent step-graph and persist it on the trial.
 
     Reads the trajectory (S3 or local fallback) and distills it into a handful
     of general phases plus a terminal node whose outcome is computed from the
     trial's own status/reward/error (see ``analyze.trajectory_graph``). When a
     ``summary`` (the shipped ``trajectory_summary`` dict) is supplied, its phase
     segmentation is reused as the graph's steps; otherwise a dedicated
-    ``settings.analysis_model`` pass (or a heuristic) segments the run. Cached
-    per trial like the trajectory itself; ``refresh=True`` recomputes.
+    ``settings.analysis_model`` pass (or a heuristic) segments the run. The
+    result is written to ``trials.trajectory_graph`` and returned. ``refresh``
+    forces regeneration even when a fresh graph is already stored.
     """
     from oddish.analyze.trajectory_graph import build_trajectory_graph
 
-    cache_key = trial.id
-    if not refresh and _should_cache_trial(trial):
-        cached = _cache_get(_TRAJECTORY_GRAPH_CACHE, cache_key)
-        if cached is not None:
-            return cached  # type: ignore[return-value]
-
-    lock = _get_lock(_TRAJECTORY_GRAPH_LOCKS, cache_key)
+    lock = _get_lock(_TRAJECTORY_GRAPH_LOCKS, trial.id)
     async with lock:
-        if not refresh and _should_cache_trial(trial):
-            cached = _cache_get(_TRAJECTORY_GRAPH_CACHE, cache_key)
-            if cached is not None:
-                return cached  # type: ignore[return-value]
+        # Re-check inside the lock — another coroutine may have populated it.
+        if not refresh and _graph_is_fresh(trial.trajectory_graph):
+            return trial.trajectory_graph  # type: ignore[return-value]
 
         trajectory = await read_trial_trajectory(trial)
         graph = await build_trajectory_graph(
@@ -716,8 +735,14 @@ async def read_trial_trajectory_graph(
             model=settings.analysis_model,
             summary=summary,
         )
-        if _should_cache_trial(trial):
-            _cache_set(_TRAJECTORY_GRAPH_CACHE, cache_key, graph)
+        graph["generated_at"] = datetime.now(timezone.utc).isoformat()
+
+        await session.execute(
+            update(TrialModel)
+            .where(TrialModel.id == trial.id)
+            .values(trajectory_graph=graph)
+        )
+        await session.commit()
         return graph
 
 

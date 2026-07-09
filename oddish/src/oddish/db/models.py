@@ -878,6 +878,11 @@ class TrialModel(TimestampedMixin, Base):
         JSONB, nullable=True
     )
 
+    # Condensed agent step-graph of the trajectory (general phases + terminal
+    # outcome node), populated on explicit request to
+    # POST /trials/{id}/trajectory/graph. Reuses trajectory_summary's phases.
+    trajectory_graph: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # Analysis data (LLM analysis of this trial)
     analysis: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     analysis_status: Mapped[AnalysisStatus | None] = mapped_column(

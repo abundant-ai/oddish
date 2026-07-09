@@ -11,9 +11,8 @@ import {
   Ban,
   Loader2,
   RefreshCw,
-  Copy,
-  Check,
   GitBranch,
+  Sparkles,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +30,13 @@ interface TrajectoryGraphViewProps {
   trialId: string;
   hasTrajectory?: boolean;
   apiBaseUrl?: string;
+}
+
+// GET returns either a stored graph or a not-generated marker.
+type GraphResponse = TrajectoryGraph | { status: "not_generated" };
+
+function isGraph(data: GraphResponse | null | undefined): data is TrajectoryGraph {
+  return !!data && "steps" in data;
 }
 
 const STEP_STYLE: Record<
@@ -96,85 +102,40 @@ const OUTCOME_STYLE: Record<
   },
 };
 
-// Escape a label for a mermaid node body (quotes, brackets, newlines break the parse).
-function mmLabel(text: string): string {
-  return (text || "")
-    .replace(/["[\]{}|]/g, "")
-    .replace(/\n+/g, " ")
-    .slice(0, 80);
-}
-
-function buildMermaid(graph: TrajectoryGraph): string {
-  const lines: string[] = ["flowchart TD"];
-  const nodeIds: string[] = [];
-  graph.steps.forEach((s, i) => {
-    const id = `s${i}`;
-    nodeIds.push(id);
-    lines.push(`  ${id}["${mmLabel(s.title)}"]`);
-  });
-  const t = graph.terminal;
-  const termLabel = mmLabel(
-    `${OUTCOME_STYLE[t.outcome]?.label ?? t.outcome}: ${t.last_action}`,
-  );
-  lines.push(`  term{{"${termLabel}"}}`);
-  const chain = [...nodeIds, "term"];
-  for (let i = 0; i < chain.length - 1; i++) {
-    lines.push(`  ${chain[i]} --> ${chain[i + 1]}`);
-  }
-  // Status styling.
-  graph.steps.forEach((s, i) => {
-    if (s.status === "warn") lines.push(`  class s${i} warn`);
-    if (s.status === "error") lines.push(`  class s${i} err`);
-  });
-  const termClass =
-    t.outcome === "success"
-      ? "pass"
-      : t.outcome === "timeout" || t.outcome === "running"
-        ? "warn"
-        : "err";
-  lines.push(`  class term ${termClass}`);
-  lines.push("  classDef warn fill:#78350f22,stroke:#f59e0b");
-  lines.push("  classDef err fill:#7f1d1d22,stroke:#ef4444");
-  lines.push("  classDef pass fill:#064e3b22,stroke:#10b981");
-  return lines.join("\n");
-}
-
 export function TrajectoryGraphView({
   trialId,
   hasTrajectory,
   apiBaseUrl = "/api",
 }: TrajectoryGraphViewProps) {
-  const [refreshing, setRefreshing] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
 
-  const { data, error, isLoading, mutate } = useSWR<TrajectoryGraph | null>(
+  const { data, error, isLoading, mutate } = useSWR<GraphResponse | null>(
     `${apiBaseUrl}/trials/${trialId}/trajectory/graph`,
     fetcher,
     { revalidateOnFocus: false },
   );
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
+  const generate = async (refresh: boolean) => {
+    setGenerating(true);
+    setGenError(null);
     try {
-      const res = await fetcher<TrajectoryGraph>(
-        `${apiBaseUrl}/trials/${trialId}/trajectory/graph?refresh=true`,
+      const res = await fetch(
+        `${apiBaseUrl}/trials/${trialId}/trajectory/graph${
+          refresh ? "?refresh=true" : ""
+        }`,
+        { method: "POST", credentials: "include" },
       );
-      await mutate(res, { revalidate: false });
-    } catch {
-      // keep the current graph on failure
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || body?.error || `HTTP ${res.status}`);
+      }
+      const graph = (await res.json()) as TrajectoryGraph;
+      await mutate(graph, { revalidate: false });
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Generation failed");
     } finally {
-      setRefreshing(false);
-    }
-  };
-
-  const handleCopyMermaid = async () => {
-    if (!data) return;
-    try {
-      await navigator.clipboard.writeText(buildMermaid(data));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard blocked; ignore
+      setGenerating(false);
     }
   };
 
@@ -184,7 +145,6 @@ export function TrajectoryGraphView({
         <Skeleton className="h-6 w-2/3" />
         <Skeleton className="h-16 w-full" />
         <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
       </div>
     );
   }
@@ -192,23 +152,43 @@ export function TrajectoryGraphView({
   if (error) {
     return (
       <div className="text-muted-foreground p-6 text-sm">
-        Could not build the agent graph for this trial.
+        Could not load the agent graph for this trial.
       </div>
     );
   }
 
-  if (!data || !data.steps?.length) {
+  // Not generated yet: show the manual trigger (unless there's no trajectory).
+  if (!isGraph(data)) {
+    if (hasTrajectory === false) {
+      return (
+        <div className="text-muted-foreground flex flex-col items-center gap-2 p-10 text-sm">
+          <GitBranch className="h-6 w-6 opacity-50" />
+          This trial has no trajectory to summarize.
+        </div>
+      );
+    }
     return (
-      <div className="text-muted-foreground flex flex-col items-center gap-2 p-10 text-sm">
-        <GitBranch className="h-6 w-6 opacity-50" />
-        {hasTrajectory === false
-          ? "This trial has no trajectory to summarize."
-          : "No agent graph available yet."}
+      <div className="flex flex-col items-center gap-3 p-10 text-center">
+        <GitBranch className="text-muted-foreground/50 h-7 w-7" />
+        <p className="text-muted-foreground max-w-sm text-sm">
+          Condense this trial&apos;s trajectory into a graph of the general
+          phases the agent moved through and where it ended.
+        </p>
+        <Button size="sm" onClick={() => generate(false)} disabled={generating}>
+          {generating ? (
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="mr-1.5 h-4 w-4" />
+          )}
+          {generating ? "Generating..." : "Generate agent graph"}
+        </Button>
+        {genError && <p className="text-xs text-red-500">{genError}</p>}
       </div>
     );
   }
 
-  const outcome = OUTCOME_STYLE[data.terminal.outcome] ?? OUTCOME_STYLE.error;
+  const graph = data;
+  const outcome = OUTCOME_STYLE[graph.terminal.outcome] ?? OUTCOME_STYLE.error;
 
   return (
     <div className="p-4 sm:p-6">
@@ -216,53 +196,38 @@ export function TrajectoryGraphView({
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-foreground text-sm leading-relaxed font-medium">
-            {data.headline}
+            {graph.headline}
           </p>
           <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
             <Badge variant="outline" className={cn("gap-1", outcome.tone)}>
               {outcome.label}
             </Badge>
             <span>
-              {data.steps.length} phase{data.steps.length !== 1 ? "s" : ""}
+              {graph.steps.length} phase{graph.steps.length !== 1 ? "s" : ""}
             </span>
-            {data.num_steps != null && (
-              <span>· {data.num_steps} trajectory steps</span>
+            {graph.num_steps != null && (
+              <span>· {graph.num_steps} trajectory steps</span>
             )}
-            <span>· {data.source === "heuristic" ? "heuristic" : "AI summary"}</span>
+            <span>· {graph.source === "heuristic" ? "heuristic" : "AI summary"}</span>
           </div>
         </div>
-        <div className="flex items-center gap-1">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={handleCopyMermaid}
-          >
-            {copied ? (
-              <Check className="h-3.5 w-3.5" />
-            ) : (
-              <Copy className="h-3.5 w-3.5" />
-            )}
-            Mermaid
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 gap-1 text-xs"
-            onClick={handleRefresh}
-            disabled={refreshing}
-          >
-            <RefreshCw
-              className={cn("h-3.5 w-3.5", refreshing && "animate-spin")}
-            />
-            Rebuild
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 text-xs"
+          onClick={() => generate(true)}
+          disabled={generating}
+        >
+          <RefreshCw className={cn("h-3.5 w-3.5", generating && "animate-spin")} />
+          Rebuild
+        </Button>
       </div>
+
+      {genError && <p className="mb-3 text-xs text-red-500">{genError}</p>}
 
       {/* Flow graph */}
       <div className="mx-auto flex max-w-2xl flex-col items-stretch">
-        {data.steps.map((step, i) => {
+        {graph.steps.map((step, i) => {
           const style = STEP_STYLE[step.status] ?? STEP_STYLE.ok;
           return (
             <div key={step.id ?? i} className="flex flex-col items-center">
@@ -305,12 +270,12 @@ export function TrajectoryGraphView({
                     {outcome.label}
                   </span>
                   <span className="text-muted-foreground text-xs">
-                    {data.terminal.last_action}
+                    {graph.terminal.last_action}
                   </span>
                 </div>
-                {data.terminal.reason && (
+                {graph.terminal.reason && (
                   <p className="text-muted-foreground/90 mt-1 text-xs leading-relaxed">
-                    {data.terminal.reason}
+                    {graph.terminal.reason}
                   </p>
                 )}
               </div>

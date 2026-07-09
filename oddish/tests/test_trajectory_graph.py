@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from oddish.analyze import trajectory_graph as tg
+from oddish.core import trial_io
+from oddish.db.models import TrialModel
 
 
 def _traj():
@@ -142,3 +145,92 @@ def test_normalize_coerces_bad_llm_output():
     assert g["steps"][0]["id"] == "s0"
     # authoritative outcome is stamped regardless of what the LLM said
     assert g["terminal"]["outcome"] == tg.OUTCOME_FAILURE
+
+
+# --- persistence layer ---
+
+
+def test_trajectory_graph_column_is_mapped():
+    trial = TrialModel()
+    assert "trajectory_graph" in TrialModel.__table__.columns
+    assert trial.trajectory_graph is None
+    payload = {"schema_version": tg.GRAPH_SCHEMA_VERSION, "steps": [], "terminal": {}}
+    trial.trajectory_graph = payload
+    assert trial.trajectory_graph == payload
+
+
+def test_read_persisted_only_returns_fresh():
+    trial = SimpleNamespace(trajectory_graph=None)
+    assert trial_io.read_persisted_trajectory_graph(trial) is None
+
+    trial.trajectory_graph = {"schema_version": "0", "steps": []}  # stale
+    assert trial_io.read_persisted_trajectory_graph(trial) is None
+
+    fresh = {"schema_version": tg.GRAPH_SCHEMA_VERSION, "steps": [{"id": "s0"}]}
+    trial.trajectory_graph = fresh
+    assert trial_io.read_persisted_trajectory_graph(trial) == fresh
+
+
+class _FakeSession:
+    def __init__(self):
+        self.committed = False
+        self.executed = []
+
+    async def execute(self, stmt):
+        self.executed.append(stmt)
+
+    async def commit(self):
+        self.committed = True
+
+
+def test_generate_and_store_persists_and_stamps(monkeypatch):
+    async def _fake_read_trajectory(trial):
+        return {
+            "steps": [
+                {"step_id": "1", "source": "agent", "tool_calls": [{"function_name": "bash"}]},
+            ]
+        }
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _fake_read_trajectory)
+
+    trial = SimpleNamespace(
+        id="trial-1",
+        status="success",
+        reward=0.0,
+        error_message=None,
+        name="demo/task",
+        agent="codex",
+        trajectory_graph=None,
+    )
+    session = _FakeSession()
+    graph = asyncio.run(
+        trial_io.generate_and_store_trajectory_graph(session, trial)
+    )
+    assert graph["schema_version"] == tg.GRAPH_SCHEMA_VERSION
+    assert graph["terminal"]["outcome"] == tg.OUTCOME_FAILURE
+    assert "generated_at" in graph
+    assert session.committed is True
+    assert len(session.executed) == 1
+
+
+def test_generate_returns_cached_when_fresh_and_not_refresh(monkeypatch):
+    calls = {"n": 0}
+
+    async def _fake_read_trajectory(trial):
+        calls["n"] += 1
+        return {"steps": []}
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _fake_read_trajectory)
+
+    fresh = {"schema_version": tg.GRAPH_SCHEMA_VERSION, "steps": [], "terminal": {}}
+    trial = SimpleNamespace(
+        id="trial-2", status="success", reward=1.0, error_message=None,
+        name="t", agent="a", trajectory_graph=fresh,
+    )
+    session = _FakeSession()
+    graph = asyncio.run(
+        trial_io.generate_and_store_trajectory_graph(session, trial)
+    )
+    assert graph is fresh
+    assert calls["n"] == 0  # short-circuited, no trajectory read
+    assert session.committed is False

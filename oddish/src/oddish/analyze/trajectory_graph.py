@@ -27,6 +27,10 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Bump when the graph shape changes so persisted graphs are regenerated on read
+# (see ``core.trial_io._graph_is_fresh``).
+GRAPH_SCHEMA_VERSION = "1"
+
 # Terminal outcomes. Kept in sync with the frontend renderer's node styling.
 OUTCOME_SUCCESS = "success"
 OUTCOME_FAILURE = "failure"
@@ -365,6 +369,7 @@ def _normalize_graph(
 
 
 def _finalize(graph: dict[str, Any], ctx: dict[str, Any], outcome: str) -> dict[str, Any]:
+    graph["schema_version"] = GRAPH_SCHEMA_VERSION
     graph["terminal"]["outcome"] = outcome
     graph["source"] = graph.get("source", "llm")
     graph["model"] = ctx.get("model")
