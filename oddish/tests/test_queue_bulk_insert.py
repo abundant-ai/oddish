@@ -125,9 +125,9 @@ async def test_recompute_called_once_on_create(monkeypatch, cleanup_task_ids):
             session, _submission("create-once", n_trials=2), task_id=task_id
         )
 
-    assert calls == [
-        task_id
-    ], f"expected a single create-path recompute, got {len(calls)}: {calls}"
+    assert calls == [task_id], (
+        f"expected a single create-path recompute, got {len(calls)}: {calls}"
+    )
 
 
 @pytest.mark.asyncio

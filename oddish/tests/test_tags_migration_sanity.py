@@ -260,9 +260,9 @@ def test_six_bugfixed_columns_keep_their_server_defaults():
     for table, cols in fixed.items():
         declared = set(_migration_default_columns(src, table))
         for col in cols:
-            assert (
-                col in declared
-            ), f"{table}.{col} is no longer parsed as a DEFAULT column"
+            assert col in declared, (
+                f"{table}.{col} is no longer parsed as a DEFAULT column"
+            )
             assert (
                 Base.metadata.tables[table].columns[col].server_default is not None
             ), f"{table}.{col} lost its server_default (regression of the fix)"

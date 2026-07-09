@@ -135,7 +135,9 @@ async def test_classifier_skips_deleted_trial(monkeypatch):
     deleted_trial = _billable_trial(deleted_at="2026-07-02", analysis_status=None)
 
     @asynccontextmanager
-    async def fake_trial_session(trial_id, *, allow_missing=False, with_for_update=False):
+    async def fake_trial_session(
+        trial_id, *, allow_missing=False, with_for_update=False
+    ):
         yield object(), deleted_trial
 
     monkeypatch.setattr(analysis_handler, "_trial_session", fake_trial_session)
@@ -391,9 +393,7 @@ async def test_reaper_skips_trial_row_locked_by_another_session(monkeypatch, ses
     try:
         async with _conn.async_session_maker() as locker:
             await locker.execute(
-                sa_select(TrialModel)
-                .where(TrialModel.id == trial_id)
-                .with_for_update()
+                sa_select(TrialModel).where(TrialModel.id == trial_id).with_for_update()
             )
             # The reaper CASes the stale worker_jobs row, then must SKIP the
             # locked trial row instead of blocking on it (deadlock risk).
@@ -410,9 +410,7 @@ async def test_reaper_skips_trial_row_locked_by_another_session(monkeypatch, ses
         # savepoint), so the whole unit is retried next sweep -- no terminal
         # job stranded next to a live trial.
         job_status = await session.scalar(
-            sa_text(
-                "SELECT status::text FROM worker_jobs WHERE subject_id = :tid"
-            ),
+            sa_text("SELECT status::text FROM worker_jobs WHERE subject_id = :tid"),
             {"tid": trial_id},
         )
         assert job_status == "RUNNING"

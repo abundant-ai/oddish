@@ -14,7 +14,7 @@ def generate_api_key() -> str:
     app_name = os.environ.get("MODAL_APP_NAME", "")
     env_marker = ""
     if app_name.startswith("oddish-pr-"):
-        env_marker = f"{app_name[len('oddish-'):]}_"
+        env_marker = f"{app_name[len('oddish-') :]}_"
     return f"ok_{env_marker}{secrets.token_hex(16)}"
 
 

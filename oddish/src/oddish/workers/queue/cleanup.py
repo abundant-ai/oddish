@@ -624,9 +624,7 @@ async def _reap_stale_worker_jobs(
                 if row is None:
                     continue  # another actor already progressed this job
 
-                committed_trial_id = await _mirror_stale_job_to_domain_row(
-                    session, row
-                )
+                committed_trial_id = await _mirror_stale_job_to_domain_row(session, row)
                 # Flush this job's mirror WITHIN its own savepoint so the unit
                 # is explicitly atomic and independent of ``begin_nested``'s
                 # autoflush-on-enter timing (which, if it ever changed, could
@@ -1005,7 +1003,11 @@ async def _unwedge_stuck_analyzing(session) -> tuple[int, int, int]:
             f"finalized={stuck_analyzing_finalized} "
             f"analysis_nulls_failed={stuck_analysis_nulls_failed}"
         )
-    return stuck_analyzing_advanced, stuck_analyzing_finalized, stuck_analysis_nulls_failed
+    return (
+        stuck_analyzing_advanced,
+        stuck_analyzing_finalized,
+        stuck_analysis_nulls_failed,
+    )
 
 
 async def _release_orphaned_slots(session) -> int:
