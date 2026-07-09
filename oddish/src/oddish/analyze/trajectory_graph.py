@@ -228,9 +228,48 @@ _OUTCOME_HINT = {
     OUTCOME_RUNNING: "The trial is still RUNNING.",
 }
 
+# The last failing line the grader printed — a cheap, deterministic reason for
+# the non-LLM paths (summary reuse / heuristic) so the terminal isn't generic.
+_FAIL_LINE_MARKERS = (
+    "fail",
+    "error",
+    "assert",
+    "expected",
+    "traceback",
+    "exception",
+    "not ok",
+    "✗",
+)
+
+
+def _grounded_reason(ctx: dict[str, Any], outcome: str) -> str:
+    reason = _OUTCOME_HINT.get(outcome, outcome)
+    if outcome not in (OUTCOME_FAILURE, OUTCOME_TIMEOUT):
+        return reason
+    verifier = ctx.get("verifier_output")
+    if not verifier:
+        return reason
+    # Surface the last grader line that reads like a failure.
+    lines = [ln.strip() for ln in str(verifier).splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        low = ln.lower()
+        if any(m in low for m in _FAIL_LINE_MARKERS):
+            return f"{reason} Grader: {_clip(ln, 200)}"
+    return reason
+
+
+def _verifier_snippet(text: Any, limit: int = 1200) -> str:
+    """The tail of the verifier output — where pass/fail + assertions land."""
+    if not text:
+        return ""
+    s = str(text).strip()
+    return s if len(s) <= limit else "…" + s[-(limit - 1):]
+
 
 def _build_prompt(ctx: dict[str, Any], outcome: str, transcript: str) -> str:
     n_steps = ctx.get("num_steps")
+    instruction = _clip(ctx.get("task_instruction"), 1600)
+    verifier = _verifier_snippet(ctx.get("verifier_output"))
     return (
         "You are summarizing what an autonomous coding/ops agent did on ONE trial "
         "of a benchmark task, so a reviewer can understand the run at a glance "
@@ -238,13 +277,16 @@ def _build_prompt(ctx: dict[str, Any], outcome: str, transcript: str) -> str:
         "Produce a SMALL graph of the GENERAL phases the agent moved through -- not "
         "one node per tool call. Aim for 3 to 8 phases. Each phase is a chunk of "
         "related work (e.g. 'Explore the repo', 'Reproduce the failure', 'Patch the "
-        "handler', 'Run the tests'). Tag each phase:\n"
-        "  ok   = proceeded fine\n"
+        "handler', 'Run the tests'). Judge each phase AGAINST THE TASK GOAL below, "
+        "not just against whether the agent's own commands succeeded. Tag each phase:\n"
+        "  ok   = made real progress toward the goal\n"
         "  warn = hit a snag but recovered / worked around it\n"
-        "  error= this is where it went wrong (wrong hypothesis, broke something, got stuck)\n\n"
+        "  error= this is where it went wrong relative to the goal (wrong hypothesis, "
+        "chased a red herring, broke something, got stuck)\n\n"
         "Then a TERMINAL: the last concrete thing the agent did, and one sentence on "
-        "why the run ended. Ground the terminal in the known outcome below -- do not "
-        "contradict it.\n\n"
+        "why the run ended. Ground the terminal in the known outcome AND, when the run "
+        "failed, in the grader output below -- name the specific check that failed. Do "
+        "not contradict the known outcome.\n\n"
         f"## Known outcome (authoritative)\n{_OUTCOME_HINT.get(outcome, outcome)}\n"
         f"Task: {ctx.get('task_name') or 'unknown'}\n"
         f"Agent: {ctx.get('agent_name') or 'unknown'}\n"
@@ -253,6 +295,16 @@ def _build_prompt(ctx: dict[str, Any], outcome: str, transcript: str) -> str:
         + (
             f"Error message: {_clip(ctx.get('error_message'), 400)}\n"
             if ctx.get("error_message")
+            else ""
+        )
+        + (
+            f"\n## Task goal (instruction the agent was given)\n{instruction}\n"
+            if instruction
+            else ""
+        )
+        + (
+            f"\n## Grader output (verifier stdout — why it passed/failed)\n{verifier}\n"
+            if verifier
             else ""
         )
         + "\n## Trajectory (condensed, one line per step)\n"
@@ -307,7 +359,7 @@ def _heuristic_graph(
         "steps": steps,
         "terminal": {
             "last_action": _last_action(digest),
-            "reason": _OUTCOME_HINT.get(outcome, outcome),
+            "reason": _grounded_reason(ctx, outcome),
         },
         "source": "heuristic",
     }
@@ -362,7 +414,7 @@ def _normalize_graph(
         "steps": steps,
         "terminal": {
             "last_action": _clip(terminal_in.get("last_action") or _last_action(digest), 160),
-            "reason": _clip(terminal_in.get("reason"), 240) or _OUTCOME_HINT.get(outcome, outcome),
+            "reason": _clip(terminal_in.get("reason"), 240) or _grounded_reason(ctx, outcome),
         },
     }
     return _finalize(graph, ctx, outcome)
@@ -506,7 +558,7 @@ def _graph_from_summary(
         "steps": steps,
         "terminal": {
             "last_action": last_action,
-            "reason": _OUTCOME_HINT.get(outcome, outcome),
+            "reason": _grounded_reason(ctx, outcome),
         },
         "source": "summary",
     }
@@ -523,7 +575,10 @@ async def build_trajectory_graph(
 
     ``trajectory`` is the parsed ATIF dict (or None when the trial has no
     trajectory). ``ctx`` carries the authoritative trial fields:
-    ``status, reward, error_message, task_name, agent_name, num_steps``.
+    ``status, reward, error_message, task_name, agent_name, num_steps`` and,
+    when available, the grounding context ``task_instruction`` (the goal) and
+    ``verifier_output`` (the grader stdout) so phases are judged against the
+    goal and the terminal names the failing check.
     ``summary`` is the shipped ``trajectory_summary`` dict when available -- its
     phases are reused as the graph's steps (no extra LLM call). Without it, a
     dedicated LLM pass (``model``) segments the run, and failing that a
