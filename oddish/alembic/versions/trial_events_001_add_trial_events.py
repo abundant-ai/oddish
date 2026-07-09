@@ -1,7 +1,7 @@
 """add trial_events table
 
 Revision ID: trial_events_001
-Revises: org_quota_idx_001
+Revises: trajsum_001
 Create Date: 2026-07-07 00:00:00.000000
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "trial_events_001"
-down_revision: Union[str, Sequence[str], None] = "org_quota_idx_001"
+down_revision: Union[str, Sequence[str], None] = "trajsum_001"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
