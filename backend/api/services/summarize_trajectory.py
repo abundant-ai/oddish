@@ -189,6 +189,56 @@ def _render_prompt(trajectory: dict, task_context: "TaskContext") -> str:
     )
 
 
+def _normalize_phases(
+    raw_phases: Any, ordered_step_ids: list[int]
+) -> list[dict]:
+    """Coalesce model-emitted phase assignments into contiguous ordered segments.
+
+    Each step in ``ordered_step_ids`` is mapped to a phase label from
+    ``raw_phases`` (a list of ``{label, step_ids, gist}``); an untagged step
+    carries forward the previous label. Consecutive steps sharing a label merge
+    into one segment. Returns ``[]`` when nothing usable was provided. A label
+    may recur in non-adjacent segments — that recurrence is meaningful.
+    """
+    if not isinstance(raw_phases, list) or not ordered_step_ids:
+        return []
+
+    valid = set(ordered_step_ids)
+    label_by_step: dict[int, str] = {}
+    gist_by_label: dict[str, str] = {}
+    for entry in raw_phases:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("label") or "").strip()
+        if not label:
+            continue
+        gist = str(entry.get("gist") or "").strip()
+        if gist and label not in gist_by_label:
+            gist_by_label[label] = gist
+        step_ids = entry.get("step_ids")
+        if not isinstance(step_ids, list):
+            continue
+        for sid in step_ids:
+            if isinstance(sid, int) and sid in valid and sid not in label_by_step:
+                label_by_step[sid] = label
+
+    if not label_by_step:
+        return []
+
+    segments: list[dict] = []
+    prev_label: str | None = None
+    for sid in ordered_step_ids:
+        label = label_by_step.get(sid) or prev_label or "Untagged"
+        prev_label = label
+        if segments and segments[-1]["label"] == label:
+            segments[-1]["step_ids"].append(sid)
+        else:
+            segments.append(
+                {"label": label, "gist": gist_by_label.get(label, ""), "step_ids": [sid]}
+            )
+    return segments
+
+
 async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
     """Call Claude to produce a persistable summary dict for ``trajectory``.
 
