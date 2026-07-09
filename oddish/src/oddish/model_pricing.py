@@ -179,8 +179,14 @@ def _find_pricing(model_name: str) -> ModelPricing | None:
     return _find_litellm_pricing(model_name) or _find_local_pricing(model_name)
 
 
+def get_model_pricing(model_name: str | None) -> ModelPricing | None:
+    if not model_name:
+        return None
+    return _find_pricing(model_name)
+
+
 def has_pricing(model_name: str | None) -> bool:
-    return bool(model_name and _find_pricing(model_name) is not None)
+    return get_model_pricing(model_name) is not None
 
 
 def estimate_cost_usd(
@@ -197,7 +203,7 @@ def estimate_cost_usd(
     cache_write = max(0, int(cache_write_tokens or 0))
     if not (input_total or output_total or cache_write):
         return None
-    pricing = _find_pricing(model_name)
+    pricing = get_model_pricing(model_name)
     if pricing is None:
         return None
 
