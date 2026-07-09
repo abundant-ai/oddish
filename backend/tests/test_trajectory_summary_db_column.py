@@ -6,7 +6,7 @@ from oddish.db.models import TrialModel
 def test_trajectory_summary_attribute_is_mapped():
     trial = TrialModel()
     payload = {
-        "schema_version": "2",
+        "schema_version": "3",
         "model": "claude-sonnet-4-6",
         "generated_at": "2026-05-02T00:00:00Z",
         "summary": "agent did X then Y",
