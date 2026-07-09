@@ -1033,6 +1033,10 @@ class Settings(BaseSettings):
     # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
     # while the node is created; the readiness wait is generous to match.
     gke_flex_start: bool = True
+    # Auto-build missing task images via the Cloud Build SDK instead of
+    # failing on require_prebuilt_image. Spends minutes of the attempt's
+    # budget on first-run tasks, so hosted deployments opt in explicitly.
+    gke_auto_build_missing_image: bool = False
     gke_pod_ready_timeout_sec: int = 3600
 
     # API server
