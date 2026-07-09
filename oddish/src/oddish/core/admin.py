@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
 from oddish.core.cost_basis import (
+    first_party_spend_filter,
     settled_cost_columns,
     settled_cost_from_row,
     settled_cost_parts,
@@ -29,7 +30,6 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TrialModel,
-    TrialOrigin,
     task_experiments,
     utcnow,
 )
@@ -1053,30 +1053,16 @@ _UNATTRIBUTED_KEY = "__unattributed__"
 def _real_spend_filter():
     """WHERE clause selecting real, first-party oddish spend, counted once.
 
-    A deliberate superset of the old ``billed_user_id IS NOT NULL`` gate:
-
-    * the first clause keeps everything the quota system bills, including the
-      billed probe runs the old gate already counted; and
-    * the second clause adds oddish-run spend that never resolved to an active
-      payer -- offboarded or unlinked users, pre-quota trials -- so a big
-      *non-registered* spender is grouped and shown instead of silently dropped.
-
-    Still excluded, so spend counts once: imported trials (``origin != ODDISH``
-    -- that spend happened on an external Harbor run) and the trial copies
-    minted by experiment-combine (a ``combine:`` idempotency key; the source
-    trials still carry the spend). The combine guard misses the rare copy whose
-    ``combine:<result>:<source>`` key overflowed 64 chars and was stored NULL --
-    acceptable slack on an internal admin view.
+    The shared first-party filter excludes imports and experiment-combine
+    copies. Billed probes remain visible because they consumed quota; unbilled
+    probes stay internal. Other unbilled Oddish runs remain visible so
+    offboarded, unlinked, and pre-quota spend is not silently dropped.
     """
-    return or_(
-        TrialModel.billed_user_id.isnot(None),
-        and_(
-            TrialModel.origin == TrialOrigin.ODDISH,
+    return and_(
+        first_party_spend_filter(),
+        or_(
+            TrialModel.billed_user_id.isnot(None),
             TrialModel.is_probe.is_(False),
-            or_(
-                TrialModel.idempotency_key.is_(None),
-                TrialModel.idempotency_key.notlike("combine:%"),
-            ),
         ),
     )
 
@@ -2031,6 +2017,7 @@ async def get_user_cost_breakdown_core(
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
         TrialModel.finished_at.isnot(None),
+        first_party_spend_filter(),
     ]
     if since is not None:
         filters.append(TrialModel.finished_at >= since)

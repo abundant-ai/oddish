@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.core import endpoints
+from oddish.core.endpoints.deletion import _combine_idempotency_key
 from oddish.db import ExperimentModel, TrialModel, TrialStatus
 from oddish.schemas import ExperimentCombineRequest
 
@@ -16,6 +17,18 @@ from oddish.schemas import ExperimentCombineRequest
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------
+
+
+def test_combine_idempotency_key_keeps_long_copies_marked():
+    result_id = "result-" + "r" * 80
+    source_id = "source-" + "s" * 80
+
+    key = _combine_idempotency_key(result_id, source_id)
+
+    assert key.startswith("combine:")
+    assert len(key) == 64
+    assert key == _combine_idempotency_key(result_id, source_id)
+    assert key != _combine_idempotency_key(result_id, source_id + "x")
 
 
 class _FakeRowsResult:
