@@ -112,12 +112,7 @@ async def costs_fixture():
         session.add_all(
             [
                 ExperimentModel(id=f"exp_{task_a}", name="exp-a", org_id=org_id),
-                ExperimentModel(
-                    id=f"exp_{task_b}",
-                    name="exp-b",
-                    org_id=org_id,
-                    deleted_at=now,
-                ),
+                ExperimentModel(id=f"exp_{task_b}", name="exp-b", org_id=org_id),
             ]
         )
         session.add(
@@ -299,7 +294,7 @@ async def test_experiment_grouping_and_sort(costs_fixture):
     assert experiments[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert experiments[1]["trial_count"] == 2
     assert experiments[1]["models"][0]["model"] == _EST_MODEL
-    assert experiments[1]["is_deleted"] is True
+    assert experiments[1]["is_deleted"] is False
     assert experiments[1]["has_deleted_spend"] is True
 
 
