@@ -51,6 +51,7 @@ import type { Trial, Task } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
+  formatTokenCount,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -799,6 +800,15 @@ export function TrialDetailPanel({
                           );
                         })()}
                     </div>
+                    {(trial.input_tokens != null ||
+                      trial.output_tokens != null) && (
+                      <div className="text-muted-foreground mt-1 font-mono text-[9px] leading-none">
+                        {formatTokenCount(
+                          (trial.input_tokens ?? 0) +
+                            (trial.output_tokens ?? 0),
+                        )}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
