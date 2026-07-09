@@ -359,9 +359,7 @@ async def create_task_sweep_core(
         expanded = build_task_submission_from_sweep(
             append_submission, task_path=task.task_path, trials=trials
         )
-        await admit_trials(
-            session, org_id, billed_user_id, count=len(expanded.trials)
-        )
+        await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
         new_trials = await append_trials_to_task(
             session,
             task=task,

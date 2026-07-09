@@ -116,7 +116,10 @@ def _load_helpers() -> dict[str, Any]:
     """
     router_path = (
         Path(__file__).resolve().parents[2]
-        / "backend" / "api" / "routers" / "task_submission.py"
+        / "backend"
+        / "api"
+        / "routers"
+        / "task_submission.py"
     )
     source = router_path.read_text(encoding="utf-8")
 

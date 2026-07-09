@@ -309,9 +309,7 @@ def format_experiment_comment(
                 f"### \u26a0\ufe0f {good_tasks}/{total_tasks} tasks passed validation"
             )
     elif (
-        analyzable_trials == 0
-        and completed_trials == total_trials
-        and total_trials > 0
+        analyzable_trials == 0 and completed_trials == total_trials and total_trials > 0
     ):
         # Every trial is terminal but none are analyzable (all gate-skipped),
         # so there's nothing to analyze or verdict \u2014 show a terminal state
@@ -349,9 +347,7 @@ def format_experiment_comment(
             # line — otherwise this table reads as still-running for a done,
             # gate-skipped task.
             task_done = sum(
-                1
-                for t in task.trials
-                if t.status in ("success", "failed", "skipped")
+                1 for t in task.trials if t.status in ("success", "failed", "skipped")
             )
 
             if task.verdict_status == "success" and task.verdict:

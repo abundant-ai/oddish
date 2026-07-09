@@ -153,9 +153,7 @@ class StorageClient:
     # Size-bounded in total decompressed byte footprint so a single task doesn't
     # blow the limit. Keys without a known etag fall back to
     # ``(content_length, last_modified)``.
-    _archive_cache: (
-        "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]"
-    ) = OrderedDict()
+    _archive_cache: "OrderedDict[tuple[str, str], tuple[bytes, list[dict[str, object]]]]" = OrderedDict()
     _archive_cache_bytes: int = 0
 
     @classmethod
