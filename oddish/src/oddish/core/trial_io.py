@@ -30,9 +30,11 @@ _CACHE_MAX_ENTRIES = 128
 _STRUCTURED_LOGS_CACHE: dict[str, tuple[float, dict]] = {}
 _TRAJECTORY_CACHE: dict[str, tuple[float, dict | None]] = {}
 _PROBE_ARTIFACTS_CACHE: dict[str, tuple[float, dict]] = {}
+_TRAJECTORY_GRAPH_CACHE: dict[str, tuple[float, dict]] = {}
 _STRUCTURED_LOGS_LOCKS: dict[str, asyncio.Lock] = {}
 _TRAJECTORY_LOCKS: dict[str, asyncio.Lock] = {}
 _PROBE_ARTIFACTS_LOCKS: dict[str, asyncio.Lock] = {}
+_TRAJECTORY_GRAPH_LOCKS: dict[str, asyncio.Lock] = {}
 _T = TypeVar("_T")
 
 _EMPTY_PROBE_ARTIFACTS: dict = {
@@ -661,6 +663,62 @@ async def read_trial_trajectory(trial: TrialModel) -> dict | None:
         if _should_cache_trial(trial):
             _cache_set(_TRAJECTORY_CACHE, cache_key, result)
         return result
+
+
+def _trial_graph_ctx(trial: TrialModel) -> dict:
+    """Authoritative trial fields the agent-graph summarizer grounds its
+    terminal node in (never taken from the LLM)."""
+    status = getattr(trial.status, "value", trial.status)
+    return {
+        "status": str(status) if status is not None else None,
+        "reward": trial.reward,
+        "error_message": trial.error_message,
+        "task_name": trial.name or trial.task_id,
+        "agent_name": trial.agent,
+    }
+
+
+async def read_trial_trajectory_graph(
+    trial: TrialModel,
+    *,
+    refresh: bool = False,
+    summary: dict | None = None,
+) -> dict:
+    """Summarize a trial's ATIF trajectory into a condensed step graph.
+
+    Reads the trajectory (S3 or local fallback) and distills it into a handful
+    of general phases plus a terminal node whose outcome is computed from the
+    trial's own status/reward/error (see ``analyze.trajectory_graph``). When a
+    ``summary`` (the shipped ``trajectory_summary`` dict) is supplied, its phase
+    segmentation is reused as the graph's steps; otherwise a dedicated
+    ``settings.analysis_model`` pass (or a heuristic) segments the run. Cached
+    per trial like the trajectory itself; ``refresh=True`` recomputes.
+    """
+    from oddish.analyze.trajectory_graph import build_trajectory_graph
+
+    cache_key = trial.id
+    if not refresh and _should_cache_trial(trial):
+        cached = _cache_get(_TRAJECTORY_GRAPH_CACHE, cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
+    lock = _get_lock(_TRAJECTORY_GRAPH_LOCKS, cache_key)
+    async with lock:
+        if not refresh and _should_cache_trial(trial):
+            cached = _cache_get(_TRAJECTORY_GRAPH_CACHE, cache_key)
+            if cached is not None:
+                return cached  # type: ignore[return-value]
+
+        trajectory = await read_trial_trajectory(trial)
+        graph = await build_trajectory_graph(
+            trajectory,
+            _trial_graph_ctx(trial),
+            model=settings.analysis_model,
+            summary=summary,
+        )
+        if _should_cache_trial(trial):
+            _cache_set(_TRAJECTORY_GRAPH_CACHE, cache_key, graph)
+        return graph
 
 
 async def read_trial_instruction(trial: TrialModel) -> str | None:

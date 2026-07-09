@@ -569,6 +569,39 @@ export interface TrajectoryHighlight {
   why: string;
 }
 
+// Condensed agent-graph summary of a trajectory (GET /trials/{id}/trajectory/graph).
+export type TrajectoryGraphStepStatus = "ok" | "warn" | "error";
+
+export type TrajectoryGraphOutcome =
+  | "success"
+  | "failure"
+  | "timeout"
+  | "error"
+  | "skipped"
+  | "running";
+
+export interface TrajectoryGraphStep {
+  id: string;
+  title: string;
+  detail: string;
+  status: TrajectoryGraphStepStatus;
+}
+
+export interface TrajectoryGraphTerminal {
+  outcome: TrajectoryGraphOutcome;
+  last_action: string;
+  reason: string;
+}
+
+export interface TrajectoryGraph {
+  headline: string;
+  steps: TrajectoryGraphStep[];
+  terminal: TrajectoryGraphTerminal;
+  source: "summary" | "llm" | "heuristic";
+  model: string | null;
+  num_steps: number | null;
+}
+
 export interface TrajectoryPhase {
   label: string;
   gist: string;
