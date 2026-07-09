@@ -2292,7 +2292,7 @@ export function ExperimentTrialsTable({
                                 v{task.current_version}
                               </span>
                             )}
-                            {(() => {
+                            {!readOnly && (() => {
                               // Sum the trials actually rendered in this row's
                               // matrix (visible agent columns) so the badge
                               // tracks the grid when agent columns are hidden.
