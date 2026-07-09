@@ -281,6 +281,20 @@ def test_zai_glm_models_resolve_via_litellm() -> None:
     assert has_pricing("zai/glm-5")
 
 
+def test_glm_5_2_priced_via_gap_table() -> None:
+    # litellm's zai/ catalog stops at zai/glm-5.1, so glm-5.2 must resolve
+    # through the local gap table or its $0 harness cost settles to NULL.
+    pricing = _find_local_pricing("zai/glm-5.2")
+    assert pricing is not None
+    assert pricing.input == pytest.approx(1.4e-6)
+    assert pricing.output == pytest.approx(4.4e-6)
+    assert has_pricing("zai/glm-5.2")
+    cost = settle_cost_usd(
+        0.0, model="zai/glm-5.2", input_tokens=1_000_000, output_tokens=1_000_000
+    )
+    assert cost == pytest.approx(1.4e-6 * 1_000_000 + 4.4e-6 * 1_000_000)
+
+
 def test_litellm_zero_zero_entries_are_rejected() -> None:
     assert (
         _pricing_from_litellm_info(
