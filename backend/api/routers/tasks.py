@@ -48,6 +48,51 @@ from oddish.core.endpoints import (
     unlink_task_from_experiment_core,
 )
 from oddish.core.helpers import terminate_run_harvest
+
+
+async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) -> None:
+    """Fire the upload-time image builder for GKE-classified tasks (post-commit).
+
+    Primary build path: the worker-side auto_build_missing_image fallback only
+    covers the race where a trial claims before this build lands. Best-effort
+    by design -- a spawn failure must never fail a committed submission (the
+    worker fallback and the clear missing-image error remain behind it).
+    """
+    if not task_ids:
+        return
+    try:
+        from worker.functions import GKE_IMAGE_BUILDER
+
+        if GKE_IMAGE_BUILDER is None:
+            return
+        from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
+
+        # Scoped to trials ON the task's current version: stale GKE trials
+        # from older versions must not trigger builds for content they never
+        # ran. If a concurrent submission bumps the version between commit and
+        # this query, the build targets the newer content and the older
+        # trials' worker-side auto-build fallback covers the gap.
+        gke_rows = await session.execute(
+            select(TrialModel.task_id, TaskVersionModel.version)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .join(
+                TaskVersionModel,
+                TaskVersionModel.id == TaskModel.current_version_id,
+            )
+            .where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+                TrialModel.harbor_config["variant_id"].astext == "gke",
+            )
+            .distinct()
+        )
+        for task_id, version in gke_rows:
+            await GKE_IMAGE_BUILDER.spawn.aio(task_id=task_id, version=version)
+            logger.info(
+                "spawned GKE image build for task %s v%s", task_id, version
+            )
+    except Exception:
+        logger.exception("GKE image build spawn failed (non-fatal)")
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -307,6 +352,8 @@ async def create_task_sweep(
 
         await session.commit()
 
+        await _spawn_gke_image_builds(session, [task.id])
+
         return build_task_sweep_response(task, new_trials, is_append, experiment)
 
 
@@ -403,6 +450,11 @@ async def create_task_sweep_batch(
             resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
+
+        await _spawn_gke_image_builds(
+            session,
+            [r.task.id for r in results if r.success and r.task is not None],
+        )
 
     succeeded = sum(1 for r in results if r.success)
     failed = len(results) - succeeded
