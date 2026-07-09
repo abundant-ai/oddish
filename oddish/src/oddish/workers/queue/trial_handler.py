@@ -30,6 +30,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
+from oddish.model_pricing import settle_cost_usd
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -703,7 +704,14 @@ async def _store_trial_results(
             trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
-            trial.cost_usd = outcome.cost_usd
+            trial.cost_usd = settle_cost_usd(
+                outcome.cost_usd,
+                model=trial.model,
+                input_tokens=outcome.input_tokens,
+                output_tokens=outcome.output_tokens,
+                cache_tokens=outcome.cache_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+            )
 
             trial.phase_timing = outcome.phase_timing
 

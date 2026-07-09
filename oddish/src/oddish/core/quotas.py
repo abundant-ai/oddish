@@ -3,10 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.cost_basis import (
+    settled_cost_columns,
+    settled_cost_from_row,
+    sum_settled_cost,
+)
 from oddish.db import TrialModel, TrialStatus
 
 MONEY_QUANTUM = Decimal("0.0001")
@@ -53,27 +58,16 @@ def _settled_cost_predicates(
     return [TrialModel.org_id == org_id, boundary]
 
 
-def _settled_cost_expr():
-    return func.coalesce(
-        TrialModel.cost_usd,
-        case(
-            (
-                TrialModel.started_at.isnot(None),
-                float(settings.unpriced_trial_cost_usd),
-            ),
-            else_=0.0,
-        ),
-    )
-
-
 async def _sum_settled_cost_usd(session: AsyncSession, predicates: list) -> Decimal:
-    return to_money_decimal(
-        await session.scalar(
-            select(func.coalesce(func.sum(_settled_cost_expr()), 0))
-            .where(*predicates)
-            .execution_options(include_deleted=True)
-        )
+    # Grouped by model so the Python token estimate in ``cost_basis`` can price
+    # unpriced trials the same way the cost dashboard does (see cost_basis docs).
+    rows = await session.execute(
+        select(TrialModel.model.label("model"), *settled_cost_columns())
+        .where(*predicates)
+        .group_by(TrialModel.model)
+        .execution_options(include_deleted=True)
     )
+    return to_money_decimal(sum_settled_cost(rows.all()))
 
 
 async def sum_cost_usd(
@@ -106,17 +100,23 @@ async def sum_cost_usd_by_user(
 ) -> dict[str, Decimal]:
     rows = await session.execute(
         select(
-            TrialModel.billed_user_id,
-            func.coalesce(func.sum(_settled_cost_expr()), 0),
+            TrialModel.billed_user_id.label("billed_user_id"),
+            TrialModel.model.label("model"),
+            *settled_cost_columns(),
         )
         .where(
             *_settled_cost_predicates(org_id, period_start),
             TrialModel.billed_user_id.is_not(None),
         )
-        .group_by(TrialModel.billed_user_id)
+        .group_by(TrialModel.billed_user_id, TrialModel.model)
         .execution_options(include_deleted=True)
     )
-    return {user_id: to_money_decimal(total) for user_id, total in rows.all()}
+    totals: dict[str, float] = {}
+    for row in rows.all():
+        totals[row.billed_user_id] = (
+            totals.get(row.billed_user_id, 0.0) + settled_cost_from_row(row)
+        )
+    return {user_id: to_money_decimal(total) for user_id, total in totals.items()}
 
 
 async def sum_cost_usd_by_org_user_all_orgs(
@@ -125,21 +125,23 @@ async def sum_cost_usd_by_org_user_all_orgs(
     """Settled 24h spend keyed the same way admission checks spend."""
     rows = await session.execute(
         select(
-            TrialModel.org_id,
-            TrialModel.billed_user_id,
-            func.coalesce(func.sum(_settled_cost_expr()), 0),
+            TrialModel.org_id.label("org_id"),
+            TrialModel.billed_user_id.label("billed_user_id"),
+            TrialModel.model.label("model"),
+            *settled_cost_columns(),
         )
         .where(
             TrialModel.finished_at > period_start,
             TrialModel.billed_user_id.is_not(None),
         )
-        .group_by(TrialModel.org_id, TrialModel.billed_user_id)
+        .group_by(TrialModel.org_id, TrialModel.billed_user_id, TrialModel.model)
         .execution_options(include_deleted=True)
     )
-    out: dict[tuple[str | None, str], Decimal] = {}
-    for org_id, user_id, total in rows.all():
-        out[(org_id, user_id)] = to_money_decimal(total)
-    return out
+    totals: dict[tuple[str | None, str], float] = {}
+    for row in rows.all():
+        key = (row.org_id, row.billed_user_id)
+        totals[key] = totals.get(key, 0.0) + settled_cost_from_row(row)
+    return {key: to_money_decimal(total) for key, total in totals.items()}
 
 
 async def effective_limits_by_org_user_all_orgs(
@@ -176,7 +178,9 @@ def _org_inflight_predicates(org_id: str | None) -> list:
     ]
 
 
-async def _sum_inflight_reserved_usd(session: AsyncSession, predicates: list) -> Decimal:
+async def _sum_inflight_reserved_usd(
+    session: AsyncSession, predicates: list
+) -> Decimal:
     return to_money_decimal(
         await session.scalar(
             select(

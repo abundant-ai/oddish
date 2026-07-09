@@ -117,7 +117,6 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
     org_id = f"org-orgsum-{_RUN}"
     now = datetime.now(timezone.utc)
     before_month = start_of_month_utc(now) - timedelta(seconds=1)
-    floor = settings.unpriced_trial_cost_usd
 
     await _ensure_org(org_id)
     async with get_session() as session:
@@ -152,7 +151,7 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
         soft_deleted.cost_usd = 9.00
         soft_deleted.deleted_at = now
 
-        # Unpriced (started, cost NULL) floors at unpriced_trial_cost_usd.
+        # Unpriced (started, cost NULL) with no tokens -> $0 (floor defaults $0).
         unpriced = await session.get(TrialModel, f"{task_id}-4")
         unpriced.started_at = now
         unpriced.finished_at = now
@@ -172,9 +171,10 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
 
         org_total = await sum_org_cost_usd(session, org_id, start_of_month_utc(now))
 
-    assert org_total == Decimal("0.10") + Decimal("0.20") + Decimal("7.00") + Decimal(
-        "9.00"
-    ) + floor
+    assert (
+        org_total
+        == Decimal("0.10") + Decimal("0.20") + Decimal("7.00") + Decimal("9.00")
+    )
 
 
 @pytest.mark.asyncio

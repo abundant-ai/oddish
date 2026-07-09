@@ -8,10 +8,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
+from oddish.core.cost_basis import (
+    settled_cost_columns,
+    settled_cost_from_row,
+    settled_cost_parts,
+)
 from oddish.core.dashboard import EXPERIMENTS_UNATTRIBUTED_OWNER
 from oddish.core.quotas import (
     effective_limits_by_org_user_all_orgs,
@@ -28,7 +33,6 @@ from oddish.db import (
     task_experiments,
     utcnow,
 )
-from oddish.model_pricing import estimate_cost_usd
 
 
 def _normalize_owner_user_id(owner_user_id: str | None) -> str | None:
@@ -1358,10 +1362,12 @@ def _build_dimension_series(
 async def _cost_time_series(
     session: AsyncSession, *, since: datetime | None, bucket: str
 ) -> tuple[CostSeries, CostSeries, CostSeries]:
-    """Billable cost over time, stacked three ways: by agent, model, and user."""
-    bucket_col = func.date_trunc(bucket, TrialModel.created_at)
-    has_native = TrialModel.cost_usd.isnot(None)
-    no_native = TrialModel.cost_usd.is_(None)
+    """Billable cost over time, stacked three ways: by agent, model, and user.
+
+    Settlement-time axis (``finished_at``): in-flight trials (``finished_at``
+    NULL) are excluded so this matches the quota basis exactly.
+    """
+    bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
 
@@ -1374,18 +1380,7 @@ async def _cost_time_series(
             gh_id_col.label("gh_id"),
             gh_user_col.label("gh_user"),
             TaskModel.created_by_user_id.label("submitter"),
-            func.coalesce(
-                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
-            ).label("est_cache"),
+            *settled_cost_columns(),
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
@@ -1402,9 +1397,9 @@ async def _cost_time_series(
             TaskModel.created_by_user_id,
         )
     )
-    query = query.where(_real_spend_filter())
+    query = query.where(_real_spend_filter(), TrialModel.finished_at.isnot(None))
     if since is not None:
-        query = query.where(TrialModel.created_at >= since)
+        query = query.where(TrialModel.finished_at >= since)
 
     rows = (await session.execute(query)).all()
 
@@ -1432,15 +1427,7 @@ async def _cost_time_series(
         totals[key] = totals.get(key, 0.0) + cost
 
     for row in rows:
-        cost = float(row.native_cost or 0.0) + (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+        cost = settled_cost_from_row(row)
         bstart = row.bucket
         u_key, _u_real, u_label = _spend_identity(
             row.billed_user_id, row.gh_id, row.gh_user, row.submitter
@@ -1546,40 +1533,14 @@ async def _prev_window_costs(
             gh_user_col.label("gh_user"),
             TaskModel.created_by_user_id.label("submitter"),
             TrialModel.model.label("model"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
-                        else_=0.0,
-                    )
-                ),
-                0.0,
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)
-                ),
-                0,
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)
-                ),
-                0,
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)
-                ),
-                0,
-            ).label("est_cache"),
+            *settled_cost_columns(),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .where(
             _real_spend_filter(),
-            TrialModel.created_at >= prev_start,
-            TrialModel.created_at < prev_end,
+            TrialModel.finished_at >= prev_start,
+            TrialModel.finished_at < prev_end,
         )
         .group_by(
             TrialModel.org_id,
@@ -1595,17 +1556,7 @@ async def _prev_window_costs(
     prev_by_user: dict[tuple[str | None, str], float] = {}
     prev_cost = 0.0
     for row in rows:
-        native = float(row.native_cost or 0.0)
-        estimated = (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
-        cost = native + estimated
+        cost = settled_cost_from_row(row)
         identity_key, _, _ = _spend_identity(
             row.billed_user_id, row.gh_id, row.gh_user, row.submitter
         )
@@ -1631,43 +1582,20 @@ async def _billed_cost_since(
     since: datetime,
     org_ids: set[str | None] | None = None,
 ) -> float:
-    """Total dashboard spend from ``since`` to now, on the breakdown's basis."""
+    """Total dashboard spend from ``since`` to now, on the breakdown's basis.
+
+    Settlement-time axis: sums trials that FINISHED at/after ``since``.
+    """
     query = (
         select(
             TrialModel.model.label("model"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
-                        else_=0.0,
-                    )
-                ),
-                0.0,
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.input_tokens), else_=0)
-                ),
-                0,
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.output_tokens), else_=0)
-                ),
-                0,
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(
-                    case((TrialModel.cost_usd.is_(None), TrialModel.cache_tokens), else_=0)
-                ),
-                0,
-            ).label("est_cache"),
+            *settled_cost_columns(),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .where(
             _real_spend_filter(),
-            TrialModel.created_at >= since,
+            TrialModel.finished_at >= since,
         )
         .group_by(TrialModel.model)
     )
@@ -1676,17 +1604,7 @@ async def _billed_cost_since(
             return 0.0
         query = query.where(_org_id_predicate(org_ids))
     rows = (await session.execute(query)).all()
-    total = 0.0
-    for row in rows:
-        total += float(row.native_cost or 0.0) + (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+    total = sum(settled_cost_from_row(row) for row in rows)
     return round(total, 4)
 
 
@@ -1731,42 +1649,7 @@ async def get_cost_breakdown_core(
             func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
             func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.isnot(None), TrialModel.cost_usd),
-                        else_=0.0,
-                    )
-                ),
-                0.0,
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.is_(None), TrialModel.input_tokens),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.is_(None), TrialModel.output_tokens),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (TrialModel.cost_usd.is_(None), TrialModel.cache_tokens),
-                        else_=0,
-                    )
-                ),
-                0,
-            ).label("est_cache"),
+            *settled_cost_columns(),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
         # LEFT join so a soft-deleted task yields NULL tags (the spend still
@@ -1789,9 +1672,11 @@ async def get_cost_breakdown_core(
             TrialModel.provider,
         )
     )
-    detail_query = detail_query.where(_real_spend_filter())
+    detail_query = detail_query.where(
+        _real_spend_filter(), TrialModel.finished_at.isnot(None)
+    )
     if since is not None:
-        detail_query = detail_query.where(TrialModel.created_at >= since)
+        detail_query = detail_query.where(TrialModel.finished_at >= since)
 
     rows = (await session.execute(detail_query)).all()
 
@@ -1818,16 +1703,7 @@ async def get_cost_breakdown_core(
         input_tokens = int(row.input_tokens or 0)
         cache_tokens = int(row.cache_tokens or 0)
         output_tokens = int(row.output_tokens or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+        native, estimated = settled_cost_parts(row)
         cost = native + estimated
 
         total_trials += trial_count
@@ -1948,7 +1824,7 @@ async def get_cost_breakdown_core(
             .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
             .where(
                 _real_spend_filter(),
-                TrialModel.created_at >= month_start,
+                TrialModel.finished_at >= month_start,
             )
             .distinct()
         )
@@ -2160,8 +2036,6 @@ async def get_user_cost_breakdown_core(
         filters.append(TrialModel.finished_at >= since)
 
     bucket_col = func.date_trunc(bucket, TrialModel.finished_at)
-    has_native = TrialModel.cost_usd.isnot(None)
-    no_native = TrialModel.cost_usd.is_(None)
 
     detail_query = (
         select(
@@ -2169,18 +2043,7 @@ async def get_user_cost_breakdown_core(
             TaskModel.name.label("task_name"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
-            func.coalesce(
-                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
-            ).label("est_cache"),
+            *settled_cost_columns(),
             func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
             func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
@@ -2201,18 +2064,7 @@ async def get_user_cost_breakdown_core(
         select(
             bucket_col.label("bucket"),
             TrialModel.model.label("model"),
-            func.coalesce(
-                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
-            ).label("est_cache"),
+            *settled_cost_columns(),
             func.count(TrialModel.id).label("trial_count"),
         )
         .where(*filters)
@@ -2229,15 +2081,7 @@ async def get_user_cost_breakdown_core(
 
     for row in series_rows:
         model = _model_label(row.model)
-        cost = float(row.native_cost or 0.0) + (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+        cost = settled_cost_from_row(row)
         bstart = row.bucket
         slot = model_per_bucket.setdefault(bstart, {})
         slot[model] = slot.get(model, 0.0) + cost
@@ -2262,16 +2106,7 @@ async def get_user_cost_breakdown_core(
         input_tokens = int(row.input_tokens or 0)
         cache_tokens = int(row.cache_tokens or 0)
         output_tokens = int(row.output_tokens or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+        native, estimated = settled_cost_parts(row)
         cost = native + estimated
 
         total_trials += trial_count
@@ -2328,18 +2163,7 @@ async def get_user_cost_breakdown_core(
             ExperimentModel.name.label("exp_name"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
-            func.coalesce(
-                func.sum(case((has_native, TrialModel.cost_usd), else_=0.0)), 0.0
-            ).label("native_cost"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.input_tokens), else_=0)), 0
-            ).label("est_input"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.output_tokens), else_=0)), 0
-            ).label("est_output"),
-            func.coalesce(
-                func.sum(case((no_native, TrialModel.cache_tokens), else_=0)), 0
-            ).label("est_cache"),
+            *settled_cost_columns(),
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(
@@ -2363,16 +2187,7 @@ async def get_user_cost_breakdown_core(
         model = _model_label(row.model)
         provider = _provider_label(row.provider)
         trial_count = int(row.trial_count or 0)
-        native = float(row.native_cost or 0.0)
-        estimated = (
-            estimate_cost_usd(
-                row.model,
-                int(row.est_input or 0),
-                int(row.est_output or 0),
-                int(row.est_cache or 0),
-            )
-            or 0.0
-        )
+        native, estimated = settled_cost_parts(row)
         cost = native + estimated
         exp = exps.get(row.experiment_id)
         if exp is None:

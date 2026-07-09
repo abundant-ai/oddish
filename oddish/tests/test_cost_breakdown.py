@@ -316,6 +316,8 @@ def _trial(
     origin: TrialOrigin = TrialOrigin.ODDISH,
     is_probe: bool = False,
     idempotency_key: str | None = None,
+    finished_at=None,
+    harbor_stage: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{experiment_id}-{index}",
@@ -333,6 +335,10 @@ def _trial(
         billed_user_id=billed_user_id,
         cost_usd=cost_usd,
         created_at=created_at,
+        # The cost dashboards key off settlement time; default a seeded trial to
+        # finished at its created_at so it lands in the same window as before.
+        finished_at=created_at if finished_at is None else finished_at,
+        harbor_stage=harbor_stage,
         deleted_at=deleted_at,
         origin=origin,
         is_probe=is_probe,
@@ -608,9 +614,13 @@ async def seeded_fallback_data():
         session.add_all(
             [
                 # Unbilled but real oddish spend -> GitHub-handle fallback.
-                _trial(FA, 0, model="claude-opus-4-8", cost_usd=10.0, created_at=recent),
+                _trial(
+                    FA, 0, model="claude-opus-4-8", cost_usd=10.0, created_at=recent
+                ),
                 # Unbilled -> GitHub-id fallback (handle shown when present).
-                _trial(FB, 0, model="claude-opus-4-8", cost_usd=20.0, created_at=recent),
+                _trial(
+                    FB, 0, model="claude-opus-4-8", cost_usd=20.0, created_at=recent
+                ),
                 # Unbilled, no GitHub -> submitting-credential fallback.
                 _trial(FC, 0, model="claude-opus-4-8", cost_usd=5.0, created_at=recent),
                 # Imported (external Harbor run) -> excluded, no double count.
@@ -680,7 +690,9 @@ async def seeded_fallback_data():
 
 
 @pytest.mark.asyncio
-async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallback_data):
+async def test_cost_breakdown_attribution_fallbacks_and_billability(
+    seeded_fallback_data,
+):
     async with get_session() as session:
         result = await get_cost_breakdown_core(
             session, window_days=7, experiment_limit=500, user_limit=500
@@ -727,9 +739,7 @@ async def test_cost_breakdown_attribution_fallbacks_and_billability(seeded_fallb
 
     # The "N users" total counts real users, not the GitHub-handle /
     # Unattributed fallback rows (which are exactly the labelled rows).
-    assert result.totals.user_count == sum(
-        1 for u in result.by_user if u.label is None
-    )
+    assert result.totals.user_count == sum(1 for u in result.by_user if u.label is None)
     assert by_user["ghuser:octo-ext"].label is not None
 
     # Imported and combine-copy spend is excluded so nothing double-counts.

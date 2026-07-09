@@ -517,9 +517,7 @@ class ConcurrencyGate:
         error: BaseException | None = None
         try:
             return fn(*args, **kwargs)
-        except (
-            BaseException
-        ) as exc:  # noqa: BLE001 - reclassified for the limiter, then re-raised
+        except BaseException as exc:  # noqa: BLE001 - reclassified for the limiter, then re-raised
             error = exc
             raise
         finally:

@@ -177,11 +177,39 @@ function formatAge(dateStr: string | null): string {
   return `${Math.floor(totalSeconds / 86400)}d`;
 }
 
-function ModelLabel({ model }: { model: CostModelBreakdown }) {
+function modelTasksHref(model: string, windowDays: string): string {
+  const params = new URLSearchParams({
+    models: model,
+    sort: "cost_desc",
+  });
+  const trialFinishedWithin =
+    windowDays === "1"
+      ? "24h"
+      : ["7", "30", "90"].includes(windowDays)
+        ? `${windowDays}d`
+        : null;
+  if (trialFinishedWithin) {
+    params.set("trial_finished_within", trialFinishedWithin);
+  }
+  return `/tasks?${params.toString()}`;
+}
+
+function ModelLabel({
+  model,
+  windowDays,
+}: {
+  model: CostModelBreakdown;
+  windowDays: string;
+}) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <QueueKeyIcon model={model.model} size={13} />
-      <span className="font-mono text-[11px]">{model.model}</span>
+      <Link
+        href={modelTasksHref(model.model, windowDays)}
+        className="font-mono text-[11px] text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+      >
+        {model.model}
+      </Link>
       <span className="text-muted-foreground text-[10px]">
         {model.provider}
       </span>
@@ -468,32 +496,22 @@ function MethodologyNote() {
         <p className="mb-2 font-medium">How costs are computed</p>
         <ul className="text-muted-foreground list-disc space-y-1.5 pl-4">
           <li>
-            Cost is tallied <strong>per trial</strong>. When the agent runtime
-            reports a cost we use that (native); otherwise we estimate it from
-            the trial&apos;s token counts × per-model pricing (LiteLLM&apos;s
-            table plus a small local fallback). This is the same estimator the
-            rest of the app already uses for per-trial cost.
+            Per-trial cost: the runtime&apos;s native cost, else a token-based
+            estimate (LiteLLM pricing). The{" "}
+            <Info className="inline h-3 w-3 align-text-top" /> marker flags a
+            cost that was estimated.
           </li>
           <li>
-            Native and estimated are mutually exclusive per trial, so they sum
-            to the total with no double-counting. The{" "}
-            <Info className="inline h-3 w-3 align-text-top" /> marker next to a
-            cost means part of it was estimated.
+            All first-party spend, across every org. Imported runs and
+            experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
-            All first-party spend is counted. Imported trials (external Harbor
-            runs) and experiment-combine copies are excluded so spend counts
-            once. Per-user figures attribute each trial to its billed user;
-            spend that never resolved to an active user — offboarded or unlinked
-            payers — is grouped under its submitted GitHub identity, its
-            submitter, or an <strong>unbilled</strong>{" "}
-            &ldquo;Unattributed&rdquo; bucket rather than being dropped.
+            Per-user attributes each trial to its billed user; spend with no
+            active payer falls to its GitHub identity, submitter, or an{" "}
+            <strong>unbilled</strong> &ldquo;Unattributed&rdquo; bucket.
+            Per-model and per-user regroup the same costs, so every view sums to
+            the same total.
           </li>
-          <li>
-            Per-model and per-user are the same per-trial costs grouped
-            differently, so each view sums back to the same total.
-          </li>
-          <li>Figures span all organizations.</li>
         </ul>
       </PopoverContent>
     </Popover>
@@ -620,7 +638,7 @@ export function CostBreakdownCard() {
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={data.by_model} />
+              <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
             <section className="space-y-2">
@@ -900,7 +918,13 @@ function UserTable({
   );
 }
 
-function ModelTable({ models }: { models: CostModelBreakdown[] }) {
+function ModelTable({
+  models,
+  windowDays,
+}: {
+  models: CostModelBreakdown[];
+  windowDays: string;
+}) {
   if (models.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -922,7 +946,7 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
         {models.map((model) => (
           <TableRow key={`${model.model}-${model.provider}`}>
             <TableCell>
-              <ModelLabel model={model} />
+              <ModelLabel model={model} windowDays={windowDays} />
             </TableCell>
             <CostCell
               cost={model.cost_usd}
@@ -961,7 +985,20 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">Cost</TableHead>
+          <TableHead className="text-right">
+            <span className="inline-flex items-center gap-1">
+              New spend
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3 w-3 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[260px]">
+                  Cost from all trials run during the analysis period, not full
+                  experiment cost.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>
