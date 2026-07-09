@@ -728,10 +728,20 @@ async def generate_and_store_trajectory_graph(
         if not refresh and _graph_is_fresh(trial.trajectory_graph):
             return trial.trajectory_graph  # type: ignore[return-value]
 
-        trajectory = await read_trial_trajectory(trial)
+        # Fetch the trajectory alongside the goal (instruction) and the grader
+        # output (verifier stdout) so the graph can judge phases against the
+        # goal and name the failing check — not just describe the commands run.
+        trajectory, instruction, verifier_output = await asyncio.gather(
+            read_trial_trajectory(trial),
+            read_trial_instruction(trial),
+            read_trial_verifier_output(trial),
+        )
+        ctx = _trial_graph_ctx(trial)
+        ctx["task_instruction"] = instruction
+        ctx["verifier_output"] = verifier_output
         graph = await build_trajectory_graph(
             trajectory,
-            _trial_graph_ctx(trial),
+            ctx,
             model=settings.analysis_model,
             summary=summary,
         )

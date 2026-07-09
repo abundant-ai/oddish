@@ -191,7 +191,15 @@ def test_generate_and_store_persists_and_stamps(monkeypatch):
             ]
         }
 
+    async def _fake_instruction(trial):
+        return "Fix the handler."
+
+    async def _fake_verifier(trial):
+        return "FAIL: expected X, got Y"
+
     monkeypatch.setattr(trial_io, "read_trial_trajectory", _fake_read_trajectory)
+    monkeypatch.setattr(trial_io, "read_trial_instruction", _fake_instruction)
+    monkeypatch.setattr(trial_io, "read_trial_verifier_output", _fake_verifier)
 
     trial = SimpleNamespace(
         id="trial-1",
@@ -234,3 +242,47 @@ def test_generate_returns_cached_when_fresh_and_not_refresh(monkeypatch):
     assert graph is fresh
     assert calls["n"] == 0  # short-circuited, no trajectory read
     assert session.committed is False
+
+
+# --- goal + grader grounding ---
+
+
+def test_grounded_reason_names_failing_grader_line():
+    ctx = {
+        "verifier_output": "running checks\ngate1 ok\nAssertionError: swap_goodput 0.4 < 0.9\nDONE",
+    }
+    reason = tg._grounded_reason(ctx, tg.OUTCOME_FAILURE)
+    assert "swap_goodput 0.4 < 0.9" in reason
+    # success never appends a failing line
+    assert "swap_goodput" not in tg._grounded_reason(ctx, tg.OUTCOME_SUCCESS)
+
+
+def test_prompt_includes_goal_and_grader_context():
+    ctx = {
+        "task_name": "chain-spine/01",
+        "agent_name": "codex",
+        "status": "success",
+        "reward": 0.0,
+        "num_steps": 4,
+        "task_instruction": "Fix the indexer so swap goodput recovers.",
+        "verifier_output": "AssertionError: swap_goodput 0.4 < 0.9",
+    }
+    prompt = tg._build_prompt(ctx, tg.OUTCOME_FAILURE, "#0 tools=bash")
+    assert "Fix the indexer so swap goodput recovers." in prompt
+    assert "swap_goodput 0.4 < 0.9" in prompt
+    assert "Task goal" in prompt and "Grader output" in prompt
+
+
+def test_summary_terminal_reason_is_grounded():
+    summary = {
+        "phases": [{"label": "Patch", "step_ids": [3], "gist": "edited"}],
+        "highlights": [],
+    }
+    ctx = {
+        "status": "success", "reward": 0.0, "task_name": "t", "agent_name": "a",
+        "verifier_output": "FAIL: expected reserve1 fresh, got stale",
+    }
+    g = asyncio.run(
+        tg.build_trajectory_graph(_traj(), ctx, model=None, summary=summary)
+    )
+    assert "expected reserve1 fresh, got stale" in g["terminal"]["reason"]
