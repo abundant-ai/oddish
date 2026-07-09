@@ -795,13 +795,6 @@ def _primary_experiment_for_task(
     return experiments[0]
 
 
-# Every TaskModel column ``_build_task_status_response`` reads. Lives next to
-# the builder so a new field read here is added to the tuple in the same
-# edit — query paths (compact /tasks, experiment ``task-shells`` /
-# ``slim-tasks``) load_only these, and a deferred column the builder touches
-# 500s at runtime with MissingGreenlet. ``verdict`` / ``verdict_error`` stay
-# loaded for that reason even though the experiment grid only renders
-# ``verdict_status``.
 TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.id,
     TaskModel.name,
@@ -809,12 +802,10 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.priority,
     TaskModel.user,
     TaskModel.tags,
-    # Read by the experiment page's PR badge (``pickExperimentPr``).
     TaskModel.link,
     TaskModel.task_path,
     TaskModel.current_version_id,
     TaskModel.run_analysis,
-    # Surfaced as ``run_probe`` on every task response.
     TaskModel.run_probe,
     TaskModel.verdict_status,
     TaskModel.verdict,
@@ -1071,12 +1062,6 @@ def build_task_status_response_compact(
     )
 
 
-# Every TrialModel column ``build_slim_trial_response`` plus the
-# count/version-scoping helpers (``resolve_effective_version_id`` /
-# ``get_task_status_trials``) read. Lives next to the builder for the same
-# MissingGreenlet reason as ``TASK_STATUS_RESPONSE_COLUMNS``. The large JSONB
-# blobs the grid never shows (``harbor_config``, ``phase_timing``,
-# ``result``) stay deferred and arrive on demand via ``GET /trials/{id}``.
 SLIM_TRIAL_RESPONSE_COLUMNS = (
     TrialModel.id,
     TrialModel.name,
@@ -1109,21 +1094,7 @@ SLIM_TRIAL_RESPONSE_COLUMNS = (
 
 
 def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
-    """Minimal TrialResponse for the experiment grid (slim Phase-2 path).
-
-    Populates only what the grid renders (status / reward / error / agent /
-    model / analysis classification) plus the schema-required fields and
-    ``cost_usd`` (kept so the exp-page header cost total still works). The
-    heavy fields the grid never shows -- ``harbor_config`` / ``phase_timing``
-    (large JSONB), ``harbor_sha`` / ``harbor_source``, ``total_steps``,
-    ``has_trajectory``, ``origin``, ``result`` -- are left at their defaults
-    and fetched on demand via ``GET /trials/{id}`` when a cell is clicked.
-
-    Unlike ``build_compact_trial_response`` this only surfaces the analysis
-    classification/subtype/evidence triplet the grid marker needs; the full
-    analysis (root_cause, recommendation, etc.) arrives with the on-click
-    full-trial fetch.
-    """
+    """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
     if isinstance(trial.analysis, dict):
         resolved_analysis_summary = {
@@ -1175,12 +1146,7 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
-    """``build_task_status_response_compact`` with SLIM per-trial payloads.
-
-    Same aggregate counts and version scoping, but each trial is built with
-    :func:`build_slim_trial_response` instead of the full compact builder.
-    Used only by the experiment-grid slim path.
-    """
+    """Build a task status response with slim per-trial payloads."""
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,

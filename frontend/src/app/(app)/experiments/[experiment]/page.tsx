@@ -86,10 +86,6 @@ export default async function ExperimentDetailPage({
 }) {
   const { experiment } = await params;
   const experimentId = decodeExperimentRouteParam(experiment ?? "");
-  // NOT awaited: the promise streams to the client and resolves inside the
-  // Suspense boundary in ExperimentClientPage (same pattern as
-  // dashboard/page.tsx), so the shell paints without waiting on
-  // auth + token + backend fetch.
   const initialTasksPromise = getInitialTasks(experimentId);
 
   return (

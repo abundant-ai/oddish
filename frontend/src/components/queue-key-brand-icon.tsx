@@ -18,8 +18,6 @@ import {
   Yi,
 } from "@lobehub/icons";
 
-// Loaded via next/dynamic from queue-key-icon.tsx so the @lobehub/icons
-// barrel stays out of every route's initial bundle.
 const BRAND_ICONS = {
   anthropic: Anthropic,
   baichuan: Baichuan,

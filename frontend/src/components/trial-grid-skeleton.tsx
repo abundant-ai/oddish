@@ -1,8 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
-// Shared placeholder for the experiment trial grid, rendered by both the
-// route-level ExperimentPageSkeleton and the trials table's own
-// initial-loading branch so the two can't drift apart.
 export function TrialGridSkeleton({
   columnCount,
   rowCount,

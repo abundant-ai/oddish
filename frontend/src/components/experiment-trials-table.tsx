@@ -949,10 +949,6 @@ export function ExperimentTrialsTable({
     getScrollElement: () => tableContainerRef.current,
     estimateSize: () => 46,
     overscan: 4,
-    // Without this, getVirtualItems() is empty until the scroll container
-    // mounts on the client, so SSR HTML ships zero rows and the table (the
-    // LCP element) can't paint until hydration. A fixed viewport-sized rect
-    // lets the server render the first window of rows.
     initialRect: { width: 1280, height: 720 },
   });
 

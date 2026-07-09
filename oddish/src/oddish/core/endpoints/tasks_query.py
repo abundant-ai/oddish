@@ -176,51 +176,20 @@ async def list_tasks_core(
                 TrialModel.provider,
                 TrialModel.queue_key,
                 TrialModel.model,
-                # Surfaced by ``build_compact_trial_response`` so the UI can
-                # show the trial's sandbox backend without waiting for
-                # worker_jobs metadata.
                 TrialModel.environment,
                 TrialModel.status,
-                # ``origin`` is surfaced in compact responses, so it must
-                # be loaded eagerly; otherwise the response builder
-                # triggers a lazy-load attempt outside the async
-                # greenlet and fails with MissingGreenlet.
                 TrialModel.origin,
                 TrialModel.attempts,
                 TrialModel.max_attempts,
                 TrialModel.harbor_stage,
                 TrialModel.reward,
                 TrialModel.error_message,
-                # Surfaced by ``build_compact_trial_response`` (probe
-                # trials read it on the experiment page). Must be loaded
-                # eagerly; otherwise the compact builder triggers a
-                # lazy-load on this deferred JSONB column outside the
-                # async greenlet and fails with MissingGreenlet (same
-                # reason ``origin`` / ``superseded_by_trial_id`` are here).
                 TrialModel.harbor_config,
-                # Surfaced by both trial builders (``harbor_sha=trial.harbor_sha``).
-                # Must be loaded eagerly; otherwise the compact builder triggers a
-                # lazy-load on this column outside the async greenlet and fails
-                # with MissingGreenlet (same reason ``harbor_config`` is here).
                 TrialModel.harbor_sha,
-                # Read by the compact builder (``build_compact_trial_response``);
-                # the experiment-scoped path also filters on ``is_probe``, but
-                # that now happens in SQL via the filtered selectin above. Must
-                # still be loaded eagerly for the builder; otherwise accessing
-                # it triggers a lazy-load on this column outside the async
-                # greenlet and fails with MissingGreenlet (same reason
-                # ``origin`` / ``harbor_config`` are here).
                 TrialModel.is_probe,
                 TrialModel.has_trajectory,
                 TrialModel.phase_timing,
                 TrialModel.analysis_status,
-                # Eagerly load the analysis JSONB on the compact path so
-                # ``build_compact_trial_response`` can read
-                # ``classification`` / ``subtype`` / ``evidence`` without
-                # a follow-up ``fetch_trial_analysis_summaries`` round
-                # trip. The blob is small in practice (3 short fields)
-                # and skipping the extra query is one of the bigger
-                # wins on the experiment-page batched fetch.
                 TrialModel.analysis,
                 TrialModel.input_tokens,
                 TrialModel.cache_tokens,
@@ -228,14 +197,7 @@ async def list_tasks_core(
                 TrialModel.output_tokens,
                 TrialModel.total_steps,
                 TrialModel.cost_usd,
-                # Read by both trial builders (``is_billed``). Must be loaded
-                # eagerly; otherwise the builder triggers a lazy-load outside
-                # the async greenlet and fails with MissingGreenlet (same
-                # reason ``origin`` is here).
                 TrialModel.billed_user_id,
-                # Loaded eagerly so the compact builder can surface the
-                # rerun pointer without triggering a lazy-load outside
-                # the async greenlet (same reason ``origin`` is here).
                 TrialModel.superseded_by_trial_id,
                 TrialModel.created_at,
                 TrialModel.started_at,
@@ -246,9 +208,6 @@ async def list_tasks_core(
                 ExperimentModel.name,
                 ExperimentModel.is_public,
                 ExperimentModel.created_at,
-                # Read by the experiment page header (PR badge + author) via
-                # ``_build_task_status_response``; must be eager or the deferred
-                # access raises MissingGreenlet on the compact path.
                 ExperimentModel.owner,
                 ExperimentModel.link,
             )
@@ -492,24 +451,7 @@ async def list_experiment_task_shells_core(
     include_empty_rewards: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
-    """Lightweight task-shell list for the experiment-details first paint.
-
-    A dedicated, trimmed alternative to ``list_tasks_core``'s compact
-    experiment path. It returns the same ``TaskStatusResponse`` shells
-    (id/name/status + aggregated trial counts) but skips every load the
-    first-paint shell view never reads: trials, ``visible_worker_jobs``,
-    ``queue_info``, ``effective_version_ids``, AND the per-task
-    ``experiments`` fan-out (which hydrates every experiment each task has
-    ever belonged to -- the dominant per-request cost of that page).
-
-    Every returned task belongs to ``experiment_id`` (the ``.any(...)``
-    filter), so the only experiment the response needs -- the primary -- is
-    the one being viewed. We attach just that with a single ``session.get``
-    instead of the fan-out.
-
-    Kept intentionally separate so the generic ``list_tasks_core`` / ``/tasks``
-    path is left completely unchanged.
-    """
+    """List task shells for the experiment detail first paint."""
     query = (
         select(TaskModel)
         .order_by(TaskModel.created_at.desc())
@@ -561,25 +503,7 @@ async def list_experiment_slim_tasks(
     include_empty_rewards: bool = True,
     record_timing: TimingRecorder | None = None,
 ) -> list[TaskStatusResponse]:
-    """Slim per-trial grid data for the experiment page (Phase 2).
-
-    Loads each task's experiment-scoped, non-probe trials (same scoping as
-    ``list_tasks_core``'s compact-trials path), but builds SLIM trial objects
-    via ``build_slim_task_status_response``: only the fields the grid renders
-    (+ cost, kept for the header total). The heavy per-trial fields
-    (harbor_config, phase_timing, tokens, full analysis, ...) are omitted from
-    the payload and fetched on demand via ``GET /trials/{id}`` when a cell is
-    clicked.
-
-    The per-task ``experiments`` fan-out is skipped (only the context
-    experiment is attached, as in ``list_experiment_task_shells_core``). Kept
-    separate so ``list_tasks_core`` / ``/tasks`` stays unchanged.
-
-    Both the task and trial queries are projected with ``load_only`` to the
-    columns the slim builders actually read (``TASK_STATUS_RESPONSE_COLUMNS``
-    / ``SLIM_TRIAL_RESPONSE_COLUMNS``), keeping the large JSONB blobs out of the
-    round trip.
-    """
+    """List slim per-trial grid data for the experiment page."""
     from sqlalchemy.orm.attributes import set_committed_value
 
     trials_relationship = TaskModel.trials.and_(

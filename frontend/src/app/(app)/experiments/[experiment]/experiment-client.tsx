@@ -603,9 +603,6 @@ function ExperimentContent({
               </Alert>
             ) : null
           }
-          // Below the table (not above) so mounting/unmounting never shifts
-          // the grid: the effect-driven prefetch would otherwise unmount an
-          // alert above the LCP element and score as CLS.
           tableFooter={
             remainingTrialTaskCount > 0 ? (
               <Alert>

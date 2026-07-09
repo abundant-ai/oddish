@@ -4,10 +4,6 @@ import { TrialGridSkeleton } from "@/components/trial-grid-skeleton";
 const SKELETON_COLUMN_COUNT = 6;
 const SKELETON_ROW_COUNT = 12;
 
-// Height-stable placeholder for the experiment page, used both as the route
-// loading.tsx and as the Suspense fallback while the initial task-shells
-// promise streams in. Mirrors the real layout (title, meta strip, summary
-// bar, toolbar, trial grid) so the swap to live content doesn't shift layout.
 export function ExperimentPageSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true" aria-label="Loading experiment">

@@ -7,8 +7,6 @@ import { encodeExperimentRouteParam } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
-// Keeps react-markdown + remark + prism out of the route's initial bundle;
-// ssr stays on so the rendered description is still in the server HTML.
 const MarkdownRenderer = dynamic(() =>
   import("@/components/renderers/markdown-renderer").then(
     (mod) => mod.MarkdownRenderer,

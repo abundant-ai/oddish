@@ -10,8 +10,6 @@ import {
   PROBE_AGENT_KEY,
 } from "@/lib/experiment-agent-grouping";
 
-// The @lobehub/icons barrel is ~44KB gzip; keep it out of the initial bundle
-// and let brand glyphs hydrate into a reserved-size box after mount.
 const BrandIcon = dynamic(() => import("./queue-key-brand-icon"), {
   ssr: false,
   loading: () => null,
