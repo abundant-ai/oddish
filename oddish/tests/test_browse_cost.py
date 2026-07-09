@@ -83,6 +83,19 @@ def test_cache_write_tokens_with_known_model_are_estimated() -> None:
     assert estimated is True
 
 
+def test_cache_read_tokens_without_input_are_unpriceable() -> None:
+    cost, estimated = _resolve_browse_trial_cost(
+        _row(
+            model="gpt-5.5-codex",
+            input_tokens=0,
+            output_tokens=0,
+            cache_tokens=1_000_000,
+        )
+    )
+    assert cost is None
+    assert estimated is False
+
+
 def test_cost_desc_scopes_persisted_and_estimated_cost_to_model_and_finish_time() -> None:
     metrics = _task_metrics_subquery(
         "org-1",

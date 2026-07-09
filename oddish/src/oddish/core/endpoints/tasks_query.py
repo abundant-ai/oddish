@@ -967,6 +967,11 @@ def _trial_cost_sort_expression(models: Sequence[str] | None) -> Any:
     uncached_input = func.greatest(
         nonnegative_input - nonnegative_cache - nonnegative_cache_write, 0
     )
+    has_estimatable_tokens = or_(
+        nonnegative_input > 0,
+        nonnegative_output > 0,
+        nonnegative_cache_write > 0,
+    )
     estimated_by_model = []
     for model in models or ():
         pricing = get_model_pricing(model)
@@ -982,7 +987,7 @@ def _trial_cost_sort_expression(models: Sequence[str] | None) -> Any:
         )
         estimated_by_model.append(
             (
-                TrialModel.model == model,
+                and_(TrialModel.model == model, has_estimatable_tokens),
                 uncached_input * pricing.input
                 + nonnegative_cache * cache_read_rate
                 + nonnegative_cache_write * cache_write_rate
