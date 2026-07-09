@@ -18,7 +18,9 @@ from oddish.model_pricing import (
     _litellm_candidates,
     _pricing_from_litellm_info,
     estimate_cost_usd,
+    get_model_pricing,
     has_pricing,
+    is_native_cost_trusted,
     settle_cost_usd,
 )
 
@@ -233,6 +235,60 @@ def test_litellm_candidates_normalize_names() -> None:
     assert "anthropic/claude-opus-4-7" in cs
 
 
+@pytest.mark.parametrize(
+    ("model", "litellm_key", "expected"),
+    [
+        (
+            "fireworks/minimax-m3",
+            "fireworks_ai/accounts/fireworks/models/minimax-m3",
+            ModelPricing(input=3e-7, output=1.2e-6, cache_read=6e-8),
+        ),
+        (
+            "fireworks/glm-5p2",
+            "fireworks_ai/accounts/fireworks/models/glm-5p2",
+            ModelPricing(input=1.4e-6, output=4.4e-6, cache_read=2.6e-7),
+        ),
+        (
+            "fireworks/kimi-k2p7-code",
+            "fireworks_ai/accounts/fireworks/models/kimi-k2p7-code",
+            ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.9e-7),
+        ),
+    ],
+)
+def test_canonical_fireworks_ids_resolve_litellm_rates(
+    model: str, litellm_key: str, expected: ModelPricing
+) -> None:
+    candidates = _litellm_candidates(model)
+    assert litellm_key in candidates
+    assert candidates.index(litellm_key) < candidates.index(model.split("/", 1)[1])
+    assert _find_litellm_pricing(model) == expected
+
+
+def test_direct_passthrough_pricing_coverage_is_provider_specific() -> None:
+    # Existing authoritative coverage: z.ai GLM-5.2 uses Oddish's documented
+    # gap entry, and MiniMax-M3 resolves LiteLLM's mixed-case provider key.
+    assert get_model_pricing("zai/glm-5.2") == ModelPricing(
+        input=1.4e-6, output=4.4e-6, cache_read=2.6e-7
+    )
+    assert _find_litellm_pricing("minimax/minimax-m3") == ModelPricing(
+        input=3e-7, output=1.2e-6, cache_read=6e-8
+    )
+
+    # LiteLLM 1.83.14 has Kimi K2.7 rates for Fireworks, but no direct Moonshot
+    # K2.7 entry. Do not borrow another provider's price.
+    assert get_model_pricing("moonshot/kimi-k2.7-code") is None
+    assert (
+        settle_cost_usd(
+            99.0,
+            native_cost_trusted=False,
+            model="moonshot/kimi-k2.7-code",
+            input_tokens=1_000,
+            output_tokens=100,
+        )
+        is None
+    )
+
+
 def test_litellm_returns_none_for_unknown_model() -> None:
     assert _find_litellm_pricing("totally-made-up-model-xyz") is None
 
@@ -290,7 +346,11 @@ def test_glm_5_2_priced_via_gap_table() -> None:
     assert pricing.output == pytest.approx(4.4e-6)
     assert has_pricing("zai/glm-5.2")
     cost = settle_cost_usd(
-        0.0, model="zai/glm-5.2", input_tokens=1_000_000, output_tokens=1_000_000
+        0.0,
+        native_cost_trusted=True,
+        model="zai/glm-5.2",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
     )
     assert cost == pytest.approx(1.4e-6 * 1_000_000 + 4.4e-6 * 1_000_000)
 
@@ -312,14 +372,46 @@ def test_litellm_zero_zero_entries_are_rejected() -> None:
 
 def test_settle_keeps_positive_native_cost() -> None:
     assert (
-        settle_cost_usd(1.23, model="zai/glm-4.6", input_tokens=1_000, output_tokens=10)
+        settle_cost_usd(
+            1.23,
+            native_cost_trusted=True,
+            model="zai/glm-4.6",
+            input_tokens=1_000,
+            output_tokens=10,
+        )
         == 1.23
     )
+
+
+@pytest.mark.parametrize(
+    "provider", ["fireworks", "zai", "minimax", "moonshot", "openrouter"]
+)
+def test_native_cost_policy_rejects_claude_code_passthrough(provider: str) -> None:
+    assert not is_native_cost_trusted(agent="claude-code", provider=provider)
+    assert is_native_cost_trusted(agent="mini-swe-agent", provider=provider)
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "bedrock"])
+def test_native_cost_policy_keeps_real_claude_costs(provider: str) -> None:
+    assert is_native_cost_trusted(agent="claude-code", provider=provider)
+
+
+def test_settle_ignores_positive_untrusted_native_cost() -> None:
+    cost = settle_cost_usd(
+        99.0,
+        native_cost_trusted=False,
+        model="fireworks/minimax-m3",
+        input_tokens=2_000_000,
+        cache_tokens=1_000_000,
+        output_tokens=100_000,
+    )
+    assert cost == pytest.approx(1_000_000 * 3e-7 + 1_000_000 * 6e-8 + 100_000 * 1.2e-6)
 
 
 def test_settle_estimates_when_native_is_zero_with_tokens() -> None:
     cost = settle_cost_usd(
         0.0,
+        native_cost_trusted=True,
         model="zai/glm-x-preview[1m]",
         input_tokens=1_000_000,
         output_tokens=100_000,
@@ -330,6 +422,7 @@ def test_settle_estimates_when_native_is_zero_with_tokens() -> None:
 def test_settle_estimates_when_native_is_missing_with_tokens() -> None:
     cost = settle_cost_usd(
         None,
+        native_cost_trusted=True,
         model="zai/glm-x-preview[1m]",
         input_tokens=1_000_000,
         output_tokens=100_000,
@@ -340,6 +433,7 @@ def test_settle_estimates_when_native_is_missing_with_tokens() -> None:
 def test_settle_estimates_cache_write_only_trials() -> None:
     cost = settle_cost_usd(
         0.0,
+        native_cost_trusted=True,
         model="claude-3-7-sonnet",
         input_tokens=0,
         output_tokens=0,
@@ -351,7 +445,11 @@ def test_settle_estimates_cache_write_only_trials() -> None:
 def test_settle_keeps_free_tier_models_at_zero() -> None:
     assert (
         settle_cost_usd(
-            0.0, model="zai/glm-4.5-flash", input_tokens=50_000, output_tokens=5_000
+            0.0,
+            native_cost_trusted=True,
+            model="zai/glm-4.5-flash",
+            input_tokens=50_000,
+            output_tokens=5_000,
         )
         == 0.0
     )
@@ -361,7 +459,11 @@ def test_settle_keeps_free_tier_models_at_zero() -> None:
 def test_settle_returns_none_for_unpriceable_model() -> None:
     assert (
         settle_cost_usd(
-            0.0, model="totally-made-up-model", input_tokens=10, output_tokens=10
+            0.0,
+            native_cost_trusted=True,
+            model="totally-made-up-model",
+            input_tokens=10,
+            output_tokens=10,
         )
         is None
     )
@@ -369,11 +471,23 @@ def test_settle_returns_none_for_unpriceable_model() -> None:
 
 def test_settle_preserves_native_when_no_tokens() -> None:
     assert (
-        settle_cost_usd(0.0, model="zai/glm-4.6", input_tokens=None, output_tokens=None)
+        settle_cost_usd(
+            0.0,
+            native_cost_trusted=True,
+            model="zai/glm-4.6",
+            input_tokens=None,
+            output_tokens=None,
+        )
         == 0.0
     )
     assert (
-        settle_cost_usd(None, model="zai/glm-4.6", input_tokens=0, output_tokens=0)
+        settle_cost_usd(
+            None,
+            native_cost_trusted=True,
+            model="zai/glm-4.6",
+            input_tokens=0,
+            output_tokens=0,
+        )
         is None
     )
 
@@ -382,6 +496,7 @@ def test_settle_treats_nan_and_negative_native_cost_as_junk() -> None:
     for junk in (float("nan"), float("inf"), -0.01):
         cost = settle_cost_usd(
             junk,
+            native_cost_trusted=True,
             model="zai/glm-x-preview[1m]",
             input_tokens=1_000_000,
             output_tokens=100_000,
@@ -389,7 +504,11 @@ def test_settle_treats_nan_and_negative_native_cost_as_junk() -> None:
         assert cost == pytest.approx(1.32)
     assert (
         settle_cost_usd(
-            float("nan"), model="zai/glm-4.6", input_tokens=None, output_tokens=None
+            float("nan"),
+            native_cost_trusted=True,
+            model="zai/glm-4.6",
+            input_tokens=None,
+            output_tokens=None,
         )
         is None
     )

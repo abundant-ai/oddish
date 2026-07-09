@@ -95,6 +95,28 @@ _LITELLM_PREFIX_CANDIDATES: tuple[str, ...] = (
     "azure/",
 )
 
+# Claude Code computes ``total_cost_usd`` from its own Anthropic model table.
+# That value is authoritative for Anthropic/Bedrock Claude, but not when the
+# same harness is pointed at an Anthropic-compatible third-party endpoint.
+_CLAUDE_CODE_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset(
+    {"fireworks", "zai", "minimax", "moonshot", "openrouter"}
+)
+
+
+def is_native_cost_trusted(*, agent: str | None, provider: str | None) -> bool:
+    """Whether a harness-reported native cost is authoritative.
+
+    Provider alone is insufficient: a LiteLLM-backed agent can report a valid
+    native Fireworks cost. Only Claude Code's third-party compatibility routes
+    use an Anthropic-only client-side price table for a non-Anthropic model.
+    """
+    normalized_agent = (agent or "").strip().lower()
+    normalized_provider = (provider or "").strip().lower()
+    return not (
+        "claude-code" in normalized_agent
+        and normalized_provider in _CLAUDE_CODE_PASSTHROUGH_PROVIDERS
+    )
+
 
 def _litellm_candidates(model_name: str) -> list[str]:
     candidates: list[str] = []
@@ -106,7 +128,21 @@ def _litellm_candidates(model_name: str) -> list[str]:
     add(model_name)
 
     if "/" in model_name:
-        add(model_name.split("/", 1)[1])
+        provider, bare = model_name.split("/", 1)
+        provider = provider.lower()
+        if provider == "fireworks":
+            # Oddish stores Fireworks routes as ``fireworks/<short-id>`` while
+            # LiteLLM's authoritative entries use its ``fireworks_ai`` provider
+            # plus the full Fireworks model path.
+            if bare.lower().startswith("accounts/fireworks/"):
+                add(f"fireworks_ai/{bare}")
+            elif "/" not in bare:
+                add(f"fireworks_ai/accounts/fireworks/models/{bare}")
+        elif provider == "minimax" and bare.lower() == "minimax-m3":
+            # MiniMax's published API id is mixed-case and LiteLLM keys it that
+            # way; Oddish deliberately stores canonical model ids lowercase.
+            add("minimax/MiniMax-M3")
+        add(bare)
 
     tail = model_name.rsplit("/", 1)[-1]
     if "." in tail:
@@ -227,6 +263,7 @@ def estimate_cost_usd(
 def settle_cost_usd(
     native_cost_usd: float | None,
     *,
+    native_cost_trusted: bool,
     model: str | None,
     input_tokens: int | None,
     output_tokens: int | None,
@@ -234,7 +271,8 @@ def settle_cost_usd(
     cache_write_tokens: int | None = None,
 ) -> float | None:
     usable = (
-        native_cost_usd is not None
+        native_cost_trusted
+        and native_cost_usd is not None
         and math.isfinite(native_cost_usd)
         and native_cost_usd >= 0
     )
