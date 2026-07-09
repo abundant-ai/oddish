@@ -65,7 +65,7 @@ HARBOR_VARIANTS: dict[str, HarborVariant] = {
     GKE_VARIANT_ID: HarborVariant(
         variant_id=GKE_VARIANT_ID,
         source="https://github.com/abundant-ai/harbor-gke",
-        sha="c81d0c3edc7ade97facb08c83c2c7c696a6bee6d",
+        sha="6316a9de9af7f5099880bf2fca5917b082dcdb8d",
         extras=("gke",),
     ),
 }
