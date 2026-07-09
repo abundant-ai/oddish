@@ -155,7 +155,7 @@ function DeletedSpendBadge({
       <TooltipContent className="max-w-[280px]">
         {isDeleted
           ? `This ${entity} was deleted, but its historical spend still counts.`
-          : `This ${entity} includes spend from deleted trials.`}
+          : `This ${entity} includes historical spend from deleted related records.`}
       </TooltipContent>
     </Tooltip>
   );

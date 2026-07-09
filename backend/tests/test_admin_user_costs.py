@@ -111,7 +111,12 @@ async def costs_fixture():
         await session.flush()
         session.add_all(
             [
-                ExperimentModel(id=f"exp_{task_a}", name="exp-a", org_id=org_id),
+                ExperimentModel(
+                    id=f"exp_{task_a}",
+                    name="exp-a",
+                    org_id=org_id,
+                    deleted_at=now,
+                ),
                 ExperimentModel(id=f"exp_{task_b}", name="exp-b", org_id=org_id),
             ]
         )
@@ -267,7 +272,7 @@ async def test_task_grouping_and_sort(costs_fixture):
     assert tasks[0]["trial_count"] == 2
     assert tasks[0]["cost_estimated_usd"] == pytest.approx(0.0)
     assert tasks[0]["is_deleted"] is False
-    assert tasks[0]["has_deleted_spend"] is False
+    assert tasks[0]["has_deleted_spend"] is True
     assert tasks[1]["task_name"] == "beta-task"
     assert tasks[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert tasks[1]["trial_count"] == 2
@@ -288,8 +293,8 @@ async def test_experiment_grouping_and_sort(costs_fixture):
     assert experiments[0]["name"] == "exp-a"
     assert experiments[0]["cost_usd"] == pytest.approx(0.30)
     assert experiments[0]["trial_count"] == 2
-    assert experiments[0]["is_deleted"] is False
-    assert experiments[0]["has_deleted_spend"] is False
+    assert experiments[0]["is_deleted"] is True
+    assert experiments[0]["has_deleted_spend"] is True
     assert experiments[1]["name"] == "exp-b"
     assert experiments[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert experiments[1]["trial_count"] == 2

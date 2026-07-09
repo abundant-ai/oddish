@@ -2064,6 +2064,7 @@ async def get_user_cost_breakdown_core(
                 or_(
                     TrialModel.deleted_at.is_not(None),
                     TaskModel.deleted_at.is_not(None),
+                    ExperimentModel.deleted_at.is_not(None),
                 )
             ).label("has_deleted_spend"),
             *settled_cost_columns(),
@@ -2073,6 +2074,11 @@ async def get_user_cost_breakdown_core(
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .join(
+            ExperimentModel,
+            ExperimentModel.id == TrialModel.experiment_id,
+            isouter=True,
+        )
         .where(*filters)
         .group_by(
             TrialModel.task_id,
