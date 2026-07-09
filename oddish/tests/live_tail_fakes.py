@@ -60,7 +60,7 @@ class FakeSession:
         return FakeExecuteResult(self.rowcount)
 
 
-def patch_db(monkeypatch, module=live_tail, **kwargs):
+def patch_db(monkeypatch, module=live_tail, price=None, **kwargs):
     session = FakeSession(**kwargs)
 
     @contextlib.asynccontextmanager
@@ -68,6 +68,8 @@ def patch_db(monkeypatch, module=live_tail, **kwargs):
         yield session
 
     monkeypatch.setattr(module, "get_session", fake_get_session)
+    if module is live_tail:
+        monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: price)
     return session
 
 

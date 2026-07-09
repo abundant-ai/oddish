@@ -190,24 +190,16 @@ class FakeClient:
         return self.response
 
 
-def test_fetch_404_raises_exit():
-    fetch = _fetch(FakeClient(FakeResponse(404)), "http://x", "trial-1")
-    with pytest.raises(typer.Exit) as exc:
+@pytest.mark.parametrize(
+    "status,exc",
+    [(404, typer.Exit), (400, typer.Exit), (503, _TransientError)],
+)
+def test_fetch_error_status(status, exc):
+    fetch = _fetch(FakeClient(FakeResponse(status, text="err")), "http://x", "t")
+    with pytest.raises(exc) as info:
         fetch(None, 0)
-    assert exc.value.exit_code == 1
-
-
-def test_fetch_5xx_raises_transient():
-    fetch = _fetch(FakeClient(FakeResponse(503, text="unavailable")), "http://x", "t")
-    with pytest.raises(_TransientError):
-        fetch(None, 0)
-
-
-def test_fetch_non_retryable_status_exits():
-    fetch = _fetch(FakeClient(FakeResponse(400, text="bad")), "http://x", "t")
-    with pytest.raises(typer.Exit) as exc:
-        fetch(None, 0)
-    assert exc.value.exit_code == 1
+    if exc is typer.Exit:
+        assert info.value.exit_code == 1
 
 
 def test_fetch_omits_attempt_when_none():

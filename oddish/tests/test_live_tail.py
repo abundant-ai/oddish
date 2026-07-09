@@ -269,8 +269,7 @@ async def test_codex_tick_without_usage_skips_checkpoint(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tick_offset_math_and_checkpoint_across_split_chunks(monkeypatch):
-    session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: 0.5)
+    session = patch_db(monkeypatch, price=0.5)
     line1 = assistant_line("msg_1", {"input_tokens": 10, "output_tokens": 2})
     line2 = assistant_line("msg_2", {"input_tokens": 3, "output_tokens": 4})
     raw1 = line1 + b"\n" + line2[:7]
@@ -300,7 +299,6 @@ async def test_tick_offset_math_and_checkpoint_across_split_chunks(monkeypatch):
 @pytest.mark.asyncio
 async def test_checkpoint_writes_null_cost_when_unpriceable(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
     tailer = make_tailer(env, model="m")
     await tailer._tick()
@@ -364,7 +362,6 @@ async def test_run_disables_after_consecutive_failures(monkeypatch):
 @pytest.mark.asyncio
 async def test_failure_cap_persists_pending_fold(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 0.001)
     env = FakeEnv([RuntimeError("boom")] * 10)
     tailer = make_tailer(env)
@@ -377,7 +374,6 @@ async def test_failure_cap_persists_pending_fold(monkeypatch):
 @pytest.mark.asyncio
 async def test_stop_triggers_final_drain(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(assistant_line("m", {"input_tokens": 5}) + b"\n")])
     tailer = make_tailer(env)
     tailer.request_stop()
@@ -405,7 +401,6 @@ async def test_cost_is_monotone_across_unpriceable_ticks(monkeypatch):
 @pytest.mark.asyncio
 async def test_stop_path_persists_fold_when_final_tick_fails(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([RuntimeError("sandbox died")])
     tailer = make_tailer(env)
     tailer.fold.feed_line(assistant_line("m", {"input_tokens": 6}))
@@ -417,7 +412,6 @@ async def test_stop_path_persists_fold_when_final_tick_fails(monkeypatch):
 @pytest.mark.asyncio
 async def test_cancelled_tailer_persists_fold_unless_replaced(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
 
     class HangingEnv:
         async def exec(self, command, timeout_sec=None):
@@ -439,7 +433,6 @@ async def test_cancelled_tailer_persists_fold_unless_replaced(monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_tick_retries_pending_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([FakeResult()])
     tailer = make_tailer(env)
     tailer.fold.feed_line(assistant_line("m", {"input_tokens": 3}))
@@ -458,7 +451,6 @@ async def test_invalid_base64_raises_exec_error():
 @pytest.mark.asyncio
 async def test_zero_rowcount_stops_tailer(monkeypatch):
     patch_db(monkeypatch, rowcount=0)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
     tailer = make_tailer(env)
     await tailer._tick()
@@ -469,7 +461,6 @@ async def test_zero_rowcount_stops_tailer(monkeypatch):
 @pytest.mark.asyncio
 async def test_replaced_tailer_skips_checkpoint(monkeypatch):
     session = patch_db(monkeypatch)
-    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
     env = FakeEnv([b64(assistant_line("m", {"input_tokens": 1}) + b"\n")])
     tailer = make_tailer(env)
     tailer.replaced = True

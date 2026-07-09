@@ -99,6 +99,7 @@ const TrajectoryViewer = dynamic(
   },
 );
 
+
 function DrawerPanelLoading({ label }: { label: string }) {
   return (
     <div className="text-muted-foreground flex h-full min-h-[160px] items-center justify-center gap-2 text-sm">

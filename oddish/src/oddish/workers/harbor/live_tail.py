@@ -422,15 +422,6 @@ class LiveTailer:
             cost = self._last_cost
         elif self._last_cost is not None:
             cost = max(cost, self._last_cost)
-        state = (
-            totals.input_tokens,
-            totals.cache_tokens,
-            totals.cache_write_tokens,
-            totals.output_tokens,
-            cost,
-        )
-        if state == self._last_written or self.replaced:
-            return
         values: dict[str, Any] = {
             "input_tokens": totals.input_tokens,
             "cache_tokens": totals.cache_tokens,
@@ -438,6 +429,9 @@ class LiveTailer:
             "output_tokens": totals.output_tokens,
             "cost_usd": cost,
         }
+        state = tuple(values.values())
+        if state == self._last_written or self.replaced:
+            return
         async with get_session() as session:
             result = await session.execute(
                 update(TrialModel)

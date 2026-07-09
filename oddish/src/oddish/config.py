@@ -659,6 +659,11 @@ def to_bedrock_model_id(model: str | None) -> str | None:
                 key = key[: -len(version_suffix)]
                 break
 
+    # Accept the marketing spelling with a dotted minor version
+    # ("claude-opus-4.8") as an alias for the canonical dashed table key
+    # ("claude-opus-4-8"); a bare dotted id has no Bedrock mapping otherwise.
+    key = key.replace(".", "-")
+
     bedrock_id = _ANTHROPIC_TO_BEDROCK_MODEL_IDS.get(key)
     if bedrock_id is None:
         raise ValueError(
@@ -973,7 +978,7 @@ class Settings(BaseSettings):
     # Default execution environment (daytona, docker, or modal)
     harbor_environment: str = "daytona"
 
-    # Live tail of agent output for running trials (spec: harbor-live-streaming-mvp)
+    # Live tail of agent output for running trials
     live_tail_enabled: bool = True
     live_tail_interval_sec: float = 5.0
 
