@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import pytest
 
 import oddish.reprice_passthrough_costs as reprice_module
-from oddish.model_pricing import untrusted_native_cost_providers
 from oddish.reprice_passthrough_costs import (
     _SELECT_CANDIDATES,
     _UPDATE_COST,
@@ -101,7 +100,9 @@ def test_candidate_sql_includes_historical_first_party_and_token_guards() -> Non
 
     assert "t.finished_at >= :since" in sql
     assert "lower(t.agent) like '%claude-code%'" in sql
-    assert "lower(t.provider) in :passthrough_providers" in sql
+    # Provider trust is derived from (agent, model) in Python, exactly like the
+    # live settlement path; a stale persisted provider must not hide a row.
+    assert "lower(t.provider)" not in sql
     assert "t.origin::text = 'oddish'" in sql
     assert "t.idempotency_key not like 'combine:%'" in sql
     assert "t.billed_user_id is not null or t.is_probe is false" in sql
@@ -127,13 +128,15 @@ def test_parse_since_accepts_iso_dates_and_normalizes_naive_values_to_utc() -> N
 @pytest.mark.asyncio
 async def test_dry_run_is_default_and_never_executes_an_update(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     statements: list[object] = []
     select_count = 0
     selected_row = SimpleNamespace(
         id="task-1-0",
         agent="claude-code",
-        provider="fireworks",
+        # Deliberately stale: live settlement derives Fireworks from the model.
+        provider="anthropic",
         model="fireworks/minimax-m3",
         cost_usd=99.0,
         input_tokens=1_000,
@@ -153,9 +156,8 @@ async def test_dry_run_is_default_and_never_executes_an_update(
         async def execute(self, statement, parameters):
             nonlocal select_count
             statements.append(statement)
-            assert parameters["passthrough_providers"] == tuple(
-                sorted(untrusted_native_cost_providers(agent="claude-code"))
-            )
+            assert "passthrough_providers" not in parameters
+            assert "provider" not in parameters
             select_count += 1
             return FakeResult([selected_row] if select_count == 1 else [])
 
@@ -168,3 +170,6 @@ async def test_dry_run_is_default_and_never_executes_an_update(
     await reprice_module.run_reprice(since="2026-01-01")
 
     assert statements == [_SELECT_CANDIDATES, _SELECT_CANDIDATES]
+    output = capsys.readouterr().out
+    assert "fireworks / fireworks/minimax-m3" in output
+    assert "planned_updates=1" in output

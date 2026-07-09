@@ -9,11 +9,11 @@ from typing import Literal
 
 from sqlalchemy import DateTime, Integer, String, bindparam, text
 
+from oddish.config import settings
 from oddish.db import get_session
 from oddish.model_pricing import (
     is_native_cost_trusted,
     settle_cost_usd,
-    untrusted_native_cost_providers,
 )
 
 _SELECT_CANDIDATES = text(
@@ -25,7 +25,6 @@ _SELECT_CANDIDATES = text(
     WHERE t.deleted_at IS NULL
       AND t.finished_at >= :since
       AND LOWER(t.agent) LIKE '%claude-code%'
-      AND LOWER(t.provider) IN :passthrough_providers
       AND t.origin::text = 'oddish'
       AND (
         t.idempotency_key IS NULL
@@ -38,16 +37,13 @@ _SELECT_CANDIDATES = text(
         OR COALESCE(t.cache_write_tokens, 0) > 0
       )
       AND (:model IS NULL OR t.model = :model)
-      AND (:provider IS NULL OR LOWER(t.provider) = LOWER(:provider))
       AND t.id > :after
     ORDER BY t.id
     LIMIT :page
     """
 ).bindparams(
-    bindparam("passthrough_providers", expanding=True, type_=String()),
     bindparam("since", type_=DateTime(timezone=True)),
     bindparam("model", type_=String()),
-    bindparam("provider", type_=String()),
     bindparam("after", type_=String()),
     bindparam("page", type_=Integer()),
 )
@@ -143,10 +139,7 @@ async def run_reprice(
 ) -> None:
     since_datetime = parse_since(since)
     model = model.strip() if model and model.strip() else None
-    provider = provider.strip() if provider and provider.strip() else None
-    passthrough_providers = tuple(
-        sorted(untrusted_native_cost_providers(agent="claude-code"))
-    )
+    provider = provider.strip().lower() if provider and provider.strip() else None
 
     summaries: dict[tuple[str, str], GroupSummary] = {}
     after = ""
@@ -162,9 +155,7 @@ async def run_reprice(
                     _SELECT_CANDIDATES,
                     {
                         "since": since_datetime,
-                        "passthrough_providers": passthrough_providers,
                         "model": model,
-                        "provider": provider,
                         "after": after,
                         "page": _PAGE_SIZE,
                     },
@@ -176,9 +167,14 @@ async def run_reprice(
 
             updates: list[dict[str, object]] = []
             for row in rows:
+                resolved_provider = settings.get_provider_for_trial(
+                    row.agent or "", row.model
+                )
+                if provider and resolved_provider.lower() != provider:
+                    continue
                 plan = _plan_reprice(
                     agent=row.agent,
-                    provider=row.provider,
+                    provider=resolved_provider,
                     model=row.model,
                     existing_cost=row.cost_usd,
                     input_tokens=row.input_tokens,
@@ -191,7 +187,7 @@ async def run_reprice(
 
                 matched_rows += 1
                 group_key = (
-                    (row.provider or "unknown").strip().lower(),
+                    resolved_provider.strip().lower() or "unknown",
                     row.model or "unknown",
                 )
                 summary = summaries.setdefault(group_key, GroupSummary())
