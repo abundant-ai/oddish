@@ -563,6 +563,27 @@ export interface Trajectory {
   final_metrics: FinalMetrics | null;
 }
 
+export interface TrajectoryHighlight {
+  step_id: number;
+  title: string;
+  why: string;
+}
+
+export interface TrajectoryPhase {
+  label: string;
+  gist: string;
+  step_ids: number[];
+}
+
+export interface TrajectorySummary {
+  schema_version: string;
+  model: string;
+  generated_at: string;
+  summary: string;
+  highlights: TrajectoryHighlight[];
+  phases: TrajectoryPhase[];
+}
+
 interface QueueSlot {
   queue_key: string;
   slot: number;
