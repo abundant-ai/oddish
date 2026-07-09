@@ -182,7 +182,7 @@ Common optional settings:
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
-- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications
+- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications (on by default for the production app; set `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` to opt a preview app in)
 
 ### Observability (Pydantic Logfire)
 

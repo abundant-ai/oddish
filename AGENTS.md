@@ -523,7 +523,10 @@ sweep):
    when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
    once for experiments over $2,000 and recent trials over $100 that exceed
    twice their experiment's other-trial average. It uses the shared settled-cost
-   basis, contains no agent/LLM path, and is disabled by default for preview apps.
+   basis and contains no agent/LLM path. It is on by default for the production
+   app and off by default on preview apps; a preview opts in by setting
+   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
+   `SLACK_EXPENSE_WEBHOOK_URL`.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
