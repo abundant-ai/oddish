@@ -6,8 +6,9 @@ trial costs:
 
 * exactly its recorded ``cost_usd`` when present -- this also preserves a
   cancelled trial's real partial spend; otherwise
-* ``$0`` when it was cancelled by the user (``harbor_stage == 'cancelled'``) --
-  an unpriced cancel is never token-estimated or floored; otherwise
+* ``$0`` when it was cancelled (``harbor_stage == 'cancelled'``) with no
+  recorded cost -- a cancel never reaches token settlement, so this only keeps
+  the unpriced floor from charging abandoned runs; otherwise
 * a LiteLLM token estimate from its input/output/cache tokens, which is ``$0``
   when no tokens were recorded (the unpriced fallback is
   ``settings.unpriced_trial_cost_usd``, ``$0`` by default).
@@ -29,9 +30,15 @@ from oddish.config import settings
 from oddish.db import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 
-# A user cancel stamps trials FAILED + ``harbor_stage='cancelled'`` (see
-# ``oddish.queue.CANCELLED_HARBOR_STAGE``); trials have no CANCELLED status, so
-# this stage string is the canonical "cancelled" signal on the trial row.
+# ``harbor_stage='cancelled'`` marks an abandoned trial. Three paths stamp it:
+# a user cancel (``oddish.queue.CANCELLED_HARBOR_STAGE``), the stale-heartbeat /
+# orphan reaper (``workers.queue.cleanup``), and a runtime CANCEL event
+# (``workers.queue.trial_handler``). None reach the settlement block that writes
+# input/output/cache tokens and ``cost_usd`` together, so a cancelled row has no
+# tokens -- its token estimate is already $0. Gating it out therefore changes
+# nothing unless the unpriced floor is re-enabled, where excluding abandoned
+# runs is the intent. Trials have no CANCELLED status, so this stage is the
+# canonical "cancelled" signal on the row.
 CANCELLED_HARBOR_STAGE = "cancelled"
 
 
