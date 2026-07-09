@@ -173,6 +173,43 @@ def test_codex_fold_keeps_last_cumulative_usage():
     assert totals.model == "gpt-5.3-codex"
 
 
+def test_codex_fold_banks_usage_across_truncation():
+    fold = CodexUsageFold(model="gpt-5.3-codex")
+    fold.feed_line(
+        codex_line(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 100,
+                    "cached_input_tokens": 40,
+                    "output_tokens": 10,
+                },
+            }
+        )
+    )
+    fold.on_truncate()
+    assert fold.has_usage
+    assert fold.usage is None
+    assert fold.totals().input_tokens == 100
+    fold.feed_line(
+        codex_line(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 30,
+                    "cached_input_tokens": 5,
+                    "output_tokens": 4,
+                },
+            }
+        )
+    )
+    totals = fold.totals()
+    assert totals.input_tokens == 130
+    assert totals.cache_tokens == 45
+    assert totals.output_tokens == 14
+    assert totals.model == "gpt-5.3-codex"
+
+
 def test_codex_fold_renders_display_kinds():
     fold = CodexUsageFold()
     assert fold.feed_line(codex_item({"type": "agent_message", "text": "hi"})) == [
@@ -330,6 +367,46 @@ async def test_tick_resets_offset_when_log_truncated(monkeypatch):
     assert "tail -c +1 '" in env.commands[2]
     assert tailer.offset == len(retry)
     assert set(tailer.fold.usage_by_id) == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_codex_tick_banks_usage_when_log_truncates(monkeypatch):
+    session = patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+
+    def turn(inp, out):
+        return (
+            codex_line(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": inp,
+                        "cached_input_tokens": 0,
+                        "output_tokens": out,
+                    },
+                }
+            )
+            + b"\n"
+        )
+
+    turn1, turn2 = turn(100, 10), turn(30, 4)
+    env = FakeEnv(
+        [
+            b64(turn1, size=len(turn1)),
+            b64(b"", size=3),
+            b64(turn2, size=len(turn2)),
+        ]
+    )
+    tailer = make_tailer(env, agent="codex", model="gpt-5.3-codex")
+    await tailer._tick()
+    assert update_params(session)[-1]["input_tokens"] == 100
+    await tailer._tick()
+    assert tailer.offset == 0
+    await tailer._tick()
+    assert "tail -c +1 '" in env.commands[2]
+    params = update_params(session)
+    assert params[-1]["input_tokens"] == 130
+    assert params[-1]["output_tokens"] == 14
 
 
 @pytest.mark.asyncio

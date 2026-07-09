@@ -42,6 +42,10 @@ class Fold(Protocol):
 
     def totals(self) -> UsageTotals: ...
 
+    def on_truncate(self) -> None:
+        """Called when the tailed log shrinks (a new session re-teed the file)."""
+        ...
+
     @property
     def has_usage(self) -> bool: ...
 
@@ -124,6 +128,11 @@ class ClaudeUsageFold:
     def has_usage(self) -> bool:
         return bool(self.usage_by_id)
 
+    def on_truncate(self) -> None:
+        # Usage keys off unique per-message ids, so a re-teed log's fresh ids
+        # accumulate into usage_by_id on their own — no banking needed.
+        return None
+
     def feed_line(self, line: bytes) -> list[dict[str, Any]]:
         event = _parse_json_line(line)
         if event is None:
@@ -191,10 +200,21 @@ def _render_codex_item(item: Any) -> list[dict[str, Any]]:
 class CodexUsageFold:
     usage: dict[str, Any] | None = None
     model: str | None = None
+    banked: UsageTotals = field(default_factory=UsageTotals)
 
     @property
     def has_usage(self) -> bool:
-        return self.usage is not None
+        return self.usage is not None or self.banked != UsageTotals()
+
+    def on_truncate(self) -> None:
+        # turn.completed usage is cumulative per codex session; a re-teed log
+        # restarts that counter, so bank the last session's total before it is
+        # overwritten (keep-last) by the new session's smaller running total.
+        session = self._session_totals()
+        self.banked.input_tokens += session.input_tokens
+        self.banked.cache_tokens += session.cache_tokens
+        self.banked.output_tokens += session.output_tokens
+        self.usage = None
 
     def feed_line(self, line: bytes) -> list[dict[str, Any]]:
         event = _parse_json_line(line)
@@ -218,12 +238,20 @@ class CodexUsageFold:
             return [{"kind": "summary", "payload": _clipped_payload("text", message)}]
         return []
 
-    def totals(self) -> UsageTotals:
+    def _session_totals(self) -> UsageTotals:
         usage = self.usage or {}
         return UsageTotals(
             input_tokens=int(usage.get("input_tokens") or 0),
             cache_tokens=int(usage.get("cached_input_tokens") or 0),
             output_tokens=int(usage.get("output_tokens") or 0),
+        )
+
+    def totals(self) -> UsageTotals:
+        session = self._session_totals()
+        return UsageTotals(
+            input_tokens=self.banked.input_tokens + session.input_tokens,
+            cache_tokens=self.banked.cache_tokens + session.cache_tokens,
+            output_tokens=self.banked.output_tokens + session.output_tokens,
             model=self.model,
         )
 
@@ -363,6 +391,7 @@ class LiveTailer:
         except ValueError:
             size, encoded = None, stdout
         if size is not None and 0 <= size < self.offset:
+            self.fold.on_truncate()
             self.offset = 0
             self.carry = b""
             return
