@@ -358,8 +358,17 @@ export function TrialDetailPanel({
 
   const validTabs = useMemo(
     () =>
-      new Set(["summary", "files", "trajectory", "agent-graph", "artifacts"]),
-    [],
+      new Set([
+        "summary",
+        "files",
+        "trajectory",
+        // Only a valid target when the Agent Graph tab is actually rendered;
+        // otherwise a ?tab=agent-graph link (e.g. public share) would select a
+        // panel that doesn't exist and leave the drawer body blank.
+        ...(showAnalysis ? ["agent-graph"] : []),
+        "artifacts",
+      ]),
+    [showAnalysis],
   );
 
   const [activeTab, setActiveTab] = useState(() => {

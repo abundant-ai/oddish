@@ -593,8 +593,21 @@ def _graph_from_summary(
         la = _last_action(digest)
         if la and la != "No recorded action":
             last_action = la
-    if not last_action and highlights and isinstance(highlights[-1], dict):
-        last_action = _clip(highlights[-1].get("title"), 120)
+    if not last_action:
+        # No trajectory to read the final step from: use the highlight for the
+        # LATEST step (max step_id), not highlights[-1] -- persisted highlights
+        # keep the LLM's array order, which isn't guaranteed sorted by step_id.
+        latest = max(
+            (
+                h
+                for h in highlights
+                if isinstance(h, dict) and isinstance(h.get("step_id"), int)
+            ),
+            key=lambda h: h["step_id"],
+            default=None,
+        )
+        if latest:
+            last_action = _clip(latest.get("title"), 120)
     if not last_action:
         last_action = "No recorded action"
 
