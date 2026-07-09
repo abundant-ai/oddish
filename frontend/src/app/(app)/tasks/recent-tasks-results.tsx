@@ -59,12 +59,26 @@ async function fetchBrowse(
       const ms = PRESET_MS[within as keyof typeof PRESET_MS];
       query.created_after = new Date(Date.now() - ms).toISOString();
     }
+    const trialFinishedWithin = sp.get("trial_finished_within");
+    const trialFinishedPresetActive = Boolean(
+      trialFinishedWithin && trialFinishedWithin in PRESET_MS,
+    );
+    if (trialFinishedPresetActive) {
+      const ms =
+        PRESET_MS[trialFinishedWithin as keyof typeof PRESET_MS];
+      query.trial_finished_after = new Date(Date.now() - ms).toISOString();
+    }
 
     for (const key of BROWSE_FORWARD_KEYS) {
-      if (key === "created_within") continue; // resolved above
+      if (key === "created_within" || key === "trial_finished_within") continue;
       // A live preset owns created_after; don't let a stale absolute bound in
       // the URL / saved filter clobber the rolling window.
       if (key === "created_after" && presetActive) continue;
+      if (
+        key === "trial_finished_after" &&
+        trialFinishedPresetActive
+      )
+        continue;
       const value = sp.get(key);
       if (value) query[key] = value;
     }
