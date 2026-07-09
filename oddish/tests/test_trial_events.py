@@ -7,9 +7,9 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import Insert as PGInsert
 from sqlalchemy.exc import SQLAlchemyError
 
-from live_tail_fakes import FakeEnv, b64, patch_db, update_params
+from live_tail_fakes import FakeEnv, b64, make_tailer, patch_db, update_params
 from oddish.workers.harbor import live_tail
-from oddish.workers.harbor.live_tail import ClaudeUsageFold, LiveTailer, UsageTotals
+from oddish.workers.harbor.live_tail import ClaudeUsageFold, UsageTotals
 from oddish.workers.queue import cleanup
 
 
@@ -127,7 +127,7 @@ async def test_seq_dense_per_attempt_across_ticks(monkeypatch):
     )
     tick2 = text_line("b", msg_id="msg_2", usage={"input_tokens": 2}) + b"\n"
     env = FakeEnv([b64(tick1), b64(tick2)])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=3, model=None)
+    tailer = make_tailer(env, attempt=3)
     await tailer._tick()
     await tailer._tick()
     inserts = insert_stmts(session)
@@ -153,7 +153,7 @@ async def test_cap_writes_one_summary_row_and_keeps_checkpoints(monkeypatch):
     )
     tick2 = text_line("late", msg_id="msg_9", usage={"input_tokens": 50}) + b"\n"
     env = FakeEnv([b64(tick1), b64(tick2)])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer = make_tailer(env)
 
     await tailer._tick()
     [insert] = insert_stmts(session)
@@ -175,7 +175,7 @@ async def test_cap_writes_one_summary_row_and_keeps_checkpoints(monkeypatch):
 async def test_replaced_guard_suppresses_event_inserts(monkeypatch):
     session = patch_db(monkeypatch)
     env = FakeEnv([b64(text_line("hi", usage={"input_tokens": 1}) + b"\n")])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer = make_tailer(env)
     tailer.replaced = True
     await tailer._tick()
     assert session.stmts == []
@@ -187,7 +187,7 @@ async def test_replaced_guard_suppresses_event_inserts(monkeypatch):
 async def test_flush_failure_retains_pending_for_retry(monkeypatch):
     session = patch_db(monkeypatch, fail_inserts=True)
     env = FakeEnv([b64(text_line("hi", usage={"input_tokens": 1}) + b"\n")])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer = make_tailer(env)
     with pytest.raises(RuntimeError):
         await tailer._tick()
     assert len(tailer.pending_events) == 1
@@ -203,7 +203,7 @@ async def test_flush_failure_retains_pending_for_retry(monkeypatch):
 async def test_final_drain_folds_and_flushes_carry(monkeypatch):
     session = patch_db(monkeypatch)
     env = FakeEnv([b64(text_line("tail", usage={"input_tokens": 8}))])
-    tailer = LiveTailer(trial_id="t1", environment=env, attempt=0, model=None)
+    tailer = make_tailer(env)
     tailer.request_stop()
     await asyncio.wait_for(tailer.run(), timeout=5)
     [insert] = insert_stmts(session)

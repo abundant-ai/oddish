@@ -25,8 +25,19 @@ class FakeEnv:
         return result
 
 
-def b64(raw: bytes) -> FakeResult:
-    return FakeResult(stdout=base64.b64encode(raw).decode())
+def b64(raw: bytes, size: int = 1 << 40) -> FakeResult:
+    return FakeResult(stdout=f"{size}\n{base64.b64encode(raw).decode()}")
+
+
+def make_tailer(env, agent="claude-code", model=None, trial_id="t1", attempt=0):
+    adapter = live_tail._adapter_for(agent)
+    return live_tail.LiveTailer(
+        trial_id=trial_id,
+        environment=env,
+        attempt=attempt,
+        log_path=adapter.log_path,
+        fold=adapter.make_fold(model),
+    )
 
 
 class FakeExecuteResult:
