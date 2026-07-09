@@ -795,6 +795,27 @@ def _primary_experiment_for_task(
     return experiments[0]
 
 
+TASK_STATUS_RESPONSE_COLUMNS = (
+    TaskModel.id,
+    TaskModel.name,
+    TaskModel.status,
+    TaskModel.priority,
+    TaskModel.user,
+    TaskModel.tags,
+    TaskModel.link,
+    TaskModel.task_path,
+    TaskModel.current_version_id,
+    TaskModel.run_analysis,
+    TaskModel.run_probe,
+    TaskModel.verdict_status,
+    TaskModel.verdict,
+    TaskModel.verdict_error,
+    TaskModel.created_at,
+    TaskModel.started_at,
+    TaskModel.finished_at,
+)
+
+
 def _build_task_status_response(
     task: TaskModel,
     *,
@@ -1041,22 +1062,39 @@ def build_task_status_response_compact(
     )
 
 
+SLIM_TRIAL_RESPONSE_COLUMNS = (
+    TrialModel.id,
+    TrialModel.name,
+    TrialModel.task_id,
+    TrialModel.task_version_id,
+    TrialModel.experiment_id,
+    TrialModel.agent,
+    TrialModel.provider,
+    TrialModel.queue_key,
+    TrialModel.model,
+    TrialModel.status,
+    TrialModel.attempts,
+    TrialModel.max_attempts,
+    TrialModel.reward,
+    TrialModel.error_message,
+    TrialModel.is_probe,
+    TrialModel.analysis,
+    TrialModel.analysis_status,
+    TrialModel.input_tokens,
+    TrialModel.cache_tokens,
+    TrialModel.cache_write_tokens,
+    TrialModel.output_tokens,
+    TrialModel.cost_usd,
+    TrialModel.billed_user_id,
+    TrialModel.superseded_by_trial_id,
+    TrialModel.created_at,
+    TrialModel.started_at,
+    TrialModel.finished_at,
+)
+
+
 def build_slim_trial_response(trial: TrialModel, task_path: str) -> TrialResponse:
-    """Minimal TrialResponse for the experiment grid (slim Phase-2 path).
-
-    Populates only what the grid renders (status / reward / error / agent /
-    model / analysis classification) plus the schema-required fields and
-    ``cost_usd`` (kept so the exp-page header cost total still works). The
-    heavy fields the grid never shows -- ``harbor_config`` / ``phase_timing``
-    (large JSONB), ``harbor_sha`` / ``harbor_source``, ``total_steps``,
-    ``has_trajectory``, ``origin``, ``result`` -- are left at their defaults
-    and fetched on demand via ``GET /trials/{id}`` when a cell is clicked.
-
-    Unlike ``build_compact_trial_response`` this only surfaces the analysis
-    classification/subtype/evidence triplet the grid marker needs; the full
-    analysis (root_cause, recommendation, etc.) arrives with the on-click
-    full-trial fetch.
-    """
+    """Build a slim TrialResponse for the experiment grid."""
     resolved_analysis_summary: dict[str, str | None] | None = None
     if isinstance(trial.analysis, dict):
         resolved_analysis_summary = {
@@ -1108,12 +1146,7 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
-    """``build_task_status_response_compact`` with SLIM per-trial payloads.
-
-    Same aggregate counts and version scoping, but each trial is built with
-    :func:`build_slim_trial_response` instead of the full compact builder.
-    Used only by the experiment-grid slim path.
-    """
+    """Build a task status response with slim per-trial payloads."""
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
