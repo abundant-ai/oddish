@@ -270,6 +270,16 @@ def assert_gke_cluster_exists() -> None:
     project = _cfg("ODDISH_GKE_PROJECT_ID")
     if not cluster or not region or not project:
         return
+    auto_provision = (_cfg("ODDISH_GKE_AUTO_PROVISION_CLUSTER") or "true").lower()
+    if auto_provision not in ("false", "0", "no", "off"):
+        # Zero-touch mode: a missing cluster is created on demand by the
+        # first trial, so absence is informational rather than fatal.
+        print(
+            f"[deploy] GKE cluster '{cluster}' will be auto-provisioned on "
+            "demand if missing (auto-provision enabled); skipping the "
+            "existence gate"
+        )
+        return
     gcloud = shutil.which("gcloud")
     if not gcloud:
         print(

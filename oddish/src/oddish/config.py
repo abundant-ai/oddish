@@ -1037,6 +1037,11 @@ class Settings(BaseSettings):
     # failing on require_prebuilt_image. Spends minutes of the attempt's
     # budget on first-run tasks, so hosted deployments opt in explicitly.
     gke_auto_build_missing_image: bool = False
+    # Create the configured cluster (and namespace) on demand instead of
+    # failing fast on a missing cluster: the Modal-parity zero-touch mode.
+    # First trial on cold infrastructure pays the ~10 minute Autopilot
+    # creation inside its ready window.
+    gke_auto_provision_cluster: bool = True
     gke_pod_ready_timeout_sec: int = 3600
 
     # API server
