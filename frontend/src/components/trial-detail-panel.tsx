@@ -913,13 +913,15 @@ export function TrialDetailPanel({
               <Route className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Trajectory
             </TabsTrigger>
-            <TabsTrigger
-              value="agent-graph"
-              className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
-            >
-              <GitBranch className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
-              Agent Graph
-            </TabsTrigger>
+            {showAnalysis && (
+              <TabsTrigger
+                value="agent-graph"
+                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
+              >
+                <GitBranch className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
+                Agent Graph
+              </TabsTrigger>
+            )}
             <TabsTrigger
               value="artifacts"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1169,16 +1171,18 @@ export function TrialDetailPanel({
             />
           </TabsContent>
 
-          <TabsContent
-            value="agent-graph"
-            className="m-0 h-full overflow-auto p-0"
-          >
-            <TrajectoryGraphView
-              trialId={trial.id}
-              hasTrajectory={trial.has_trajectory}
-              apiBaseUrl={apiBaseUrl}
-            />
-          </TabsContent>
+          {showAnalysis && (
+            <TabsContent
+              value="agent-graph"
+              className="m-0 h-full overflow-auto p-0"
+            >
+              <TrajectoryGraphView
+                trialId={trial.id}
+                hasTrajectory={trial.has_trajectory}
+                apiBaseUrl={apiBaseUrl}
+              />
+            </TabsContent>
+          )}
         </div>
       </Tabs>
     </>

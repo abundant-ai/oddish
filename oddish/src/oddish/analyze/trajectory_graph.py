@@ -31,11 +31,16 @@ logger = logging.getLogger(__name__)
 # (see ``core.trial_io._graph_is_fresh``).
 GRAPH_SCHEMA_VERSION = "1"
 
-# Terminal outcomes. Kept in sync with the frontend renderer's node styling.
+# Terminal outcomes. Kept in sync with the frontend renderer's node styling AND
+# with the app's own trial classification (frontend `getMatrixStatus`): a full
+# pass, partial credit, a scoreless (verification-off) completion, a grader
+# failure, a timeout, a harness/infra error, a skip, or still running.
 OUTCOME_SUCCESS = "success"
+OUTCOME_PARTIAL = "partial"
 OUTCOME_FAILURE = "failure"
 OUTCOME_TIMEOUT = "timeout"
 OUTCOME_ERROR = "error"
+OUTCOME_SCORELESS = "scoreless"
 OUTCOME_SKIPPED = "skipped"
 OUTCOME_RUNNING = "running"
 
@@ -96,44 +101,56 @@ _GRAPH_SCHEMA: dict[str, Any] = {
 }
 
 
+def _reward_outcome(reward: float) -> str:
+    """Reward -> outcome, matching the app's ``getRewardMatrixStatus``:
+    exactly 1.0 is a pass, 0 is a failure, anything between is partial credit."""
+    if reward >= 1:
+        return OUTCOME_SUCCESS
+    if reward <= 0:
+        return OUTCOME_FAILURE
+    return OUTCOME_PARTIAL
+
+
 def _infer_outcome(ctx: dict[str, Any]) -> str:
     """Authoritative terminal outcome from the trial's own fields (not the LLM).
 
-    Mirrors the JobStatus/reward contract: status SUCCESS = ran to completion
-    (reward is the graded score); FAILED = harness/infra error (reward usually
-    None). A timeout is a FAILED whose error text says so.
+    Mirrors the frontend ``getMatrixStatus`` so the graph terminal can never
+    contradict the trial drawer / grader: skipped; harness error (or timeout)
+    when an error message is present, except an agent-timeout that still scored;
+    a FAILED status is a harness error; a SUCCESS status maps by reward
+    (pass / partial / fail), or scoreless when verification produced no reward.
     """
     status = (ctx.get("status") or "").lower()
-    err = (ctx.get("error_message") or "").lower()
+    err = ctx.get("error_message") or ""
     reward = ctx.get("reward")
+    has_reward = reward is not None
+    # Agent timeouts are detected the same way the frontend does.
+    is_agent_timeout = (
+        "AgentTimeoutError" in err or "Agent execution timed out" in err
+    )
 
     if status in ("queued", "pending", "running", "retrying"):
         return OUTCOME_RUNNING
     if status == "skipped":
         return OUTCOME_SKIPPED
 
-    is_timeout = any(
-        k in err
-        for k in (
-            "timeout",
-            "timed out",
-            "deadline",
-            "time limit",
-            "exceeded the maximum",
-            "wall clock",
-        )
-    )
-    if reward is not None and reward > 0:
-        return OUTCOME_SUCCESS
-    if is_timeout:
-        return OUTCOME_TIMEOUT
-    # Completed execution (status success) with reward 0 -> the agent finished
-    # but the grader failed it. Anything else with no reward is a harness error.
-    if status == "success" and reward is not None:
-        return OUTCOME_FAILURE
-    if status == "failed" or reward is None:
+    # An error message means the run did not complete cleanly -> harness error,
+    # or (more specifically than the drawer) a timeout, unless it still scored.
+    if err and not (is_agent_timeout and has_reward):
+        return OUTCOME_TIMEOUT if is_agent_timeout else OUTCOME_ERROR
+
+    if status == "failed":
+        if is_agent_timeout and has_reward:
+            return _reward_outcome(reward)
         return OUTCOME_ERROR
-    return OUTCOME_FAILURE
+
+    if status == "success":
+        # Terminal completion: reward is the graded score; no reward = a
+        # deliberately scoreless run (verification disabled), NOT an infra error.
+        return _reward_outcome(reward) if has_reward else OUTCOME_SCORELESS
+
+    # Unknown terminal status: fall back to the reward reading.
+    return _reward_outcome(reward) if has_reward else OUTCOME_SCORELESS
 
 
 def _step_tool_names(step: dict[str, Any]) -> list[str]:
@@ -220,10 +237,12 @@ def _transcript(digest: list[dict[str, Any]]) -> str:
 
 
 _OUTCOME_HINT = {
-    OUTCOME_SUCCESS: "The run PASSED the grader.",
+    OUTCOME_SUCCESS: "The run PASSED the grader (reward 1.0).",
+    OUTCOME_PARTIAL: "The agent finished with PARTIAL credit (0 < reward < 1).",
     OUTCOME_FAILURE: "The agent finished but the grader FAILED it (reward 0).",
     OUTCOME_TIMEOUT: "The run hit its TIMEOUT before finishing.",
     OUTCOME_ERROR: "The run ended in a HARNESS/INFRA error (never graded).",
+    OUTCOME_SCORELESS: "The run completed but produced NO score (verification off).",
     OUTCOME_SKIPPED: "The trial was SKIPPED (baseline gate cancelled it).",
     OUTCOME_RUNNING: "The trial is still RUNNING.",
 }
@@ -541,7 +560,11 @@ def _graph_from_summary(
                 "status": status,
             }
         )
-    if steps and outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR):
+    # Phases were present but every entry was unusable -> fall back rather than
+    # emit a stepless "summary" graph.
+    if not steps:
+        return _finalize(_heuristic_graph(digest, ctx, outcome), ctx, outcome)
+    if outcome in (OUTCOME_FAILURE, OUTCOME_TIMEOUT, OUTCOME_ERROR):
         steps[-1]["status"] = "error"
 
     last_action = ""

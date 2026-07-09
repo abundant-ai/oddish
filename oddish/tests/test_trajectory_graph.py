@@ -56,11 +56,12 @@ def test_outcome_failure_when_completed_reward_zero():
 
 
 def test_outcome_timeout_from_error_text():
+    # Detected the same way the frontend getMatrixStatus does.
     g = _build(
         {
             "status": "failed",
             "reward": None,
-            "error_message": "Agent exceeded the maximum wall clock time limit",
+            "error_message": "AgentTimeoutError: Agent execution timed out after 1800s",
             "task_name": "t",
             "agent_name": "a",
         }
@@ -71,6 +72,31 @@ def test_outcome_timeout_from_error_text():
 def test_outcome_error_for_harness_failure():
     g = _build({"status": "failed", "reward": None, "error_message": "sandbox crashed", "task_name": "t", "agent_name": "a"})
     assert g["terminal"]["outcome"] == tg.OUTCOME_ERROR
+
+
+def test_outcome_partial_credit_not_passed():
+    g = _build({"status": "success", "reward": 0.5, "error_message": None, "task_name": "t", "agent_name": "a"})
+    assert g["terminal"]["outcome"] == tg.OUTCOME_PARTIAL
+    # partial credit must not paint the last phase red or read as "passed"
+    assert g["steps"][-1]["status"] != "error"
+
+
+def test_outcome_scoreless_when_success_without_reward():
+    g = _build({"status": "success", "reward": None, "error_message": None, "task_name": "t", "agent_name": "a"})
+    assert g["terminal"]["outcome"] == tg.OUTCOME_SCORELESS
+
+
+def test_agent_timeout_with_reward_scores_normally():
+    g = _build(
+        {
+            "status": "failed",
+            "reward": 1.0,
+            "error_message": "AgentTimeoutError: timed out but a reward was recorded",
+            "task_name": "t",
+            "agent_name": "a",
+        }
+    )
+    assert g["terminal"]["outcome"] == tg.OUTCOME_SUCCESS
 
 
 def test_no_trajectory_still_returns_graph():
@@ -175,12 +201,16 @@ class _FakeSession:
     def __init__(self):
         self.committed = False
         self.executed = []
+        self.refreshed = 0
 
     async def execute(self, stmt):
         self.executed.append(stmt)
 
     async def commit(self):
         self.committed = True
+
+    async def refresh(self, obj, attribute_names=None):
+        self.refreshed += 1
 
 
 def test_generate_and_store_persists_and_stamps(monkeypatch):
