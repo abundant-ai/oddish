@@ -242,7 +242,7 @@ ADAPTERS: tuple[Adapter, ...] = (
         make_fold=lambda model: ClaudeUsageFold(model=model),
     ),
     Adapter(
-        matches=lambda agent: agent == "codex",
+        matches=lambda agent: "codex" in agent,
         log_path="/logs/agent/codex.txt",
         make_fold=lambda model: CodexUsageFold(model=model),
     ),
@@ -344,7 +344,8 @@ class LiveTailer:
 
     async def _tick(self) -> None:
         command = (
-            f"set -o pipefail; tail -c +{self.offset + 1} '{self.log_path}'"
+            f"set -o pipefail; wc -c < '{self.log_path}' 2>/dev/null || echo -1; "
+            f"tail -c +{self.offset + 1} '{self.log_path}'"
             f" 2>/dev/null | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
         )
         result = await self.environment.exec(
@@ -355,7 +356,17 @@ class LiveTailer:
             if return_code == 127 or self.offset > 0:
                 raise RuntimeError(f"tail exec failed rc={return_code}")
             return
-        encoded = (result.stdout or "").strip()
+        stdout = (result.stdout or "").strip()
+        size_line, _, encoded = stdout.partition("\n")
+        try:
+            size = int(size_line.strip())
+        except ValueError:
+            size, encoded = None, stdout
+        if size is not None and 0 <= size < self.offset:
+            self.offset = 0
+            self.carry = b""
+            return
+        encoded = encoded.strip()
         if encoded:
             try:
                 raw = base64.b64decode(encoded, validate=True)

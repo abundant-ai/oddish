@@ -109,6 +109,7 @@ def test_adapter_dispatch():
     assert live_tail.supports("claude-code")
     assert live_tail.supports("claude-code@2.1")
     assert live_tail.supports("Codex")
+    assert live_tail.supports("codex-api-key-no-search")
     assert not live_tail.supports("mini-swe-agent")
     assert not live_tail.supports("")
     assert not live_tail.supports(None)
@@ -116,6 +117,7 @@ def test_adapter_dispatch():
     assert claude.log_path == "/logs/agent/claude-code.txt"
     assert isinstance(claude.make_fold(None), ClaudeUsageFold)
     codex = live_tail._adapter_for("codex")
+    assert live_tail._adapter_for("codex-api-key-no-search") is codex
     assert codex.log_path == "/logs/agent/codex.txt"
     assert codex.make_fold("m").model == "m"
     assert isinstance(codex.make_fold("m"), CodexUsageFold)
@@ -132,29 +134,35 @@ def codex_item(item) -> bytes:
 def test_codex_fold_keeps_last_cumulative_usage():
     fold = CodexUsageFold(model="gpt-5.3-codex")
     assert not fold.has_usage
-    fold.feed_line(
-        codex_line(
-            {
-                "type": "turn.completed",
-                "usage": {
-                    "input_tokens": 100,
-                    "cached_input_tokens": 40,
-                    "output_tokens": 10,
-                },
-            }
+    assert (
+        fold.feed_line(
+            codex_line(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 40,
+                        "output_tokens": 10,
+                    },
+                }
+            )
         )
+        == []
     )
-    fold.feed_line(
-        codex_line(
-            {
-                "type": "turn.completed",
-                "usage": {
-                    "input_tokens": 250,
-                    "cached_input_tokens": 90,
-                    "output_tokens": 30,
-                },
-            }
+    assert (
+        fold.feed_line(
+            codex_line(
+                {
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 250,
+                        "cached_input_tokens": 90,
+                        "output_tokens": 30,
+                    },
+                }
+            )
         )
+        == []
     )
     assert fold.has_usage
     totals = fold.totals()
@@ -298,6 +306,32 @@ async def test_checkpoint_writes_null_cost_when_unpriceable(monkeypatch):
     await tailer._tick()
     params = update_params(session)
     assert params[-1]["cost_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_tick_resets_offset_when_log_truncated(monkeypatch):
+    patch_db(monkeypatch)
+    monkeypatch.setattr(live_tail, "estimate_cost_usd", lambda *_a, **_k: None)
+    line1 = assistant_line("m1", {"input_tokens": 1}) + b"\n"
+    retry = assistant_line("m2", {"input_tokens": 9}) + b"\n"
+    env = FakeEnv(
+        [
+            b64(line1, size=len(line1)),
+            b64(b"", size=3),
+            b64(retry, size=len(retry)),
+        ]
+    )
+    tailer = make_tailer(env)
+    await tailer._tick()
+    assert tailer.offset == len(line1)
+    tailer.carry = b"torn"
+    await tailer._tick()
+    assert tailer.offset == 0
+    assert tailer.carry == b""
+    await tailer._tick()
+    assert "tail -c +1 '" in env.commands[2]
+    assert tailer.offset == len(retry)
+    assert set(tailer.fold.usage_by_id) == {"m1", "m2"}
 
 
 @pytest.mark.asyncio

@@ -25,8 +25,8 @@ class FakeEnv:
         return result
 
 
-def b64(raw: bytes) -> FakeResult:
-    return FakeResult(stdout=base64.b64encode(raw).decode())
+def b64(raw: bytes, size: int = 1 << 40) -> FakeResult:
+    return FakeResult(stdout=f"{size}\n{base64.b64encode(raw).decode()}")
 
 
 def make_tailer(env, agent="claude-code", model=None, trial_id="t1", attempt=0):
