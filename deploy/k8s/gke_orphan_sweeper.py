@@ -286,7 +286,20 @@ def _dead_owner_owns_pod(pod: PodSnapshot, finished_at: datetime | None) -> bool
     """
     if finished_at is None or pod.creation_time is None:
         return True
-    return finished_at >= pod.creation_time
+    # timestamptz columns and Kubernetes timestamps are both tz-aware in
+    # practice, but a naive value from either side must degrade to a wrong-ish
+    # answer, never a TypeError that aborts the whole sweep.
+    finished = (
+        finished_at.replace(tzinfo=timezone.utc)
+        if finished_at.tzinfo is None
+        else finished_at
+    )
+    created = (
+        pod.creation_time.replace(tzinfo=timezone.utc)
+        if pod.creation_time.tzinfo is None
+        else pod.creation_time
+    )
+    return finished >= created
 
 
 def resolve_liveness(
