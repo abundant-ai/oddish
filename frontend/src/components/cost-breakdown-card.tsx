@@ -951,7 +951,20 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">New spend</TableHead>
+          <TableHead className="text-right">
+            <span className="inline-flex items-center gap-1">
+              New spend
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3 w-3 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[260px]">
+                  Cost from all trials run during the analysis period, not full
+                  experiment cost.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>
