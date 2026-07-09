@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from oddish.config import settings
 from oddish.db import get_session
@@ -67,7 +67,15 @@ def decide(
 
 async def _gke_trial_activity() -> tuple[int, datetime | None]:
     async with get_session() as session:
-        variant_is_gke = TrialModel.harbor_config["variant_id"].astext == "gke"
+        # Environment is the routing truth: harbor-gke pins at non-blessed
+        # SHAs classify as the "ephemeral" variant yet still run on GKE, so
+        # counting by variant alone would let the reaper delete a cluster
+        # mid-run. The variant predicate stays for legacy rows without the
+        # environment column populated.
+        variant_is_gke = or_(
+            TrialModel.environment == "gke",
+            TrialModel.harbor_config["variant_id"].astext == "gke",
+        )
         live = await session.scalar(
             select(func.count())
             .select_from(TrialModel)
