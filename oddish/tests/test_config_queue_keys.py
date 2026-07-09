@@ -128,6 +128,27 @@ def test_opus_4_8_maps_to_global_inference_profile(monkeypatch):
     assert settings.normalize_queue_key("anthropic/claude-opus-4-8") == expected
 
 
+def test_dotted_marketing_spelling_maps_to_global_inference_profile(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    # The marketing spelling uses a dotted minor version ("claude-opus-4.8"),
+    # but the Bedrock table is keyed by the canonical dashed id
+    # ("claude-opus-4-8"). The dotted alias must resolve rather than raising
+    # (an unmapped Claude id surfaces as a 500 at trial submit).
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-opus-4.8")
+        == "global.anthropic.claude-opus-4-8"
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "anthropic/claude-opus-4.8")
+        == "global.anthropic.claude-opus-4-8"
+    )
+    assert (
+        settings.normalize_trial_model("claude-code", "claude-sonnet-4.6")
+        == "global.anthropic.claude-sonnet-4-6"
+    )
+
+
 def test_fable_5_maps_to_global_inference_profile(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
