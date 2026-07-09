@@ -388,7 +388,10 @@ async def generate_trial_trajectory_graph(
         summary: dict | None = None
         try:
             summary = await get_or_generate_summary(session, attached_trial)
-        except SummaryGenerationError as e:
+        except Exception as e:
+            # Best-effort: the graph reuses the summary's phases when present but
+            # segments the run itself otherwise. Any failure here (generation
+            # error, a DB error inside the summary path) must not abort the graph.
             logger.warning(
                 "Trajectory summary unavailable for graph %s: %s", trial_id, e
             )
