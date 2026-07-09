@@ -2017,6 +2017,7 @@ async def get_user_cost_breakdown_core(
         TrialModel.org_id == org_id,
         TrialModel.billed_user_id == billed_user_id,
         TrialModel.finished_at.isnot(None),
+        first_party_spend_filter(),
     ]
     if since is not None:
         filters.append(TrialModel.finished_at >= since)
