@@ -149,15 +149,16 @@ def try_print_trial_detail(
             # own task status, not get shadowed by parent-task-{index}'s trial.
             if client.get(f"{api_url}/tasks/{trial_id}").status_code == 200:
                 return False  # it's a task; let normal status handling show it
-            # Core-server fallback: pull the parent task and find the trial.
-            parent = trial_id.rpartition("-")[0]
-            task_response = client.get(f"{api_url}/tasks/{parent}")
-            if task_response.status_code == 200:
-                task = task_response.json()
-                for candidate in task.get("trials", []) or []:
-                    if candidate.get("id") == trial_id:
-                        trial = candidate
-                        break
+            # Core-server fallback: fetch the trial by its index. This route
+            # returns the exact trial by id -- including superseded and
+            # non-current-version trials -- unlike scanning the parent task's
+            # (current-version-only) embedded trial list, which would drop them.
+            parent, _, index = trial_id.rpartition("-")
+            idx_response = client.get(f"{api_url}/tasks/{parent}/trials/{index}")
+            if idx_response.status_code == 200:
+                data = idx_response.json()
+                if isinstance(data, dict) and data.get("id") == trial_id:
+                    trial = data
         else:
             # Genuine error on the single-trial route (auth, server error, ...).
             _fail(response, json_output, "Failed to get trial")

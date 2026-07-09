@@ -106,6 +106,33 @@ def _render_user_costs(data: dict[str, Any]) -> None:
             )
         console.print(table)
 
+    # By-model rollup, aggregated from each task's per-model breakdown (the
+    # user payload carries models per task, not as a top-level list). Mirrors
+    # the by-model table the org-wide view prints.
+    by_model: dict[tuple[str, str], dict[str, float]] = {}
+    for task in tasks:
+        for model_row in task.get("models") or []:
+            key = (str(model_row.get("model", "-")), str(model_row.get("provider", "-")))
+            bucket = by_model.setdefault(key, {"cost_usd": 0.0, "trial_count": 0})
+            bucket["cost_usd"] += float(model_row.get("cost_usd") or 0.0)
+            bucket["trial_count"] += int(model_row.get("trial_count") or 0)
+    if by_model:
+        table = Table(title="By model", show_header=True)
+        table.add_column("Model", style="cyan")
+        table.add_column("Provider")
+        table.add_column("Cost", justify="right")
+        table.add_column("Trials", justify="right")
+        for (model, provider), bucket in sorted(
+            by_model.items(), key=lambda kv: kv[1]["cost_usd"], reverse=True
+        ):
+            table.add_row(
+                model,
+                provider,
+                _fmt_usd(bucket["cost_usd"]),
+                str(int(bucket["trial_count"])),
+            )
+        console.print(table)
+
 
 def costs(
     user: Annotated[

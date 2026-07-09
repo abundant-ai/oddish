@@ -68,7 +68,17 @@ _USER = {
     "name": "Alice",
     "email": "a@x.com",
     "totals": {"cost_usd": 8.0, "trial_count": 25, "task_count": 4},
-    "tasks": [{"task_id": "t1", "task_name": "demo", "cost_usd": 5.0, "trial_count": 10, "models": []}],
+    "tasks": [
+        {
+            "task_id": "t1",
+            "task_name": "demo",
+            "cost_usd": 5.0,
+            "trial_count": 10,
+            "models": [
+                {"model": "claude-sonnet-4-5", "provider": "anthropic", "cost_usd": 5.0, "trial_count": 10},
+            ],
+        }
+    ],
 }
 
 
@@ -87,6 +97,9 @@ def test_costs_user_breakdown_with_window():
     assert cap["url"].endswith("/admin/costs/users/u1")
     assert cap["params"]["window_days"] == 30
     assert "Billed spend" in cap["result"].output
+    # Per-user view includes a by-model rollup, like the org-wide view.
+    assert "By model" in cap["result"].output
+    assert "claude-sonnet-4-5" in cap["result"].output
 
 
 def test_costs_auth_error_exits_nonzero():
