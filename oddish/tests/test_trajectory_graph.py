@@ -177,6 +177,27 @@ def test_summary_used_even_with_empty_digest():
     assert g["terminal"]["last_action"] == "Checked metrics"
 
 
+def test_empty_digest_highlight_fallback_uses_max_step_id():
+    # highlights NOT in step_id order; the fallback must pick the LATEST step,
+    # not the last array entry.
+    summary = {
+        "phases": [{"label": "Work", "step_ids": [2, 9], "gist": "did work"}],
+        "highlights": [
+            {"step_id": 9, "title": "Final commit"},
+            {"step_id": 2, "title": "Early probe"},
+        ],
+    }
+    g = asyncio.run(
+        tg.build_trajectory_graph(
+            {"steps": []},
+            {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
+            model=None,
+            summary=summary,
+        )
+    )
+    assert g["terminal"]["last_action"] == "Final commit"
+
+
 def test_summary_without_phases_falls_back():
     g = asyncio.run(
         tg.build_trajectory_graph(
