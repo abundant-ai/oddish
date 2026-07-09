@@ -344,12 +344,12 @@ def test_submit_timing_harness(
 
     # Probe-off invariant: the backend must not have flipped run_probe on.
     flipped = [o.task_id for o in submitted if o.run_probe]
-    assert (
-        not flipped
-    ), f"run_probe flipped ON server-side for {len(flipped)} task(s): {flipped[:5]}."
+    assert not flipped, (
+        f"run_probe flipped ON server-side for {len(flipped)} task(s): {flipped[:5]}."
+    )
     with_probe_trials = [
         (o.task_id, o.probe_trials) for o in submitted if (o.probe_trials or 0) > 0
     ]
-    assert (
-        not with_probe_trials
-    ), f"unexpected probe trials despite run_probe=false: {with_probe_trials[:5]}"
+    assert not with_probe_trials, (
+        f"unexpected probe trials despite run_probe=false: {with_probe_trials[:5]}"
+    )

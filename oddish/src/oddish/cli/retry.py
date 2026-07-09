@@ -217,7 +217,9 @@ def _run_trial_retries(
     if target_type == "trial":
         _confirm(f"Retry trial {target_id}?", yes=yes, json_output=json_output)
         trial_results = _retry_trial_ids(
-            api_url, [target_id], registry_auth=registry_auth,
+            api_url,
+            [target_id],
+            registry_auth=registry_auth,
             gate_baselines=gate_baselines,
         )
         return {
@@ -247,7 +249,9 @@ def _run_trial_retries(
             "kind": "trials",
             "target": {"type": "task", "id": target_id},
             "trials": _retry_trial_ids(
-                api_url, trial_ids, registry_auth=registry_auth,
+                api_url,
+                trial_ids,
+                registry_auth=registry_auth,
                 gate_baselines=gate_baselines,
             ),
         }
@@ -273,7 +277,9 @@ def _run_trial_retries(
         "kind": "trials",
         "target": {"type": "experiment", "id": target_id},
         "trials": _retry_trial_ids(
-            api_url, trial_ids, registry_auth=registry_auth,
+            api_url,
+            trial_ids,
+            registry_auth=registry_auth,
             gate_baselines=gate_baselines,
         ),
     }

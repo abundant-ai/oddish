@@ -42,6 +42,7 @@ def _observation(content: str, *, source_call_id: str | None = None) -> Observat
         results=[ObservationResult(source_call_id=source_call_id, content=content)]
     )
 
+
 # Session-relative directory the agent copies the Grok session store into.
 GROK_SESSION_CAPTURE_DIRNAME = "grok-session"
 
@@ -281,7 +282,10 @@ def build_trajectory_from_updates(
                 update.get("toolCallId") or update.get("tool_call_id") or len(steps)
             )
             name = str(
-                update.get("title") or update.get("kind") or update.get("name") or "tool"
+                update.get("title")
+                or update.get("kind")
+                or update.get("name")
+                or "tool"
             )
             raw_input = update.get("rawInput")
             arguments = raw_input if isinstance(raw_input, dict) else {}
@@ -320,8 +324,7 @@ def build_trajectory_from_updates(
                     Step(
                         step_id=len(steps) + 1,
                         source="user",
-                        message="tool result"
-                        + (f" ({status})" if status else ""),
+                        message="tool result" + (f" ({status})" if status else ""),
                         observation=_observation(
                             observation_text, source_call_id=tool_id or None
                         ),
