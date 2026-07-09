@@ -246,6 +246,77 @@ if _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS):
         modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
     )
 
+
+def assert_gke_cluster_exists() -> None:
+    """Deploy-time gate: refuse to ship a GKE-enabled deploy whose configured
+    cluster does not exist.
+
+    The platform never creates clusters -- workers only connect to the standing
+    cluster named by ODDISH_GKE_CLUSTER_NAME -- so a stale pointer (cluster
+    deleted after the .env was written) would fail every TPU trial at runtime.
+    Best-effort by design: it needs the gcloud CLI (present on deploy machines,
+    absent in CI whose deploys are GKE-less anyway) and treats anything but a
+    definitive not-found as non-blocking so flaky networks cannot veto a deploy.
+    Called from deploy.py under modal.is_local() only; containers never run it.
+    """
+    import shutil
+    import subprocess
+
+    def _cfg(key: str) -> str | None:
+        return os.environ.get(key) or LOCAL_DOTENV_VARS.get(key)
+
+    cluster = _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS)
+    region = _cfg("ODDISH_GKE_REGION")
+    project = _cfg("ODDISH_GKE_PROJECT_ID")
+    if not cluster or not region or not project:
+        return
+    gcloud = shutil.which("gcloud")
+    if not gcloud:
+        print(
+            f"[deploy] gcloud CLI not found; skipping existence check for "
+            f"GKE cluster '{cluster}'"
+        )
+        return
+    try:
+        result = subprocess.run(
+            [
+                gcloud,
+                "container",
+                "clusters",
+                "describe",
+                cluster,
+                "--region",
+                region,
+                "--project",
+                project,
+                "--format=value(name)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
+            "continuing"
+        )
+        return
+    if result.returncode == 0:
+        print(f"[deploy] GKE cluster '{cluster}' verified in {region}")
+        return
+    stderr = result.stderr.strip()
+    if "404" in stderr or "not found" in stderr.lower():
+        raise SystemExit(
+            f"GKE cluster '{cluster}' not found in region '{region}' "
+            f"(project '{project}'):\n{stderr[:300]}\n"
+            "Refusing to deploy a GKE-enabled app pointed at a missing "
+            "cluster; fix the ODDISH_GKE_* config or create the cluster."
+        )
+    print(
+        f"[deploy] WARNING: could not verify GKE cluster '{cluster}' "
+        f"({stderr[:200]}); continuing"
+    )
+
 # Appended UNCONDITIONALLY (an empty dict is a valid secret): this list is
 # recomputed inside the container, where backend/.env does not exist, so an
 # append conditional on the file's presence makes the deploy-time and
