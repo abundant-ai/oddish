@@ -24,9 +24,13 @@ class ModelPricing:
 #   * gpt-5.3 bare (litellm has gpt-5.3-codex only).
 #   * Legacy Claude 3.5 with dotted notation (litellm uses dashed form).
 #   * claude-haiku-4 bare (litellm has claude-haiku-4-5 only).
+#   * glm-5.2 (litellm's zai/ catalog stops at zai/glm-5.1; our stored id is
+#     zai/glm-5.2). z.ai list price: docs.z.ai/guides/overview/pricing (2026-07)
+#     = $1.4/M in, $4.4/M out, $0.26/M cached input.
 # Ordering invariant: earlier patterns must not be substrings of later ones.
 PRICING_TABLE: list[tuple[str, ModelPricing]] = [
     ("glm-x-preview", ModelPricing(input=1e-6, output=3.2e-6, cache_read=2e-7)),
+    ("glm-5.2", ModelPricing(input=1.4e-6, output=4.4e-6, cache_read=2.6e-7)),
     ("glm-4.5-flash", ModelPricing(input=0.0, output=0.0)),
     ("glm-4.7-flash", ModelPricing(input=0.0, output=0.0)),
     # Anthropic legacy / bare variants.
