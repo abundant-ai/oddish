@@ -3,8 +3,9 @@ import base64
 import binascii
 import contextlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -15,7 +16,6 @@ from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
 from oddish.workers.queue.shared import console
 
-CLAUDE_LOG_PATH = "/logs/agent/claude-code.txt"
 MAX_CHUNK_BYTES = 256 * 1024
 EXEC_TIMEOUT_SEC = 30
 MAX_CONSECUTIVE_FAILURES = 5
@@ -35,6 +35,26 @@ class UsageTotals:
     cache_write_tokens: int = 0
     output_tokens: int = 0
     model: str | None = None
+
+
+class Fold(Protocol):
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]: ...
+
+    def totals(self) -> UsageTotals: ...
+
+    @property
+    def has_usage(self) -> bool: ...
+
+
+def _parse_json_line(line: bytes) -> dict[str, Any] | None:
+    line = line.strip()
+    if not line.startswith(b"{"):
+        return None
+    try:
+        event = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return event if isinstance(event, dict) else None
 
 
 def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
@@ -100,15 +120,13 @@ class ClaudeUsageFold:
     usage_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     model: str | None = None
 
+    @property
+    def has_usage(self) -> bool:
+        return bool(self.usage_by_id)
+
     def feed_line(self, line: bytes) -> list[dict[str, Any]]:
-        line = line.strip()
-        if not line.startswith(b"{"):
-            return []
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            return []
-        if not isinstance(event, dict):
+        event = _parse_json_line(line)
+        if event is None:
             return []
         if event.get("type") == "assistant":
             message = event.get("message")
@@ -141,6 +159,107 @@ class ClaudeUsageFold:
         return t
 
 
+def _render_codex_item(item: Any) -> list[dict[str, Any]]:
+    if not isinstance(item, dict):
+        return []
+    item_type = item.get("type")
+    if item_type in ("agent_message", "reasoning"):
+        text = item.get("text")
+        if not text:
+            return []
+        return [{"kind": "message", "payload": _clipped_payload("text", text)}]
+    if item_type == "command_execution":
+        result = _clipped_payload("content", item.get("aggregated_output") or "")
+        exit_code = item.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            result["is_error"] = True
+        return [
+            {
+                "kind": "tool_use",
+                "payload": _clipped_payload(
+                    "input",
+                    {"command": str(item.get("command") or "")},
+                    name="shell",
+                ),
+            },
+            {"kind": "tool_result", "payload": result},
+        ]
+    return []
+
+
+@dataclass
+class CodexUsageFold:
+    usage: dict[str, Any] | None = None
+    model: str | None = None
+
+    @property
+    def has_usage(self) -> bool:
+        return self.usage is not None
+
+    def feed_line(self, line: bytes) -> list[dict[str, Any]]:
+        event = _parse_json_line(line)
+        if event is None:
+            return []
+        event_type = event.get("type")
+        if event_type == "item.completed":
+            return _render_codex_item(event.get("item"))
+        if event_type == "turn.completed":
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self.usage = usage
+            return []
+        if event_type == "turn.failed":
+            error = event.get("error")
+            message = (
+                error.get("message") if isinstance(error, dict) else event.get("message")
+            )
+            if not message:
+                return []
+            return [{"kind": "summary", "payload": _clipped_payload("text", message)}]
+        return []
+
+    def totals(self) -> UsageTotals:
+        usage = self.usage or {}
+        return UsageTotals(
+            input_tokens=int(usage.get("input_tokens") or 0),
+            cache_tokens=int(usage.get("cached_input_tokens") or 0),
+            output_tokens=int(usage.get("output_tokens") or 0),
+            model=self.model,
+        )
+
+
+@dataclass(frozen=True)
+class Adapter:
+    matches: Callable[[str], bool]
+    log_path: str
+    make_fold: Callable[[str | None], Fold]
+
+
+ADAPTERS: tuple[Adapter, ...] = (
+    Adapter(
+        matches=lambda agent: "claude-code" in agent,
+        log_path="/logs/agent/claude-code.txt",
+        make_fold=lambda model: ClaudeUsageFold(model=model),
+    ),
+    Adapter(
+        matches=lambda agent: agent == "codex",
+        log_path="/logs/agent/codex.txt",
+        make_fold=lambda model: CodexUsageFold(model=model),
+    ),
+)
+
+
+def _adapter_for(agent: str | None) -> Adapter | None:
+    name = (agent or "").strip().lower()
+    if not name:
+        return None
+    return next((a for a in ADAPTERS if a.matches(name)), None)
+
+
+def supports(agent: str | None) -> bool:
+    return _adapter_for(agent) is not None
+
+
 def price_totals(totals: UsageTotals) -> float | None:
     model = totals.model
     if not model:
@@ -164,12 +283,14 @@ class LiveTailer:
         trial_id: str,
         environment: Any,
         attempt: int,
-        model: str | None,
+        log_path: str,
+        fold: Fold,
     ):
         self.trial_id = trial_id
         self.environment = environment
         self.attempt = attempt
-        self.fold = ClaudeUsageFold(model=model)
+        self.log_path = log_path
+        self.fold = fold
         self.offset = 0
         self.carry = b""
         self.seq = 0
@@ -223,7 +344,7 @@ class LiveTailer:
 
     async def _tick(self) -> None:
         command = (
-            f"set -o pipefail; tail -c +{self.offset + 1} '{CLAUDE_LOG_PATH}'"
+            f"set -o pipefail; tail -c +{self.offset + 1} '{self.log_path}'"
             f" 2>/dev/null | head -c {MAX_CHUNK_BYTES} | base64 | tr -d '\\n'"
         )
         result = await self.environment.exec(
@@ -282,7 +403,7 @@ class LiveTailer:
         self.pending_events.clear()
 
     async def _checkpoint(self) -> None:
-        if not self.fold.usage_by_id:
+        if not self.fold.has_usage:
             return
         totals = self.fold.totals()
         cost = price_totals(totals)
@@ -325,10 +446,6 @@ class LiveTailer:
 _tailers: dict[str, tuple[LiveTailer, asyncio.Task]] = {}
 
 
-def supports(agent: str | None) -> bool:
-    return "claude-code" in (agent or "").lower()
-
-
 def start(
     *,
     trial_id: str,
@@ -339,10 +456,15 @@ def start(
 ) -> None:
     if not settings.live_tail_enabled:
         return
-    if environment is None or not supports(agent):
+    adapter = _adapter_for(agent)
+    if environment is None or adapter is None:
         return
     tailer = LiveTailer(
-        trial_id=trial_id, environment=environment, attempt=attempt, model=model
+        trial_id=trial_id,
+        environment=environment,
+        attempt=attempt,
+        log_path=adapter.log_path,
+        fold=adapter.make_fold(model),
     )
     old = _tailers.pop(trial_id, None)
     if old:
