@@ -99,7 +99,7 @@ _LITELLM_PREFIX_CANDIDATES: tuple[str, ...] = (
 # That value is authoritative for Anthropic/Bedrock Claude, but not when the
 # same harness is pointed at an Anthropic-compatible third-party endpoint.
 _CLAUDE_CODE_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset(
-    {"fireworks", "zai", "minimax", "moonshot", "openrouter"}
+    {"fireworks", "fireworks_ai", "zai", "minimax", "moonshot", "openrouter"}
 )
 
 
