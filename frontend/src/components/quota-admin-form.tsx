@@ -119,7 +119,6 @@ export function QuotaAdminForm() {
   const [orgDraft, setOrgDraft] = useState<string | null>(null);
   const [orgSaving, setOrgSaving] = useState(false);
   const [orgError, setOrgError] = useState<string | undefined>(undefined);
-  const [editingBase, setEditingBase] = useState<Record<string, boolean>>({});
 
   if (error) {
     const status = (error as { status?: number }).status;
@@ -313,11 +312,8 @@ export function QuotaAdminForm() {
     setDrafts(({ [userId]: _drop, ...rest }) => rest);
     setRowError(({ [userId]: _drop, ...rest }) => rest);
   };
-  const startEdit = (userId: string) =>
-    setEditingBase((e) => ({ ...e, [userId]: true }));
   const cancelEdit = (userId: string) => {
     revertDraft(userId);
-    setEditingBase(({ [userId]: _drop, ...rest }) => rest);
   };
 
   async function saveAll() {
@@ -359,9 +355,6 @@ export function QuotaAdminForm() {
     setRowError(failed);
     setDrafts((d) =>
       Object.fromEntries(Object.entries(d).filter(([id]) => id in failed))
-    );
-    setEditingBase((e) =>
-      Object.fromEntries(Object.entries(e).filter(([id]) => id in failed))
     );
     void mutate();
   }
@@ -451,8 +444,6 @@ export function QuotaAdminForm() {
               const err = rowError[id];
               const busy = bumpBusy[id] ?? false;
               const bumpUsd = member.bump_usd ?? 0;
-              const rowEditing =
-                (editingBase[id] ?? false) || dirty || Boolean(err);
               return (
                 <TableRow key={id} className="border-border/70">
                   <TableCell className="py-2.5 align-top">
@@ -502,31 +493,30 @@ export function QuotaAdminForm() {
                   </TableCell>
                   <TableCell className="py-2.5 text-right align-top">
                     <div className="flex flex-col items-end gap-1.5">
-                      {rowEditing ? (
-                        <div className="flex items-center justify-end gap-1.5">
-                          <Input
-                            type="number"
-                            min={0}
-                            step="0.01"
-                            inputMode="decimal"
-                            aria-label={`24-hour base limit for ${memberLabel(member)}`}
-                            aria-invalid={err ? true : undefined}
-                            autoFocus
-                            className={`h-8 w-24 text-right font-mono text-xs ${
-                              err
-                                ? "border-destructive focus-visible:ring-destructive"
-                                : dirty
-                                  ? "border-primary/50"
-                                  : ""
-                            }`}
-                            value={draftValue(member)}
-                            disabled={saving}
-                            onChange={(e) => setDraft(id, e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") void saveAll();
-                              if (e.key === "Escape") cancelEdit(id);
-                            }}
-                          />
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          inputMode="decimal"
+                          aria-label={`24-hour base limit for ${memberLabel(member)}`}
+                          aria-invalid={err ? true : undefined}
+                          className={`h-8 w-24 text-right font-mono text-xs ${
+                            err
+                              ? "border-destructive focus-visible:ring-destructive"
+                              : dirty
+                                ? "border-primary/50"
+                                : ""
+                          }`}
+                          value={draftValue(member)}
+                          disabled={saving}
+                          onChange={(e) => setDraft(id, e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void saveAll();
+                            if (e.key === "Escape") cancelEdit(id);
+                          }}
+                        />
+                        {dirty || err ? (
                           <button
                             type="button"
                             className="text-muted-foreground hover:text-foreground text-[11px] underline underline-offset-2 disabled:opacity-50"
@@ -535,38 +525,28 @@ export function QuotaAdminForm() {
                           >
                             Cancel
                           </button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-end gap-0.5">
-                          <button
-                            type="button"
-                            className="text-foreground hover:text-primary font-mono text-sm font-semibold tabular-nums underline-offset-2 hover:underline disabled:opacity-50"
-                            disabled={saving}
-                            aria-label={`Edit 24-hour base limit for ${memberLabel(member)}`}
-                            onClick={() => startEdit(id)}
-                          >
-                            {formatDollars(member.limit_usd)}
-                          </button>
-                          {bumpUsd > 0 ? (
-                            <span className="text-muted-foreground text-[11px]">
-                              {formatDollars(baseLimit(member))} base
-                              <span className="text-emerald-600 dark:text-emerald-500">
-                                {" "}
-                                + {formatDollars(bumpUsd)} boost
-                              </span>
+                        ) : null}
+                      </div>
+                      <div className="flex flex-col items-end gap-0.5">
+                        {bumpUsd > 0 ? (
+                          <span className="text-muted-foreground text-[11px]">
+                            {formatDollars(member.limit_usd)} total
+                            <span className="text-emerald-600 dark:text-emerald-500">
+                              {" "}
+                              includes + {formatDollars(bumpUsd)} boost
                             </span>
-                          ) : (
-                            <span className="text-muted-foreground text-[11px]">
-                              base limit
-                            </span>
-                          )}
-                          {bumpUsd > 0 && member.bump_expires_at ? (
-                            <span className="text-[11px] text-emerald-600 dark:text-emerald-500">
-                              until {formatBumpExpiry(member.bump_expires_at)}
-                            </span>
-                          ) : null}
-                        </div>
-                      )}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground text-[11px]">
+                            base limit
+                          </span>
+                        )}
+                        {bumpUsd > 0 && member.bump_expires_at ? (
+                          <span className="text-[11px] text-emerald-600 dark:text-emerald-500">
+                            until {formatBumpExpiry(member.bump_expires_at)}
+                          </span>
+                        ) : null}
+                      </div>
                       {err ? (
                         <p className="text-destructive text-right text-[11px]">
                           {err}
@@ -711,8 +691,8 @@ export function QuotaAdminForm() {
       </div>
       <div className="flex items-center justify-between gap-3">
         <p className="text-muted-foreground text-xs">
-          Click a member&apos;s limit to edit its base; leave it empty to
-          revert to the workspace default.
+          Edit a member&apos;s base limit directly; leave it empty to revert to
+          the workspace default.
         </p>
         <div className="flex shrink-0 items-center gap-3">
           {dirtyMembers.length > 0 && !saving ? (
