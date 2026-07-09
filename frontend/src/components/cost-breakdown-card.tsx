@@ -468,38 +468,22 @@ function MethodologyNote() {
         <p className="mb-2 font-medium">How costs are computed</p>
         <ul className="text-muted-foreground list-disc space-y-1.5 pl-4">
           <li>
-            Cost is tallied <strong>per trial</strong>. When the agent runtime
-            reports a cost we use that (native); otherwise we estimate it from
-            the trial&apos;s token counts × per-model pricing (LiteLLM&apos;s
-            table plus a small local fallback). This is the same estimator the
-            rest of the app already uses for per-trial cost.
+            Per-trial cost: the runtime&apos;s native cost, else a token-based
+            estimate (LiteLLM pricing). The{" "}
+            <Info className="inline h-3 w-3 align-text-top" /> marker flags a
+            cost that was estimated.
           </li>
           <li>
-            Native and estimated are mutually exclusive per trial, so they sum
-            to the total with no double-counting. The{" "}
-            <Info className="inline h-3 w-3 align-text-top" /> marker next to a
-            cost means part of it was estimated.
+            All first-party spend, across every org. Imported runs and
+            experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
-            All first-party spend is counted. Imported trials (external Harbor
-            runs) and experiment-combine copies are excluded so spend counts
-            once. Per-user figures attribute each trial to its billed user;
-            spend that never resolved to an active user — offboarded or unlinked
-            payers — is grouped under its submitted GitHub identity, its
-            submitter, or an <strong>unbilled</strong>{" "}
-            &ldquo;Unattributed&rdquo; bucket rather than being dropped.
+            Per-user attributes each trial to its billed user; spend with no
+            active payer falls to its GitHub identity, submitter, or an{" "}
+            <strong>unbilled</strong> &ldquo;Unattributed&rdquo; bucket.
+            Per-model and per-user regroup the same costs, so every view sums to
+            the same total.
           </li>
-          <li>
-            Per-model and per-user are the same per-trial costs grouped
-            differently, so each view sums back to the same total.
-          </li>
-          <li>
-            Every figure — the chart, the window totals, and the monthly figure
-            — counts a trial by its <strong>finish time</strong> (settlement),
-            the same basis as quota Used; still-running trials are excluded until
-            they finish, and a cancelled run with no reported cost counts as $0.
-          </li>
-          <li>Figures span all organizations.</li>
         </ul>
       </PopoverContent>
     </Popover>
