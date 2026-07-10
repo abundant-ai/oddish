@@ -1,8 +1,8 @@
 """Deploy-time gate that routes GKE config through the ``oddish-gke-config``
 runtime secret.
 
-Single-tenant GKE enablement carries ODDISH_GKE_* (cluster/registry coordinates
-plus the user-email allowlist) in a Modal *runtime* secret instead of baking it from
+Single-tenant GKE enablement carries the ODDISH_GKE_* (cluster/registry
+coordinates) in a Modal *runtime* secret instead of baking it from
 ``backend/.env``. The secret is referenced only when a deploy-time flag
 (ODDISH_GKE_ENABLED) says so, so an environment without the secret still
 deploys. These tests pin two contracts:

@@ -1055,17 +1055,6 @@ class Settings(BaseSettings):
     # automatic on the next trial, so deletion only trades a cold-start.
     gke_idle_cluster_ttl_hours: float = 3.0
     gke_pod_ready_timeout_sec: int = 3600
-    # Single-tenant GKE user allowlist. Comma-separated, case-insensitive user
-    # emails permitted to run --env gke / TPU trials; EMPTY = deny all (the
-    # fail-safe default). GKE is multi-tenant-exposing -- without this, any user
-    # on the hosted product could route TPU work to the shared cluster. The
-    # hosted API rejects a GKE-routed submission whose authenticated user email
-    # is absent from this list before any trial is created; the OSS single-tenant
-    # server (unauthenticated) is exempt. Delivered at runtime via the
-    # oddish-gke-config secret, so the allowlist changes with a secret update
-    # (picked up as the API containers recycle) rather than shipping new code;
-    # already-running containers keep the old list until they roll over.
-    gke_allowed_user_emails: str = ""
 
     # API server
     api_host: str = "0.0.0.0"
@@ -1240,20 +1229,6 @@ class Settings(BaseSettings):
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
         return self
-
-    @property
-    def gke_allowed_user_email_set(self) -> frozenset[str]:
-        """``gke_allowed_user_emails`` parsed to a lowercased set; EMPTY = deny all.
-
-        Emails are lowercased for case-insensitive matching; blank entries and
-        surrounding whitespace are dropped so a trailing comma or padded value
-        never widens the allowlist to the empty string.
-        """
-        return frozenset(
-            part.strip().lower()
-            for part in self.gke_allowed_user_emails.split(",")
-            if part.strip()
-        )
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
