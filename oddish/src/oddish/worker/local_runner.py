@@ -46,6 +46,7 @@ from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
+from oddish.observability import log_unpriced_trial_if_needed
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -737,19 +738,35 @@ async def _run_harbor_trial(trial_id: str) -> None:
             trial.cache_tokens = agent_result.n_cache_tokens
             trial.cache_write_tokens = cache_write_tokens
             trial.output_tokens = agent_result.n_output_tokens
+            provider = settings.get_provider_for_trial(
+                getattr(trial, "agent", ""), trial.model
+            )
+            native_cost_trusted = is_native_cost_trusted(
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+            )
             trial.cost_usd = settle_cost_usd(
                 agent_result.cost_usd,
-                native_cost_trusted=is_native_cost_trusted(
-                    agent=getattr(trial, "agent", None),
-                    provider=settings.get_provider_for_trial(
-                        getattr(trial, "agent", ""), trial.model
-                    ),
-                ),
+                native_cost_trusted=native_cost_trusted,
                 model=trial.model,
                 input_tokens=agent_result.n_input_tokens,
                 output_tokens=agent_result.n_output_tokens,
                 cache_tokens=agent_result.n_cache_tokens,
                 cache_write_tokens=cache_write_tokens,
+            )
+            log_unpriced_trial_if_needed(
+                cost_usd=trial.cost_usd,
+                trial_id=trial.id,
+                model=trial.model,
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+                attempt=trial.attempts,
+                input_tokens=agent_result.n_input_tokens,
+                cache_tokens=agent_result.n_cache_tokens,
+                cache_write_tokens=cache_write_tokens,
+                output_tokens=agent_result.n_output_tokens,
+                native_cost_usd=agent_result.cost_usd,
+                native_cost_trusted=native_cost_trusted,
             )
         trial.total_steps = _trajectory_total_steps(trajectory)
         trial.has_trajectory = trajectory is not None

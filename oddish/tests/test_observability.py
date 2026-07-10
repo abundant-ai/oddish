@@ -56,3 +56,36 @@ def test_log_warning_keeps_standard_log_when_logfire_is_disabled(
 
     assert calls == []
     assert "Trial has token usage but no resolved cost" in caplog.text
+
+
+def test_unpriced_trial_helper_only_logs_null_cost_with_tokens(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        observability,
+        "log_warning",
+        lambda message, **attributes: calls.append((message, attributes)),
+    )
+    base = {
+        "trial_id": "trial-1",
+        "model": "new-model",
+        "agent": "claude-code",
+        "provider": "openrouter",
+        "attempt": 1,
+        "cache_tokens": 0,
+        "cache_write_tokens": 0,
+        "native_cost_usd": 0.0,
+        "native_cost_trusted": False,
+    }
+
+    assert not observability.log_unpriced_trial_if_needed(
+        cost_usd=1.0, input_tokens=100, output_tokens=10, **base
+    )
+    assert not observability.log_unpriced_trial_if_needed(
+        cost_usd=None, input_tokens=0, output_tokens=0, **base
+    )
+    assert observability.log_unpriced_trial_if_needed(
+        cost_usd=None, input_tokens=100, output_tokens=10, **base
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["metric"] == "trial_cost_unpriced"
+    assert calls[0][1]["model"] == "new-model"

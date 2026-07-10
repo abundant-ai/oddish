@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from oddish import observability
 from oddish.db import TrialStatus
 from oddish.workers.harbor.runner import HarborOutcome
-from oddish.workers.queue import trial_handler
 from oddish.workers.queue.trial_handler import _store_trial_results
 from test_scoreless_trial_no_retry import _patch_session, _trial
 
@@ -89,7 +89,7 @@ async def test_zero_cost_unpriceable_model_settles_to_none(monkeypatch):
     trial = _trial(agent="claude-code", model="totally-made-up-model")
     warnings = []
     monkeypatch.setattr(
-        trial_handler,
+        observability,
         "log_warning",
         lambda message, **attributes: warnings.append((message, attributes)),
     )
@@ -122,7 +122,7 @@ async def test_priceable_model_does_not_log_unpriced_warning(monkeypatch):
     trial = _trial(agent="claude-code", model="zai/glm-x-preview[1m]")
     warnings = []
     monkeypatch.setattr(
-        trial_handler,
+        observability,
         "log_warning",
         lambda message, **attributes: warnings.append((message, attributes)),
     )

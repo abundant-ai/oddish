@@ -130,3 +130,44 @@ def log_warning(
         logfire.warning(message, _tags=list(tags) or None, **attributes)
     except Exception:
         logger.warning("logfire.warning(%r) failed", message, exc_info=True)
+
+
+def log_unpriced_trial_if_needed(
+    *,
+    cost_usd: float | None,
+    trial_id: str,
+    model: str | None,
+    agent: str | None,
+    provider: str | None,
+    attempt: int,
+    input_tokens: int | None,
+    cache_tokens: int | None,
+    cache_write_tokens: int | None,
+    output_tokens: int | None,
+    native_cost_usd: float | None,
+    native_cost_trusted: bool,
+) -> bool:
+    """Log one structured integrity warning when tokens cannot be priced."""
+    if cost_usd is not None or not any(
+        int(tokens or 0) > 0
+        for tokens in (input_tokens, output_tokens, cache_write_tokens)
+    ):
+        return False
+
+    log_warning(
+        "Trial has token usage but no resolved cost",
+        tags=("cost-integrity", "unpriced-model"),
+        metric="trial_cost_unpriced",
+        trial_id=trial_id,
+        model=model or "unknown",
+        agent=agent or "unknown",
+        provider=provider or "unknown",
+        attempt=attempt,
+        input_tokens=input_tokens or 0,
+        cache_tokens=cache_tokens or 0,
+        cache_write_tokens=cache_write_tokens or 0,
+        output_tokens=output_tokens or 0,
+        native_cost_usd=native_cost_usd,
+        native_cost_trusted=native_cost_trusted,
+    )
+    return True
