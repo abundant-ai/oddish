@@ -293,40 +293,6 @@ def _reject_tpu_without_gke(
         )
 
 
-def _reject_gke_user_not_allowed(
-    effective_environment: EnvironmentType | None,
-    org_id: str | None,
-    user_email: str | None,
-    allowed_user_emails: "frozenset[str]",
-) -> None:
-    """403 when a GKE-routed submission's user is not in the GKE allowlist.
-
-    Single-tenant safety: GKE is exposed only to explicitly allowlisted users,
-    keyed on the authenticated user's email (ODDISH_GKE_ALLOWED_USER_EMAILS,
-    lowercased; EMPTY = deny all). ``user_email`` is server-derived and
-    unforgeable -- the Clerk session user's email, or an API key's creator email.
-    Enforced after the three GKE routing paths -- explicit environment=gke, the
-    CLI TPU auto-sniff (arrives as environment=gke), and override_tpu -- plus an
-    append's inherited GKE environment all converge on ``effective_environment``,
-    and before any trial is persisted, so no routing path can slip a
-    non-allowlisted user onto the shared cluster.
-
-    A None ``org_id`` is exempt: that is the OSS single-tenant server, which is
-    unauthenticated and whose operator owns the whole install. But a hosted
-    request (org_id set) whose email cannot be resolved -- ``user_email`` None,
-    e.g. an API key with no creator user -- is DENIED, not exempted: default-deny
-    keeps an unidentifiable hosted caller off the shared cluster.
-    """
-    if effective_environment != EnvironmentType.GKE or org_id is None:
-        return
-    email = (user_email or "").strip().lower()
-    if email not in allowed_user_emails:
-        raise HTTPException(
-            status_code=403,
-            detail="GKE is not enabled for your account.",
-        )
-
-
 def _reject_mixed_gke_configs(
     configs,
     effective_environment: EnvironmentType | None,
@@ -359,7 +325,6 @@ async def create_task_sweep_core(
     submission: TaskSweepSubmission,
     org_id: str | None = None,
     billed_user_id: str | None = None,
-    user_email: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     idempotency_key: str | None = None,
@@ -467,12 +432,6 @@ async def create_task_sweep_core(
         effective_default_env = resolved_default
     _reject_mixed_gke_configs(submission.configs, effective_environment)
     _reject_tpu_without_gke(submission.harbor, effective_environment)
-    # Single-tenant gate: a GKE-routed submission from a non-allowlisted user is
-    # rejected here -- after every routing path has resolved into
-    # ``effective_environment`` and before any trial is persisted.
-    _reject_gke_user_not_allowed(
-        effective_environment, org_id, user_email, settings.gke_allowed_user_email_set
-    )
     harbor_to_gate = submission.harbor
     if effective_environment is not None:
         harbor_to_gate = stamp_gke_harbor_source(
@@ -720,7 +679,6 @@ async def create_task_sweep_batch_core(
     *,
     submissions: Sequence[TaskSweepSubmission],
     org_id: str | None = None,
-    user_email: str | None = None,
     default_environment: EnvironmentType | None = None,
     allowed_environments: Collection[EnvironmentType] | None = None,
     prepare: (
@@ -796,7 +754,6 @@ async def create_task_sweep_batch_core(
                     submission=submission,
                     org_id=org_id,
                     billed_user_id=billed_user_ids[index],
-                    user_email=user_email,
                     default_environment=item_envs[index],
                     allowed_environments=allowed_environments,
                 )
