@@ -30,7 +30,7 @@ export function QuotaUsageCard() {
     <div className="border-border bg-muted/30 rounded-lg border p-4">
       <div className="flex items-center gap-2">
         <Gauge className="text-muted-foreground h-4 w-4" />
-        <p className="text-foreground text-sm font-medium">Usage (last 24h)</p>
+        <p className="text-foreground text-sm font-medium">Quota</p>
       </div>
 
       <div className="mt-3">
