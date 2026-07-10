@@ -261,6 +261,7 @@ All routes require auth unless marked public.
 | GET | `/trials/{trial_id}/trajectory` | Trial trajectory |
 | GET | `/tasks/{task_id}/files` | List task files (presigned URLs) |
 | GET | `/tasks/{task_id}/files/{path}` | Fetch task file |
+| DELETE | `/tasks/{task_id}` | Soft-delete a task and all its trials (admin only) |
 
 ### Experiment sharing and management
 
