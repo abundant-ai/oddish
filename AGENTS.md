@@ -536,7 +536,9 @@ sweep):
 4. `send_slack_expense_notifications()` runs every five minutes in production
    when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
    for experiments at $1,000 and each additional $1,000 of spend, and for recent
-   trials over $25 that exceed twice their experiment's other-trial average.
+   trials over $70 that exceed twice the average of other trials in the
+   experiment for the same task and model. Trials without a same-task/model
+   peer do not produce anomaly alerts.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis

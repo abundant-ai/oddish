@@ -26,12 +26,15 @@ def _trial(
     cost_usd: float,
     *,
     experiment_id: str = "experiment-1",
+    task_id: str = "task/1",
+    model: str = "model-1",
     finished_at: datetime,
 ) -> TrialSpend:
     return TrialSpend(
         id=trial_id,
-        task_id="task/1",
+        task_id=task_id,
         experiment_id=experiment_id,
+        model=model,
         finished_at=finished_at,
         cost_usd=cost_usd,
     )
@@ -93,43 +96,26 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
     assert "/experiments/experiment%252F1|open experiment>" in experiment_alert.text
 
 
-def test_build_alerts_reports_first_trial_only_above_floor() -> None:
+def test_build_alerts_requires_a_same_task_model_peer() -> None:
     now = datetime.now(timezone.utc)
     experiment = ExperimentCandidate("experiment-1", "Experiment", None, 0)
 
-    below = build_alerts(
-        [experiment],
-        [_trial("trial-100", 100, finished_at=now)],
-        recent_cutoff=now - timedelta(hours=2),
-        dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=100,
-        trial_average_multiplier=2,
-    )
-    above = build_alerts(
-        [experiment],
-        [_trial("trial-101", 101, finished_at=now)],
-        recent_cutoff=now - timedelta(hours=2),
-        dashboard_url="https://www.oddish.app",
-        experiment_threshold_usd=2000,
-        experiment_repeat_usd=1000,
-        trial_threshold_usd=100,
-        trial_average_multiplier=2,
-    )
-
-    assert not any(alert.key.startswith("trial:") for alert in below)
-    assert [alert.key for alert in above] == ["trial:trial-101:100:2"]
-    assert "first trial" in above[0].text
-
-
-def test_build_alerts_keeps_first_trial_rule_when_multiple_finish_between_polls() -> None:
-    now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+        [experiment],
         [
-            _trial("first", 101, finished_at=now - timedelta(minutes=1)),
-            _trial("second", 1000, finished_at=now),
+            _trial("outlier", 1000, finished_at=now),
+            _trial(
+                "other-model",
+                1,
+                model="model-2",
+                finished_at=now - timedelta(days=1),
+            ),
+            _trial(
+                "other-task",
+                1,
+                task_id="task/2",
+                finished_at=now - timedelta(days=1),
+            ),
         ],
         recent_cutoff=now - timedelta(hours=2),
         dashboard_url="https://www.oddish.app",
@@ -139,7 +125,31 @@ def test_build_alerts_keeps_first_trial_rule_when_multiple_finish_between_polls(
         trial_average_multiplier=2,
     )
 
-    assert "trial:first:100:2" in [alert.key for alert in alerts]
+    assert not any(alert.key.startswith("trial:") for alert in alerts)
+
+
+def test_build_alerts_uses_same_task_model_peers() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+        [
+            _trial("outlier", 201, finished_at=now),
+            _trial(
+                "peer",
+                100,
+                finished_at=now - timedelta(days=1),
+            ),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+    )
+
+    assert [alert.key for alert in alerts] == ["trial:outlier:100:2"]
+    assert "2.0× the same-task/model average" in alerts[0].text
 
 
 def test_build_alerts_requires_more_than_double_other_trial_average() -> None:
@@ -270,8 +280,8 @@ async def test_load_alerts_uses_settled_trial_costs(
                     task_id=task_id,
                     experiment_id=experiment_id,
                     agent="claude-code",
-                    provider="anthropic",
-                    model="anthropic/claude-sonnet-4-6",
+                    provider="openai",
+                    model="gpt-5.3",
                     queue_key="test",
                     status=TrialStatus.SUCCESS,
                     origin=TrialOrigin.ODDISH,
@@ -320,12 +330,11 @@ async def test_load_alerts_uses_settled_trial_costs(
             f"trial:{task_id}-outlier:100:2",
         ]
         assert "finished" in alerts[0].text
+        assert "same-task/model average" in alerts[1].text
     finally:
         async with get_session() as session:
             await session.execute(
-                TrialModel.__table__.delete().where(
-                    TrialModel.experiment_id == experiment_id
-                )
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
             )
             await session.execute(
                 TaskModel.__table__.delete().where(TaskModel.id == task_id)
