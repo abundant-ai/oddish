@@ -1721,9 +1721,9 @@ export function ExperimentTrialsTable({
   };
 
   const renderLegendBlock = () => (
-    <div className="flex min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1 sm:ml-auto sm:w-fit sm:flex-nowrap">
+    <div className="flex max-w-full min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1 sm:ml-auto sm:w-fit">
       {renderLegendAnatomy()}
-      <div className="flex items-center gap-0.5 px-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 px-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
@@ -1738,7 +1738,7 @@ export function ExperimentTrialsTable({
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
       {showAnalysis && (
-        <div className="ml-1 flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2">
+        <div className="ml-1 flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 border-l border-dashed border-[color:var(--paper-line)] pl-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
