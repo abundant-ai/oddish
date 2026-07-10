@@ -22,6 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from oddish.core.cost_basis import settled_cost_columns, settled_cost_parts
 from oddish.core.helpers import (
     build_task_status_responses_from_counts,
     escape_like,
@@ -1533,7 +1534,11 @@ async def get_model_usage_core(
         func.sum(TrialModel.cache_tokens).label("cache_tokens"),
         func.sum(TrialModel.output_tokens).label("output_tokens"),
         func.sum(TrialModel.total_steps).label("total_steps"),
-        func.sum(TrialModel.cost_usd).label("cost_usd"),
+        # Settled cost basis: native cost_usd where present, else a token
+        # estimate, so unpriced trials fall back to the estimate instead of
+        # silently counting as $0 like a raw SUM(cost_usd) would. Requires
+        # grouping by TrialModel.model (below) so the per-row estimate resolves.
+        *settled_cost_columns(),
         func.count(case((TrialModel.status == TrialStatus.RUNNING, 1))).label(
             "running"
         ),
@@ -1588,6 +1593,7 @@ async def get_model_usage_core(
                 "output_tokens": 0,
                 "total_steps": 0,
                 "cost_usd": 0.0,
+                "cost_estimated_usd": 0.0,
                 "running": 0,
                 "retrying": 0,
                 "queued": 0,
@@ -1604,7 +1610,11 @@ async def get_model_usage_core(
         agg["cache_tokens"] = int(agg["cache_tokens"]) + int(row.cache_tokens or 0)
         agg["output_tokens"] = int(agg["output_tokens"]) + int(row.output_tokens or 0)
         agg["total_steps"] = int(agg["total_steps"]) + int(row.total_steps or 0)
-        agg["cost_usd"] = float(agg["cost_usd"]) + float(row.cost_usd or 0)
+        native_cost, estimated_cost = settled_cost_parts(row)
+        agg["cost_usd"] = float(agg["cost_usd"]) + native_cost + estimated_cost
+        agg["cost_estimated_usd"] = (
+            float(agg["cost_estimated_usd"]) + estimated_cost
+        )
         agg["running"] = int(agg["running"]) + int(row.running or 0)
         agg["retrying"] = int(agg["retrying"]) + int(row.retrying or 0)
         agg["queued"] = int(agg["queued"]) + int(row.queued or 0)
@@ -1629,6 +1639,7 @@ async def get_model_usage_core(
                 "output_tokens": int(agg["output_tokens"]),
                 "total_steps": int(agg["total_steps"]),
                 "cost_usd": round(float(agg["cost_usd"]), 4),
+                "cost_estimated_usd": round(float(agg["cost_estimated_usd"]), 4),
                 "running": int(agg["running"]),
                 "retrying": int(agg["retrying"]),
                 "queued": int(agg["queued"]),
