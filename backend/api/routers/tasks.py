@@ -36,6 +36,7 @@ from oddish.core.endpoints import (
     create_task_sweep_batch_core,
     create_task_sweep_core,
     delete_experiment_core,
+    delete_task_core,
     get_task_detail_core,
     get_task_for_org_core,
     get_task_status_core,
@@ -1071,6 +1072,27 @@ async def delete_experiment(
     async with get_session() as session:
         result = await delete_experiment_core(
             session, experiment_id=experiment_id, org_id=auth.org_id
+        )
+        await session.commit()
+    invalidate_dashboard_cache(org_id=auth.org_id)
+
+    modal_cancelled = await terminate_run_harvest(result)
+    return result | {"modal_calls_cancelled": modal_cancelled}
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task(
+    task_id: str,
+    auth: Annotated[AuthContext, Depends(require_admin)],
+) -> dict:
+    """Soft-delete a task and all of its trials.
+
+    Artifacts remain in storage so the task can be restored. Any active
+    workers are cancelled only after the database tombstones commit.
+    """
+    async with get_session() as session:
+        result = await delete_task_core(
+            session, task_id=task_id, org_id=auth.org_id
         )
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
