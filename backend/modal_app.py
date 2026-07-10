@@ -1,4 +1,5 @@
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import modal
@@ -7,7 +8,7 @@ from dotenv import dotenv_values
 from oddish.core.harbor_source import (
     HARBOR_VARIANTS,
     HarborVariant,
-    harbor_uv_source_rewrite_command,
+    harbor_git_requirement,
 )
 
 
@@ -200,6 +201,38 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 # lease (WORKER_TIMEOUT_SECONDS + 30).
 WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
 
+_GKE_CLUSTER_ENV = "ODDISH_GKE_CLUSTER_NAME"
+
+
+def _effective_gke_cluster_name(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> str | None:
+    """GKE cluster name from the same two channels the deploy resolves it from:
+    an explicit process env var wins, else ``backend/.env`` (LOCAL_DOTENV_VARS).
+
+    Both channels also reach the worker runtime -- env vars directly, ``.env``
+    via the ``from_dict`` secret appended below -- where pydantic ``Settings``
+    reads whichever is set and ``oddish.runtime.registry`` registers the GKE
+    backend (and TPU routing) on it. The oddish-gcp credential secret is gated on
+    this exact value so secret-attachment can never disagree with registration:
+    a dotenv-only deploy would otherwise register GKE and route TPU trials to
+    workers that lack ``GOOGLE_APPLICATION_CREDENTIALS_JSON`` and every such
+    trial would authenticate-fail.
+    """
+    explicit = environ.get(_GKE_CLUSTER_ENV) or dotenv_vars.get(_GKE_CLUSTER_ENV)
+    if explicit:
+        return explicit
+    # Modal-parity derived default (mirrors Settings._derive_gke_cluster_name):
+    # a GKE-configured deploy without an explicit name uses <app>-trials, so
+    # secret attachment stays in lockstep with runtime registration.
+    project = environ.get("ODDISH_GKE_PROJECT_ID") or dotenv_vars.get(
+        "ODDISH_GKE_PROJECT_ID"
+    )
+    if project:
+        return f"{MODAL_APP_NAME}-trials"
+    return None
+
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
@@ -219,8 +252,108 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
-if LOCAL_DOTENV_VARS:
-    runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
+# GCP service-account credentials for GKE TPU trials, materialized into an ADC
+# file by the worker runtime. Optional and lazily hydrated by Modal, so installs
+# without GKE never reference the secret and still boot. The gate consults both
+# the process env and backend/.env (see _effective_gke_cluster_name) so the
+# secret attaches whenever GKE is configured by ANY channel that also registers
+# the backend -- otherwise GKE workers boot without credentials and every trial
+# authenticate-fails.
+if _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS):
+    runtime_secrets.append(
+        modal.Secret.from_name("oddish-gcp", environment_name=MODAL_SECRET_ENVIRONMENT)
+    )
+
+
+def assert_gke_cluster_exists() -> None:
+    """Deploy-time gate: refuse to ship a GKE-enabled deploy whose configured
+    cluster does not exist.
+
+    The platform never creates clusters -- workers only connect to the standing
+    cluster named by ODDISH_GKE_CLUSTER_NAME -- so a stale pointer (cluster
+    deleted after the .env was written) would fail every TPU trial at runtime.
+    Best-effort by design: it needs the gcloud CLI (present on deploy machines,
+    absent in CI whose deploys are GKE-less anyway) and treats anything but a
+    definitive not-found as non-blocking so flaky networks cannot veto a deploy.
+    Called from deploy.py under modal.is_local() only; containers never run it.
+    """
+    import shutil
+    import subprocess
+
+    def _cfg(key: str) -> str | None:
+        return os.environ.get(key) or LOCAL_DOTENV_VARS.get(key)
+
+    cluster = _effective_gke_cluster_name(os.environ, LOCAL_DOTENV_VARS)
+    region = _cfg("ODDISH_GKE_REGION")
+    project = _cfg("ODDISH_GKE_PROJECT_ID")
+    if not cluster or not region or not project:
+        return
+    auto_provision = (_cfg("ODDISH_GKE_AUTO_PROVISION_CLUSTER") or "true").lower()
+    if auto_provision not in ("false", "0", "no", "off"):
+        # Zero-touch mode: a missing cluster is created on demand by the
+        # first trial, so absence is informational rather than fatal.
+        print(
+            f"[deploy] GKE cluster '{cluster}' will be auto-provisioned on "
+            "demand if missing (auto-provision enabled); skipping the "
+            "existence gate"
+        )
+        return
+    gcloud = shutil.which("gcloud")
+    if not gcloud:
+        print(
+            f"[deploy] gcloud CLI not found; skipping existence check for "
+            f"GKE cluster '{cluster}'"
+        )
+        return
+    try:
+        result = subprocess.run(
+            [
+                gcloud,
+                "container",
+                "clusters",
+                "describe",
+                cluster,
+                "--region",
+                region,
+                "--project",
+                project,
+                "--format=value(name)",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"[deploy] WARNING: timed out verifying GKE cluster '{cluster}'; "
+            "continuing"
+        )
+        return
+    if result.returncode == 0:
+        print(f"[deploy] GKE cluster '{cluster}' verified in {region}")
+        return
+    stderr = result.stderr.strip()
+    if "404" in stderr or "not found" in stderr.lower():
+        raise SystemExit(
+            f"GKE cluster '{cluster}' not found in region '{region}' "
+            f"(project '{project}'):\n{stderr[:300]}\n"
+            "Refusing to deploy a GKE-enabled app pointed at a missing "
+            "cluster; fix the ODDISH_GKE_* config or create the cluster."
+        )
+    print(
+        f"[deploy] WARNING: could not verify GKE cluster '{cluster}' "
+        f"({stderr[:200]}); continuing"
+    )
+
+# Appended UNCONDITIONALLY (an empty dict is a valid secret): this list is
+# recomputed inside the container, where backend/.env does not exist, so an
+# append conditional on the file's presence makes the deploy-time and
+# container-init secret lists disagree and every function crashloops at
+# hydration ("Function has N dependencies but container got N+1 object ids").
+# The secret's values are captured at deploy, so a dotenv still reaches the
+# runtime; in-container the recomputed dict is empty and only keeps the
+# dependency count stable.
+runtime_secrets.append(modal.Secret.from_dict(LOCAL_DOTENV_VARS))
 # Per-PR DB override created by the modal-preview workflow. Gating on
 # MODAL_APP_NAME (baked into the image) keeps the secret list identical
 # at deploy and container init.
@@ -287,6 +420,19 @@ ENV_VARS = {
     # Gate LLM trials on nop/oracle baseline outcomes. Off unless the deploy
     # environment sets it (preview sets "1"); prod stays off until flipped here.
     "ODDISH_GATE_LLM_ON_BASELINES": os.environ.get("ODDISH_GATE_LLM_ON_BASELINES", "0"),
+    # GKE coordinates resolved at deploy time (process env wins over
+    # backend/.env, mirroring _effective_gke_cluster_name), baked into the
+    # image like MODAL_APP_NAME above. The oddish-gcp secret gate and the
+    # workers' pydantic Settings re-read these INSIDE the container, where
+    # neither the deploy shell's env nor backend/.env exists -- without the
+    # bake, a GKE-configured deploy attaches the credential secret at deploy
+    # time but not at container init (dependency-count drift -> hydration
+    # crashloop) and workers boot without the cluster coordinates.
+    **{
+        k: v
+        for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
+        if k.startswith("ODDISH_GKE_")
+    },
 }
 
 
@@ -368,7 +514,10 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
     When *harbor_override* is set, the harbor git source/rev in the copied
     pyproject(s) is repointed at the variant's commit BEFORE ``uv_sync`` so the
     WHOLE dependency set resolves against that Harbor (an image-variant bakes its
-    own hermetic Harbor). With no override this is the default worker image.
+    own hermetic Harbor); the variant's Harbor extras (e.g. gke -> k8s +
+    google-cloud) are added to the harbor requirement in the same pre-sync step,
+    since the lean default image does not carry them. With no override this is
+    the default worker image.
     """
     img = (
         modal.Image.debian_slim(python_version="3.14")
@@ -398,28 +547,36 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
             copy=True,
         )
     )
+    # Install all dependencies (oddish from /oddish, harbor + others resolved).
+    img = img.uv_sync()
     if harbor_override is not None:
-        # Repoint the harbor pin in both pyprojects (backend's + the editable
-        # oddish's) before the resolve.
+        # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync
+        # stages the LOCAL pyproject.toml + uv.lock at /.uv and runs --frozen, so
+        # editing pyprojects inside the image can never change what it installs
+        # (that approach shipped the lean default Harbor and every GKE trial died
+        # with MissingExtraError: kubernetes). A post-sync sha-pinned install with
+        # the variant's extras replaces harbor and pulls the extras' dependency
+        # stack (e.g. gke -> kubernetes + google-auth) into the same venv, the
+        # exact requirement string the ephemeral out-of-process path already uses.
+        # /.uv/uv and /.uv/.venv are where uv_sync leaves the binary and the venv.
+        requirement = harbor_git_requirement(
+            harbor_override.source,
+            harbor_override.sha,
+            extras=harbor_override.extras,
+        )
         img = img.run_commands(
-            harbor_uv_source_rewrite_command(
-                harbor_override.source,
-                harbor_override.sha,
-                "/root/pyproject.toml",
-                "/oddish/pyproject.toml",
-            )
+            f"/.uv/uv pip install --python /.uv/.venv/bin/python '{requirement}'"
         )
     return (
-        # Install all dependencies (oddish from /oddish, harbor + others resolved)
-        img.uv_sync()
         # Add backend-specific Python modules
-        .add_local_python_source(
+        img.add_local_python_source(
             "api",
             "auth",
             "backfill_github_id",
             "cloud_policy",
             "crypto",
             "dashboard_attribution",
+            "dashboard_cache",
             "dashboard_owner_backfill",
             "endpoints",
             "idempotency_store",

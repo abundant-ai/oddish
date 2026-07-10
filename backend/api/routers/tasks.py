@@ -16,7 +16,7 @@ from fastapi import (
     status,
 )
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +48,8 @@ from oddish.core.endpoints import (
     unlink_task_from_experiment_core,
 )
 from oddish.core.helpers import terminate_run_harvest
+
+
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -132,6 +134,77 @@ router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
 
 
+async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) -> None:
+    """Fire the upload-time image builder for GKE-classified tasks (post-commit).
+
+    Primary build path: the worker-side auto_build_missing_image fallback only
+    covers the race where a trial claims before this build lands. Best-effort
+    by design -- a spawn failure must never fail a committed submission (the
+    worker fallback and the clear missing-image error remain behind it).
+    """
+    if not task_ids:
+        return
+    try:
+        import os
+
+        import modal
+
+        # Spawn by name: importing worker.functions here would re-run Modal
+        # function registration inside the API container. from_name resolves
+        # the deployed function directly; GKE-less deploys never register it
+        # and the NotFoundError lands in the catch below.
+        builder = modal.Function.from_name(
+            os.environ.get("MODAL_APP_NAME", "oddish"),
+            "build_gke_task_image",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+        )
+        from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
+
+        # Scoped to trials ON the task's current version: stale GKE trials
+        # from older versions must not trigger builds for content they never
+        # ran. If a concurrent submission bumps the version between commit and
+        # this query, the build targets the newer content and the older
+        # trials' worker-side auto-build fallback covers the gap.
+        gke_rows = await session.execute(
+            select(TrialModel.task_id, TaskVersionModel.version)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .join(
+                TaskVersionModel,
+                TaskVersionModel.id == TaskModel.current_version_id,
+            )
+            .where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+                # Environment is the routing truth: allowlisted harbor-gke
+                # pins at non-blessed SHAs classify as the ephemeral variant
+                # yet still run on GKE and need the prebuilt image.
+                or_(
+                    TrialModel.environment == "gke",
+                    TrialModel.harbor_config["variant_id"].astext == "gke",
+                ),
+            )
+            .distinct()
+        )
+        for task_id, version in gke_rows:
+            try:
+                await builder.spawn.aio(task_id=task_id, version=version)
+            except modal.exception.NotFoundError:
+                # GKE-less deploy: the builder function isn't registered, so
+                # every remaining spawn would fail identically -- let the
+                # outer catch log it once.
+                raise
+            except Exception:
+                logger.exception(
+                    "GKE image build spawn failed for task %s v%s (non-fatal)",
+                    task_id,
+                    version,
+                )
+                continue
+            logger.info("spawned GKE image build for task %s v%s", task_id, version)
+    except Exception:
+        logger.exception("GKE image build spawn failed (non-fatal)")
+
+
 def _make_timing_recorder(request: Request) -> TimingRecorder:
     def _record(name: str, duration_ms: float, description: str | None = None) -> None:
         add_server_timing_metric(request, name, duration_ms, description)
@@ -157,7 +230,6 @@ async def _cancel_modal_function_calls(modal_fc_ids: list[str]) -> int:
         if fc_id
     ]
     return await ModalDispatcher().cancel(handles)
-
 
 
 # =============================================================================
@@ -286,8 +358,16 @@ async def create_task_sweep(
             )
         except IdempotencyReplay as replay:
             # Faithful retry of a completed key: return the stored response and
-            # skip the owner-stamping / publish side effects below.
-            return TaskResponse.model_validate(replay.response_json)
+            # skip the owner-stamping / publish side effects below. The image
+            # build spawn IS retried though -- it is best-effort on the
+            # original request and the builder is idempotent (checks the
+            # registry first), so a replay is the natural recovery hook when
+            # the original spawn failed.
+            response = TaskResponse.model_validate(replay.response_json)
+            replay_task_id = getattr(response, "id", None)
+            if replay_task_id:
+                await _spawn_gke_image_builds(session, [replay_task_id])
+            return response
 
         stamp_experiment_owner(experiment, owner_user_id, claim_unowned=not is_append)
 
@@ -306,6 +386,8 @@ async def create_task_sweep(
             await ensure_experiment_public(session, experiment)
 
         await session.commit()
+
+        await _spawn_gke_image_builds(session, [task.id])
 
         return build_task_sweep_response(task, new_trials, is_append, experiment)
 
@@ -403,6 +485,11 @@ async def create_task_sweep_batch(
             resolve_billed_user_id=_resolve_billed,
         )
         await session.commit()
+
+        await _spawn_gke_image_builds(
+            session,
+            [r.task.id for r in results if r.success and r.task is not None],
+        )
 
     succeeded = sum(1 for r in results if r.success)
     failed = len(results) - succeeded
@@ -833,9 +920,7 @@ async def combine_experiments(
     into it. The sources are org-scoped and left untouched; append-only,
     so this needs only the ``tasks`` scope rather than admin.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         result = await combine_experiments_core(
@@ -861,9 +946,7 @@ async def create_trial_collection(
     Trials keep their home experiment; membership is additive via
     ``experiment_trials``. Append-only, so ``tasks`` scope suffices.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         result = await create_trial_collection_core(
@@ -1180,9 +1263,7 @@ async def retry_task_qa(
 ) -> dict:
     """(Re)run the single task-level QA job: classify every trial, then
     synthesize the task verdict."""
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await rerun_task_qa_core(session, task_id=task_id, org_id=auth.org_id)
@@ -1200,9 +1281,7 @@ async def backfill_task_qa(
     (optionally only ``trial_ids``); ``enable_analysis`` also opts the task
     into analysis going forward.
     """
-    auth.require_scope(
-        APIKeyScope.TASKS, allow_member_created_task_key=False
-    )
+    auth.require_scope(APIKeyScope.TASKS, allow_member_created_task_key=False)
 
     async with get_session() as session:
         return await backfill_task_analysis_core(
