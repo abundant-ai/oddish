@@ -1006,6 +1006,25 @@ class TrialModel(TimestampedMixin, Base):
     )
 
 
+class TrialEventModel(Base):
+    """Live transcript event for a running trial (short-lived; S3 is the record)."""
+
+    __tablename__ = "trial_events"
+
+    trial_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("trials.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    attempt: Mapped[int] = mapped_column(Integer, primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=text("now()"), nullable=False
+    )
+
+
 class QueueSlotModel(Base):
     """Worker slot lease keyed by queue key."""
 
