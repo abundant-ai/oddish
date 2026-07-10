@@ -186,7 +186,20 @@ async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) ->
             .distinct()
         )
         for task_id, version in gke_rows:
-            await builder.spawn.aio(task_id=task_id, version=version)
+            try:
+                await builder.spawn.aio(task_id=task_id, version=version)
+            except modal.exception.NotFoundError:
+                # GKE-less deploy: the builder function isn't registered, so
+                # every remaining spawn would fail identically -- let the
+                # outer catch log it once.
+                raise
+            except Exception:
+                logger.exception(
+                    "GKE image build spawn failed for task %s v%s (non-fatal)",
+                    task_id,
+                    version,
+                )
+                continue
             logger.info("spawned GKE image build for task %s v%s", task_id, version)
     except Exception:
         logger.exception("GKE image build spawn failed (non-fatal)")
