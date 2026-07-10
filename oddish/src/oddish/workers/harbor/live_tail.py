@@ -715,20 +715,26 @@ class LiveTailer:
         checkpoint = self._checkpoint_values()
         if (not self.pending_events or self.replaced) and checkpoint is None:
             return
+        flushed_count = 0
+        checkpoint_ack: tuple[tuple, float | None] | None = None
         async with get_session() as session:
-            await self._flush_events(session)
-            await self._checkpoint(session, checkpoint)
+            flushed_count = await self._flush_events(session)
+            checkpoint_ack = await self._checkpoint(session, checkpoint)
+        if flushed_count:
+            del self.pending_events[:flushed_count]
+        if checkpoint_ack is not None:
+            self._last_written, self._last_cost = checkpoint_ack
 
-    async def _flush_events(self, session) -> None:
+    async def _flush_events(self, session) -> int:
         if not self.pending_events or self.replaced:
-            return
+            return 0
         rows = [
             {"trial_id": self.trial_id, "attempt": self.attempt, **event}
             for event in self.pending_events
         ]
         stmt = pg_insert(TrialEventModel).values(rows).on_conflict_do_nothing()
         await session.execute(stmt)
-        self.pending_events.clear()
+        return len(rows)
 
     def _checkpoint_values(self) -> tuple[dict[str, Any], tuple, float | None] | None:
         if not self.fold.has_usage:
@@ -755,9 +761,9 @@ class LiveTailer:
         self,
         session,
         checkpoint: tuple[dict[str, Any], tuple, float | None] | None,
-    ) -> None:
+    ) -> tuple[tuple, float | None] | None:
         if checkpoint is None:
-            return
+            return None
         values, state, cost = checkpoint
         result = await session.execute(
             update(TrialModel)
@@ -769,9 +775,8 @@ class LiveTailer:
         )
         if getattr(result, "rowcount", None) == 0:
             self.request_stop()
-            return
-        self._last_written = state
-        self._last_cost = cost
+            return None
+        return state, cost
 
 
 _tailers: dict[str, tuple[LiveTailer, asyncio.Task]] = {}

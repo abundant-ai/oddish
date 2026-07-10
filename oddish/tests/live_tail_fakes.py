@@ -52,12 +52,13 @@ class FakeExecuteResult:
 
 
 class FakeSession:
-    def __init__(self, rowcount=1, fail_inserts=False):
+    def __init__(self, rowcount=1, fail_inserts=False, fail_commit=False):
         self.stmts = []
         self.params = []
         self.context_entries = 0
         self.rowcount = rowcount
         self.fail_inserts = fail_inserts
+        self.fail_commit = fail_commit
 
     async def execute(self, stmt, params=None):
         if self.fail_inserts and isinstance(stmt, PGInsert):
@@ -73,7 +74,13 @@ def patch_db(monkeypatch, module=live_tail, price=None, **kwargs):
     @contextlib.asynccontextmanager
     async def fake_get_session():
         session.context_entries += 1
-        yield session
+        try:
+            yield session
+        except Exception:
+            raise
+        else:
+            if session.fail_commit:
+                raise RuntimeError("commit failed")
 
     monkeypatch.setattr(module, "get_session", fake_get_session)
     if module is live_tail:

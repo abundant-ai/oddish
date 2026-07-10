@@ -976,6 +976,59 @@ async def test_empty_tick_retries_pending_checkpoint(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_commit_failure_retains_pending_events(monkeypatch):
+    session = patch_db(monkeypatch, fail_commit=True)
+    tailer = make_tailer(FakeEnv([]))
+    tailer.pending_events = [
+        {"seq": 1, "kind": "message", "payload": {"text": "first"}},
+        {"seq": 2, "kind": "message", "payload": {"text": "second"}},
+    ]
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await tailer._persist_tick()
+
+    assert tailer.pending_events == [
+        {"seq": 1, "kind": "message", "payload": {"text": "first"}},
+        {"seq": 2, "kind": "message", "payload": {"text": "second"}},
+    ]
+
+    session.fail_commit = False
+    await tailer._persist_tick()
+
+    assert tailer.pending_events == []
+    from test_trial_events import insert_rows, insert_stmts
+
+    rows = insert_rows(insert_stmts(session)[-1])
+    assert [(r["seq"], r["payload"]["text"]) for r in rows] == [
+        (1, "first"),
+        (2, "second"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_commit_failure_retries_checkpoint_markers(monkeypatch):
+    session = patch_db(monkeypatch, fail_commit=True, price=0.5)
+    tailer = make_tailer(FakeEnv([]), model="m")
+    tailer.fold.feed_line(assistant_line("m", {"input_tokens": 3}))
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await tailer._persist_tick()
+
+    assert tailer._last_written is None
+    assert tailer._last_cost is None
+    assert update_params(session)[-1]["input_tokens"] == 3
+
+    session.fail_commit = False
+    await tailer._persist_tick()
+
+    params = update_params(session)
+    assert len(params) == 2
+    assert [p["input_tokens"] for p in params] == [3, 3]
+    assert tailer._last_written is not None
+    assert tailer._last_cost == 0.5
+
+
+@pytest.mark.asyncio
 async def test_invalid_base64_raises_exec_error():
     env = FakeEnv([FakeResult(stdout="not-base64!!")])
     tailer = make_tailer(env)
