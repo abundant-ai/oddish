@@ -44,6 +44,7 @@ class ExperimentCandidate:
 @dataclass(frozen=True)
 class TrialSpend:
     id: str
+    name: str
     task_id: str
     experiment_id: str
     model: str
@@ -117,6 +118,7 @@ def build_alerts(
         task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
+    experiments_by_id = {experiment.id: experiment for experiment in experiments}
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
@@ -126,11 +128,17 @@ def build_alerts(
             experiment_repeat_usd,
         )
         if milestones:
-            phase = (
-                f"{experiment.active_trials} trial"
-                f"{'s' if experiment.active_trials != 1 else ''} still running"
-                if experiment.active_trials
-                else "finished"
+            agent_costs: dict[str, float] = {}
+            for trial in experiment_trials:
+                agent_costs[trial.model] = (
+                    agent_costs.get(trial.model, 0) + trial.cost_usd
+                )
+            top_agent_costs = sorted(
+                agent_costs.items(), key=lambda item: (-item[1], item[0])
+            )[:3]
+            top_agent_cost_lines = "\n".join(
+                f"• `{_escape(model)}`: *${cost:,.2f}*"
+                for model, cost in top_agent_costs
             )
             experiment_url = (
                 f"{dashboard_url}/experiments/"
@@ -141,12 +149,13 @@ def build_alerts(
                     SlackAlert(
                         key=f"experiment:{experiment.id}:{milestone:g}",
                         text=(
-                            f":money_with_wings: *Expensive experiment:* "
-                            f"*{_escape(experiment.name)}* reached the "
-                            f"*${milestone:,.2f}* spend milestone "
-                            f"(now *${total_cost:,.2f}*) — {phase} · "
-                            f"owner: *{_escape(experiment.owner or 'Unknown')}* "
-                            f"· <{experiment_url}|open experiment>"
+                            ":money_with_wings: *Expensive experiment*\n"
+                            f"Title: *{_escape(experiment.name)}*\n"
+                            f"Trials still running: {experiment.active_trials}\n"
+                            f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
+                            "Top agent costs:\n"
+                            f"{top_agent_cost_lines}\n"
+                            f"<{experiment_url}|open experiment>"
                         ),
                     )
                 )
@@ -167,6 +176,7 @@ def build_alerts(
                 else "other same-task/model trials averaged $0"
             )
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
+            experiment = experiments_by_id[trial.experiment_id]
             alerts.append(
                 SlackAlert(
                     key=(
@@ -174,8 +184,12 @@ def build_alerts(
                         f"{trial_average_multiplier:g}"
                     ),
                     text=(
-                        f":warning: *Expensive trial:* `{_escape(trial.id)}` cost "
-                        f"*${trial.cost_usd:,.2f}* — {comparison} · "
+                        ":warning: *Expensive trial*\n"
+                        f"Title: `{_escape(trial.name)}`\n"
+                        f"Experiment: *{_escape(experiment.name)}*\n"
+                        f"Cost: *${trial.cost_usd:,.2f}* — {comparison}\n"
+                        f"Model: `{_escape(trial.model)}`\n"
+                        f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                         f"<{task_url}|open task>"
                     ),
                 )
@@ -262,6 +276,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 await session.execute(
                     select(
                         TrialModel.id,
+                        TrialModel.name,
                         TrialModel.task_id,
                         TrialModel.experiment_id,
                         TrialModel.finished_at,
@@ -275,6 +290,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     )
                     .group_by(
                         TrialModel.id,
+                        TrialModel.name,
                         TrialModel.task_id,
                         TrialModel.experiment_id,
                         TrialModel.finished_at,
@@ -318,6 +334,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     trials = [
         TrialSpend(
             id=str(row.id),
+            name=str(row.name),
             task_id=str(row.task_id),
             experiment_id=str(row.experiment_id),
             model=str(row.model),
