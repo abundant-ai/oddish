@@ -201,31 +201,62 @@ oddish run <task> -a oracle --env gke \
 
 ---
 
-## 6. Batch / manifest runs
+## 6. Batch / manifest runs (the `/oddish` CI flow)
 
-Two things gate the manifest path today:
-- **GKE routing lives on the feature branch, not `main`**, and `/oddish` CI
-  installs the CLI from `main` — so no `/oddish` batch reaches GKE until the
-  GKE PR is merged and the target API redeployed.
-- **The `/oddish` manifest parser allowlists only `modal`/`daytona`** for
-  `metadata.environment`; adding `"gke"` there (one line in
-  `experiments/.github/workflows/oddish-experiment.yml`) lets a manifest select
-  the GKE backend. (`oddish run -c` already honors `environment: gke`.)
+Batch runs go through the `/oddish` PR-comment workflow: a manifest lists
+`agents:` and `tasks:`, and the CI runs `oddish run … -c sweep.yaml`. To make
+that target GKE, three things must be true — in this order:
 
-TPU *type* is never a manifest field — it comes from each task's
-`task.toml [environment.tpu]` or a sweep `harbor: override_tpu` block.
+**Enablement sequence**
 
-Once those are met:
-- **Auto-sniff (cleanest):** give each task a `[environment.tpu]` block; a
-  normal manifest auto-routes to GKE/TPU.
-- **Force GKE for CPU tasks:** add `metadata.environment: gke` (needs the
-  allowlist line) → GKE CPU pods.
-- **Direct CLI** with a sweep config for full control:
-  ```yaml
-  environment: gke
-  agents: [{name: oracle, n_trials: 1}]
-  harbor: {environment: {override_tpu: {type: v6e, topology: "1x1"}}}
+1. **The GKE routing must be on the CLI that CI installs.** The `/oddish` CI
+   installs the oddish CLI from **`main`**, but GKE routing currently lives on
+   the feature branch. So **merge the GKE PRs to `main`** (oddish + harbor-gke).
+   This is low-risk: GKE is **inert without config** — with no
+   `ODDISH_GKE_PROJECT_ID` the backend never registers and `--env gke` stays
+   unavailable, so `modal`/`daytona` behavior is unchanged. Merging the *code*
+   is safe; *enabling* it (next step) is the deliberate act.
+2. **The target Oddish API must be deployed with GKE config.** CI's `oddish run`
+   talks to a specific API; that deployment needs `backend/.env` with the
+   `ODDISH_GKE_*` values (§2) and the `oddish-gcp` secret. **Tenancy caveat
+   (§0):** until the multi-tenant hardening lands, point batch/CI at a
+   **dedicated, single-tenant GKE-configured deployment** (trusted operator and
+   tasks) — *not* the shared multi-tenant oddish.app.
+3. **The manifest must be allowed to select GKE.** The `/oddish` parser
+   historically allowlisted only `modal`/`daytona` for `metadata.environment`;
+   **experiments PR #659** adds `gke`. Merge it to let a manifest set
+   `metadata.environment: gke`. *(Not needed for TPU auto-sniff — see below.)*
+
+**Two ways to actually route a batch (once the above is met)**
+
+- **TPU tasks — auto-sniff (no manifest field, no CI change):** give each task a
+  `task.toml [environment.tpu]` block; a normal manifest auto-routes it to
+  GKE/TPU. TPU *type* is never a manifest field — it lives in the task.
+  ```toml
+  # tasks/<t>/task.toml
+  [environment.tpu]
+  type = "v6e"
+  topology = "2x2"
   ```
+- **Force the GKE backend (e.g. CPU tasks on GKE) — needs PR #659:**
+  ```yaml
+  # experiments/<name>/<name>.yaml
+  metadata: {name: my-batch, task_path: tasks, oddish_only: true, environment: gke}
+  agents: [{name: oracle, model_name: …, n_trials: 2}]
+  tasks: [task-a, task-b]
+  ```
+
+**Direct CLI batch (bypasses CI, full control incl. v6e on CPU-defined tasks):**
+```yaml
+# sweep.yaml
+environment: gke
+agents: [{name: oracle, n_trials: 1}]
+harbor: {environment: {override_tpu: {type: v6e, topology: "1x1"}}}
+```
+```bash
+oddish run ./tasks -c sweep.yaml --environment-kwarg region=us-east5 \
+  --github-user <u> --github-id <id>
+```
 
 > The **smithy** repo doesn't use oddish — its trials run through the separate
 > **Taiga** pipeline, so there's no oddish/GKE path there.
