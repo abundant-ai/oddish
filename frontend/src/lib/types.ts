@@ -358,6 +358,8 @@ export interface ModelUsage {
   output_tokens: number;
   total_steps: number;
   cost_usd: number;
+  // Portion of cost_usd that is a token estimate (native cost was missing).
+  cost_estimated_usd?: number | null;
   running: number;
   queued: number;
   succeeded: number;
