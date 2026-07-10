@@ -64,6 +64,12 @@ oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
 oddish run ./my-task -c sweep.yaml
 ```
 
+Re-submitting the same sweep is declarative for each task version and
+experiment: queued, running, and successful trials continue to satisfy the
+requested count, while failed trials are replaced immutably. The failed rows
+remain available by direct ID for history, but are marked superseded so only
+their replacements appear in normal task and experiment views.
+
 Options
 
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
