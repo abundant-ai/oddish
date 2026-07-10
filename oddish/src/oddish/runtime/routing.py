@@ -26,6 +26,7 @@ def select_backend(
     *,
     requires_gpu: bool = False,
     requires_private_registry: bool = False,
+    requires_tpu: bool = False,
 ) -> ExecutionBackend:
     for backend in ordered_backends():
         caps = backend.capabilities()
@@ -33,13 +34,21 @@ def select_backend(
             continue
         if requires_private_registry and not caps.private_registry_pull:
             continue
+        if requires_tpu and caps.tpu is None:
+            continue
         return backend
     raise NoEligibleBackendError(
         f"No backend supports requires_gpu={requires_gpu}, "
-        f"requires_private_registry={requires_private_registry}"
+        f"requires_private_registry={requires_private_registry}, "
+        f"requires_tpu={requires_tpu}"
     )
 
 
-def default_cloud_environment(*, requires_gpu: bool) -> EnvironmentType:
-    """The cloud default: GPU → Modal, else Daytona (via capability negotiation)."""
-    return EnvironmentType(select_backend(requires_gpu=requires_gpu).name)
+def default_cloud_environment(
+    *, requires_gpu: bool = False, requires_tpu: bool = False
+) -> EnvironmentType:
+    """The cloud default via capability negotiation: TPU → GKE, GPU → Modal,
+    else Daytona."""
+    return EnvironmentType(
+        select_backend(requires_gpu=requires_gpu, requires_tpu=requires_tpu).name
+    )

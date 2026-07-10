@@ -7,9 +7,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
 
-from oddish.runtime.ports import Capabilities, ExecutionBackend, GpuSupport
+from oddish.runtime.ports import (
+    Capabilities,
+    ExecutionBackend,
+    GpuSupport,
+    TpuSupport,
+)
 from oddish.runtime.backends.daytona import DaytonaBackend
 from oddish.runtime.backends.fake import FakeBackend
+from oddish.runtime.backends.gke import GkeBackend
 from oddish.runtime.backends.modal import ModalBackend
 
 # Real backends are added to this list as they are implemented.
@@ -17,6 +23,7 @@ CONFORMANCE_BACKENDS: list[ExecutionBackend] = [
     FakeBackend(),
     ModalBackend(),
     DaytonaBackend(),
+    GkeBackend(),
 ]
 
 _COLD_START = {"instant", "seconds", "minutes"}
@@ -33,6 +40,10 @@ def test_capabilities_self_consistent(backend: ExecutionBackend) -> None:
         assert isinstance(caps.gpu, GpuSupport)
         assert len(caps.gpu.accelerators) > 0
         assert caps.gpu.max_count > 0
+    if caps.tpu is not None:
+        assert isinstance(caps.tpu, TpuSupport)
+        assert len(caps.tpu.types) > 0
+        assert caps.tpu.max_chips_per_host > 0
 
 
 @pytest.mark.parametrize("backend", CONFORMANCE_BACKENDS, ids=lambda b: b.name)

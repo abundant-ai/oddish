@@ -115,7 +115,10 @@ def nop_oracle_kind(agent: str | None) -> str | None:
 
 # --- Configurable Harbor source ----------------------------------------------
 # The locked default fork + commit. HARBOR_DEFAULT_SHA MUST equal the pin in
-# both uv.lock files (a test asserts it against oddish/uv.lock).
+# both uv.lock files (a test asserts it against oddish/uv.lock). This is the
+# lean Harbor baked into the default Modal/Daytona worker image; GKE (TPU)
+# trials run a heavier GKE-enabled Harbor on a dedicated blessed-variant image
+# (see HARBOR_VARIANTS in oddish.core.harbor_source), never this default.
 HARBOR_DEFAULT_SOURCE = "https://github.com/rishidesai/harbor"
 HARBOR_DEFAULT_SHA = "2ae61e86b2c43ad87b7f6dcae284e97bdaeb0299"
 
@@ -996,7 +999,9 @@ class Settings(BaseSettings):
     # Comma-separated case-insensitive URL globs of allowed override sources. The
     # allowlist is the safety boundary: a source outside it is rejected at submit.
     harbor_allowed_sources: str = (
-        "https://github.com/rishidesai/*,https://github.com/dot-agi/*"
+        "https://github.com/abundant-ai/*,"
+        "https://github.com/rishidesai/*,"
+        "https://github.com/dot-agi/*"
     )
 
     # Daytona sandbox auto-cleanup safety net (minutes). A sandbox idle
@@ -1020,6 +1025,36 @@ class Settings(BaseSettings):
     # minute of per-chat provisioning). Unset -> default base image + install
     # at provision time. See docs/cc-chat-snapshot.md to build it.
     cc_chat_daytona_snapshot: str = ""
+
+    # GKE execution backend (TPU trials). The cluster and Artifact Registry
+    # coordinates are unset by default; configuring GKE (project id, or an
+    # explicit cluster name) registers the backend and makes ``--env gke``
+    # available. When no cluster name is given it derives from the deployment
+    # ("<MODAL_APP_NAME>-trials", Modal-parity naming) and auto-provisioning
+    # materializes it on demand.
+    gke_cluster_name: str | None = None
+    gke_region: str | None = None
+    gke_project_id: str | None = None
+    gke_namespace: str = "oddish-trials"
+    gke_registry_location: str | None = None
+    gke_registry_name: str | None = None
+    # DWS flex-start provisions TPU capacity on demand, so a pod can sit Pending
+    # while the node is created; the readiness wait is generous to match.
+    gke_flex_start: bool = True
+    # Auto-build missing task images via the Cloud Build SDK instead of
+    # failing on require_prebuilt_image. Spends minutes of the attempt's
+    # budget on first-run tasks, so hosted deployments opt in explicitly.
+    gke_auto_build_missing_image: bool = False
+    # Create the configured cluster (and namespace) on demand instead of
+    # failing fast on a missing cluster: the Modal-parity zero-touch mode.
+    # First trial on cold infrastructure pays the ~10 minute Autopilot
+    # creation inside its ready window.
+    gke_auto_provision_cluster: bool = True
+    # Idle-cluster reaper TTL: delete the (harbor-managed) cluster after this
+    # many hours without GKE trial activity. <=0 disables. Recreation is
+    # automatic on the next trial, so deletion only trades a cold-start.
+    gke_idle_cluster_ttl_hours: float = 3.0
+    gke_pod_ready_timeout_sec: int = 3600
 
     # API server
     api_host: str = "0.0.0.0"
@@ -1187,6 +1222,13 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Helper methods
     # ==========================================================================
+
+    @model_validator(mode="after")
+    def _derive_gke_cluster_name(self) -> "Settings":
+        if self.gke_project_id and not self.gke_cluster_name:
+            app_name = os.environ.get("MODAL_APP_NAME", "oddish")
+            self.gke_cluster_name = f"{app_name}-trials"
+        return self
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
