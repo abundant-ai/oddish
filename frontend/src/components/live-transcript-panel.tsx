@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Radio, ShieldAlert, Wrench } from "lucide-react";
+import { Info, Loader2, Radio, ShieldAlert, Wrench } from "lucide-react";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
@@ -28,8 +28,19 @@ interface LiveResponse {
   done: boolean;
 }
 
-const POLL_MS = 2000;
+const POLL_MS = 10_000;
 const SANITIZED_TITLE = "Unsafe control characters were rendered safely.";
+
+function agentNotice(agent: string | null | undefined): string | null {
+  const name = (agent ?? "").toLowerCase();
+  if (name.includes("mini-swe-agent")) {
+    return "Mini-swe sends updates after each step finishes. The first update can take a few minutes.";
+  }
+  if (name.includes("cursor-cli")) {
+    return "Cursor sends messages and tool calls after they finish. Work in progress may not appear right away.";
+  }
+  return null;
+}
 
 function safeText(value: unknown): { text: string; changed: boolean } {
   if (typeof value !== "string") return { text: "", changed: false };
@@ -132,9 +143,11 @@ function LiveEventRow({ event }: { event: LiveEvent }) {
 
 export function LiveTranscriptPanel({
   trialId,
+  agent,
   apiBaseUrl = "/api",
 }: {
   trialId: string;
+  agent?: string | null;
   apiBaseUrl?: string;
 }) {
   const [events, setEvents] = useState<LiveEvent[]>([]);
@@ -202,6 +215,7 @@ export function LiveTranscriptPanel({
   const done = last?.done ?? false;
   const stage = last?.harbor_stage;
   const tokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
+  const notice = agentNotice(agent);
 
   return (
     <div className="flex h-full flex-col">
@@ -227,6 +241,15 @@ export function LiveTranscriptPanel({
           </span>
         )}
       </div>
+      {notice && (
+        <div
+          role="note"
+          className="border-border bg-muted/30 text-muted-foreground flex items-start gap-2 border-b px-4 py-2 text-xs"
+        >
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>{notice}</span>
+        </div>
+      )}
       <div
         ref={scrollRef}
         onScroll={onScroll}

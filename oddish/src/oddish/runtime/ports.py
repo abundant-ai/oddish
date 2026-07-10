@@ -27,6 +27,15 @@ class GpuSupport:
 
 
 @dataclass(frozen=True)
+class TpuSupport:
+    """TPU accelerator support — the offered chip generations and the
+    single-host chip ceiling (Harbor's one-pod environment is single-host)."""
+
+    types: tuple[str, ...]
+    max_chips_per_host: int
+
+
+@dataclass(frozen=True)
 class Capabilities:
     """Feature-detected backend capabilities (spec §5.1). Optional blocks are
     only valid when the corresponding flag is set; routing never assumes."""
@@ -38,6 +47,7 @@ class Capabilities:
     streaming_logs: bool
     memory_snapshot_fork: bool
     cold_start: LatencyClass
+    tpu: TpuSupport | None = None
 
 
 @runtime_checkable

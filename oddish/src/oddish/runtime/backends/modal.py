@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import re
 import sys
 from pathlib import Path
@@ -69,8 +70,12 @@ class ModalBackend:
         )
 
     def harbor_env_kwargs(self, base_kwargs: dict[str, Any]) -> dict[str, Any]:
-        # Modal needs no extra env kwargs today; pass the caller's through.
-        return dict(base_kwargs)
+        # Harbor's default sandbox app is the anonymous "__harbor__", which
+        # makes trial sandboxes unattributable in the Modal dashboard. Group
+        # them under "<deployed app>-trials" instead; caller kwargs win,
+        # matching the other backends' merge semantics.
+        app_name = f"{os.environ.get('MODAL_APP_NAME', 'oddish')}-trials"
+        return {"app_name": app_name, **base_kwargs}
 
     async def teardown(self, external_id: str) -> bool:
         if not external_id:

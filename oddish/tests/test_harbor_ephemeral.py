@@ -111,6 +111,40 @@ def test_read_outcome_without_result_json_is_non_retryable(tmp_path):
     assert outcome.error == "boom"
 
 
+def test_build_payload_prefers_passed_env_build_multiplier():
+    # The runner computes the GKE-sized env-build multiplier and passes it in; it
+    # must win over whatever rode in the raw config, so the child JobConfig gets
+    # the pod-ready-covering value.
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="nop",
+        model=None,
+        environment=EnvironmentType.GKE,
+        raw_harbor_config={"environment_build_timeout_multiplier": 2.0},
+        is_probe=False,
+        environment_build_timeout_multiplier=99.0,
+    )
+    assert payload["environment_build_timeout_multiplier"] == 99.0
+
+
+def test_build_payload_falls_back_to_raw_env_build_multiplier():
+    # With nothing passed (the off-GKE case), the child keeps the caller's raw
+    # multiplier -- behavior-preserving for non-GKE ephemeral trials.
+    payload = _build_payload(
+        task_path=Path("/tmp/task"),
+        jobs_dir=Path("/tmp/jobs"),
+        outcome_path=Path("/tmp/jobs/outcome.json"),
+        agent="nop",
+        model=None,
+        environment=EnvironmentType.DOCKER,
+        raw_harbor_config={"environment_build_timeout_multiplier": 2.0},
+        is_probe=False,
+    )
+    assert payload["environment_build_timeout_multiplier"] == 2.0
+
+
 def test_build_payload_carries_extra_agent_env():
     payload = _build_payload(
         task_path=Path("/tmp/task"),
