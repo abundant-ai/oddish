@@ -122,3 +122,12 @@ def test_merged_result_truncates_long_errors():
 
     merged = merged_trial_result(None, "x" * 1000, "SomeError")
     assert len(merged["harbor_exception"]["error"]) == 300
+
+
+def test_nonfinite_metrics_rejected(tmp_path):
+    vdir = tmp_path / "verifier"
+    vdir.mkdir()
+    (vdir / "metrics.json").write_text('{"tokens_per_sec": NaN}')
+    # NaN would parse under stock json but break JSONB persistence; the
+    # extractor must skip it rather than return an unpersistable dict.
+    assert extract_verifier_metrics(tmp_path) is None

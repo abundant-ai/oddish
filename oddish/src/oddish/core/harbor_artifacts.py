@@ -42,6 +42,10 @@ def detect_trajectory(path: Path) -> bool:
 VERIFIER_METRICS_MAX_BYTES = 64 * 1024
 
 
+def _reject_nonfinite(name: str):
+    raise ValueError(f"non-finite JSON constant in metrics: {name}")
+
+
 def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
     """The first ``verifier/metrics.json`` under a Harbor output tree, or None.
 
@@ -55,7 +59,13 @@ def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
         try:
             if metrics_path.stat().st_size > VERIFIER_METRICS_MAX_BYTES:
                 continue
-            payload = json.loads(metrics_path.read_text())
+            # Reject NaN/Infinity: json.loads accepts them, but they do not
+            # survive JSONB persistence (trials.result), which would fail an
+            # otherwise-complete trial at finalization.
+            payload = json.loads(
+                metrics_path.read_text(),
+                parse_constant=_reject_nonfinite,
+            )
         except (OSError, ValueError):
             continue
         if isinstance(payload, dict):

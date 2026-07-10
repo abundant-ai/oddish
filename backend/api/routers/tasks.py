@@ -50,64 +50,6 @@ from oddish.core.endpoints import (
 from oddish.core.helpers import terminate_run_harvest
 
 
-async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) -> None:
-    """Fire the upload-time image builder for GKE-classified tasks (post-commit).
-
-    Primary build path: the worker-side auto_build_missing_image fallback only
-    covers the race where a trial claims before this build lands. Best-effort
-    by design -- a spawn failure must never fail a committed submission (the
-    worker fallback and the clear missing-image error remain behind it).
-    """
-    if not task_ids:
-        return
-    try:
-        import os
-
-        import modal
-
-        # Spawn by name: importing worker.functions here would re-run Modal
-        # function registration inside the API container. from_name resolves
-        # the deployed function directly; GKE-less deploys never register it
-        # and the NotFoundError lands in the catch below.
-        builder = modal.Function.from_name(
-            os.environ.get("MODAL_APP_NAME", "oddish"),
-            "build_gke_task_image",
-            environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
-        )
-        from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
-
-        # Scoped to trials ON the task's current version: stale GKE trials
-        # from older versions must not trigger builds for content they never
-        # ran. If a concurrent submission bumps the version between commit and
-        # this query, the build targets the newer content and the older
-        # trials' worker-side auto-build fallback covers the gap.
-        gke_rows = await session.execute(
-            select(TrialModel.task_id, TaskVersionModel.version)
-            .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .join(
-                TaskVersionModel,
-                TaskVersionModel.id == TaskModel.current_version_id,
-            )
-            .where(
-                TrialModel.task_id.in_(task_ids),
-                TrialModel.task_version_id == TaskModel.current_version_id,
-                # Environment is the routing truth: allowlisted harbor-gke
-                # pins at non-blessed SHAs classify as the ephemeral variant
-                # yet still run on GKE and need the prebuilt image.
-                or_(
-                    TrialModel.environment == "gke",
-                    TrialModel.harbor_config["variant_id"].astext == "gke",
-                ),
-            )
-            .distinct()
-        )
-        for task_id, version in gke_rows:
-            await builder.spawn.aio(task_id=task_id, version=version)
-            logger.info("spawned GKE image build for task %s v%s", task_id, version)
-    except Exception:
-        logger.exception("GKE image build spawn failed (non-fatal)")
-
-
 from oddish.core.dashboard import (
     invalidate_dashboard_cache,
 )
@@ -190,6 +132,64 @@ if TYPE_CHECKING:
 
 router = APIRouter(tags=["Tasks"])
 logger = logging.getLogger(__name__)
+
+
+async def _spawn_gke_image_builds(session: AsyncSession, task_ids: list[str]) -> None:
+    """Fire the upload-time image builder for GKE-classified tasks (post-commit).
+
+    Primary build path: the worker-side auto_build_missing_image fallback only
+    covers the race where a trial claims before this build lands. Best-effort
+    by design -- a spawn failure must never fail a committed submission (the
+    worker fallback and the clear missing-image error remain behind it).
+    """
+    if not task_ids:
+        return
+    try:
+        import os
+
+        import modal
+
+        # Spawn by name: importing worker.functions here would re-run Modal
+        # function registration inside the API container. from_name resolves
+        # the deployed function directly; GKE-less deploys never register it
+        # and the NotFoundError lands in the catch below.
+        builder = modal.Function.from_name(
+            os.environ.get("MODAL_APP_NAME", "oddish"),
+            "build_gke_task_image",
+            environment_name=os.environ.get("MODAL_ENVIRONMENT") or None,
+        )
+        from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
+
+        # Scoped to trials ON the task's current version: stale GKE trials
+        # from older versions must not trigger builds for content they never
+        # ran. If a concurrent submission bumps the version between commit and
+        # this query, the build targets the newer content and the older
+        # trials' worker-side auto-build fallback covers the gap.
+        gke_rows = await session.execute(
+            select(TrialModel.task_id, TaskVersionModel.version)
+            .join(TaskModel, TaskModel.id == TrialModel.task_id)
+            .join(
+                TaskVersionModel,
+                TaskVersionModel.id == TaskModel.current_version_id,
+            )
+            .where(
+                TrialModel.task_id.in_(task_ids),
+                TrialModel.task_version_id == TaskModel.current_version_id,
+                # Environment is the routing truth: allowlisted harbor-gke
+                # pins at non-blessed SHAs classify as the ephemeral variant
+                # yet still run on GKE and need the prebuilt image.
+                or_(
+                    TrialModel.environment == "gke",
+                    TrialModel.harbor_config["variant_id"].astext == "gke",
+                ),
+            )
+            .distinct()
+        )
+        for task_id, version in gke_rows:
+            await builder.spawn.aio(task_id=task_id, version=version)
+            logger.info("spawned GKE image build for task %s v%s", task_id, version)
+    except Exception:
+        logger.exception("GKE image build spawn failed (non-fatal)")
 
 
 def _make_timing_recorder(request: Request) -> TimingRecorder:
