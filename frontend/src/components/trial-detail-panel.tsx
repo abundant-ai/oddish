@@ -1160,6 +1160,7 @@ export function TrialDetailPanel({
               <LiveTranscriptPanel
                 key={trial.id}
                 trialId={trial.id}
+                agent={trial.agent}
                 apiBaseUrl={apiBaseUrl}
               />
             </TabsContent>
