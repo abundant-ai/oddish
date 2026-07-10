@@ -335,7 +335,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: "Analysis failed",
+    label: "QA failed",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -1596,12 +1596,12 @@ export function ExperimentTrialsTable({
           <span className="flex flex-col gap-0.5">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
-              trial outcome
+              result
             </span>
             {showAnalysis && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-                trial analysis
+                QA
               </span>
             )}
           </span>
@@ -1727,7 +1727,7 @@ export function ExperimentTrialsTable({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-              Trial outcome
+              Result
             </span>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
@@ -1742,7 +1742,7 @@ export function ExperimentTrialsTable({
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-                Trial analysis
+                QA
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs">
