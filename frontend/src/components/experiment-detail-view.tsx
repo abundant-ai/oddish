@@ -19,7 +19,7 @@ import { TagEditor } from "@/components/tag-editor";
 import { UnifiedDrawerWrapper } from "@/components/unified-drawer-wrapper";
 import { fetcher } from "@/lib/api";
 import { prBadge, prNumberFromUrl, taskPrUrl } from "@/lib/utils";
-import { formatCostUsd } from "@/lib/format";
+import { formatCostUsd, formatTokenCount } from "@/lib/format";
 import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
@@ -150,6 +150,8 @@ type ExperimentSummary = {
   costTrialCount: number;
   costHasEstimated: boolean;
   costHasNative: boolean;
+  tokenCount: number;
+  tokenTrialCount: number;
   billedCostUsd: number;
   billedTrialCount: number;
   billedHasEstimated: boolean;
@@ -219,6 +221,8 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
     costTrialCount: acc.costTrialCount,
     costHasEstimated: acc.costHasEstimated,
     costHasNative: acc.costHasNative,
+    tokenCount: acc.tokenCount,
+    tokenTrialCount: acc.tokenTrialCount,
     billedCostUsd: acc.billedCostUsd,
     billedTrialCount: acc.billedTrialCount,
     billedHasEstimated: acc.billedHasEstimated,
@@ -618,7 +622,10 @@ function ExperimentSummaryBar({
           </span>
         </span>
       </KpiTile>
-      <KpiTile label="Cost">
+      <KpiTile
+        label="Cost"
+        labelInfo="Total cost it took to run all tasks in this experiment."
+      >
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
@@ -653,9 +660,17 @@ function ExperimentSummaryBar({
             <span className="text-[color:var(--paper-ink-3)]">—</span>
           )}
         </span>
+        {summary.tokenTrialCount > 0 && (
+          <span className="font-mono text-[10px] text-[color:var(--paper-ink-3)]">
+            {formatTokenCount(summary.tokenCount)}
+          </span>
+        )}
       </KpiTile>
       {showBilledSpend && (
-        <KpiTile label="Billed spend">
+        <KpiTile
+          label="New spend"
+          labelInfo="Total new spend for this experiment."
+        >
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
             title={

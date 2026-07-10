@@ -30,7 +30,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
-from oddish.model_pricing import settle_cost_usd
+from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -41,6 +41,7 @@ from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
 from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
+from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
 from oddish.workers.queue.shared import console
 from oddish.workers.queue.trial_failures import (
@@ -165,6 +166,7 @@ class PreparedTrialRun:
 class TrialExecutionResult:
     outcome: HarborOutcome | None
     execution_error: str | None
+    tailed_attempt: int | None = None
 
 
 def _is_agent_timeout_exception(exc: object | None) -> bool:
@@ -631,25 +633,29 @@ async def _store_trial_results(
     probe_analysis: dict | None = None,
     worker_id: str | None = None,
     worker_job_id: str | None = None,
-) -> None:
+) -> bool:
+    """Persist the trial outcome. Returns True when the trial is left in a
+    terminal state (SUCCESS/FAILED with finished_at set), False when it stays
+    inflight (RETRYING) or the update was skipped. Callers use this to decide
+    whether the live transcript can be purged."""
     async with _trial_session(trial_id, allow_missing=True, with_for_update=True) as (
         session,
         trial,
     ):
         if not trial:
-            return
+            return False
         if trial.superseded_by_trial_id is not None:
             console.print(
                 f"[dim]Trial {trial_id} was superseded, skipping result update[/dim]"
             )
-            return
+            return False
         if not await _worker_still_owns_trial(
             session, trial, worker_id=worker_id, worker_job_id=worker_job_id
         ):
             console.print(
                 f"[dim]Trial {trial_id} result ignored; worker no longer owns it[/dim]"
             )
-            return
+            return False
 
         is_modal_image_build_error = bool(
             outcome and is_modal_image_build_failure(outcome.error)
@@ -663,7 +669,10 @@ async def _store_trial_results(
             console.print(
                 f"[dim]Trial {trial_id} was cancelled by user, skipping result update[/dim]"
             )
-            return
+            # These rows are already terminal (finished_at stamped by the cancel
+            # path / CANCEL hook); report that so the caller runs the terminal
+            # live-event purge instead of leaning on the 24h TTL sweeper.
+            return trial.finished_at is not None
 
         if outcome:
             is_timeout = _is_agent_timeout_error_message(outcome.error)
@@ -688,6 +697,8 @@ async def _store_trial_results(
             )
             trial.trial_s3_key = trial_s3_key
 
+            prev_cost_usd = trial.cost_usd
+
             trial.input_tokens = outcome.input_tokens
             trial.cache_tokens = outcome.cache_tokens
             trial.cache_write_tokens = outcome.cache_write_tokens
@@ -695,6 +706,12 @@ async def _store_trial_results(
             trial.total_steps = outcome.total_steps
             trial.cost_usd = settle_cost_usd(
                 outcome.cost_usd,
+                native_cost_trusted=is_native_cost_trusted(
+                    agent=getattr(trial, "agent", None),
+                    provider=settings.get_provider_for_trial(
+                        getattr(trial, "agent", ""), trial.model
+                    ),
+                ),
                 model=trial.model,
                 input_tokens=outcome.input_tokens,
                 output_tokens=outcome.output_tokens,
@@ -735,6 +752,22 @@ async def _store_trial_results(
                     )
                 elif trial.attempts < trial.max_attempts:
                     trial.status = TrialStatus.RETRYING
+                    # A RETRYING trial is still inflight: the END/CANCEL hook may
+                    # have stamped finished_at on the failed attempt, but the row
+                    # will be re-run. Clear it so inflight quota (finished_at IS
+                    # NULL) still reserves for it and /live keeps reporting the
+                    # trial as running rather than done.
+                    trial.finished_at = None
+                    # Keep cost_usd monotonic while the trial stays inflight.
+                    # The per-attempt authoritative extraction can report less
+                    # than the live checkpoints from the same attempt (or None on
+                    # an early failure), and inflight quota --
+                    # GREATEST(cost_usd, floor) over finished_at IS NULL rows --
+                    # must only tighten, never loosen, until the trial settles.
+                    if prev_cost_usd is not None and (
+                        trial.cost_usd is None or trial.cost_usd < prev_cost_usd
+                    ):
+                        trial.cost_usd = prev_cost_usd
                     console.print(
                         f"[yellow]Trial {trial_id} re-queued for retry "
                         f"({trial.attempts}/{trial.max_attempts})[/yellow]"
@@ -776,6 +809,8 @@ async def _store_trial_results(
                     f"[blue]Task {trial.task_id} transitioned to next stage[/blue]"
                 )
 
+        return trial.status in (TrialStatus.SUCCESS, TrialStatus.FAILED)
+
 
 async def _upload_probe_assets(
     environment, probe_task_dir: Path, trial_id: str
@@ -809,6 +844,7 @@ async def _handle_harbor_event(
 ) -> None:
     """Update a trial from Harbor lifecycle events."""
     event = hook_event.event
+    live_tail_spawn: tuple[int, str, str | None] | None = None
 
     try:
         should_upload_probe_dir = (
@@ -841,8 +877,10 @@ async def _handle_harbor_event(
             trial_id, allow_missing=True, with_for_update=True
         ) as (_session, trial):
             if not trial:
+                live_tail.request_stop(trial_id)
                 return
             if trial.superseded_by_trial_id is not None:
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
                     "(superseded)[/dim]"
@@ -851,6 +889,7 @@ async def _handle_harbor_event(
             if not await _worker_still_owns_trial(
                 _session, trial, worker_id=worker_id, worker_job_id=worker_job_id
             ):
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} ignored "
                     "(worker no longer owns it)[/dim]"
@@ -866,6 +905,7 @@ async def _handle_harbor_event(
                 TrialEvent.END,
                 TrialEvent.CANCEL,
             ):
+                live_tail.request_stop(trial_id)
                 console.print(
                     f"[dim]Trial {trial_id} event {event.value} "
                     f"ignored (cancelled by user)[/dim]"
@@ -907,6 +947,7 @@ async def _handle_harbor_event(
                 )
             elif event == TrialEvent.AGENT_START:
                 trial.harbor_stage = "agent_running"
+                live_tail_spawn = (trial.attempts, trial.agent, trial.model)
                 console.print(f"[cyan]Trial {trial_id} agent started[/cyan]")
             elif event == TrialEvent.VERIFICATION_START:
                 trial.harbor_stage = "verification"
@@ -972,6 +1013,17 @@ async def _handle_harbor_event(
                 trial.finished_at = utcnow()
                 console.print(f"[yellow]Trial {trial_id} cancelled[/yellow]")
 
+        if live_tail_spawn is not None and hook_event.environment is not None:
+            live_tail.start(
+                trial_id=trial_id,
+                environment=hook_event.environment,
+                attempt=live_tail_spawn[0],
+                agent=live_tail_spawn[1],
+                model=live_tail_spawn[2],
+            )
+        elif event in (TrialEvent.AGENT_END, TrialEvent.END, TrialEvent.CANCEL):
+            live_tail.request_stop(trial_id)
+
     except Exception as e:
         console.print(f"[yellow]Hook callback error: {e}[/yellow]")
 
@@ -988,6 +1040,7 @@ async def _execute_trial(
     extra_agent_env: dict[str, str] | None = None,
 ) -> TrialExecutionResult:
     execution_error: str | None = None
+    tailed_attempt: int | None = None
     heartbeat_stop = asyncio.Event()
     heartbeat_task = asyncio.create_task(
         _heartbeat_trial_execution(
@@ -1053,11 +1106,21 @@ async def _execute_trial(
     finally:
         heartbeat_stop.set()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
+        # Stop the tailer (final flush + checkpoint) here, but defer the event
+        # purge to run_trial_job after the trial row is marked terminal. Purging
+        # now -- before _store_trial_results sets finished_at -- would blank the
+        # live transcript while polling clients still observe the trial as
+        # running (read_trial_live reports done via finished_at).
+        tailed_attempt = await live_tail.shutdown(trial_id)
         # Clean up temp task directory
         if temp_task_dir and temp_task_dir.exists():
             shutil.rmtree(temp_task_dir, ignore_errors=True)
 
-    return TrialExecutionResult(outcome=outcome, execution_error=execution_error)
+    return TrialExecutionResult(
+        outcome=outcome,
+        execution_error=execution_error,
+        tailed_attempt=tailed_attempt,
+    )
 
 
 def _harbor_config_is_ephemeral(harbor_config: dict | None) -> bool:
@@ -1215,6 +1278,8 @@ async def run_trial_job(
             agent=prepared_trial.trial_agent,
         )
 
+    execution: TrialExecutionResult | None = None
+    trial_terminal = False
     try:
         # Issue a job-scoped credential bundle (least-privilege model key(s) + S3
         # write prefix) and inject its scoped model env into the agent, replacing
@@ -1318,7 +1383,7 @@ async def run_trial_job(
         if oddish_uploaded and execution.outcome and execution.outcome.job_dir:
             _cleanup_uploaded_job_dir(execution.outcome.job_dir, trial_id)
 
-        await asyncio.shield(
+        trial_terminal = await asyncio.shield(
             _store_trial_results(
                 trial_id=trial_id,
                 outcome=execution.outcome,
@@ -1330,6 +1395,16 @@ async def run_trial_job(
             )
         )
     finally:
+        # Purge the live transcript only once the trial is terminal. Doing it
+        # inside _execute_trial's finally would race the S3 upload/store window
+        # and blank the transcript while clients still see the trial running;
+        # purging on a RETRYING outcome (finished_at still null) would likewise
+        # blank the current attempt's transcript while /live reports it as
+        # running until the next pickup bumps attempts. Prior attempts' events
+        # are covered by the terminal purge (attempt <= tailed_attempt) and the
+        # 24h TTL sweeper.
+        if execution is not None and trial_terminal:
+            await live_tail.purge_events(trial_id, execution.tailed_attempt)
         # Backstop for the non-happy paths (harness exception, worker
         # cancel, S3 upload failure, or Harbor dying before producing a
         # job_dir). On Modal, ``process_single_job`` containers are warm

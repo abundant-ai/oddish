@@ -8,6 +8,7 @@ from oddish.cli.combine import combine
 from oddish.cli.costs import costs
 from oddish.cli.delete import delete
 from oddish.cli.experiment import experiment_app
+from oddish.cli.logs import logs
 from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
@@ -27,6 +28,7 @@ app.command(name="backfill-analysis")(backfill_analysis)
 app.command()(upload)
 app.command(name="ls")(ls)
 app.command()(status)
+app.command(help="Stream a running trial's live transcript and running cost.")(logs)
 app.command()(cancel)
 app.command()(combine)
 app.command()(costs)

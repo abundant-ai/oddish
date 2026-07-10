@@ -45,7 +45,7 @@ from oddish.db import (
 from oddish.core.harbor_artifacts import cache_write_tokens_from_trajectory
 from oddish.db.models import WorkerJobKind, WorkerJobModel, WorkerJobStatus
 from oddish.db.storage import resolve_task_directory
-from oddish.model_pricing import settle_cost_usd
+from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -739,6 +739,12 @@ async def _run_harbor_trial(trial_id: str) -> None:
             trial.output_tokens = agent_result.n_output_tokens
             trial.cost_usd = settle_cost_usd(
                 agent_result.cost_usd,
+                native_cost_trusted=is_native_cost_trusted(
+                    agent=getattr(trial, "agent", None),
+                    provider=settings.get_provider_for_trial(
+                        getattr(trial, "agent", ""), trial.model
+                    ),
+                ),
                 model=trial.model,
                 input_tokens=agent_result.n_input_tokens,
                 output_tokens=agent_result.n_output_tokens,

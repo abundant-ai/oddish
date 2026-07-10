@@ -101,6 +101,7 @@ FastAPI server — oddish standalone (python -m oddish.server)
 Postgres
   - worker_jobs       # unified queue (TRIAL / QA / TASK_EXPAND / TAG_PROJECT / …)
   - trials / tasks    # domain state + live UI columns
+  - trial_events      # short-lived live transcript pages for running trials
   - queue_slots       # per-queue-key concurrency leases
         |
         v
@@ -124,7 +125,20 @@ High-level flow:
    job classifies every live trial's trajectory (written to `trials.analysis`)
    and then synthesizes the task verdict (`tasks.verdict`). A sweep of `T`
    tasks × `N` trials therefore enqueues `T` QA jobs, not `T × (N + 1)`.
-5. Trial completion persists queryable execution metrics on the trial row:
+5. While a trial runs, a worker-side tailer (`oddish.workers.harbor.live_tail`,
+   on by default via `live_tail_enabled` / `live_tail_interval_sec`) polls the
+   agent's log file inside the sandbox for supported agents (claude-code,
+   codex, cursor-cli, mini-swe-agent), folds token usage, checkpoints live
+   tokens/cost onto the trial row (`UPDATE … WHERE finished_at IS NULL`, so
+   inflight quota reservations only tighten), and appends transcript events to
+   `trial_events` (PK `(trial_id, attempt, seq)`, capped at 5000 events).
+   `GET /trials/{id}/live` serves them with an `(attempt, after_seq)` cursor to
+   `oddish logs [--follow]` and the dashboard Live tab. Events are purged when
+   the trial goes terminal (S3 stays the permanent record); a 24h TTL sweep in
+   the cleanup pass reaps rows leaked by hard-killed workers. A RETRYING trial
+   clears `finished_at` and keeps its cost monotonic so it still counts as
+   inflight for quotas and `/live`.
+6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, and trajectory availability. Use the CLI or dashboard
    to watch progress and pull logs/artifacts back locally.
@@ -319,7 +333,7 @@ extensions) — see `backend/README.md`.
 | Tasks | `GET /tasks`, `GET /tasks/browse`, `GET /tasks/{task_id}`, `GET /tasks/{task_id}/detail`, `GET /tasks/{task_id}/versions[/{version}]`, `POST /tasks/cancel` |
 | Task QA | `POST /tasks/{task_id}/qa/retry`, `POST /tasks/{task_id}/qa/cancel`, `POST /tasks/{task_id}/qa/backfill` |
 | Experiments | `POST /experiments/combine`, `PATCH /experiments/{experiment_id}` |
-| Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
+| Trials | `GET /tasks/{task_id}/trials/{index}`, `POST /trials/{trial_id}/retry` (optional `registry_auth` body), `GET /trials/{trial_id}/live` ((attempt, seq)-cursor live transcript), `GET /trials/{trial_id}/logs[/structured]`, `GET /trials/{trial_id}/trajectory`, `GET /trials/{trial_id}/result` |
 | Files | `GET /tasks/{task_id}/files[/{path}]`, `GET /trials/{trial_id}/files[/{path}]`, `GET /trials/{trial_id}/debug-files` |
 | Admin diagnostics | `GET /admin/slots`, `GET /admin/queue-status`, `GET /admin/orphaned-state`, `GET /admin/queue-health` |
 | Public sharing | `/public/experiments...` router from `oddish.core.sharing.public` |
@@ -519,6 +533,18 @@ sweep):
    mirrored domain column, records the outcome (`SUCCESS` / `RETRYING` /
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
+4. `send_slack_expense_notifications()` runs every five minutes in production
+   when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
+   for experiments at $1,000 and each additional $1,000 of spend, and for recent
+   trials over $25 that exceed twice their experiment's other-trial average.
+   The first experiment threshold and repeat interval are configurable with
+   `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
+   `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
+   and contains no agent/LLM path. It is on by default for the production app
+   and off by default on preview apps; a preview opts in by setting
+   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
+   `SLACK_EXPENSE_WEBHOOK_URL`, optionally through a preview-only named secret
+   selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
@@ -609,7 +635,8 @@ poolers such as Supavisor / PgBouncer.
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 `ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
-`MODAL_APP_NAME` / `MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
+`ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` / `MODAL_APP_NAME` /
+`MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
@@ -634,6 +661,7 @@ uv run alembic upgrade head
 | `modal_app.py` | Modal image, volumes, shared runtime, env knobs |
 | `endpoints.py` | Modal ASGI app function |
 | `serve.py` | Railway/uvicorn entrypoint |
+| `slack_notifications.py` | Deterministic scheduled experiment/trial expense alerts |
 | `cloud_policy.py` | Hosted-only environment policy |
 | `api/app.py` | FastAPI app factory |
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries, deletion |

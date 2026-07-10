@@ -14,7 +14,7 @@ from api.app import create_app
 from auth import require_admin, require_auth
 from auth.types import AuthContext, AuthMethod
 from models import OrganizationModel, UserModel, UserRole
-from oddish.db import ExperimentModel, TaskModel, TrialModel, get_session
+from oddish.db import ExperimentModel, TaskModel, TrialModel, TrialOrigin, get_session
 
 DB_URL = os.environ.get("ODDISH_DATABASE_URL")
 requires_db = pytest.mark.skipif(not DB_URL, reason="ODDISH_DATABASE_URL not set")
@@ -67,6 +67,8 @@ def _trial(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     deleted_at: datetime | None = None,
+    origin: TrialOrigin = TrialOrigin.ODDISH,
+    idempotency_key: str | None = None,
 ) -> TrialModel:
     return TrialModel(
         id=f"{task_id}-{idx}",
@@ -85,6 +87,8 @@ def _trial(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         deleted_at=deleted_at,
+        origin=origin,
+        idempotency_key=idempotency_key,
     )
 
 
@@ -107,7 +111,12 @@ async def costs_fixture():
         await session.flush()
         session.add_all(
             [
-                ExperimentModel(id=f"exp_{task_a}", name="exp-a", org_id=org_id),
+                ExperimentModel(
+                    id=f"exp_{task_a}",
+                    name="exp-a",
+                    org_id=org_id,
+                    deleted_at=now,
+                ),
                 ExperimentModel(id=f"exp_{task_b}", name="exp-b", org_id=org_id),
             ]
         )
@@ -121,6 +130,7 @@ async def costs_fixture():
             TaskModel(
                 id=task_b, name="beta-task", org_id=org_id, user="x",
                 task_path="s3://test-bucket/beta",
+                deleted_at=now,
             )
         )
         await session.flush()
@@ -158,6 +168,21 @@ async def costs_fixture():
                 _trial(
                     task_b, 1, org_id=org_id, billed_user_id=target.id,
                     finished_at=recent, cost_usd=0.05, deleted_at=now,
+                ),
+                # Non-first-party rows billed to the target: an imported trial
+                # (paid for outside Oddish) and an experiment-combine copy
+                # (duplicates an original's cost). Both must stay out of the
+                # drilldown; their outsized costs make any leak obvious in the
+                # totals/tasks/experiments assertions.
+                _trial(
+                    task_a, 6, org_id=org_id, billed_user_id=target.id,
+                    finished_at=recent, cost_usd=111.0,
+                    origin=TrialOrigin.IMPORTED,
+                ),
+                _trial(
+                    task_b, 2, org_id=org_id, billed_user_id=target.id,
+                    finished_at=recent, cost_usd=222.0,
+                    idempotency_key=f"combine:exp_{task_b}:{task_a}-1",
                 ),
             ]
         )
@@ -246,11 +271,15 @@ async def test_task_grouping_and_sort(costs_fixture):
     assert tasks[0]["cost_usd"] == pytest.approx(0.30)
     assert tasks[0]["trial_count"] == 2
     assert tasks[0]["cost_estimated_usd"] == pytest.approx(0.0)
+    assert tasks[0]["is_deleted"] is False
+    assert tasks[0]["has_deleted_spend"] is True
     assert tasks[1]["task_name"] == "beta-task"
     assert tasks[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert tasks[1]["trial_count"] == 2
     assert tasks[1]["cost_estimated_usd"] == pytest.approx(_EST_EXPECTED)
     assert tasks[1]["models"][0]["model"] == _EST_MODEL
+    assert tasks[1]["is_deleted"] is True
+    assert tasks[1]["has_deleted_spend"] is True
 
 
 @requires_db
@@ -264,10 +293,14 @@ async def test_experiment_grouping_and_sort(costs_fixture):
     assert experiments[0]["name"] == "exp-a"
     assert experiments[0]["cost_usd"] == pytest.approx(0.30)
     assert experiments[0]["trial_count"] == 2
+    assert experiments[0]["is_deleted"] is True
+    assert experiments[0]["has_deleted_spend"] is True
     assert experiments[1]["name"] == "exp-b"
     assert experiments[1]["cost_usd"] == pytest.approx(0.05 + _EST_EXPECTED)
     assert experiments[1]["trial_count"] == 2
     assert experiments[1]["models"][0]["model"] == _EST_MODEL
+    assert experiments[1]["is_deleted"] is False
+    assert experiments[1]["has_deleted_spend"] is True
 
 
 @requires_db
@@ -297,6 +330,34 @@ async def test_all_time_still_excludes_unsettled(costs_fixture):
     assert totals["trial_count"] == 5
     assert totals["cost_native_usd"] == pytest.approx(0.35 + 3.00)
     assert totals["cost_estimated_usd"] == pytest.approx(_EST_EXPECTED)
+
+
+@requires_db
+@pytest.mark.asyncio
+async def test_imported_and_combine_trials_excluded(costs_fixture):
+    """Non-first-party rows billed to the user never show up in the drilldown.
+
+    The fixture seeds an imported trial ($111) and a combine-copy trial ($222)
+    billed to the target. Quota sums exclude them via the shared first-party
+    filter, so the drilldown must too — otherwise it exceeds the quota column
+    for the same payer.
+    """
+    f = costs_fixture
+    resp = await _get(f.org_id, f.admin.id, f.target.id, params={"window_days": 0})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    totals = body["totals"]
+    assert totals["trial_count"] == 5
+    assert totals["cost_native_usd"] == pytest.approx(0.35 + 3.00)
+
+    assert sum(t["trial_count"] for t in body["tasks"]) == 5
+    for task in body["tasks"]:
+        assert task["cost_usd"] < 100
+    for exp in body["experiments"]:
+        assert exp["cost_usd"] < 100
+    for bucket in body["series_by_model"]["buckets"]:
+        assert bucket["cost_usd"] < 100
 
 
 @requires_db
