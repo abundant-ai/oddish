@@ -114,6 +114,18 @@ const OUTCOME_STYLE: Record<
     label: "Running",
     tone: "text-blue-600 dark:text-blue-400",
   },
+  queued: {
+    ring: "border-purple-500/50 bg-purple-500/10",
+    icon: <Clock className="h-5 w-5 text-purple-500" />,
+    label: "Queued",
+    tone: "text-purple-600 dark:text-purple-400",
+  },
+  pending: {
+    ring: "border-gray-500/50 bg-gray-500/10",
+    icon: <Clock className="h-5 w-5 text-gray-500" />,
+    label: "Pending",
+    tone: "text-gray-600 dark:text-gray-400",
+  },
 };
 
 export function TrajectoryGraphView({

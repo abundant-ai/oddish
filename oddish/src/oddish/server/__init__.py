@@ -722,11 +722,13 @@ async def get_trial_trajectory_graph(trial_id: str):
 @api.post("/trials/{trial_id}/trajectory/graph")
 async def generate_trial_trajectory_graph(trial_id: str, refresh: bool = False):
     """Generate (and persist) the condensed agent step-graph for a trial."""
+    from oddish.core.helpers import _has_fetchable_trajectory
+
     async with get_session() as session:
         trial = await session.get(TrialModel, trial_id)
         if trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
-        if not trial.has_trajectory:
+        if not _has_fetchable_trajectory(trial):
             raise HTTPException(
                 status_code=404, detail="No trajectory available for this trial"
             )

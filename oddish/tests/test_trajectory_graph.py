@@ -349,6 +349,7 @@ def test_generate_falls_back_to_persisted_summary(monkeypatch):
         id="trial-3", status="success", reward=1.0, error_message=None,
         name="t", agent="a", trajectory_graph=None,
         trajectory_summary={
+            "schema_version": "3",
             "phases": [{"label": "Explore", "step_ids": [1], "gist": "looked"}],
             "highlights": [],
         },
@@ -427,3 +428,46 @@ def test_summary_terminal_reason_is_grounded():
         tg.build_trajectory_graph(_traj(), ctx, model=None, summary=summary)
     )
     assert "expected reserve1 fresh, got stale" in g["terminal"]["reason"]
+
+
+# --- Bugbot round 5: outcome-match + freshness guards ---
+
+
+def test_non_terminal_outcomes_match_matrix():
+    def outc(status):
+        return tg._infer_outcome({"status": status, "reward": None})
+    assert outc("queued") == tg.OUTCOME_QUEUED
+    assert outc("pending") == tg.OUTCOME_QUEUED  # frontend folds pending -> queued
+    assert outc("running") == tg.OUTCOME_RUNNING
+    assert outc("retrying") == tg.OUTCOME_PENDING  # getMatrixStatus: retrying -> pending
+
+
+def test_stale_persisted_summary_not_reused(monkeypatch):
+    async def _fake_read_trajectory(trial):
+        return {"steps": [{"step_id": "1", "source": "agent", "tool_calls": [{"function_name": "bash"}]}]}
+
+    async def _none(trial):
+        return None
+
+    monkeypatch.setattr(trial_io, "read_trial_trajectory", _fake_read_trajectory)
+    monkeypatch.setattr(trial_io, "read_trial_instruction", _none)
+    monkeypatch.setattr(trial_io, "read_trial_verifier_output", _none)
+
+    # stale schema -> the fresh guard rejects it -> NOT source "summary"
+    trial = SimpleNamespace(
+        id="trial-stale", status="success", reward=0.0, error_message=None,
+        name="t", agent="a", trajectory_graph=None,
+        trajectory_summary={"schema_version": "2", "phases": [{"label": "Old", "step_ids": [1]}]},
+    )
+    session = _FakeSession()
+    graph = asyncio.run(trial_io.generate_and_store_trajectory_graph(session, trial))
+    assert graph["source"] != "summary"
+
+
+def test_fresh_persisted_summary_helper():
+    assert trial_io._fresh_persisted_summary(SimpleNamespace(trajectory_summary=None)) is None
+    assert trial_io._fresh_persisted_summary(
+        SimpleNamespace(trajectory_summary={"schema_version": "2", "phases": []})
+    ) is None
+    fresh = {"schema_version": "3", "phases": [{"label": "x"}]}
+    assert trial_io._fresh_persisted_summary(SimpleNamespace(trajectory_summary=fresh)) == fresh
