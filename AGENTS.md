@@ -117,7 +117,12 @@ High-level flow:
 2. Submit a sweep of agent/model trials for that task; each trial is
    enqueued as a `worker_jobs` row in the same transaction as its domain
    row. Set `max_trial_attempts` on a sweep submission or sweep config to
-   override the total attempt budget for newly-created trials.
+   override the total attempt budget for newly-created trials. Re-submitting
+   the same task-version/experiment sweep reconciles to the requested count:
+   live non-failed trials are retained, while failed slots get fresh trial
+   rows and the old attempts point to those replacements through
+   `superseded_by_trial_id`. This preserves retry history without leaving the
+   failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis is **task-scoped**: when every trial of a
@@ -536,7 +541,9 @@ sweep):
 4. `send_slack_expense_notifications()` runs every five minutes in production
    when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
    for experiments at $1,000 and each additional $1,000 of spend, and for recent
-   trials over $25 that exceed twice their experiment's other-trial average.
+   trials over $70 that exceed twice the average of other trials in the
+   experiment for the same task and model. Trials without a same-task/model
+   peer do not produce anomaly alerts.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis

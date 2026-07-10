@@ -16,7 +16,11 @@ from sqlalchemy.dialects.postgresql import insert
 from modal_app import app, image, slack_notification_secrets
 from models import SlackExpenseAlertModel
 from oddish.core.admin import _real_spend_filter
-from oddish.core.cost_basis import settled_cost_columns, settled_cost_from_row
+from oddish.core.cost_basis import (
+    CANCELLED_HARBOR_STAGE,
+    settled_cost_columns,
+    settled_cost_from_row,
+)
 from oddish.db import (
     ExperimentModel,
     TrialModel,
@@ -24,6 +28,7 @@ from oddish.db import (
     close_database_connections,
     get_session,
 )
+from oddish.model_pricing import has_pricing
 
 log = logging.getLogger("oddish.slack_notifications")
 
@@ -39,10 +44,19 @@ class ExperimentCandidate:
 @dataclass(frozen=True)
 class TrialSpend:
     id: str
+    name: str
     task_id: str
     experiment_id: str
+    model: str
     finished_at: datetime
     cost_usd: float
+
+
+@dataclass(frozen=True)
+class UnpricedModel:
+    model: str
+    trial_count: int
+    task_id: str
 
 
 @dataclass(frozen=True)
@@ -90,12 +104,21 @@ def build_alerts(
     experiment_repeat_usd: float,
     trial_threshold_usd: float,
     trial_average_multiplier: float,
+    unpriced_models: list[UnpricedModel] | None = None,
 ) -> list[SlackAlert]:
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
+    task_model_costs: dict[tuple[str, str], float] = {}
+    task_model_counts: dict[tuple[str, str], int] = {}
     for trial in trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
+        peer_key = (trial.task_id, trial.model)
+        task_model_costs[peer_key] = (
+            task_model_costs.get(peer_key, 0) + trial.cost_usd
+        )
+        task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
+    experiments_by_id = {experiment.id: experiment for experiment in experiments}
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
@@ -105,11 +128,17 @@ def build_alerts(
             experiment_repeat_usd,
         )
         if milestones:
-            phase = (
-                f"{experiment.active_trials} trial"
-                f"{'s' if experiment.active_trials != 1 else ''} still running"
-                if experiment.active_trials
-                else "finished"
+            agent_costs: dict[str, float] = {}
+            for trial in experiment_trials:
+                agent_costs[trial.model] = (
+                    agent_costs.get(trial.model, 0) + trial.cost_usd
+                )
+            top_agent_costs = sorted(
+                agent_costs.items(), key=lambda item: (-item[1], item[0])
+            )[:3]
+            top_agent_cost_lines = "\n".join(
+                f"• `{_escape(model)}`: *${cost:,.2f}*"
+                for model, cost in top_agent_costs
             )
             experiment_url = (
                 f"{dashboard_url}/experiments/"
@@ -120,45 +149,36 @@ def build_alerts(
                     SlackAlert(
                         key=f"experiment:{experiment.id}:{milestone:g}",
                         text=(
-                            f":money_with_wings: *Expensive experiment:* "
-                            f"*{_escape(experiment.name)}* reached the "
-                            f"*${milestone:,.2f}* spend milestone "
-                            f"(now *${total_cost:,.2f}*) — {phase} · "
-                            f"owner: *{_escape(experiment.owner or 'Unknown')}* "
-                            f"· <{experiment_url}|open experiment>"
+                            ":money_with_wings: *Expensive experiment*\n"
+                            f"Title: *{_escape(experiment.name)}*\n"
+                            f"Spend milestone: *${milestone:,.2f}* "
+                            f"(current spend: *${total_cost:,.2f}*)\n"
+                            f"Trials still running: {experiment.active_trials}\n"
+                            f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
+                            "Top agent costs:\n"
+                            f"{top_agent_cost_lines}\n"
+                            f"<{experiment_url}|open experiment>"
                         ),
                     )
                 )
 
-        trial_count = len(experiment_trials)
-        first_trial_id = (
-            min(experiment_trials, key=lambda item: (item.finished_at, item.id)).id
-            if experiment_trials
-            else None
-        )
         for trial in experiment_trials:
             if trial.finished_at < recent_cutoff or trial.cost_usd <= trial_threshold_usd:
                 continue
-            is_first_trial = trial.id == first_trial_id
-            other_average = (
-                None
-                if trial_count == 1
-                else (total_cost - trial.cost_usd) / (trial_count - 1)
-            )
-            if (
-                not is_first_trial
-                and other_average is not None
-                and trial.cost_usd <= other_average * trial_average_multiplier
-            ):
+            peer_key = (trial.task_id, trial.model)
+            peer_count = task_model_counts[peer_key] - 1
+            if peer_count == 0:
+                continue
+            peer_average = (task_model_costs[peer_key] - trial.cost_usd) / peer_count
+            if trial.cost_usd <= peer_average * trial_average_multiplier:
                 continue
             comparison = (
-                "first trial"
-                if is_first_trial
-                else f"{trial.cost_usd / other_average:.1f}× the experiment average"
-                if other_average
-                else "other trials averaged $0"
+                f"{trial.cost_usd / peer_average:.1f}× the same-task/model average"
+                if peer_average
+                else "other same-task/model trials averaged $0"
             )
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
+            experiment = experiments_by_id[trial.experiment_id]
             alerts.append(
                 SlackAlert(
                     key=(
@@ -166,12 +186,33 @@ def build_alerts(
                         f"{trial_average_multiplier:g}"
                     ),
                     text=(
-                        f":warning: *Expensive trial:* `{_escape(trial.id)}` cost "
-                        f"*${trial.cost_usd:,.2f}* — {comparison} · "
+                        ":warning: *Expensive trial*\n"
+                        f"Title: `{_escape(trial.name)}`\n"
+                        f"Experiment: *{_escape(experiment.name)}*\n"
+                        f"Cost: *${trial.cost_usd:,.2f}* — {comparison}\n"
+                        f"Model: `{_escape(trial.model)}`\n"
+                        f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                         f"<{task_url}|open task>"
                     ),
                 )
             )
+
+    for unpriced in unpriced_models or []:
+        plural = "s" if unpriced.trial_count != 1 else ""
+        task_url = f"{dashboard_url}/tasks/{quote(unpriced.task_id, safe='')}"
+        alerts.append(
+            SlackAlert(
+                key=f"unpriced-model:{unpriced.model}",
+                text=(
+                    f":grey_question: *Unpriceable model:* "
+                    f"`{_escape(unpriced.model)}` has no price — "
+                    f"{unpriced.trial_count} recent trial{plural} recorded "
+                    f"token usage but settled to *$0* because no rate could be "
+                    f"resolved (spend is going uncounted). Add it to the "
+                    f"pricing table · <{task_url}|open task>"
+                ),
+            )
+        )
     return alerts
 
 
@@ -225,32 +266,69 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
             for row in candidate_rows
         ]
-        if not experiments:
-            return []
-
+        # Expensive-experiment/trial alerts need candidate experiments, but the
+        # unpriceable-model scan below is independent of them (an unpriced trial
+        # can live under a collection or soft-deleted experiment that is never a
+        # candidate), so don't early-return on an empty candidate set -- only
+        # skip the experiment-scoped trial query.
         experiment_ids = [experiment.id for experiment in experiments]
-        trial_rows = (
+        trial_rows = []
+        if experiment_ids:
+            trial_rows = (
+                await session.execute(
+                    select(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                        *settled_cost_columns(),
+                    )
+                    .where(
+                        TrialModel.experiment_id.in_(experiment_ids),
+                        TrialModel.finished_at.isnot(None),
+                        _real_spend_filter(),
+                    )
+                    .group_by(
+                        TrialModel.id,
+                        TrialModel.name,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                    )
+                    .execution_options(include_deleted=True)
+                )
+            ).all()
+
+        # Trials that ran (recorded tokens) but settled to NULL cost: no native
+        # cost and no token estimate. Grouping by model lets us alert once per
+        # model rather than once per trial. Whether the model is genuinely
+        # unpriceable -- rather than merely tokenless -- is decided below with
+        # ``has_pricing``: the token-estimate path shares that same lookup, so a
+        # priced model always produces an estimate here and never reaches the
+        # alert, and an unpriced one never produces a token estimate to hide it.
+        unpriced_rows = (
             await session.execute(
                 select(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
                     TrialModel.model,
-                    *settled_cost_columns(),
+                    func.count(TrialModel.id).label("trial_count"),
+                    func.max(TrialModel.task_id).label("task_id"),
                 )
                 .where(
-                    TrialModel.experiment_id.in_(experiment_ids),
-                    TrialModel.finished_at.isnot(None),
+                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.cost_usd.is_(None),
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
+                    or_(
+                        func.coalesce(TrialModel.input_tokens, 0) > 0,
+                        func.coalesce(TrialModel.output_tokens, 0) > 0,
+                        func.coalesce(TrialModel.cache_write_tokens, 0) > 0,
+                    ),
                     _real_spend_filter(),
                 )
-                .group_by(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
-                    TrialModel.model,
-                )
+                .group_by(TrialModel.model)
                 .execution_options(include_deleted=True)
             )
         ).all()
@@ -258,12 +336,23 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
     trials = [
         TrialSpend(
             id=str(row.id),
+            name=str(row.name),
             task_id=str(row.task_id),
             experiment_id=str(row.experiment_id),
+            model=str(row.model),
             finished_at=row.finished_at,
             cost_usd=settled_cost_from_row(row),
         )
         for row in trial_rows
+    ]
+    unpriced_models = [
+        UnpricedModel(
+            model=str(row.model),
+            trial_count=int(row.trial_count or 0),
+            task_id=str(row.task_id),
+        )
+        for row in unpriced_rows
+        if row.model and not has_pricing(str(row.model))
     ]
     dashboard_url = os.environ.get(
         "ODDISH_DASHBOARD_URL", "https://www.oddish.app"
@@ -279,10 +368,11 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         experiment_repeat_usd=_env_float(
             "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
         ),
-        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 25),
+        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 70),
         trial_average_multiplier=_env_float(
             "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
         ),
+        unpriced_models=unpriced_models,
     )
 
 

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Collection, Sequence
 
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
@@ -15,6 +15,7 @@ from oddish.core.endpoints._common import (
 from oddish.core.harbor_source import (
     HarborSourceError,
     resolve_and_gate_harbor,
+    stamp_gke_harbor_source,
 )
 from oddish.core.idempotency import (
     SWEEP_ROUTE,
@@ -28,9 +29,11 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TrialModel,
+    TrialStatus,
     utcnow,
 )
 from oddish.schemas import (
+    HarborConfig,
     TaskResponse,
     TaskSweepBatchItemResult,
     TaskSweepSubmission,
@@ -65,6 +68,50 @@ def build_task_sweep_response(
         created_at=task.created_at,
         new_trial_ids=[trial.id for trial in response_trials],
     )
+
+
+async def replay_has_retryable_failed_trials(
+    session: AsyncSession,
+    response_json: dict,
+    *,
+    org_id: str | None,
+) -> bool:
+    """Return whether an idempotent sweep replay now ends in a failed leaf.
+
+    A CLI invocation uses a stable key so a transport retry cannot duplicate
+    queued work. Once one of the trials created by that invocation fails,
+    however, repeating the same sweep is an intentional retry. Follow each
+    immutable retry chain from the response's original ids to its current leaf
+    so later failures remain retryable without weakening in-flight dedup.
+    """
+    raw_ids = response_json.get("new_trial_ids")
+    if not isinstance(raw_ids, list):
+        return False
+    pending = {trial_id for trial_id in raw_ids if isinstance(trial_id, str)}
+    seen: set[str] = set()
+
+    while pending:
+        batch = pending - seen
+        if not batch:
+            return False
+        seen.update(batch)
+        stmt = select(
+            TrialModel.id,
+            TrialModel.status,
+            TrialModel.superseded_by_trial_id,
+        ).where(TrialModel.id.in_(batch))
+        if org_id is not None:
+            stmt = stmt.where(TrialModel.org_id == org_id)
+        rows = (await session.execute(stmt)).all()
+
+        pending = set()
+        for _trial_id, status, superseded_by in rows:
+            if superseded_by:
+                pending.add(superseded_by)
+            elif status == TrialStatus.FAILED:
+                return True
+
+    return False
 
 
 def _stamp_experiment_provenance(
@@ -143,6 +190,135 @@ async def _finalize_sweep(
         )
 
 
+def _effective_sweep_environment(
+    submission_environment: EnvironmentType | None,
+    inherited_environment: EnvironmentType | None,
+    default_environment: EnvironmentType | None,
+) -> EnvironmentType | None:
+    """Environment the sweep's trials will actually run in, for the harbor stamp.
+
+    Mirrors ``build_trial_specs_from_sweep``'s submission-level resolution so the
+    harbor stamp sees the SAME environment as the trials: an explicit submission
+    override wins, else the environment inherited from an append target's existing
+    trials, else the caller-resolved default. Stamping against the submission's own
+    environment alone would leave a GKE append (submitted without ``--env``) on the
+    lean default image instead of harbor-gke.
+    """
+    return submission_environment or inherited_environment or default_environment
+
+
+async def _existing_task_environment(
+    session: AsyncSession, task_id: str
+) -> EnvironmentType | None:
+    """Environment of *task_id*'s oldest non-null trial, or ``None`` if it has none.
+
+    Appended trials inherit this as their default environment, so both the harbor
+    stamp and ``build_trial_specs_from_sweep`` resolve against it. This is a plain
+    read, safe to run before the harbor gate.
+    """
+    result = await session.execute(
+        select(TrialModel.environment)
+        .where(
+            TrialModel.task_id == task_id,
+            TrialModel.environment.is_not(None),
+        )
+        .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+        .limit(1)
+    )
+    existing_environment = result.scalar_one_or_none()
+    return EnvironmentType(existing_environment) if existing_environment else None
+
+
+def _resolve_sweep_environments(
+    submission_environment: EnvironmentType | None,
+    inherited_environment: EnvironmentType | None,
+    default_environment: EnvironmentType | None,
+    harbor: HarborConfig,
+) -> tuple[EnvironmentType | None, EnvironmentType | None]:
+    """Resolve ``(effective_environment, default_for_trial_specs)`` together.
+
+    The TPU inference (an override_tpu whose environment chain is entirely
+    unset resolves to GKE) must reach BOTH values: the effective environment
+    drives the harbor stamp and the guards, while the default feeds
+    ``build_trial_specs_from_sweep`` -- diverging them would stamp the GKE
+    image onto trials that then run the default backend (breaking the
+    stamp-env == trial-env invariant).
+    """
+    effective = _effective_sweep_environment(
+        submission_environment, inherited_environment, default_environment
+    )
+    inferred = _infer_tpu_environment(harbor, effective)
+    if inferred is not effective:
+        return inferred, inferred
+    return effective, default_environment
+
+
+def _infer_tpu_environment(
+    harbor: HarborConfig,
+    effective_environment: EnvironmentType | None,
+) -> EnvironmentType | None:
+    """Resolve a TPU request with NO environment anywhere to GKE.
+
+    The hosted router infers this in its default (get_default_cloud_environment)
+    but an OSS install's sweep handler passes no default -- without this, a TPU
+    submission that omits environment would 422 there instead of routing like
+    the hosted API and the CLI sniff. A RESOLVED environment is never
+    overridden; the guards below judge it.
+    """
+    if effective_environment is None and harbor.environment.override_tpu is not None:
+        return EnvironmentType.GKE
+    return effective_environment
+
+
+def _reject_tpu_without_gke(
+    harbor: "HarborConfig",
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a TPU request resolves to a non-GKE effective environment.
+
+    The schema rejects the explicit-environment case; this covers what only the
+    server can see -- the caller-resolved default and an append's inherited
+    environment.
+    """
+    if (
+        harbor.environment.override_tpu is not None
+        and effective_environment != EnvironmentType.GKE
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TPU requests require the trials' effective environment to be "
+                "gke. Submit with environment=gke."
+            ),
+        )
+
+
+def _reject_mixed_gke_configs(
+    configs,
+    effective_environment: EnvironmentType | None,
+) -> None:
+    """422 when a config-level ``environment: gke`` rides a non-GKE submission.
+
+    Per-config environments win in ``build_trial_specs_from_sweep``, but the
+    harbor stamp keys off the SUBMISSION-level effective environment -- so this
+    one mismatch direction would run trials on GKE with the lean default Harbor
+    pin (a broken image). The reverse direction (non-GKE configs under a GKE
+    submission) stays permitted: the gke variant image is a superset and runs
+    those trials correctly.
+    """
+    if effective_environment == EnvironmentType.GKE:
+        return
+    if any(getattr(c, "environment", None) == EnvironmentType.GKE for c in configs):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "configs[].environment=gke requires the submission-level "
+                "environment to be gke so the trials get the GKE-enabled "
+                "Harbor image."
+            ),
+        )
+
+
 async def create_task_sweep_core(
     session: AsyncSession,
     *,
@@ -181,6 +357,7 @@ async def create_task_sweep_core(
     )
     from oddish.queue import (
         _ensure_not_collection_target,
+        TrialSupersedeConflict,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
@@ -209,14 +386,61 @@ async def create_task_sweep_core(
         except IdempotencyConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
-    # BEFORE any task mutation (append/create) so a disallowed/unresolvable ref
-    # never half-creates a task. The default pin does no network I/O.
     from oddish.config import settings
+
+    # Auto-detect append mode if the task already exists in the DB for this org.
+    # Detection and the inherited-environment read below are reads, so resolving
+    # them before the gate keeps the gate BEFORE any task mutation.
+    if not submission.append_to_task:
+        existing = await session.get(TaskModel, submission.task_id)
+        if existing is not None and (org_id is None or existing.org_id == org_id):
+            submission = submission.model_copy(update={"append_to_task": True})
+
+    # Appended trials INHERIT the existing task's environment (its oldest trial).
+    # The stamp below MUST see that inherited environment, or a GKE task appended
+    # to without ``--env`` would stamp against the (non-GKE) default and silently
+    # run the lean default image. Resolved here, and reused by the append branch.
+    inherited_environment: EnvironmentType | None = None
+    if submission.append_to_task:
+        inherited_environment = await _existing_task_environment(
+            session, submission.task_id
+        )
+    effective_default_env = (
+        inherited_environment
+        if inherited_environment is not None
+        else default_environment
+    )
+
+    # Resolve the Harbor pin to a concrete SHA, allowlist-check it, and stamp it
+    # BEFORE any task mutation (the append detection above is a read) so a
+    # disallowed/unresolvable ref never half-creates a task; the default pin does
+    # no network I/O. A GKE (TPU) trial must run the GKE-enabled harbor-gke fork,
+    # not the lean default Harbor, so when the trials' effective environment is GKE
+    # and the caller pinned no source (or the default fork), bind the blessed gke
+    # variant BEFORE resolution so it classifies onto the gke worker image. The
+    # effective environment mirrors build_trial_specs_from_sweep (submission
+    # override, else the inherited/caller-resolved default); a non-GKE submission
+    # is left untouched and keeps the default pin.
+    effective_environment, resolved_default = _resolve_sweep_environments(
+        submission.environment,
+        inherited_environment,
+        default_environment,
+        submission.harbor,
+    )
+    if resolved_default is not default_environment:
+        default_environment = resolved_default
+        effective_default_env = resolved_default
+    _reject_mixed_gke_configs(submission.configs, effective_environment)
+    _reject_tpu_without_gke(submission.harbor, effective_environment)
+    harbor_to_gate = submission.harbor
+    if effective_environment is not None:
+        harbor_to_gate = stamp_gke_harbor_source(
+            submission.harbor, effective_environment
+        )
 
     try:
         stamped_harbor, _variant = resolve_and_gate_harbor(
-            submission.harbor, settings=settings
+            harbor_to_gate, settings=settings
         )
     except HarborSourceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -231,12 +455,6 @@ async def create_task_sweep_core(
         github_meta = GitHubMeta.from_tags(submission.tags)
         if github_meta and github_meta.pr_url:
             submission = submission.model_copy(update={"link": github_meta.pr_url})
-
-    # Auto-detect append mode if the task already exists in the DB for this org.
-    if not submission.append_to_task:
-        existing = await session.get(TaskModel, submission.task_id)
-        if existing is not None and (org_id is None or existing.org_id == org_id):
-            submission = submission.model_copy(update={"append_to_task": True})
 
     if submission.append_to_task:
         task = await get_task_for_org_core(
@@ -299,44 +517,34 @@ async def create_task_sweep_core(
         # Stamp the run's owner + PR link onto the experiment (set-once).
         _stamp_experiment_provenance(experiment, submission)
 
-        # Determine default environment from existing trial, if present.
-        existing_env_result = await session.execute(
-            select(TrialModel.environment)
-            .where(
-                TrialModel.task_id == task.id,
-                TrialModel.environment.is_not(None),
-            )
-            .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
-            .limit(1)
-        )
-        existing_environment = existing_env_result.scalar_one_or_none()
-        effective_default_env = (
-            EnvironmentType(existing_environment)
-            if existing_environment
-            else default_environment
-        )
-
+        # ``effective_default_env`` (this task's inherited environment, else the
+        # caller default) was resolved before the harbor gate so the stamp and
+        # these trials share one environment; build_trial_specs_from_sweep reuses
+        # it below.
         target_experiment_id = new_experiment_id or (
             primary_experiment.id if primary_experiment else None
         )
         existing_counts: dict[tuple[str, str | None], int] | None = None
+        failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
         if task.current_version_id is not None:
             reconcile_where = [
                 TrialModel.task_id == task.id,
                 TrialModel.task_version_id == task.current_version_id,
                 TrialModel.is_probe.is_(False),
+                TrialModel.superseded_by_trial_id.is_(None),
             ]
             if target_experiment_id is not None:
                 reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
-            existing_counts_result = await session.execute(
-                select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
-                .where(*reconcile_where)
-                .group_by(TrialModel.agent, TrialModel.model)
+            existing_trials_result = await session.execute(
+                select(TrialModel).where(*reconcile_where).order_by(TrialModel.id)
             )
-            existing_counts = {
-                (agent, model): count
-                for agent, model, count in existing_counts_result.all()
-            }
+            existing_counts = defaultdict(int)
+            for existing_trial in existing_trials_result.scalars():
+                key = (existing_trial.agent, existing_trial.model)
+                if existing_trial.status == TrialStatus.FAILED:
+                    failed_trial_ids[key].append(existing_trial.id)
+                else:
+                    existing_counts[key] += 1
 
         trials = build_trial_specs_from_sweep(
             submission,
@@ -344,6 +552,25 @@ async def create_task_sweep_core(
             allowed_environments=allowed_environments,
             existing_counts=existing_counts,
         )
+
+        # A failed live attempt does not satisfy the declarative N. The specs
+        # above therefore include replacements for failed slots. Attach every
+        # failed attempt for that agent/model to the replacement rows so old
+        # duplicate failures collapse out of the default UI while remaining
+        # directly inspectable as immutable history.
+        replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(
+            list
+        )
+        for index, spec in enumerate(trials):
+            normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
+            replacement_positions[(spec.agent, normalized_model)].append(index)
+        supersede_by_spec: list[list[str]] = [[] for _ in trials]
+        for key, old_ids in failed_trial_ids.items():
+            positions = replacement_positions.get(key, [])
+            if not positions:
+                continue
+            for offset, old_id in enumerate(old_ids):
+                supersede_by_spec[positions[offset % len(positions)]].append(old_id)
 
         append_submission = submission.model_copy(
             update={
@@ -360,13 +587,17 @@ async def create_task_sweep_core(
             append_submission, task_path=task.task_path, trials=trials
         )
         await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
-        new_trials = await append_trials_to_task(
-            session,
-            task=task,
-            submission=expanded,
-            experiment_id=new_experiment_id,
-            billed_user_id=billed_user_id,
-        )
+        try:
+            new_trials = await append_trials_to_task(
+                session,
+                task=task,
+                submission=expanded,
+                experiment_id=new_experiment_id,
+                billed_user_id=billed_user_id,
+                supersede_failed_trial_ids=supersede_by_spec,
+            )
+        except TrialSupersedeConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         await _finalize_sweep(
             session,

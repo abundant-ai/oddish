@@ -64,6 +64,12 @@ oddish run --task <task_id> -a gemini-cli -m google/gemini-3.1-pro-preview
 oddish run ./my-task -c sweep.yaml
 ```
 
+Re-submitting the same sweep is declarative for each task version and
+experiment: queued, running, and successful trials continue to satisfy the
+requested count, while failed trials are replaced immutably. The failed rows
+remain available by direct ID for history, but are marked superseded so only
+their replacements appear in normal task and experiment views.
+
 Options
 
 - `--path`, `-p PATH` - Harbor-compatible path flag for a local task or dataset directory
@@ -603,3 +609,30 @@ task content is idempotent — content-hash unchanged → no new version.
 
 For very large archives or scripted/CI flows, prefer the CLI: the UI
 caps each uploaded zip at 1 GiB.
+
+## Benchmark Metrics (metrics.json)
+
+A task can report structured benchmark numbers by having its **verifier**
+write `metrics.json` next to `reward.txt` (i.e. `/logs/verifier/metrics.json`
+inside the sandbox). Oddish persists the parsed object onto the trial and
+returns it as the trial's `result` in the API and dashboard.
+
+Contract:
+
+- A single JSON **object**, at most **64 KiB**. Anything else (missing,
+  malformed, oversized, non-object) is ignored — metrics can never fail a
+  trial whose reward already settled.
+- Include `"schema_version": 1` so downstream consumers can evolve.
+- Recommended keys for performance benchmarks (all optional):
+  `latency_ms`, `step_time_ms`, `ttft_ms`, `throughput_tokens_per_sec`,
+  `mxu_utilization_pct`, and for MoE workloads `routing_overhead_ms`,
+  `gating_overhead_ms`, `ici_time_ms`, `expert_load_balance`.
+  Task-specific keys are fine alongside.
+
+```bash
+# tests/test.sh
+echo 1 > /logs/verifier/reward.txt
+cat > /logs/verifier/metrics.json <<'JSON'
+{"schema_version": 1, "ttft_ms": 12.5, "throughput_tokens_per_sec": 4300}
+JSON
+```

@@ -40,6 +40,7 @@ from oddish.core.endpoints.sweep import (
     build_task_sweep_response,
     create_task_sweep_batch_core,
     create_task_sweep_core,
+    replay_has_retryable_failed_trials,
 )
 from oddish.core.endpoints.task_detail import (
     _aggregate_task_detail_rollups,
@@ -102,6 +103,7 @@ __all__ = [
     "list_task_versions_core",
     "list_tasks_core",
     "rerun_task_qa_core",
+    "replay_has_retryable_failed_trials",
     "retry_trial_core",
     "unlink_task_from_experiment_core",
 ]

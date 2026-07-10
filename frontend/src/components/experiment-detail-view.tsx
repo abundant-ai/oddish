@@ -9,7 +9,6 @@ import {
   useState,
 } from "react";
 import dynamic from "next/dynamic";
-import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import useSWR from "swr";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -772,36 +771,6 @@ function ExperimentSummaryBar({
   );
 }
 
-// The experiment-level probe runs in the experiment's current/most-recent
-// task environment. Prefer the highest current_version, tie-break on most
-// recent created_at, fall back to the first task.
-function resolveHostTaskId(tasks: Task[]): string | undefined {
-  if (tasks.length === 0) return undefined;
-  const sorted = [...tasks].sort((a, b) => {
-    const v = (b.current_version ?? -1) - (a.current_version ?? -1);
-    if (v !== 0) return v;
-    return (b.created_at ?? "").localeCompare(a.created_at ?? "");
-  });
-  return sorted[0]?.id;
-}
-
-function ExperimentProbeLaunchButton({
-  experimentId,
-  hostTaskId,
-}: {
-  experimentId?: string;
-  hostTaskId?: string;
-}) {
-  if (!experimentId || !hostTaskId) return null;
-  // Probes run against the experiment's host task, so route to that task's
-  // probe page rather than opening an inline form.
-  return (
-    <Button asChild size="sm">
-      <Link href={`/tasks/${hostTaskId}/probe`}>New probe</Link>
-    </Button>
-  );
-}
-
 export function ExperimentDetailView({
   experimentId,
   tasksForExperiment,
@@ -1257,14 +1226,6 @@ export function ExperimentDetailView({
             </Alert>
           ) : (
             <div className="space-y-3">
-              {!readOnly ? (
-                <div className="flex items-center justify-end">
-                  <ExperimentProbeLaunchButton
-                    experimentId={experimentId}
-                    hostTaskId={resolveHostTaskId(tasksForExperiment)}
-                  />
-                </div>
-              ) : null}
               {inlineAlert}
               <ExperimentTrialsTable
                 tasks={tasksForExperiment}

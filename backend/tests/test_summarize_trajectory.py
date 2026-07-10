@@ -200,10 +200,10 @@ def _fake_client_returning(text: str) -> MagicMock:
 @pytest.mark.asyncio
 async def test_generate_returns_persistable_summary():
     from api.services.summarize_trajectory import (
-        MODEL,
         SCHEMA_VERSION,
         generate,
     )
+    from oddish.config import settings, to_anthropic_api_model_id
 
     payload = json.dumps(
         {
@@ -218,8 +218,14 @@ async def test_generate_returns_persistable_summary():
     with patch("anthropic.AsyncAnthropic", return_value=fake):
         result = await generate(_trajectory_with_steps([1, 2, 3]), _minimal_ctx())
 
+    # The summary rides the shared analysis-model knob, normalized to the
+    # direct-API id both for the call and in the persisted provenance field.
+    expected_model = (
+        to_anthropic_api_model_id(settings.analysis_model) or settings.analysis_model
+    )
     assert result["schema_version"] == SCHEMA_VERSION
-    assert result["model"] == MODEL
+    assert result["model"] == expected_model
+    assert fake.messages.create.call_args.kwargs["model"] == expected_model
     assert "generated_at" in result
     assert result["summary"].startswith("Agent reproduced")
     assert [h["step_id"] for h in result["highlights"]] == [1, 3]
@@ -316,6 +322,10 @@ def _fake_trial(*, has_trajectory: bool, trajectory_summary: dict | None):
         trial_s3_key="trials/t-1/",
         has_trajectory=has_trajectory,
         trajectory_summary=trajectory_summary,
+        # _has_fetchable_trajectory (the summary gate) reads these; a non-grok
+        # agent keeps has_trajectory=False -> no fetchable trajectory, as before.
+        agent="claude-code",
+        finished_at=None,
     )
 
 

@@ -296,6 +296,11 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
     populated, in which case every pin classified to ``<id>`` is routed onto the
     matching Function (built on that variant's hermetic image). Variants run with
     ``min_containers=0`` -- they're rare and shouldn't hold warm capacity.
+
+    ``serialized=True`` because the per-variant entry is a closure over
+    ``variant_id`` (Modal rejects a non-global-scope ``@app.function`` target
+    otherwise); the entry only calls the module-global ``_run_one_job``, so it
+    pickles cleanly and runs the same body as the default worker.
     """
     functions: dict[str, object] = {}
     for variant_id, variant_image in harbor_variant_images().items():
@@ -312,6 +317,7 @@ def build_harbor_variant_functions(modal_app) -> dict[str, object]:
             memory=WORKER_MEMORY_MB,
             nonpreemptible=WORKER_NONPREEMPTIBLE,
             name=harbor_variant_function_name(variant_id),
+            serialized=True,
         )(_make_variant_entry(variant_id))
     return functions
 
@@ -525,6 +531,74 @@ async def precompute_dashboard_stats():
 # ``ephemeral`` always route to the base ``process_single_job``. Empty unless
 # HARBOR_VARIANTS is populated.
 _VARIANT_JOB_FUNCTIONS: dict[str, object] = build_harbor_variant_functions(app)
+
+
+async def _build_gke_task_image_entry(task_id: str, version: int) -> str:
+    from worker.gke_image_build import ensure_task_image
+    from worker.runtime import _materialize_gcp_adc_credentials
+
+    # Same ADC bootstrap the trial workers run: the oddish-gcp secret ships
+    # inline JSON that Google SDKs can only consume from a file path.
+    _materialize_gcp_adc_credentials()
+    outcome = await ensure_task_image(task_id, version)
+    console.print(f"[cyan]GKE image build[/cyan] task={task_id} v{version}: {outcome}")
+    return outcome
+
+
+def build_gke_image_builder_function(modal_app) -> object | None:
+    """Register the upload-time image builder on the gke variant image.
+
+    Returns None on GKE-less deploys (no variant image, nothing to build
+    with); the API route guards on that. Uses the variant image so the
+    name/tag derivation runs the exact harbor code the trial will use.
+    """
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        min_containers=0,
+        buffer_containers=0,
+        timeout=3600,
+        cpu=2.0,
+        memory=4096,
+        name="build_gke_task_image",
+        serialized=True,
+    )(_build_gke_task_image_entry)
+
+
+GKE_IMAGE_BUILDER: object | None = build_gke_image_builder_function(app)
+
+
+async def _reap_idle_gke_cluster_entry() -> str:
+    from worker.gke_cluster_reaper import reap_idle_cluster
+
+    outcome = await reap_idle_cluster()
+    console.print(f"[cyan]GKE cluster reaper[/cyan]: {outcome}")
+    return outcome
+
+
+def build_gke_cluster_reaper_function(modal_app) -> object | None:
+    """Hourly idle-cluster reaper (the delete half of zero-touch GKE)."""
+    images = harbor_variant_images()
+    if "gke" not in images:
+        return None
+    return modal_app.function(
+        image=images["gke"],
+        secrets=runtime_secrets,
+        schedule=modal.Period(hours=1),
+        min_containers=0,
+        buffer_containers=0,
+        timeout=600,
+        cpu=1.0,
+        memory=2048,
+        name="reap_idle_gke_cluster",
+        serialized=True,
+    )(_reap_idle_gke_cluster_entry)
+
+
+GKE_CLUSTER_REAPER: object | None = build_gke_cluster_reaper_function(app)
 
 
 @app.function(

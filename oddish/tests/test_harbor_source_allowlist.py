@@ -1,5 +1,6 @@
 import pytest
 
+from oddish.config import HARBOR_DEFAULT_SOURCE, Settings
 from oddish.core.harbor_source import HarborSourceError, assert_allowed
 
 
@@ -35,3 +36,17 @@ def test_git_plus_prefix_is_normalized_before_match():
         "git+https://github.com/dot-agi/harbor",
         allowed="https://github.com/dot-agi/*",
     )
+
+
+def test_default_fork_validates_against_shipped_allowlist():
+    # The locked default fork must validate against the allowlist oddish ships.
+    allowed = Settings().harbor_allowed_sources
+    assert_allowed("https://github.com/abundant-ai/harbor-gke", allowed=allowed)
+    assert_allowed(HARBOR_DEFAULT_SOURCE, allowed=allowed)
+
+
+def test_prior_forks_still_validate_against_shipped_allowlist():
+    # Trials stamped with a pre-migration source must keep passing the gate.
+    allowed = Settings().harbor_allowed_sources
+    assert_allowed("https://github.com/rishidesai/harbor", allowed=allowed)
+    assert_allowed("https://github.com/dot-agi/harbor", allowed=allowed)
