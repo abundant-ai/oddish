@@ -232,7 +232,7 @@ def test_feed_line_never_raises_on_typed_garbage():
 
 @pytest.mark.asyncio
 async def test_start_attempt_bump_replaces_and_reseeds(monkeypatch):
-    patch_db(monkeypatch)
+    session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail.settings, "live_tail_enabled", True)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 60)
     kwargs = dict(
@@ -254,12 +254,18 @@ async def test_start_attempt_bump_replaces_and_reseeds(monkeypatch):
     assert new_tailer.attempt == 1
     assert old_tailer.replaced and not new_tailer.replaced
     assert new_tailer._last_cost == 2.5
-    assert new_tailer.seq == 7 and new_tailer.capped
-    assert new_tailer.pending_events == [{"seq": 7, "kind": "message", "payload": {}}]
+    assert new_tailer.seq == 0
+    assert not new_tailer.capped
+    assert new_tailer.pending_events == []
     assert new_tailer.pending_events is not old_tailer.pending_events
     old_tailer._buffer_events([{"kind": "message", "payload": {}}])
     assert len(old_tailer.pending_events) == 1
     assert new_tailer.offset == 0 and new_tailer.fold is not old_tailer.fold
+    new_tailer._buffer_events([{"kind": "message", "payload": {"text": "new"}}])
+    await new_tailer._persist_tick()
+    [insert] = insert_stmts(session)
+    [row] = insert_rows(insert)
+    assert (row["attempt"], row["seq"], row["payload"]["text"]) == (1, 1, "new")
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     assert live_tail._tailers.get("t1") == (new_tailer, new_task)
@@ -284,11 +290,17 @@ async def test_same_attempt_replacement_inherits_read_state(monkeypatch):
     old_tailer.offset = 512
     old_tailer.carry = b'{"partial'
     old_tailer.fold.usage_by_id["m"] = {"input_tokens": 9}
+    old_tailer.seq = 7
+    old_tailer.capped = True
+    old_tailer.pending_events.append({"seq": 7, "kind": "message", "payload": {}})
     live_tail.start(**kwargs)
     new_tailer, _ = live_tail._tailers["t1"]
     assert new_tailer.offset == 512
     assert new_tailer.carry == b'{"partial'
     assert new_tailer.fold is old_tailer.fold
+    assert new_tailer.seq == 7 and new_tailer.capped
+    assert new_tailer.pending_events == [{"seq": 7, "kind": "message", "payload": {}}]
+    assert new_tailer.pending_events is not old_tailer.pending_events
     with contextlib.suppress(asyncio.CancelledError):
         await old_task
     assert await live_tail.shutdown("t1") == 2

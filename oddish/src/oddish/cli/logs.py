@@ -65,9 +65,11 @@ def stream_logs(
             raise
         resp_attempt = data["attempt"]
         initial_pickup = attempt == 0 and resp_attempt == 1
-        if attempt is not None and resp_attempt != attempt and not initial_pickup:
-            emit("[dim]— trial retried; restarting transcript —[/dim]")
-            after_seq = 0
+        if attempt is not None and resp_attempt != attempt:
+            last_cost = None
+            if not initial_pickup:
+                emit("[dim]— trial retried; restarting transcript —[/dim]")
+                after_seq = 0
         attempt = resp_attempt
         events = data["events"]
         seen += len(events)

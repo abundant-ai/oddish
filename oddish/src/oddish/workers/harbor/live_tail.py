@@ -823,10 +823,10 @@ def start(
         old_tailer.request_stop()
         old_task.cancel()
         tailer._last_cost = old_tailer._last_cost
-        tailer.seq = old_tailer.seq
-        tailer.capped = old_tailer.capped
-        tailer.pending_events = list(old_tailer.pending_events)
         if old_tailer.attempt == attempt:
+            tailer.seq = old_tailer.seq
+            tailer.capped = old_tailer.capped
+            tailer.pending_events = list(old_tailer.pending_events)
             tailer.offset = old_tailer.offset
             tailer.carry = old_tailer.carry
             tailer.fold = old_tailer.fold
