@@ -8,6 +8,7 @@ from sqlalchemy.dialects.postgresql import Insert as PGInsert
 from sqlalchemy.exc import SQLAlchemyError
 
 from live_tail_fakes import FakeEnv, b64, make_tailer, patch_db, update_params
+from oddish.transcript_safety import sanitize_transcript_value
 from oddish.workers.harbor import live_tail
 from oddish.workers.harbor.live_tail import ClaudeUsageFold, UsageTotals
 from oddish.workers.queue import cleanup
@@ -46,6 +47,20 @@ def tool_result_line(content, is_error=False):
     if is_error:
         block["is_error"] = True
     return line({"type": "user", "message": {"content": [block]}})
+
+
+def assert_no_unsafe_text(value):
+    if isinstance(value, str):
+        assert "\x00" not in value
+        assert "\x1b" not in value
+        assert not any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            assert_no_unsafe_text(key)
+            assert_no_unsafe_text(item)
+    elif isinstance(value, list):
+        for item in value:
+            assert_no_unsafe_text(item)
 
 
 def test_feed_line_renders_display_kinds():
@@ -109,11 +124,97 @@ def test_tool_result_payload_truncated():
     assert event["payload"] == {"content": "boom", "is_error": True}
 
 
+def test_nul_tool_output_is_visible_and_marked_sanitized():
+    fold = ClaudeUsageFold()
+    [event] = fold.feed_line(tool_result_line("before\x00after"))
+    assert event["payload"] == {
+        "content": "before␀after",
+        "sanitized": True,
+    }
+    assert_no_unsafe_text(event["payload"])
+
+
+def test_nested_tool_payload_keys_and_names_are_sanitized():
+    fold = ClaudeUsageFold()
+    rendered = fold.feed_line(
+        assistant_content(
+            [
+                {
+                    "type": "tool_use",
+                    "name": "Ba\x1bsh",
+                    "input": {"bad\x00key": "value\ud800", "argv": ["\x01"]},
+                }
+            ]
+        )
+    )
+    [event] = rendered
+    assert event["payload"]["name"] == "Ba␛sh"
+    assert event["payload"]["sanitized"] is True
+    assert "bad␀key" in event["payload"]["input"]
+    assert "value�" in event["payload"]["input"]
+    assert "␁" in event["payload"]["input"]
+    assert_no_unsafe_text(event["payload"])
+
+
+def test_tool_name_is_clipped_after_sanitization(monkeypatch):
+    monkeypatch.setattr(live_tail, "PAYLOAD_CLIP_CHARS", 6)
+    fold = ClaudeUsageFold()
+    [event] = fold.feed_line(
+        assistant_content(
+            [{"type": "tool_use", "name": "\x85" * 2, "input": {"command": "x"}}]
+        )
+    )
+    assert event["payload"]["name"] == "\\u0085"
+    assert len(event["payload"]["name"]) == 6
+    assert event["payload"]["truncated"] is True
+    assert event["payload"]["sanitized"] is True
+    assert_no_unsafe_text(event["payload"])
+
+
+def test_lone_surrogates_and_control_bytes_are_sanitized():
+    fold = ClaudeUsageFold()
+    [event] = fold.feed_line(text_line("a\ud800b\x1bc\x07d\x7fe\x85f"))
+    assert event["payload"]["text"] == "a�b␛c␇d␡e\\u0085f"
+    assert event["payload"]["sanitized"] is True
+    assert_no_unsafe_text(event["payload"])
+
+
+def test_newline_tab_and_carriage_return_are_preserved_unmarked():
+    fold = ClaudeUsageFold()
+    [event] = fold.feed_line(text_line("line 1\nline\t2\rline 3"))
+    assert event["payload"] == {"text": "line 1\nline\t2\rline 3"}
+
+
+def test_recursive_sanitizer_preserves_normal_json_unchanged():
+    value = {
+        "command": "printf 'hello\\n'",
+        "argv": ["one", "two\tthree"],
+        "ok": True,
+        "count": 3,
+        "nested": {"stderr": None},
+    }
+    sanitized = sanitize_transcript_value(value)
+    assert sanitized.value == value
+    assert sanitized.changed is False
+    assert sanitized.replacements == 0
+
+
 def test_message_text_truncated():
     fold = ClaudeUsageFold()
     [event] = fold.feed_line(text_line("y" * 3000))
     assert len(event["payload"]["text"]) == live_tail.PAYLOAD_CLIP_CHARS
     assert event["payload"]["truncated"] is True
+
+
+def test_payload_clipping_applies_after_sanitization(monkeypatch):
+    monkeypatch.setattr(live_tail, "PAYLOAD_CLIP_CHARS", 10)
+    fold = ClaudeUsageFold()
+    [event] = fold.feed_line(text_line("\x85" * 3))
+    assert event["payload"]["text"] == "\\u0085\\u00"
+    assert len(event["payload"]["text"]) == 10
+    assert event["payload"]["truncated"] is True
+    assert event["payload"]["sanitized"] is True
+    assert_no_unsafe_text(event["payload"])
 
 
 @pytest.mark.asyncio
@@ -197,6 +298,23 @@ async def test_flush_failure_retains_pending_for_retry(monkeypatch):
     [insert] = insert_stmts(session)
     assert insert_rows(insert)[0]["seq"] == 1
     assert tailer.pending_events == []
+
+
+@pytest.mark.asyncio
+async def test_flush_sanitizes_bad_event_without_dropping_safe_sibling(monkeypatch):
+    session = patch_db(monkeypatch)
+    tailer = make_tailer(FakeEnv([]))
+    tailer.pending_events = [
+        {"seq": 1, "kind": "tool_result", "payload": {"content": "bad\x00"}},
+        {"seq": 2, "kind": "message", "payload": {"text": "safe"}},
+    ]
+
+    assert await tailer._flush_events(session) == 2
+    [insert] = insert_stmts(session)
+    rows = insert_rows(insert)
+    assert rows[0]["payload"] == {"content": "bad␀", "sanitized": True}
+    assert rows[1]["payload"] == {"text": "safe"}
+    assert_no_unsafe_text(rows)
 
 
 @pytest.mark.asyncio
