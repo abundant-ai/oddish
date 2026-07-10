@@ -108,6 +108,7 @@ async def test_stale_trial_retry_cleanup_schedules_backoff(monkeypatch):
         status=TrialStatus.RUNNING,
         error_message=None,
         next_retry_at=None,
+        finished_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
         current_worker_id="worker-1",
         current_queue_slot=3,
         stale_reaped_at=None,
@@ -153,5 +154,6 @@ async def test_stale_trial_retry_cleanup_schedules_backoff(monkeypatch):
     assert trial.status == TrialStatus.RETRYING
     assert trial.error_message == "Worker heartbeat stalled for over 15 minutes."
     assert trial.next_retry_at == retry_at
+    assert trial.finished_at is None
     assert trial.current_worker_id is None
     assert trial.current_queue_slot is None
