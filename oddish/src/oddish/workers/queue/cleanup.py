@@ -229,6 +229,36 @@ async def clear_terminal_trial_runtime_refs(
     return total_cleared
 
 
+# TTL backstop for `trial_events` rows leaked by hard-killed workers (the
+# happy-path delete lives in the worker's terminal `finally`). Runs in its own
+# best-effort transaction like the other post-commit passes.
+TRIAL_EVENTS_TTL_HOURS = 24
+
+
+async def purge_stale_trial_events() -> int:
+    try:
+        async with get_session() as session:
+            result = cast(
+                CursorResult,
+                await session.execute(
+                    text(
+                        """
+                        DELETE FROM trial_events te
+                        USING trials t
+                        WHERE t.id = te.trial_id
+                          AND t.finished_at IS NOT NULL
+                          AND t.finished_at < NOW() - make_interval(hours => :ttl_hours)
+                        """
+                    ),
+                    {"ttl_hours": TRIAL_EVENTS_TTL_HOURS},
+                ),
+            )
+            return int(result.rowcount or 0)
+    except SQLAlchemyError as exc:
+        console.print(f"[yellow]Trial events TTL sweep skipped: {exc}[/yellow]")
+        return 0
+
+
 class _DomainRowLocked(Exception):
     """Domain row exists but is FOR-UPDATE-locked by settle/retry; the caller
     rolls back the job's savepoint so the whole unit retries next sweep."""
@@ -291,6 +321,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             trial.status = TrialStatus.RETRYING
             trial.error_message = row["error_message"]
             trial.next_retry_at = retry_at
+            trial.finished_at = None
             trial.current_worker_id = None
             trial.current_queue_slot = None
             trial.stale_reaped_at = utcnow()
@@ -408,6 +439,7 @@ async def cleanup_orphaned_queue_state(
     # provider TTL and the next sweep are the backstops.
     worker_sandboxes_terminated = await _terminate_orphaned_sandboxes(worker_targets)
     terminal_trial_runtime_refs_cleared = await clear_terminal_trial_runtime_refs()
+    stale_trial_events_purged = await purge_stale_trial_events()
 
     return {
         "worker_jobs_retried": worker_jobs_retried,
@@ -420,6 +452,7 @@ async def cleanup_orphaned_queue_state(
         "stuck_analyzing_finalized": stuck_analyzing_finalized,
         "stuck_analysis_nulls_failed": stuck_analysis_nulls_failed,
         "terminal_trial_runtime_refs_cleared": terminal_trial_runtime_refs_cleared,
+        "stale_trial_events_purged": stale_trial_events_purged,
         "orphaned_active_slots_cleared": orphaned_active_slots_cleared,
         "zombie_txn_reaped": zombie_txn_reaped,
         "experiments_last_activity_reconciled": experiments_last_activity_reconciled,

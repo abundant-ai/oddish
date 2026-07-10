@@ -51,6 +51,7 @@ from oddish.core.trial_io import (
     read_trial_result,
     read_trial_trajectory,
 )
+from oddish.core.trial_live import read_trial_live_for_id
 from oddish.schemas import TrialRetryRequest
 from oddish.core.admin import (
     QueueHealthResponse,
@@ -684,6 +685,17 @@ async def retry_trial(
 # =============================================================================
 # Trial Artifact Endpoints
 # =============================================================================
+
+
+@api.get("/trials/{trial_id}/live")
+async def get_trial_live(
+    trial_id: str, attempt: int | None = None, after_seq: int = 0
+) -> dict:
+    """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
+    async with get_session() as session:
+        return await read_trial_live_for_id(
+            session, trial_id=trial_id, attempt=attempt, after_seq=after_seq
+        )
 
 
 @api.get("/trials/{trial_id}/logs")
