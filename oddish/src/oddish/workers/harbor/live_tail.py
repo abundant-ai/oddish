@@ -13,6 +13,7 @@ from oddish.config import settings
 from oddish.db import TrialEventModel, TrialModel
 from oddish.db.connection import get_session
 from oddish.model_pricing import estimate_cost_usd
+from oddish.transcript_safety import sanitize_transcript_text, sanitize_transcript_value
 from oddish.workers.queue.shared import console
 
 # Keep the same ~51 KiB/s drain capacity as the original 256 KiB / 5s
@@ -87,11 +88,33 @@ def _as_int(value: Any) -> int:
 
 
 def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
-    if not isinstance(value, str):
-        value = json.dumps(value, default=str)
-    payload: dict[str, Any] = {key: value[:PAYLOAD_CLIP_CHARS], **extra}
-    if len(value) > PAYLOAD_CLIP_CHARS:
+    sanitized = False
+    truncated = False
+    if isinstance(value, str):
+        safe_text = sanitize_transcript_text(value)
+        value = safe_text.text
+        sanitized = safe_text.changed
+    else:
+        safe_value = sanitize_transcript_value(value)
+        sanitized = safe_value.changed
+        value = json.dumps(safe_value.value, ensure_ascii=False, allow_nan=False)
+    truncated = len(value) > PAYLOAD_CLIP_CHARS
+    payload: dict[str, Any] = {key: value[:PAYLOAD_CLIP_CHARS]}
+    for extra_key, extra_value in extra.items():
+        safe_key = sanitize_transcript_text(str(extra_key))
+        if isinstance(extra_value, str):
+            safe_extra = sanitize_transcript_text(extra_value)
+            payload[safe_key.text] = safe_extra.text[:PAYLOAD_CLIP_CHARS]
+            sanitized = sanitized or safe_key.changed or safe_extra.changed
+            truncated = truncated or len(safe_extra.text) > PAYLOAD_CLIP_CHARS
+        else:
+            safe_value = sanitize_transcript_value(extra_value)
+            payload[safe_key.text] = safe_value.value
+            sanitized = sanitized or safe_key.changed or safe_value.changed
+    if truncated:
         payload["truncated"] = True
+    if sanitized:
+        payload["sanitized"] = True
     return payload
 
 
@@ -829,13 +852,26 @@ class LiveTailer:
     async def _flush_events(self, session) -> int:
         if not self.pending_events or self.replaced:
             return 0
+        events = [self._sanitize_event(event) for event in self.pending_events]
         rows = [
             {"trial_id": self.trial_id, "attempt": self.attempt, **event}
-            for event in self.pending_events
+            for event in events
         ]
         stmt = pg_insert(TrialEventModel).values(rows).on_conflict_do_nothing()
         await session.execute(stmt)
         return len(rows)
+
+    def _sanitize_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        payload = event.get("payload")
+        safe_payload = sanitize_transcript_value(
+            payload if isinstance(payload, dict) else {}
+        )
+        if not safe_payload.changed:
+            return event
+        normalized = dict(event)
+        normalized["payload"] = dict(safe_payload.value)
+        normalized["payload"]["sanitized"] = True
+        return normalized
 
     def _checkpoint_values(self) -> tuple[dict[str, Any], tuple, float | None] | None:
         if not self.fold.has_usage:

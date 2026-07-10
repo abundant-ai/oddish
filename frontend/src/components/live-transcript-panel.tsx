@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Radio, Wrench } from "lucide-react";
+import { Loader2, Radio, ShieldAlert, Wrench } from "lucide-react";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
@@ -29,24 +29,72 @@ interface LiveResponse {
 }
 
 const POLL_MS = 2000;
+const SANITIZED_TITLE = "Unsafe control characters were rendered safely.";
 
-function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
+function safeText(value: unknown): { text: string; changed: boolean } {
+  if (typeof value !== "string") return { text: "", changed: false };
+  let changed = false;
+  const text = Array.from(value, (ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    if (ch === "\n" || ch === "\r" || ch === "\t") return ch;
+    if (code >= 0xd800 && code <= 0xdfff) {
+      changed = true;
+      return "\ufffd";
+    }
+    if (code === 0x7f) {
+      changed = true;
+      return "\u2421";
+    }
+    if (code < 0x20) {
+      changed = true;
+      return String.fromCharCode(0x2400 + code);
+    }
+    if (code >= 0x80 && code <= 0x9f) {
+      changed = true;
+      return `\\u${code.toString(16).toUpperCase().padStart(4, "0")}`;
+    }
+    return ch;
+  }).join("");
+  return { text, changed };
+}
+
+function SanitizedBadge() {
+  return (
+    <span
+      title={SANITIZED_TITLE}
+      aria-label={SANITIZED_TITLE}
+      className="ml-1 inline-flex items-center gap-1 align-baseline text-[10px] font-medium text-amber-600"
+    >
+      <ShieldAlert className="h-3 w-3" />
+      sanitized
+    </span>
+  );
 }
 
 function LiveEventRow({ event }: { event: LiveEvent }) {
   const { kind, payload } = event;
+  const name = safeText(payload.name);
+  const input = safeText(payload.input);
+  const content = safeText(payload.content);
+  const text = safeText(payload.text);
+  const sanitized =
+    payload.sanitized === true ||
+    name.changed ||
+    input.changed ||
+    content.changed ||
+    text.changed;
 
   if (kind === "tool_use") {
     return (
       <div className="flex items-start gap-1.5 text-purple-500">
         <Wrench className="mt-0.5 h-3 w-3 shrink-0" />
         <span className="min-w-0 flex-1 wrap-break-word">
-          <span className="font-semibold">{str(payload.name) || "tool"}</span>
-          {str(payload.input) && (
-            <span className="text-muted-foreground"> {str(payload.input)}</span>
+          <span className="font-semibold">{name.text || "tool"}</span>
+          {input.text && (
+            <span className="text-muted-foreground"> {input.text}</span>
           )}
           {payload.truncated ? " …" : ""}
+          {sanitized && <SanitizedBadge />}
         </span>
       </div>
     );
@@ -60,8 +108,9 @@ function LiveEventRow({ event }: { event: LiveEvent }) {
           payload.is_error ? "text-red-500" : "text-muted-foreground"
         )}
       >
-        {str(payload.content) || "(no output)"}
+        {content.text || "(no output)"}
         {payload.truncated ? " …" : ""}
+        {sanitized && <SanitizedBadge />}
       </div>
     );
   }
@@ -74,8 +123,9 @@ function LiveEventRow({ event }: { event: LiveEvent }) {
           : "wrap-break-word whitespace-pre-wrap"
       }
     >
-      {str(payload.text)}
+      {text.text}
       {payload.truncated ? " …" : ""}
+      {sanitized && <SanitizedBadge />}
     </div>
   );
 }
