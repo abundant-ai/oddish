@@ -36,7 +36,6 @@ TRUNCATE_HEAD = 800
 TRUNCATE_TAIL = 400
 TRUNCATION_MARKER = "\n[...truncated {n} chars...]\n"
 SCHEMA_VERSION = "3"
-MODEL = "claude-sonnet-4-6"
 
 
 def _truncate(text: str) -> str:
@@ -259,7 +258,7 @@ async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
     """
     from anthropic import AsyncAnthropic
 
-    from oddish.config import to_anthropic_api_model_id
+    from oddish.config import settings, to_anthropic_api_model_id
 
     valid_step_ids = {
         step.get("step_id")
@@ -269,9 +268,14 @@ async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
 
     prompt = _render_prompt(trajectory, task_context)
 
-    # Normalize Bedrock inference-profile ids back to the plain API id the
-    # direct Anthropic API accepts; plain ids pass through unchanged.
-    model = to_anthropic_api_model_id(MODEL) or MODEL
+    # The summary runs on the shared analysis model (the same
+    # ODDISH_ANALYSIS_MODEL knob as the trajectory graph). Normalize Bedrock
+    # inference-profile ids back to the plain API id the direct Anthropic API
+    # accepts; plain ids pass through unchanged.
+    model = (
+        to_anthropic_api_model_id(settings.analysis_model)
+        or settings.analysis_model
+    )
 
     try:
         client = AsyncAnthropic()
@@ -325,7 +329,7 @@ async def generate(trajectory: dict, task_context: "TaskContext") -> dict:
 
     return {
         "schema_version": SCHEMA_VERSION,
-        "model": MODEL,
+        "model": model,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "summary": summary,
         "highlights": highlights,
