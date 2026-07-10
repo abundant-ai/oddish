@@ -692,7 +692,9 @@ async def build_trajectory_graph(
     # Preferred: reuse the already-generated phase segmentation, even when the
     # ATIF trajectory didn't parse into steps here (a persisted summary still
     # describes the run) -- so a summarized trial never falls to "No trajectory".
-    if summary and isinstance(summary.get("phases"), list) and summary["phases"]:
+    # A present-but-empty phases list routes here too: _graph_from_summary falls
+    # back to the heuristic for it, which avoids a redundant second LLM pass.
+    if summary and isinstance(summary.get("phases"), list):
         return _graph_from_summary(summary, ctx, outcome, digest)
 
     if not digest:
