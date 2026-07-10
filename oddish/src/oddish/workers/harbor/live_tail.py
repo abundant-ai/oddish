@@ -440,8 +440,12 @@ class MiniSweUsageFold:
         document = _parse_json_line(line)
         if document is None:
             return []
-        messages = document.get("messages")
-        if not isinstance(messages, list):
+        raw_messages = document.get("messages")
+        if isinstance(raw_messages, list):
+            messages = raw_messages
+            if len(messages) < self.emitted:
+                self.emitted = 0
+        else:
             messages = []
         model = (
             ((document.get("info") or {}).get("config") or {}).get("model") or {}
@@ -634,9 +638,7 @@ class LiveTailer:
                 self._buffer_events(self.fold.feed_line(raw))
         else:
             raw = await self._read_tail()
-            if raw is _SKIP_TICK:
-                return
-            if raw:
+            if raw is not _SKIP_TICK and raw:
                 self._feed_tail_chunk(raw)
         await self._persist_tick()
 

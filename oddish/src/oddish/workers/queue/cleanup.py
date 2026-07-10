@@ -321,6 +321,7 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
             trial.status = TrialStatus.RETRYING
             trial.error_message = row["error_message"]
             trial.next_retry_at = retry_at
+            trial.finished_at = None
             trial.current_worker_id = None
             trial.current_queue_slot = None
             trial.stale_reaped_at = utcnow()

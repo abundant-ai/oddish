@@ -673,6 +673,46 @@ def test_mini_swe_fold_accumulates_usage_from_snapshot():
     assert totals.model == "anthropic/claude-opus-4-8"
 
 
+def test_mini_swe_fold_replays_transcript_after_valid_snapshot_shrink():
+    fold = MiniSweUsageFold()
+    first = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant(
+                    "old first",
+                    usage={"prompt_tokens": 10, "completion_tokens": 2},
+                ),
+                mini_assistant(
+                    "old second",
+                    usage={"prompt_tokens": 20, "completion_tokens": 3},
+                ),
+            ]
+        )
+    )
+    assert [event["payload"]["text"] for event in first] == ["old first", "old second"]
+    assert fold.emitted == 3
+    assert fold.totals().input_tokens == 30
+    assert fold.totals().output_tokens == 5
+
+    replayed = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant(
+                    "fresh retry",
+                    usage={"prompt_tokens": 1, "completion_tokens": 1},
+                ),
+            ]
+        )
+    )
+
+    assert replayed == [{"kind": "message", "payload": {"text": "fresh retry"}}]
+    assert fold.emitted == 2
+    assert fold.totals().input_tokens == 30
+    assert fold.totals().output_tokens == 5
+
+
 def test_mini_swe_fold_ignores_garbage():
     fold = MiniSweUsageFold()
     for raw in (b"", b"not json", b"{truncated", json.dumps([1, 2]).encode()):
@@ -1026,6 +1066,30 @@ async def test_commit_failure_retries_checkpoint_markers(monkeypatch):
     assert [p["input_tokens"] for p in params] == [3, 3]
     assert tailer._last_written is not None
     assert tailer._last_cost == 0.5
+
+
+@pytest.mark.asyncio
+async def test_skip_tick_retries_pending_persistence(monkeypatch):
+    session = patch_db(monkeypatch, fail_commit=True)
+    tailer = make_tailer(FakeEnv([FakeResult(return_code=1)]))
+    tailer.pending_events = [
+        {"seq": 1, "kind": "message", "payload": {"text": "pending"}}
+    ]
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await tailer._persist_tick()
+    assert len(tailer.pending_events) == 1
+
+    session.fail_commit = False
+    await tailer._tick()
+
+    assert tailer.pending_events == []
+    assert tailer.offset == 0
+    assert tailer.carry == b""
+    from test_trial_events import insert_rows, insert_stmts
+
+    rows = insert_rows(insert_stmts(session)[-1])
+    assert [(r["seq"], r["payload"]["text"]) for r in rows] == [(1, "pending")]
 
 
 @pytest.mark.asyncio
