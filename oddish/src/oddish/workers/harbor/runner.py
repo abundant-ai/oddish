@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import shutil
 import tempfile
 import time
@@ -11,7 +12,11 @@ from typing import Any, Awaitable, Callable
 
 from harbor import Job, JobConfig  # type: ignore[attr-defined]
 from harbor.models.environment_type import EnvironmentType
-from harbor.models.task.config import MCPServerConfig, TaskConfig as HarborTaskConfig
+from harbor.models.task.config import (
+    EnvironmentConfig,
+    MCPServerConfig,
+    TaskConfig as HarborTaskConfig,
+)
 from harbor.models.trial.config import TaskConfig
 from harbor.trial.hooks import TrialHookEvent
 
@@ -47,6 +52,94 @@ from .storage import (
 )
 
 HookCallback = Callable[[TrialHookEvent], Awaitable[None]]
+
+
+# Harbor's default task-environment ``build_timeout_sec`` -- the base it
+# multiplies. Sizing reads each task's own value; this is only the fallback base
+# when a task's task.toml cannot be read. Sourced from Harbor so it cannot drift.
+_ENV_BUILD_TIMEOUT_BASE_SEC: float = EnvironmentConfig.model_fields[
+    "build_timeout_sec"
+].default
+# Headroom the GKE outer wait needs beyond the Pod's ready/capacity wait: it
+# covers Harbor-side environment construction and keeps the outer cap strictly
+# above the inner pod-ready timeout so the more specific inner error surfaces.
+_GKE_ENV_BUILD_OVERHEAD_SEC = 300.0
+
+
+def _sized_environment_build_timeout_multiplier(
+    *,
+    environment: EnvironmentType,
+    environment_build_timeout_multiplier: float | None,
+    timeout_multiplier: float | None,
+    pod_ready_timeout_sec: int,
+    base_sec: float,
+) -> float | None:
+    """Grow the environment-build timeout multiplier to cover a GKE Pod's
+    capacity/pod-ready wait; a no-op for every other environment.
+
+    A GKE Pod can sit Pending through a DWS flex-start capacity wait for up to
+    ``pod_ready_timeout_sec`` before it reports ready. Harbor wraps
+    ``environment.start()`` in an outer ``wait_for`` of the effective multiplier
+    times the task's own ``build_timeout_sec`` (``base_sec``). Sizing against a
+    fixed base would fall short whenever a task sets ``build_timeout_sec`` below
+    the default, so the multiplier is computed against the task's real base and
+    the outer wait clears ``pod_ready_timeout_sec`` plus build overhead
+    regardless of how small that base is. Never lower a larger caller value;
+    Harbor resolves an unset env-build multiplier to the general
+    ``timeout_multiplier``, so that is honoured as the floor too.
+
+    Returns the multiplier to store -- unchanged (possibly ``None``) off GKE.
+    """
+    if environment != EnvironmentType.GKE:
+        return environment_build_timeout_multiplier
+    effective_current = (
+        environment_build_timeout_multiplier
+        if environment_build_timeout_multiplier is not None
+        else (timeout_multiplier if timeout_multiplier is not None else 1.0)
+    )
+    needed = math.ceil((pod_ready_timeout_sec + _GKE_ENV_BUILD_OVERHEAD_SEC) / base_sec)
+    return float(max(effective_current, needed))
+
+
+def _effective_pod_ready_timeout_sec(
+    env_kwargs: dict[str, Any], default_sec: int
+) -> int:
+    """The pod-ready timeout Harbor will actually enforce for a GKE Pod.
+
+    ``GkeBackend.harbor_env_kwargs`` seeds ``pod_ready_timeout_sec`` from the
+    platform default but lets a submission override it (caller-wins), and that
+    override can arrive as a string via ``--environment-kwarg``. Read the merged
+    value, coercing to int, and fall back to ``default_sec`` when it is absent or
+    unparseable, so the outer build wait is sized to the timeout the Pod is
+    really given rather than the smaller raw setting.
+    """
+    raw = env_kwargs.get("pod_ready_timeout_sec")
+    if raw is None:
+        return default_sec
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default_sec
+
+
+def _effective_task_build_timeout_sec(task_path: Path) -> float:
+    """The task's own environment ``build_timeout_sec`` -- the base Harbor
+    multiplies by ``environment_build_timeout_multiplier`` for the outer build
+    wait.
+
+    Read from the task's task.toml so the GKE outer wait is sized against the
+    real base even when a task sets a sub-default ``build_timeout_sec``. Falls
+    back to Harbor's ``EnvironmentConfig`` default when the config cannot be read
+    or is non-positive -- Harbor would fail such a trial at load anyway, so the
+    fallback only needs to keep the sizing arithmetic safe.
+    """
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+        base = float(task_config.environment.build_timeout_sec)
+    except Exception:
+        return _ENV_BUILD_TIMEOUT_BASE_SEC
+    return base if base > 0 else _ENV_BUILD_TIMEOUT_BASE_SEC
 
 
 def _read_query_cli_text() -> str:
@@ -135,6 +228,26 @@ def _patch_task_toml(task_dir: Path, hc: HarborConfig) -> None:
         config_path.write_text(task_config.model_dump_toml())
 
 
+def _assert_tpu_backend(environment, backend, override_tpu) -> None:
+    """Fail fast when a TPU-requesting trial is routed to a TPU-less backend.
+
+    Without this, the trial runs WITHOUT the accelerator and dies minutes later
+    on its own device asserts -- a confusing failure that looks like a workload
+    bug. Only the override_tpu channel is visible here; a TPU declared solely
+    in task.toml is parsed by Harbor after this point.
+    """
+    if override_tpu is None:
+        return
+    if backend is not None and backend.capabilities().tpu is not None:
+        return
+    raise RuntimeError(
+        f"TPU trials must run on the GKE backend: this trial requests a TPU "
+        f"({override_tpu.type}) but is routed to environment "
+        f"'{environment.value}', which has no TPU support. Resubmit with "
+        f"environment=gke ('oddish run' auto-routes TPU tasks)."
+    )
+
+
 async def run_harbor_trial_async(
     task_path: Path,
     agent: str,
@@ -161,6 +274,32 @@ async def run_harbor_trial_async(
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
 
+    # Size the environment-build timeout multiplier BEFORE the dispatch fork so
+    # EVERY path that runs a GKE environment carries it -- the in-process blessed
+    # variant AND the out-of-process ephemeral child. pod_ready is read from the
+    # raw submission kwargs (the same override channel the GKE backend merges
+    # under its platform default), so it matches the value the Pod is actually
+    # given; the task's own build_timeout_sec is the base Harbor multiplies. This
+    # is a no-op (returns the caller's value, possibly None) off GKE.
+    env_build_multiplier = _sized_environment_build_timeout_multiplier(
+        environment=environment,
+        environment_build_timeout_multiplier=hc.environment_build_timeout_multiplier,
+        timeout_multiplier=hc.timeout_multiplier,
+        pod_ready_timeout_sec=_effective_pod_ready_timeout_sec(
+            hc.environment.kwargs, settings.gke_pod_ready_timeout_sec
+        ),
+        base_sec=_effective_task_build_timeout_sec(task_path),
+    )
+
+    # The TPU gate runs BEFORE the ephemeral early-return so BOTH engines get
+    # the fast-fail: an out-of-process trial with override_tpu on a TPU-less
+    # backend would otherwise skip it entirely.
+    _assert_tpu_backend(
+        environment,
+        get_backend(environment.value),
+        getattr(hc.environment, "override_tpu", None),
+    )
+
     # An allowlisted override that is neither the locked default nor a blessed
     # image variant runs out-of-process against its own Harbor: a different
     # Harbor than the one baked into this container cannot be swapped in-process
@@ -179,6 +318,7 @@ async def run_harbor_trial_async(
             harbor_config=harbor_config,
             org_id=org_id,
             extra_agent_env=extra_agent_env,
+            environment_build_timeout_multiplier=env_build_multiplier,
         )
 
     # Probes attach to an existing task and inherit its task.toml, which may
@@ -297,9 +437,11 @@ async def run_harbor_trial_async(
             job_config_kwargs["agent_setup_timeout_multiplier"] = (
                 hc.agent_setup_timeout_multiplier
             )
-        if hc.environment_build_timeout_multiplier is not None:
+        # Reuse the multiplier sized before the dispatch fork (identical inputs:
+        # pod_ready from the same submission kwargs, base from the same task).
+        if env_build_multiplier is not None:
             job_config_kwargs["environment_build_timeout_multiplier"] = (
-                hc.environment_build_timeout_multiplier
+                env_build_multiplier
             )
         if hc.retry is not None:
             job_config_kwargs["retry"] = hc.retry
