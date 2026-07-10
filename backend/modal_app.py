@@ -212,11 +212,13 @@ _GKE_CLUSTER_ENV = "ODDISH_GKE_CLUSTER_NAME"
 # the two lists. See _gke_config_secret_enabled / _gke_runtime_secret_names.
 _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
 _GKE_CONFIG_SECRET_NAME = "oddish-gke-config"
-# Internal: the deploy-time GKE secret plan, baked into the image env so the
-# in-container recompute reads it back from immutable image metadata instead of
-# re-deriving it from os.environ (which an unrelated runtime secret could
-# pollute -- see _resolve_gke_secret_plan). Not an operator-facing setting.
-_GKE_PLAN_ENV = "ODDISH_GKE_SECRET_PLAN"
+# Internal: the deploy-time GKE secret plan is baked into the image as a FILE so
+# the in-container recompute reads it back from immutable image content, never
+# from os.environ. A Modal runtime secret can inject/override env vars but cannot
+# touch a file baked into the image, so this is the one channel a stray secret
+# (e.g. one carrying ODDISH_GKE_*) cannot pollute into a dependency-count drift.
+# See _resolve_gke_secret_plan and _build_worker_image. Not operator-facing.
+_GKE_PLAN_FILE = "/opt/oddish/gke_secret_plan"
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -298,18 +300,23 @@ def _resolve_gke_secret_plan(
 ) -> list[str]:
     """The GKE secret plan for this process, robust against runtime-secret env.
 
-    At deploy time (``modal.is_local()``) the plan is derived from the deploy
-    env / backend/.env and baked into the image env under ``_GKE_PLAN_ENV`` (see
-    ENV_VARS). Inside a worker container it is read straight back from that baked
-    value -- never re-derived from ``os.environ`` -- so an unrelated runtime
-    secret that happens to carry ``ODDISH_GKE_ENABLED`` (or ``ODDISH_GKE_*``)
-    cannot change the recomputed secret list and drift Modal's dependency count
-    into a hydration crashloop. The baked value is a stable, deploy-time
+    At deploy time (``modal.is_local()``) the plan is derived from the deploy env
+    / backend/.env and baked into the image as a file (``_GKE_PLAN_FILE``, written
+    by _build_worker_image). Inside a worker container it is read straight back
+    from that baked file -- never from ``os.environ`` -- so no runtime secret can
+    change the recomputed secret list and drift Modal's dependency count into a
+    hydration crashloop: a Modal secret can inject or override env vars but cannot
+    touch a file baked into the image. The baked plan is a stable, deploy-time
     decision; the container never disagrees with it.
     """
     if modal.is_local():
         return _gke_runtime_secret_names(environ, dotenv_vars)
-    return [name for name in environ.get(_GKE_PLAN_ENV, "").split(",") if name]
+    try:
+        with open(_GKE_PLAN_FILE) as fh:
+            baked = fh.read().strip()
+    except OSError:
+        return []
+    return [name for name in baked.split(",") if name]
 
 
 runtime_secret = modal.Secret.from_name(
@@ -514,11 +521,6 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k.startswith("ODDISH_GKE_")
     },
-    # Deploy-time GKE secret plan, baked so the in-container recompute reads it
-    # back verbatim instead of re-deriving from os.environ (see
-    # _resolve_gke_secret_plan). Placed after the ODDISH_GKE_ spread so this
-    # authoritative value always wins. Empty string on a GKE-less deploy.
-    _GKE_PLAN_ENV: ",".join(GKE_SECRET_PLAN),
 }
 
 
@@ -635,6 +637,15 @@ def _build_worker_image(harbor_override: "HarborVariant | None" = None) -> modal
     )
     # Install all dependencies (oddish from /oddish, harbor + others resolved).
     img = img.uv_sync()
+    # Bake the deploy-time GKE secret plan into the image as a file, so the
+    # in-container recompute of runtime_secrets reads it from immutable image
+    # content rather than os.environ (which a runtime secret could pollute). The
+    # values are internal secret names -- safe to inline. See
+    # _resolve_gke_secret_plan.
+    img = img.run_commands(
+        f"mkdir -p {os.path.dirname(_GKE_PLAN_FILE)} && "
+        f"printf '%s' '{','.join(GKE_SECRET_PLAN)}' > {_GKE_PLAN_FILE}"
+    )
     if harbor_override is not None:
         # Swap the variant's Harbor into the synced venv AFTER uv_sync. The sync
         # stages the LOCAL pyproject.toml + uv.lock at /.uv and runs --frozen, so
