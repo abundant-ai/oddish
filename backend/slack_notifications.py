@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,8 @@ from oddish.db import (
     close_database_connections,
     get_session,
 )
+
+log = logging.getLogger("oddish.slack_notifications")
 
 
 @dataclass(frozen=True)
@@ -292,13 +295,15 @@ async def _release_alert(alert_key: str) -> None:
 
 async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
     for alert in alerts:
-        if await _claim_alert(alert.key):
-            try:
-                await _post(webhook_url, alert.text)
-            except Exception:
-                await _release_alert(alert.key)
-                raise
-            await _mark_alert_sent(alert.key)
+        if not await _claim_alert(alert.key):
+            continue
+        try:
+            await _post(webhook_url, alert.text)
+        except Exception:
+            await _release_alert(alert.key)
+            log.exception("slack expense alert post failed alert_key=%s", alert.key)
+            continue
+        await _mark_alert_sent(alert.key)
 
 
 @app.function(

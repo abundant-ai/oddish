@@ -193,12 +193,19 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
     await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
     await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
-    with pytest.raises(RuntimeError):
-        await send_alerts("https://hooks.slack.test", [SlackAlert("failed", "fail")])
 
-    assert posted == ["ok", "fail"]
-    assert sent == {"sent"}
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("failed", "fail"),
+            SlackAlert("after-failure", "ok"),
+        ],
+    )
+
+    assert posted == ["ok", "fail", "ok"]
+    assert sent == {"sent", "after-failure"}
     assert "failed" not in claimed
+    assert "after-failure" in claimed
 
 
 @pytest.mark.asyncio
