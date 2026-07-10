@@ -149,15 +149,10 @@ def _infer_outcome(ctx: dict[str, Any]) -> str:
         "AgentTimeoutError" in err or "Agent execution timed out" in err
     )
 
-    # Non-terminal statuses, mapped exactly as the frontend getMatrixStatus does
-    # (queued/pending -> queued, running -> running, retrying -> pending) so the
-    # graph terminal never disagrees with the trial drawer.
-    if status in ("queued", "pending"):
-        return OUTCOME_QUEUED
-    if status == "running":
-        return OUTCOME_RUNNING
-    if status == "retrying":
-        return OUTCOME_PENDING
+    # Precedence follows getMatrixStatus EXACTLY (skipped -> error-message ->
+    # failed -> success -> non-terminal) so the graph terminal can't diverge
+    # from the trial drawer even in edge cases (e.g. a status that carries both
+    # a running flag and an error message).
     if status == "skipped":
         return OUTCOME_SKIPPED
 
@@ -175,6 +170,15 @@ def _infer_outcome(ctx: dict[str, Any]) -> str:
         # Terminal completion: reward is the graded score; no reward = a
         # deliberately scoreless run (verification disabled), NOT an infra error.
         return _reward_outcome(reward) if has_reward else OUTCOME_SCORELESS
+
+    # Non-terminal statuses, mapped as getMatrixStatus does: queued/pending ->
+    # queued, running -> running, retrying (any other) -> pending.
+    if status in ("queued", "pending"):
+        return OUTCOME_QUEUED
+    if status == "running":
+        return OUTCOME_RUNNING
+    if status == "retrying":
+        return OUTCOME_PENDING
 
     # Unknown terminal status: fall back to the reward reading.
     return _reward_outcome(reward) if has_reward else OUTCOME_SCORELESS
