@@ -1,8 +1,10 @@
 import re
+import tomllib
 
 from oddish.config import (
     HARBOR_DEFAULT_SHA,
     HARBOR_DEFAULT_SOURCE,
+    Settings,
     parse_harbor_spec,
 )
 
@@ -52,6 +54,32 @@ def test_default_sha_matches_uv_lock_pin():
     assert HARBOR_DEFAULT_SHA in lock, "HARBOR_DEFAULT_SHA drifted from oddish/uv.lock"
     assert re.fullmatch(r"[0-9a-f]{40}", HARBOR_DEFAULT_SHA)
     assert HARBOR_DEFAULT_SOURCE == FORK
+    # The backend mirrors oddish's harbor pin; guard it too so a future re-pin
+    # that updates only oddish can't silently split the two workers' harbor.
+    backend_lock = open("../backend/uv.lock", encoding="utf-8").read()
+    assert HARBOR_DEFAULT_SHA in backend_lock, (
+        "HARBOR_DEFAULT_SHA drifted from backend/uv.lock"
+    )
+
+
+def test_probe_harbor_ref_matches_pyproject_pin():
+    # The probe fetches harbor from ``harbor_source_ref``; it must track the same
+    # branch the dependency is pinned to, or probe trials run different harbor code
+    # than the trials being probed. Derived from pyproject so the two are checked
+    # to move together whenever the pin is re-pointed.
+    with open("pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert Settings().harbor_source_ref == harbor_pin["branch"]
+
+
+def test_pyproject_default_source_matches_config():
+    # pyproject<->config drift guard: the baked default harbor source in
+    # pyproject must equal HARBOR_DEFAULT_SOURCE, so the default worker image
+    # bakes exactly the pin the server classifies as "default" (rishidesai, NOT
+    # harbor-gke -- that is a blessed variant on its own image).
+    with open("pyproject.toml", "rb") as fh:
+        harbor_pin = tomllib.load(fh)["tool"]["uv"]["sources"]["harbor"]
+    assert harbor_pin["git"] == HARBOR_DEFAULT_SOURCE
 
 
 def test_r1_url_with_userinfo_does_not_split_ref_on_userinfo_at():

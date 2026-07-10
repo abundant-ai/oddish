@@ -36,6 +36,43 @@ def detect_trajectory(path: Path) -> bool:
     return any(path.rglob("trajectory.json")) or any(path.rglob("trajectory.jsonl"))
 
 
+# Benchmark tasks report structured metrics by writing this file from their
+# verifier (next to reward.txt). Kept small: the payload lands in a JSONB
+# column and rides every trial-detail response.
+VERIFIER_METRICS_MAX_BYTES = 64 * 1024
+
+
+def _reject_nonfinite(name: str):
+    raise ValueError(f"non-finite JSON constant in metrics: {name}")
+
+
+def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
+    """The first ``verifier/metrics.json`` under a Harbor output tree, or None.
+
+    Forgiving by design -- a missing, oversized, malformed, or non-object file
+    yields None rather than an error, so a broken metrics emission can never
+    take down a trial whose reward already settled.
+    """
+    if not path or not path.exists():
+        return None
+    for metrics_path in sorted(path.rglob("verifier/metrics.json")):
+        try:
+            if metrics_path.stat().st_size > VERIFIER_METRICS_MAX_BYTES:
+                continue
+            # Reject NaN/Infinity: json.loads accepts them, but they do not
+            # survive JSONB persistence (trials.result), which would fail an
+            # otherwise-complete trial at finalization.
+            payload = json.loads(
+                metrics_path.read_text(),
+                parse_constant=_reject_nonfinite,
+            )
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            return cast(dict[str, Any], payload)
+    return None
+
+
 def _as_int(value: Any) -> int | None:
     if value is None:
         return None

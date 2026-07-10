@@ -88,6 +88,7 @@ def _build_payload(
     raw_harbor_config: dict[str, Any],
     is_probe: bool,
     extra_agent_env: dict[str, str] | None = None,
+    environment_build_timeout_multiplier: float | None = None,
 ) -> dict[str, Any]:
     daytona_kwargs: dict[str, Any] = {}
     if environment == EnvironmentType.DAYTONA:
@@ -115,8 +116,13 @@ def _build_payload(
         "agent_setup_timeout_multiplier": raw_harbor_config.get(
             "agent_setup_timeout_multiplier"
         ),
-        "environment_build_timeout_multiplier": raw_harbor_config.get(
-            "environment_build_timeout_multiplier"
+        # The runner sizes this to cover a GKE Pod's capacity/pod-ready wait and
+        # passes it in; it wins over the raw config so the child JobConfig gets
+        # the covering multiplier. Off GKE it is None and the raw value stands.
+        "environment_build_timeout_multiplier": (
+            environment_build_timeout_multiplier
+            if environment_build_timeout_multiplier is not None
+            else raw_harbor_config.get("environment_build_timeout_multiplier")
         ),
         "retry": raw_harbor_config.get("retry"),
         "runtime_env": _runtime_env_overrides(
@@ -239,8 +245,16 @@ async def run_ephemeral_harbor_trial(
     harbor_config: dict[str, Any] | None = None,
     org_id: str | None = None,
     extra_agent_env: dict[str, str] | None = None,
+    environment_build_timeout_multiplier: float | None = None,
 ) -> HarborOutcome:
-    """Run one trial in an override Harbor child process."""
+    """Run one trial in an override Harbor child process.
+
+    ``environment_build_timeout_multiplier`` is the runner-sized env-build
+    multiplier (GKE Pods need the outer build wait to cover their capacity/
+    pod-ready wait); when set it overrides the raw config on the child JobConfig,
+    so a GKE override trial gets the same sizing as an in-process one. ``None``
+    off GKE leaves the caller's value untouched.
+    """
     raw = harbor_config or {}
     hc = HarborConfig.model_validate(raw)
     source = hc.source
@@ -303,6 +317,7 @@ async def run_ephemeral_harbor_trial(
         raw_harbor_config=raw,
         is_probe=is_probe,
         extra_agent_env=extra_agent_env,
+        environment_build_timeout_multiplier=environment_build_timeout_multiplier,
     )
     payload_path = unique_parent / "payload.json"
     payload_path.write_text(json.dumps(payload))

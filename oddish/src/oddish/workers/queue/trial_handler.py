@@ -40,6 +40,7 @@ from oddish.worker.probe_creds import ProbeCredsError, mint_probe_creds
 from oddish.worker.probe_overlay import PROBE_HARNESS_DIR
 from oddish.worker.probe_staging import apply_probe_overlay, stage_cli_mount
 from oddish.workers.harbor.ephemeral import HarborOverrideImportError
+from oddish.workers.harbor.outcome import merged_trial_result
 from oddish.workers.harbor.runner import HarborOutcome, run_harbor_trial_async
 from oddish.workers.harbor import live_tail
 from oddish.workers.queue.db_helpers import _trial_session
@@ -720,6 +721,11 @@ async def _store_trial_results(
             )
 
             trial.phase_timing = outcome.phase_timing
+            # Verifier-reported benchmark metrics (the metrics.json contract),
+            # plus a harbor_exception marker when a phase raised quietly.
+            trial.result = merged_trial_result(
+                outcome.metrics, outcome.error, outcome.exception_type
+            )
 
             trial.has_trajectory = outcome.has_trajectory
 
