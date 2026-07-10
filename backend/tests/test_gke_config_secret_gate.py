@@ -116,3 +116,47 @@ def test_deploy_and_container_recompute_agree_legacy_path():
     deploy_names = modal_app._gke_runtime_secret_names({}, dotenv)
     baked = {k: v for k, v in dotenv.items() if k.startswith("ODDISH_GKE_")}
     assert modal_app._gke_runtime_secret_names(dict(baked), {}) == deploy_names
+
+
+# --- the plan is read from immutable image metadata in-container -----------
+#
+# The recompute inside a worker container must NOT re-derive the plan from
+# os.environ, because an unrelated runtime secret could carry ODDISH_GKE_ENABLED
+# and flip the list, drifting Modal's dependency count into a hydration
+# crashloop. _resolve_gke_secret_plan reads the deploy-time plan baked into the
+# image env instead.
+
+
+def test_plan_deploy_time_derives_from_env(monkeypatch):
+    monkeypatch.setattr(modal_app.modal, "is_local", lambda: True)
+    plan = modal_app._resolve_gke_secret_plan({"ODDISH_GKE_ENABLED": "true"}, {})
+    assert plan == [GCP, CONFIG]
+
+
+def test_plan_in_container_reads_baked_value_not_env(monkeypatch):
+    monkeypatch.setattr(modal_app.modal, "is_local", lambda: False)
+    # Baked plan (from a runtime-secret-flag deploy) is authoritative.
+    env = {modal_app._GKE_PLAN_ENV: f"{GCP},{CONFIG}"}
+    assert modal_app._resolve_gke_secret_plan(env, {}) == [GCP, CONFIG]
+
+
+def test_plan_in_container_immune_to_secret_injected_flag(monkeypatch):
+    # The crux of codex finding 5: a GKE-less deploy baked an EMPTY plan; a
+    # runtime secret then injects ODDISH_GKE_ENABLED=true into the container env.
+    # The recompute must still yield [] (matching deploy), not attach secrets and
+    # crashloop on a dependency-count mismatch.
+    monkeypatch.setattr(modal_app.modal, "is_local", lambda: False)
+    polluted = {modal_app._GKE_PLAN_ENV: "", "ODDISH_GKE_ENABLED": "true"}
+    assert modal_app._resolve_gke_secret_plan(polluted, {}) == []
+
+
+def test_plan_in_container_empty_when_unset(monkeypatch):
+    monkeypatch.setattr(modal_app.modal, "is_local", lambda: False)
+    assert modal_app._resolve_gke_secret_plan({}, {}) == []
+
+
+def test_baked_plan_env_is_in_env_vars():
+    # The deploy-time plan must be baked so the container can read it back.
+    assert modal_app._GKE_PLAN_ENV in modal_app.ENV_VARS
+    # GKE-less test env -> empty plan baked.
+    assert modal_app.ENV_VARS[modal_app._GKE_PLAN_ENV] == ""
