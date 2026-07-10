@@ -1524,7 +1524,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1561,7 +1561,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1596,12 +1596,12 @@ export function ExperimentTrialsTable({
           <span className="flex flex-col gap-0.5">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
-              result
+              trial result
             </span>
             {showAnalysis && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-                QA
+                QA result
               </span>
             )}
           </span>
@@ -1727,7 +1727,7 @@ export function ExperimentTrialsTable({
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-              Result
+              Trial
             </span>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
