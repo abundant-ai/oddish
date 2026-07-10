@@ -103,6 +103,21 @@ _LITELLM_PREFIX_CANDIDATES: tuple[str, ...] = (
     "azure/",
 )
 
+_PROVIDER_ALIASES: dict[str, str] = {
+    "fireworks": "fireworks_ai",
+    "fw": "fireworks_ai",
+    "moonshotai": "moonshot",
+    "kimi": "moonshot",
+    "z-ai": "zai",
+    "z.ai": "zai",
+}
+_CLAUDE_DOTTED_VERSION_RE = re.compile(
+    r"(claude-(?:opus|sonnet|haiku)-\d+)\.(\d+)"
+)
+_ANTHROPIC_DOTTED_NAMESPACE_RE = re.compile(
+    r"^(?:(?:global|us|eu|au)\.)?anthropic\.(.+)$"
+)
+
 # Claude Code computes ``total_cost_usd`` from its own Anthropic model table.
 # That value is authoritative for Anthropic/Bedrock Claude, but not when the
 # same harness is pointed at an Anthropic-compatible third-party endpoint.
@@ -130,49 +145,95 @@ def is_native_cost_trusted(*, agent: str | None, provider: str | None) -> bool:
     return normalized_provider not in untrusted_native_cost_providers(agent=agent)
 
 
+def _spelling_variants(value: str) -> list[str]:
+    """Return deterministic spelling variants from most to least specific.
+
+    Provider/path handling lives in :func:`_litellm_candidates`; this helper
+    only normalizes spellings of one candidate. The queue makes transforms
+    compose (for example dotted Claude version + dated suffix) without adding
+    one special case for every combination.
+    """
+    variants: list[str] = []
+    pending = [value]
+
+    while pending:
+        candidate = pending.pop(0)
+        if not candidate or candidate in variants:
+            continue
+        variants.append(candidate)
+
+        without_date = _DATED_SUFFIX_RE.sub("", candidate)
+        if without_date != candidate:
+            pending.append(without_date)
+
+        without_version = _VERSIONED_SUFFIX_RE.sub("", candidate)
+        if without_version != candidate:
+            pending.append(without_version)
+
+        dashed_claude = _CLAUDE_DOTTED_VERSION_RE.sub(r"\1-\2", candidate)
+        if dashed_claude != candidate:
+            pending.append(dashed_claude)
+
+        # Bedrock inference profiles use dotted namespaces such as
+        # ``global.anthropic.claude-opus-4-8``. Strip only recognized
+        # namespaces; never split arbitrary dots (``claude-opus-4.8`` is a
+        # version spelling, not a namespace).
+        match = _ANTHROPIC_DOTTED_NAMESPACE_RE.match(candidate)
+        if match:
+            pending.append(match.group(1))
+
+    return variants
+
+
 def _litellm_candidates(model_name: str) -> list[str]:
+    """Generate price-table keys from exact identity to safe fallbacks.
+
+    Model ids are paths: ``router/vendor/model``. Walk every suffix so a new
+    OpenRouter model can fall back to LiteLLM's vendor or bare-model key before
+    LiteLLM adds the router-specific entry. Exact/router-specific keys stay
+    first because different providers can charge different prices for the same
+    open-weight model.
+    """
     candidates: list[str] = []
 
-    def add(c: str) -> None:
-        if c and c not in candidates:
-            candidates.append(c)
+    def add_with_variants(value: str) -> None:
+        for candidate in _spelling_variants(value):
+            if candidate not in candidates:
+                candidates.append(candidate)
 
-    add(model_name)
+    parts = [part for part in model_name.split("/") if part]
+    for start in range(len(parts)):
+        suffix_parts = parts[start:]
+        suffix = "/".join(suffix_parts)
+        add_with_variants(suffix)
 
-    if "/" in model_name:
-        provider, bare = model_name.split("/", 1)
-        provider = provider.lower()
-        if provider == "fireworks":
-            # Oddish stores Fireworks routes as ``fireworks/<short-id>`` while
-            # LiteLLM's authoritative entries use its ``fireworks_ai`` provider
-            # plus the full Fireworks model path.
-            if bare.lower().startswith("accounts/fireworks/"):
-                add(f"fireworks_ai/{bare}")
+        if len(suffix_parts) < 2:
+            continue
+        provider = suffix_parts[0].casefold()
+        bare = "/".join(suffix_parts[1:])
+
+        if provider in {"fireworks", "fw"}:
+            # Oddish stores Fireworks short ids while LiteLLM's authoritative
+            # key also has the full Fireworks model path.
+            if bare.casefold().startswith("accounts/fireworks/"):
+                add_with_variants(f"fireworks_ai/{bare}")
             elif "/" not in bare:
-                add(f"fireworks_ai/accounts/fireworks/models/{bare}")
-        elif provider == "minimax" and bare.lower() == "minimax-m3":
-            # MiniMax's published API id is mixed-case and LiteLLM keys it that
-            # way; Oddish deliberately stores canonical model ids lowercase.
-            add("minimax/MiniMax-M3")
-        add(bare)
+                add_with_variants(
+                    f"fireworks_ai/accounts/fireworks/models/{bare}"
+                )
 
-    tail = model_name.rsplit("/", 1)[-1]
-    if "." in tail:
-        add(tail.rsplit(".", 1)[-1])
+        mapped_provider = _PROVIDER_ALIASES.get(provider)
+        if mapped_provider:
+            add_with_variants(f"{mapped_provider}/{bare}")
 
-    for base in list(candidates):
-        without_date = _DATED_SUFFIX_RE.sub("", base)
-        if without_date != base:
-            add(without_date)
-        without_version = _VERSIONED_SUFFIX_RE.sub("", base)
-        if without_version != base:
-            add(without_version)
-
-    normalized_bases = list(candidates)
-    for base in normalized_bases:
+    # Bare model ids sometimes need a LiteLLM provider namespace. Add these
+    # only after exact and provider-attributed candidates so a reseller's
+    # distinct rate can never be silently replaced by a generic vendor rate.
+    bare_candidates = [candidate for candidate in candidates if "/" not in candidate]
+    for base in bare_candidates:
         for prefix in _LITELLM_PREFIX_CANDIDATES:
             if prefix:
-                add(f"{prefix}{base}")
+                add_with_variants(f"{prefix}{base}")
 
     return candidates
 
@@ -205,8 +266,13 @@ def _find_litellm_pricing(model_name: str) -> ModelPricing | None:
     if not isinstance(model_cost, dict) or not model_cost:
         return None
 
+    # Oddish canonical ids are lowercase, while LiteLLM contains mixed-case
+    # keys (for example ``minimax/MiniMax-M3``). The catalog currently has no
+    # casefold collision with different prices, so a case-insensitive index is
+    # safe and removes per-model casing patches.
+    model_cost_casefolded = {key.casefold(): info for key, info in model_cost.items()}
     for candidate in _litellm_candidates(model_name):
-        info = model_cost.get(candidate)
+        info = model_cost_casefolded.get(candidate.casefold())
         if info is None:
             continue
         pricing = _pricing_from_litellm_info(info)
@@ -216,10 +282,11 @@ def _find_litellm_pricing(model_name: str) -> ModelPricing | None:
 
 
 def _find_local_pricing(model_name: str) -> ModelPricing | None:
-    lower = model_name.lower()
-    for pattern, pricing in PRICING_TABLE:
-        if pattern in lower:
-            return pricing
+    for candidate in _litellm_candidates(model_name):
+        lower = candidate.lower()
+        for pattern, pricing in PRICING_TABLE:
+            if pattern in lower:
+                return pricing
     return None
 
 

@@ -31,6 +31,7 @@ from oddish.db import (
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
 from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
+from oddish.observability import log_warning
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -705,20 +706,46 @@ async def _store_trial_results(
             trial.cache_write_tokens = outcome.cache_write_tokens
             trial.output_tokens = outcome.output_tokens
             trial.total_steps = outcome.total_steps
+            provider = settings.get_provider_for_trial(
+                getattr(trial, "agent", ""), trial.model
+            )
+            native_cost_trusted = is_native_cost_trusted(
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+            )
             trial.cost_usd = settle_cost_usd(
                 outcome.cost_usd,
-                native_cost_trusted=is_native_cost_trusted(
-                    agent=getattr(trial, "agent", None),
-                    provider=settings.get_provider_for_trial(
-                        getattr(trial, "agent", ""), trial.model
-                    ),
-                ),
+                native_cost_trusted=native_cost_trusted,
                 model=trial.model,
                 input_tokens=outcome.input_tokens,
                 output_tokens=outcome.output_tokens,
                 cache_tokens=outcome.cache_tokens,
                 cache_write_tokens=outcome.cache_write_tokens,
             )
+            if trial.cost_usd is None and any(
+                int(tokens or 0) > 0
+                for tokens in (
+                    outcome.input_tokens,
+                    outcome.output_tokens,
+                    outcome.cache_write_tokens,
+                )
+            ):
+                log_warning(
+                    "Trial has token usage but no resolved cost",
+                    tags=("cost-integrity", "unpriced-model"),
+                    metric="trial_cost_unpriced",
+                    trial_id=trial.id,
+                    model=trial.model or "unknown",
+                    agent=getattr(trial, "agent", None) or "unknown",
+                    provider=provider or "unknown",
+                    attempt=trial.attempts,
+                    input_tokens=outcome.input_tokens or 0,
+                    cache_tokens=outcome.cache_tokens or 0,
+                    cache_write_tokens=outcome.cache_write_tokens or 0,
+                    output_tokens=outcome.output_tokens or 0,
+                    native_cost_usd=outcome.cost_usd,
+                    native_cost_trusted=native_cost_trusted,
+                )
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),

@@ -71,6 +71,19 @@ def configure_observability(service_name: str) -> bool:
         return True
 
 
+def mark_observability_configured() -> None:
+    """Record that another package configured the shared Logfire singleton.
+
+    The hosted backend configures Logfire before importing Oddish worker
+    modules. This hook lets portable Oddish logging helpers use that existing
+    configuration without importing the hosted package or configuring Logfire
+    a second time.
+    """
+    global _configured
+    with _lock:
+        _configured = True
+
+
 def span(name: str, /, **attributes):
     """Open a Logfire span, or a no-op context manager when tracing is off.
 
@@ -87,3 +100,33 @@ def span(name: str, /, **attributes):
         except Exception:
             logger.warning("logfire.span(%r) failed", name, exc_info=True)
     return nullcontext()
+
+
+def log_warning(
+    message: str,
+    *,
+    tags: tuple[str, ...] = (),
+    **attributes,
+) -> None:
+    """Emit a warning to process logs and, when configured, Logfire.
+
+    Standard logging remains the durable fallback for self-hosted installs.
+    The direct Logfire record is structured so alert rules can group/filter by
+    attributes such as ``model`` instead of parsing console text.
+    """
+    rendered_attributes = " ".join(
+        f"{key}={value!r}" for key, value in sorted(attributes.items())
+    )
+    logger.warning(
+        "%s%s",
+        message,
+        f" {rendered_attributes}" if rendered_attributes else "",
+    )
+    if not _configured:
+        return
+    try:
+        import logfire
+
+        logfire.warning(message, _tags=list(tags) or None, **attributes)
+    except Exception:
+        logger.warning("logfire.warning(%r) failed", message, exc_info=True)
