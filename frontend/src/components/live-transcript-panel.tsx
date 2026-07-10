@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Info, Loader2, Radio, ShieldAlert, Wrench } from "lucide-react";
+import {
+  ChevronRight,
+  Info,
+  Loader2,
+  Radio,
+  ShieldAlert,
+  Wrench,
+} from "lucide-react";
+import { CodeBlock } from "@/components/code-block";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
@@ -82,50 +90,153 @@ function SanitizedBadge() {
   );
 }
 
+function prettyJson(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed[0] !== "{" && trimmed[0] !== "[") return text;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function LiveToolUse({
+  payload,
+  name,
+  input,
+  sanitized,
+}: {
+  payload: Record<string, unknown>;
+  name: string;
+  input: string;
+  sanitized: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const args = prettyJson(input);
+  const hasArgs = args.trim().length > 0;
+  const collapsible = hasArgs && args.length > 120;
+  const showArgs = hasArgs && (!collapsible || open);
+
+  const header = (
+    <>
+      {collapsible ? (
+        <ChevronRight
+          className={cn(
+            "h-3 w-3 shrink-0 text-purple-500 transition-transform",
+            open && "rotate-90"
+          )}
+        />
+      ) : (
+        <Wrench className="h-3 w-3 shrink-0 text-purple-500" />
+      )}
+      <span className="font-mono font-semibold text-purple-500">
+        {name || "tool"}
+      </span>
+      {collapsible && !open && (
+        <span className="text-muted-foreground text-[10px]">
+          (click to expand)
+        </span>
+      )}
+      {payload.truncated ? (
+        <span className="text-muted-foreground">…</span>
+      ) : null}
+      {sanitized && <SanitizedBadge />}
+    </>
+  );
+  const headerClass = cn(
+    "flex w-full items-center gap-1.5 px-2 py-1 text-left bg-purple-500/10",
+    collapsible && "hover:bg-purple-500/15"
+  );
+
+  return (
+    <div className="overflow-hidden rounded border border-purple-500/20">
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className={headerClass}
+        >
+          {header}
+        </button>
+      ) : (
+        <div className={headerClass}>{header}</div>
+      )}
+      {showArgs && (
+        <CodeBlock
+          code={args}
+          language="json"
+          className="rounded-none"
+          maxHeight="14rem"
+        />
+      )}
+    </div>
+  );
+}
+
+function LiveToolResult({
+  payload,
+  content,
+  sanitized,
+}: {
+  payload: Record<string, unknown>;
+  content: string;
+  sanitized: boolean;
+}) {
+  const errored = payload.is_error === true;
+  return (
+    <div
+      className={cn(
+        "space-y-1",
+        errored && "border-l-2 border-red-500/60 pl-2"
+      )}
+    >
+      <CodeBlock
+        code={content || "(no output)"}
+        language="bash"
+        maxHeight="14rem"
+      />
+      {(errored || payload.truncated || sanitized) && (
+        <div className="flex items-center gap-1.5 pl-0.5 text-[10px]">
+          {errored && <span className="font-medium text-red-500">error</span>}
+          {payload.truncated ? (
+            <span className="text-muted-foreground">truncated …</span>
+          ) : null}
+          {sanitized && <SanitizedBadge />}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LiveEventRow({ event }: { event: LiveEvent }) {
   const { kind, payload } = event;
-  const name = safeText(payload.name);
-  const input = safeText(payload.input);
-  const content = safeText(payload.content);
-  const text = safeText(payload.text);
-  const sanitized =
-    payload.sanitized === true ||
-    name.changed ||
-    input.changed ||
-    content.changed ||
-    text.changed;
 
   if (kind === "tool_use") {
+    const name = safeText(payload.name);
+    const input = safeText(payload.input);
     return (
-      <div className="flex items-start gap-1.5 text-purple-500">
-        <Wrench className="mt-0.5 h-3 w-3 shrink-0" />
-        <span className="min-w-0 flex-1 wrap-break-word">
-          <span className="font-semibold">{name.text || "tool"}</span>
-          {input.text && (
-            <span className="text-muted-foreground"> {input.text}</span>
-          )}
-          {payload.truncated ? " …" : ""}
-          {sanitized && <SanitizedBadge />}
-        </span>
-      </div>
+      <LiveToolUse
+        payload={payload}
+        name={name.text}
+        input={input.text}
+        sanitized={payload.sanitized === true || name.changed || input.changed}
+      />
     );
   }
 
   if (kind === "tool_result") {
+    const content = safeText(payload.content);
     return (
-      <div
-        className={cn(
-          "border-border/60 border-l-2 pl-2 wrap-break-word whitespace-pre-wrap",
-          payload.is_error ? "text-red-500" : "text-muted-foreground"
-        )}
-      >
-        {content.text || "(no output)"}
-        {payload.truncated ? " …" : ""}
-        {sanitized && <SanitizedBadge />}
-      </div>
+      <LiveToolResult
+        payload={payload}
+        content={content.text.trim()}
+        sanitized={payload.sanitized === true || content.changed}
+      />
     );
   }
 
+  const text = safeText(payload.text);
+  const sanitized = payload.sanitized === true || text.changed;
   return (
     <div
       className={
