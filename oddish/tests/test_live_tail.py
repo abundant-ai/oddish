@@ -713,6 +713,39 @@ def test_mini_swe_fold_replays_transcript_after_valid_snapshot_shrink():
     assert fold.totals().output_tokens == 5
 
 
+def test_mini_swe_fold_skips_unchanged_prefix_after_snapshot_shrink():
+    fold = MiniSweUsageFold()
+    first = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant("shared"),
+                mini_assistant("old suffix"),
+                mini_assistant("dropped"),
+            ]
+        )
+    )
+    assert [event["payload"]["text"] for event in first] == [
+        "shared",
+        "old suffix",
+        "dropped",
+    ]
+    assert fold.emitted == 4
+
+    shrunk = fold.feed_line(
+        mini_trajectory(
+            [
+                {"role": "user", "content": "task"},
+                mini_assistant("shared"),
+                mini_assistant("changed suffix"),
+            ]
+        )
+    )
+
+    assert shrunk == [{"kind": "message", "payload": {"text": "changed suffix"}}]
+    assert fold.emitted == 3
+
+
 def test_mini_swe_fold_ignores_garbage():
     fold = MiniSweUsageFold()
     for raw in (b"", b"not json", b"{truncated", json.dumps([1, 2]).encode()):
