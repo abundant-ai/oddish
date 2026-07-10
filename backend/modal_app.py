@@ -260,7 +260,7 @@ def _gke_config_secret_enabled(
     Enabled by ODDISH_GKE_ENABLED in the deploy environment (or backend/.env),
     mirroring _effective_gke_cluster_name's two channels. When enabled, the
     runtime secret carries ODDISH_GKE_* (cluster/registry coordinates plus the
-    org allowlist) so pydantic ``Settings`` reads them at container init and
+    user-email allowlist) so pydantic ``Settings`` reads them at container init and
     ``oddish.runtime.registry`` registers the GKE backend -- no backend/.env
     needed. When disabled, the secret is never referenced, so an environment
     without it (dev, GKE-less previews, prod before enablement) still deploys.
@@ -334,7 +334,7 @@ if SAURON_AWS_SECRET_NAME:
 # Optional GKE secrets, gated so a GKE-less deploy references none (and still
 # boots) while a GKE-enabled deploy attaches exactly what its channel needs:
 # oddish-gcp (GCP creds) for either channel, plus oddish-gke-config (runtime
-# ODDISH_GKE_* incl. the org allowlist) for the config-secret channel. Lazily
+# ODDISH_GKE_* incl. the user-email allowlist) for the config-secret channel. Lazily
 # hydrated by Modal; the gate reads image-baked env so this list is identical at
 # deploy time and at in-container recompute. See _gke_runtime_secret_names.
 GKE_SECRET_PLAN = _resolve_gke_secret_plan(os.environ, LOCAL_DOTENV_VARS)
