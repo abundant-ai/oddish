@@ -24,10 +24,11 @@ from oddish.workers.harbor.live_tail import (
 )
 
 
-def assistant_line(msg_id, usage, model="claude-opus-4-8"):
-    return json.dumps(
-        {"type": "assistant", "message": {"id": msg_id, "model": model, "usage": usage}}
-    ).encode()
+def assistant_line(msg_id, usage, model="claude-opus-4-8", content=None):
+    message = {"id": msg_id, "model": model, "usage": usage}
+    if content is not None:
+        message["content"] = content
+    return json.dumps({"type": "assistant", "message": message}).encode()
 
 
 def test_fold_keeps_last_usage_per_message_id():
@@ -51,6 +52,120 @@ def test_fold_keeps_last_usage_per_message_id():
     assert totals.cache_write_tokens == 20
     assert totals.output_tokens == 50 + 7
     assert totals.model == "claude-opus-4-8"
+
+
+def test_claude_fold_suppresses_exact_duplicate_assistant_content():
+    fold = ClaudeUsageFold()
+    content = [{"type": "text", "text": "hello"}]
+
+    assert fold.feed_line(
+        assistant_line("msg_1", {"input_tokens": 1, "output_tokens": 1}, content=content)
+    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+    assert (
+        fold.feed_line(
+            assistant_line(
+                "msg_1",
+                {"input_tokens": 1, "output_tokens": 9},
+                content=content,
+            )
+        )
+        == []
+    )
+    assert fold.totals().output_tokens == 9
+
+
+def test_claude_fold_emits_only_growing_text_suffix():
+    fold = ClaudeUsageFold()
+    assert fold.feed_line(
+        assistant_line(
+            "msg_1",
+            {"input_tokens": 1},
+            content=[{"type": "text", "text": "hello"}],
+        )
+    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+
+    assert fold.feed_line(
+        assistant_line(
+            "msg_1",
+            {"input_tokens": 1},
+            content=[{"type": "text", "text": "hello world"}],
+        )
+    ) == [{"kind": "message", "payload": {"text": " world"}}]
+
+    assert fold.feed_line(
+        assistant_line(
+            "msg_1",
+            {"input_tokens": 1},
+            content=[{"type": "text", "text": "replacement"}],
+        )
+    ) == [{"kind": "message", "payload": {"text": "replacement"}}]
+
+
+def test_claude_fold_emits_appended_tool_block_once():
+    fold = ClaudeUsageFold()
+    base = [{"type": "text", "text": "hello"}]
+    tool = {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
+
+    assert fold.feed_line(
+        assistant_line("msg_1", {"input_tokens": 1}, content=base)
+    ) == [{"kind": "message", "payload": {"text": "hello"}}]
+    assert fold.feed_line(
+        assistant_line("msg_1", {"input_tokens": 1}, content=[*base, tool])
+    ) == [
+        {
+            "kind": "tool_use",
+            "payload": {"input": json.dumps({"command": "ls"}), "name": "Bash"},
+        }
+    ]
+    assert (
+        fold.feed_line(
+            assistant_line("msg_1", {"input_tokens": 1}, content=[*base, tool])
+        )
+        == []
+    )
+
+
+def test_claude_fold_duplicate_with_unsupported_blocks_stays_silent():
+    fold = ClaudeUsageFold()
+    content = [
+        {"type": "thinking", "text": "hidden"},
+        {"type": "text", "text": "hello"},
+        {"type": "image", "source": "ignored"},
+        {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+    ]
+
+    assert fold.feed_line(
+        assistant_line("msg_1", {"input_tokens": 1}, content=content)
+    ) == [
+        {"kind": "message", "payload": {"text": "hello"}},
+        {
+            "kind": "tool_use",
+            "payload": {"input": json.dumps({"command": "ls"}), "name": "Bash"},
+        },
+    ]
+    assert (
+        fold.feed_line(
+            assistant_line(
+                "msg_1",
+                {"input_tokens": 1, "output_tokens": 7},
+                content=content,
+            )
+        )
+        == []
+    )
+    assert fold.totals().output_tokens == 7
+
+
+def test_claude_fold_tracks_distinct_message_ids_independently():
+    fold = ClaudeUsageFold()
+    content = [{"type": "text", "text": "same"}]
+
+    assert fold.feed_line(
+        assistant_line("msg_1", {"input_tokens": 1}, content=content)
+    ) == [{"kind": "message", "payload": {"text": "same"}}]
+    assert fold.feed_line(
+        assistant_line("msg_2", {"input_tokens": 1}, content=content)
+    ) == [{"kind": "message", "payload": {"text": "same"}}]
 
 
 def test_split_lines_carries_partial_tail():
