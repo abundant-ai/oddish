@@ -17,6 +17,10 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ExperimentShareButton } from "@/components/experiment-share-button";
 import { ChatButton } from "@/components/cc-chat/chat-button";
+import {
+  ProbeLaunchButton,
+  resolveProbeHostTask,
+} from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
 import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
@@ -24,6 +28,11 @@ import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
 import { ExperimentPageSkeleton } from "./experiment-skeleton";
+
+// Paper-styled header action button, shared by the Probe and Chat buttons so
+// they render as the same element.
+const HEADER_ACTION_BUTTON_CLASS =
+  "h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]";
 
 const TRIALS_BATCH_SIZE = 250;
 const TRIALS_PREFETCH_PAGES = 2;
@@ -226,6 +235,11 @@ function ExperimentContent({
     }
     return merged;
   }, [lightweightTasks, trialPages]);
+
+  const probeHostTask = useMemo(
+    () => resolveProbeHostTask(tasksForExperiment),
+    [tasksForExperiment],
+  );
 
   const isLoading = isLoadingTasks;
   const isLoadingTrials =
@@ -568,11 +582,20 @@ function ExperimentContent({
           headerRight={
             experimentId ? (
               <div className="flex items-center gap-2">
+                {probeHostTask ? (
+                  <ProbeLaunchButton
+                    taskId={probeHostTask.id}
+                    taskName={probeHostTask.name}
+                    variant="labeled"
+                    label="Probe"
+                    className={HEADER_ACTION_BUTTON_CLASS}
+                  />
+                ) : null}
                 <ChatButton
                   scopeKind="experiment"
                   scopeId={experimentId}
                   variant="ghost"
-                  className="h-8 select-none gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+                  className={HEADER_ACTION_BUTTON_CLASS}
                 />
                 <ExperimentShareButton
                   experimentId={experimentId}
