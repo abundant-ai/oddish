@@ -16,7 +16,11 @@ from sqlalchemy.dialects.postgresql import insert
 from modal_app import app, image, slack_notification_secrets
 from models import SlackExpenseAlertModel
 from oddish.core.admin import _real_spend_filter
-from oddish.core.cost_basis import settled_cost_columns, settled_cost_from_row
+from oddish.core.cost_basis import (
+    CANCELLED_HARBOR_STAGE,
+    settled_cost_columns,
+    settled_cost_from_row,
+)
 from oddish.db import (
     ExperimentModel,
     TrialModel,
@@ -24,6 +28,7 @@ from oddish.db import (
     close_database_connections,
     get_session,
 )
+from oddish.model_pricing import has_pricing
 
 log = logging.getLogger("oddish.slack_notifications")
 
@@ -44,6 +49,13 @@ class TrialSpend:
     model: str
     finished_at: datetime
     cost_usd: float
+
+
+@dataclass(frozen=True)
+class UnpricedModel:
+    model: str
+    trial_count: int
+    task_id: str
 
 
 @dataclass(frozen=True)
@@ -91,6 +103,7 @@ def build_alerts(
     experiment_repeat_usd: float,
     trial_threshold_usd: float,
     trial_average_multiplier: float,
+    unpriced_models: list[UnpricedModel] | None = None,
 ) -> list[SlackAlert]:
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
     task_model_costs: dict[tuple[str, str], float] = {}
@@ -167,6 +180,23 @@ def build_alerts(
                     ),
                 )
             )
+
+    for unpriced in unpriced_models or []:
+        plural = "s" if unpriced.trial_count != 1 else ""
+        task_url = f"{dashboard_url}/tasks/{quote(unpriced.task_id, safe='')}"
+        alerts.append(
+            SlackAlert(
+                key=f"unpriced-model:{unpriced.model}",
+                text=(
+                    f":grey_question: *Unpriceable model:* "
+                    f"`{_escape(unpriced.model)}` has no price — "
+                    f"{unpriced.trial_count} recent trial{plural} recorded "
+                    f"token usage but settled to *$0* because no rate could be "
+                    f"resolved (spend is going uncounted). Add it to the "
+                    f"pricing table · <{task_url}|open task>"
+                ),
+            )
+        )
     return alerts
 
 
@@ -220,32 +250,67 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
             for row in candidate_rows
         ]
-        if not experiments:
-            return []
-
+        # Expensive-experiment/trial alerts need candidate experiments, but the
+        # unpriceable-model scan below is independent of them (an unpriced trial
+        # can live under a collection or soft-deleted experiment that is never a
+        # candidate), so don't early-return on an empty candidate set -- only
+        # skip the experiment-scoped trial query.
         experiment_ids = [experiment.id for experiment in experiments]
-        trial_rows = (
+        trial_rows = []
+        if experiment_ids:
+            trial_rows = (
+                await session.execute(
+                    select(
+                        TrialModel.id,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                        *settled_cost_columns(),
+                    )
+                    .where(
+                        TrialModel.experiment_id.in_(experiment_ids),
+                        TrialModel.finished_at.isnot(None),
+                        _real_spend_filter(),
+                    )
+                    .group_by(
+                        TrialModel.id,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                    )
+                    .execution_options(include_deleted=True)
+                )
+            ).all()
+
+        # Trials that ran (recorded tokens) but settled to NULL cost: no native
+        # cost and no token estimate. Grouping by model lets us alert once per
+        # model rather than once per trial. Whether the model is genuinely
+        # unpriceable -- rather than merely tokenless -- is decided below with
+        # ``has_pricing``: the token-estimate path shares that same lookup, so a
+        # priced model always produces an estimate here and never reaches the
+        # alert, and an unpriced one never produces a token estimate to hide it.
+        unpriced_rows = (
             await session.execute(
                 select(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
                     TrialModel.model,
-                    *settled_cost_columns(),
+                    func.count(TrialModel.id).label("trial_count"),
+                    func.max(TrialModel.task_id).label("task_id"),
                 )
                 .where(
-                    TrialModel.experiment_id.in_(experiment_ids),
-                    TrialModel.finished_at.isnot(None),
+                    TrialModel.finished_at >= recent_cutoff,
+                    TrialModel.cost_usd.is_(None),
+                    func.coalesce(TrialModel.harbor_stage, "")
+                    != CANCELLED_HARBOR_STAGE,
+                    or_(
+                        func.coalesce(TrialModel.input_tokens, 0) > 0,
+                        func.coalesce(TrialModel.output_tokens, 0) > 0,
+                        func.coalesce(TrialModel.cache_write_tokens, 0) > 0,
+                    ),
                     _real_spend_filter(),
                 )
-                .group_by(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
-                    TrialModel.model,
-                )
+                .group_by(TrialModel.model)
                 .execution_options(include_deleted=True)
             )
         ).all()
@@ -260,6 +325,15 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             cost_usd=settled_cost_from_row(row),
         )
         for row in trial_rows
+    ]
+    unpriced_models = [
+        UnpricedModel(
+            model=str(row.model),
+            trial_count=int(row.trial_count or 0),
+            task_id=str(row.task_id),
+        )
+        for row in unpriced_rows
+        if row.model and not has_pricing(str(row.model))
     ]
     dashboard_url = os.environ.get(
         "ODDISH_DASHBOARD_URL", "https://www.oddish.app"
@@ -279,6 +353,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         trial_average_multiplier=_env_float(
             "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
         ),
+        unpriced_models=unpriced_models,
     )
 
 
