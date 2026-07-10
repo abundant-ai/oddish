@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Awaitable, Callable, Collection, Sequence
 
 from fastapi import HTTPException
 from harbor.models.environment_type import EnvironmentType
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.core.endpoints._common import (
@@ -29,6 +29,7 @@ from oddish.db import (
     ExperimentModel,
     TaskModel,
     TrialModel,
+    TrialStatus,
     utcnow,
 )
 from oddish.schemas import (
@@ -67,6 +68,50 @@ def build_task_sweep_response(
         created_at=task.created_at,
         new_trial_ids=[trial.id for trial in response_trials],
     )
+
+
+async def replay_has_retryable_failed_trials(
+    session: AsyncSession,
+    response_json: dict,
+    *,
+    org_id: str | None,
+) -> bool:
+    """Return whether an idempotent sweep replay now ends in a failed leaf.
+
+    A CLI invocation uses a stable key so a transport retry cannot duplicate
+    queued work. Once one of the trials created by that invocation fails,
+    however, repeating the same sweep is an intentional retry. Follow each
+    immutable retry chain from the response's original ids to its current leaf
+    so later failures remain retryable without weakening in-flight dedup.
+    """
+    raw_ids = response_json.get("new_trial_ids")
+    if not isinstance(raw_ids, list):
+        return False
+    pending = {trial_id for trial_id in raw_ids if isinstance(trial_id, str)}
+    seen: set[str] = set()
+
+    while pending:
+        batch = pending - seen
+        if not batch:
+            return False
+        seen.update(batch)
+        stmt = select(
+            TrialModel.id,
+            TrialModel.status,
+            TrialModel.superseded_by_trial_id,
+        ).where(TrialModel.id.in_(batch))
+        if org_id is not None:
+            stmt = stmt.where(TrialModel.org_id == org_id)
+        rows = (await session.execute(stmt)).all()
+
+        pending = set()
+        for _trial_id, status, superseded_by in rows:
+            if superseded_by:
+                pending.add(superseded_by)
+            elif status == TrialStatus.FAILED:
+                return True
+
+    return False
 
 
 def _stamp_experiment_provenance(
@@ -337,6 +382,7 @@ async def create_task_sweep_core(
     )
     from oddish.queue import (
         _ensure_not_collection_target,
+        TrialSupersedeConflict,
         append_trials_to_task,
         create_task,
         get_experiment_by_id_or_name,
@@ -510,23 +556,26 @@ async def create_task_sweep_core(
             primary_experiment.id if primary_experiment else None
         )
         existing_counts: dict[tuple[str, str | None], int] | None = None
+        failed_trial_ids: dict[tuple[str, str | None], list[str]] = defaultdict(list)
         if task.current_version_id is not None:
             reconcile_where = [
                 TrialModel.task_id == task.id,
                 TrialModel.task_version_id == task.current_version_id,
                 TrialModel.is_probe.is_(False),
+                TrialModel.superseded_by_trial_id.is_(None),
             ]
             if target_experiment_id is not None:
                 reconcile_where.append(TrialModel.experiment_id == target_experiment_id)
-            existing_counts_result = await session.execute(
-                select(TrialModel.agent, TrialModel.model, func.count(TrialModel.id))
-                .where(*reconcile_where)
-                .group_by(TrialModel.agent, TrialModel.model)
+            existing_trials_result = await session.execute(
+                select(TrialModel).where(*reconcile_where).order_by(TrialModel.id)
             )
-            existing_counts = {
-                (agent, model): count
-                for agent, model, count in existing_counts_result.all()
-            }
+            existing_counts = defaultdict(int)
+            for existing_trial in existing_trials_result.scalars():
+                key = (existing_trial.agent, existing_trial.model)
+                if existing_trial.status == TrialStatus.FAILED:
+                    failed_trial_ids[key].append(existing_trial.id)
+                else:
+                    existing_counts[key] += 1
 
         trials = build_trial_specs_from_sweep(
             submission,
@@ -534,6 +583,25 @@ async def create_task_sweep_core(
             allowed_environments=allowed_environments,
             existing_counts=existing_counts,
         )
+
+        # A failed live attempt does not satisfy the declarative N. The specs
+        # above therefore include replacements for failed slots. Attach every
+        # failed attempt for that agent/model to the replacement rows so old
+        # duplicate failures collapse out of the default UI while remaining
+        # directly inspectable as immutable history.
+        replacement_positions: dict[tuple[str, str | None], list[int]] = defaultdict(
+            list
+        )
+        for index, spec in enumerate(trials):
+            normalized_model = settings.normalize_trial_model(spec.agent, spec.model)
+            replacement_positions[(spec.agent, normalized_model)].append(index)
+        supersede_by_spec: list[list[str]] = [[] for _ in trials]
+        for key, old_ids in failed_trial_ids.items():
+            positions = replacement_positions.get(key, [])
+            if not positions:
+                continue
+            for offset, old_id in enumerate(old_ids):
+                supersede_by_spec[positions[offset % len(positions)]].append(old_id)
 
         append_submission = submission.model_copy(
             update={
@@ -550,13 +618,17 @@ async def create_task_sweep_core(
             append_submission, task_path=task.task_path, trials=trials
         )
         await admit_trials(session, org_id, billed_user_id, count=len(expanded.trials))
-        new_trials = await append_trials_to_task(
-            session,
-            task=task,
-            submission=expanded,
-            experiment_id=new_experiment_id,
-            billed_user_id=billed_user_id,
-        )
+        try:
+            new_trials = await append_trials_to_task(
+                session,
+                task=task,
+                submission=expanded,
+                experiment_id=new_experiment_id,
+                billed_user_id=billed_user_id,
+                supersede_failed_trial_ids=supersede_by_spec,
+            )
+        except TrialSupersedeConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         await _finalize_sweep(
             session,
