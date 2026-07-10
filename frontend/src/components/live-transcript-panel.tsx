@@ -28,7 +28,7 @@ interface LiveResponse {
   done: boolean;
 }
 
-const POLL_MS = 2000;
+const POLL_MS = 10_000;
 
 function agentNotice(agent: string | null | undefined): string | null {
   const name = (agent ?? "").toLowerCase();
