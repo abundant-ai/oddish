@@ -64,7 +64,8 @@ def stream_logs(
                 raise typer.Exit(1) from exc
             raise
         resp_attempt = data["attempt"]
-        if attempt is not None and resp_attempt != attempt:
+        initial_pickup = attempt == 0 and resp_attempt == 1
+        if attempt is not None and resp_attempt != attempt and not initial_pickup:
             emit("[dim]— trial retried; restarting transcript —[/dim]")
             after_seq = 0
         attempt = resp_attempt

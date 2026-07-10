@@ -88,6 +88,22 @@ def test_single_shot_no_events_returns_zero():
     assert fetch.calls == [(None, 0)]
 
 
+def test_initial_pickup_from_queued_trial_does_not_emit_retry_banner():
+    seen, fetch, lines, sleeps = run(
+        [
+            page(0, [], done=False),
+            page(1, [event(1, text="started")], done=False),
+            page(1, [], done=True),
+        ],
+        follow=True,
+    )
+    assert seen == 1
+    assert fetch.calls == [(None, 0), (0, 0), (1, 1)]
+    assert lines == ["started", "[dim]$0.5000 · 120 tokens[/dim]"]
+    assert not any("restarting transcript" in line for line in lines)
+    assert sleeps == [2.0]
+
+
 def test_newer_attempt_resets_cursor_to_zero():
     seen, fetch, lines, sleeps = run(
         [
@@ -98,6 +114,10 @@ def test_newer_attempt_resets_cursor_to_zero():
         follow=True,
     )
     assert fetch.calls == [(None, 0), (1, 1), (2, 0)]
+    assert lines == [
+        "[dim]$0.5000 · 120 tokens[/dim]",
+        "[dim]— trial retried; restarting transcript —[/dim]",
+    ]
     assert sum("restarting transcript" in line for line in lines) == 1
 
 
