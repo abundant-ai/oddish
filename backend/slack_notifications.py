@@ -235,11 +235,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     *settled_cost_columns(),
                 )
                 .where(
-                    TrialModel.task_id.in_(
-                        select(TrialModel.task_id)
-                        .where(TrialModel.experiment_id.in_(experiment_ids))
-                        .distinct()
-                    ),
+                    TrialModel.experiment_id.in_(experiment_ids),
                     TrialModel.finished_at.isnot(None),
                     _real_spend_filter(),
                 )

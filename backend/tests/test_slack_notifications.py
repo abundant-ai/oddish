@@ -128,7 +128,7 @@ def test_build_alerts_requires_a_same_task_model_peer() -> None:
     assert not any(alert.key.startswith("trial:") for alert in alerts)
 
 
-def test_build_alerts_uses_same_task_model_peers_across_experiments() -> None:
+def test_build_alerts_uses_same_task_model_peers() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
         [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
@@ -137,7 +137,6 @@ def test_build_alerts_uses_same_task_model_peers_across_experiments() -> None:
             _trial(
                 "peer",
                 100,
-                experiment_id="historical-experiment",
                 finished_at=now - timedelta(days=1),
             ),
         ],
@@ -256,7 +255,6 @@ async def test_load_alerts_uses_settled_trial_costs(
 ) -> None:
     suffix = uuid4().hex[:12]
     experiment_id = f"slack-exp-{suffix}"
-    historical_experiment_id = f"slack-historical-exp-{suffix}"
     task_id = f"slack-task-{suffix}"
     now = datetime.now(timezone.utc)
     monkeypatch.setenv("ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", "100")
@@ -265,15 +263,7 @@ async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch.setenv("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", "2")
 
     async with get_session() as session:
-        session.add_all(
-            [
-                ExperimentModel(id=experiment_id, name="Slack expense test"),
-                ExperimentModel(
-                    id=historical_experiment_id,
-                    name="Historical Slack expense test",
-                ),
-            ]
-        )
+        session.add(ExperimentModel(id=experiment_id, name="Slack expense test"))
         session.add(
             TaskModel(
                 id=task_id,
@@ -288,7 +278,7 @@ async def test_load_alerts_uses_settled_trial_costs(
                     id=f"{task_id}-baseline",
                     name="baseline",
                     task_id=task_id,
-                    experiment_id=historical_experiment_id,
+                    experiment_id=experiment_id,
                     agent="claude-code",
                     provider="openai",
                     model="gpt-5.3",
@@ -351,9 +341,7 @@ async def test_load_alerts_uses_settled_trial_costs(
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(
-                    ExperimentModel.id.in_(
-                        [experiment_id, historical_experiment_id]
-                    )
+                    ExperimentModel.id == experiment_id
                 )
             )
 
