@@ -316,11 +316,15 @@ def resolve_liveness(
     have created it (see :func:`_dead_owner_owns_pod`). Live always wins.
 
     ``has_live_unlinked_worker`` is decided separately: a ``RUNNING``
-    GKE-environment trial that has not yet recorded a handle -- or whose
+    GKE-classified trial that has not yet recorded a handle -- or whose
     recorded handle points at a pod that no longer exists (a retry's stale
-    handle from a previous attempt) -- could own an as-yet-unlinked pod. It is keyed off ``trials.environment = 'gke'`` (not the
-    variant id) so it also covers a GKE trial that ran on an out-of-process
-    Harbor.
+    handle from a previous attempt) -- could own an as-yet-unlinked pod. It is
+    keyed off ``trials.environment = 'gke'`` OR the gke variant id, mirroring
+    the cluster reaper: the environment column covers GKE trials on an
+    out-of-process Harbor (ephemeral variant), while the variant predicate
+    covers rows GKE-routed without a populated environment column (the
+    worker-side default fallback). Over-arming only delays orphan deletion;
+    missing a live trial would delete its pod.
     """
     by_handle = {_pod_handle(namespace, p.name): p for p in pods}
     handles = list(by_handle)
@@ -356,7 +360,8 @@ def resolve_liveness(
               ON t.id = wj.subject_id AND wj.subject_table = 'trials'
             WHERE wj.kind = 'TRIAL'
               AND wj.status = 'RUNNING'
-              AND t.environment = 'gke'
+              AND (t.environment = 'gke'
+                   OR t.harbor_config ->> 'variant_id' = 'gke')
             """
         )
         running_handles = [r[0] for r in cur.fetchall()]

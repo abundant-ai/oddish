@@ -380,6 +380,18 @@ def test_resolve_liveness_skips_handle_query_when_no_pods():
     assert view.owned_dead_pods == frozenset()
 
 
+def test_unlinked_guard_classifies_gke_like_the_cluster_reaper():
+    # The guard must recognize GKE trials by environment (out-of-process runs)
+    # OR by the gke variant id (rows routed via the worker-side default
+    # fallback, environment column unpopulated) -- one predicate alone leaves
+    # a live unlinked pod deletable as an orphan.
+    conn = _FakeConn(rows=[], has_live_unlinked_worker=False)
+    sweeper.resolve_liveness(conn, [], namespace="oddish-trials")
+    guard_sql = conn.executed[0][0]
+    assert "t.environment = 'gke'" in guard_sql
+    assert "t.harbor_config ->> 'variant_id' = 'gke'" in guard_sql
+
+
 def test_run_sweep_deletes_only_orphans_and_lists_before_db_read():
     pods = [
         _FakePod("live", age=timedelta(hours=2)),
