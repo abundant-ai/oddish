@@ -44,6 +44,8 @@ OUTCOME_ERROR = "error"
 OUTCOME_SCORELESS = "scoreless"
 OUTCOME_SKIPPED = "skipped"
 OUTCOME_RUNNING = "running"
+OUTCOME_QUEUED = "queued"
+OUTCOME_PENDING = "pending"
 
 # Bounds so a huge trajectory can't blow the analysis token budget.
 _MAX_STEPS_IN_DIGEST = 160
@@ -147,8 +149,15 @@ def _infer_outcome(ctx: dict[str, Any]) -> str:
         "AgentTimeoutError" in err or "Agent execution timed out" in err
     )
 
-    if status in ("queued", "pending", "running", "retrying"):
+    # Non-terminal statuses, mapped exactly as the frontend getMatrixStatus does
+    # (queued/pending -> queued, running -> running, retrying -> pending) so the
+    # graph terminal never disagrees with the trial drawer.
+    if status in ("queued", "pending"):
+        return OUTCOME_QUEUED
+    if status == "running":
         return OUTCOME_RUNNING
+    if status == "retrying":
+        return OUTCOME_PENDING
     if status == "skipped":
         return OUTCOME_SKIPPED
 
@@ -263,6 +272,8 @@ _OUTCOME_HINT = {
     OUTCOME_SCORELESS: "The run completed but produced NO score (verification off).",
     OUTCOME_SKIPPED: "The trial was SKIPPED (baseline gate cancelled it).",
     OUTCOME_RUNNING: "The trial is still RUNNING.",
+    OUTCOME_QUEUED: "The trial is QUEUED (waiting to start).",
+    OUTCOME_PENDING: "The trial is PENDING (retrying).",
 }
 
 # The last failing line the grader printed — a cheap, deterministic reason for

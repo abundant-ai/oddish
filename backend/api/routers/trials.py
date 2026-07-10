@@ -370,6 +370,8 @@ async def generate_trial_trajectory_graph(
     consistent. ``?refresh=true`` regenerates even if one is already stored.
     """
     auth.require_scope(APIKeyScope.TASKS)
+    from oddish.core.helpers import _has_fetchable_trajectory
+
     trial = await _get_authorized_trial(trial_id, auth)
 
     async with get_session() as session:
@@ -377,7 +379,10 @@ async def generate_trial_trajectory_graph(
         if attached_trial is None:
             raise HTTPException(status_code=404, detail="Trial not found")
 
-        if not attached_trial.has_trajectory:
+        # Mirror the trajectory endpoint's notion of "has a trajectory" — true
+        # for finished Grok Build runs (grok-build.json synthesized to ATIF),
+        # not just rows with the has_trajectory column set.
+        if not _has_fetchable_trajectory(attached_trial):
             raise HTTPException(
                 status_code=404, detail="No trajectory available for this trial"
             )

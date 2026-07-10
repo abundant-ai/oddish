@@ -580,7 +580,9 @@ export type TrajectoryGraphOutcome =
   | "error"
   | "scoreless"
   | "skipped"
-  | "running";
+  | "running"
+  | "queued"
+  | "pending";
 
 export interface TrajectoryGraphStep {
   id: string;

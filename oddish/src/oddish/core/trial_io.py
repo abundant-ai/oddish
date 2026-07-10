@@ -692,6 +692,22 @@ def _graph_is_fresh(graph: dict | None) -> bool:
     )
 
 
+# Keep in sync with backend api.services.summarize_trajectory.SCHEMA_VERSION: a
+# persisted trajectory_summary from an OLDER schema must not drive the graph's
+# phases (its shape may differ), so we only reuse a fresh one as the fallback.
+_SUMMARY_SCHEMA_VERSION = "3"
+
+
+def _fresh_persisted_summary(trial: TrialModel) -> dict | None:
+    summary = getattr(trial, "trajectory_summary", None)
+    if (
+        isinstance(summary, dict)
+        and summary.get("schema_version") == _SUMMARY_SCHEMA_VERSION
+    ):
+        return summary
+    return None
+
+
 def read_persisted_trajectory_graph(trial: TrialModel) -> dict | None:
     """Return the stored agent graph for a trial, or None if absent/stale.
 
@@ -753,7 +769,7 @@ async def generate_and_store_trajectory_graph(
             trajectory,
             ctx,
             model=settings.analysis_model,
-            summary=summary if summary is not None else trial.trajectory_summary,
+            summary=summary if summary is not None else _fresh_persisted_summary(trial),
         )
         graph["generated_at"] = datetime.now(timezone.utc).isoformat()
 
