@@ -183,16 +183,22 @@ export function TrajectoryGraphView({
     );
   }
 
-  // Not generated yet: show the manual trigger (unless there's no trajectory).
+  // No fetchable trajectory: show the empty state regardless of whether an
+  // (outdated) graph is still persisted — a trial with no trajectory shouldn't
+  // render a stale graph the user also can't regenerate (backend 404s). Note
+  // `hasTrajectory` is the computed _has_fetchable_trajectory value (true for
+  // finished Grok Build runs), so this doesn't hide legitimate graphs.
+  if (hasTrajectory === false) {
+    return (
+      <div className="text-muted-foreground flex flex-col items-center gap-2 p-10 text-sm">
+        <GitBranch className="h-6 w-6 opacity-50" />
+        This trial has no trajectory to summarize.
+      </div>
+    );
+  }
+
+  // Not generated yet: show the manual trigger.
   if (!isGraph(data)) {
-    if (hasTrajectory === false) {
-      return (
-        <div className="text-muted-foreground flex flex-col items-center gap-2 p-10 text-sm">
-          <GitBranch className="h-6 w-6 opacity-50" />
-          This trial has no trajectory to summarize.
-        </div>
-      );
-    }
     return (
       <div className="flex flex-col items-center gap-3 p-10 text-center">
         <GitBranch className="text-muted-foreground/50 h-7 w-7" />
