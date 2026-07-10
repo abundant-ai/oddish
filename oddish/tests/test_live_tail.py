@@ -935,6 +935,17 @@ async def test_run_disables_after_consecutive_failures(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_disables_immediately_when_tail_unavailable(monkeypatch):
+    monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 0.001)
+    env = FakeEnv([FakeResult(return_code=127)] * 10)
+    tailer = make_tailer(env)
+
+    await asyncio.wait_for(tailer.run(), timeout=5)
+
+    assert len(env.commands) == 1
+
+
+@pytest.mark.asyncio
 async def test_failure_cap_persists_pending_fold(monkeypatch):
     session = patch_db(monkeypatch)
     monkeypatch.setattr(live_tail.settings, "live_tail_interval_sec", 0.001)

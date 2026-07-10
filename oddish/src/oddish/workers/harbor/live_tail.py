@@ -30,6 +30,10 @@ class TailExecError(RuntimeError):
     pass
 
 
+class TailExecUnavailableError(TailExecError):
+    pass
+
+
 def split_lines(buf: bytes) -> tuple[list[bytes], bytes]:
     *lines, rest = buf.split(b"\n")
     return lines, rest
@@ -614,6 +618,11 @@ class LiveTailer:
                 failures = 0
             except asyncio.CancelledError:
                 raise
+            except TailExecUnavailableError as exc:
+                console.print(
+                    f"[dim]Trial {self.trial_id} live tail disabled: {exc}[/dim]"
+                )
+                return
             except Exception as exc:
                 failures += 1
                 if failures >= MAX_CONSECUTIVE_FAILURES:
@@ -680,6 +689,8 @@ class LiveTailer:
         )
         return_code = getattr(result, "return_code", 0)
         if return_code not in (0, None):
+            if return_code == 127:
+                raise TailExecUnavailableError(f"{source} exec failed rc=127")
             if tolerate_missing and return_code != 127 and self.offset == 0:
                 return None
             raise TailExecError(f"{source} exec failed rc={return_code}")
