@@ -145,6 +145,7 @@ def _render_tool_results(message: Any) -> list[dict[str, Any]]:
 @dataclass
 class ClaudeUsageFold:
     usage_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rendered_blocks_by_id: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     model: str | None = None
 
     @property
@@ -171,13 +172,79 @@ class ClaudeUsageFold:
                 model = message.get("model")
                 if isinstance(model, str) and model:
                     self.model = model
-            return _render_assistant_blocks(message)
+            if not msg_id:
+                return _render_assistant_blocks(message)
+            return self._render_assistant_delta(str(msg_id), message)
         if event.get("type") == "user":
             return _render_tool_results(event.get("message"))
         if event.get("type") == "result":
             value = event.get("result") or event.get("subtype") or ""
             return [_event("summary", "text", value)]
         return []
+
+    def _render_assistant_delta(
+        self, msg_id: str, message: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        content = message.get("content")
+        if not isinstance(content, list):
+            return []
+        previous = self.rendered_blocks_by_id.get(msg_id, [])
+        current: list[dict[str, Any]] = []
+        rendered: list[dict[str, Any]] = []
+        for index, block in enumerate(content):
+            if not isinstance(block, dict):
+                continue
+            state = self._block_state(block)
+            if state is None:
+                continue
+            supported_index = len(current)
+            prior = previous[supported_index] if supported_index < len(previous) else None
+            rendered.extend(self._render_block_delta(block, state, prior))
+            current.append(state)
+        self.rendered_blocks_by_id[msg_id] = current
+        return rendered
+
+    def _block_state(self, block: dict[str, Any]) -> dict[str, Any] | None:
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text")
+            if not text:
+                return None
+            return {"type": "text", "text": str(text)}
+        if block_type == "tool_use":
+            return {
+                "type": "tool_use",
+                "fingerprint": json.dumps(
+                    block, sort_keys=True, separators=(",", ":"), default=str
+                ),
+            }
+        return None
+
+    def _render_block_delta(
+        self,
+        block: dict[str, Any],
+        state: dict[str, Any],
+        prior: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if state["type"] == "text":
+            text = state["text"]
+            prior_text = (
+                prior.get("text")
+                if prior is not None and prior.get("type") == "text"
+                else None
+            )
+            if prior_text == text:
+                return []
+            if isinstance(prior_text, str) and text.startswith(prior_text):
+                text = text[len(prior_text) :]
+            return [_event("message", "text", text)] if text else []
+        if (
+            prior is not None
+            and prior.get("type") == "tool_use"
+            and prior.get("fingerprint") == state["fingerprint"]
+        ):
+            return []
+        return _render_assistant_blocks({"content": [block]})
 
     def totals(self) -> UsageTotals:
         t = UsageTotals(model=self.model)
