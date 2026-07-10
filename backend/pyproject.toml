@@ -84,6 +84,7 @@ py-modules = [
     "models",
     "observability",
     "serve",
+    "slack_notifications",
     "statsig_client",
 ]
 

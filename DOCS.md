@@ -22,6 +22,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish upload` - register a task or upload existing trials
 - `oddish ls` - list uploaded tasks
 - `oddish status` - view progress
+- `oddish logs` - stream a running trial's live transcript and cost estimate
 - `oddish cancel` - stop in-flight task runs or task-level QA jobs
 - `oddish backfill-analysis` - (re)run trial analysis for a trial, task, or experiment
 - `oddish costs` - view billable-spend accounting (org-wide, or per-user with `--user`)
@@ -33,7 +34,7 @@ export ODDISH_API_KEY="ok_..."
 - `oddish publish` / `oddish unpublish` - toggle public read-only sharing for an experiment
 - `oddish probe` - internal probe-trial helpers (`oddish probe`, `oddish probe skill add`)
 
-Every command accepts `--json` for machine-readable output (CI / scripts / agents).
+Every command except `oddish logs` accepts `--json` for machine-readable output (CI / scripts / agents).
 
 ### Lifecycle
 
@@ -302,6 +303,36 @@ oddish status --queue --stale-after 30 # widen the stale-heartbeat window
 On hosted Oddish these diagnostics require a **full-scope** API key
 (`read`/`tasks` keys get a clear error); a self-hosted core server applies no
 auth.
+
+## Stream Live Logs
+
+Use `oddish logs` to stream a **running** trial's transcript (agent messages,
+tool calls, tool results) plus a running token/cost estimate, without waiting
+for the trial to finish.
+
+```bash
+# One page of whatever has streamed so far
+oddish logs <trial_id>
+
+# Poll until the trial ends
+oddish logs <trial_id> --follow
+```
+
+Notes
+
+- Live transcripts exist only for supported agents (`claude-code`, `codex`,
+  `cursor-cli`, `mini-swe-agent`); other agents show no live events.
+- Live events are short-lived: they are purged once the trial reaches a
+  terminal state. For finished trials, use `oddish pull` (or
+  `GET /trials/{id}/logs`) to fetch the permanent logs from S3.
+- The cost line is a live estimate; the authoritative cost is settled on the
+  trial when it finishes.
+
+Options
+
+- `TRIAL_ID` - Trial ID to stream live transcript + cost for
+- `--follow`, `-f` - Poll for new events until the trial ends
+- `--api TEXT` - Override the API URL
 
 ## Cancel In-Flight Runs
 

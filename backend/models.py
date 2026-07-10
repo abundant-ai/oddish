@@ -479,6 +479,18 @@ class UserProviderKeyModel(TimestampedMixin, Base):
     key_hint: Mapped[str] = mapped_column(String(8), nullable=False, default="")
 
 
+class SlackExpenseAlertModel(Base):
+    __tablename__ = "slack_expense_alerts"
+
+    alert_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    claimed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ---------------------------------------------------------------------------
 # Soft-delete registration
 # ---------------------------------------------------------------------------

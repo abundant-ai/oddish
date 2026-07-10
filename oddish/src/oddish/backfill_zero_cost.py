@@ -84,6 +84,7 @@ async def run_backfill(*, apply: bool) -> None:
             for row in rows:
                 cost = settle_cost_usd(
                     0.0,
+                    native_cost_trusted=False,
                     model=row.model,
                     input_tokens=row.input_tokens,
                     output_tokens=row.output_tokens,
