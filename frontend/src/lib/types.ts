@@ -802,6 +802,8 @@ export interface CostUserBreakdown {
 export interface CostExperimentBreakdown {
   experiment_id: string;
   name: string | null;
+  is_deleted: boolean;
+  has_deleted_spend: boolean;
   org_id: string | null;
   owner_user_id: string | null;
   owner_name: string | null;
@@ -873,6 +875,8 @@ export interface CostBreakdownResponse {
 export interface UserCostTaskBreakdown {
   task_id: string;
   task_name: string | null;
+  is_deleted: boolean;
+  has_deleted_spend: boolean;
   trial_count: number;
   cost_usd: number;
   cost_estimated_usd: number;
@@ -882,6 +886,8 @@ export interface UserCostTaskBreakdown {
 export interface UserCostExperimentBreakdown {
   experiment_id: string;
   name: string | null;
+  is_deleted: boolean;
+  has_deleted_spend: boolean;
   trial_count: number;
   cost_usd: number;
   models: CostModelBreakdown[];

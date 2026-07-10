@@ -506,6 +506,11 @@ function MethodologyNote() {
             experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
+            Deleted trials, tasks, and experiments remain included because
+            deleting a record does not erase historical spend. A badge marks
+            affected experiment rows.
+          </li>
+          <li>
             Per-user attributes each trial to its billed user; spend with no
             active payer falls to its GitHub identity, submitter, or an{" "}
             <strong>unbilled</strong> &ldquo;Unattributed&rdquo; bucket.
@@ -589,8 +594,8 @@ export function CostBreakdownCard() {
         </div>
         <p className="text-muted-foreground text-xs">
           All first-party trial spend across all organizations, including
-          unbilled spend that never resolved to a registered user — see the
-          info icon for methodology.
+          deleted historical spend and unbilled spend that never resolved to a
+          registered user — see the info icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -670,7 +675,8 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
   const monthCost = totals.month_cost_usd ?? 0;
   const budget = totals.month_budget_usd;
-  const monthPct = budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
+  const monthPct =
+    budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
   const monthFill =
     monthPct != null && monthPct >= 80
       ? "bg-destructive"
@@ -697,7 +703,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         </div>
         <div className="text-muted-foreground text-[10px]">
           Monthly quota
-          {monthPct != null ? ` · ${Math.round(monthPct)}%` : " · month to date"}
+          {monthPct != null
+            ? ` · ${Math.round(monthPct)}%`
+            : " · month to date"}
         </div>
         {monthPct != null && (
           <div className="bg-muted-foreground/20 mx-auto mt-1 h-1.5 w-24 overflow-hidden rounded-full">
@@ -814,8 +822,8 @@ function UserTable({
                 <span className="cursor-help">24h quota</span>
               </TooltipTrigger>
               <TooltipContent className="max-w-[280px]">
-                Rolling-24h settled spend vs quota limit — the enforcement basis,
-                so it will not match the window cost column.
+                Rolling-24h settled spend vs quota limit — the enforcement
+                basis, so it will not match the window cost column.
               </TooltipContent>
             </Tooltip>
           </TableHead>
@@ -968,6 +976,33 @@ function ModelTable({
   );
 }
 
+function DeletedSpendBadge({
+  isDeleted,
+  hasDeletedSpend,
+}: {
+  isDeleted: boolean;
+  hasDeletedSpend: boolean;
+}) {
+  if (!hasDeletedSpend) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="text-muted-foreground cursor-help text-[9px] font-normal"
+        >
+          {isDeleted ? "deleted" : "includes deleted"}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[280px]">
+        {isDeleted
+          ? "This experiment was deleted, but its historical spend still counts."
+          : "This experiment includes spend from deleted trials or tasks."}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ExperimentTable({
   experiments,
 }: {
@@ -1008,13 +1043,28 @@ function ExperimentTable({
         {experiments.map((exp) => (
           <TableRow key={exp.experiment_id}>
             <TableCell className="max-w-[220px]">
-              <Link
-                href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
-                className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
-                title={exp.name ?? exp.experiment_id}
-              >
-                {exp.name ?? exp.experiment_id}
-              </Link>
+              <span className="inline-flex items-center gap-1.5">
+                {exp.is_deleted ? (
+                  <span
+                    className="truncate text-xs font-medium"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </span>
+                ) : (
+                  <Link
+                    href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
+                    className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </Link>
+                )}
+                <DeletedSpendBadge
+                  isDeleted={exp.is_deleted}
+                  hasDeletedSpend={exp.has_deleted_spend}
+                />
+              </span>
             </TableCell>
             <TableCell className="text-muted-foreground text-[11px]">
               {exp.owner_name ?? exp.owner_email ?? exp.owner_label ?? "—"}

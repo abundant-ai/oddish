@@ -30,7 +30,7 @@ from oddish.db import (
     utcnow,
 )
 from oddish.db.storage import get_storage_client, resolve_task_directory
-from oddish.model_pricing import settle_cost_usd
+from oddish.model_pricing import is_native_cost_trusted, settle_cost_usd
 from oddish.worker.probe_analysis import (
     extract_probe_artifacts,
     run_probe_analyzer,
@@ -706,6 +706,12 @@ async def _store_trial_results(
             trial.total_steps = outcome.total_steps
             trial.cost_usd = settle_cost_usd(
                 outcome.cost_usd,
+                native_cost_trusted=is_native_cost_trusted(
+                    agent=getattr(trial, "agent", None),
+                    provider=settings.get_provider_for_trial(
+                        getattr(trial, "agent", ""), trial.model
+                    ),
+                ),
                 model=trial.model,
                 input_tokens=outcome.input_tokens,
                 output_tokens=outcome.output_tokens,
