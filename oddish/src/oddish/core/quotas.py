@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.cost_basis import (
+    first_party_spend_filter,
     settled_cost_columns,
     settled_cost_from_row,
     sum_settled_cost,
@@ -55,7 +56,7 @@ def _settled_cost_predicates(
         if inclusive_start
         else TrialModel.finished_at > period_start
     )
-    return [TrialModel.org_id == org_id, boundary]
+    return [TrialModel.org_id == org_id, boundary, first_party_spend_filter()]
 
 
 async def _sum_settled_cost_usd(session: AsyncSession, predicates: list) -> Decimal:
@@ -133,6 +134,7 @@ async def sum_cost_usd_by_org_user_all_orgs(
         .where(
             TrialModel.finished_at > period_start,
             TrialModel.billed_user_id.is_not(None),
+            first_party_spend_filter(),
         )
         .group_by(TrialModel.org_id, TrialModel.billed_user_id, TrialModel.model)
         .execution_options(include_deleted=True)

@@ -43,8 +43,42 @@ async def test_zero_harness_cost_settles_to_token_estimate(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_positive_native_cost_is_kept_verbatim(monkeypatch):
-    trial = _trial(agent="claude-code", model="claude-opus-4-7")
+@pytest.mark.parametrize(
+    "model",
+    [
+        "claude-opus-4-7",
+        "bedrock/global.anthropic.claude-opus-4-7",
+    ],
+)
+async def test_positive_native_cost_is_kept_for_anthropic_claude(monkeypatch, model):
+    trial = _trial(agent="claude-code", model=model)
+    await _store(monkeypatch, trial, _outcome(cost_usd=4.56))
+    assert trial.cost_usd == pytest.approx(4.56)
+
+
+@pytest.mark.asyncio
+async def test_positive_native_cost_is_ignored_for_fireworks_claude_code(monkeypatch):
+    trial = _trial(agent="claude-code", model="fireworks/minimax-m3")
+    await _store(
+        monkeypatch,
+        trial,
+        _outcome(
+            cost_usd=14.941,
+            input_tokens=2_000_000,
+            cache_tokens=1_000_000,
+            output_tokens=100_000,
+        ),
+    )
+    expected = 1_000_000 * 3e-7 + 1_000_000 * 6e-8 + 100_000 * 1.2e-6
+    assert trial.cost_usd == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+async def test_positive_native_cost_is_kept_for_non_claude_fireworks_agent(monkeypatch):
+    trial = _trial(
+        agent="mini-swe-agent",
+        model="fireworks_ai/accounts/fireworks/models/minimax-m3",
+    )
     await _store(monkeypatch, trial, _outcome(cost_usd=4.56))
     assert trial.cost_usd == pytest.approx(4.56)
 
