@@ -29,8 +29,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Bump when the graph shape changes so persisted graphs are regenerated on read
-# (see ``core.trial_io._graph_is_fresh``).
-GRAPH_SCHEMA_VERSION = "1"
+# (see ``core.trial_io._graph_is_fresh``). v2: word-boundary clipping + wider
+# field limits (v1 graphs were stored mid-word truncated).
+GRAPH_SCHEMA_VERSION = "2"
 
 # Terminal outcomes. Kept in sync with the frontend renderer's node styling AND
 # with the app's own trial classification (frontend `getMatrixStatus`): a full
@@ -198,7 +199,14 @@ def _clip(text: Any, limit: int = _MAX_FIELD_CHARS) -> str:
     if not text:
         return ""
     s = str(text).strip().replace("\n", " ")
-    return s if len(s) <= limit else s[: limit - 1] + "…"
+    if len(s) <= limit:
+        return s
+    # Break at the last word boundary so we never chop mid-word (e.g. "ram…").
+    cut = s[: limit - 1].rstrip()
+    space = cut.rfind(" ")
+    if space >= int(limit * 0.6):
+        cut = cut[:space].rstrip()
+    return cut + "…"
 
 
 def _content_text(content: Any) -> str:
@@ -306,7 +314,7 @@ def _grounded_reason(ctx: dict[str, Any], outcome: str) -> str:
     for ln in reversed(lines):
         low = ln.lower()
         if any(m in low for m in _FAIL_LINE_MARKERS):
-            return f"{reason} Grader: {_clip(ln, 200)}"
+            return f"{reason} Grader: {_clip(ln, 300)}"
     return reason
 
 
@@ -430,7 +438,7 @@ def _last_action(digest: list[dict[str, Any]]) -> str:
         if d["tools"]:
             return f"Called {d['tools'][0]}"
         if d["message"]:
-            return _clip(d["message"], 120)
+            return _clip(d["message"], 240)
     return "No recorded action"
 
 
@@ -450,7 +458,7 @@ def _normalize_graph(
             {
                 "id": f"s{i}",
                 "title": _clip(s.get("title") or f"Step {i + 1}", 80),
-                "detail": _clip(s.get("detail"), 240),
+                "detail": _clip(s.get("detail"), 400),
                 "status": status,
             }
         )
@@ -464,12 +472,12 @@ def _normalize_graph(
     terminal_in = raw.get("terminal") if isinstance(raw, dict) else None
     terminal_in = terminal_in if isinstance(terminal_in, dict) else {}
     graph = {
-        "headline": _clip(raw.get("headline"), 200)
+        "headline": _clip(raw.get("headline"), 400)
         or f"{ctx.get('agent_name') or 'agent'}: {outcome}",
         "steps": steps,
         "terminal": {
-            "last_action": _clip(terminal_in.get("last_action") or _last_action(digest), 160),
-            "reason": _clip(terminal_in.get("reason"), 240) or _grounded_reason(ctx, outcome),
+            "last_action": _clip(terminal_in.get("last_action") or _last_action(digest), 240),
+            "reason": _clip(terminal_in.get("reason"), 400) or _grounded_reason(ctx, outcome),
         },
     }
     return _finalize(graph, ctx, outcome)
@@ -609,7 +617,7 @@ def _graph_from_summary(
             {
                 "id": f"s{i}",
                 "title": _clip(ph.get("label") or f"Phase {i + 1}", 80),
-                "detail": _clip(ph.get("gist"), 240),
+                "detail": _clip(ph.get("gist"), 400),
                 "status": status,
             }
         )
@@ -641,11 +649,11 @@ def _graph_from_summary(
             default=None,
         )
         if latest:
-            last_action = _clip(latest.get("title"), 120)
+            last_action = _clip(latest.get("title"), 240)
     if not last_action:
         last_action = "No recorded action"
 
-    headline = _clip(summary.get("summary"), 200) or (
+    headline = _clip(summary.get("summary"), 400) or (
         f"{ctx.get('agent_name') or 'agent'} on {ctx.get('task_name') or 'task'}: {outcome}"
     )
     graph = {
