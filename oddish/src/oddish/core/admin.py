@@ -1164,6 +1164,8 @@ class CostUserBreakdown(BaseModel):
 class CostExperimentBreakdown(BaseModel):
     experiment_id: str
     name: str | None
+    is_deleted: bool = False
+    has_deleted_spend: bool = False
     org_id: str | None
     owner_user_id: str | None
     owner_name: str | None = None
@@ -1387,6 +1389,7 @@ async def _cost_time_series(
     if since is not None:
         query = query.where(TrialModel.finished_at >= since)
 
+    query = query.execution_options(include_deleted=True)
     rows = (await session.execute(query)).all()
 
     agent_per_bucket: dict[datetime, dict[str, float]] = {}
@@ -1491,6 +1494,7 @@ async def _primary_task_authors(
                 TaskModel.id.asc(),
             )
             .distinct(task_experiments.c.experiment_id)
+            .execution_options(include_deleted=True)
         )
     ).all()
     authors: dict[str, str] = {}
@@ -1506,8 +1510,8 @@ async def _prev_window_costs(
 ) -> tuple[dict[tuple[str | None, str], float], float]:
     """Per-(org, payer) spend and total spend for the prior adjacent window.
 
-    Mirrors the main breakdown's basis exactly: same joins (so the session's
-    soft-delete filtering applies), same real-spend gate, same payer identity.
+    Mirrors the main breakdown's basis exactly: same joins, same real-spend
+    gate, same payer identity, and the same historical soft-deleted spend.
     """
     gh_id_col = TaskModel.tags["github_id"].astext
     gh_user_col = TaskModel.tags["github_username"].astext
@@ -1536,6 +1540,7 @@ async def _prev_window_costs(
             TaskModel.created_by_user_id,
             TrialModel.model,
         )
+        .execution_options(include_deleted=True)
     )
     rows = (await session.execute(query)).all()
 
@@ -1589,6 +1594,7 @@ async def _billed_cost_since(
         if not org_ids:
             return 0.0
         query = query.where(_org_id_predicate(org_ids))
+    query = query.execution_options(include_deleted=True)
     rows = (await session.execute(query)).all()
     total = sum(settled_cost_from_row(row) for row in rows)
     return round(total, 4)
@@ -1619,6 +1625,7 @@ async def get_cost_breakdown_core(
         select(
             TrialModel.experiment_id.label("experiment_id"),
             ExperimentModel.name.label("exp_name"),
+            ExperimentModel.deleted_at.is_not(None).label("exp_deleted"),
             ExperimentModel.org_id.label("exp_org_id"),
             TrialModel.org_id.label("trial_org_id"),
             ExperimentModel.owner_user_id.label("owner_user_id"),
@@ -1635,6 +1642,13 @@ async def get_cost_breakdown_core(
             func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
             func.coalesce(func.sum(TrialModel.output_tokens), 0).label("output_tokens"),
+            func.bool_or(
+                or_(
+                    TrialModel.deleted_at.is_not(None),
+                    ExperimentModel.deleted_at.is_not(None),
+                    TaskModel.deleted_at.is_not(None),
+                )
+            ).label("has_deleted_spend"),
             *settled_cost_columns(),
         )
         .join(ExperimentModel, ExperimentModel.id == TrialModel.experiment_id)
@@ -1644,6 +1658,7 @@ async def get_cost_breakdown_core(
         .group_by(
             TrialModel.experiment_id,
             ExperimentModel.name,
+            ExperimentModel.deleted_at,
             ExperimentModel.org_id,
             ExperimentModel.owner_user_id,
             ExperimentModel.owner,
@@ -1657,6 +1672,7 @@ async def get_cost_breakdown_core(
             TrialModel.model,
             TrialModel.provider,
         )
+        .execution_options(include_deleted=True)
     )
     detail_query = detail_query.where(
         _real_spend_filter(), TrialModel.finished_at.isnot(None)
@@ -1716,6 +1732,8 @@ async def get_cost_breakdown_core(
             exp = experiments[row.experiment_id] = {
                 "experiment_id": row.experiment_id,
                 "name": row.exp_name,
+                "is_deleted": bool(row.exp_deleted),
+                "has_deleted_spend": bool(row.has_deleted_spend),
                 "org_id": row.exp_org_id,
                 "owner_user_id": owner_user_id,
                 "owner": row.exp_owner,
@@ -1729,6 +1747,10 @@ async def get_cost_breakdown_core(
                 "cost_estimated_usd": 0.0,
                 "models": {},
             }
+        else:
+            exp["has_deleted_spend"] = exp["has_deleted_spend"] or bool(
+                row.has_deleted_spend
+            )
         exp["trial_count"] += trial_count
         exp["input_tokens"] += input_tokens
         exp["cache_tokens"] += cache_tokens
@@ -1813,6 +1835,7 @@ async def get_cost_breakdown_core(
                 TrialModel.finished_at >= month_start,
             )
             .distinct()
+            .execution_options(include_deleted=True)
         )
     ).all()
     month_limits_by_org = {
@@ -1900,6 +1923,8 @@ async def get_cost_breakdown_core(
         CostExperimentBreakdown(
             experiment_id=str(e["experiment_id"]),
             name=e["name"],
+            is_deleted=e["is_deleted"],
+            has_deleted_spend=e["has_deleted_spend"],
             org_id=e["org_id"],
             owner_user_id=e["owner_user_id"],
             owner_label=_clean_author(e["owner"])
@@ -1955,6 +1980,8 @@ async def get_cost_breakdown_core(
 class CostTaskBreakdown(BaseModel):
     task_id: str
     task_name: str | None
+    is_deleted: bool = False
+    has_deleted_spend: bool = False
     trial_count: int
     input_tokens: int
     cache_tokens: int
@@ -1967,6 +1994,8 @@ class CostTaskBreakdown(BaseModel):
 class UserCostExperimentBreakdown(BaseModel):
     experiment_id: str
     name: str | None
+    is_deleted: bool = False
+    has_deleted_spend: bool = False
     trial_count: int
     cost_usd: float
     models: list[CostModelBreakdown]
@@ -2028,8 +2057,16 @@ async def get_user_cost_breakdown_core(
         select(
             TrialModel.task_id.label("task_id"),
             TaskModel.name.label("task_name"),
+            TaskModel.deleted_at.is_not(None).label("task_deleted"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
+            func.bool_or(
+                or_(
+                    TrialModel.deleted_at.is_not(None),
+                    TaskModel.deleted_at.is_not(None),
+                    ExperimentModel.deleted_at.is_not(None),
+                )
+            ).label("has_deleted_spend"),
             *settled_cost_columns(),
             func.coalesce(func.sum(TrialModel.input_tokens), 0).label("input_tokens"),
             func.coalesce(func.sum(TrialModel.cache_tokens), 0).label("cache_tokens"),
@@ -2037,10 +2074,16 @@ async def get_user_cost_breakdown_core(
             func.count(TrialModel.id).label("trial_count"),
         )
         .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
+        .join(
+            ExperimentModel,
+            ExperimentModel.id == TrialModel.experiment_id,
+            isouter=True,
+        )
         .where(*filters)
         .group_by(
             TrialModel.task_id,
             TaskModel.name,
+            TaskModel.deleted_at,
             TrialModel.model,
             TrialModel.provider,
         )
@@ -2108,6 +2151,8 @@ async def get_user_cost_breakdown_core(
             task = tasks[row.task_id] = {
                 "task_id": row.task_id,
                 "task_name": row.task_name,
+                "is_deleted": bool(row.task_deleted),
+                "has_deleted_spend": bool(row.has_deleted_spend),
                 "trial_count": 0,
                 "input_tokens": 0,
                 "cache_tokens": 0,
@@ -2116,6 +2161,10 @@ async def get_user_cost_breakdown_core(
                 "cost_estimated_usd": 0.0,
                 "models": {},
             }
+        else:
+            task["has_deleted_spend"] = task["has_deleted_spend"] or bool(
+                row.has_deleted_spend
+            )
         task["trial_count"] += trial_count
         task["input_tokens"] += input_tokens
         task["cache_tokens"] += cache_tokens
@@ -2148,8 +2197,16 @@ async def get_user_cost_breakdown_core(
         select(
             TrialModel.experiment_id.label("experiment_id"),
             ExperimentModel.name.label("exp_name"),
+            ExperimentModel.deleted_at.is_not(None).label("exp_deleted"),
             TrialModel.model.label("model"),
             TrialModel.provider.label("provider"),
+            func.bool_or(
+                or_(
+                    TrialModel.deleted_at.is_not(None),
+                    ExperimentModel.deleted_at.is_not(None),
+                    TaskModel.deleted_at.is_not(None),
+                )
+            ).label("has_deleted_spend"),
             *settled_cost_columns(),
             func.count(TrialModel.id).label("trial_count"),
         )
@@ -2158,10 +2215,12 @@ async def get_user_cost_breakdown_core(
             ExperimentModel.id == TrialModel.experiment_id,
             isouter=True,
         )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id, isouter=True)
         .where(*filters)
         .group_by(
             TrialModel.experiment_id,
             ExperimentModel.name,
+            ExperimentModel.deleted_at,
             TrialModel.model,
             TrialModel.provider,
         )
@@ -2181,10 +2240,16 @@ async def get_user_cost_breakdown_core(
             exp = exps[row.experiment_id] = {
                 "experiment_id": row.experiment_id,
                 "name": row.exp_name,
+                "is_deleted": bool(row.exp_deleted),
+                "has_deleted_spend": bool(row.has_deleted_spend),
                 "trial_count": 0,
                 "cost_usd": 0.0,
                 "models": {},
             }
+        else:
+            exp["has_deleted_spend"] = exp["has_deleted_spend"] or bool(
+                row.has_deleted_spend
+            )
         exp["trial_count"] += trial_count
         exp["cost_usd"] += cost
         _accumulate_model(
@@ -2203,6 +2268,8 @@ async def get_user_cost_breakdown_core(
         UserCostExperimentBreakdown(
             experiment_id=str(e["experiment_id"]),
             name=e["name"],
+            is_deleted=e["is_deleted"],
+            has_deleted_spend=e["has_deleted_spend"],
             trial_count=int(e["trial_count"]),
             cost_usd=round(float(e["cost_usd"]), 4),
             models=_model_breakdowns(e["models"], limit=_MAX_MODELS_PER_EXPERIMENT),
@@ -2219,6 +2286,8 @@ async def get_user_cost_breakdown_core(
         CostTaskBreakdown(
             task_id=str(t["task_id"]),
             task_name=t["task_name"],
+            is_deleted=t["is_deleted"],
+            has_deleted_spend=t["has_deleted_spend"],
             trial_count=int(t["trial_count"]),
             input_tokens=int(t["input_tokens"]),
             cache_tokens=int(t["cache_tokens"]),

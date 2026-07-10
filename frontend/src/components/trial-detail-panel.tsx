@@ -35,6 +35,7 @@ import {
   ChevronRight,
   RotateCcw,
   Loader2,
+  Radio,
   Microscope,
   CheckCircle2,
   XCircle,
@@ -66,6 +67,7 @@ import {
 } from "@/lib/status-config";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
+import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 
@@ -346,7 +348,7 @@ export function TrialDetailPanel({
   const searchParams = useSearchParams();
 
   const validTabs = useMemo(
-    () => new Set(["summary", "files", "trajectory", "artifacts"]),
+    () => new Set(["summary", "live", "files", "trajectory", "artifacts"]),
     [],
   );
 
@@ -554,6 +556,10 @@ export function TrialDetailPanel({
     trial.reward,
     trial.error_message,
   );
+  const showLive =
+    showAnalysis && (trial.status === "running" || trial.status === "retrying");
+  const effectiveTab =
+    activeTab === "live" && !showLive ? "summary" : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
@@ -892,7 +898,7 @@ export function TrialDetailPanel({
       </DrawerHeader>
 
       <Tabs
-        value={activeTab}
+        value={effectiveTab}
         onValueChange={setActiveTab}
         className="flex flex-1 flex-col overflow-hidden"
       >
@@ -905,6 +911,15 @@ export function TrialDetailPanel({
               <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
+            {showLive && (
+              <TabsTrigger
+                value="live"
+                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
+              >
+                <Radio className="mr-1 h-3.5 w-3.5 text-red-500 sm:mr-2 sm:h-4 sm:w-4" />
+                Live
+              </TabsTrigger>
+            )}
             <TabsTrigger
               value="files"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1139,6 +1154,16 @@ export function TrialDetailPanel({
               )}
             </div>
           </TabsContent>
+
+          {showLive && (
+            <TabsContent value="live" className="m-0 h-full p-0">
+              <LiveTranscriptPanel
+                key={trial.id}
+                trialId={trial.id}
+                apiBaseUrl={apiBaseUrl}
+              />
+            </TabsContent>
+          )}
 
           <TabsContent value="files" className="m-0 h-full p-0">
             <TaskFilesPanel
