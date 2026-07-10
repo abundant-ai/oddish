@@ -182,7 +182,7 @@ Common optional settings:
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
-- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications (on by default for the production app; defaults to experiment alerts at each $1,000 milestone and anomaly alerts for trials over $70 that exceed twice the average of other trials for the same task and model; thresholds and the experiment repeat interval use the `ODDISH_SLACK_*` settings in `.env.example`; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only webhook secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`)
+- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications (on by default for the production app; defaults to experiment alerts at each $1,000 milestone and anomaly alerts for trials over $70 that exceed twice the average of other trials in the experiment for the same task and model; thresholds and the experiment repeat interval use the `ODDISH_SLACK_*` settings in `.env.example`; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only webhook secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`)
 
 ### Observability (Pydantic Logfire)
 
