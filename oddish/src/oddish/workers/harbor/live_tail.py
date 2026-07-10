@@ -430,6 +430,7 @@ class MiniSweUsageFold:
 
     model: str | None = None
     emitted: int = 0
+    _message_fingerprints: list[str] = field(default_factory=list)
     _totals: UsageTotals = field(default_factory=UsageTotals)
     _has_usage: bool = False
 
@@ -448,9 +449,13 @@ class MiniSweUsageFold:
         if isinstance(raw_messages, list):
             messages = raw_messages
             if len(messages) < self.emitted:
-                self.emitted = 0
+                fingerprints = self._fingerprints(messages)
+                self.emitted = self._common_prefix_len(fingerprints)
+            else:
+                fingerprints = self._fingerprints(messages)
         else:
             messages = []
+            fingerprints = None
         model = (
             ((document.get("info") or {}).get("config") or {}).get("model") or {}
         ).get("model_name")
@@ -471,7 +476,23 @@ class MiniSweUsageFold:
             if isinstance(message, dict):
                 rendered.extend(self._render_message(message, is_task=i == task_index))
         self.emitted = max(self.emitted, len(messages))
+        if fingerprints is not None:
+            self._message_fingerprints = fingerprints
         return rendered
+
+    def _fingerprints(self, messages: list[Any]) -> list[str]:
+        return [
+            json.dumps(message, sort_keys=True, separators=(",", ":"), default=str)
+            for message in messages
+        ]
+
+    def _common_prefix_len(self, fingerprints: list[str]) -> int:
+        common = 0
+        for old, new in zip(self._message_fingerprints, fingerprints):
+            if old != new:
+                break
+            common += 1
+        return common
 
     def _recompute_usage(self, messages: list[Any]) -> None:
         input_tokens = output_tokens = cache_tokens = 0
