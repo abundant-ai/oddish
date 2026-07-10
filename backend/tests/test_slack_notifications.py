@@ -15,6 +15,7 @@ from slack_notifications import (
     ExperimentCandidate,
     SlackAlert,
     TrialSpend,
+    UnpricedModel,
     build_alerts,
     load_alerts,
     send_alerts,
@@ -186,6 +187,49 @@ def test_build_alerts_requires_more_than_double_other_trial_average() -> None:
     assert [alert.key for alert in over_double] == ["trial:over-double:100:2"]
 
 
+def test_build_alerts_reports_unpriceable_models_once_each() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        unpriced_models=[
+            UnpricedModel(model="mystery/model-x", trial_count=3, task_id="task/9"),
+        ],
+    )
+
+    assert [alert.key for alert in alerts] == ["unpriced-model:mystery/model-x"]
+    text = alerts[0].text
+    assert "*Unpriceable model:*" in text
+    assert "`mystery/model-x`" in text
+    assert "3 recent trials recorded" in text
+    assert "/tasks/task%2F9|open task>" in text
+
+
+def test_build_alerts_unpriceable_model_uses_singular_for_one_trial() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Experiment", None, 0)],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        unpriced_models=[
+            UnpricedModel(model="mystery/model-x", trial_count=1, task_id="task/9"),
+        ],
+    )
+
+    assert "1 recent trial recorded" in alerts[0].text
+
+
 def test_build_alerts_ignores_old_trials() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
@@ -320,17 +364,39 @@ async def test_load_alerts_uses_settled_trial_costs(
                     cost_usd=3000,
                     deleted_at=now,
                 ),
+                # Unpriceable: real tokens, no native cost, and no rate resolves
+                # -> settles to $0 and should raise an unpriced-model alert.
+                TrialModel(
+                    id=f"{task_id}-unpriced",
+                    name="unpriced",
+                    task_id=task_id,
+                    experiment_id=experiment_id,
+                    agent="claude-code",
+                    provider="made-up",
+                    model="made-up/no-such-model-9000",
+                    queue_key="test",
+                    status=TrialStatus.SUCCESS,
+                    origin=TrialOrigin.ODDISH,
+                    is_probe=False,
+                    output_tokens=1_000,
+                    finished_at=now,
+                ),
             ]
         )
 
     try:
         alerts = await load_alerts(now)
+        # The gpt-5.3 outlier has NULL cost + tokens too, but gpt-5.3 IS priced,
+        # so it produces a token estimate and never appears as unpriceable --
+        # the token estimate does not falsely trigger the alert.
         assert [alert.key for alert in alerts] == [
             f"experiment:{experiment_id}:100",
             f"trial:{task_id}-outlier:100:2",
+            "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "finished" in alerts[0].text
         assert "same-task/model average" in alerts[1].text
+        assert "*Unpriceable model:*" in alerts[2].text
     finally:
         async with get_session() as session:
             await session.execute(
