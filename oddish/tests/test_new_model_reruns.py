@@ -23,7 +23,7 @@ import pytest_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from oddish.db import TaskModel, TrialModel, get_session  # noqa: E402
+from oddish.db import TaskModel, TrialModel, TrialStatus, get_session  # noqa: E402
 from oddish.queue import create_task  # noqa: E402
 from oddish.schemas import (  # noqa: E402
     AgentModelPair,
@@ -210,3 +210,163 @@ async def test_new_experiment_gets_full_n_trials(seeded_task_id):
         f"exp-b should have {N_TRIALS} trials (new experiment = 0 existing), "
         f"got {counts_by_exp[exp_b_obj.id]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_identical_sweep_replaces_failed_trials_and_hides_history(
+    seeded_task_id,
+):
+    """A repeated manifest retries failed slots immutably instead of either
+    no-oping or adding another visible failure beside them."""
+    from sqlalchemy import select
+
+    from oddish.config import settings
+    from oddish.core.endpoints import (
+        create_task_sweep_core,
+        replay_has_retryable_failed_trials,
+    )
+
+    experiment_name = f"exp-retry-{_RUN}"
+    submission = TaskSweepSubmission(
+        task_id=seeded_task_id,
+        append_to_task=True,
+        experiment_id=experiment_name,
+        configs=[AgentModelPair(agent=AGENT, model=MODEL_A, n_trials=N_TRIALS)],
+        user="test",
+    )
+
+    async with get_session() as session:
+        _task, original_trials, _is_append, _experiment = await create_task_sweep_core(
+            session, submission=submission, org_id=None
+        )
+    original_ids = [trial.id for trial in original_trials]
+    assert len(original_ids) == N_TRIALS
+
+    async with get_session() as session:
+        originals = (
+            await session.execute(
+                select(TrialModel).where(TrialModel.id.in_(original_ids))
+            )
+        ).scalars()
+        for trial in originals:
+            trial.status = TrialStatus.FAILED
+
+    replay_json = {"new_trial_ids": original_ids}
+    async with get_session() as session:
+        assert await replay_has_retryable_failed_trials(
+            session, replay_json, org_id=None
+        )
+
+    async with get_session() as session:
+        _task, replacements, _is_append, _experiment = await create_task_sweep_core(
+            session, submission=submission, org_id=None
+        )
+    replacement_ids = [trial.id for trial in replacements]
+    assert len(replacement_ids) == N_TRIALS
+
+    normalized_model = settings.normalize_trial_model(AGENT, MODEL_A)
+    async with get_session() as session:
+        all_attempts = (
+            (
+                await session.execute(
+                    select(TrialModel)
+                    .where(
+                        TrialModel.task_id == seeded_task_id,
+                        TrialModel.agent == AGENT,
+                        TrialModel.model == normalized_model,
+                    )
+                    .order_by(TrialModel.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        live = [trial for trial in all_attempts if not trial.superseded_by_trial_id]
+        superseded = [trial for trial in all_attempts if trial.superseded_by_trial_id]
+
+        assert {trial.id for trial in live} == set(replacement_ids)
+        assert {trial.id for trial in superseded} == set(original_ids)
+        assert {trial.superseded_by_trial_id for trial in superseded} == set(
+            replacement_ids
+        )
+        assert {trial.task_version_id for trial in live} == {
+            trial.task_version_id for trial in superseded
+        }
+
+        # The stable idempotency response follows the immutable retry chain;
+        # queued replacements remain deduplicated instead of retrying again.
+        assert not await replay_has_retryable_failed_trials(
+            session, replay_json, org_id=None
+        )
+
+    async with get_session() as session:
+        _task, no_new_trials, _is_append, _experiment = await create_task_sweep_core(
+            session, submission=submission, org_id=None
+        )
+    assert no_new_trials == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_collapses_duplicate_failures_onto_one_replacement(
+    seeded_task_id,
+):
+    """Historical duplicate failures disappear from the normal matrix when a
+    smaller declarative sweep asks for one healthy slot."""
+    from sqlalchemy import select
+
+    from oddish.config import settings
+    from oddish.core.endpoints import create_task_sweep_core
+
+    experiment_name = f"exp-collapse-{_RUN}"
+    initial = TaskSweepSubmission(
+        task_id=seeded_task_id,
+        append_to_task=True,
+        experiment_id=experiment_name,
+        configs=[AgentModelPair(agent=AGENT, model=MODEL_B, n_trials=2)],
+        user="test",
+    )
+    async with get_session() as session:
+        _task, failed_trials, _is_append, _experiment = await create_task_sweep_core(
+            session, submission=initial, org_id=None
+        )
+    failed_ids = [trial.id for trial in failed_trials]
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(TrialModel).where(TrialModel.id.in_(failed_ids))
+            )
+        ).scalars()
+        for trial in rows:
+            trial.status = TrialStatus.FAILED
+
+    reconcile_one = initial.model_copy(
+        update={"configs": [AgentModelPair(agent=AGENT, model=MODEL_B, n_trials=1)]}
+    )
+    async with get_session() as session:
+        _task, replacements, _is_append, _experiment = await create_task_sweep_core(
+            session, submission=reconcile_one, org_id=None
+        )
+    assert len(replacements) == 1
+    replacement_id = replacements[0].id
+
+    normalized_model = settings.normalize_trial_model(AGENT, MODEL_B)
+    async with get_session() as session:
+        attempts = (
+            (
+                await session.execute(
+                    select(TrialModel).where(
+                        TrialModel.task_id == seeded_task_id,
+                        TrialModel.agent == AGENT,
+                        TrialModel.model == normalized_model,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [trial.id for trial in attempts if not trial.superseded_by_trial_id] == [
+        replacement_id
+    ]
+    assert {
+        trial.superseded_by_trial_id for trial in attempts if trial.id in failed_ids
+    } == {replacement_id}

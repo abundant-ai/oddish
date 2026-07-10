@@ -43,6 +43,7 @@ from oddish.core.endpoints import (
     list_experiment_slim_tasks,
     list_experiment_task_shells_core,
     list_tasks_core,
+    replay_has_retryable_failed_trials,
     list_task_versions_core,
     rerun_task_qa_core,
     unlink_task_from_experiment_core,
@@ -294,7 +295,9 @@ async def create_task_sweep(
     """Submit a task sweep - expands a task_id into many trials.
 
     A retried submission carrying the same ``Idempotency-Key`` replays the
-    original response instead of creating duplicate trials.
+    original response instead of creating duplicate trials while its current
+    trial leaves are non-failed. Failed leaves turn the same declarative sweep
+    into immutable replacement trials.
     """
     auth.require_scope(APIKeyScope.TASKS)
 
@@ -309,12 +312,11 @@ async def create_task_sweep(
     request_hash = compute_request_hash(submission)
 
     async with get_session() as session:
-        # A COMPLETED, hash-matched, unexpired idempotency record must replay the
-        # stored response BEFORE the linkage gate: a faithful retry of an
-        # already-created sweep must not 403 just because the linked user was
-        # deactivated (or lost their github_id) in between. Every other case (no
-        # record, in-progress, hash mismatch, expired) returns None and falls
-        # through to the unchanged gate-then-core path below.
+        # A COMPLETED, hash-matched, unexpired idempotency record normally
+        # replays BEFORE the linkage gate: a faithful transport retry must not
+        # 403 just because linked-user state changed after submission. A failed
+        # current leaf is different: it makes this an intentional rerun, so it
+        # falls through the current linkage/billing gates and sweep reconcile.
         if idempotency_key:
             replay_json = await probe_completed_replay(
                 SubmissionIdempotencyStore(session),
@@ -325,7 +327,17 @@ async def create_task_sweep(
                 now=utcnow(),
             )
             if replay_json is not None:
-                return TaskResponse.model_validate(replay_json)
+                if await replay_has_retryable_failed_trials(
+                    session, replay_json, org_id=auth.org_id
+                ):
+                    # The stable CLI key normally identifies a transport replay.
+                    # Once its current retry-chain leaf has failed, the same
+                    # command is instead an intentional retry. Reconciliation is
+                    # task-row locked, so bypassing the old reservation remains
+                    # duplicate-safe under concurrent submissions.
+                    idempotency_key = None
+                else:
+                    return TaskResponse.model_validate(replay_json)
 
         await resolve_submission_identity(session, submission, auth)
         apply_github_attribution(submission)

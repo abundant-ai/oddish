@@ -117,7 +117,12 @@ High-level flow:
 2. Submit a sweep of agent/model trials for that task; each trial is
    enqueued as a `worker_jobs` row in the same transaction as its domain
    row. Set `max_trial_attempts` on a sweep submission or sweep config to
-   override the total attempt budget for newly-created trials.
+   override the total attempt budget for newly-created trials. Re-submitting
+   the same task-version/experiment sweep reconciles to the requested count:
+   live non-failed trials are retained, while failed slots get fresh trial
+   rows and the old attempts point to those replacements through
+   `superseded_by_trial_id`. This preserves retry history without leaving the
+   failed attempts in normal UI/API trial sets.
 3. Workers claim one `worker_jobs` row at a time, dispatch to the registered
    handler for its kind, write heartbeats, and exit.
 4. Trajectory analysis is **task-scoped**: when every trial of a
