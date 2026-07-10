@@ -533,6 +533,15 @@ sweep):
    mirrored domain column, records the outcome (`SUCCESS` / `RETRYING` /
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
+4. `send_slack_expense_notifications()` runs every five minutes in production
+   when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
+   once for experiments over $2,000 and recent trials over $100 that exceed
+   twice their experiment's other-trial average. It uses the shared settled-cost
+   basis and contains no agent/LLM path. It is on by default for the production
+   app and off by default on preview apps; a preview opts in by setting
+   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
+   `SLACK_EXPENSE_WEBHOOK_URL`, optionally through a preview-only named secret
+   selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
@@ -623,7 +632,8 @@ poolers such as Supavisor / PgBouncer.
 Modal runtime knobs (scaling, schedules, CPU/memory, concurrency) are read
 directly by `backend/modal_app.py` from `ODDISH_MODAL_*` /
 `ODDISH_DEFAULT_MODEL_CONCURRENCY` / `ODDISH_MODEL_CONCURRENCY_OVERRIDES` /
-`MODAL_APP_NAME` / `MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
+`ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS` / `MODAL_APP_NAME` /
+`MODAL_SECRET_ENVIRONMENT` env vars. `modal_app.py` is the
 source of truth for the full list and defaults (e.g.
 `ODDISH_MODAL_MAX_WORKERS_PER_POLL=256`,
 `ODDISH_MODAL_WORKER_MAX_CONTAINERS=2688`).
@@ -648,6 +658,7 @@ uv run alembic upgrade head
 | `modal_app.py` | Modal image, volumes, shared runtime, env knobs |
 | `endpoints.py` | Modal ASGI app function |
 | `serve.py` | Railway/uvicorn entrypoint |
+| `slack_notifications.py` | Deterministic scheduled experiment/trial expense alerts |
 | `cloud_policy.py` | Hosted-only environment policy |
 | `api/app.py` | FastAPI app factory |
 | `api/routers/tasks.py` | Task upload, browse, sweep, sharing, retries, deletion |
