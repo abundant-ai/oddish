@@ -22,6 +22,7 @@ from oddish.core.trial_io import (
     read_persisted_trajectory_graph,
     generate_and_store_trajectory_graph,
 )
+from oddish.core.trial_live import read_trial_live_for_id
 from oddish.core.ingest.trial_imports import (
     complete_trial_import,
     initialize_trial_import,
@@ -227,6 +228,25 @@ async def delete_trial(
         "s3_keys_deleted": s3_keys_deleted,
         "modal_calls_cancelled": modal_cancelled,
     }
+
+
+@router.get("/trials/{trial_id}/live")
+async def get_trial_live(
+    trial_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+    attempt: int | None = Query(None),
+    after_seq: int = Query(0),
+) -> dict:
+    """Live transcript events + running usage for a trial ((attempt, seq) cursor)."""
+    auth.require_scope(APIKeyScope.READ)
+    async with get_session() as session:
+        return await read_trial_live_for_id(
+            session,
+            trial_id=trial_id,
+            org_id=auth.org_id,
+            attempt=attempt,
+            after_seq=after_seq,
+        )
 
 
 @router.get("/trials/{trial_id}/logs")

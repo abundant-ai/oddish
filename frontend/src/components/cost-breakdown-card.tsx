@@ -177,11 +177,39 @@ function formatAge(dateStr: string | null): string {
   return `${Math.floor(totalSeconds / 86400)}d`;
 }
 
-function ModelLabel({ model }: { model: CostModelBreakdown }) {
+function modelTasksHref(model: string, windowDays: string): string {
+  const params = new URLSearchParams({
+    models: model,
+    sort: "cost_desc",
+  });
+  const trialFinishedWithin =
+    windowDays === "1"
+      ? "24h"
+      : ["7", "30", "90"].includes(windowDays)
+        ? `${windowDays}d`
+        : null;
+  if (trialFinishedWithin) {
+    params.set("trial_finished_within", trialFinishedWithin);
+  }
+  return `/tasks?${params.toString()}`;
+}
+
+function ModelLabel({
+  model,
+  windowDays,
+}: {
+  model: CostModelBreakdown;
+  windowDays: string;
+}) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <QueueKeyIcon model={model.model} size={13} />
-      <span className="font-mono text-[11px]">{model.model}</span>
+      <Link
+        href={modelTasksHref(model.model, windowDays)}
+        className="font-mono text-[11px] text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+      >
+        {model.model}
+      </Link>
       <span className="text-muted-foreground text-[10px]">
         {model.provider}
       </span>
@@ -478,6 +506,11 @@ function MethodologyNote() {
             experiment-combine copies are excluded so spend counts once.
           </li>
           <li>
+            Deleted trials, tasks, and experiments remain included because
+            deleting a record does not erase historical spend. A badge marks
+            affected experiment rows.
+          </li>
+          <li>
             Per-user attributes each trial to its billed user; spend with no
             active payer falls to its GitHub identity, submitter, or an{" "}
             <strong>unbilled</strong> &ldquo;Unattributed&rdquo; bucket.
@@ -561,8 +594,8 @@ export function CostBreakdownCard() {
         </div>
         <p className="text-muted-foreground text-xs">
           All first-party trial spend across all organizations, including
-          unbilled spend that never resolved to a registered user — see the
-          info icon for methodology.
+          deleted historical spend and unbilled spend that never resolved to a
+          registered user — see the info icon for methodology.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -610,7 +643,7 @@ export function CostBreakdownCard() {
 
             <section className="space-y-2">
               <h3 className="text-sm font-medium">Cost by model</h3>
-              <ModelTable models={data.by_model} />
+              <ModelTable models={data.by_model} windowDays={windowDays} />
             </section>
 
             <section className="space-y-2">
@@ -642,7 +675,8 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         : `${diff >= 0 ? "+" : "−"}${Math.abs(Math.round((diff / prev) * 100))}%`;
   const monthCost = totals.month_cost_usd ?? 0;
   const budget = totals.month_budget_usd;
-  const monthPct = budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
+  const monthPct =
+    budget != null && budget > 0 ? (monthCost / budget) * 100 : null;
   const monthFill =
     monthPct != null && monthPct >= 80
       ? "bg-destructive"
@@ -669,7 +703,9 @@ function StatTiles({ totals }: { totals: CostBreakdownResponse["totals"] }) {
         </div>
         <div className="text-muted-foreground text-[10px]">
           Monthly quota
-          {monthPct != null ? ` · ${Math.round(monthPct)}%` : " · month to date"}
+          {monthPct != null
+            ? ` · ${Math.round(monthPct)}%`
+            : " · month to date"}
         </div>
         {monthPct != null && (
           <div className="bg-muted-foreground/20 mx-auto mt-1 h-1.5 w-24 overflow-hidden rounded-full">
@@ -786,8 +822,8 @@ function UserTable({
                 <span className="cursor-help">24h quota</span>
               </TooltipTrigger>
               <TooltipContent className="max-w-[280px]">
-                Rolling-24h settled spend vs quota limit — the enforcement basis,
-                so it will not match the window cost column.
+                Rolling-24h settled spend vs quota limit — the enforcement
+                basis, so it will not match the window cost column.
               </TooltipContent>
             </Tooltip>
           </TableHead>
@@ -890,7 +926,13 @@ function UserTable({
   );
 }
 
-function ModelTable({ models }: { models: CostModelBreakdown[] }) {
+function ModelTable({
+  models,
+  windowDays,
+}: {
+  models: CostModelBreakdown[];
+  windowDays: string;
+}) {
   if (models.length === 0)
     return (
       <p className="text-muted-foreground py-3 text-xs">
@@ -912,7 +954,7 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
         {models.map((model) => (
           <TableRow key={`${model.model}-${model.provider}`}>
             <TableCell>
-              <ModelLabel model={model} />
+              <ModelLabel model={model} windowDays={windowDays} />
             </TableCell>
             <CostCell
               cost={model.cost_usd}
@@ -934,6 +976,33 @@ function ModelTable({ models }: { models: CostModelBreakdown[] }) {
   );
 }
 
+function DeletedSpendBadge({
+  isDeleted,
+  hasDeletedSpend,
+}: {
+  isDeleted: boolean;
+  hasDeletedSpend: boolean;
+}) {
+  if (!hasDeletedSpend) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="outline"
+          className="text-muted-foreground cursor-help text-[9px] font-normal"
+        >
+          {isDeleted ? "deleted" : "includes deleted"}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-[280px]">
+        {isDeleted
+          ? "This experiment was deleted, but its historical spend still counts."
+          : "This experiment includes spend from deleted trials or tasks."}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ExperimentTable({
   experiments,
 }: {
@@ -951,7 +1020,20 @@ function ExperimentTable({
         <TableRow>
           <TableHead>Experiment</TableHead>
           <TableHead>Owner</TableHead>
-          <TableHead className="text-right">New spend</TableHead>
+          <TableHead className="text-right">
+            <span className="inline-flex items-center gap-1">
+              New spend
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3 w-3 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-[260px]">
+                  Cost from all trials run during the analysis period, not full
+                  experiment cost.
+                </TooltipContent>
+              </Tooltip>
+            </span>
+          </TableHead>
           <TableHead className="text-right">Trials</TableHead>
           <TableHead>Models</TableHead>
           <TableHead className="text-right">Activity</TableHead>
@@ -961,13 +1043,28 @@ function ExperimentTable({
         {experiments.map((exp) => (
           <TableRow key={exp.experiment_id}>
             <TableCell className="max-w-[220px]">
-              <Link
-                href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
-                className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
-                title={exp.name ?? exp.experiment_id}
-              >
-                {exp.name ?? exp.experiment_id}
-              </Link>
+              <span className="inline-flex items-center gap-1.5">
+                {exp.is_deleted ? (
+                  <span
+                    className="truncate text-xs font-medium"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </span>
+                ) : (
+                  <Link
+                    href={`/experiments/${encodeExperimentRouteParam(exp.experiment_id)}`}
+                    className="truncate text-xs font-medium text-[#5d77a5] hover:underline dark:text-[#a8b8d2]"
+                    title={exp.name ?? exp.experiment_id}
+                  >
+                    {exp.name ?? exp.experiment_id}
+                  </Link>
+                )}
+                <DeletedSpendBadge
+                  isDeleted={exp.is_deleted}
+                  hasDeletedSpend={exp.has_deleted_spend}
+                />
+              </span>
             </TableCell>
             <TableCell className="text-muted-foreground text-[11px]">
               {exp.owner_name ?? exp.owner_email ?? exp.owner_label ?? "—"}

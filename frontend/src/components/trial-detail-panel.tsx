@@ -35,6 +35,7 @@ import {
   ChevronRight,
   RotateCcw,
   Loader2,
+  Radio,
   Microscope,
   CheckCircle2,
   XCircle,
@@ -52,6 +53,7 @@ import type { Trial, Task } from "@/lib/types";
 import {
   costEstimateMarks,
   formatCostUsd,
+  formatTokenCount,
   sumTaskTrialCost,
 } from "@/lib/format";
 import {
@@ -66,6 +68,7 @@ import {
 } from "@/lib/status-config";
 import { HarborStageTimeline } from "@/components/harbor-stage-timeline";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
+import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
 
@@ -360,6 +363,7 @@ export function TrialDetailPanel({
     () =>
       new Set([
         "summary",
+        "live",
         "files",
         "trajectory",
         // Only a valid target when the Agent Graph tab is actually rendered;
@@ -575,6 +579,10 @@ export function TrialDetailPanel({
     trial.reward,
     trial.error_message,
   );
+  const showLive =
+    showAnalysis && (trial.status === "running" || trial.status === "retrying");
+  const effectiveTab =
+    activeTab === "live" && !showLive ? "summary" : activeTab;
   const trialStatusConfig = STATUS_CONFIG[trialStatus];
   const TrialStatusIcon = trialStatusConfig.icon;
   // Sum the navigable trials for this view (version-scoped in both callers),
@@ -794,7 +802,9 @@ export function TrialDetailPanel({
                 </div>
               </CardContent>
             </Card>
-            {trial.cost_usd != null && (
+            {(trial.cost_usd != null ||
+              trial.input_tokens != null ||
+              trial.output_tokens != null) && (
               <Card className="min-w-[120px] border">
                 <CardContent className="flex h-full items-center px-2 py-1">
                   <div className="min-w-0">
@@ -803,10 +813,17 @@ export function TrialDetailPanel({
                     </div>
                     <div className="mt-1 flex items-baseline gap-1">
                       <span className="font-mono text-sm leading-none font-bold tabular-nums">
-                        {trial.cost_is_estimated ? "~" : ""}
-                        {formatCostUsd(trial.cost_usd)}
+                        {trial.cost_usd != null ? (
+                          <>
+                            {trial.cost_is_estimated ? "~" : ""}
+                            {formatCostUsd(trial.cost_usd)}
+                          </>
+                        ) : (
+                          "—"
+                        )}
                       </span>
-                      {taskCost.pricedCount > 1 &&
+                      {trial.cost_usd != null &&
+                        taskCost.pricedCount > 1 &&
                         (() => {
                           const marks = costEstimateMarks(
                             taskCost.hasEstimated,
@@ -821,6 +838,15 @@ export function TrialDetailPanel({
                           );
                         })()}
                     </div>
+                    {(trial.input_tokens != null ||
+                      trial.output_tokens != null) && (
+                      <div className="text-muted-foreground mt-1 font-mono text-[9px] leading-none">
+                        {formatTokenCount(
+                          (trial.input_tokens ?? 0) +
+                            (trial.output_tokens ?? 0),
+                        )}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -895,7 +921,7 @@ export function TrialDetailPanel({
       </DrawerHeader>
 
       <Tabs
-        value={activeTab}
+        value={effectiveTab}
         onValueChange={setActiveTab}
         className="flex flex-1 flex-col overflow-hidden"
       >
@@ -908,6 +934,15 @@ export function TrialDetailPanel({
               <FileText className="mr-1 h-3.5 w-3.5 sm:mr-2 sm:h-4 sm:w-4" />
               Summary
             </TabsTrigger>
+            {showLive && (
+              <TabsTrigger
+                value="live"
+                className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
+              >
+                <Radio className="mr-1 h-3.5 w-3.5 text-red-500 sm:mr-2 sm:h-4 sm:w-4" />
+                Live
+              </TabsTrigger>
+            )}
             <TabsTrigger
               value="files"
               className="data-[state=active]:border-primary rounded-none px-3 text-xs data-[state=active]:border-b-2 data-[state=active]:bg-transparent sm:px-4 sm:text-sm"
@@ -1151,6 +1186,17 @@ export function TrialDetailPanel({
               )}
             </div>
           </TabsContent>
+
+          {showLive && (
+            <TabsContent value="live" className="m-0 h-full p-0">
+              <LiveTranscriptPanel
+                key={trial.id}
+                trialId={trial.id}
+                agent={trial.agent}
+                apiBaseUrl={apiBaseUrl}
+              />
+            </TabsContent>
+          )}
 
           <TabsContent value="files" className="m-0 h-full p-0">
             <TaskFilesPanel

@@ -23,6 +23,7 @@ from oddish.core.quotas import (  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
+    TrialOrigin,
     TrialStatus,
     WorkerJobModel,
     get_session,
@@ -122,7 +123,7 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
     async with get_session() as session:
         await create_task(
             session,
-            _submission("org-sum", n_trials=7),
+            _submission("org-sum", n_trials=9),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=f"user-A-{_RUN}",
@@ -166,6 +167,19 @@ async def test_sum_org_cost_usd_counts_all_payers_null_billed_and_soft_deleted(
         last_month = await session.get(TrialModel, f"{task_id}-6")
         last_month.finished_at = before_month
         last_month.cost_usd = 3.00
+
+        # Imported runs were paid for outside Oddish and do not consume quota.
+        imported = await session.get(TrialModel, f"{task_id}-7")
+        imported.finished_at = now
+        imported.cost_usd = 10_000.00
+        imported.origin = TrialOrigin.IMPORTED
+
+        # Combine rows materialize an existing result; charging their copied
+        # cost would count the same execution twice.
+        combined = await session.get(TrialModel, f"{task_id}-8")
+        combined.finished_at = now
+        combined.cost_usd = 20_000.00
+        combined.idempotency_key = f"combine:result:{task_id}-0"
 
         await session.flush()
 

@@ -137,6 +137,7 @@ The API layer enforces this scope in all list/read/write queries.
 | `auth/provisioning.py` | Clerk user/org provisioning helpers |
 | `auth/types.py` | `AuthContext` dataclass and `AuthMethod` enum |
 | `models.py` | Cloud auth models (orgs/users/api keys) |
+| `slack_notifications.py` | Scheduled expensive experiment/trial Slack notifications |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`) and kind-agnostic `process_single_job` runner |
 | `worker/runtime.py` | Modal runtime patching and storage setup |
 | `worker/github.py` | Thin wrappers delegating GitHub notifications to `oddish.integrations.github` |
@@ -181,6 +182,7 @@ Common optional settings:
 - provider keys such as `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_VERSION`, `ODDISH_AZURE_OPENAI_DEPLOYMENTS`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DAYTONA_API_KEY`
 - `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally routing OpenAI-family jobs to public OpenAI
 - GitHub notifier settings such as `GITHUB_TOKEN` and `ODDISH_DASHBOARD_URL`
+- `SLACK_EXPENSE_WEBHOOK_URL` for deterministic expensive experiment/trial notifications (on by default for the production app; defaults to experiment alerts at each $1,000 milestone and trial alerts over $25; thresholds and the experiment repeat interval use the `ODDISH_SLACK_*` settings in `.env.example`; previews opt in with `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and can attach a preview-only webhook secret via `ODDISH_SLACK_EXPENSE_SECRET_NAME` / `ODDISH_SLACK_EXPENSE_SECRET_ENVIRONMENT`)
 
 ### Observability (Pydantic Logfire)
 
@@ -203,7 +205,8 @@ pick it up:
 
 Modal runtime knobs are read directly by `modal_app.py`, which is the source
 of truth for the full list and defaults. They cover worker enablement
-(`ODDISH_ENABLE_MODAL_WORKERS`), API/worker/dispatcher/reconciler container
+(`ODDISH_ENABLE_MODAL_WORKERS`, `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS`),
+API/worker/dispatcher/reconciler container
 scaling and CPU/memory sizing (`ODDISH_MODAL_API_*`, `ODDISH_MODAL_WORKER_*`,
 `ODDISH_MODAL_DISPATCHER_*`, `ODDISH_MODAL_RECONCILER_*`), schedule intervals
 and timeouts (`ODDISH_MODAL_POLL_INTERVAL_SECONDS`,

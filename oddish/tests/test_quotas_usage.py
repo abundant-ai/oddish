@@ -22,6 +22,7 @@ from oddish.model_pricing import estimate_cost_usd  # noqa: E402
 from oddish.db import (  # noqa: E402
     TaskModel,
     TrialModel,
+    TrialOrigin,
     WorkerJobModel,
     get_session,
 )
@@ -83,7 +84,7 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
     async with get_session() as session:
         await create_task(
             session,
-            _submission("quota-sum", n_trials=6),
+            _submission("quota-sum", n_trials=8),
             task_id=task_id,
             org_id=org_id,
             billed_user_id=billed_user,
@@ -115,6 +116,16 @@ async def test_sum_cost_usd_excludes_inflight_before_window_and_null_billed(
         finished_before_window = await session.get(TrialModel, f"{task_id}-5")
         finished_before_window.finished_at = aged_out
         finished_before_window.cost_usd = 3.00
+
+        imported = await session.get(TrialModel, f"{task_id}-6")
+        imported.finished_at = now
+        imported.cost_usd = 10_000.00
+        imported.origin = TrialOrigin.IMPORTED
+
+        combined = await session.get(TrialModel, f"{task_id}-7")
+        combined.finished_at = now
+        combined.cost_usd = 20_000.00
+        combined.idempotency_key = f"combine:result:{task_id}-0"
 
         await session.flush()
 
