@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from urllib.parse import quote
 
 import httpx
@@ -40,6 +41,7 @@ class TrialSpend:
     id: str
     task_id: str
     experiment_id: str
+    model: str
     finished_at: datetime
     cost_usd: float
 
@@ -62,6 +64,23 @@ def _escape(value: str) -> str:
     return html.escape(value, quote=False)
 
 
+def _experiment_milestones(
+    total_cost: float,
+    first_threshold: float,
+    repeat_interval: float,
+) -> list[float]:
+    total = Decimal(str(total_cost))
+    first = Decimal(str(first_threshold))
+    repeat = Decimal(str(repeat_interval))
+    if total <= 0 or total < first:
+        return []
+    if repeat <= 0:
+        return [first_threshold]
+
+    milestone_count = int((total - first) // repeat) + 1
+    return [float(first + repeat * index) for index in range(milestone_count)]
+
+
 def build_alerts(
     experiments: list[ExperimentCandidate],
     trials: list[TrialSpend],
@@ -69,18 +88,31 @@ def build_alerts(
     recent_cutoff: datetime,
     dashboard_url: str,
     experiment_threshold_usd: float,
+    experiment_repeat_usd: float,
     trial_threshold_usd: float,
     trial_average_multiplier: float,
 ) -> list[SlackAlert]:
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
+    task_model_costs: dict[tuple[str, str], float] = {}
+    task_model_counts: dict[tuple[str, str], int] = {}
     for trial in trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
+        peer_key = (trial.task_id, trial.model)
+        task_model_costs[peer_key] = (
+            task_model_costs.get(peer_key, 0) + trial.cost_usd
+        )
+        task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
-        if total_cost > experiment_threshold_usd:
+        milestones = _experiment_milestones(
+            total_cost,
+            experiment_threshold_usd,
+            experiment_repeat_usd,
+        )
+        if milestones:
             phase = (
                 f"{experiment.active_trials} trial"
                 f"{'s' if experiment.active_trials != 1 else ''} still running"
@@ -91,45 +123,35 @@ def build_alerts(
                 f"{dashboard_url}/experiments/"
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
-            alerts.append(
-                SlackAlert(
-                    key=f"experiment:{experiment.id}:{experiment_threshold_usd:g}",
-                    text=(
-                        f":money_with_wings: *Expensive experiment:* "
-                        f"*{_escape(experiment.name)}* has spent *${total_cost:,.2f}* "
-                        f"— {phase} · owner: *{_escape(experiment.owner or 'Unknown')}* "
-                        f"· <{experiment_url}|open experiment>"
-                    ),
+            for milestone in milestones:
+                alerts.append(
+                    SlackAlert(
+                        key=f"experiment:{experiment.id}:{milestone:g}",
+                        text=(
+                            f":money_with_wings: *Expensive experiment:* "
+                            f"*{_escape(experiment.name)}* reached the "
+                            f"*${milestone:,.2f}* spend milestone "
+                            f"(now *${total_cost:,.2f}*) — {phase} · "
+                            f"owner: *{_escape(experiment.owner or 'Unknown')}* "
+                            f"· <{experiment_url}|open experiment>"
+                        ),
+                    )
                 )
-            )
 
-        trial_count = len(experiment_trials)
-        first_trial_id = (
-            min(experiment_trials, key=lambda item: (item.finished_at, item.id)).id
-            if experiment_trials
-            else None
-        )
         for trial in experiment_trials:
             if trial.finished_at < recent_cutoff or trial.cost_usd <= trial_threshold_usd:
                 continue
-            is_first_trial = trial.id == first_trial_id
-            other_average = (
-                None
-                if trial_count == 1
-                else (total_cost - trial.cost_usd) / (trial_count - 1)
-            )
-            if (
-                not is_first_trial
-                and other_average is not None
-                and trial.cost_usd <= other_average * trial_average_multiplier
-            ):
+            peer_key = (trial.task_id, trial.model)
+            peer_count = task_model_counts[peer_key] - 1
+            if peer_count == 0:
+                continue
+            peer_average = (task_model_costs[peer_key] - trial.cost_usd) / peer_count
+            if trial.cost_usd <= peer_average * trial_average_multiplier:
                 continue
             comparison = (
-                "first trial"
-                if is_first_trial
-                else f"{trial.cost_usd / other_average:.1f}× the experiment average"
-                if other_average
-                else "other trials averaged $0"
+                f"{trial.cost_usd / peer_average:.1f}× the same-task/model average"
+                if peer_average
+                else "other same-task/model trials averaged $0"
             )
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
             alerts.append(
@@ -233,6 +255,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             id=str(row.id),
             task_id=str(row.task_id),
             experiment_id=str(row.experiment_id),
+            model=str(row.model),
             finished_at=row.finished_at,
             cost_usd=settled_cost_from_row(row),
         )
@@ -247,9 +270,12 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         recent_cutoff=recent_cutoff,
         dashboard_url=dashboard_url,
         experiment_threshold_usd=_env_float(
-            "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 2000
+            "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 1000
         ),
-        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 100),
+        experiment_repeat_usd=_env_float(
+            "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
+        ),
+        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 70),
         trial_average_multiplier=_env_float(
             "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
         ),

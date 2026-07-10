@@ -411,7 +411,14 @@ async def get_or_generate_summary(
     if _is_fresh(trial.trajectory_summary):
         return trial.trajectory_summary
 
-    if not trial.has_trajectory:
+    # Use the same "has a trajectory" notion as the trajectory endpoint /
+    # trajectory-graph gate (true for finished Grok Build runs whose
+    # grok-build.json synthesizes to ATIF), not just the raw has_trajectory
+    # column — otherwise those trials get an Agent Graph but no summary, and the
+    # graph would segment via its own path instead of the shared phases.
+    from oddish.core.helpers import _has_fetchable_trajectory
+
+    if not _has_fetchable_trajectory(trial):
         return None
 
     async with _GEN_LOCKS[trial.id]:

@@ -316,6 +316,10 @@ def _fake_trial(*, has_trajectory: bool, trajectory_summary: dict | None):
         trial_s3_key="trials/t-1/",
         has_trajectory=has_trajectory,
         trajectory_summary=trajectory_summary,
+        # _has_fetchable_trajectory (the summary gate) reads these; a non-grok
+        # agent keeps has_trajectory=False -> no fetchable trajectory, as before.
+        agent="claude-code",
+        finished_at=None,
     )
 
 
