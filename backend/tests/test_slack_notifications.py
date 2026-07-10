@@ -33,6 +33,7 @@ def _trial(
 ) -> TrialSpend:
     return TrialSpend(
         id=trial_id,
+        name=f"{trial_id} title",
         task_id=task_id,
         experiment_id=experiment_id,
         model=model,
@@ -89,12 +90,43 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         "experiment:experiment/1:2000",
     ]
     experiment_alert = alerts[1]
-    assert "*Exp &lt;One&gt;*" in experiment_alert.text
-    assert "*$2,000.00* spend milestone" in experiment_alert.text
-    assert "(now *$2,001.00*)" in experiment_alert.text
-    assert "2 trials still running" in experiment_alert.text
-    assert "owner: *Pat &amp; Sam*" in experiment_alert.text
-    assert "/experiments/experiment%252F1|open experiment>" in experiment_alert.text
+    assert experiment_alert.text.splitlines() == [
+        ":money_with_wings: *Expensive experiment*",
+        "Title: *Exp &lt;One&gt;*",
+        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
+        "Trials still running: 2",
+        "Owner: *Pat &amp; Sam*",
+        "Top agent costs:",
+        "• `model-1`: *$2,001.00*",
+        "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+
+
+def test_build_alerts_lists_the_top_three_agent_costs() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Experiment", "Ada", 0)],
+        [
+            _trial("a-1", 150, model="openrouter/opus", finished_at=now),
+            _trial("a-2", 100, model="openrouter/opus", finished_at=now),
+            _trial("b", 200, model="azure/fable", finished_at=now),
+            _trial("c", 100, model="anthropic/sonnet", finished_at=now),
+            _trial("d", 50, model="openai/gpt", finished_at=now),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=100,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    assert alerts[0].text.splitlines()[5:9] == [
+        "Top agent costs:",
+        "• `openrouter/opus`: *$250.00*",
+        "• `azure/fable`: *$200.00*",
+        "• `anthropic/sonnet`: *$100.00*",
+    ]
 
 
 def test_build_alerts_requires_a_same_task_model_peer() -> None:
@@ -150,7 +182,15 @@ def test_build_alerts_uses_same_task_model_peers() -> None:
     )
 
     assert [alert.key for alert in alerts] == ["trial:outlier:100:2"]
-    assert "2.0× the same-task/model average" in alerts[0].text
+    assert alerts[0].text.splitlines() == [
+        ":warning: *Expensive trial*",
+        "Title: `outlier title`",
+        "Experiment: *Experiment*",
+        "Cost: *$201.00* — 2.0× the same-task/model average",
+        "Model: `model-1`",
+        "Author: *Unknown*",
+        "<https://www.oddish.app/tasks/task%2F1|open task>",
+    ]
 
 
 def test_build_alerts_requires_more_than_double_other_trial_average() -> None:
@@ -394,7 +434,11 @@ async def test_load_alerts_uses_settled_trial_costs(
             f"trial:{task_id}-outlier:100:2",
             "unpriced-model:made-up/no-such-model-9000",
         ]
-        assert "finished" in alerts[0].text
+        assert "Trials still running: 0" in alerts[0].text
+        assert "Top agent costs:" in alerts[0].text
+        assert "Title: `outlier`" in alerts[1].text
+        assert "Experiment: *Slack expense test*" in alerts[1].text
+        assert "Author: *Unknown*" in alerts[1].text
         assert "same-task/model average" in alerts[1].text
         assert "*Unpriceable model:*" in alerts[2].text
     finally:
