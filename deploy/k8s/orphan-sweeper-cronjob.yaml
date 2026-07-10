@@ -1,0 +1,71 @@
+# Backstop reaper for orphaned GKE trial sandbox pods.
+#
+# Runs in-cluster, independent of Oddish's dispatch, so it still reaps even if
+# dispatch is wedged. Each run lists app=sandbox pods in oddish-trials, reads
+# ownership from worker_jobs over a read-only Postgres connection, and deletes
+# only pods that no live (RUNNING) trial owns (see gke_orphan_sweeper.py for the
+# exact rule; a legitimately-Pending live trial's pod is never touched, because
+# its worker_job stays RUNNING while it waits for capacity). It is safe to run
+# often and safe to disable.
+#
+# One-time setup:
+#   1. Build + push the image (its own minimal image; NOT the worker image):
+#        docker build -f deploy/k8s/orphan-sweeper.Dockerfile \
+#          -t <REGISTRY>/oddish-orphan-sweeper:latest .
+#        docker push <REGISTRY>/oddish-orphan-sweeper:latest
+#      then set that reference in the container `image:` below.
+#   2. Create a READ-ONLY Postgres secret. The role needs only
+#      SELECT on worker_jobs and trials; the sweeper additionally pins the
+#      connection read-only at runtime.
+#        kubectl -n oddish-trials create secret generic oddish-orphan-sweeper \
+#          --from-literal=database-url='postgresql://readonly:...@host/db'
+#   3. kubectl apply -f deploy/k8s/orphan-sweeper-rbac.yaml
+#      kubectl apply -f deploy/k8s/orphan-sweeper-cronjob.yaml
+#
+# The GKE cluster reaches Postgres over its egress; no gcloud/ADC is needed
+# because the in-cluster ServiceAccount token authenticates to the Kubernetes
+# API. To watch decisions without deleting, set ODDISH_SWEEP_DRY_RUN=1.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: oddish-orphan-sweeper
+  namespace: oddish-trials
+spec:
+  schedule: "*/10 * * * *" # every 10 minutes
+  concurrencyPolicy: Forbid # never overlap two sweeps
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0 # a missed sweep is picked up by the next run
+      ttlSecondsAfterFinished: 300
+      template:
+        spec:
+          serviceAccountName: oddish-orphan-sweeper
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001 # matches the image's non-root user
+          containers:
+            - name: sweeper
+              image: oddish-orphan-sweeper:latest # set to your pushed image
+              command: ["python", "/app/gke_orphan_sweeper.py"]
+              env:
+                - name: ODDISH_GKE_NAMESPACE
+                  value: "oddish-trials"
+                # Never touch a pod younger than this (covers the create ->
+                # claim -> handle-persisted window and clock skew).
+                - name: ODDISH_SWEEP_GRACE_MINUTES
+                  value: "10"
+                - name: ODDISH_DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: oddish-orphan-sweeper
+                      key: database-url
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "128Mi"
+                limits:
+                  memory: "256Mi"

@@ -49,6 +49,15 @@ from oddish.experiment import generate_experiment_name
 
 console = Console()
 
+# Environments the hosted (Modal-backed) API dispatches directly; any other
+# ``--env`` on that path is coerced to Modal. GKE joins Modal and Daytona so
+# TPU trials reach the GKE backend instead of being forced onto Modal.
+_HOSTED_PASSTHROUGH_ENVIRONMENTS = {
+    EnvironmentType.MODAL,
+    EnvironmentType.DAYTONA,
+    EnvironmentType.GKE,
+}
+
 
 def _task_config_requests_gpu(task_path: Path) -> bool:
     config_path = task_path / "task.toml"
@@ -60,6 +69,16 @@ def _task_config_requests_gpu(task_path: Path) -> bool:
     # it unset -> None); treat an absent value as 0 GPUs instead of crashing
     # on ``None > 0``.
     return (task_config.environment.gpus or 0) > 0
+
+
+def _task_config_requests_tpu(task_path: Path) -> bool:
+    config_path = task_path / "task.toml"
+    try:
+        task_config = HarborTaskConfig.model_validate_toml(config_path.read_text())
+    except Exception:
+        return False
+    # ``[environment.tpu]`` is an optional table; its presence is the request.
+    return task_config.environment.tpu is not None
 
 
 def _read_harbor_manifest(*candidates: Path | None) -> dict[str, str] | None:
@@ -93,6 +112,26 @@ def _read_harbor_manifest(*candidates: Path | None) -> dict[str, str] | None:
     return None
 
 
+def _validate_explicit_environment_for_task(
+    environment: "EnvironmentType | None",
+    task_path: Path | None,
+) -> None:
+    """Refuse an explicit non-GKE --env on a task that declares a TPU.
+
+    Only GKE serves TPUs, and a task.toml TPU request is invisible to every
+    server-side guard (the tarball never passes through the API) -- the CLI is
+    the last place that can turn this into a pre-submit error instead of a
+    failure minutes into the trial."""
+    if environment is None or environment == EnvironmentType.GKE:
+        return
+    if task_path is not None and _task_config_requests_tpu(task_path):
+        raise typer.BadParameter(
+            f"This task declares '[environment.tpu]' but --env is "
+            f"'{environment.value}'; only gke runs TPUs. Use --env gke or "
+            f"drop --env to auto-route."
+        )
+
+
 def _default_cloud_environment_for_task(
     task_path: Path | None,
     *,
@@ -100,9 +139,24 @@ def _default_cloud_environment_for_task(
 ) -> EnvironmentType:
     from oddish.runtime.routing import default_cloud_environment
 
+    requires_tpu = task_path is not None and _task_config_requests_tpu(task_path)
     if override_gpus is not None:
-        return default_cloud_environment(requires_gpu=override_gpus > 0)
-    requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+        requires_gpu = override_gpus > 0
+    else:
+        requires_gpu = task_path is not None and _task_config_requests_gpu(task_path)
+
+    if requires_gpu and requires_tpu:
+        raise typer.BadParameter(
+            "A task cannot request both GPU and TPU resources: no single "
+            "execution backend provides both. Split them into separate tasks, "
+            "or drop the '[environment.tpu]' block / the GPU request."
+        )
+    if requires_tpu:
+        # GKE is the only TPU-capable backend. Resolve it by name so a cloud
+        # submission still routes TPU work to GKE even when the local registry
+        # never registered it (a laptop without ODDISH_GKE_CLUSTER_NAME); the
+        # hosted deployment validates the choice against its own cloud policy.
+        return EnvironmentType.GKE
     return default_cloud_environment(requires_gpu=requires_gpu)
 
 
@@ -781,10 +835,11 @@ def run(
     elif (
         environment is not None
         and is_modal_api
-        and environment not in {EnvironmentType.MODAL, EnvironmentType.DAYTONA}
+        and environment not in _HOSTED_PASSTHROUGH_ENVIRONMENTS
     ):
         console.print(
-            "[yellow]Oddish Cloud supports --env modal and --env daytona; forcing --env modal[/yellow]"
+            "[yellow]Oddish Cloud supports --env modal, --env daytona, and "
+            "--env gke; forcing --env modal[/yellow]"
         )
         environment = EnvironmentType.MODAL
 
@@ -806,6 +861,7 @@ def run(
 
         task_configs = copy.deepcopy(configs)
         task_environment = environment
+        _validate_explicit_environment_for_task(task_environment, task_path)
         if task_environment is None and is_modal_api and task_path is not None:
             task_environment = _default_cloud_environment_for_task(
                 task_path,
