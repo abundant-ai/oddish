@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from urllib.parse import quote
 
 import httpx
@@ -62,6 +63,23 @@ def _escape(value: str) -> str:
     return html.escape(value, quote=False)
 
 
+def _experiment_milestones(
+    total_cost: float,
+    first_threshold: float,
+    repeat_interval: float,
+) -> list[float]:
+    total = Decimal(str(total_cost))
+    first = Decimal(str(first_threshold))
+    repeat = Decimal(str(repeat_interval))
+    if total <= 0 or total < first:
+        return []
+    if repeat <= 0:
+        return [first_threshold]
+
+    milestone_count = int((total - first) // repeat) + 1
+    return [float(first + repeat * index) for index in range(milestone_count)]
+
+
 def build_alerts(
     experiments: list[ExperimentCandidate],
     trials: list[TrialSpend],
@@ -69,6 +87,7 @@ def build_alerts(
     recent_cutoff: datetime,
     dashboard_url: str,
     experiment_threshold_usd: float,
+    experiment_repeat_usd: float,
     trial_threshold_usd: float,
     trial_average_multiplier: float,
 ) -> list[SlackAlert]:
@@ -80,7 +99,12 @@ def build_alerts(
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
-        if total_cost > experiment_threshold_usd:
+        milestones = _experiment_milestones(
+            total_cost,
+            experiment_threshold_usd,
+            experiment_repeat_usd,
+        )
+        if milestones:
             phase = (
                 f"{experiment.active_trials} trial"
                 f"{'s' if experiment.active_trials != 1 else ''} still running"
@@ -91,17 +115,20 @@ def build_alerts(
                 f"{dashboard_url}/experiments/"
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
-            alerts.append(
-                SlackAlert(
-                    key=f"experiment:{experiment.id}:{experiment_threshold_usd:g}",
-                    text=(
-                        f":money_with_wings: *Expensive experiment:* "
-                        f"*{_escape(experiment.name)}* has spent *${total_cost:,.2f}* "
-                        f"— {phase} · owner: *{_escape(experiment.owner or 'Unknown')}* "
-                        f"· <{experiment_url}|open experiment>"
-                    ),
+            for milestone in milestones:
+                alerts.append(
+                    SlackAlert(
+                        key=f"experiment:{experiment.id}:{milestone:g}",
+                        text=(
+                            f":money_with_wings: *Expensive experiment:* "
+                            f"*{_escape(experiment.name)}* reached the "
+                            f"*${milestone:,.2f}* spend milestone "
+                            f"(now *${total_cost:,.2f}*) — {phase} · "
+                            f"owner: *{_escape(experiment.owner or 'Unknown')}* "
+                            f"· <{experiment_url}|open experiment>"
+                        ),
+                    )
                 )
-            )
 
         trial_count = len(experiment_trials)
         first_trial_id = (
@@ -247,9 +274,12 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         recent_cutoff=recent_cutoff,
         dashboard_url=dashboard_url,
         experiment_threshold_usd=_env_float(
-            "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 2000
+            "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 1000
         ),
-        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 100),
+        experiment_repeat_usd=_env_float(
+            "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
+        ),
+        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 25),
         trial_average_multiplier=_env_float(
             "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
         ),
