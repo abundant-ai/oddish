@@ -250,35 +250,39 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
             for row in candidate_rows
         ]
-        if not experiments:
-            return []
-
+        # Expensive-experiment/trial alerts need candidate experiments, but the
+        # unpriceable-model scan below is independent of them (an unpriced trial
+        # can live under a collection or soft-deleted experiment that is never a
+        # candidate), so don't early-return on an empty candidate set -- only
+        # skip the experiment-scoped trial query.
         experiment_ids = [experiment.id for experiment in experiments]
-        trial_rows = (
-            await session.execute(
-                select(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
-                    TrialModel.model,
-                    *settled_cost_columns(),
+        trial_rows = []
+        if experiment_ids:
+            trial_rows = (
+                await session.execute(
+                    select(
+                        TrialModel.id,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                        *settled_cost_columns(),
+                    )
+                    .where(
+                        TrialModel.experiment_id.in_(experiment_ids),
+                        TrialModel.finished_at.isnot(None),
+                        _real_spend_filter(),
+                    )
+                    .group_by(
+                        TrialModel.id,
+                        TrialModel.task_id,
+                        TrialModel.experiment_id,
+                        TrialModel.finished_at,
+                        TrialModel.model,
+                    )
+                    .execution_options(include_deleted=True)
                 )
-                .where(
-                    TrialModel.experiment_id.in_(experiment_ids),
-                    TrialModel.finished_at.isnot(None),
-                    _real_spend_filter(),
-                )
-                .group_by(
-                    TrialModel.id,
-                    TrialModel.task_id,
-                    TrialModel.experiment_id,
-                    TrialModel.finished_at,
-                    TrialModel.model,
-                )
-                .execution_options(include_deleted=True)
-            )
-        ).all()
+            ).all()
 
         # Trials that ran (recorded tokens) but settled to NULL cost: no native
         # cost and no token estimate. Grouping by model lets us alert once per

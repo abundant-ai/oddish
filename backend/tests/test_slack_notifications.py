@@ -413,6 +413,67 @@ async def test_load_alerts_uses_settled_trial_costs(
 
 
 @pytest.mark.asyncio
+async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> None:
+    # A soft-deleted experiment yields no expensive-experiment candidate, so
+    # load_alerts must not early-return before the unpriceable-model scan.
+    suffix = uuid4().hex[:12]
+    experiment_id = f"slack-exp-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    async with get_session() as session:
+        session.add(
+            ExperimentModel(
+                id=experiment_id, name="Deleted exp", deleted_at=now
+            )
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+        session.add(
+            TrialModel(
+                id=f"{task_id}-unpriced",
+                name="unpriced",
+                task_id=task_id,
+                experiment_id=experiment_id,
+                agent="claude-code",
+                provider="made-up",
+                model="made-up/no-such-model-9001",
+                queue_key="test",
+                status=TrialStatus.SUCCESS,
+                origin=TrialOrigin.ODDISH,
+                is_probe=False,
+                output_tokens=1_000,
+                finished_at=now,
+            )
+        )
+
+    try:
+        alerts = await load_alerts(now)
+        assert "unpriced-model:made-up/no-such-model-9001" in {
+            alert.key for alert in alerts
+        }
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id == experiment_id
+                )
+            )
+
+
+@pytest.mark.asyncio
 async def test_database_alert_claim_is_durable() -> None:
     alert_key = f"test-alert-{uuid4().hex}"
 
