@@ -41,6 +41,7 @@ class TrialSpend:
     id: str
     task_id: str
     experiment_id: str
+    model: str
     finished_at: datetime
     cost_usd: float
 
@@ -92,8 +93,15 @@ def build_alerts(
     trial_average_multiplier: float,
 ) -> list[SlackAlert]:
     trials_by_experiment: dict[str, list[TrialSpend]] = {}
+    task_model_costs: dict[tuple[str, str], float] = {}
+    task_model_counts: dict[tuple[str, str], int] = {}
     for trial in trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
+        peer_key = (trial.task_id, trial.model)
+        task_model_costs[peer_key] = (
+            task_model_costs.get(peer_key, 0) + trial.cost_usd
+        )
+        task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
     for experiment in experiments:
@@ -130,33 +138,20 @@ def build_alerts(
                     )
                 )
 
-        trial_count = len(experiment_trials)
-        first_trial_id = (
-            min(experiment_trials, key=lambda item: (item.finished_at, item.id)).id
-            if experiment_trials
-            else None
-        )
         for trial in experiment_trials:
             if trial.finished_at < recent_cutoff or trial.cost_usd <= trial_threshold_usd:
                 continue
-            is_first_trial = trial.id == first_trial_id
-            other_average = (
-                None
-                if trial_count == 1
-                else (total_cost - trial.cost_usd) / (trial_count - 1)
-            )
-            if (
-                not is_first_trial
-                and other_average is not None
-                and trial.cost_usd <= other_average * trial_average_multiplier
-            ):
+            peer_key = (trial.task_id, trial.model)
+            peer_count = task_model_counts[peer_key] - 1
+            if peer_count == 0:
+                continue
+            peer_average = (task_model_costs[peer_key] - trial.cost_usd) / peer_count
+            if trial.cost_usd <= peer_average * trial_average_multiplier:
                 continue
             comparison = (
-                "first trial"
-                if is_first_trial
-                else f"{trial.cost_usd / other_average:.1f}× the experiment average"
-                if other_average
-                else "other trials averaged $0"
+                f"{trial.cost_usd / peer_average:.1f}× the same-task/model average"
+                if peer_average
+                else "other same-task/model trials averaged $0"
             )
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
             alerts.append(
@@ -240,7 +235,11 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     *settled_cost_columns(),
                 )
                 .where(
-                    TrialModel.experiment_id.in_(experiment_ids),
+                    TrialModel.task_id.in_(
+                        select(TrialModel.task_id)
+                        .where(TrialModel.experiment_id.in_(experiment_ids))
+                        .distinct()
+                    ),
                     TrialModel.finished_at.isnot(None),
                     _real_spend_filter(),
                 )
@@ -260,6 +259,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             id=str(row.id),
             task_id=str(row.task_id),
             experiment_id=str(row.experiment_id),
+            model=str(row.model),
             finished_at=row.finished_at,
             cost_usd=settled_cost_from_row(row),
         )
@@ -279,7 +279,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         experiment_repeat_usd=_env_float(
             "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
         ),
-        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 25),
+        trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 70),
         trial_average_multiplier=_env_float(
             "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
         ),
