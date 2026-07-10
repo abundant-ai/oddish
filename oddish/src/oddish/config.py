@@ -1055,6 +1055,14 @@ class Settings(BaseSettings):
     # automatic on the next trial, so deletion only trades a cold-start.
     gke_idle_cluster_ttl_hours: float = 3.0
     gke_pod_ready_timeout_sec: int = 3600
+    # Single-tenant GKE org allowlist. Comma-separated org ids permitted to run
+    # --env gke / TPU trials; EMPTY = deny all (the fail-safe default). GKE is
+    # multi-tenant-exposing -- without this, any org on the hosted product could
+    # route TPU work to the shared cluster. The hosted API rejects a GKE-routed
+    # submission whose org is absent before any trial is created; the OSS
+    # single-tenant server (no org identity) is exempt. Delivered at runtime via
+    # the oddish-gke-config secret so the allowlist changes without a redeploy.
+    gke_allowed_org_ids: str = ""
 
     # API server
     api_host: str = "0.0.0.0"
@@ -1229,6 +1237,19 @@ class Settings(BaseSettings):
             app_name = os.environ.get("MODAL_APP_NAME", "oddish")
             self.gke_cluster_name = f"{app_name}-trials"
         return self
+
+    @property
+    def gke_allowed_org_id_set(self) -> frozenset[str]:
+        """``gke_allowed_org_ids`` parsed to a set; EMPTY string = deny all.
+
+        Blank entries and surrounding whitespace are dropped so a trailing comma
+        or padded id never widens the allowlist to the empty org.
+        """
+        return frozenset(
+            part.strip()
+            for part in self.gke_allowed_org_ids.split(",")
+            if part.strip()
+        )
 
     @model_validator(mode="after")
     def normalize_model_overrides(self) -> "Settings":
