@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -46,6 +47,12 @@ logger = logging.getLogger(__name__)
 
 USER_CANCELLED_MESSAGE = "Cancelled by user"
 CANCELLED_HARBOR_STAGE = "cancelled"
+
+
+class TrialSupersedeConflict(RuntimeError):
+    """A failed attempt changed while a sweep was replacing it."""
+
+
 ACTIVE_TRIAL_STATUSES = (
     TrialStatus.PENDING,
     TrialStatus.QUEUED,
@@ -1012,6 +1019,7 @@ async def append_trials_to_task(
     submission: TaskSubmission,
     experiment_id: str | None = None,
     billed_user_id: str | None = None,
+    supersede_failed_trial_ids: Sequence[Sequence[str]] | None = None,
 ) -> list[TrialModel]:
     """Append new queued trials to an existing task.
 
@@ -1019,7 +1027,17 @@ async def append_trials_to_task(
     ``experiment_id`` is given, new trials use that experiment and the
     task is auto-linked to it via ``task_experiments`` (matching the
     implicit behavior of the old single-FK world).
+
+    ``supersede_failed_trial_ids`` is aligned with ``submission.trials``.
+    After each replacement row is inserted, the listed failed attempts point
+    at it through ``superseded_by_trial_id``. This gives sweep reconciliation
+    the same immutable-history behavior as an explicit trial retry while
+    keeping the append and supersede writes in one transaction.
     """
+    if supersede_failed_trial_ids is None:
+        supersede_failed_trial_ids = [() for _ in submission.trials]
+    elif len(supersede_failed_trial_ids) != len(submission.trials):
+        raise ValueError("supersede_failed_trial_ids must align with submission.trials")
     # ``include_deleted=True`` keeps soft-deleted trials in the suffix
     # search so the next allocated ``{task_id}-{N}`` can never collide
     # with a tombstoned row's primary key.
@@ -1054,7 +1072,10 @@ async def append_trials_to_task(
     worker_job_requests: list[EnqueueRequest] = []
     new_trial_ids: list[str] = []
     new_llm_trial_ids: list[str] = []
-    for spec in submission.trials:
+    supersede_pairs: list[tuple[str, str]] = []
+    for spec, superseded_ids in zip(
+        submission.trials, supersede_failed_trial_ids, strict=True
+    ):
         model = settings.normalize_trial_model(spec.agent, spec.model)
         provider = settings.get_provider_for_trial(spec.agent, model)
         queue_key = settings.get_queue_key_for_trial(spec.agent, model)
@@ -1095,12 +1116,32 @@ async def append_trials_to_task(
             )
         )
         new_trial_ids.append(trial_id)
+        supersede_pairs.extend((old_id, trial_id) for old_id in superseded_ids)
         if not is_nop_oracle_agent(spec.agent):
             new_llm_trial_ids.append(trial_id)
         next_index += 1
 
     await _bulk_insert_trials(session, new_trial_rows)
     await bulk_enqueue_worker_jobs(session, worker_job_requests)
+
+    # The replacement rows must exist before the self-referential FK can point
+    # old attempts at them. Only live FAILED rows are eligible: if another
+    # retry won a race, fail the transaction instead of overwriting its chain.
+    for old_trial_id, new_trial_id in supersede_pairs:
+        result = await session.execute(
+            update(TrialModel)
+            .where(
+                TrialModel.id == old_trial_id,
+                TrialModel.task_id == task.id,
+                TrialModel.status == TrialStatus.FAILED,
+                TrialModel.superseded_by_trial_id.is_(None),
+            )
+            .values(superseded_by_trial_id=new_trial_id)
+        )
+        if cast(Any, result).rowcount != 1:
+            raise TrialSupersedeConflict(
+                f"Failed trial {old_trial_id} was concurrently superseded or changed"
+            )
 
     # Re-read the inserted rows as ORM objects (in index order) so callers get
     # real ``TrialModel`` instances, matching the old per-row return.
