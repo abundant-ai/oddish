@@ -471,3 +471,25 @@ def test_fresh_persisted_summary_helper():
     ) is None
     fresh = {"schema_version": "3", "phases": [{"label": "x"}]}
     assert trial_io._fresh_persisted_summary(SimpleNamespace(trajectory_summary=fresh)) == fresh
+
+
+def test_empty_phases_summary_uses_heuristic_not_llm(monkeypatch):
+    # A fresh summary with empty phases must fall to the heuristic, NOT trigger a
+    # second segmentation LLM pass (even when a model is configured).
+    called = {"llm": 0}
+
+    async def _boom_llm(prompt, model):
+        called["llm"] += 1
+        return None
+
+    monkeypatch.setattr(tg, "_run_llm", _boom_llm)
+    g = asyncio.run(
+        tg.build_trajectory_graph(
+            _traj(),
+            {"status": "success", "reward": 1.0, "task_name": "t", "agent_name": "a"},
+            model="some-model",
+            summary={"schema_version": "3", "summary": "x", "phases": []},
+        )
+    )
+    assert g["source"] == "heuristic"
+    assert called["llm"] == 0, "empty-phases summary must not run the segmentation LLM"
