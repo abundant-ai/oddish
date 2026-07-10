@@ -93,6 +93,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
     assert experiment_alert.text.splitlines() == [
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
+        "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
         "Top agent costs:",
@@ -120,7 +121,7 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
         trial_average_multiplier=2,
     )
 
-    assert alerts[0].text.splitlines()[4:8] == [
+    assert alerts[0].text.splitlines()[5:9] == [
         "Top agent costs:",
         "• `openrouter/opus`: *$250.00*",
         "• `azure/fable`: *$200.00*",

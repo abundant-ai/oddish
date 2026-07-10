@@ -151,6 +151,8 @@ def build_alerts(
                         text=(
                             ":money_with_wings: *Expensive experiment*\n"
                             f"Title: *{_escape(experiment.name)}*\n"
+                            f"Spend milestone: *${milestone:,.2f}* "
+                            f"(current spend: *${total_cost:,.2f}*)\n"
                             f"Trials still running: {experiment.active_trials}\n"
                             f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
                             "Top agent costs:\n"
