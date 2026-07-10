@@ -335,7 +335,7 @@ const ANALYSIS_LEGEND_ITEMS: Array<{
   },
   {
     key: "analysis-failed",
-    label: "Analysis failed",
+    label: "QA failed",
     dotClass: "bg-yellow-400",
   },
 ];
@@ -1524,7 +1524,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleStatus(status)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1561,7 +1561,7 @@ export function ExperimentTrialsTable({
             type="button"
             variant="ghost"
             onClick={() => toggleAnalysisKey(item.key)}
-            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-2 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
+            className={`h-auto gap-1.5 rounded-[5px] border border-transparent px-1.5 py-1 text-[11px] font-medium text-[color:var(--paper-ink-2)] transition select-none hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)] ${
               isDimmed ? "line-through opacity-[0.38]" : ""
             }`}
           >
@@ -1596,12 +1596,12 @@ export function ExperimentTrialsTable({
           <span className="flex flex-col gap-0.5">
             <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
               <span className="inline-block h-2.5 w-2.5 rounded-[2px] bg-[color:var(--paper-pass)]" />
-              trial outcome
+              trial result
             </span>
             {showAnalysis && (
               <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                 <span className="mx-[1px] inline-block h-2 w-2 rounded-full bg-[color:var(--paper-a-good)]" />
-                trial analysis
+                QA result
               </span>
             )}
           </span>
@@ -1721,13 +1721,13 @@ export function ExperimentTrialsTable({
   };
 
   const renderLegendBlock = () => (
-    <div className="flex min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1 sm:ml-auto sm:w-fit sm:flex-nowrap">
+    <div className="flex max-w-full min-w-0 flex-wrap items-center gap-y-1 rounded-[8px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] p-1">
       {renderLegendAnatomy()}
-      <div className="flex items-center gap-0.5 px-1">
+      <div className="flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 px-1">
         <Tooltip>
           <TooltipTrigger asChild>
             <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-              Trial outcome
+              Trial
             </span>
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
@@ -1738,11 +1738,11 @@ export function ExperimentTrialsTable({
         {LEGEND_STATUS_ORDER.map((status) => renderStatusChip(status))}
       </div>
       {showAnalysis && (
-        <div className="ml-1 flex items-center gap-0.5 border-l border-dashed border-[color:var(--paper-line)] pl-2">
+        <div className="ml-1 flex min-w-0 flex-wrap items-center gap-0.5 gap-y-1 border-l border-dashed border-[color:var(--paper-line)] pl-2">
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="cursor-help pr-2 font-mono text-[9.5px] font-semibold tracking-[0.1em] whitespace-nowrap text-[color:var(--paper-ink-3)] uppercase">
-                Trial analysis
+                QA
               </span>
             </TooltipTrigger>
             <TooltipContent className="max-w-xs">
@@ -1795,22 +1795,23 @@ export function ExperimentTrialsTable({
 
         <div className="max-w-full overflow-hidden rounded-[10px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)]">
           <div className="relative z-30 flex flex-col gap-3 border-b border-[color:var(--paper-line-2)] bg-[color:var(--paper-surface)] px-4 pt-3.5 pb-3">
-            <div className="flex flex-wrap items-start gap-3">
-              <div className="w-full sm:w-[280px]">
-                <div className="flex h-8 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)]">
-                  <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
-                  <Input
-                    type="search"
-                    value={taskSearch}
-                    onChange={(event) =>
-                      handleTaskSearchChange(event.target.value)
-                    }
-                    placeholder="Search tasks (comma-separated)"
-                    className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
-                  />
-                </div>
+            <div className="flex flex-wrap items-stretch gap-3">
+              {/* Fills the space left of the legend; stretches to its height. */}
+              <div className="flex min-h-8 w-full min-w-0 items-center gap-2 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-bg)] px-2.5 text-[color:var(--paper-ink-2)] focus-within:border-[color:var(--paper-ink-4)] sm:w-auto sm:min-w-[280px] sm:flex-1">
+                <Search className="h-3.5 w-3.5 shrink-0 text-[color:var(--paper-ink-3)]" />
+                <Input
+                  type="search"
+                  value={taskSearch}
+                  onChange={(event) =>
+                    handleTaskSearchChange(event.target.value)
+                  }
+                  placeholder="Search tasks (comma-separated)"
+                  className="h-auto min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[12.5px] text-[color:var(--paper-ink)] placeholder:text-[color:var(--paper-ink-3)] focus-visible:ring-0 focus-visible:ring-offset-0"
+                />
               </div>
-              <div className="min-w-0 flex-1">{renderLegendBlock()}</div>
+              {/* shrink-0 keeps the legend intact on one line; when the row is
+                  too narrow it drops below the search bar and wraps there. */}
+              <div className="max-w-full shrink-0">{renderLegendBlock()}</div>
             </div>
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11.5px] text-[color:var(--paper-ink-3)]">
