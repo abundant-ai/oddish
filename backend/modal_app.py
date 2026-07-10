@@ -212,6 +212,11 @@ _GKE_CLUSTER_ENV = "ODDISH_GKE_CLUSTER_NAME"
 # the two lists. See _gke_config_secret_enabled / _gke_runtime_secret_names.
 _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
 _GKE_CONFIG_SECRET_NAME = "oddish-gke-config"
+# Internal: the deploy-time GKE secret plan, baked into the image env so the
+# in-container recompute reads it back from immutable image metadata instead of
+# re-deriving it from os.environ (which an unrelated runtime secret could
+# pollute -- see _resolve_gke_secret_plan). Not an operator-facing setting.
+_GKE_PLAN_ENV = "ODDISH_GKE_SECRET_PLAN"
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -288,6 +293,25 @@ def _gke_runtime_secret_names(
     return names
 
 
+def _resolve_gke_secret_plan(
+    environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
+) -> list[str]:
+    """The GKE secret plan for this process, robust against runtime-secret env.
+
+    At deploy time (``modal.is_local()``) the plan is derived from the deploy
+    env / backend/.env and baked into the image env under ``_GKE_PLAN_ENV`` (see
+    ENV_VARS). Inside a worker container it is read straight back from that baked
+    value -- never re-derived from ``os.environ`` -- so an unrelated runtime
+    secret that happens to carry ``ODDISH_GKE_ENABLED`` (or ``ODDISH_GKE_*``)
+    cannot change the recomputed secret list and drift Modal's dependency count
+    into a hydration crashloop. The baked value is a stable, deploy-time
+    decision; the container never disagrees with it.
+    """
+    if modal.is_local():
+        return _gke_runtime_secret_names(environ, dotenv_vars)
+    return [name for name in environ.get(_GKE_PLAN_ENV, "").split(",") if name]
+
+
 runtime_secret = modal.Secret.from_name(
     RUNTIME_SECRET_NAME, environment_name=MODAL_SECRET_ENVIRONMENT
 )
@@ -313,7 +337,8 @@ if SAURON_AWS_SECRET_NAME:
 # ODDISH_GKE_* incl. the org allowlist) for the config-secret channel. Lazily
 # hydrated by Modal; the gate reads image-baked env so this list is identical at
 # deploy time and at in-container recompute. See _gke_runtime_secret_names.
-for _gke_secret_name in _gke_runtime_secret_names(os.environ, LOCAL_DOTENV_VARS):
+GKE_SECRET_PLAN = _resolve_gke_secret_plan(os.environ, LOCAL_DOTENV_VARS)
+for _gke_secret_name in GKE_SECRET_PLAN:
     runtime_secrets.append(
         modal.Secret.from_name(
             _gke_secret_name, environment_name=MODAL_SECRET_ENVIRONMENT
@@ -489,6 +514,11 @@ ENV_VARS = {
         for k, v in {**LOCAL_DOTENV_VARS, **os.environ}.items()
         if k.startswith("ODDISH_GKE_")
     },
+    # Deploy-time GKE secret plan, baked so the in-container recompute reads it
+    # back verbatim instead of re-deriving from os.environ (see
+    # _resolve_gke_secret_plan). Placed after the ODDISH_GKE_ spread so this
+    # authoritative value always wins. Empty string on a GKE-less deploy.
+    _GKE_PLAN_ENV: ",".join(GKE_SECRET_PLAN),
 }
 
 
