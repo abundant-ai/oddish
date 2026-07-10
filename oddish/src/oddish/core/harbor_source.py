@@ -55,17 +55,11 @@ GKE_VARIANT_ID = "gke"
 # means adding an entry here and building its image/Function (the Modal side
 # reads this same registry). Any allowlisted pin not registered here runs
 # out-of-process as ``ephemeral``.
-#
-# MERGE CHECKLIST: once harbor-gke's GKE support merges into the default fork,
-# advance HARBOR_DEFAULT_SOURCE/SHA (config.py) + both pyproject/uv.lock pins to
-# the merged commit and DELETE the gke entry below. The default image then
-# carries GKE natively, GKE trials classify to ``default``, and the per-variant
-# image/Function collapse away with the registry entry.
 HARBOR_VARIANTS: dict[str, HarborVariant] = {
     GKE_VARIANT_ID: HarborVariant(
         variant_id=GKE_VARIANT_ID,
         source="https://github.com/abundant-ai/harbor-gke",
-        sha="7c9aec14a4d6443b1d17a6f89753eb384758634b",
+        sha="7f5a94f8a21a2ddf436b76b37eaecf6dadf1143c",
         extras=("gke",),
     ),
 }
@@ -205,8 +199,8 @@ def stamp_gke_harbor_source(
     no source OR pinned the DEFAULT fork, stamp the blessed gke variant's
     ``(source, sha)`` — the sha rides as the ref so resolution needs no network and
     the pin classifies deterministically onto the gke worker image. The default
-    fork is treated exactly like an unset source because it carries no GKE support
-    (see the merge checklist above); leaving a GKE trial on it would silently run
+    fork is treated exactly like an unset source because it carries no GKE support;
+    leaving a GKE trial on it would silently run
     the lean default image. Only a genuinely different explicit fork is left
     untouched (the allowlist gates it; a non-merge-sha GKE source runs
     out-of-process, which installs ``harbor[gke]`` in its own child). Every non-GKE
