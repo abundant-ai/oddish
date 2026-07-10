@@ -844,6 +844,33 @@ def _parse_required_key_value_pairs(
     return result
 
 
+def _coerce_kwarg_values(kwargs: dict[str, str]) -> dict[str, Any]:
+    """Interpret CLI kwarg values as JSON literals where they are ones.
+
+    Harbor environment constructors take typed kwargs (bools, ints, floats),
+    but CLI KEY=VALUE pairs arrive as strings -- "false" would reach a bool
+    parameter as a truthy string. Values that parse as JSON become typed
+    (false -> False, 900 -> 900, {"a": 1} -> dict); everything else stays a
+    plain string (cluster names, zones, image tags). JSON-quoting a value
+    ('"123"') is the escape hatch for literal strings that would coerce.
+    """
+    def _reject_nonstandard_constant(name: str) -> Any:
+        # json.loads accepts NaN/Infinity/-Infinity, but they do not survive
+        # strict JSON serialization (API payloads, JSONB); treat them as the
+        # plain strings they were typed as.
+        raise ValueError(f"non-standard JSON constant: {name}")
+
+    coerced: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        try:
+            coerced[key] = json.loads(
+                value, parse_constant=_reject_nonstandard_constant
+            )
+        except (json.JSONDecodeError, ValueError):
+            coerced[key] = value
+    return coerced
+
+
 def _validate_json_serializable(value: Any, *, label: str) -> None:
     try:
         json.dumps(value)
@@ -974,9 +1001,11 @@ def build_sweep_payload(
         env_overrides["override_storage_mb"] = override_storage_mb
     if force_build is not None:
         env_overrides["force_build"] = force_build
-    parsed_environment_kwargs = _parse_required_key_value_pairs(
-        environment_kwargs,
-        option_name="--environment-kwarg",
+    parsed_environment_kwargs = _coerce_kwarg_values(
+        _parse_required_key_value_pairs(
+            environment_kwargs,
+            option_name="--environment-kwarg",
+        )
     )
     harbor = _build_harbor_payload(
         harbor_config,
