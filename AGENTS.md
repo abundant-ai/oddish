@@ -690,6 +690,12 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
 
+On an experiment page, removing a task always calls the scoped
+`DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
+experiment membership and its scoped trials without deleting the task, even
+when it was the task's final experiment membership. Whole-task deletion remains
+a separate explicit action outside the experiment-scoped table.
+
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production
 deployment.
