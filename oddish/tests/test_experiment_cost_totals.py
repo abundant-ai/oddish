@@ -9,11 +9,13 @@ assert against ``_resolve_trial_cost`` — the same function the trial API
 serializes through — instead of hand-computed numbers.
 
 *Scope is spend, not the grid.* Cost counts every trial that ran under the
-experiment: all task versions, superseded retries, and probes. The grid hides
-those (see ``get_task_status_trials``) so that scores compare like with like,
-but the money was spent and billed regardless — ``core.quotas`` applies none of
-those filters either. Several tests below exist specifically to keep someone
-from "fixing" the tile back into agreement with the visible rows.
+experiment: all task versions, superseded retries, probes, and soft-deleted
+trials. The grid hides those (see ``get_task_status_trials``) so that scores
+compare like with like, but the money was spent and billed regardless —
+``core.quotas`` and the admin cost breakdown apply none of those filters either,
+so all three now report the same number. Several tests below exist specifically
+to keep someone from "fixing" the tile back into agreement with the visible
+rows.
 
 Uses the rollback-per-test ``session`` fixture against the local Postgres, with
 a run-scoped org id so each test sees only its own trials.
@@ -298,7 +300,8 @@ async def test_trials_gathered_into_a_collection_count(session):
 
     borrowed = _trial(task, home, cost_usd=4.0)  # home is the OTHER experiment
     native_and_gathered = _trial(task, collection, cost_usd=6.0)  # home == collection
-    session.add_all([borrowed, native_and_gathered])
+    unlinked = _trial(task, home, cost_usd=100.0)  # gathered, then removed again
+    session.add_all([borrowed, native_and_gathered, unlinked])
     await session.flush()
 
     await session.execute(
@@ -311,6 +314,21 @@ async def test_trials_gathered_into_a_collection_count(session):
             ]
         )
     )
+    # Unlinked from the collection. ``include_deleted=True`` opts the TRIALS out
+    # of the soft-delete filter; it must not also revive a dropped membership
+    # row, which carries its own deleted_at predicate in
+    # ``gathered_trial_ids_select``.
+    #
+    # Inserted separately on purpose: an executemany insert compiles its column
+    # list from the FIRST dict, so a deleted_at that appears only on a later row
+    # is silently dropped and the link goes in live.
+    await session.execute(
+        insert(experiment_trials).values(
+            experiment_id=collection.id,
+            trial_id=unlinked.id,
+            deleted_at=utcnow(),
+        )
+    )
     await session.flush()
 
     totals = await get_experiment_cost_totals(
@@ -318,7 +336,7 @@ async def test_trials_gathered_into_a_collection_count(session):
     )
 
     assert totals.cost_usd == pytest.approx(10.0)
-    assert totals.total_trials == 2  # not 3
+    assert totals.total_trials == 2  # not 3 (no double count), not 4 (unlinked)
 
 
 @pytest.mark.asyncio
@@ -346,15 +364,14 @@ async def test_negative_token_counts_cannot_cancel_across_trials(session):
 
 
 @pytest.mark.asyncio
-async def test_soft_deleted_trials_do_not_count(session):
-    """The one place we knowingly diverge from billing.
+async def test_soft_deleted_trials_still_count_as_spend(session):
+    """Deleting a trial removes it from the view; it does not refund it.
 
-    ``core.quotas`` sums with ``include_deleted=True`` so a user cannot delete
-    their way out of an invoice. Here the global soft-delete filter applies:
-    deleting a trial is an explicit "remove it from the experiment" action, and
-    a tile that kept charging for a row the user removed — and can no longer
-    see — would be inexplicable. Pinned so the divergence stays a decision
-    rather than an accident.
+    The query opts out of the global soft-delete filter with
+    ``include_deleted=True``, matching the two other places that answer "what
+    was spent": the quota sum (``core.quotas``) and the admin cost breakdown.
+    Without this the page would report a smaller number than the admin table and
+    the invoice for the same experiment.
     """
     task, experiment = await _fixture(session, "deleted")
 
@@ -368,8 +385,8 @@ async def test_soft_deleted_trials_do_not_count(session):
         session, experiment_id=experiment.id, org_id=_ORG
     )
 
-    assert totals.cost_usd == pytest.approx(3.0)
-    assert totals.total_trials == 1
+    assert totals.cost_usd == pytest.approx(12.0)
+    assert totals.total_trials == 2
 
 
 @pytest.mark.asyncio
