@@ -22,7 +22,7 @@ async def test_meta_mini_swe_agent_adds_session_header_and_openai_model(tmp_path
         extra_env={
             "MSWEA_API_KEY": "meta-test-key",
             "OPENAI_BASE_URL": "https://api.ai.meta.com/v1",
-            "ODDISH_META_EVAL_NAME": "Terminal Bench 2.1",
+            "ODDISH_META_EVAL_NAME": "SWE Marathon",
         },
     )
 
@@ -31,7 +31,7 @@ async def test_meta_mini_swe_agent_adds_session_header_and_openai_model(tmp_path
     config_command = commands[-2][0]
     run_command, run_env = commands[-1]
 
-    assert "x-session-id: 'terminal-bench-2-1--" in config_command
+    assert "x-session-id: 'swe-marathon--" in config_command
     assert "--model=openai/llama-eval-model" in run_command
     assert "-c mini -c /tmp/oddish-meta-mini-swe-agent.yaml" in run_command
     assert "reasoning_effort" not in run_command
