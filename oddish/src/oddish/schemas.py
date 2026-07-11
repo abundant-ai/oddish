@@ -812,6 +812,24 @@ class TaskCostTotals(BaseModel):
     total_trials: int = 0
 
 
+class ExperimentCostTotals(BaseModel):
+    """Experiment-wide cost rollup across every (non-superseded) trial.
+
+    Served separately from the paginated trial grid so the page's cost tiles
+    reflect the whole experiment, not just the loaded pages.
+    """
+
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
+    total_trials: int = 0
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 

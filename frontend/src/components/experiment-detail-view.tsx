@@ -23,7 +23,12 @@ import {
   EMPTY_TRIAL_AGGREGATE,
   accumulateTrial,
 } from "@/lib/trial-aggregation";
-import type { Task, Trial, UserTagRef } from "@/lib/types";
+import type {
+  ExperimentCostTotals,
+  Task,
+  Trial,
+  UserTagRef,
+} from "@/lib/types";
 import { ExternalLink, GitPullRequest, Info, Loader2 } from "lucide-react";
 import {
   Tooltip,
@@ -90,6 +95,9 @@ type DrawerState = {
 interface ExperimentDetailViewProps {
   experimentId?: string;
   tasksForExperiment: Task[];
+  // Whole-experiment cost rollup. Omit to fall back to summing the loaded
+  // trials, which understates cost while pages are still unloaded.
+  costTotals?: ExperimentCostTotals;
   isLoading: boolean;
   isLoadingTrials?: boolean;
   hasError?: boolean;
@@ -774,6 +782,7 @@ function ExperimentSummaryBar({
 export function ExperimentDetailView({
   experimentId,
   tasksForExperiment,
+  costTotals,
   isLoading,
   isLoadingTrials = false,
   hasError = false,
@@ -1104,10 +1113,25 @@ export function ExperimentDetailView({
     });
   }, [tasksForExperiment, drawerState, buildTrialGroups]);
 
-  const summary = useMemo(
-    () => buildExperimentSummary(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
-  );
+  // The trial grid is paginated, so ``buildExperimentSummary`` only ever sums
+  // cost over the loaded pages. Prefer the server-side rollup, which covers
+  // every trial in the experiment. Non-cost fields still come from the loaded
+  // trials (the grid can only describe what it has).
+  const summary = useMemo(() => {
+    const base = buildExperimentSummary(deferredTasksForDerivedData);
+    if (!costTotals) return base;
+    return {
+      ...base,
+      costUsd: costTotals.cost_usd,
+      costTrialCount: costTotals.cost_trial_count,
+      costHasEstimated: costTotals.cost_has_estimated,
+      costHasNative: costTotals.cost_has_native,
+      billedCostUsd: costTotals.billed_cost_usd,
+      billedTrialCount: costTotals.billed_trial_count,
+      billedHasEstimated: costTotals.billed_has_estimated,
+      billedHasNative: costTotals.billed_has_native,
+    };
+  }, [deferredTasksForDerivedData, costTotals]);
 
   const closeDrawer = () => {
     setDrawerState(null);

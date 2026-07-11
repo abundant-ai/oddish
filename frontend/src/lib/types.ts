@@ -324,6 +324,20 @@ interface TaskCostTotals {
   total_trials: number;
 }
 
+/** `GET /api/experiments/{id}/cost-totals` — cost across ALL trials in the
+ * experiment, not just the trial pages the grid has loaded. */
+export interface ExperimentCostTotals {
+  cost_usd: number;
+  cost_trial_count: number;
+  cost_has_estimated: boolean;
+  cost_has_native: boolean;
+  billed_cost_usd: number;
+  billed_trial_count: number;
+  billed_has_estimated: boolean;
+  billed_has_native: boolean;
+  total_trials: number;
+}
+
 export interface TaskDetailResponse {
   task: Task;
   versions: TaskVersionSummary[];
