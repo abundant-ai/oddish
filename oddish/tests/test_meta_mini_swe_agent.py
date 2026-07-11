@@ -67,6 +67,35 @@ async def test_meta_mini_swe_agent_json_quotes_explicit_session_id(tmp_path):
     assert f"x-session-id: {json.dumps(session_id)}" in commands[-2][0]
 
 
+@pytest.mark.asyncio
+async def test_meta_mini_swe_agent_forwards_reasoning_effort(tmp_path):
+    commands: list[tuple[str, dict | None]] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append((command, env))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent = OddishMetaMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="meta/llama-eval-model",
+        reasoning_effort="xhigh",
+        extra_env={
+            "MSWEA_API_KEY": "meta-test-key",
+            "OPENAI_BASE_URL": "https://api.ai.meta.com/v1",
+        },
+    )
+
+    await agent.run("fix the task", _FakeEnvironment(), SimpleNamespace())
+
+    run_command = commands[-1][0]
+    # meta/ models are not openai/-prefixed, so effort rides in extra_body of the
+    # chat-completions request body.
+    assert (
+        "model.model_kwargs.extra_body.reasoning_effort=xhigh" in run_command
+    )
+
+
 def test_meta_mini_swe_agent_allowlists_custom_base_url(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.agents.mini_swe_agent.settings.meta_base_url",
