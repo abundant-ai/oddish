@@ -157,5 +157,8 @@ def test_plan_not_baked_into_env_vars():
     # The plan is baked as an image file, not an env var, so a runtime secret
     # cannot override it. Ensure the internal key never lands in the image env.
     assert "ODDISH_GKE_SECRET_PLAN" not in modal_app.ENV_VARS
-    # GKE-less test env -> empty plan.
-    assert modal_app.GKE_SECRET_PLAN == []
+    # Assert the resolver on explicit empty inputs, not the import-time
+    # GKE_SECRET_PLAN global: that global is derived from the ambient process
+    # env + backend/.env, so a developer using the legacy GKE .env path would
+    # otherwise see a non-empty plan and a false failure here.
+    assert modal_app._resolve_gke_secret_plan({}, {}) == []
