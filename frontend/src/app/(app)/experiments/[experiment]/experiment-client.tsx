@@ -310,6 +310,14 @@ function ExperimentContent({
   const canManageExperimentShare =
     orgRole === "org:admin" || orgRole === "org:owner";
 
+  // Deletes below write the grid optimistically, so for one round trip the row
+  // is gone while the cost tiles still show the pre-delete rollup. Do NOT
+  // "fix" that by optimistically subtracting the removed trials' cost: the only
+  // trials on the client are the ones the grid renders, and the rollup also
+  // counts that task's probes, superseded retries and earlier-version trials.
+  // Subtracting the visible ones would leave the tile too LOW -- a spend number
+  // derived from the visible rows, which is the bug this endpoint exists to
+  // remove. Refetching is the correct (and self-healing) answer.
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
       await Promise.all([
