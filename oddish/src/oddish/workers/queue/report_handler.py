@@ -151,6 +151,10 @@ async def run_report_generation_job(
             trial_ids = [t.id for t, _ in rows]
 
         for tid in trial_ids:
+            if worker_job_id:
+                async with get_session() as session:
+                    if not await _worker_job_is_running(session, worker_job_id):
+                        return
             async with get_session() as session:
                 trial = await session.get(TrialModel, tid)
                 needs = trial is not None and trial.analysis_status not in (
@@ -158,11 +162,24 @@ async def run_report_generation_job(
                 )
             if needs:
                 try:
-                    await classify_trial_and_store(tid)
+                    await classify_trial_and_store(
+                        tid,
+                        should_store=(
+                            lambda session: _worker_job_is_running(
+                                session, worker_job_id
+                            )
+                        )
+                        if worker_job_id
+                        else None,
+                    )
                 except Exception:
                     pass  # skip un-analyzable trials; they still count toward num_trials
 
         # 3. Build inputs + run the pure core.
+        if worker_job_id:
+            async with get_session() as session:
+                if not await _worker_job_is_running(session, worker_job_id):
+                    return
         try:
             async with get_session() as session:
                 rows = await _gather_trial_rows(session, report_id, org_id)
@@ -202,9 +219,3 @@ async def run_report_generation_job(
             report.finished_at = utcnow()
 
     await asyncio.shield(_store())
-
-
-async def _worker_report_status(report_id: str) -> JobStatus | None:
-    async with get_session() as session:
-        report = await session.get(ReportModel, report_id)
-        return None if report is None else report.status
