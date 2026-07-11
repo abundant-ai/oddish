@@ -812,6 +812,28 @@ class TaskCostTotals(BaseModel):
     total_trials: int = 0
 
 
+class ExperimentCostTotals(BaseModel):
+    """What an experiment spent, across every trial that ran under it.
+
+    Served separately from the trial grid because it cannot be derived from it:
+    the grid is paginated, and it is filtered to each task's current version, so
+    it omits earlier versions, superseded retries, probes and deleted trials --
+    all of which were still billed. Expect this to exceed the sum of the visible
+    rows. Counts what the quota sum and the admin cost breakdown count, so the
+    page, the admin table and the invoice agree on one number.
+    """
+
+    cost_usd: float = 0.0
+    cost_trial_count: int = 0
+    cost_has_estimated: bool = False
+    cost_has_native: bool = False
+    billed_cost_usd: float = 0.0
+    billed_trial_count: int = 0
+    billed_has_estimated: bool = False
+    billed_has_native: bool = False
+    total_trials: int = 0
+
+
 class TaskDetailResponse(BaseModel):
     """Task detail bundle for ``GET /tasks/{task_id}/detail``."""
 
