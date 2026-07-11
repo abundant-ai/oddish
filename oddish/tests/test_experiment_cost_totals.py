@@ -1,11 +1,19 @@
 """``get_experiment_cost_totals`` — the whole-experiment cost rollup.
 
-The experiment page pages its trials, so the cost tiles cannot be a client-side
-sum. The server-side aggregate groups by ``(agent, model, billed)`` and prices
-pooled token totals for trials whose ``cost_usd`` is NULL. The load-bearing
-claim is that this equals the per-trial sum the UI *would* have produced had
-every page been loaded — so the tests below assert exactly that, against
-``_resolve_trial_cost`` (the same function the trial API serializes through).
+Two things are being pinned here.
+
+*Pricing is exact.* The aggregate groups by ``(agent, model, billed)`` and, for
+trials whose ``cost_usd`` is NULL, prices pooled token totals rather than
+dollars. It must equal what per-trial pricing would produce, so those tests
+assert against ``_resolve_trial_cost`` — the same function the trial API
+serializes through — instead of hand-computed numbers.
+
+*Scope is spend, not the grid.* Cost counts every trial that ran under the
+experiment: all task versions, superseded retries, and probes. The grid hides
+those (see ``get_task_status_trials``) so that scores compare like with like,
+but the money was spent and billed regardless — ``core.quotas`` applies none of
+those filters either. Several tests below exist specifically to keep someone
+from "fixing" the tile back into agreement with the visible rows.
 
 Uses the rollback-per-test ``session`` fixture against the local Postgres, with
 a run-scoped org id so each test sees only its own trials.
@@ -239,8 +247,13 @@ async def test_billed_split_tracks_billed_user_id(session):
 
 
 @pytest.mark.asyncio
-async def test_probe_and_superseded_trials_are_excluded(session):
-    """Scope matches the grid: no probes, no superseded reruns."""
+async def test_probe_and_superseded_trials_still_count_as_spend(session):
+    """Cost is spend, so trials the GRID hides must still be summed.
+
+    A probe and a superseded retry attempt both really ran and were really
+    billed (``core.quotas`` applies no probe/superseded filter). The grid omits
+    them for score-comparability reasons; that must not erase their cost.
+    """
     task, experiment = await _fixture(session, "scope")
 
     keeper = _trial(task, experiment, cost_usd=3.0)
@@ -249,8 +262,8 @@ async def test_probe_and_superseded_trials_are_excluded(session):
 
     session.add_all(
         [
-            _trial(task, experiment, cost_usd=100.0, is_probe=True),
-            _trial(task, experiment, cost_usd=100.0, superseded_by_trial_id=keeper.id),
+            _trial(task, experiment, cost_usd=5.0, is_probe=True),
+            _trial(task, experiment, cost_usd=7.0, superseded_by_trial_id=keeper.id),
         ]
     )
     await session.flush()
@@ -259,8 +272,35 @@ async def test_probe_and_superseded_trials_are_excluded(session):
         session, experiment_id=experiment.id, org_id=_ORG
     )
 
-    assert totals.cost_usd == pytest.approx(3.0)
-    assert totals.cost_trial_count == 1
+    assert totals.cost_usd == pytest.approx(15.0)
+    assert totals.cost_trial_count == 3
+    assert totals.total_trials == 3
+
+
+@pytest.mark.asyncio
+async def test_trials_from_other_experiments_are_never_counted(session):
+    """Membership is the one filter that DOES apply: this experiment's trials only."""
+    task, experiment = await _fixture(session, "isolation")
+
+    other = ExperimentModel(
+        name=f"expcost-other-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(other)
+    await session.flush()
+
+    session.add_all(
+        [
+            _trial(task, experiment, cost_usd=4.0),
+            _trial(task, other, cost_usd=1000.0),  # same task, different experiment
+        ]
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.cost_usd == pytest.approx(4.0)
     assert totals.total_trials == 1
 
 
@@ -302,13 +342,14 @@ async def test_untokened_and_unpriced_trials_contribute_nothing(session):
 
 
 @pytest.mark.asyncio
-async def test_only_the_effective_version_of_each_task_is_counted(session):
-    """A re-uploaded task's OLD-version trials must not inflate the total.
+async def test_trials_on_earlier_task_versions_still_count_as_spend(session):
+    """Re-uploading a task mid-experiment must not erase the older run's cost.
 
-    The grid renders only each task's effective version
-    (``get_task_status_trials``), so counting v1's trials alongside v2's would
-    report a cost the page never shows. Asserted against the grid's own helper
-    rather than a hand-computed number.
+    The grid pivots each task to its effective version
+    (``get_task_status_trials``), so v1's trials vanish from the table once v2
+    exists. They still ran and were still billed, so the cost tile — which
+    reports spend — must include them. This is the case where the tile and the
+    visible rows legitimately disagree.
     """
     task, experiment = await _fixture(session, "versions")
 
@@ -327,45 +368,23 @@ async def test_only_the_effective_version_of_each_task_is_counted(session):
     old.task_version_id = v1.id
     new_native = _trial(task, experiment, cost_usd=2.0)
     new_native.task_version_id = v2.id
-    new_estimated = _trial(
-        task, experiment, input_tokens=1_000_000, output_tokens=100_000
-    )
-    new_estimated.task_version_id = v2.id
-    session.add_all([old, new_native, new_estimated])
+    session.add_all([old, new_native])
     await session.flush()
 
     totals = await get_experiment_cost_totals(
         session, experiment_id=experiment.id, org_id=_ORG
     )
 
-    # The v1 trial is the one the page hides; it must not be summed.
+    # The grid shows only the v2 trial...
     await session.refresh(task, attribute_names=["trials"])
     displayed = get_task_status_trials(task, version_id=v2.id)
-    assert {t.id for t in displayed} == {new_native.id, new_estimated.id}
-    assert totals.cost_usd == pytest.approx(_client_side_sum(displayed))
+    assert {t.id for t in displayed} == {new_native.id}
+
+    # ...but the tile reports what the experiment actually cost: v1 + v2.
+    assert totals.cost_usd == pytest.approx(52.0)
     assert totals.cost_trial_count == 2
     assert totals.total_trials == 2
-    assert totals.cost_usd < 50.0  # the stale v1 trial is excluded outright
-
-
-@pytest.mark.asyncio
-async def test_unversioned_task_counts_every_live_trial(session):
-    """With no versions anywhere, the grid version filter is inert — count all."""
-    task, experiment = await _fixture(session, "unversioned")
-
-    trials = [
-        _trial(task, experiment, cost_usd=1.0),
-        _trial(task, experiment, cost_usd=2.0),
-    ]
-    session.add_all(trials)
-    await session.flush()
-
-    totals = await get_experiment_cost_totals(
-        session, experiment_id=experiment.id, org_id=_ORG
-    )
-
-    assert totals.cost_usd == pytest.approx(3.0)
-    assert totals.cost_trial_count == 2
+    assert totals.cost_usd > _client_side_sum(displayed)
 
 
 @pytest.mark.asyncio
