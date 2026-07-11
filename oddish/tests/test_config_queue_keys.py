@@ -300,6 +300,9 @@ def test_meta_agent_env_includes_configured_session_controls(monkeypatch):
 
     assert env["ODDISH_META_EVAL_NAME"] == "SWE Marathon"
     assert env["ODDISH_META_SESSION_ID"] == "swe-marathon--123456"
+    assert env["MSWEA_API_KEY"] == "${META_API_KEY}"
+    # LiteLLM's openai/ provider authenticates from OPENAI_API_KEY.
+    assert env["OPENAI_API_KEY"] == "${META_API_KEY}"
     assert "OPENAI_API_BASE" not in env
 
 

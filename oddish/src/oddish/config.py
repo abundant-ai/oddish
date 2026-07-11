@@ -1659,8 +1659,14 @@ class Settings(BaseSettings):
     def get_meta_agent_env(self) -> dict[str, str]:
         """Return env vars for Meta's OpenAI-compatible mini-swe-agent route."""
         base_url = (self.meta_base_url or META_DEFAULT_BASE_URL).rstrip("/")
+        # mini-swe-agent drives the model through LiteLLM's ``openai/`` provider
+        # (see OddishMetaMiniSweAgent._litellm_model_name), which authenticates
+        # from OPENAI_API_KEY. MSWEA_API_KEY alone does not reach the provider,
+        # so surface the Meta key under OPENAI_API_KEY too (resolved at runtime
+        # from ${META_API_KEY}, never persisted).
         env = {
             "MSWEA_API_KEY": "${META_API_KEY}",
+            "OPENAI_API_KEY": "${META_API_KEY}",
             "OPENAI_BASE_URL": base_url,
         }
         if self.meta_eval_name:
