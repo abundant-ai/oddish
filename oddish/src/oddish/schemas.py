@@ -1752,6 +1752,39 @@ class SkillResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Reports — agent-eval reports across experiments.
+# ---------------------------------------------------------------------------
+class ReportCreate(BaseModel):
+    name: str
+    experiment_ids: list[str]
+
+
+class ExperimentOption(BaseModel):
+    id: str
+    name: str
+
+
+class ReportResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    status: str
+    error: str | None = None
+    bad_failure_content: str | None = None
+    good_failure_content: str | None = None
+    universal_capabilities_content: str | None = None
+    headroom_analysis: str | None = None
+    num_trials: int | None = None
+    num_bad_failures: int | None = None
+    num_good_failures: int | None = None
+    breakdown: dict | None = None
+    experiment_ids: list[str] = []
+    created_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+# ---------------------------------------------------------------------------
 # Documents — agent doc-store.
 # ---------------------------------------------------------------------------
 class DocumentCreate(BaseModel):
