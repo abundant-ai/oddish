@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from sqlalchemy import insert
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -39,6 +40,7 @@ from oddish.core.helpers import (  # noqa: E402
 from oddish.config import settings  # noqa: E402
 from oddish.db.models import (  # noqa: E402
     ExperimentModel,
+    experiment_trials,
     TaskModel,
     TaskVersionModel,
     TrialModel,
@@ -275,6 +277,99 @@ async def test_probe_and_superseded_trials_still_count_as_spend(session):
     assert totals.cost_usd == pytest.approx(15.0)
     assert totals.cost_trial_count == 3
     assert totals.total_trials == 3
+
+
+@pytest.mark.asyncio
+async def test_trials_gathered_into_a_collection_count(session):
+    """The other half of ``trial_in_experiment``, and the reason it's an OR.
+
+    A collection experiment owns trials additively through ``experiment_trials``
+    without rewriting their scalar ``experiment_id``. Those trials must be summed
+    under the collection — and a trial that is BOTH the home and gathered must be
+    counted exactly once, not twice.
+    """
+    task, home = await _fixture(session, "gathered")
+
+    collection = ExperimentModel(
+        name=f"expcost-collection-{_ORG}", org_id=_ORG, last_activity_at=utcnow()
+    )
+    session.add(collection)
+    await session.flush()
+
+    borrowed = _trial(task, home, cost_usd=4.0)  # home is the OTHER experiment
+    native_and_gathered = _trial(task, collection, cost_usd=6.0)  # home == collection
+    session.add_all([borrowed, native_and_gathered])
+    await session.flush()
+
+    await session.execute(
+        insert(experiment_trials).values(
+            [
+                {"experiment_id": collection.id, "trial_id": borrowed.id},
+                # Deliberately also link the trial whose home already IS the
+                # collection: the OR must not double-count it.
+                {"experiment_id": collection.id, "trial_id": native_and_gathered.id},
+            ]
+        )
+    )
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=collection.id, org_id=_ORG
+    )
+
+    assert totals.cost_usd == pytest.approx(10.0)
+    assert totals.total_trials == 2  # not 3
+
+
+@pytest.mark.asyncio
+async def test_negative_token_counts_cannot_cancel_across_trials(session):
+    """Token clamps are per row, matching ``estimate_cost_usd``.
+
+    Pathological data only, but if the SQL summed raw and clamped once at the
+    pooled total, one trial's negative count would cancel a sibling's positive
+    one — something per-trial pricing can never do.
+    """
+    task, experiment = await _fixture(session, "negative")
+
+    trials = [
+        _trial(task, experiment, input_tokens=100_000, cache_tokens=-50_000),
+        _trial(task, experiment, input_tokens=100_000, cache_tokens=50_000),
+    ]
+    session.add_all(trials)
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.cost_usd == pytest.approx(_client_side_sum(trials))
+
+
+@pytest.mark.asyncio
+async def test_soft_deleted_trials_do_not_count(session):
+    """The one place we knowingly diverge from billing.
+
+    ``core.quotas`` sums with ``include_deleted=True`` so a user cannot delete
+    their way out of an invoice. Here the global soft-delete filter applies:
+    deleting a trial is an explicit "remove it from the experiment" action, and
+    a tile that kept charging for a row the user removed — and can no longer
+    see — would be inexplicable. Pinned so the divergence stays a decision
+    rather than an accident.
+    """
+    task, experiment = await _fixture(session, "deleted")
+
+    kept = _trial(task, experiment, cost_usd=3.0)
+    removed = _trial(task, experiment, cost_usd=9.0)
+    removed.deleted_at = utcnow()
+    session.add_all([kept, removed])
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.cost_usd == pytest.approx(3.0)
+    assert totals.total_trials == 1
 
 
 @pytest.mark.asyncio

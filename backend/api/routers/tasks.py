@@ -625,11 +625,12 @@ async def get_experiment_cost_totals_route(
     experiment_id: str,
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> ExperimentCostTotals:
-    """Whole-experiment cost rollup.
+    """What the experiment spent, across every trial that ran under it.
 
-    The grid routes above page their trials, so the page cannot sum cost
-    client-side without loading every trial. This aggregates over all of them
-    in one grouped query.
+    Deliberately wider than the grid routes above: those page their trials (so
+    the page can't sum cost client-side without loading all of them) and scope
+    each task to its current version (so they omit earlier versions, superseded
+    retries and probes -- all of which were still billed). One grouped query.
     """
     auth.require_scope(APIKeyScope.READ)
 

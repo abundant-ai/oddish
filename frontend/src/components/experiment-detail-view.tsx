@@ -50,12 +50,12 @@ import { ProbeDetailPanel } from "@/components/probe-detail-panel";
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel,
+      (mod) => mod.TrialDetailPanel
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  },
+  }
 );
 
 const TaskFilesPanel = dynamic(
@@ -64,7 +64,7 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  },
+  }
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -95,9 +95,13 @@ type DrawerState = {
 interface ExperimentDetailViewProps {
   experimentId?: string;
   tasksForExperiment: Task[];
-  // Whole-experiment cost rollup. Omit to fall back to summing the loaded
-  // trials, which understates cost while pages are still unloaded.
+  // Server-side spend rollup for the whole experiment. Omit (as the public
+  // share view does) to fall back to summing the loaded trials, which
+  // understates cost while pages are unloaded.
   costTotals?: ExperimentCostTotals;
+  // True while the rollup is still in flight, so the cost tiles show a
+  // placeholder instead of the (wrong) client sum. See experiment-client.
+  costTotalsPending?: boolean;
   isLoading: boolean;
   isLoadingTrials?: boolean;
   hasError?: boolean;
@@ -125,12 +129,12 @@ interface ExperimentDetailViewProps {
 const AGENT_SUMMARY_STORAGE_PREFIX = "oddish:experiment-agent-summaries:";
 
 function getModelScopedAgentsFromSummaries(
-  summaries: ExperimentAgentSummary[],
+  summaries: ExperimentAgentSummary[]
 ): Set<string> {
   return new Set(
     summaries
       .filter((summary) => summary.isModelScoped)
-      .map((summary) => summary.agent),
+      .map((summary) => summary.agent)
   );
 }
 
@@ -394,7 +398,7 @@ function ExperimentPrLink({
     return (
       <span
         title="No pull request linked to this experiment"
-        className="inline-flex h-8 select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60"
+        className="inline-flex h-8 items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink-3)] opacity-60 select-none"
       >
         <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
         no PR linked
@@ -412,7 +416,7 @@ function ExperimentPrLink({
       title={
         prTitle ? `${prTitle} — view on GitHub` : "View pull request on GitHub"
       }
-      className="inline-flex h-8 max-w-[200px] select-none items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
+      className="inline-flex h-8 max-w-[200px] items-center gap-[7px] rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] leading-none text-[color:var(--paper-ink)] transition-colors select-none hover:border-[color:var(--paper-ink-4)] hover:bg-[color:var(--paper-surface-2)]"
     >
       <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
       <span className="min-w-0 truncate">
@@ -533,6 +537,7 @@ function ExperimentSummaryBar({
   // trial that ran, including earlier task versions, superseded retries and
   // probes that the table below filters out. Drives the tooltip's disclosure.
   costIsSpend,
+  costPending,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
@@ -540,6 +545,7 @@ function ExperimentSummaryBar({
   isLoadingTrials: boolean;
   showBilledSpend: boolean;
   costIsSpend: boolean;
+  costPending: boolean;
 }) {
   if (isInitialLoading) {
     return (
@@ -661,7 +667,9 @@ function ExperimentSummaryBar({
               : "No cost data reported yet"
           }
         >
-          {summary.costTrialCount > 0 ? (
+          {costPending ? (
+            <span className="text-[color:var(--paper-ink-3)]">—</span>
+          ) : summary.costTrialCount > 0 ? (
             <>
               {summary.costHasEstimated && !summary.costHasNative && (
                 <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
@@ -697,6 +705,10 @@ function ExperimentSummaryBar({
                 ? `Summed across ${summary.billedTrialCount} billed trial${
                     summary.billedTrialCount === 1 ? "" : "s"
                   }${
+                    costIsSpend
+                      ? ". The table shows only current-version trials"
+                      : ""
+                  }${
                     summary.billedHasEstimated && summary.billedHasNative
                       ? ". Mixed native + estimated values; ~ marks estimates."
                       : summary.billedHasEstimated
@@ -706,7 +718,9 @@ function ExperimentSummaryBar({
                 : "No billed trials yet"
             }
           >
-            {summary.billedTrialCount > 0 ? (
+            {costPending ? (
+              <span className="text-[color:var(--paper-ink-3)]">—</span>
+            ) : summary.billedTrialCount > 0 ? (
               <>
                 {summary.billedHasEstimated && !summary.billedHasNative && (
                   <span className="font-mono text-[16px] text-[color:var(--paper-ink-3)]">
@@ -795,6 +809,7 @@ export function ExperimentDetailView({
   experimentId,
   tasksForExperiment,
   costTotals,
+  costTotalsPending = false,
   isLoading,
   isLoadingTrials = false,
   hasError = false,
@@ -825,7 +840,7 @@ export function ExperimentDetailView({
       ? `/api/tags/for-target?scope=EXPERIMENT&target_id=${encodeURIComponent(experimentId)}`
       : null,
     fetcher,
-    { revalidateOnFocus: false },
+    { revalidateOnFocus: false }
   );
   const [drawerState, setDrawerState] = useState<DrawerState>(null);
   // When loadFullTrialOnOpen is set, the grid only has slim trials, so fetch
@@ -845,7 +860,7 @@ export function ExperimentDetailView({
       try {
         const res = await fetch(
           `${apiBaseUrl}/trials/${encodeURIComponent(openTrialId)}`,
-          { cache: "no-store" },
+          { cache: "no-store" }
         );
         if (!res.ok) return;
         const data = (await res.json()) as Trial;
@@ -871,7 +886,7 @@ export function ExperimentDetailView({
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-task",
+        "oddish:trial-drawer-show-task"
       );
       // Default ON: only explicit "0" disables it.
       return stored !== "0";
@@ -883,7 +898,7 @@ export function ExperimentDetailView({
     if (typeof window === "undefined") return true;
     try {
       const stored = window.localStorage.getItem(
-        "oddish:trial-drawer-show-trial",
+        "oddish:trial-drawer-show-trial"
       );
       return stored !== "0";
     } catch {
@@ -897,7 +912,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-task",
-        next ? "1" : "0",
+        next ? "1" : "0"
       );
     } catch {
       // ignore
@@ -910,7 +925,7 @@ export function ExperimentDetailView({
     try {
       window.localStorage.setItem(
         "oddish:trial-drawer-show-trial",
-        next ? "1" : "0",
+        next ? "1" : "0"
       );
     } catch {
       // ignore
@@ -928,7 +943,7 @@ export function ExperimentDetailView({
     : null;
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(deferredTasksForDerivedData),
-    [deferredTasksForDerivedData],
+    [deferredTasksForDerivedData]
   );
   const displayAgentSummaries =
     agentSummaries.length > 0 ? agentSummaries : cachedAgentSummaries;
@@ -937,7 +952,7 @@ export function ExperimentDetailView({
       agentSummaries.length > 0
         ? modelScopedAgents
         : getModelScopedAgentsFromSummaries(cachedAgentSummaries),
-    [agentSummaries, modelScopedAgents, cachedAgentSummaries],
+    [agentSummaries, modelScopedAgents, cachedAgentSummaries]
   );
 
   useEffect(() => {
@@ -967,7 +982,7 @@ export function ExperimentDetailView({
     try {
       window.sessionStorage.setItem(
         agentSummaryStorageKey,
-        JSON.stringify(agentSummaries),
+        JSON.stringify(agentSummaries)
       );
     } catch {
       // Ignore storage failures; the live data still drives the table.
@@ -1002,7 +1017,7 @@ export function ExperimentDetailView({
       }
       return { trialGroups, orderedTrials };
     },
-    [displayModelScopedAgents],
+    [displayModelScopedAgents]
   );
 
   useEffect(() => {
@@ -1091,7 +1106,7 @@ export function ExperimentDetailView({
   useEffect(() => {
     if (!drawerState) return;
     const liveTask = tasksForExperiment.find(
-      (t) => t.id === drawerState.task.id,
+      (t) => t.id === drawerState.task.id
     );
     if (!liveTask) return;
     const liveTrialCount = liveTask.trials?.length ?? 0;
@@ -1125,10 +1140,10 @@ export function ExperimentDetailView({
     });
   }, [tasksForExperiment, drawerState, buildTrialGroups]);
 
-  // The trial grid is paginated, so ``buildExperimentSummary`` only ever sums
-  // cost over the loaded pages. Prefer the server-side rollup, which covers
-  // every trial in the experiment. Non-cost fields still come from the loaded
-  // trials (the grid can only describe what it has).
+  // Prefer the server-side rollup for cost: ``buildExperimentSummary`` sums
+  // only the loaded pages, and only the trials the grid renders, so it
+  // understates spend on both counts. Non-cost fields stay client-side --
+  // they describe the visible rows, which is what they should describe.
   const summary = useMemo(() => {
     const base = buildExperimentSummary(deferredTasksForDerivedData);
     if (!costTotals) return base;
@@ -1254,6 +1269,7 @@ export function ExperimentDetailView({
             // view (the only readOnly consumer).
             showBilledSpend={!readOnly}
             costIsSpend={costTotals != null}
+            costPending={costTotalsPending}
           />
 
           {hasError ? (
@@ -1278,7 +1294,7 @@ export function ExperimentDetailView({
                 showAnalysis={showAnalysis}
                 onTrialSelect={(trial, task, context) => {
                   const taskIndex = tasksForExperiment.findIndex(
-                    (t) => t.id === task.id,
+                    (t) => t.id === task.id
                   );
                   setDrawerState({
                     isOpen: true,
