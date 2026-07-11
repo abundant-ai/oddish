@@ -294,9 +294,12 @@ def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
         env.setdefault(key, value)
     agent_config.env = env
 
-    kwargs = dict(agent_config.kwargs or {})
-    kwargs.pop("reasoning_effort", None)
-    agent_config.kwargs = kwargs
+    # Preserve reasoning_effort so callers can request a specific effort
+    # (e.g. --agent-kwarg reasoning_effort=xhigh). The mini-swe-agent harness
+    # forwards it to the model via model.model_kwargs.extra_body.reasoning_effort
+    # (see harbor MiniSweAgent.run). When the caller does not set it, effort
+    # stays unset (vendor default), so other sampling params are untouched.
+    agent_config.kwargs = dict(agent_config.kwargs or {})
 
 
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
