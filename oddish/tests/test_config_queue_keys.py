@@ -280,6 +280,17 @@ def test_grok_build_xai_model_routes_to_xai(monkeypatch):
     assert settings.normalize_queue_key(model) == model
 
 
+def test_meta_model_routes_to_meta_for_mini_swe_agent(monkeypatch):
+    settings = _settings(monkeypatch, clear_openai_env=False)
+    model = "meta/llama-eval-model"
+
+    assert normalize_model_id(" Meta / Llama Eval Model ") == model
+    assert settings.normalize_trial_model("mini-swe-agent", model) == model
+    assert settings.get_provider_for_trial("mini-swe-agent", model) == "meta"
+    assert settings.get_queue_key_for_trial("mini-swe-agent", model) == model
+    assert settings.normalize_queue_key(model) == model
+
+
 def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
