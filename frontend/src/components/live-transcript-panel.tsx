@@ -1,15 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Info, Loader2, Radio, ShieldAlert } from "lucide-react";
 import {
-  ChevronRight,
-  Info,
-  Loader2,
-  Radio,
-  ShieldAlert,
-  Wrench,
-} from "lucide-react";
-import { CodeBlock } from "@/components/code-block";
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Badge } from "@/components/ui/badge";
+import {
+  StepHeader,
+  ToolCallBlock,
+  ObservationBlock,
+} from "@/components/trajectory-blocks";
 import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { fetcher } from "@/lib/api";
 import { formatCostUsd } from "@/lib/format";
@@ -34,6 +38,13 @@ interface LiveResponse {
   usage: LiveUsage;
   harbor_stage: string | null;
   done: boolean;
+}
+
+interface LiveStep {
+  key: number;
+  kind: "turn" | "summary";
+  message: LiveEvent | null;
+  events: LiveEvent[];
 }
 
 const POLL_MS = 10_000;
@@ -100,154 +111,140 @@ function prettyJson(text: string): string {
   }
 }
 
-function LiveToolUse({
-  payload,
-  name,
-  input,
-  sanitized,
-}: {
-  payload: Record<string, unknown>;
-  name: string;
-  input: string;
-  sanitized: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const args = prettyJson(input);
-  const hasArgs = args.trim().length > 0;
-  const collapsible = hasArgs && args.length > 120;
-  const showArgs = hasArgs && (!collapsible || open);
+function groupSteps(events: LiveEvent[]): LiveStep[] {
+  const steps: LiveStep[] = [];
+  let current: LiveStep | null = null;
+  const flush = () => {
+    if (current) steps.push(current);
+    current = null;
+  };
+  for (const ev of events) {
+    if (ev.kind === "summary") {
+      flush();
+      steps.push({ key: ev.seq, kind: "summary", message: ev, events: [] });
+      continue;
+    }
+    if (ev.kind === "message") {
+      flush();
+      current = { key: ev.seq, kind: "turn", message: ev, events: [] };
+      continue;
+    }
+    if (!current) {
+      current = { key: ev.seq, kind: "turn", message: null, events: [] };
+    }
+    current.events.push(ev);
+  }
+  flush();
+  return steps;
+}
 
-  const header = (
+function stepPreview(step: LiveStep): string | null {
+  if (step.message) {
+    const text = safeText(step.message.payload.text).text.trim();
+    if (text) return text.split("\n")[0].slice(0, 80);
+  }
+  const firstTool = step.events.find((e) => e.kind === "tool_use");
+  if (firstTool) return safeText(firstTool.payload.name).text || "tool";
+  return null;
+}
+
+function stepBadges(step: LiveStep): ReactNode {
+  const tools = step.events.filter((e) => e.kind === "tool_use").length;
+  if (!tools) return undefined;
+  return (
+    <Badge variant="secondary" className="px-1.5 py-0 text-[10px] font-normal">
+      {tools} tool{tools > 1 ? "s" : ""}
+    </Badge>
+  );
+}
+
+function markers(
+  payload: Record<string, unknown>,
+  sanitized: boolean
+): ReactNode {
+  if (!payload.truncated && !sanitized) return undefined;
+  return (
     <>
-      {collapsible ? (
-        <ChevronRight
-          className={cn(
-            "h-3 w-3 shrink-0 text-purple-500 transition-transform",
-            open && "rotate-90"
-          )}
-        />
-      ) : (
-        <Wrench className="h-3 w-3 shrink-0 text-purple-500" />
-      )}
-      <span className="font-mono font-semibold text-purple-500">
-        {name || "tool"}
-      </span>
-      {collapsible && !open && (
-        <span className="text-muted-foreground text-[10px]">
-          (click to expand)
-        </span>
-      )}
       {payload.truncated ? (
         <span className="text-muted-foreground">…</span>
       ) : null}
       {sanitized && <SanitizedBadge />}
     </>
   );
-  const headerClass = cn(
-    "flex w-full items-center gap-1.5 px-2 py-1 text-left bg-purple-500/10",
-    collapsible && "hover:bg-purple-500/15"
-  );
-
-  return (
-    <div className="overflow-hidden rounded border border-purple-500/20">
-      {collapsible ? (
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className={headerClass}
-        >
-          {header}
-        </button>
-      ) : (
-        <div className={headerClass}>{header}</div>
-      )}
-      {showArgs && (
-        <CodeBlock
-          code={args}
-          language="json"
-          className="rounded-none"
-          maxHeight="14rem"
-        />
-      )}
-    </div>
-  );
 }
 
-function LiveToolResult({
-  payload,
-  content,
-  sanitized,
-}: {
-  payload: Record<string, unknown>;
-  content: string;
-  sanitized: boolean;
-}) {
-  const errored = payload.is_error === true;
-  return (
-    <div
-      className={cn(
-        "space-y-1",
-        errored && "border-l-2 border-red-500/60 pl-2"
-      )}
-    >
-      <CodeBlock
-        code={content || "(no output)"}
-        language="bash"
-        maxHeight="14rem"
-      />
-      {(errored || payload.truncated || sanitized) && (
-        <div className="flex items-center gap-1.5 pl-0.5 text-[10px]">
-          {errored && <span className="font-medium text-red-500">error</span>}
-          {payload.truncated ? (
-            <span className="text-muted-foreground">truncated …</span>
-          ) : null}
-          {sanitized && <SanitizedBadge />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LiveEventRow({ event }: { event: LiveEvent }) {
-  const { kind, payload } = event;
-
-  if (kind === "tool_use") {
-    const name = safeText(payload.name);
-    const input = safeText(payload.input);
-    return (
-      <LiveToolUse
-        payload={payload}
-        name={name.text}
-        input={input.text}
-        sanitized={payload.sanitized === true || name.changed || input.changed}
-      />
-    );
-  }
-
-  if (kind === "tool_result") {
-    const content = safeText(payload.content);
-    return (
-      <LiveToolResult
-        payload={payload}
-        content={content.text.trim()}
-        sanitized={payload.sanitized === true || content.changed}
-      />
-    );
-  }
-
+function LiveMessage({ payload }: { payload: Record<string, unknown> }) {
   const text = safeText(payload.text);
   const sanitized = payload.sanitized === true || text.changed;
   return (
-    <div
-      className={
-        kind === "summary"
-          ? "text-muted-foreground border-border border-t pt-2 text-[11px] italic"
-          : "wrap-break-word whitespace-pre-wrap"
-      }
-    >
+    <div className="text-sm wrap-break-word whitespace-pre-wrap">
       {text.text}
       {payload.truncated ? " …" : ""}
       {sanitized && <SanitizedBadge />}
+    </div>
+  );
+}
+
+function LiveToolUse({ payload }: { payload: Record<string, unknown> }) {
+  const name = safeText(payload.name);
+  const input = safeText(payload.input);
+  const sanitized = payload.sanitized === true || name.changed || input.changed;
+  return (
+    <ToolCallBlock
+      name={name.text}
+      args={prettyJson(input.text)}
+      trailing={markers(payload, sanitized)}
+    />
+  );
+}
+
+function LiveToolResult({ payload }: { payload: Record<string, unknown> }) {
+  const content = safeText(payload.content);
+  const sanitized = payload.sanitized === true || content.changed;
+  const truncated = payload.truncated ? (
+    <span className="text-muted-foreground">truncated …</span>
+  ) : null;
+  return (
+    <ObservationBlock
+      content={content.text.trim() || "(no output)"}
+      isError={payload.is_error === true}
+      trailing={
+        truncated || sanitized ? (
+          <>
+            {truncated}
+            {sanitized && <SanitizedBadge />}
+          </>
+        ) : undefined
+      }
+    />
+  );
+}
+
+function LiveSummary({ payload }: { payload: Record<string, unknown> }) {
+  const text = safeText(payload.text);
+  const sanitized = payload.sanitized === true || text.changed;
+  return (
+    <div className="border-border text-muted-foreground border-t pt-2 text-[11px] italic">
+      {text.text}
+      {payload.truncated ? " …" : ""}
+      {sanitized && <SanitizedBadge />}
+    </div>
+  );
+}
+
+function LiveStepContent({ step }: { step: LiveStep }) {
+  return (
+    <div className="space-y-3 text-sm">
+      {step.message && <LiveMessage payload={step.message.payload} />}
+      {step.events.map((ev) =>
+        ev.kind === "tool_use" ? (
+          <LiveToolUse key={ev.seq} payload={ev.payload} />
+        ) : ev.kind === "tool_result" ? (
+          <LiveToolResult key={ev.seq} payload={ev.payload} />
+        ) : (
+          <LiveMessage key={ev.seq} payload={ev.payload} />
+        )
+      )}
     </div>
   );
 }
@@ -264,11 +261,13 @@ export function LiveTranscriptPanel({
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [last, setLast] = useState<LiveResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string[]>([]);
 
   const attemptRef = useRef<number | null>(null);
   const afterSeqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
+  const prevNewestRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -289,6 +288,8 @@ export function LiveTranscriptPanel({
         attemptRef.current = data.attempt;
         afterSeqRef.current = data.next_seq;
         if (restart) {
+          prevNewestRef.current = null;
+          setExpanded([]);
           setEvents(data.events);
         } else if (data.events.length) {
           setEvents((prev) => [...prev, ...data.events]);
@@ -310,11 +311,39 @@ export function LiveTranscriptPanel({
     };
   }, [trialId, apiBaseUrl]);
 
+  const steps = useMemo(() => groupSteps(events), [events]);
+  const numbered = useMemo(() => {
+    let n = 0;
+    return steps.map((step) => ({
+      step,
+      num: step.kind === "turn" ? ++n : 0,
+    }));
+  }, [steps]);
+
+  const newest = useMemo(() => {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      if (steps[i].kind === "turn") return `live-${steps[i].key}`;
+    }
+    return null;
+  }, [steps]);
+
+  useEffect(() => {
+    if (!newest || newest === prevNewestRef.current) return;
+    const prev = prevNewestRef.current;
+    prevNewestRef.current = newest;
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (prev) next.delete(prev);
+      next.add(newest);
+      return Array.from(next);
+    });
+  }, [newest]);
+
   useEffect(() => {
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [events]);
+  }, [events, expanded]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -361,16 +390,44 @@ export function LiveTranscriptPanel({
           <span>{notice}</span>
         </div>
       )}
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="flex-1 space-y-2 overflow-auto px-4 py-3 font-mono text-xs"
-      >
-        {events.map((event) => (
-          <LiveEventRow key={event.seq} event={event} />
-        ))}
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-auto">
+        {steps.length > 0 && (
+          <Accordion
+            type="multiple"
+            value={expanded}
+            onValueChange={setExpanded}
+          >
+            {numbered.map(({ step, num }) =>
+              step.kind === "summary" ? (
+                step.message && (
+                  <div key={step.key} className="px-4 py-2">
+                    <LiveSummary payload={step.message.payload} />
+                  </div>
+                )
+              ) : (
+                <AccordionItem
+                  key={step.key}
+                  value={`live-${step.key}`}
+                  className="px-4"
+                >
+                  <AccordionTrigger className="py-2 hover:no-underline">
+                    <StepHeader
+                      index={num}
+                      source="agent"
+                      preview={stepPreview(step)}
+                      badges={stepBadges(step)}
+                    />
+                  </AccordionTrigger>
+                  <AccordionContent>
+                    <LiveStepContent step={step} />
+                  </AccordionContent>
+                </AccordionItem>
+              )
+            )}
+          </Accordion>
+        )}
         {events.length === 0 && !error && (
-          <div className="text-muted-foreground flex items-center gap-2 py-6">
+          <div className="text-muted-foreground flex items-center gap-2 px-4 py-6 text-xs">
             {done ? (
               <span>No live transcript for this trial.</span>
             ) : (
@@ -384,7 +441,9 @@ export function LiveTranscriptPanel({
           </div>
         )}
         {error && (
-          <div className="pt-2 text-red-500">Live stream error: {error}</div>
+          <div className="px-4 pt-2 text-xs text-red-500">
+            Live stream error: {error}
+          </div>
         )}
       </div>
     </div>
