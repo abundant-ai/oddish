@@ -72,14 +72,13 @@ export function NewReportDialog({ onCreated }: { onCreated?: () => void }) {
     }
   }
 
+  function handleOpenChange(o: boolean) {
+    setOpen(o);
+    if (!o) reset();
+  }
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(o) => {
-        setOpen(o);
-        if (!o) reset();
-      }}
-    >
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button type="button" size="sm" className="h-8 gap-1 px-3 text-[12px]">
           <Plus className="h-3.5 w-3.5" /> New Report
@@ -128,7 +127,7 @@ export function NewReportDialog({ onCreated }: { onCreated?: () => void }) {
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+          <Button variant="ghost" size="sm" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button size="sm" disabled={!canSubmit} onClick={handleSubmit}>
