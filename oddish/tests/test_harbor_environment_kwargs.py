@@ -469,7 +469,7 @@ def test_mini_swe_meta_agent_config_sets_meta_route(monkeypatch) -> None:
     assert agent_config.model_name == "meta/llama-eval-model"
     assert agent_config.env["MSWEA_API_KEY"] == "${META_API_KEY}"
     assert agent_config.env["OPENAI_BASE_URL"] == "https://meta.example/v1"
-    assert agent_config.env["OPENAI_API_BASE"] == "https://meta.example/v1"
+    assert "OPENAI_API_BASE" not in agent_config.env
     assert "reasoning_effort" not in agent_config.kwargs
     assert "OPENAI_API_KEY" not in agent_config.env
     assert "AZURE_OPENAI_API_KEY" not in agent_config.env
@@ -492,7 +492,7 @@ def test_mini_swe_meta_agent_config_preserves_explicit_env(monkeypatch) -> None:
 
     assert agent_config.env["MSWEA_API_KEY"] == "${CUSTOM_META_KEY}"
     assert agent_config.env["OPENAI_BASE_URL"] == "https://custom.meta/v1"
-    assert agent_config.env["OPENAI_API_BASE"] == "https://api.ai.meta.com/v1"
+    assert "OPENAI_API_BASE" not in agent_config.env
     assert agent_config.kwargs == {"cost_limit": "0"}
 
 

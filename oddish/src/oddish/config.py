@@ -1660,7 +1660,6 @@ class Settings(BaseSettings):
         return {
             "MSWEA_API_KEY": "${META_API_KEY}",
             "OPENAI_BASE_URL": base_url,
-            "OPENAI_API_BASE": base_url,
         }
 
 
