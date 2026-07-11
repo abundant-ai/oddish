@@ -10,14 +10,12 @@ version, superseded, or probe filter, and the admin spend filter keeps billed
 probes too. So this counts all versions, superseded retries, and probes, and the
 tile's tooltip tells the reader the table below is a filtered view of it.
 
-One deliberate departure from billing: **soft-deleted trials do not count**. The
-global soft-delete filter (``db.soft_delete``) drops them from this query, and
-unlike ``core.quotas`` we do not pass ``include_deleted=True`` to opt out. Quotas
-count them so nobody can delete their way out of an invoice; here, deleting a
-trial is an explicit "remove this from the experiment" action, and a tile that
-kept charging for a row the user removed -- with no way to see it -- would be
-inexplicable. The consequence is that this can under-report against the invoice
-by the value of any deleted trials.
+**Soft-deleted trials count too**, which is why the query opts out of the global
+soft-delete filter with ``include_deleted=True`` (``db.soft_delete``). Deleting a
+trial removes it from the *view*; it does not refund it. Both other places that
+answer "what was spent" already do this -- the quota sum (``core.quotas``) and
+the admin cost breakdown (``core.admin.get_cost_breakdown_core``) -- so counting
+them here keeps one number across the page, the admin table, and the invoice.
 
 The other reason the number can't be computed client-side: the page paginates
 trials, so summing the loaded pages only ever covers a prefix of the experiment.
@@ -96,9 +94,15 @@ def experiment_cost_groups_select(
 
     Membership is the only filter: a trial counts if it ran under this
     experiment, either as its home (``trials.experiment_id``) or gathered into a
-    collection via ``experiment_trials``. No version / superseded / probe
-    filtering -- see the module docstring: those hide trials from the grid, but
-    the spend is real and already billed.
+    collection via ``experiment_trials``. No version / superseded / probe /
+    soft-delete filtering -- see the module docstring: those hide trials from the
+    grid, but the spend is real and already billed.
+
+    ``include_deleted=True`` opts the *trials* out of the global soft-delete
+    filter. It does not resurrect unlinked collection membership: the
+    ``experiment_trials`` rows carry their own explicit ``deleted_at IS NULL``
+    predicate (``gathered_trial_ids_select``), so a trial unlinked from a
+    collection stays out of that collection's total.
     """
     billed = TrialModel.billed_user_id.isnot(None)
 
@@ -118,6 +122,7 @@ def experiment_cost_groups_select(
         )
         .where(trial_in_experiment(experiment_id))
         .group_by(TrialModel.agent, TrialModel.model, billed)
+        .execution_options(include_deleted=True)
     )
     if org_id is not None:
         query = query.where(TrialModel.org_id == org_id)

@@ -817,10 +817,10 @@ class ExperimentCostTotals(BaseModel):
 
     Served separately from the trial grid because it cannot be derived from it:
     the grid is paginated, and it is filtered to each task's current version, so
-    it omits earlier versions, superseded retries and probes -- all of which
-    were still billed. Expect this to exceed the sum of the visible rows.
-    Soft-deleted trials are the one exclusion (see ``core.endpoints
-    .experiment_cost``).
+    it omits earlier versions, superseded retries, probes and deleted trials --
+    all of which were still billed. Expect this to exceed the sum of the visible
+    rows. Counts what the quota sum and the admin cost breakdown count, so the
+    page, the admin table and the invoice agree on one number.
     """
 
     cost_usd: float = 0.0
