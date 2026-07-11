@@ -90,7 +90,7 @@ import {
   Copy,
   OctagonX,
   Search,
-  Trash2,
+  Unlink,
 } from "lucide-react";
 import { QueueKeyIcon } from "./queue-key-icon";
 import { StatusIcon } from "./status-icon";
@@ -119,7 +119,7 @@ type ExperimentTrialsTableProps = {
   isLoading: boolean;
   isLoadingTrials?: boolean;
   showPassAtK?: boolean;
-  onTaskDelete?: (task: Task) => Promise<void>;
+  onTaskUnlink?: (task: Task) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   allowRerun?: boolean;
   onProbeSelect?: (trial: Trial, task: Task) => void;
@@ -460,7 +460,7 @@ export function ExperimentTrialsTable({
   isLoading,
   isLoadingTrials = false,
   showPassAtK = false,
-  onTaskDelete,
+  onTaskUnlink,
   onRerun,
   allowRerun = true,
   onProbeSelect,
@@ -498,9 +498,9 @@ export function ExperimentTrialsTable({
     null,
   );
   const [copiedTable, setCopiedTable] = useState(false);
-  const [deleteTargets, setDeleteTargets] = useState<Task[]>([]);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [unlinkTargets, setUnlinkTargets] = useState<Task[]>([]);
+  const [unlinkError, setUnlinkError] = useState<string | null>(null);
+  const [isUnlinking, setIsUnlinking] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
   const [rerunError, setRerunError] = useState<string | null>(null);
   const [isCancellingSelected, setIsCancellingSelected] = useState(false);
@@ -530,7 +530,7 @@ export function ExperimentTrialsTable({
     startNeighborWidth: number;
   } | null>(null);
   const [isResizing, setIsResizing] = useState(false);
-  const canDeleteTasks = Boolean(onTaskDelete);
+  const canUnlinkTasks = Boolean(onTaskUnlink);
   const canRerun = allowRerun;
 
   const prevUrlRef = useRef({
@@ -1074,63 +1074,63 @@ export function ExperimentTrialsTable({
     }, 2000);
   };
 
-  const deleteTargetSummary = useMemo(() => {
-    if (deleteTargets.length === 0) {
+  const unlinkTargetSummary = useMemo(() => {
+    if (unlinkTargets.length === 0) {
       return { label: "", taskCount: 0, trialCount: 0 };
     }
-    if (deleteTargets.length === 1) {
-      const target = deleteTargets[0];
+    if (unlinkTargets.length === 1) {
+      const target = unlinkTargets[0];
       return {
         label: target.name,
         taskCount: 1,
         trialCount: target.total ?? 0,
       };
     }
-    const trialCount = deleteTargets.reduce(
+    const trialCount = unlinkTargets.reduce(
       (sum, task) => sum + (task.total ?? 0),
       0,
     );
     return {
-      label: `${deleteTargets.length} tasks`,
-      taskCount: deleteTargets.length,
+      label: `${unlinkTargets.length} tasks`,
+      taskCount: unlinkTargets.length,
       trialCount,
     };
-  }, [deleteTargets]);
+  }, [unlinkTargets]);
 
-  const handleDeleteTasks = async () => {
-    if (deleteTargets.length === 0 || !onTaskDelete || isDeleting) return;
-    setIsDeleting(true);
-    setDeleteError(null);
+  const handleUnlinkTasks = async () => {
+    if (unlinkTargets.length === 0 || !onTaskUnlink || isUnlinking) return;
+    setIsUnlinking(true);
+    setUnlinkError(null);
 
     try {
       let firstError: string | null = null;
       const failedTargets: Task[] = [];
       const nextSelected = new Set(selectedTasks);
 
-      for (const target of deleteTargets) {
+      for (const target of unlinkTargets) {
         try {
-          await onTaskDelete(target);
+          await onTaskUnlink(target);
           nextSelected.delete(target.id);
         } catch (error) {
           failedTargets.push(target);
           if (!firstError) {
             firstError =
-              error instanceof Error ? error.message : "Failed to delete task";
+              error instanceof Error ? error.message : "Failed to unlink task";
           }
         }
       }
 
       setSelectedTasks(nextSelected);
-      setDeleteTargets(failedTargets);
+      setUnlinkTargets(failedTargets);
       if (firstError) {
-        setDeleteError(firstError);
+        setUnlinkError(firstError);
       }
     } catch (error) {
-      setDeleteError(
-        error instanceof Error ? error.message : "Failed to delete task",
+      setUnlinkError(
+        error instanceof Error ? error.message : "Failed to unlink task",
       );
     } finally {
-      setIsDeleting(false);
+      setIsUnlinking(false);
     }
   };
 
@@ -1901,25 +1901,25 @@ export function ExperimentTrialsTable({
                         </InlineCount>
                       </InlineBtn>
                     )}
-                    {canDeleteTasks && (
+                    {canUnlinkTasks && (
                       <>
                         <span className="text-[color:var(--paper-line)] select-none">
                           │
                         </span>
                         <InlineBtn
                           onClick={() => {
-                            setDeleteTargets(selectedTaskList);
-                            setDeleteError(null);
+                            setUnlinkTargets(selectedTaskList);
+                            setUnlinkError(null);
                           }}
-                          disabled={isDeleting || selectedTaskList.length === 0}
+                          disabled={isUnlinking || selectedTaskList.length === 0}
                           style={
-                            selectedTaskList.length > 0 && !isDeleting
+                            selectedTaskList.length > 0 && !isUnlinking
                               ? { color: "var(--paper-fail)" }
                               : undefined
                           }
                         >
-                          <Trash2 className="h-3 w-3" />
-                          Delete
+                          <Unlink className="h-3 w-3" />
+                          Unlink
                         </InlineBtn>
                       </>
                     )}
@@ -2535,48 +2535,49 @@ export function ExperimentTrialsTable({
           </div>
         </DialogContent>
       </Dialog>
-      {canDeleteTasks && (
+      {canUnlinkTasks && (
         <AlertDialog
-          open={deleteTargets.length > 0}
+          open={unlinkTargets.length > 0}
           onOpenChange={(open) => {
-            if (!open && !isDeleting) {
-              setDeleteTargets([]);
-              setDeleteError(null);
+            if (!open && !isUnlinking) {
+              setUnlinkTargets([]);
+              setUnlinkError(null);
             }
           }}
         >
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {deleteTargetSummary.taskCount > 1
-                  ? "Delete selected tasks?"
-                  : "Delete this task?"}
+                {unlinkTargetSummary.taskCount > 1
+                  ? "Unlink selected tasks?"
+                  : "Unlink this task?"}
               </AlertDialogTitle>
               <AlertDialogDescription>
-                This permanently deletes{" "}
+                This removes{" "}
                 <span className="text-foreground font-medium">
-                  {deleteTargetSummary.label}
+                  {unlinkTargetSummary.label}
                 </span>{" "}
-                and removes {deleteTargetSummary.trialCount} trials. This action
-                cannot be undone.
+                and {unlinkTargetSummary.trialCount} experiment-scoped trials
+                from this experiment. The task records and their data in other
+                experiments are preserved.
               </AlertDialogDescription>
             </AlertDialogHeader>
-            {deleteError && (
+            {unlinkError && (
               <Alert variant="destructive">
-                <AlertTitle>Delete failed</AlertTitle>
-                <AlertDescription>{deleteError}</AlertDescription>
+                <AlertTitle>Unlink failed</AlertTitle>
+                <AlertDescription>{unlinkError}</AlertDescription>
               </Alert>
             )}
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={isDeleting}>
+              <AlertDialogCancel disabled={isUnlinking}>
                 Cancel
               </AlertDialogCancel>
               <AlertDialogAction
-                onClick={handleDeleteTasks}
-                disabled={isDeleting}
+                onClick={handleUnlinkTasks}
+                disabled={isUnlinking}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
-                {isDeleting ? "Deleting..." : "Delete task"}
+                {isUnlinking ? "Unlinking..." : "Unlink task"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
