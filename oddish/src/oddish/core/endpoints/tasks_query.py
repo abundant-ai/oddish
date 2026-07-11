@@ -296,7 +296,13 @@ async def list_tasks_core(
                 set_committed_value(
                     task,
                     "trials",
-                    get_task_status_trials(task, version_id=effective),
+                    get_task_status_trials(
+                        task,
+                        # A collection's gathered set may deliberately span
+                        # task versions -- keep every gathered trial. Probe
+                        # merging below still pins to ``effective``.
+                        version_id=None if gathered_trial_ids else effective,
+                    ),
                 )
             else:
                 set_committed_value(task, "trials", get_task_status_trials(task))

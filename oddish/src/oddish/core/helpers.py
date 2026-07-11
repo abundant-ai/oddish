@@ -928,14 +928,20 @@ def build_task_status_response(
 
     ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
     collection-gathered trials on an older version aren't re-resolved away.
+    A non-empty gathered set marks a collection experiment: a hand-curated
+    trial set that may deliberately span task versions, so trial display
+    skips the version filter entirely while the reported version fields keep
+    the newest gathered version.
     """
+    trial_version_filter: str | None | object = effective_version_id
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
         )
-    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+        trial_version_filter = None if gathered_trial_ids else effective_version_id
+    task_trials = get_task_status_trials(task, version_id=trial_version_filter)
     total = len(task_trials)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
@@ -1000,15 +1006,18 @@ def build_task_status_response_compact(
 ) -> TaskStatusResponse:
     """Build TaskStatusResponse with compact per-trial payloads.
 
-    See :func:`build_task_status_response` for the version-scoping semantics.
+    See :func:`build_task_status_response` for the version-scoping semantics,
+    including the no-version-filter rule for collection-gathered trial sets.
     """
+    trial_version_filter: str | None | object = effective_version_id
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
         )
-    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+        trial_version_filter = None if gathered_trial_ids else effective_version_id
+    task_trials = get_task_status_trials(task, version_id=trial_version_filter)
     real_trials = [t for t in task_trials if not t.is_probe]
     total = len(real_trials)
     completed = sum(1 for t in real_trials if t.status == TrialStatus.SUCCESS)
@@ -1148,14 +1157,20 @@ def build_slim_task_status_response(
     effective_version_id: str | None | object = _VERSION_ID_UNSET,
     gathered_trial_ids: set[str] | None = None,
 ) -> TaskStatusResponse:
-    """Build a task status response with slim per-trial payloads."""
+    """Build a task status response with slim per-trial payloads.
+
+    See :func:`build_task_status_response` for the version-scoping semantics,
+    including the no-version-filter rule for collection-gathered trial sets.
+    """
+    trial_version_filter: str | None | object = effective_version_id
     if effective_version_id is _VERSION_ID_UNSET:
         effective_version_id = resolve_effective_version_id(
             task,
             experiment_context_id=experiment_context_id,
             gathered_trial_ids=gathered_trial_ids,
         )
-    task_trials = get_task_status_trials(task, version_id=effective_version_id)
+        trial_version_filter = None if gathered_trial_ids else effective_version_id
+    task_trials = get_task_status_trials(task, version_id=trial_version_filter)
     total = len(task_trials)
     completed = sum(1 for t in task_trials if t.status == TrialStatus.SUCCESS)
     failed = sum(1 for t in task_trials if t.status == TrialStatus.FAILED)
