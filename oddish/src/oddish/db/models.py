@@ -185,6 +185,10 @@ class WorkerJobKind(str, Enum):
     # rebuilds from source rather than applying a delta. Sibling-enqueued
     # by every tag write in the same transaction.
     TAG_PROJECT = "TAG_PROJECT"
+    # Generate a cross-experiment analysis report: fans out per-trial Haiku
+    # findings and reduces them into four narrative sections. Runs on the QA
+    # queue; handled by ReportJobHandler.
+    REPORT = "REPORT"
 
 
 class WorkerJobStatus(str, Enum):
