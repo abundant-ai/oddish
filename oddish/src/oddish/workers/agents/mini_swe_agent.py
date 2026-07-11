@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import shlex
 import uuid
 
 from harbor.agents.installed.mini_swe_agent import MiniSweAgent
 
-from oddish.config import meta_bare_model_id
+from oddish.config import META_DEFAULT_BASE_URL, meta_bare_model_id, settings
 
 
 _META_CONFIG_PATH = "/tmp/oddish-meta-mini-swe-agent.yaml"
@@ -27,7 +29,30 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
         model_name: str | None = None,
         kwargs: dict | None = None,
     ) -> list[str]:
-        return [_META_API_DOMAIN]
+        from harbor.environments.modal_network import normalize_domain_or_url
+
+        candidates = {
+            META_DEFAULT_BASE_URL,
+            settings.meta_base_url,
+            os.environ.get("META_BASE_URL"),
+        }
+        extra_env = (kwargs or {}).get("extra_env")
+        if isinstance(extra_env, dict):
+            candidates.update(
+                {
+                    extra_env.get("META_BASE_URL"),
+                    extra_env.get("OPENAI_BASE_URL"),
+                    extra_env.get("OPENAI_API_BASE"),
+                }
+            )
+
+        domains = {
+            domain
+            for candidate in candidates
+            if (domain := normalize_domain_or_url(candidate))
+        }
+        domains.add(_META_API_DOMAIN)
+        return sorted(domains)
 
     def _meta_session_id(self) -> str:
         explicit = (
@@ -59,7 +84,7 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
             "model:\n"
             "  model_kwargs:\n"
             "    extra_headers:\n"
-            f"      x-session-id: {session_id!r}\n"
+            f"      x-session-id: {json.dumps(session_id)}\n"
         )
         command = (
             f"cat > {quoted_path} <<'{heredoc_marker}'\n{config_yaml}{heredoc_marker}\n"
