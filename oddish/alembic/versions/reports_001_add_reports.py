@@ -119,10 +119,15 @@ def upgrade() -> None:
         "idx_reports_org_owner_user_live ON reports (org_id, owner_user_id) "
         "WHERE deleted_at IS NULL"
     )
+    _autocommit(
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_reports_org_id ON reports (org_id)"
+    )
 
 
 def downgrade() -> None:
     _autocommit("SET lock_timeout = '8s'")
+    _autocommit("DROP INDEX CONCURRENTLY IF EXISTS ix_reports_org_id")
     _autocommit("DROP INDEX CONCURRENTLY IF EXISTS idx_reports_org_owner_user_live")
     _autocommit("DROP INDEX CONCURRENTLY IF EXISTS idx_reports_org_created_live")
     _autocommit(
