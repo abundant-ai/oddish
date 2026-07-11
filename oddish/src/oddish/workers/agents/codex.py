@@ -10,11 +10,18 @@ from .codex_stdout_trajectory import write_trajectory_if_richer
 
 
 _AZURE_CODEX_PROVIDER = "oddish_azure_openai"
+_AZURE_CODEX_COMPAT_CATALOG = "/tmp/codex-home/oddish-azure-compat-models.json"
 _AZURE_CODEX_RETRY_CONFIG_PARAMS = {
     "text.verbosity": "model_verbosity",
 }
 _SUPPORTED_VALUES_RE = re.compile(
     r"Supported values are:\s*(?P<values>(?:'[^']+'\s*,?\s*)+)"
+)
+_RESPONSES_LITE_TOOLS_ERROR_PARTS = (
+    "X-OpenAI-Internal-Codex-Responses-Lite",
+    "only supports function tools, custom tools, and client-executed tool search",
+    '"param": "tools"',
+    '"code": "unsupported_value"',
 )
 
 
@@ -127,6 +134,12 @@ class AzureCompatibleCodex(OddishCodex):
     Responses route (``wss://.../openai/v1/responses``) with a 302 before the
     agent reads the task. Configure Codex with an explicit OpenAI-compatible
     provider that disables websockets so it uses the HTTP Responses stream.
+
+    Some newly published Codex model metadata can also select the internal
+    Responses Lite request shape before Azure supports it. Successful requests
+    retain the stock metadata. If Azure returns the exact Lite tools protocol
+    error, retry once with a catalog derived from the installed Codex version
+    and change only the selected model to the standard Responses tool shape.
     """
 
     @classmethod
@@ -193,6 +206,45 @@ class AzureCompatibleCodex(OddishCodex):
             return command
         return command.rstrip() + "\n" + provider_config
 
+    @staticmethod
+    def _is_responses_lite_tools_error(error_text: str) -> bool:
+        normalized = error_text.replace('\\"', '"').replace("\\n", "\n")
+        return all(part in normalized for part in _RESPONSES_LITE_TOOLS_ERROR_PARTS)
+
+    def _compat_catalog_command(self) -> str | None:
+        if not self.model_name:
+            return None
+
+        model_name = shlex.quote(self.model_name)
+        catalog_path = shlex.quote(_AZURE_CODEX_COMPAT_CATALOG)
+        return (
+            "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi\n"
+            f"export ODDISH_AZURE_CODEX_MODEL={model_name}\n"
+            f"export ODDISH_AZURE_CODEX_CATALOG={catalog_path}\n"
+            "node <<'ODDISH_AZURE_CODEX_CATALOG_JS'\n"
+            'const { execFileSync } = require("node:child_process");\n'
+            'const fs = require("node:fs");\n'
+            'const path = require("node:path");\n'
+            "const model = process.env.ODDISH_AZURE_CODEX_MODEL;\n"
+            "const target = process.env.ODDISH_AZURE_CODEX_CATALOG;\n"
+            'const raw = execFileSync("codex", ["debug", "models"], {\n'
+            '  encoding: "utf8",\n'
+            "});\n"
+            "const catalog = JSON.parse(raw);\n"
+            "const models = Array.isArray(catalog.models) ? catalog.models : [];\n"
+            "const selected = models.find((candidate) => candidate.slug === model);\n"
+            "if (!selected) {\n"
+            "  throw new Error(`Codex model catalog does not contain ${model}`);\n"
+            "}\n"
+            "selected.use_responses_lite = false;\n"
+            "selected.tool_mode = null;\n"
+            "fs.mkdirSync(path.dirname(target), { recursive: true });\n"
+            "const temporary = `${target}.tmp-${process.pid}`;\n"
+            "fs.writeFileSync(temporary, JSON.stringify(catalog), { mode: 0o600 });\n"
+            "fs.renameSync(temporary, target);\n"
+            "ODDISH_AZURE_CODEX_CATALOG_JS\n"
+        )
+
     async def exec_as_agent(
         self,
         environment,
@@ -209,10 +261,48 @@ class AzureCompatibleCodex(OddishCodex):
         command = self._ensure_codex_config_override(
             command, "model_provider", _AZURE_CODEX_PROVIDER
         )
-        return await super().exec_as_agent(
-            environment,
-            command,
-            env=env,
-            cwd=cwd,
-            timeout_sec=timeout_sec,
-        )
+        try:
+            return await super().exec_as_agent(
+                environment,
+                command,
+                env=env,
+                cwd=cwd,
+                timeout_sec=timeout_sec,
+            )
+        except NonZeroAgentExitCodeError as original_error:
+            if not self._is_responses_lite_tools_error(str(original_error)):
+                raise
+
+            retry_command = self._ensure_codex_config_override(
+                command, "model_catalog_json", _AZURE_CODEX_COMPAT_CATALOG
+            )
+            catalog_command = self._compat_catalog_command()
+            if catalog_command is None or retry_command == command:
+                raise
+
+            self.logger.warning(
+                "Azure rejected Codex Responses Lite tools for model %s; "
+                "retrying once with the standard Responses tool shape",
+                self.model_name,
+            )
+            try:
+                await super().exec_as_agent(
+                    environment,
+                    catalog_command,
+                    env=env,
+                    cwd=cwd,
+                    timeout_sec=timeout_sec,
+                )
+            except NonZeroAgentExitCodeError as catalog_error:
+                self.logger.exception(
+                    "Failed to build the Azure Codex compatibility catalog"
+                )
+                raise original_error from catalog_error
+
+            return await super().exec_as_agent(
+                environment,
+                retry_command,
+                env=env,
+                cwd=cwd,
+                timeout_sec=timeout_sec,
+            )

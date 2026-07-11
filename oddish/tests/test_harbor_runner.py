@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest  # noqa: E402
+from harbor.agents.installed.base import NonZeroAgentExitCodeError  # noqa: E402
 
 from oddish.task_timeouts import TaskTimeoutValidationError  # noqa: E402
 from oddish.workers.agents.codex import AzureCompatibleCodex, OddishCodex  # noqa: E402
@@ -1168,11 +1169,11 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
 
 
 def test_azure_compatible_codex_disables_unified_exec(tmp_path):
-    seen: dict[str, str] = {}
+    seen: list[str] = []
 
     class _FakeEnvironment:
         async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
-            seen["command"] = command
+            seen.append(command)
             return SimpleNamespace(return_code=0, stdout="", stderr="")
 
     agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="oddish-gpt")
@@ -1184,10 +1185,119 @@ def test_azure_compatible_codex_disables_unified_exec(tmp_path):
         )
     )
 
-    assert "--disable unified_exec" in seen["command"]
-    assert "--enable unified_exec" not in seen["command"]
-    assert "-c model_provider='\"oddish_azure_openai\"'" in seen["command"]
-    assert "model_verbosity" not in seen["command"]
+    assert len(seen) == 1
+    assert "--disable unified_exec" in seen[0]
+    assert "--enable unified_exec" not in seen[0]
+    assert "-c model_provider='\"oddish_azure_openai\"'" in seen[0]
+    assert "model_verbosity" not in seen[0]
+    assert "model_catalog_json" not in seen[0]
+
+
+def test_azure_compatible_codex_retries_exact_responses_lite_error(tmp_path):
+    seen: list[str] = []
+    lite_error = (
+        '{"type":"error","message":"{\\n'
+        '  \\"error\\": {\\n'
+        '    \\"message\\": \\"X-OpenAI-Internal-Codex-Responses-Lite '
+        "only supports function tools, custom tools, and client-executed tool "
+        'search.\\",\\n'
+        '    \\"param\\": \\"tools\\",\\n'
+        '    \\"code\\": \\"unsupported_value\\"\\n'
+        "  }\\n"
+        '}"}'
+    )
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(return_code=1, stdout=lite_error, stderr="")
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    # A deliberately future-looking name proves the fallback is driven by the
+    # provider capability error rather than a hard-coded GPT-5.6 allowlist.
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-9-future")
+
+    asyncio.run(
+        agent.exec_as_agent(
+            _FakeEnvironment(),
+            "codex exec --json --enable unified_exec -- 'fix it'",
+        )
+    )
+
+    assert len(seen) == 3
+    assert "model_catalog_json" not in seen[0]
+    assert 'execFileSync("codex", ["debug", "models"]' in seen[1]
+    assert "export ODDISH_AZURE_CODEX_MODEL=gpt-9-future" in seen[1]
+    assert "selected.use_responses_lite = false" in seen[1]
+    assert "selected.tool_mode = null" in seen[1]
+    assert "fs.renameSync(temporary, target)" in seen[1]
+    assert (
+        "-c model_catalog_json="
+        "'\"/tmp/codex-home/oddish-azure-compat-models.json\"'" in seen[2]
+    )
+    assert "-c model_provider='\"oddish_azure_openai\"'" in seen[2]
+
+
+def test_azure_compatible_codex_does_not_retry_unrelated_tools_error(tmp_path):
+    seen: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            return SimpleNamespace(
+                return_code=1,
+                stdout=(
+                    '{"error":{"message":"Unsupported tools",'
+                    '"param":"tools","code":"unsupported_value"}}'
+                ),
+                stderr="",
+            )
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="gpt-5.6-luna")
+
+    with pytest.raises(NonZeroAgentExitCodeError, match="Unsupported tools"):
+        asyncio.run(
+            agent.exec_as_agent(
+                _FakeEnvironment(),
+                "codex exec --json -- 'fix it'",
+            )
+        )
+
+    assert len(seen) == 1
+
+
+def test_azure_compatible_codex_preserves_original_error_if_catalog_fails(tmp_path):
+    seen: list[str] = []
+    lite_error = (
+        "X-OpenAI-Internal-Codex-Responses-Lite only supports function tools, "
+        "custom tools, and client-executed tool search. "
+        '"param": "tools", "code": "unsupported_value"'
+    )
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            seen.append(command)
+            if len(seen) == 1:
+                return SimpleNamespace(return_code=1, stdout=lite_error, stderr="")
+            return SimpleNamespace(
+                return_code=1,
+                stdout="Codex model catalog does not contain deployment",
+                stderr="",
+            )
+
+    agent = AzureCompatibleCodex(logs_dir=tmp_path, model_name="deployment")
+
+    with pytest.raises(NonZeroAgentExitCodeError, match="Responses-Lite"):
+        asyncio.run(
+            agent.exec_as_agent(
+                _FakeEnvironment(),
+                "codex exec --json -- 'fix it'",
+            )
+        )
+
+    assert len(seen) == 2
+    assert 'execFileSync("codex", ["debug", "models"]' in seen[1]
 
 
 def test_oddish_codex_retries_server_supported_verbosity(tmp_path):
