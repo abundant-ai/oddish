@@ -202,16 +202,16 @@ MAX_WORKERS_PER_POLL = _env_int("ODDISH_MODAL_MAX_WORKERS_PER_POLL", 256)
 WORKER_BATCH_BUDGET_SECONDS = _env_int("ODDISH_MODAL_WORKER_BATCH_BUDGET_SECONDS", 300)
 
 _GKE_CLUSTER_ENV = "ODDISH_GKE_CLUSTER_NAME"
-# Deploy-time flag that routes GKE config through a Modal *runtime* secret
-# (oddish-gke-config) instead of baking it from backend/.env. Read from the
-# deploy environment / .env and baked into the image env by the ODDISH_GKE_
-# filter in ENV_VARS, so the in-container recompute of the secret list reads the
-# SAME value (Modal matches function dependencies by count -- the deploy-time and
-# container lists must never diverge). NOT a value inside the runtime secret: a
-# secret-only flag would be seen at container init but not at deploy, drifting
-# the two lists. See _gke_config_secret_enabled / _gke_runtime_secret_names.
+# Deploy-time flag that turns on GKE by delivering the ODDISH_GKE_* coordinates
+# through the oddish-gcp runtime secret (alongside the SA creds) instead of
+# baking them from backend/.env. Read from the deploy environment / .env and
+# baked into the image env by the ODDISH_GKE_ filter in ENV_VARS, so the
+# in-container recompute of the secret list reads the SAME value (Modal matches
+# function dependencies by count -- the deploy-time and container lists must
+# never diverge). NOT a value inside a runtime secret: a secret-only flag would
+# be seen at container init but not at deploy, drifting the two lists. See
+# _gke_enabled_flag / _gke_runtime_secret_names.
 _GKE_ENABLED_ENV = "ODDISH_GKE_ENABLED"
-_GKE_CONFIG_SECRET_NAME = "oddish-gke-config"
 # Internal: the deploy-time GKE secret plan is baked into the image as a FILE so
 # the in-container recompute reads it back from immutable image content, never
 # from os.environ. A Modal runtime secret can inject/override env vars but cannot
@@ -254,18 +254,18 @@ def _effective_gke_cluster_name(
     return None
 
 
-def _gke_config_secret_enabled(
+def _gke_enabled_flag(
     environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
 ) -> bool:
-    """Whether this deploy routes GKE config through the oddish-gke-config secret.
+    """Whether ODDISH_GKE_ENABLED turns on GKE for this deploy.
 
-    Enabled by ODDISH_GKE_ENABLED in the deploy environment (or backend/.env),
-    mirroring _effective_gke_cluster_name's two channels. When enabled, the
-    runtime secret carries the ODDISH_GKE_* cluster/registry coordinates so
-    pydantic ``Settings`` reads them at container init and
+    Set in the deploy environment (or backend/.env), mirroring
+    _effective_gke_cluster_name's two channels. When set, the oddish-gcp runtime
+    secret carries the ODDISH_GKE_* cluster/registry coordinates (alongside the
+    GCP SA creds) so pydantic ``Settings`` reads them at container init and
     ``oddish.runtime.registry`` registers the GKE backend -- no backend/.env
-    needed. When disabled, the secret is never referenced, so an environment
-    without it (dev, GKE-less previews, prod before enablement) still deploys.
+    needed. When unset, no GKE secret is referenced, so an environment without
+    the coordinates (dev, GKE-less previews, prod before enablement) still deploys.
     """
     return _is_truthy(
         environ.get(_GKE_ENABLED_ENV) or dotenv_vars.get(_GKE_ENABLED_ENV)
@@ -275,24 +275,28 @@ def _gke_config_secret_enabled(
 def _gke_runtime_secret_names(
     environ: Mapping[str, str], dotenv_vars: Mapping[str, str]
 ) -> list[str]:
-    """Optional GKE secrets to attach for this deploy, in a stable order.
+    """The GKE secret to attach for this deploy, or none.
 
-    ``oddish-gcp`` (GCP service-account creds, materialized into an ADC file by
-    the worker) attaches whenever GKE is configured by EITHER channel: the legacy
-    backend/.env cluster resolution OR the runtime-config-secret flag -- otherwise
-    GKE workers boot without credentials and every trial authenticate-fails.
-    ``oddish-gke-config`` attaches only for the flag path (the .env path bakes
-    its own config). Both conditions read values baked into the image env, so the
+    ``oddish-gcp`` carries the GCP service-account creds AND (in the flag path)
+    the ODDISH_GKE_* coordinates, so a single secret covers both channels: attach
+    it whenever GKE is configured by EITHER the legacy backend/.env cluster
+    resolution OR the ODDISH_GKE_ENABLED flag -- otherwise GKE workers boot
+    without credentials/config and every trial fails. A GKE-less deploy attaches
+    nothing. Both conditions read values baked into the image env, so the
     deploy-time list and the in-container recompute are identical (Modal matches
     dependencies by count; a divergence crashloops every function at hydration).
+
+    The two config channels are ALTERNATIVES per deploy: the flag path puts the
+    coordinates in oddish-gcp (prod), the .env path bakes them from backend/.env
+    (preview/local). If a .env deploy runs against an oddish-gcp that ALSO carries
+    coordinates, the two must agree -- Modal's precedence between an injected
+    secret value and an image-baked env var is not something to rely on.
     """
-    names: list[str] = []
-    config_enabled = _gke_config_secret_enabled(environ, dotenv_vars)
-    if _effective_gke_cluster_name(environ, dotenv_vars) or config_enabled:
-        names.append("oddish-gcp")
-    if config_enabled:
-        names.append(_GKE_CONFIG_SECRET_NAME)
-    return names
+    if _effective_gke_cluster_name(environ, dotenv_vars) or _gke_enabled_flag(
+        environ, dotenv_vars
+    ):
+        return ["oddish-gcp"]
+    return []
 
 
 def _resolve_gke_secret_plan(
@@ -338,12 +342,12 @@ if SAURON_AWS_SECRET_NAME:
         )
     )
 
-# Optional GKE secrets, gated so a GKE-less deploy references none (and still
-# boots) while a GKE-enabled deploy attaches exactly what its channel needs:
-# oddish-gcp (GCP creds) for either channel, plus oddish-gke-config (runtime
-# ODDISH_GKE_* coordinates) for the config-secret channel. Lazily
-# hydrated by Modal; the gate reads image-baked env so this list is identical at
-# deploy time and at in-container recompute. See _gke_runtime_secret_names.
+# Optional GKE secret, gated so a GKE-less deploy references none (and still
+# boots) while a GKE-enabled deploy attaches the single oddish-gcp secret, which
+# carries the GCP creds plus (in the flag path) the runtime ODDISH_GKE_*
+# coordinates. Lazily hydrated by Modal; the gate reads image-baked env so this
+# list is identical at deploy time and at in-container recompute. See
+# _gke_runtime_secret_names.
 GKE_SECRET_PLAN = _resolve_gke_secret_plan(os.environ, LOCAL_DOTENV_VARS)
 for _gke_secret_name in GKE_SECRET_PLAN:
     runtime_secrets.append(
