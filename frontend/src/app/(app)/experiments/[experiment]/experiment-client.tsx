@@ -416,15 +416,20 @@ function ExperimentContent({
     }
   };
 
-  const handleDeleteTask = async (task: Task) => {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
-      method: "DELETE",
-    });
+  const handleUnlinkTask = async (task: Task) => {
+    const res = await fetch(
+      `/api/experiments/${encodedId}/tasks/${encodeURIComponent(task.id)}`,
+      {
+        method: "DELETE",
+      },
+    );
 
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete task",
+        errorData.detail ||
+          errorData.error ||
+          "Failed to unlink task from experiment",
       );
     }
 
@@ -662,7 +667,7 @@ function ExperimentContent({
           }
           readOnly={false}
           allowRetry
-          onTaskDelete={handleDeleteTask}
+          onTaskUnlink={handleUnlinkTask}
           onTrialDelete={handleDeleteTrial}
           onRerun={refreshTaskPages}
         />
