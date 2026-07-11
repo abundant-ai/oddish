@@ -29,6 +29,20 @@ async def _enqueue_report_worker_job(session, *, report_id: str, org_id: str | N
 async def create_report_core(
     session: AsyncSession, *, data: ReportCreate, org_id: str | None, user_id: str | None
 ) -> ReportModel:
+    seen: set[str] = set(data.experiment_ids)
+    requested = list(seen)
+
+    valid_stmt = select(ExperimentModel.id).where(
+        ExperimentModel.id.in_(requested), ExperimentModel.org_id == org_id
+    )
+    valid_ids = {row[0] for row in (await session.execute(valid_stmt)).all()}
+    missing = seen - valid_ids
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or inaccessible experiment ids: {sorted(missing)}",
+        )
+
     report = ReportModel(
         name=data.name,
         org_id=org_id,
@@ -38,11 +52,7 @@ async def create_report_core(
     session.add(report)
     await session.flush()  # assigns report.id
 
-    seen: set[str] = set()
-    for eid in data.experiment_ids:
-        if eid in seen:
-            continue
-        seen.add(eid)
+    for eid in requested:
         await session.execute(
             insert(report_experiments).values(
                 report_id=report.id, experiment_id=eid

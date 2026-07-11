@@ -67,6 +67,44 @@ async def test_get_report_core_404_for_unknown_id(session):
 
 
 @pytest.mark.asyncio
+async def test_create_report_rejects_unknown_or_foreign_org_experiment_id(
+    session, monkeypatch
+):
+    import oddish.core.reports as mod
+    from sqlalchemy import select
+
+    from oddish.db.models import ReportModel
+
+    calls = {"enqueued": False}
+
+    async def _fake_enqueue(session, *, report_id, org_id):
+        calls["enqueued"] = True
+
+    monkeypatch.setattr(mod, "_enqueue_report_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="exp-1", org_id="org_1")
+    foreign = ExperimentModel(name="exp-foreign", org_id="org_2")
+    session.add_all([e1, foreign])
+    await session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await create_report_core(
+            session,
+            data=ReportCreate(
+                name="Cross-org", experiment_ids=[e1.id, foreign.id, "does-not-exist"]
+            ),
+            org_id="org_1",
+            user_id="user_1",
+        )
+    assert exc.value.status_code == 400
+
+    # No orphan report row and no enqueue on the rejected path.
+    assert calls["enqueued"] is False
+    rows = (await session.execute(select(ReportModel))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_create_report_dedupes_experiment_ids(session, monkeypatch):
     import oddish.core.reports as mod
 

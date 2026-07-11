@@ -1,8 +1,28 @@
 import pytest
 
+from oddish.config import settings, to_anthropic_api_model_id
 from oddish.db.models import WorkerJobKind
 from oddish.workers.jobs import ensure_builtin_handlers_registered
 from oddish.workers.jobs.registry import get_handler
+
+
+def test_build_report_eval_config_uses_settings_model_and_default_concurrency(
+    monkeypatch
+):
+    import oddish.workers.queue.report_handler as rh
+
+    monkeypatch.delenv("ODDISH_REPORT_CONCURRENCY", raising=False)
+    config = rh._build_report_eval_config()
+    assert config.analysis_model == to_anthropic_api_model_id(settings.analysis_model)
+    assert config.map_concurrency == 16  # ReportEvalConfig default
+
+
+def test_build_report_eval_config_reads_concurrency_env(monkeypatch):
+    import oddish.workers.queue.report_handler as rh
+
+    monkeypatch.setenv("ODDISH_REPORT_CONCURRENCY", "4")
+    config = rh._build_report_eval_config()
+    assert config.map_concurrency == 4
 
 
 def test_report_handler_registered():

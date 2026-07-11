@@ -12,9 +12,11 @@ check it's still the live owner before writing its terminal state.
 from __future__ import annotations
 
 import asyncio
+import os
 
 from sqlalchemy import or_, select
 
+from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.report_inputs import build_report_inputs
 from oddish.core.reports import experiment_ids_for_report
 from oddish.core.experiment_membership import trial_in_experiment
@@ -36,6 +38,34 @@ from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 REPORT_HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+def _build_report_eval_config() -> ReportEvalConfig:
+    """Host-side config wiring: pick the model/concurrency from settings/env.
+
+    core.py stays pure (no DB/env reads); this is the one place that
+    translates settings into a ``ReportEvalConfig``. Report generation runs
+    in-process on the direct Anthropic API (see evals/report/core.py
+    ``_default_client``), so the configured Bedrock inference-profile id must
+    be converted to its direct-API form -- same convention as
+    ``worker/probe_analysis.py``.
+    """
+    config = ReportEvalConfig()
+    analysis_model = to_anthropic_api_model_id(settings.analysis_model) or config.analysis_model
+
+    map_concurrency = config.map_concurrency
+    raw_concurrency = os.environ.get("ODDISH_REPORT_CONCURRENCY")
+    if raw_concurrency is not None:
+        map_concurrency = int(raw_concurrency)
+
+    return ReportEvalConfig(
+        analysis_model=analysis_model,
+        map_concurrency=map_concurrency,
+        temperature=config.temperature,
+        taxonomy_version=config.taxonomy_version,
+        token_budget=config.token_budget,
+        prompt_version=config.prompt_version,
+    )
 
 
 async def _heartbeat_report_worker_job(
@@ -184,7 +214,7 @@ async def run_report_generation_job(
             async with get_session() as session:
                 rows = await _gather_trial_rows(session, report_id, org_id)
                 inputs = await build_report_inputs(rows)
-            output = await run_report_eval(inputs, ReportEvalConfig())
+            output = await run_report_eval(inputs, _build_report_eval_config())
             error = None
         except Exception as exc:  # noqa: BLE001
             output = None

@@ -1,9 +1,22 @@
+import pytest
+from pydantic import ValidationError
+
 from oddish.schemas import ReportCreate, ReportResponse, ExperimentOption
 
 
 def test_report_create_requires_name_and_experiments():
     c = ReportCreate(name="Q3", experiment_ids=["e1", "e2"])
     assert c.name == "Q3" and c.experiment_ids == ["e1", "e2"]
+
+
+def test_report_create_rejects_empty_name():
+    with pytest.raises(ValidationError):
+        ReportCreate(name="", experiment_ids=["e1"])
+
+
+def test_report_create_rejects_empty_experiment_ids():
+    with pytest.raises(ValidationError):
+        ReportCreate(name="Q3", experiment_ids=[])
 
 
 def test_report_response_from_attrs_shape():

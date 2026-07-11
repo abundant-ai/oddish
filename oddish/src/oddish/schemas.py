@@ -1755,8 +1755,8 @@ class SkillResponse(BaseModel):
 # Reports — agent-eval reports across experiments.
 # ---------------------------------------------------------------------------
 class ReportCreate(BaseModel):
-    name: str
-    experiment_ids: list[str]
+    name: str = Field(min_length=1)
+    experiment_ids: list[str] = Field(min_length=1)
 
 
 class ExperimentOption(BaseModel):
