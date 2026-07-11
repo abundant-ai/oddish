@@ -21,6 +21,7 @@ from oddish.db import (
     WorkerJobKind,
     get_session,
 )
+from oddish.db.models import JobStatus, ReportModel
 from oddish.registry_auth import (
     RegistryAuthDecryptError,
     current_registry_credentials,
@@ -29,6 +30,7 @@ from oddish.registry_auth import (
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.qa_handler import run_task_qa_job
+from oddish.workers.queue.report_handler import run_report_generation_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.trial_failures import (
@@ -285,9 +287,36 @@ class TagProjectJobHandler:
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 
 
+class ReportJobHandler:
+    kind = WorkerJobKind.REPORT
+
+    def default_queue_key(self, job) -> str:
+        return job.queue_key or "qa"
+
+    def validate_payload(self, payload: dict) -> dict:
+        return payload
+
+    async def run(self, job) -> JobOutcome:
+        report_id = job.subject_id or (job.payload or {}).get("report_id")
+        if not report_id:
+            raise ValueError("REPORT worker_job missing subject_id / payload.report_id")
+        await run_report_generation_job(report_id, worker_job_id=job.id)
+        async with get_session() as session:
+            report = await session.get(ReportModel, report_id)
+            if report is None:
+                return JobOutcome.fail("Report vanished mid-generation", retryable=False)
+            if report.status == JobStatus.SUCCESS:
+                return JobOutcome.ok()
+            return JobOutcome.fail(
+                report.error or f"Report {report_id} left in {report.status}",
+                retryable=True,
+            )
+
+
 __all__ = [
     "AnalysisJobHandler",
     "QaJobHandler",
+    "ReportJobHandler",
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",

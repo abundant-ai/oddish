@@ -9,9 +9,9 @@ state. This package is the seam: it owns
 - ``enqueue``: ``EnqueueRequest`` plus ``enqueue_worker_job`` which
   writes a ``worker_jobs`` row inside the caller's session.
 - ``handlers``: per-kind adapters (``TrialJobHandler`` / ``QaJobHandler`` /
-  ``TaskExpandJobHandler`` / ``TagProjectJobHandler``, plus the transitional
-  ``AnalysisJobHandler``) that delegate to the existing ``run_*_job`` bodies
-  and map terminal domain state back onto a ``JobOutcome``.
+  ``TaskExpandJobHandler`` / ``TagProjectJobHandler`` / ``ReportJobHandler``,
+  plus the transitional ``AnalysisJobHandler``) that delegate to the existing
+  ``run_*_job`` bodies and map terminal domain state back onto a ``JobOutcome``.
 
 ``ensure_builtin_handlers_registered()`` wires every built-in handler
 into the global registry. Both the standalone worker and the backend
@@ -51,6 +51,7 @@ def ensure_builtin_handlers_registered() -> None:
         WorkerJobKind.ANALYSIS,
         WorkerJobKind.TASK_EXPAND,
         WorkerJobKind.TAG_PROJECT,
+        WorkerJobKind.REPORT,
     }
     if _BUILTINS_REGISTERED and required_kinds.issubset(HANDLERS):
         return
@@ -61,6 +62,7 @@ def ensure_builtin_handlers_registered() -> None:
     from oddish.workers.jobs.handlers import (
         AnalysisJobHandler,
         QaJobHandler,
+        ReportJobHandler,
         TagProjectJobHandler,
         TaskExpandJobHandler,
         TrialJobHandler,
@@ -72,6 +74,7 @@ def ensure_builtin_handlers_registered() -> None:
         AnalysisJobHandler(),
         TaskExpandJobHandler(),
         TagProjectJobHandler(),
+        ReportJobHandler(),
     ):
         try:
             register(handler)
