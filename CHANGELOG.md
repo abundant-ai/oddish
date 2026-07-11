@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-11]
+
+### Added
+
+- GKE execution backend: TPU-declaring tasks auto-route to pods on a GKE cluster via DWS flex-start, with Postgres remaining the source of truth for queueing, fairness, retries, and cancellation while Modal/Daytona trials stay on the original harbor pin unaffected. Adds zero-touch cluster provisioning, an idle-cluster reaper, a DB-driven orphan-pod sweeper, deploy-time cluster gating, Cloud Build task-image builds, and verifier-reported benchmark metrics persisted to `trials.result` (#611)
+- Live trial streaming: a worker-side tailer polls supported agents' (Claude Code, Codex, Cursor CLI, mini-swe-agent) sandbox logs while a trial runs, checkpoints live token/cost onto the trial row, and stores transcript events in a new `trial_events` table. Served via `GET /trials/{id}/live`, a new `oddish logs [--follow]` CLI command, and a dashboard Live tab; on by default (#612)
+- Agent Graph tab: condenses a trial's trajectory into a small phase-by-phase node graph (explore → reproduce → patch → verify…), each phase tagged ok/warn/error and capped by a terminal node whose outcome is derived deterministically from the trial's own status/reward rather than the LLM. Reuses trajectory-summary phases when available; generated on demand via `GET`/`POST /trials/{id}/trajectory/graph` (#645)
+- Deterministic Slack expense notifications: a Modal-scheduled job (webhook-only, no bot or LLM) posts multi-line alerts for experiments crossing spend milestones (default $1,000, repeating), for trials that cost more than a configurable floor and exceed 2x the average of same-task/model peers, and for models with no resolvable price at all. Alerts include titles, owners, top model costs, and dashboard links, deduplicated via a durable Postgres claim table (#655, #662, #665, #669, #674)
+- Sweep resubmission now retries failed trials: resubmitting the same task-version/experiment sweep treats failed live trials as missing slots, creates immutable replacement trials on the same task version and experiment, and marks the originals as superseded so normal task/experiment views show only the replacements while the failed history stays inspectable by ID (#673)
+
+### Changed
+
+- The Usage page's per-model cost table now falls back to a token-cost estimate for trials with no settled native cost instead of silently showing $0, matching every other cost surface in the app; the UI marks estimated portions the same way as elsewhere (#670)
+- Rewrote the trajectory-classification prompt (`classify_prompt.txt`) from a "default to GOOD_FAILURE" heuristic into a stricter auditor workflow with explicit agent-visibility rules, a causality gate, two counterfactual checks, and a symptom-twins disambiguation table (#671)
+- Trajectory summary generation now reads the shared `settings.analysis_model` (honoring the `ODDISH_ANALYSIS_MODEL` override) instead of a hardcoded model constant, matching the trajectory graph and other analysis paths (#668)
+- Experiment trials-table legend now wraps instead of clipping past the card edge on typical desktop widths, with shortened labels ("Trial"/"QA", "QA failed"); the experiment-level probe launcher moved out of its own row into the page header next to the Chat button (#667)
+- Live transcript panel: idle polling slowed from every 2 seconds to every 10, and an info notice now explains delayed updates for mini-swe-agent and Cursor CLI trials, which only report progress after a step or message completes (#664, #666)
+- Renamed the dashboard's "Usage (last 24h)" quota card heading to "Quota" (#661)
+- Removing a task from an experiment now calls a new scoped `DELETE /experiments/{experiment_id}/tasks/{task_id}` endpoint that unlinks the experiment membership and its trials without deleting the task, even when it was the task's last experiment membership; whole-task deletion remains a separate action (#677)
+
+---
+
 ## [2026-07-07]
 
 ### Changed
