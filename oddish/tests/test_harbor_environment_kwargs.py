@@ -447,6 +447,59 @@ def test_claude_code_fireworks_agent_config_preserves_explicit_env(monkeypatch) 
     assert agent_config.env["ANTHROPIC_API_KEY"] == ""
 
 
+def test_mini_swe_meta_agent_config_sets_meta_route(monkeypatch) -> None:
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "azure")
+    monkeypatch.setattr(
+        harbor_runner.settings,
+        "meta_base_url",
+        "https://meta.example/v1/",
+    )
+    monkeypatch.setattr(harbor_runner.settings, "meta_eval_name", "SWE Marathon")
+    monkeypatch.setattr(harbor_runner.settings, "meta_session_id", None)
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="meta/llama-eval-model",
+        raw_harbor_config={},
+    )
+
+    assert agent_config.name is None
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
+    )
+    assert agent_config.model_name == "meta/llama-eval-model"
+    assert agent_config.env["MSWEA_API_KEY"] == "${META_API_KEY}"
+    assert agent_config.env["OPENAI_BASE_URL"] == "https://meta.example/v1"
+    assert agent_config.env["ODDISH_META_EVAL_NAME"] == "SWE Marathon"
+    assert "ODDISH_META_SESSION_ID" not in agent_config.env
+    assert "OPENAI_API_BASE" not in agent_config.env
+    assert "reasoning_effort" not in agent_config.kwargs
+    assert "OPENAI_API_KEY" not in agent_config.env
+    assert "AZURE_OPENAI_API_KEY" not in agent_config.env
+
+
+def test_mini_swe_meta_agent_config_preserves_explicit_env(monkeypatch) -> None:
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="meta/llama-eval-model",
+        raw_harbor_config={
+            "agent_config": {
+                "env": {
+                    "MSWEA_API_KEY": "${CUSTOM_META_KEY}",
+                    "OPENAI_BASE_URL": "https://custom.meta/v1",
+                },
+                "kwargs": {"reasoning_effort": "high", "cost_limit": "0"},
+            }
+        },
+    )
+
+    assert agent_config.env["MSWEA_API_KEY"] == "${CUSTOM_META_KEY}"
+    assert agent_config.env["OPENAI_BASE_URL"] == "https://custom.meta/v1"
+    assert "OPENAI_API_BASE" not in agent_config.env
+    assert agent_config.kwargs == {"cost_limit": "0"}
+
+
 def test_claude_code_openrouter_kimi_is_not_routed_to_moonshot(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test")
 

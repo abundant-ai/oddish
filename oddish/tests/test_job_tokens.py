@@ -32,6 +32,7 @@ def _fake_settings(**keys) -> types.SimpleNamespace:
         anthropic_api_key=None,
         openai_api_key=None,
         gemini_api_key=None,
+        meta_api_key=None,
     )
     base.update(keys)
     ns = types.SimpleNamespace(**base)
@@ -48,6 +49,8 @@ def _provider_of(model: str) -> str:
         return "openai"
     if "gemini" in m:
         return "gemini"
+    if m.startswith("meta/"):
+        return "meta"
     return "anthropic"
 
 
@@ -85,6 +88,18 @@ def test_scoped_model_env_litellm_claude_scopes_anthropic_key() -> None:
         settings=settings,
     )
     assert env == {"ANTHROPIC_API_KEY": "sk-ant"}
+
+
+def test_scoped_model_env_meta_only_carries_meta_key() -> None:
+    settings = _fake_settings(
+        anthropic_api_key="sk-ant",
+        openai_api_key="sk-oai",
+        meta_api_key="meta-key",
+    )
+    env = job_tokens.scoped_model_env(
+        agent="mini-swe-agent", model="meta/llama-eval-model", settings=settings
+    )
+    assert env == {"META_API_KEY": "meta-key", "MSWEA_API_KEY": "meta-key"}
 
 
 def test_scoped_model_env_claude_code_bedrock_uses_routing_flag() -> None:

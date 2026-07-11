@@ -370,13 +370,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, and xAI each have explicit canonical
-  provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
-  `fireworks/`, and `xai/`. Add or change provider aliases in `config.py`, then
-  update env injection in the Harbor runner and the network allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, and Meta each have explicit
+  canonical provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
+  `fireworks/`, `xai/`, and `meta/`. Add or change provider aliases in
+  `config.py`, then update env injection in the Harbor runner and the network
+  allowlist notes.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
-  `XAI_API_KEY`) and must not be persisted on trial rows.
+  `XAI_API_KEY`, `META_API_KEY`) and must not be persisted on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
