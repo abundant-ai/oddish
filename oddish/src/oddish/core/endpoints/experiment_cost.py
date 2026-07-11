@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
 from oddish.core.experiment_membership import trial_in_experiment
-from oddish.db.models import TrialModel
+from oddish.db.models import TaskModel, TaskVersionModel, TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
 
@@ -62,15 +62,57 @@ def _sum_when(condition, value):
     return func.coalesce(func.sum(case((condition, value), else_=0)), 0)
 
 
+def _in_scope(experiment_id: str):
+    """The trials the experiment grid considers at all, before version scoping."""
+    return (
+        trial_in_experiment(experiment_id),
+        TrialModel.is_probe.is_(False),
+        TrialModel.superseded_by_trial_id.is_(None),
+    )
+
+
+def _effective_version_select(experiment_id: str) -> Select:
+    """Per task, the ``task_version_id`` the experiment page displays.
+
+    SQL twin of ``resolve_effective_version_id``: the latest version among the
+    task's in-scope trials. Ordered by the *integer* ``task_versions.version``,
+    because ``task_version_id`` sorts lexicographically and would put ``-v9``
+    above ``-v10``. Mirrors ``fetch_experiment_effective_version_ids``.
+    """
+    return (
+        select(
+            TrialModel.task_id.label("task_id"),
+            TrialModel.task_version_id.label("task_version_id"),
+        )
+        .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
+        .where(*_in_scope(experiment_id), TrialModel.task_version_id.isnot(None))
+        .order_by(TrialModel.task_id.asc(), TaskVersionModel.version.desc())
+        .distinct(TrialModel.task_id)
+    )
+
+
 def experiment_cost_groups_select(
     experiment_id: str, *, org_id: str | None = None
 ) -> Select:
     """One row per ``(agent, model, billed)`` bucket of the experiment's trials.
 
-    Scoped to the same trials the experiment grid renders: non-probe and
-    non-superseded, including trials gathered into a collection experiment.
+    Scoped to exactly the trials the grid renders: non-probe, non-superseded,
+    collection-aware, and — critically — restricted to each task's *effective
+    version*. A task re-uploaded and re-run inside the same experiment keeps its
+    older versions' trials in the DB, and the grid does not show them
+    (``get_task_status_trials``), so counting them here would overstate cost.
     """
     billed = TrialModel.billed_user_id.isnot(None)
+    effective = _effective_version_select(experiment_id).subquery()
+
+    # ``COALESCE(latest in-scope version, task.current_version_id)`` — the
+    # fallback ``resolve_effective_version_id`` uses when no in-scope trial
+    # carries a version. A NULL effective means the task is unversioned, and
+    # every live trial shows; otherwise only exact matches do (so a NULL
+    # ``task_version_id`` against a versioned task drops out, as in Python).
+    effective_version_id = func.coalesce(
+        effective.c.task_version_id, TaskModel.current_version_id
+    )
 
     query = (
         select(
@@ -86,10 +128,14 @@ def experiment_cost_groups_select(
             _sum_when(_ESTIMATED_ROW, _CACHE_WRITE).label("cache_write_tokens"),
             _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
         )
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
+        .join(effective, effective.c.task_id == TrialModel.task_id, isouter=True)
         .where(
-            trial_in_experiment(experiment_id),
-            TrialModel.is_probe.is_(False),
-            TrialModel.superseded_by_trial_id.is_(None),
+            *_in_scope(experiment_id),
+            or_(
+                effective_version_id.is_(None),
+                TrialModel.task_version_id == effective_version_id,
+            ),
         )
         .group_by(TrialModel.agent, TrialModel.model, billed)
     )
