@@ -105,7 +105,7 @@ interface ExperimentDetailViewProps {
   allowRetry?: boolean;
   showAnalysis?: boolean;
   apiBaseUrl?: string;
-  onTaskDelete?: (task: Task) => Promise<void>;
+  onTaskUnlink?: (task: Task) => Promise<void>;
   onTrialDelete?: (trial: Trial, task: Task | null) => Promise<void>;
   onRerun?: (taskIds?: string[]) => void;
   // Logged-in exp page sends slim trials, so set true to fetch a clicked
@@ -789,7 +789,7 @@ export function ExperimentDetailView({
   allowRetry = true,
   showAnalysis = true,
   apiBaseUrl = "/api",
-  onTaskDelete,
+  onTaskUnlink,
   onTrialDelete,
   onRerun,
   loadFullTrialOnOpen = false,
@@ -1234,7 +1234,7 @@ export function ExperimentDetailView({
                 isLoading={isLoading}
                 isLoadingTrials={isLoadingTrials}
                 showPassAtK={showPassAtK}
-                onTaskDelete={onTaskDelete}
+                onTaskUnlink={onTaskUnlink}
                 onRerun={onRerun}
                 allowRerun={allowRetry}
                 readOnly={readOnly}
