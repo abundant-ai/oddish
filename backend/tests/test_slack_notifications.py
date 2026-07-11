@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 import slack_notifications as notifications
+from models import OrganizationModel, UserModel
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -19,6 +20,7 @@ from slack_notifications import (
     build_alerts,
     load_alerts,
     send_alerts,
+    send_owner_emails,
 )
 
 
@@ -71,6 +73,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
                 name="Exp <One>",
                 owner="Pat & Sam",
                 active_trials=2,
+                owner_email="owner@example.com",
             )
         ],
         [
@@ -99,6 +102,23 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         "Top agent costs:",
         "• `model-1`: *$2,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+    assert experiment_alert.recipient_email == "owner@example.com"
+    assert experiment_alert.email_subject == "Cost alert: Exp <One> reached $2,000"
+    assert experiment_alert.email_text is not None
+    assert experiment_alert.email_text.splitlines() == [
+        "Expensive experiment",
+        "",
+        "Exp <One>",
+        "Spend milestone: $2,000.00",
+        "Current spend: $2,001.00",
+        "Trials still running: 2",
+        "Owner: Pat & Sam",
+        "",
+        "Top agent costs:",
+        "- model-1: $2,001.00",
+        "",
+        "Open experiment: https://www.oddish.app/experiments/experiment%252F1",
     ]
 
 
@@ -334,12 +354,82 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
 
 @pytest.mark.asyncio
+async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    posted: list[tuple[str, str, str]] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(key: str) -> None:
+        sent.add(key)
+
+    async def release(key: str) -> None:
+        claimed.remove(key)
+
+    async def post_email(
+        _api_key: str,
+        _sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+    ) -> None:
+        posted.append((recipient, subject, body))
+        if subject == "fail":
+            raise RuntimeError("failed")
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_post_email", post_email)
+
+    delivered = SlackAlert(
+        "experiment:1:1000",
+        "slack text",
+        recipient_email=" Owner@Example.com ",
+        email_subject="Cost alert",
+        email_text="Details",
+    )
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [delivered])
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [delivered])
+    await send_owner_emails(
+        "secret",
+        "Oddish <alerts@example.com>",
+        [
+            SlackAlert(
+                "trial:2:70:2",
+                "slack text",
+                recipient_email="owner@example.com",
+                email_subject="fail",
+                email_text="Details",
+            ),
+            SlackAlert("unpriced:model", "admin-only Slack alert"),
+        ],
+    )
+
+    assert posted == [
+        ("owner@example.com", "Cost alert", "Details"),
+        ("owner@example.com", "fail", "Details"),
+    ]
+    assert sent == {"email:experiment:1:1000:owner@example.com"}
+    assert "email:trial:2:70:2:owner@example.com" not in claimed
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     suffix = uuid4().hex[:12]
     experiment_id = f"slack-exp-{suffix}"
     task_id = f"slack-task-{suffix}"
+    org_id = f"slack-org-{suffix}"
+    user_id = f"slack-user-{suffix}"
     now = datetime.now(timezone.utc)
     monkeypatch.setenv("ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", "100")
     monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_REPEAT_USD", "1000")
@@ -347,11 +437,35 @@ async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch.setenv("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", "2")
 
     async with get_session() as session:
-        session.add(ExperimentModel(id=experiment_id, name="Slack expense test"))
+        session.add(
+            OrganizationModel(
+                id=org_id,
+                name="Slack expense test org",
+                slug=org_id,
+            )
+        )
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email="expense-owner@example.com",
+                name="Expense Owner",
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=experiment_id,
+                name="Slack expense test",
+                org_id=org_id,
+                owner="Expense Owner",
+                owner_user_id=user_id,
+            )
+        )
         session.add(
             TaskModel(
                 id=task_id,
                 name=task_id,
+                org_id=org_id,
                 user="test",
                 task_path="/tmp/test",
             )
@@ -435,10 +549,12 @@ async def test_load_alerts_uses_settled_trial_costs(
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
+        assert alerts[0].recipient_email == "expense-owner@example.com"
         assert "Top agent costs:" in alerts[0].text
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
-        assert "Author: *Unknown*" in alerts[1].text
+        assert "Author: *Expense Owner*" in alerts[1].text
+        assert alerts[1].recipient_email == "expense-owner@example.com"
         assert "same-task/model average" in alerts[1].text
         assert "*Unpriceable model:*" in alerts[2].text
     finally:
@@ -454,10 +570,20 @@ async def test_load_alerts_uses_settled_trial_costs(
                     ExperimentModel.id == experiment_id
                 )
             )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
+                )
+            )
 
 
 @pytest.mark.asyncio
-async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> None:
+async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> (
+    None
+):
     # A soft-deleted experiment yields no expensive-experiment candidate, so
     # load_alerts must not early-return before the unpriceable-model scan.
     suffix = uuid4().hex[:12]
@@ -467,9 +593,7 @@ async def test_load_alerts_reports_unpriced_model_without_candidate_experiment()
 
     async with get_session() as session:
         session.add(
-            ExperimentModel(
-                id=experiment_id, name="Deleted exp", deleted_at=now
-            )
+            ExperimentModel(id=experiment_id, name="Deleted exp", deleted_at=now)
         )
         session.add(
             TaskModel(

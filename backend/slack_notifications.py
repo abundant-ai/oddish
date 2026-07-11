@@ -14,7 +14,7 @@ from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from modal_app import app, image, slack_notification_secrets
-from models import SlackExpenseAlertModel
+from models import SlackExpenseAlertModel, UserModel
 from oddish.core.admin import _real_spend_filter
 from oddish.core.cost_basis import (
     CANCELLED_HARBOR_STAGE,
@@ -39,6 +39,7 @@ class ExperimentCandidate:
     name: str
     owner: str | None
     active_trials: int
+    owner_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,9 @@ class UnpricedModel:
 class SlackAlert:
     key: str
     text: str
+    recipient_email: str | None = None
+    email_subject: str | None = None
+    email_text: str | None = None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -112,9 +116,7 @@ def build_alerts(
     for trial in trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
         peer_key = (trial.task_id, trial.model)
-        task_model_costs[peer_key] = (
-            task_model_costs.get(peer_key, 0) + trial.cost_usd
-        )
+        task_model_costs[peer_key] = task_model_costs.get(peer_key, 0) + trial.cost_usd
         task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
@@ -145,6 +147,22 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
+                email_subject = (
+                    f"Cost alert: {experiment.name} reached ${milestone:,.0f}"
+                )
+                email_text = (
+                    "Expensive experiment\n\n"
+                    f"{experiment.name}\n"
+                    f"Spend milestone: ${milestone:,.2f}\n"
+                    f"Current spend: ${total_cost:,.2f}\n"
+                    f"Trials still running: {experiment.active_trials}\n"
+                    f"Owner: {experiment.owner or 'Unknown'}\n\n"
+                    "Top agent costs:\n"
+                    + "\n".join(
+                        f"- {model}: ${cost:,.2f}" for model, cost in top_agent_costs
+                    )
+                    + f"\n\nOpen experiment: {experiment_url}"
+                )
                 alerts.append(
                     SlackAlert(
                         key=f"experiment:{experiment.id}:{milestone:g}",
@@ -159,11 +177,17 @@ def build_alerts(
                             f"{top_agent_cost_lines}\n"
                             f"<{experiment_url}|open experiment>"
                         ),
+                        recipient_email=experiment.owner_email,
+                        email_subject=email_subject,
+                        email_text=email_text,
                     )
                 )
 
         for trial in experiment_trials:
-            if trial.finished_at < recent_cutoff or trial.cost_usd <= trial_threshold_usd:
+            if (
+                trial.finished_at < recent_cutoff
+                or trial.cost_usd <= trial_threshold_usd
+            ):
                 continue
             peer_key = (trial.task_id, trial.model)
             peer_count = task_model_counts[peer_key] - 1
@@ -179,6 +203,16 @@ def build_alerts(
             )
             task_url = f"{dashboard_url}/tasks/{quote(trial.task_id, safe='')}"
             experiment = experiments_by_id[trial.experiment_id]
+            email_subject = f"Cost alert: expensive trial in {experiment.name}"
+            email_text = (
+                "Expensive trial\n\n"
+                f"{trial.name}\n"
+                f"Experiment: {experiment.name}\n"
+                f"Cost: ${trial.cost_usd:,.2f} — {comparison}\n"
+                f"Model: {trial.model}\n"
+                f"Author: {experiment.owner or 'Unknown'}\n\n"
+                f"Open task: {task_url}"
+            )
             alerts.append(
                 SlackAlert(
                     key=(
@@ -194,6 +228,9 @@ def build_alerts(
                         f"Author: *{_escape(experiment.owner or 'Unknown')}*\n"
                         f"<{task_url}|open task>"
                     ),
+                    recipient_email=experiment.owner_email,
+                    email_subject=email_subject,
+                    email_text=email_text,
                 )
             )
 
@@ -237,9 +274,21 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    func.count(TrialModel.id).filter(active_trial).label("active_trials"),
+                    UserModel.email.label("owner_email"),
+                    func.count(TrialModel.id)
+                    .filter(active_trial)
+                    .label("active_trials"),
                 )
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
+                .outerjoin(
+                    UserModel,
+                    and_(
+                        UserModel.id == ExperimentModel.owner_user_id,
+                        UserModel.org_id == ExperimentModel.org_id,
+                        UserModel.is_active.is_(True),
+                        UserModel.deleted_at.is_(None),
+                    ),
+                )
                 .where(
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
@@ -253,6 +302,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
+                    UserModel.email,
                 )
                 .execution_options(include_deleted=True)
             )
@@ -263,6 +313,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                 name=str(row.name),
                 owner=row.owner,
                 active_trials=int(row.active_trials or 0),
+                owner_email=row.owner_email,
             )
             for row in candidate_rows
         ]
@@ -365,13 +416,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         experiment_threshold_usd=_env_float(
             "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 1000
         ),
-        experiment_repeat_usd=_env_float(
-            "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
-        ),
+        experiment_repeat_usd=_env_float("ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000),
         trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 70),
-        trial_average_multiplier=_env_float(
-            "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
-        ),
+        trial_average_multiplier=_env_float("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2),
         unpriced_models=unpriced_models,
     )
 
@@ -379,6 +426,27 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
 async def _post(webhook_url: str, text: str) -> None:
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(webhook_url, json={"text": text})
+        response.raise_for_status()
+
+
+async def _post_email(
+    api_key: str,
+    sender: str,
+    recipient: str,
+    subject: str,
+    body: str,
+) -> None:
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "from": sender,
+                "to": [recipient],
+                "subject": subject,
+                "text": body,
+            },
+        )
         response.raise_for_status()
 
 
@@ -426,6 +494,39 @@ async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
         await _mark_alert_sent(alert.key)
 
 
+async def send_owner_emails(
+    api_key: str,
+    sender: str,
+    alerts: list[SlackAlert],
+) -> None:
+    for alert in alerts:
+        if not (alert.recipient_email and alert.email_subject and alert.email_text):
+            continue
+        recipient = alert.recipient_email.strip().lower()
+        if not recipient:
+            continue
+        claim_key = f"email:{alert.key}:{recipient}"
+        if not await _claim_alert(claim_key):
+            continue
+        try:
+            await _post_email(
+                api_key,
+                sender,
+                recipient,
+                alert.email_subject,
+                alert.email_text,
+            )
+        except Exception:
+            await _release_alert(claim_key)
+            log.exception(
+                "expense alert email failed alert_key=%s recipient=%s",
+                alert.key,
+                recipient,
+            )
+            continue
+        await _mark_alert_sent(claim_key)
+
+
 @app.function(
     image=image,
     secrets=slack_notification_secrets,
@@ -435,9 +536,15 @@ async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
 )
 async def send_slack_expense_notifications() -> None:
     webhook_url = os.environ.get("SLACK_EXPENSE_WEBHOOK_URL", "").strip()
-    if not webhook_url:
+    email_api_key = os.environ.get("RESEND_API_KEY", "").strip()
+    email_sender = os.environ.get("ODDISH_EXPENSE_EMAIL_FROM", "").strip()
+    if not webhook_url and not (email_api_key and email_sender):
         return
     try:
-        await send_alerts(webhook_url, await load_alerts())
+        alerts = await load_alerts()
+        if webhook_url:
+            await send_alerts(webhook_url, alerts)
+        if email_api_key and email_sender:
+            await send_owner_emails(email_api_key, email_sender, alerts)
     finally:
         await close_database_connections()

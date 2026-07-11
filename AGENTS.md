@@ -540,19 +540,24 @@ sweep):
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
 4. `send_slack_expense_notifications()` runs every five minutes in production
-   when `SLACK_EXPENSE_WEBHOOK_URL` is configured. It deterministically alerts
-   for experiments at $1,000 and each additional $1,000 of spend, and for recent
-   trials over $70 that exceed twice the average of other trials in the
-   experiment for the same task and model. Trials without a same-task/model
+   when a Slack or email delivery channel is configured. It deterministically
+   alerts for experiments at $1,000 and each additional $1,000 of spend, and
+   for recent trials over $70 that exceed twice the average of other trials in
+   the experiment for the same task and model. Trials without a same-task/model
    peer do not produce anomaly alerts.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
    and contains no agent/LLM path. It is on by default for the production app
    and off by default on preview apps; a preview opts in by setting
-   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing
-   `SLACK_EXPENSE_WEBHOOK_URL`, optionally through a preview-only named secret
+   `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing either
+   `SLACK_EXPENSE_WEBHOOK_URL`, or both `RESEND_API_KEY` and
+   `ODDISH_EXPENSE_EMAIL_FROM`, optionally through a preview-only named secret
    selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
+   Email alerts go only to active attributed experiment owners, resolved through
+   `experiments.owner_user_id -> users.email`; unpriceable-model alerts remain
+   Slack-only. Slack and email use independent idempotency claims so one delivery
+   channel cannot suppress or retry the other.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
