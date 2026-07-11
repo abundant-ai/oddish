@@ -24,11 +24,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from oddish.core.endpoints.experiment_cost import (  # noqa: E402
     get_experiment_cost_totals,
 )
-from oddish.core.helpers import _resolve_trial_cost  # noqa: E402
+from oddish.core.helpers import (  # noqa: E402
+    _resolve_trial_cost,
+    get_task_status_trials,
+)
 from oddish.config import settings  # noqa: E402
 from oddish.db.models import (  # noqa: E402
     ExperimentModel,
     TaskModel,
+    TaskVersionModel,
     TrialModel,
     TrialStatus,
     generate_id,
@@ -295,6 +299,73 @@ async def test_untokened_and_unpriced_trials_contribute_nothing(session):
     assert totals.total_trials == 3
     assert totals.cost_has_estimated is False
     assert totals.cost_has_native is True
+
+
+@pytest.mark.asyncio
+async def test_only_the_effective_version_of_each_task_is_counted(session):
+    """A re-uploaded task's OLD-version trials must not inflate the total.
+
+    The grid renders only each task's effective version
+    (``get_task_status_trials``), so counting v1's trials alongside v2's would
+    report a cost the page never shows. Asserted against the grid's own helper
+    rather than a hand-computed number.
+    """
+    task, experiment = await _fixture(session, "versions")
+
+    v1 = TaskVersionModel(
+        id=f"{task.id}-v1", task_id=task.id, version=1, task_path=task.task_path
+    )
+    v2 = TaskVersionModel(
+        id=f"{task.id}-v2", task_id=task.id, version=2, task_path=task.task_path
+    )
+    session.add_all([v1, v2])
+    await session.flush()
+    task.current_version_id = v2.id
+    await session.flush()
+
+    old = _trial(task, experiment, cost_usd=50.0)
+    old.task_version_id = v1.id
+    new_native = _trial(task, experiment, cost_usd=2.0)
+    new_native.task_version_id = v2.id
+    new_estimated = _trial(
+        task, experiment, input_tokens=1_000_000, output_tokens=100_000
+    )
+    new_estimated.task_version_id = v2.id
+    session.add_all([old, new_native, new_estimated])
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    # The v1 trial is the one the page hides; it must not be summed.
+    await session.refresh(task, attribute_names=["trials"])
+    displayed = get_task_status_trials(task, version_id=v2.id)
+    assert {t.id for t in displayed} == {new_native.id, new_estimated.id}
+    assert totals.cost_usd == pytest.approx(_client_side_sum(displayed))
+    assert totals.cost_trial_count == 2
+    assert totals.total_trials == 2
+    assert totals.cost_usd < 50.0  # the stale v1 trial is excluded outright
+
+
+@pytest.mark.asyncio
+async def test_unversioned_task_counts_every_live_trial(session):
+    """With no versions anywhere, the grid version filter is inert — count all."""
+    task, experiment = await _fixture(session, "unversioned")
+
+    trials = [
+        _trial(task, experiment, cost_usd=1.0),
+        _trial(task, experiment, cost_usd=2.0),
+    ]
+    session.add_all(trials)
+    await session.flush()
+
+    totals = await get_experiment_cost_totals(
+        session, experiment_id=experiment.id, org_id=_ORG
+    )
+
+    assert totals.cost_usd == pytest.approx(3.0)
+    assert totals.cost_trial_count == 2
 
 
 @pytest.mark.asyncio
