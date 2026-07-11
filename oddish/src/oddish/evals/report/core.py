@@ -94,7 +94,7 @@ async def _map_one(
         bucket=d.get("bucket", BUCKET_OF.get(sa.classification, "other")),
         subcategory=d.get("subcategory", "emergent"),
         evidence_quote=d.get("evidence_quote", ""),
-        step_indices=list(d.get("step_indices", [])),
+        step_indices=list(d.get("step_indices") or []),
         root_cause=d.get("root_cause", ""),
         headroom_signal=d.get("headroom_signal", ""),
         # Trust the host-built link on the bundle, never the model's echo.
@@ -108,8 +108,6 @@ async def run_report_eval(
     *,
     client: LLMClient | None = None,
 ) -> ReportEvalOutput:
-    client = client or _default_client()
-
     bad, good, breakdown = bucket_subanalyses(inputs.subanalyses)
     counts = {"trials": len(inputs.bundles), "bad": len(bad), "good": len(good)}
 
@@ -117,6 +115,8 @@ async def run_report_eval(
         return ReportEvalOutput(
             sections=dict(_EMPTY_SECTIONS), findings=[], counts=counts, breakdown=breakdown
         )
+
+    client = client or _default_client()
 
     roster = _roster(bad, good)
     by_trial = {b.trial_id: b for b in inputs.bundles}

@@ -89,3 +89,16 @@ async def test_run_report_eval_no_failures_skips_reduce_llm():
     assert out.counts == {"trials": 1, "bad": 0, "good": 0}
     assert client.calls == []  # nothing to analyze → no LLM calls
     assert out.sections["bad"] == "" and out.sections["headroom"] == ""
+
+
+@pytest.mark.asyncio
+async def test_run_report_eval_no_work_is_pure_without_client_or_env(monkeypatch):
+    """No injected client + no ANTHROPIC_API_KEY must not raise on the zero-work path."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    inputs = ReportEvalInputs(
+        bundles=[_bundle("task-9")],
+        subanalyses=[_sa("task-9", "GOOD_SUCCESS", "Correct Solution")],
+    )
+    out = await run_report_eval(inputs, ReportEvalConfig(), client=None)
+    assert out.counts == {"trials": 1, "bad": 0, "good": 0}
+    assert all(v == "" for v in out.sections.values())
