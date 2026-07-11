@@ -529,12 +529,17 @@ function ExperimentSummaryBar({
   isInitialLoading,
   isLoadingTrials,
   showBilledSpend,
+  // True when cost came from the server rollup, which reports SPEND: every
+  // trial that ran, including earlier task versions, superseded retries and
+  // probes that the table below filters out. Drives the tooltip's disclosure.
+  costIsSpend,
 }: {
   taskCount: number;
   summary: ExperimentSummary;
   isInitialLoading: boolean;
   isLoadingTrials: boolean;
   showBilledSpend: boolean;
+  costIsSpend: boolean;
 }) {
   if (isInitialLoading) {
     return (
@@ -639,6 +644,13 @@ function ExperimentSummaryBar({
             summary.costTrialCount > 0
               ? `Summed across ${summary.costTrialCount} trial${
                   summary.costTrialCount === 1 ? "" : "s"
+                } run in this experiment${
+                  // Spend covers every trial that ran; the table is filtered to
+                  // each task's current version. Say so, or the tile reads as
+                  // "wrong" whenever a task was re-uploaded or a trial retried.
+                  costIsSpend
+                    ? ". The table shows only current-version trials"
+                    : ""
                 }${
                   summary.costHasEstimated && summary.costHasNative
                     ? ". Mixed native + estimated values; ~ marks estimates."
@@ -1241,6 +1253,7 @@ export function ExperimentDetailView({
             // Billing attribution is internal; keep it off the public share
             // view (the only readOnly consumer).
             showBilledSpend={!readOnly}
+            costIsSpend={costTotals != null}
           />
 
           {hasError ? (
