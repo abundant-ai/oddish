@@ -1244,6 +1244,8 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
     meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
     meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
+    meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
+    meta_session_id: str | None = Field(default=None, alias="ODDISH_META_SESSION_ID")
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"
@@ -1657,10 +1659,15 @@ class Settings(BaseSettings):
     def get_meta_agent_env(self) -> dict[str, str]:
         """Return env vars for Meta's OpenAI-compatible mini-swe-agent route."""
         base_url = (self.meta_base_url or META_DEFAULT_BASE_URL).rstrip("/")
-        return {
+        env = {
             "MSWEA_API_KEY": "${META_API_KEY}",
             "OPENAI_BASE_URL": base_url,
         }
+        if self.meta_eval_name:
+            env["ODDISH_META_EVAL_NAME"] = self.meta_eval_name
+        if self.meta_session_id:
+            env["ODDISH_META_SESSION_ID"] = self.meta_session_id
+        return env
 
 
 settings = Settings()

@@ -291,6 +291,18 @@ def test_meta_model_routes_to_meta_for_mini_swe_agent(monkeypatch):
     assert settings.normalize_queue_key(model) == model
 
 
+def test_meta_agent_env_includes_configured_session_controls(monkeypatch):
+    monkeypatch.setenv("ODDISH_META_EVAL_NAME", "SWE Marathon")
+    monkeypatch.setenv("ODDISH_META_SESSION_ID", "swe-marathon--123456")
+    settings = _settings(monkeypatch, clear_openai_env=False)
+
+    env = settings.get_meta_agent_env()
+
+    assert env["ODDISH_META_EVAL_NAME"] == "SWE Marathon"
+    assert env["ODDISH_META_SESSION_ID"] == "swe-marathon--123456"
+    assert "OPENAI_API_BASE" not in env
+
+
 def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 

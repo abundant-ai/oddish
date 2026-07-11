@@ -454,6 +454,8 @@ def test_mini_swe_meta_agent_config_sets_meta_route(monkeypatch) -> None:
         "meta_base_url",
         "https://meta.example/v1/",
     )
+    monkeypatch.setattr(harbor_runner.settings, "meta_eval_name", "SWE Marathon")
+    monkeypatch.setattr(harbor_runner.settings, "meta_session_id", None)
 
     agent_config = harbor_runner._build_agent_config(
         agent="mini-swe-agent",
@@ -469,6 +471,8 @@ def test_mini_swe_meta_agent_config_sets_meta_route(monkeypatch) -> None:
     assert agent_config.model_name == "meta/llama-eval-model"
     assert agent_config.env["MSWEA_API_KEY"] == "${META_API_KEY}"
     assert agent_config.env["OPENAI_BASE_URL"] == "https://meta.example/v1"
+    assert agent_config.env["ODDISH_META_EVAL_NAME"] == "SWE Marathon"
+    assert "ODDISH_META_SESSION_ID" not in agent_config.env
     assert "OPENAI_API_BASE" not in agent_config.env
     assert "reasoning_effort" not in agent_config.kwargs
     assert "OPENAI_API_KEY" not in agent_config.env
