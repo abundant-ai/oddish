@@ -647,24 +647,29 @@ function ExperimentSummaryBar({
         <span
           className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
           title={
-            summary.costTrialCount > 0
-              ? `Summed across ${summary.costTrialCount} trial${
-                  summary.costTrialCount === 1 ? "" : "s"
-                } run in this experiment${
-                  // Spend covers every trial that ran; the table is filtered to
-                  // each task's current version. Say so, or the tile reads as
-                  // "wrong" whenever a task was re-uploaded or a trial retried.
-                  costIsSpend
-                    ? ". The table shows only current-version trials"
-                    : ""
-                }${
-                  summary.costHasEstimated && summary.costHasNative
-                    ? ". Mixed native + estimated values; ~ marks estimates."
-                    : summary.costHasEstimated
-                      ? ". Estimated from token counts × static model pricing."
-                      : ". Reported by the agent runtime."
-                }`
-              : "No cost data reported yet"
+            // Must agree with the VALUE rendered below: while the rollup is in
+            // flight the tile shows an em dash, so the tooltip cannot describe
+            // the client fold's (partial, grid-scoped) counts.
+            costPending
+              ? "Calculating experiment spend…"
+              : summary.costTrialCount > 0
+                ? `Summed across ${summary.costTrialCount} trial${
+                    summary.costTrialCount === 1 ? "" : "s"
+                  } run in this experiment${
+                    // Spend covers every trial that ran; the table is filtered to
+                    // each task's current version. Say so, or the tile reads as
+                    // "wrong" whenever a task was re-uploaded or a trial retried.
+                    costIsSpend
+                      ? ". The table shows only current-version trials"
+                      : ""
+                  }${
+                    summary.costHasEstimated && summary.costHasNative
+                      ? ". Mixed native + estimated values; ~ marks estimates."
+                      : summary.costHasEstimated
+                        ? ". Estimated from token counts × static model pricing."
+                        : ". Reported by the agent runtime."
+                  }`
+                : "No cost data reported yet"
           }
         >
           {costPending ? (
@@ -701,21 +706,23 @@ function ExperimentSummaryBar({
           <span
             className="font-display flex items-baseline gap-1 text-[26px] leading-none font-medium tracking-[-0.02em] text-[color:var(--paper-ink)]"
             title={
-              summary.billedTrialCount > 0
-                ? `Summed across ${summary.billedTrialCount} billed trial${
-                    summary.billedTrialCount === 1 ? "" : "s"
-                  }${
-                    costIsSpend
-                      ? ". The table shows only current-version trials"
-                      : ""
-                  }${
-                    summary.billedHasEstimated && summary.billedHasNative
-                      ? ". Mixed native + estimated values; ~ marks estimates."
-                      : summary.billedHasEstimated
-                        ? ". Estimated from token counts × static model pricing."
-                        : ". Reported by the agent runtime."
-                  }`
-                : "No billed trials yet"
+              costPending
+                ? "Calculating billed spend…"
+                : summary.billedTrialCount > 0
+                  ? `Summed across ${summary.billedTrialCount} billed trial${
+                      summary.billedTrialCount === 1 ? "" : "s"
+                    }${
+                      costIsSpend
+                        ? ". The table shows only current-version trials"
+                        : ""
+                    }${
+                      summary.billedHasEstimated && summary.billedHasNative
+                        ? ". Mixed native + estimated values; ~ marks estimates."
+                        : summary.billedHasEstimated
+                          ? ". Estimated from token counts × static model pricing."
+                          : ". Reported by the agent runtime."
+                    }`
+                  : "No billed trials yet"
             }
           >
             {costPending ? (
