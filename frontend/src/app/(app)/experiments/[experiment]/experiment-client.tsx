@@ -23,7 +23,12 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
+import type {
+  Task,
+  Trial,
+  ExperimentShareInfo,
+  ExperimentCostTotals,
+} from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -186,6 +191,18 @@ function ExperimentContent({
     trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
   );
 
+  // Whole-experiment cost rollup. The trial pages above are paginated, so a
+  // client-side sum over the loaded trials understates cost until every page
+  // is fetched. This aggregate covers all trials regardless of what's loaded.
+  const costTotalsKey = experimentId
+    ? `/api/experiments/${encodedId}/cost-totals`
+    : null;
+  const { data: costTotals, mutate: mutateCostTotals } =
+    useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
+      refreshInterval: 0,
+      revalidateOnFocus: false,
+    });
+
   // Experiment-level metadata (sharing + description) for the header.
   // Fetched eagerly so the description renders immediately; shares the SWR
   // cache key with ExperimentShareButton (which fetches lazily on open).
@@ -285,9 +302,13 @@ function ExperimentContent({
 
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
-      await Promise.all([mutateLightweight(), mutateTrials()]);
+      await Promise.all([
+        mutateLightweight(),
+        mutateTrials(),
+        mutateCostTotals(),
+      ]);
     },
-    [mutateLightweight, mutateTrials],
+    [mutateLightweight, mutateTrials, mutateCostTotals],
   );
 
   const loadMoreTrials = useCallback(() => {
@@ -360,12 +381,21 @@ function ExperimentContent({
       // ``mutateTrials()`` re-runs every page key currently held by
       // useSWRInfinite, in order, with the regular SWR dedup window.
       void mutateTrials();
+      // Cheap grouped aggregate; refresh alongside so the cost tiles track
+      // trials finishing while the page is open.
+      void mutateCostTotals();
     }, refreshIntervalMs);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [allTasksUrl, refreshIntervalMs, mutateLightweight, mutateTrials]);
+  }, [
+    allTasksUrl,
+    refreshIntervalMs,
+    mutateLightweight,
+    mutateTrials,
+    mutateCostTotals,
+  ]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -497,6 +527,7 @@ function ExperimentContent({
         <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
+            costTotals={costTotals}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
