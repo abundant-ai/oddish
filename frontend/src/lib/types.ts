@@ -324,8 +324,13 @@ interface TaskCostTotals {
   total_trials: number;
 }
 
-/** `GET /api/experiments/{id}/cost-totals` — cost across ALL trials in the
- * experiment, not just the trial pages the grid has loaded. */
+/** `GET /api/experiments/{id}/cost-totals` — what the experiment SPENT.
+ *
+ * Covers every trial that ran under it, so it is wider than the grid in two
+ * ways: it isn't limited to the trial pages loaded so far, and it counts
+ * trials the table filters out (earlier task versions, superseded retries,
+ * probes). Those still burned tokens and were still billed. Expect this to
+ * exceed the sum of the visible rows; the Cost tooltip says as much. */
 export interface ExperimentCostTotals {
   cost_usd: number;
   cost_trial_count: number;

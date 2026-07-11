@@ -813,10 +813,14 @@ class TaskCostTotals(BaseModel):
 
 
 class ExperimentCostTotals(BaseModel):
-    """Experiment-wide cost rollup across every (non-superseded) trial.
+    """What an experiment spent, across every trial that ran under it.
 
-    Served separately from the paginated trial grid so the page's cost tiles
-    reflect the whole experiment, not just the loaded pages.
+    Served separately from the trial grid because it cannot be derived from it:
+    the grid is paginated, and it is filtered to each task's current version, so
+    it omits earlier versions, superseded retries and probes -- all of which
+    were still billed. Expect this to exceed the sum of the visible rows.
+    Soft-deleted trials are the one exclusion (see ``core.endpoints
+    .experiment_cost``).
     """
 
     cost_usd: float = 0.0

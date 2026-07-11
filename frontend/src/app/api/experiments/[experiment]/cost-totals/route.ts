@@ -17,7 +17,7 @@ import {
 // aggregate instead. Takes no query params -- it is always the full experiment.
 export async function GET(
   _request: NextRequest,
-  { params }: { params: Promise<{ experiment: string }> },
+  { params }: { params: Promise<{ experiment: string }> }
 ) {
   const timings = new ServerTimingCollector();
   const requestStartedAt = performance.now();
@@ -26,7 +26,7 @@ export async function GET(
     const authObj = await timings.measureAsync(
       "next_auth",
       () => auth(),
-      "Clerk auth",
+      "Clerk auth"
     );
 
     if (!authObj || !authObj.userId) {
@@ -36,14 +36,14 @@ export async function GET(
     const token = await timings.measureAsync(
       "next_token",
       () => getClerkToken(authObj.getToken),
-      "Clerk token",
+      "Clerk token"
     );
 
     if (!token) {
       console.error("Failed to get Clerk token for user:", authObj.userId);
       return NextResponse.json(
         { error: "Failed to get authentication token" },
-        { status: 401 },
+        { status: 401 }
       );
     }
 
@@ -54,13 +54,13 @@ export async function GET(
     if (!experimentId) {
       return NextResponse.json(
         { error: "Missing experiment" },
-        { status: 400 },
+        { status: 400 }
       );
     }
 
     const url = getBackendUrl(
       "experiments",
-      `/${encodeURIComponent(experimentId)}/cost-totals`,
+      `/${encodeURIComponent(experimentId)}/cost-totals`
     );
 
     const res = await timings.measureAsync(
@@ -70,40 +70,40 @@ export async function GET(
           cache: "no-store",
           headers: getAuthHeaders(token),
         }),
-      "Backend fetch",
+      "Backend fetch"
     );
 
     if (!res.ok) {
       const errorText = await timings.measureAsync(
         "next_error_body",
         () => res.text(),
-        "Read error body",
+        "Read error body"
       );
       console.error(`Backend error: ${res.status} - ${errorText}`);
       return NextResponse.json(
         { error: "Failed to fetch experiment cost totals", details: errorText },
-        { status: res.status },
+        { status: res.status }
       );
     }
 
     const data = await timings.measureAsync(
       "next_json",
       () => res.json(),
-      "Decode JSON",
+      "Decode JSON"
     );
     timings.add(
       "next_total",
       performance.now() - requestStartedAt,
-      "Experiment cost-totals proxy total",
+      "Experiment cost-totals proxy total"
     );
     const response = NextResponse.json(data);
     response.headers.set(
       "Cache-Control",
-      "private, max-age=3, stale-while-revalidate=10",
+      "private, max-age=3, stale-while-revalidate=10"
     );
     const serverTiming = joinServerTimingHeaders(
       timings.toHeader(),
-      res.headers.get("server-timing"),
+      res.headers.get("server-timing")
     );
     if (serverTiming) {
       response.headers.set("Server-Timing", serverTiming);
@@ -113,7 +113,7 @@ export async function GET(
     console.error("API route error:", error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
-      { status: 503 },
+      { status: 503 }
     );
   }
 }

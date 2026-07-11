@@ -10,6 +10,15 @@ version, superseded, or probe filter, and the admin spend filter keeps billed
 probes too. So this counts all versions, superseded retries, and probes, and the
 tile's tooltip tells the reader the table below is a filtered view of it.
 
+One deliberate departure from billing: **soft-deleted trials do not count**. The
+global soft-delete filter (``db.soft_delete``) drops them from this query, and
+unlike ``core.quotas`` we do not pass ``include_deleted=True`` to opt out. Quotas
+count them so nobody can delete their way out of an invoice; here, deleting a
+trial is an explicit "remove this from the experiment" action, and a tile that
+kept charging for a row the user removed -- with no way to see it -- would be
+inexplicable. The consequence is that this can under-report against the invoice
+by the value of any deleted trials.
+
 The other reason the number can't be computed client-side: the page paginates
 trials, so summing the loaded pages only ever covers a prefix of the experiment.
 
@@ -43,17 +52,26 @@ from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
 
-_INPUT = func.coalesce(TrialModel.input_tokens, 0)
-_OUTPUT = func.coalesce(TrialModel.output_tokens, 0)
-_CACHED = func.coalesce(TrialModel.cache_tokens, 0)
-_CACHE_WRITE = func.coalesce(TrialModel.cache_write_tokens, 0)
 
-# max(0, input - cached - cache_write), spelled with CASE rather than GREATEST
-# so it runs on SQLite as well as Postgres.
-_uncached_input = case(
-    (_INPUT - _CACHED - _CACHE_WRITE > 0, _INPUT - _CACHED - _CACHE_WRITE),
-    else_=0,
-)
+def _non_negative(column):
+    """``max(0, column)`` -- spelled with CASE rather than GREATEST so it runs on
+    SQLite as well as Postgres.
+
+    Applied per row, not to the pooled total, because ``estimate_cost_usd``
+    clamps each token bucket per row (``model_pricing``). Summing raw and
+    clamping once at the end would let a negative count cancel a sibling row's
+    positive one, which per-trial pricing never does.
+    """
+    return case((column > 0, column), else_=0)
+
+
+_INPUT = _non_negative(func.coalesce(TrialModel.input_tokens, 0))
+_OUTPUT = _non_negative(func.coalesce(TrialModel.output_tokens, 0))
+_CACHED = _non_negative(func.coalesce(TrialModel.cache_tokens, 0))
+_CACHE_WRITE = _non_negative(func.coalesce(TrialModel.cache_write_tokens, 0))
+
+# max(0, input - cached - cache_write), per row.
+_uncached_input = _non_negative(_INPUT - _CACHED - _CACHE_WRITE)
 
 _HAS_NATIVE_COST = TrialModel.cost_usd.isnot(None)
 
@@ -112,7 +130,10 @@ def _estimated_group_cost(agent: str | None, model: str | None, row) -> float | 
     if not row.estimated_count:
         return None
     return estimate_cost_usd(
-        settings.normalize_trial_model(agent, model),
+        # ``or model``: _resolve_trial_cost prices with ``model_name or
+        # trial.model``, falling back to the raw string when normalization
+        # returns None. Mirror it so the two never diverge.
+        settings.normalize_trial_model(agent, model) or model,
         # Re-derives ``uncached_input_tokens`` under estimate_cost_usd's own
         # clamp, which is a no-op on an already-clamped total.
         row.uncached_input_tokens + row.cached_tokens + row.cache_write_tokens,
