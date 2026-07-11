@@ -437,6 +437,7 @@ def assert_gke_cluster_exists() -> None:
         f"({stderr[:200]}); continuing"
     )
 
+
 # Appended UNCONDITIONALLY (an empty dict is a valid secret): this list is
 # recomputed inside the container, where backend/.env does not exist, so an
 # append conditional on the file's presence makes the deploy-time and
@@ -480,6 +481,7 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"openai/gpt-5.4-mini": 128, '
     '"xai/v9m-rl-learnability-tp8": 108, '
+    '"meta/super_nova_ext": 80, '
     '"zai/glm-5.2": 64}',
 )
 
