@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from oddish.evals.primitives import SubAnalysis, TrajectoryBundle
+from oddish.evals.report.bucketing import BUCKET_OF
 from oddish.evals.report.schemas import Finding
 
 _PROMPT_DIR = Path(__file__).parent / "prompts"
@@ -30,7 +31,7 @@ def build_map_prompt(
 ) -> str:
     return MAP_PROMPT_TEMPLATE.format(
         trial_id=bundle.trial_id,
-        bucket=("bad" if subanalysis.classification.startswith("BAD") else "good"),
+        bucket=BUCKET_OF.get(subanalysis.classification, "other"),
         classification=subanalysis.classification,
         subtype=subanalysis.subtype,
         evidence=subanalysis.evidence,
