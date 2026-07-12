@@ -96,6 +96,67 @@ async def test_meta_mini_swe_agent_forwards_reasoning_effort(tmp_path):
     )
 
 
+@pytest.mark.asyncio
+async def test_meta_mini_swe_agent_delivers_task_via_config_not_argv(tmp_path):
+    commands: list[tuple[str, dict | None]] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append((command, env))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    marker = "ZZ-restart-the-vinext-dev-server-ZZ"
+    agent = OddishMetaMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="meta/llama-eval-model",
+        extra_env={"MSWEA_API_KEY": "meta-test-key"},
+    )
+
+    await agent.run(marker, _FakeEnvironment(), SimpleNamespace())
+
+    config_command = commands[-2][0]
+    run_command = commands[-1][0]
+    # Task rides in the config file (run.task), not on argv, so the agent's own
+    # `pkill -f <keyword>` cannot match the mini-swe-agent process cmdline.
+    assert "run:" in config_command and "task:" in config_command
+    assert marker in config_command
+    assert "--task=" not in run_command
+    assert marker not in run_command
+
+
+@pytest.mark.asyncio
+async def test_meta_mini_swe_agent_task_extraction_robust_to_flags_in_prompt(tmp_path):
+    commands: list[tuple[str, dict | None]] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append((command, env))
+            return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    # Prompt contains flag-looking text (--output=) and an apostrophe: a naive
+    # regex up to the next --output= would truncate mid-quote and leave --task=
+    # on argv. The quote-aware scanner must extract the whole prompt.
+    task = "Build a CLI supporting --output=FILE and don't crash"
+    agent = OddishMetaMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="meta/llama-eval-model",
+        extra_env={"MSWEA_API_KEY": "meta-test-key"},
+    )
+
+    await agent.run(task, _FakeEnvironment(), SimpleNamespace())
+
+    config_command = commands[-2][0]
+    run_command = commands[-1][0]
+    # Whole prompt (incl. the embedded --output=FILE) landed in the config file.
+    assert "--output=FILE" in config_command
+    # argv carries neither --task= nor any of the prompt text.
+    assert "--task=" not in run_command
+    assert "--output=FILE" not in run_command
+    assert "don't crash" not in run_command
+    # The real trajectory --output flag survives on argv.
+    assert "--output=/logs/agent/mini-swe-agent.trajectory.json" in run_command
+
+
 def test_meta_mini_swe_agent_allowlists_custom_base_url(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.agents.mini_swe_agent.settings.meta_base_url",

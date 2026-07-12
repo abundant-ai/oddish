@@ -13,6 +13,59 @@ from oddish.config import META_DEFAULT_BASE_URL, meta_bare_model_id, settings
 
 _META_CONFIG_PATH = "/tmp/oddish-meta-mini-swe-agent.yaml"
 _META_API_DOMAIN = "api.ai.meta.com"
+_TASK_FLAG = "--task="
+
+
+def _shell_token_end(s: str, start: int) -> int:
+    """Index just past the shell token beginning at ``s[start]``.
+
+    Honors single/double quotes and backslash escapes so the scan stops at the
+    first *unquoted* whitespace. This makes ``--task=`` extraction robust even
+    when the quoted prompt itself contains flag-looking text (e.g. ``--output=``)
+    -- a naive regex up to the next ``--output=`` would truncate inside the
+    prompt and leave ``--task=`` on argv.
+    """
+    i, n = start, len(s)
+    squote = dquote = False
+    while i < n:
+        c = s[i]
+        if squote:
+            if c == "'":
+                squote = False
+        elif dquote:
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == '"':
+                dquote = False
+        elif c == "'":
+            squote = True
+        elif c == '"':
+            dquote = True
+        elif c == "\\" and i + 1 < n:
+            i += 1
+        elif c.isspace():
+            break
+        i += 1
+    return i
+
+
+def _extract_task_span(command: str) -> tuple[str | None, tuple[int, int] | None]:
+    """Return (task, (start, end)) for the ``--task=<quoted>`` segment, or (None, None).
+
+    ``start`` includes a single preceding space when present so the whole
+    segment can be excised cleanly.
+    """
+    idx = command.find(_TASK_FLAG)
+    if idx < 0:
+        return None, None
+    vstart = idx + len(_TASK_FLAG)
+    vend = _shell_token_end(command, vstart)
+    try:
+        task = shlex.split(command[vstart:vend])[0]
+    except (ValueError, IndexError):
+        return None, None
+    start = idx - 1 if idx > 0 and command[idx - 1] == " " else idx
+    return task, (start, vend)
 
 
 def _slugify_session_part(value: str) -> str:
@@ -76,7 +129,9 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
             return None
         return f"openai/{meta_bare_model_id(model_name)}"
 
-    async def _write_meta_config(self, environment, env: dict | None) -> None:
+    async def _write_meta_config(
+        self, environment, env: dict | None, task: str | None = None
+    ) -> None:
         session_id = self._meta_session_id()
         quoted_path = shlex.quote(_META_CONFIG_PATH)
         heredoc_marker = f"ODDISH_META_MSWEA_CONFIG_{uuid.uuid4().hex[:8]}"
@@ -86,6 +141,15 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
             "    extra_headers:\n"
             f"      x-session-id: {json.dumps(session_id)}\n"
         )
+        # Deliver the task via the config file (mini-swe-agent reads run.task,
+        # see minisweagent.run.mini) instead of --task on the command line. The
+        # agent frequently runs pkill -f <keyword> to restart servers it starts;
+        # with the prompt on argv, those patterns match the mini-swe-agent
+        # process's own cmdline and SIGTERM it (exit 143). Keeping the prompt off
+        # argv avoids the self-kill. JSON is valid YAML, so it round-trips
+        # multi-line prompts safely.
+        if task is not None:
+            config_yaml += f"run:\n  task: {json.dumps(task)}\n"
         command = (
             f"cat > {quoted_path} <<'{heredoc_marker}'\n{config_yaml}{heredoc_marker}\n"
         )
@@ -117,7 +181,15 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
         timeout_sec=None,
     ):
         if "mini-swe-agent --yolo " in command:
-            await self._write_meta_config(environment, env)
+            # Excise --task=<prompt> from argv first, while its span is still
+            # valid, then let _patch_meta_command rewrite --model (which would
+            # otherwise shift these offsets). The prompt rides in the config file
+            # (run.task) so the agent's own pkill -f can't match its cmdline.
+            task, task_span = _extract_task_span(command)
+            if task_span is not None:
+                start, end = task_span
+                command = command[:start] + command[end:]
+            await self._write_meta_config(environment, env, task=task)
             command = self._patch_meta_command(command)
 
         return await super().exec_as_agent(
