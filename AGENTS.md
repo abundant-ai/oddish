@@ -858,18 +858,59 @@ oddish run -p <task-dir> --agent <agent> --model <provider/model> \
      for a param you're explicitly asked to set (e.g. `reasoning_effort`). The
      required `x-session-id` header is set by the meta route automatically.
 
+8. **mini-swe-agent + litellm proxy deps (`fastapi`/`orjson`).** The tool is
+   installed unpinned (`uv tool install mini-swe-agent`), so a fresh install can
+   pull a litellm (>= 1.92) that lazily imports proxy/MCP handlers needing
+   `fastapi`, `orjson`, … on the tool-calling completion path
+   (`completion(tools=[BASH_TOOL])`). Those aren't in the base tool venv, so the
+   first model call dies with `ModuleNotFoundError` and the trial fails fast
+   (2 steps, 0 tokens). `OddishMetaMiniSweAgent.install()` reinstalls with the
+   proxy extras (`uv tool install mini-swe-agent --with 'litellm[proxy]'`, PR
+   #693). If a *new* mini-swe-agent/litellm release breaks imports again, pin the
+   version or extend the `--with` set.
+
 ### 4. Workflow (breadth → depth → babysit)
 
 1. **Validate** with 1 trial each on a representative open / patched-closed-net /
    CUA task. Confirm: auth works (tokens climbing), trajectory captured,
    closed-net setup succeeds, CUA verifier runs.
 2. **Breadth** across all 20 at a small N.
-3. **Depth:** raise the target to ≥5 with **buffer** (e.g. 8 for non-CUA) since
-   some infra is stochastic.
-4. **Babysit loop:** audit by underlying error → `oddish delete -t <id> …` the
-   infra trials → re-topup (raise target) → repeat until every task has ≥5 valid
-   and 0 infra. Prune over-provisioned tasks to exactly 5 (prefer `reward=1`, then
-   longer trajectories, excluding any infra).
+3. **Depth:** the per-eval target `N` is usually **5**, but confirm it per
+   request — vendors sometimes ask for more (e.g. this Meta run used **N=8**).
+   Raise the sweep target to `N` plus a **small** buffer (e.g. `N+1`/`N+2`) to
+   absorb the occasional stochastic bad trial without over-provisioning.
+4. **Babysit loop:** audit by underlying error → delete the infra **and
+   degenerate** trials → re-topup (raise target) → repeat until every task has
+   ≥ `N` good trials and 0 infra. Then prune each task to exactly `N` (see below).
+
+### 4b. Pruning to N and rerunning degenerate trials
+
+**Degenerate trials — delete and rerun (don't keep).** Beyond the hard infra
+failures (137/143/exit-1), also drop trials that aren't a *real* attempt and
+rerun them:
+
+- Very few steps/messages relative to the task — e.g. `total_steps < ~15` when
+  the task normally runs 60–400 steps (spot them via the step distribution in
+  the audit). Watch for a low step count paired with a long runtime / timeout
+  (the agent stalled).
+- Obvious rate-limit / `429` / `RateLimitError` in the logs, or a 0-token quick
+  exit.
+
+**Pruning down to N — keep it light.** When a task has more than `N` good
+trials, prune the extras keeping the best, in this priority order:
+
+1. Exclude anything infra or degenerate first.
+2. Prefer `reward=1` over `reward=0`.
+3. Break ties toward **longer trajectories** (more steps).
+
+**pass@k caveat (important):** do **not** over-optimize this selection —
+aggressively dropping low-reward trials to keep the "best" biases the pass@k /
+pass@1 statistics the eval reports. Keep buffers small so you only ever prune a
+*handful* per task (that's fine); systematically discarding many valid trials to
+inflate scores is not. Tasks that already sit at exactly `N` need no pruning at
+all (zero bias). The clean way to minimize bias is a small buffer (target
+`N+1`/`N+2`) + reruns of only infra/degenerate trials, rather than a big
+over-provision followed by heavy pruning.
 
 ### 5. Monitor / audit
 
