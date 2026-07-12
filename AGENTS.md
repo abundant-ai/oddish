@@ -728,3 +728,181 @@ curl ${NEXT_PUBLIC_API_URL:-http://localhost:8000}/openapi.json
 - Verify Clerk keys in `frontend/.env.local`.
 - If org-scoped backend access fails, confirm `CLERK_JWT_TEMPLATE` is set and includes `org_id`.
 - If using production Clerk keys locally, use `frontend/run-prod-clerk-local.sh`.
+
+---
+
+## Runbook: full vendor-model eval on SWE-Marathon (via Oddish, on Modal)
+
+This is the operational playbook for running a full SWE-Marathon eval (e.g. a
+vendor asks for **5 trials × 20 tasks = 100 trials** on a new/internal model)
+end to end on Oddish + Modal. It captures the gotchas learned running xAI
+(`grok-build`) and Meta (`mini-swe-agent`) evals so the next one is fast.
+
+**Target outcome:** ≥5 *valid* trials per task, where **valid = the trial ran to
+a real terminal state** — a clean success *or* an `AgentTimeoutError`. Any other
+infra failure (non-zero agent exit like 137/143/1, verifier infra failure, a
+Harbor `ExceptionGroup`) is **not** valid; delete and rerun those.
+
+### 0. Prereqs / setup
+
+1. `git pull` both `oddish` and `swe-marathon` (tasks live in
+   `swe-marathon/tasks/<name>/task.toml`).
+2. Confirm the agent+model are **routed** in `oddish/src/oddish/config.py` and
+   `oddish/src/oddish/workers/harbor/agent_config.py`. A new vendor needs: a
+   provider prefix + queue key (`is_*_model` / `to_*_model_id`), env injection
+   (`get_*_agent_env`), and network-allowlist coverage. Examples already wired:
+   `xai/` → `grok-build`; `meta/` → `mini-swe-agent` (LiteLLM `openai/` route).
+3. The vendor API key must be a **Modal secret with the exact env var name the
+   route reads** (e.g. `XAI_API_KEY`, `META_API_KEY`) and must be present in the
+   **worker** function's env (not just the API), then **deployed**. Symptom of a
+   missing/empty key: the agent fails fast (2 steps, 0 tokens) with the
+   provider SDK's "missing credentials" error. Note `resolve_env_vars` *raises*
+   `Environment variable 'X' not found` only when the var is entirely absent, so
+   a "missing credentials" error instead means the var exists but is empty or
+   isn't wired where the client reads it (e.g. LiteLLM's `openai/` provider reads
+   `OPENAI_API_KEY`, not a vendor-specific name).
+4. CLI points at hosted Oddish: `ODDISH_API_URL` + `ODDISH_API_KEY`.
+
+### 1. Categorize the 20 tasks
+
+From each `task.toml` `[environment]/[agent]/[verifier].network_mode` and the
+presence of a CUA verifier (`tests/cua*`):
+
+- **Closed-internet (7):** agent=`allowlist`, verifier=`no-network` —
+  `embedding-eval`, `kubernetes-rust-rewrite`, `nextjs-vite-rewrite`,
+  `parameter-golf`, `post-train-ifeval-gpu`, `trimul-cuda`, `zstd-decoder`.
+- **CUA verifier (4):** `excel-clone`, `mastodon-clone`, `s3-clone`,
+  `slack-clone` (browser-agent verifier on an Anthropic key).
+- **Open (9):** everything else (agent runs on public internet).
+
+### 2. Submit
+
+```bash
+oddish run -p <task-dir> --agent <agent> --model <provider/model> \
+  --n-trials <N> --experiment <exp-id-or-name> -e modal --json \
+  [--override-memory-mb <MB>] [--agent-kwarg k=v] [--ae ENV=VAL]
+```
+
+- Always `-e modal`. First `--experiment <name>` submission creates the
+  experiment; reuse the id (e.g. `a52b8b51`) afterwards.
+- `--ae ODDISH_EVAL_NONCE=$(date +%s%N)` is a harmless distinct env var.
+
+### 3. Load-bearing gotchas (each cost real debugging time)
+
+1. **Sweeps are TARGET-based, not incremental.** `--n-trials N` means "ensure N
+   total trials exist for this `(task, agent, model, experiment)`"; it creates
+   `N − existing`. Submitting `N ≤ existing` adds **0** (this — not idempotency —
+   is the usual reason a rerun shows `added=0`). To add more, raise `N` above the
+   current count, or delete some first. (There is also a real 24h idempotency
+   key = SHA-256 of the whole sweep payload; a different payload → different key.)
+
+2. **The Modal/Harbor fork cannot switch network policy between phases.** A
+   closed-internet task's intended `public` env → `allowlist` agent →
+   `no-network` verifier fails with *"cannot change network policy after start"*
+   (surfaces as a Harbor `ExceptionGroup`). **Fix:** copy the task dir and patch
+   `task.toml` so `[environment]`, `[agent]`, and `[verifier]` all use
+   `network_mode="allowlist"` with a single `allowed_hosts` list, then submit
+   `-p <patched-dir>`. Because setup now runs *under* the allowlist (not public),
+   `allowed_hosts` must include **every host the agent's install step needs**,
+   not just the model API:
+   - model API host (e.g. `api.x.ai`, `api.ai.meta.com`) + object storage
+     (`storage.googleapis.com`),
+   - tool install: `astral.sh`, `github.com`, `objects.githubusercontent.com`,
+     `raw.githubusercontent.com`, `pypi.org`, `files.pythonhosted.org`,
+   - apt (some base images `apt-get install` prereqs): `deb.debian.org`,
+     `security.debian.org`, `archive.ubuntu.com`, `security.ubuntu.com`.
+   Missing install hosts show up as agent-setup `exit 100` (apt) / `exit 2` (uv).
+
+3. **OOM (`exit 137`).** High reasoning effort (e.g. `reasoning_effort=xhigh`) +
+   heavy build/test/training commands blow past default RAM → container
+   OOM-killed. It surfaces as a job `status=success` with `reward=0` and an
+   `error_message` of `Command failed (exit 137)`. **Fix:** bump memory, e.g.
+   `--override-memory-mb 98304` (96 GB) — this eliminated the 137s. Note a task's
+   own `task.toml` default (even 64 GB) can be too low under `xhigh`.
+
+4. **Agent self-kill (`exit 143`).** `mini-swe-agent` runs `pkill -f <keyword>`
+   to restart servers/processes it launches (`pkill -f vite`, `pkill -f rj-rust`,
+   `pkill -f train_gpt.py`). Harbor put the **task prompt on argv**
+   (`mini-swe-agent --task='<prompt>'`), and the prompt text contains those
+   keywords, so `pkill -f` matched the agent's own process → SIGTERM → `exit
+   143`, heavily on server/build tasks. **Fixed in the meta route (PR #691):**
+   deliver the task via the mini-swe-agent config (`run.task`) and strip `--task`
+   from argv, so the prompt is no longer on the cmdline. General lesson: any
+   agent that shells out `pkill/kill` can self-terminate; keep the prompt off
+   argv.
+
+5. **Classify by underlying error, not job status.** Infra failures (137/143/1)
+   frequently show as `status=success, reward=0` with a populated
+   `error_message`. Always audit `error_message`; treat `AgentTimeoutError` /
+   `VerifierTimeoutError` as acceptable and everything else (`Command failed
+   (exit N)`, `ExceptionGroup`) as infra to delete + rerun.
+
+6. **CUA verifiers.** Throttle to **≤ ~10 concurrent** CUA trials so the browser
+   verifier (Anthropic key) isn't overloaded; confirm the verifier ran cleanly on
+   the first CUA completion before scaling. Beware: if the shared platform
+   `ANTHROPIC_API_KEY` is quota-capped, CUA verifiers fail independently of the
+   agent.
+
+7. **Per-vendor routing / knobs.**
+   - `grok-build` (xAI): pass `--agent-kwarg api_backend=chat_completions` when
+     the model only serves `/v1/chat/completions`; grok's rich trajectory comes
+     from its on-disk session store (captured by the Oddish wrapper), not the
+     headless stream.
+   - `claude-code`: routes to the direct Anthropic API vs Bedrock via
+     `settings.claude_code_force_direct_api` / `ODDISH_CLAUDE_CODE_FORCE_DIRECT_API`
+     (a worker/deploy env var, not a CLI flag). Bedrock creds must actually work.
+   - `mini-swe-agent` + `meta/`: LiteLLM `openai/` provider → needs
+     `OPENAI_API_KEY` (surfaced from `${META_API_KEY}`); `reasoning_effort=xhigh`
+     via `--agent-kwarg` (forwarded as `model.model_kwargs.extra_body.reasoning_effort`).
+   - Vendor guides often say "keep sampling params default" — honor that except
+     for a param you're explicitly asked to set (e.g. `reasoning_effort`). The
+     required `x-session-id` header is set by the meta route automatically.
+
+### 4. Workflow (breadth → depth → babysit)
+
+1. **Validate** with 1 trial each on a representative open / patched-closed-net /
+   CUA task. Confirm: auth works (tokens climbing), trajectory captured,
+   closed-net setup succeeds, CUA verifier runs.
+2. **Breadth** across all 20 at a small N.
+3. **Depth:** raise the target to ≥5 with **buffer** (e.g. 8 for non-CUA) since
+   some infra is stochastic.
+4. **Babysit loop:** audit by underlying error → `oddish delete -t <id> …` the
+   infra trials → re-topup (raise target) → repeat until every task has ≥5 valid
+   and 0 infra. Prune over-provisioned tasks to exactly 5 (prefer `reward=1`, then
+   longer trajectories, excluding any infra).
+
+### 5. Monitor / audit
+
+- `oddish status <task_id> --json` → per trial: `status`, `reward`,
+  `total_steps`, `has_trajectory`, `input/output/cache_tokens`, `cost_usd`,
+  `error_message`, `jobs[].attempts`, `task_version`, `experiment_id`.
+- `oddish pull <trial_id> --logs --files [--structured]` → verify the ATIF
+  `trajectory.json` has steps with `tool_calls` + `observation` + token
+  `metrics`, plus `verifier/reward.txt` and `verifier/metrics.json`.
+- `oddish cancel <task_id>` stops in-flight; `oddish delete -t <id> …`
+  (admin) removes trials (soft delete).
+
+### 6. Export to the SWE-Marathon logs bucket (`ralphbench-logs`)
+
+`scripts/read-swe-marathon-logs.py` (in `swe-marathon`) documents the layout.
+Bucket `ralphbench-logs` (region `us-west-2`); per task:
+`<task>/_manifest.json` + `<task>/<trial_id>/{config.json, result.json,
+<source_trial_name>/{agent/, verifier/}}` where `source_trial_name` is the
+**completed** attempt dir (the one with `verifier/reward.txt`).
+
+- **Merge** into the existing `_manifest.json` (never overwrite): add each trial
+  under `trials` (`agent`, `model`, `provider`, `origin`, `reward`, tokens,
+  `cost_usd`, `started/finished_at`, `task_version_id`, `source_trial_name`,
+  `artifact_layout="harbor-nested"`, `artifact_prefix`), then update `n_trials`,
+  `pair_counts` (`"agent|model"`), `n_pass`, `task_versions`, and append a `note`.
+- Store the **public** model name if the eval used an internal codename
+  (relabel every text file, e.g. `xai/v9-stickynote` → `grok-4.5`; scan all
+  uploaded files afterward to confirm no codename leaked).
+- A brand-new task gets its **own prefix + fresh manifest** — do not merge into a
+  superseded task's prefix.
+- Match existing conventions: models are `provider/model`; `nop`/`oracle`
+  baselines use `model="default"`, `provider="default"`, `has_trajectory=false`.
+- The AWS creds for this bucket are short-lived STS (~1h) — persist to an env
+  file, verify with `sts get-caller-identity`, and expect to refresh mid-upload
+  on large exports. `boto3` is available in the `oddish` venv (no `aws` CLI
+  needed).
