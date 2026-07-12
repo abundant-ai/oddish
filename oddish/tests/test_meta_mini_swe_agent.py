@@ -157,6 +157,29 @@ async def test_meta_mini_swe_agent_task_extraction_robust_to_flags_in_prompt(tmp
     assert "--output=/logs/agent/mini-swe-agent.trajectory.json" in run_command
 
 
+@pytest.mark.asyncio
+async def test_meta_mini_swe_agent_install_adds_litellm_proxy_extras(tmp_path):
+    commands: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append(command)
+            return SimpleNamespace(return_code=0, stdout="mini-swe-agent, 2.4.5", stderr="")
+
+    agent = OddishMetaMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="meta/llama-eval-model",
+        extra_env={"MSWEA_API_KEY": "meta-test-key"},
+    )
+
+    await agent.install(_FakeEnvironment())
+
+    # litellm's proxy extras must be pulled into the tool venv so the
+    # tool-calling completion path can import fastapi/orjson/...
+    assert any("uv tool install mini-swe-agent" in c for c in commands)
+    assert any("litellm[proxy]" in c for c in commands)
+
+
 def test_meta_mini_swe_agent_allowlists_custom_base_url(monkeypatch):
     monkeypatch.setattr(
         "oddish.workers.agents.mini_swe_agent.settings.meta_base_url",
