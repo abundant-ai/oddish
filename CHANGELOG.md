@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-12]
+
+### Added
+
+- Meta-hosted `mini-swe-agent` eval routing: a new `meta/<model>` provider/queue bucket routes through an Oddish wrapper that injects Meta's `x-session-id` header, points LiteLLM at Meta's OpenAI-compatible endpoint, and no longer strips `--agent-kwarg reasoning_effort=...` — callers can now request a specific reasoning effort (e.g. `xhigh`), which the harness forwards to the model via `model.model_kwargs.extra_body.reasoning_effort` (#680, #686).
+- GKE (TPU) execution backend can now be enabled in production without a `backend/.env`: a deploy-time `ODDISH_GKE_ENABLED` flag delivers the `ODDISH_GKE_*` cluster/registry coordinates through the existing `oddish-gcp` Modal secret (the plan is baked into an image file so a runtime secret injection can't drift Modal's dependency count into a hydration crashloop), and the flag is now set for the main deploy — GKE is routable by any authenticated user via `--env gke` or CI, with no per-org access gate (#672, #681).
+- New `GET /experiments/{id}/cost-totals` endpoint computes each experiment's true spend server-side — every trial that ran under it, including all task versions, superseded retries, probes, and soft-deleted trials, grouped by `(agent, model, billed)` and priced exactly — so the experiment page's Cost and Billed-spend tiles are correct on first paint instead of reflecting only the currently-loaded (paged) trial rows (#689).
+
+### Changed
+
+- Removing a task from an experiment's trial table now calls a scoped `DELETE /experiments/{id}/tasks/{task_id}` unlink endpoint instead of deleting the task outright, preserving the task and its other experiment memberships even when this was its last link to the experiment; the UI action and confirmation copy are renamed from "delete" to "unlink" accordingly (#677).
+
+### Fixed
+
+- Meta mini-swe-agent evals no longer fail immediately with a LiteLLM "Missing credentials" error: `OPENAI_API_KEY` (aliased to `${META_API_KEY}`) is now set alongside `MSWEA_API_KEY`, since LiteLLM's `openai/` provider — which mini-swe-agent uses to reach Meta's OpenAI-compatible endpoint — authenticates from that variable (#682).
+- GKE worker file transfers (used by Codex and Claude Code agents) no longer fail: the pinned `harbor-gke` commit was bumped twice in prod, first for a WebSocket v4-subprotocol exec/cp fix, then for a binary tar-stream read fix (#684, #685).
+
+---
+
 ## [2026-07-07]
 
 ### Changed
