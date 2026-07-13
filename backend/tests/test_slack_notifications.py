@@ -907,9 +907,7 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
 
     try:
         alerts = await load_alerts(now)
-        assert [alert.key for alert in alerts] == [
-            f"experiment-failed:{finished_id}"
-        ]
+        assert [alert.key for alert in alerts] == [f"experiment-failed:{finished_id}"]
         alert = alerts[0]
         assert alert.dm_only
         assert alert.recipient_email == "failed-owner@example.com"

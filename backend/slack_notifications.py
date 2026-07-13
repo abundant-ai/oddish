@@ -253,8 +253,7 @@ def build_alerts(
         if failed.failed_trials < failed.total_trials * experiment_failed_ratio:
             continue
         experiment_url = (
-            f"{dashboard_url}/experiments/"
-            f"{quote(quote(failed.id, safe=''), safe='')}"
+            f"{dashboard_url}/experiments/{quote(quote(failed.id, safe=''), safe='')}"
         )
         alerts.append(
             SlackAlert(
@@ -522,9 +521,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         trial_average_multiplier=_env_float("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2),
         unpriced_models=unpriced_models,
         failed_experiments=failed_experiments,
-        experiment_failed_ratio=_env_float(
-            "ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", 0.5
-        ),
+        experiment_failed_ratio=_env_float("ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", 0.5),
     )
 
 
