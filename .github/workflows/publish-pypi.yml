@@ -33,10 +33,14 @@ jobs:
       - name: Smoke-test wheel
         run: |
           uv venv --python 3.13 /tmp/oddish-release
-          uv pip install --python /tmp/oddish-release/bin/python oddish/dist/*.whl
+          WHEEL="$(find oddish/dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv pip install --python /tmp/oddish-release/bin/python "$WHEEL"
+          /tmp/oddish-release/bin/python -c 'import importlib.metadata, oddish; assert oddish.__version__ == importlib.metadata.version("oddish")'
           for command in run status pull cancel; do
             /tmp/oddish-release/bin/oddish "$command" --help >/dev/null
           done
+          uv pip install --python /tmp/oddish-release/bin/python "${WHEEL}[worker]"
+          /tmp/oddish-release/bin/python -c 'from oddish.workers.agents.codex import AzureCompatibleCodex; from oddish.workers.agents.grok_build import OddishGrokBuild; from oddish.workers.agents.mini_swe_agent import OddishMetaMiniSweAgent; assert OddishGrokBuild.SUPPORTS_ATIF'
 
       - uses: actions/upload-artifact@v4
         with:

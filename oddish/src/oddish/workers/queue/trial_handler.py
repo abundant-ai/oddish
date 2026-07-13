@@ -193,7 +193,7 @@ def _is_agent_timeout_error_message(error: str | None) -> bool:
 # first attempt.
 _NON_RETRYABLE_EXCEPTION_TYPES: frozenset[str] = frozenset(
     RetryConfig.model_fields["exclude_exceptions"].default_factory() or set()
-) | {HarborOverrideImportError.__name__}
+) | {"AddTestsDirError", HarborOverrideImportError.__name__}
 
 
 def _is_non_retryable_outcome(outcome: HarborOutcome | None) -> bool:

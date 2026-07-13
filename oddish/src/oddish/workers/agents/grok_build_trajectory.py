@@ -5,10 +5,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from harbor.models.trajectories.agent import Agent
-from harbor.models.trajectories.final_metrics import FinalMetrics
-from harbor.models.trajectories.step import Step
-from harbor.models.trajectories.trajectory import Trajectory
+from harbor.models.trajectories import (
+    Agent,
+    FinalMetrics,
+    Observation,
+    ObservationResult,
+    Step,
+    ToolCall,
+    Trajectory,
+)
 from harbor.utils.trajectory_utils import format_trajectory_json
 
 
@@ -54,7 +59,7 @@ def parse_grok_build_payloads(text: str) -> list[dict[str, Any]]:
 
 
 def _event_text(event: dict[str, Any]) -> str:
-    for key in ("data", "text", "content", "message"):
+    for key in ("data", "text", "content", "message", "output"):
         value = event.get(key)
         if isinstance(value, str):
             return value
@@ -187,6 +192,98 @@ def convert_grok_build_payloads_to_trajectory(
             session_id = session_id or _first_string(
                 [payload], "sessionId", "session_id"
             )
+            continue
+
+        if event_type in {"tool_call", "function_call", "custom_tool_call"}:
+            reasoning_content = None
+            if current_type == "thought":
+                reasoning_content = "".join(current_parts).strip() or None
+                current_type = None
+                current_parts = []
+            else:
+                flush()
+            raw_arguments = (
+                payload.get("arguments")
+                or payload.get("args")
+                or payload.get("input")
+                or {}
+            )
+            if isinstance(raw_arguments, str):
+                try:
+                    parsed_arguments = json.loads(raw_arguments)
+                except json.JSONDecodeError:
+                    parsed_arguments = {"value": raw_arguments}
+            elif isinstance(raw_arguments, dict):
+                parsed_arguments = raw_arguments
+            else:
+                parsed_arguments = {"value": raw_arguments}
+            call_id = str(
+                payload.get("id")
+                or payload.get("call_id")
+                or payload.get("tool_call_id")
+                or f"tool-call-{len(steps) + 1}"
+            )
+            function_name = str(
+                payload.get("name")
+                or payload.get("tool_name")
+                or payload.get("function_name")
+                or "tool"
+            )
+            steps.append(
+                Step(
+                    step_id=len(steps) + 1,
+                    source="agent",
+                    model_name=resolved_model or model_name,
+                    message=function_name,
+                    reasoning_content=reasoning_content,
+                    tool_calls=[
+                        ToolCall(
+                            tool_call_id=call_id,
+                            function_name=function_name,
+                            arguments=parsed_arguments,
+                        )
+                    ],
+                    llm_call_count=1,
+                    extra={"source": "grok_build_json", "type": event_type},
+                )
+            )
+            continue
+
+        if event_type in {
+            "tool_result",
+            "function_call_output",
+            "custom_tool_call_output",
+        }:
+            flush()
+            content = _event_text(payload)
+            if content:
+                source_call_id = (
+                    payload.get("tool_call_id")
+                    or payload.get("call_id")
+                    or payload.get("id")
+                )
+                steps.append(
+                    Step(
+                        step_id=len(steps) + 1,
+                        source="agent",
+                        model_name=resolved_model or model_name,
+                        message=content,
+                        llm_call_count=0,
+                        observation=Observation(
+                            results=[
+                                ObservationResult(
+                                    source_call_id=None,
+                                    content=content,
+                                )
+                            ]
+                        ),
+                        extra={
+                            "source": "grok_build_json",
+                            "type": event_type,
+                            "source_call_id": source_call_id,
+                        },
+                    )
+                )
             continue
 
         flush()

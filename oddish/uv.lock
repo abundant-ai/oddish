@@ -7,6 +7,9 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "harbor", git = "https://github.com/rishidesai/harbor?branch=main" }]
+
 [[package]]
 name = "aioboto3"
 version = "15.5.0"

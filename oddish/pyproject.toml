@@ -39,11 +39,10 @@ dependencies = [
     "pydantic-settings==2.12.0",
     # Envelope encryption for per-run registry credentials (oddish.registry_auth)
     "cryptography>=42",
-    # Harbor (task models, agent config, dataset handling).
-    # Installed from the rishidesai/harbor fork's main branch via
-    # [tool.uv.sources] below.  When bumping, run
-    # ``uv lock --upgrade-package harbor`` to refresh the pinned commit.
-    "harbor",
+    # Harbor (task models, agent config, dataset handling). Published wheels
+    # resolve this PyPI release; local and hosted development intentionally
+    # override it with the rishidesai/harbor fork below.
+    "harbor==0.18.0",
     # JSON Schema validation (result_focus structured-output schema checks).
     "jsonschema>=4.0",
     # Source-of-truth pricing table (`litellm.model_cost`) covering ~2,700
@@ -113,6 +112,9 @@ oddish-docstore-mcp = "oddish.mcp.docstore_server:main"
 
 [tool.uv.sources]
 harbor = { git = "https://github.com/rishidesai/harbor", branch = "main" }
+
+[tool.uv]
+override-dependencies = ["harbor==0.15.0"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [".git", "uv.lock"]
