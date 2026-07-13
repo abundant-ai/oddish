@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-13]
+
+### Fixed
+
+- Meta `mini-swe-agent` trials no longer die with exit 143 (SIGTERM) on server/build/training tasks: the task prompt is now delivered via the agent's `-c` config file (`run.task`, valid as JSON-in-YAML) instead of on the `--task=` command-line argument, which the agent's own `pkill -f <keyword>` restarts (e.g. `pkill -f vite`, `pkill -f train_gpt.py`) were inadvertently matching against its own process cmdline. Task extraction from the command line is quote-aware so prompts containing flag-like text (e.g. `--output=`) or embedded quotes are excised correctly (#691).
+- Meta `mini-swe-agent` trials no longer fail immediately with `ModuleNotFoundError: No module named 'fastapi'` from `litellm.completion()`: `OddishMetaMiniSweAgent.install()` now reinstalls the tool with `--with 'litellm[proxy]'`, pulling in `fastapi`/`orjson` and other proxy/MCP-handler dependencies that recent `litellm` versions lazily import on the tool-calling completion path (#693).
+
+---
+
 ## [2026-07-07]
 
 ### Changed
