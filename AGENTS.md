@@ -145,7 +145,9 @@ High-level flow:
    inflight for quotas and `/live`. Claude assistant deltas and tool blocks carry
    a hashed `turn_id` in their event payload so clients can distinguish streamed
    suffixes from a new no-tool assistant turn without exposing provider message
-   identifiers.
+   identifiers. Claude message payloads also carry a `block_index` and
+   `text_mode` (`append` or `replace`) so clients can assemble corrected text
+   snapshots without concatenating stale content.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, and trajectory availability. Use the CLI or dashboard

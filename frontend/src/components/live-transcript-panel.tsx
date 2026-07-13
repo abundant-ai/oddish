@@ -116,6 +116,41 @@ function turnId(event: LiveEvent): string | null {
     : null;
 }
 
+function sameMessageBlock(
+  event: LiveEvent,
+  id: string,
+  blockIndex: unknown
+): boolean {
+  return (
+    event.kind === "message" &&
+    turnId(event) === id &&
+    event.payload.block_index === blockIndex
+  );
+}
+
+function updateMessageBlock(previous: LiveEvent, next: LiveEvent): LiveEvent {
+  if (next.payload.text_mode === "replace") {
+    return { ...next, seq: previous.seq };
+  }
+  const previousText =
+    typeof previous.payload.text === "string" ? previous.payload.text : "";
+  const nextText =
+    typeof next.payload.text === "string" ? next.payload.text : "";
+  return {
+    ...previous,
+    payload: {
+      ...previous.payload,
+      ...next.payload,
+      text: previousText + nextText,
+      text_mode: "replace",
+      sanitized:
+        previous.payload.sanitized === true || next.payload.sanitized === true,
+      truncated:
+        previous.payload.truncated === true || next.payload.truncated === true,
+    },
+  };
+}
+
 function groupSteps(events: LiveEvent[]): LiveStep[] {
   const steps: LiveStep[] = [];
   let current: LiveStep | null = null;
@@ -134,6 +169,21 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
       // Claude live-tail tags suffixes and tool blocks from one assistant
       // message with the same opaque turn id. Missing ids stay conservative.
       if (id && current?.events.some((event) => turnId(event) === id)) {
+        if (
+          ev.payload.text_mode === "append" ||
+          ev.payload.text_mode === "replace"
+        ) {
+          const priorIndex = current.events.findIndex((event) =>
+            sameMessageBlock(event, id, ev.payload.block_index)
+          );
+          if (priorIndex >= 0) {
+            current.events[priorIndex] = updateMessageBlock(
+              current.events[priorIndex],
+              ev
+            );
+            continue;
+          }
+        }
         current.events.push(ev);
         continue;
       }

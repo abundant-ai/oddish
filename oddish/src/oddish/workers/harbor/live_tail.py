@@ -259,7 +259,9 @@ class ClaudeUsageFold:
             prior = (
                 previous[supported_index] if supported_index < len(previous) else None
             )
-            rendered.extend(self._render_block_delta(block, state, prior))
+            rendered.extend(
+                self._render_block_delta(block, state, prior, supported_index)
+            )
             current.append(state)
         self.rendered_blocks_by_id[msg_id] = current
         return _with_turn_id(rendered, msg_id)
@@ -285,9 +287,11 @@ class ClaudeUsageFold:
         block: dict[str, Any],
         state: dict[str, Any],
         prior: dict[str, Any] | None,
+        block_index: int,
     ) -> list[dict[str, Any]]:
         if state["type"] == "text":
             text = state["text"]
+            text_mode = "replace"
             prior_text = (
                 prior.get("text")
                 if prior is not None and prior.get("type") == "text"
@@ -297,7 +301,20 @@ class ClaudeUsageFold:
                 return []
             if isinstance(prior_text, str) and text.startswith(prior_text):
                 text = text[len(prior_text) :]
-            return [_event("message", "text", text)] if text else []
+                text_mode = "append"
+            return (
+                [
+                    _event(
+                        "message",
+                        "text",
+                        text,
+                        block_index=block_index,
+                        text_mode=text_mode,
+                    )
+                ]
+                if text
+                else []
+            )
         if (
             prior is not None
             and prior.get("type") == "tool_use"

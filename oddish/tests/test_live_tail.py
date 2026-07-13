@@ -36,6 +36,9 @@ def with_turn_id(msg_id, events):
     turn_id = hashlib.sha256(msg_id.encode()).hexdigest()
     for event in events:
         event["payload"]["turn_id"] = turn_id
+        if event["kind"] == "message":
+            event["payload"].setdefault("block_index", 0)
+            event["payload"].setdefault("text_mode", "replace")
     return events
 
 
@@ -100,7 +103,15 @@ def test_claude_fold_emits_only_growing_text_suffix():
             {"input_tokens": 1},
             content=[{"type": "text", "text": "hello world"}],
         )
-    ) == with_turn_id("msg_1", [{"kind": "message", "payload": {"text": " world"}}])
+    ) == with_turn_id(
+        "msg_1",
+        [
+            {
+                "kind": "message",
+                "payload": {"text": " world", "text_mode": "append"},
+            }
+        ],
+    )
 
     assert fold.feed_line(
         assistant_line(
