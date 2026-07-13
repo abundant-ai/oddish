@@ -14,12 +14,14 @@ from oddish.db import (
 )
 from slack_notifications import (
     ExperimentCandidate,
+    FailedExperiment,
     SlackAlert,
     TrialSpend,
     UnpricedModel,
     build_alerts,
     load_alerts,
     send_alerts,
+    send_owner_dms,
     send_owner_emails,
 )
 
@@ -306,6 +308,83 @@ def test_build_alerts_ignores_old_trials() -> None:
     assert alerts == []
 
 
+def test_build_alerts_reports_failed_experiments_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        failed_experiments=[
+            FailedExperiment(
+                id="experiment/1",
+                name="Exp <One>",
+                owner="Pat & Sam",
+                failed_trials=3,
+                total_trials=4,
+                owner_email="owner@example.com",
+            )
+        ],
+    )
+
+    assert [alert.key for alert in alerts] == ["experiment-failed:experiment/1"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.email_subject is None
+    assert alert.text.splitlines() == [
+        ":x: *Experiment failed*",
+        "Title: *Exp &lt;One&gt;*",
+        "Failed trials: *3/4*",
+        "Owner: *Pat &amp; Sam*",
+        "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failed_trials", "total_trials", "expected"),
+    [
+        (0, 4, False),
+        (1, 4, False),
+        (2, 4, True),
+        (4, 4, True),
+        (0, 0, False),
+    ],
+)
+def test_build_alerts_failed_experiment_respects_ratio(
+    failed_trials: int,
+    total_trials: int,
+    expected: bool,
+) -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        failed_experiments=[
+            FailedExperiment(
+                id="experiment-1",
+                name="Experiment",
+                owner=None,
+                failed_trials=failed_trials,
+                total_trials=total_trials,
+            )
+        ],
+        experiment_failed_ratio=0.5,
+    )
+
+    assert bool(alerts) is expected
+
+
 @pytest.mark.asyncio
 async def test_send_alerts_claims_once_and_releases_failed_posts(
     monkeypatch: pytest.MonkeyPatch,
@@ -419,6 +498,117 @@ async def test_send_owner_emails_claims_per_recipient_and_releases_failures(
     ]
     assert sent == {"email:experiment:1:1000:owner@example.com"}
     assert "email:trial:2:70:2:owner@example.com" not in claimed
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_skips_dm_only_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[str] = []
+
+    async def claim(key: str) -> bool:
+        return True
+
+    async def mark_sent(key: str) -> None:
+        pass
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("experiment-failed:1", "dm only", dm_only=True),
+            SlackAlert("experiment:1:1000", "channel"),
+        ],
+    )
+
+    assert posted == ["channel"]
+
+
+@pytest.mark.asyncio
+async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    lookups: list[str] = []
+    posted: list[tuple[str, str]] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(key: str) -> None:
+        sent.add(key)
+
+    async def release(key: str) -> None:
+        claimed.remove(key)
+
+    async def lookup(_token: str, email: str) -> str | None:
+        lookups.append(email)
+        return None if email == "unknown@example.com" else "U123"
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        posted.append((slack_user_id, text))
+        if text == "fail":
+            raise RuntimeError("failed")
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    delivered = SlackAlert(
+        "experiment-failed:1",
+        "dm text",
+        recipient_email=" Owner@Example.com ",
+        dm_only=True,
+    )
+    await send_owner_dms("xoxb-token", [delivered])
+    await send_owner_dms("xoxb-token", [delivered])
+    await send_owner_dms(
+        "xoxb-token",
+        [
+            SlackAlert(
+                "experiment:1:1000",
+                "fail",
+                recipient_email="owner@example.com",
+            ),
+            SlackAlert(
+                "trial:2:70:2",
+                "cost dm",
+                recipient_email="owner@example.com",
+            ),
+            SlackAlert(
+                "experiment:2:1000",
+                "unmatched",
+                recipient_email="unknown@example.com",
+            ),
+            SlackAlert("unpriced:model", "admin-only Slack alert"),
+        ],
+    )
+
+    assert posted == [("U123", "dm text"), ("U123", "fail"), ("U123", "cost dm")]
+    assert lookups == [
+        "owner@example.com",
+        "owner@example.com",
+        "owner@example.com",
+        "unknown@example.com",
+    ]
+    assert sent == {
+        "dm:experiment-failed:1:owner@example.com",
+        "dm:trial:2:70:2:owner@example.com",
+    }
+    assert "dm:experiment:1:1000:owner@example.com" not in claimed
+    assert "dm:experiment:2:1000:unknown@example.com" not in claimed
 
 
 @pytest.mark.asyncio
@@ -637,6 +827,113 @@ async def test_load_alerts_reports_unpriced_model_without_candidate_experiment()
             await session.execute(
                 ExperimentModel.__table__.delete().where(
                     ExperimentModel.id == experiment_id
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_load_alerts_reports_finished_failed_experiments() -> None:
+    suffix = uuid4().hex[:12]
+    finished_id = f"slack-exp-failed-{suffix}"
+    running_id = f"slack-exp-running-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    org_id = f"slack-org-{suffix}"
+    user_id = f"slack-user-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    def trial(trial_id: str, experiment_id: str, status: TrialStatus) -> TrialModel:
+        return TrialModel(
+            id=trial_id,
+            name=trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            agent="claude-code",
+            provider="openai",
+            model="gpt-5.3",
+            queue_key="test",
+            status=status,
+            origin=TrialOrigin.ODDISH,
+            is_probe=False,
+            cost_usd=1,
+            finished_at=None if status == TrialStatus.QUEUED else now,
+        )
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Failed org", slug=org_id))
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email="failed-owner@example.com",
+                name="Failed Owner",
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=finished_id,
+                name="Failed experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=running_id,
+                name="Running experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                org_id=org_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+        session.add_all(
+            [
+                trial(f"{task_id}-failed-1", finished_id, TrialStatus.FAILED),
+                trial(f"{task_id}-failed-2", finished_id, TrialStatus.FAILED),
+                trial(f"{task_id}-success", finished_id, TrialStatus.SUCCESS),
+                trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
+                trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
+            ]
+        )
+
+    try:
+        alerts = await load_alerts(now)
+        assert [alert.key for alert in alerts] == [
+            f"experiment-failed:{finished_id}"
+        ]
+        alert = alerts[0]
+        assert alert.dm_only
+        assert alert.recipient_email == "failed-owner@example.com"
+        assert "Failed trials: *2/3*" in alert.text
+        assert "Title: *Failed experiment*" in alert.text
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_([finished_id, running_id])
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
                 )
             )
 

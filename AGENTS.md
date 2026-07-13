@@ -551,13 +551,18 @@ sweep):
    and contains no agent/LLM path. It is on by default for the production app
    and off by default on preview apps; a preview opts in by setting
    `ODDISH_ENABLE_SLACK_EXPENSE_NOTIFICATIONS=true` and providing either
-   `SLACK_EXPENSE_WEBHOOK_URL`, or both `RESEND_API_KEY` and
-   `ODDISH_EXPENSE_EMAIL_FROM`, optionally through a preview-only named secret
-   selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
+   `SLACK_EXPENSE_WEBHOOK_URL`, both `RESEND_API_KEY` and
+   `ODDISH_EXPENSE_EMAIL_FROM`, or `SLACK_ALERT_BOT_TOKEN`, optionally through
+   a preview-only named secret selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
    Email alerts go only to active attributed experiment owners, resolved through
    `experiments.owner_user_id -> users.email`; unpriceable-model alerts remain
-   Slack-only. Slack and email use independent idempotency claims so one delivery
-   channel cannot suppress or retry the other.
+   Slack-only. With `SLACK_ALERT_BOT_TOKEN` set, owner-directed alerts are also
+   DMed to the owner's Slack account, resolved from the owner email via
+   `users.lookupByEmail`, and a DM-only alert fires when a finished experiment
+   (no active trials, a trial finished recently) has at least
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED.
+   Webhook, email, and DM use independent idempotency claims so one delivery
+   channel cannot suppress or retry another.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks
