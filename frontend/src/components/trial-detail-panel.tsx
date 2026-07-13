@@ -71,6 +71,7 @@ import { HarborStageBadge } from "@/components/harbor-stage-badge";
 import { LiveTranscriptPanel } from "@/components/live-transcript-panel";
 import { QueueKeyIcon } from "@/components/queue-key-icon";
 import { StatusIcon } from "@/components/status-icon";
+import { VerifierResultsCard } from "@/components/verifier-results-card";
 
 const TaskFilesPanel = dynamic(
   () =>
@@ -1004,6 +1005,15 @@ export function TrialDetailPanel({
                   </CardContent>
                 </Card>
               )}
+              <VerifierResultsCard
+                trial={trial}
+                apiBaseUrl={apiBaseUrl}
+                enabled={isOpen}
+                onViewFile={(path) => {
+                  setFilesTargetPath(path);
+                  setActiveTab("files");
+                }}
+              />
               {/* Analysis Card - only show if analysis is enabled/running/complete */}
               {showAnalysis && (trial.analysis_status || trial.analysis) && (
                 <Card
@@ -1020,6 +1030,9 @@ export function TrialDetailPanel({
                   }
                 >
                   <CardContent className="px-4 py-3">
+                    <div className="text-muted-foreground mb-2 text-[11px] font-semibold tracking-wider uppercase">
+                      QA Assessment
+                    </div>
                     <div className="flex items-start gap-3">
                       {trial.analysis_status === "running" ||
                       trial.analysis_status === "pending" ||

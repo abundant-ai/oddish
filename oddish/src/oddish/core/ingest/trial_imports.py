@@ -268,6 +268,7 @@ async def initialize_trial_import(
             max_attempts=1,
             harbor_stage=trial_spec.harbor_stage or "completed",
             reward=trial_spec.reward,
+            result=trial_spec.result,
             error_message=trial_spec.error_message,
             input_tokens=trial_spec.input_tokens,
             cache_tokens=trial_spec.cache_tokens,
