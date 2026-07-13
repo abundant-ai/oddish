@@ -28,6 +28,9 @@ jobs:
       MODAL_ENVIRONMENT: main
       # Hold LLM trials until a task's nop/oracle baselines validate it.
       ODDISH_GATE_LLM_ON_BASELINES: "1"
+      # Enable the GKE (TPU) execution backend in prod; coordinates + SA
+      # creds ride in the oddish-gcp secret, attached only when this is set.
+      ODDISH_GKE_ENABLED: "true"
       # Point uv at the .venv pre-built into the base image.  `uv sync
       # --frozen` then validates that venv against the current lockfile
       # and only patches the editable oddish path — typically a no-op

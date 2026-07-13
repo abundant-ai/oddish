@@ -516,6 +516,42 @@ def to_xai_model_id(model: str | None) -> str | None:
     return f"{XAI_PROVIDER}/{xai_bare_model_id(model)}"
 
 
+# Meta-hosted OpenAI-compatible model routing. These models run through Harbor's
+# mini-swe-agent harness, but need a distinct provider/queue bucket and Meta API
+# env shape rather than Oddish's Azure/OpenAI-family defaults.
+META_PROVIDER = "meta"
+META_DEFAULT_BASE_URL = "https://api.ai.meta.com/v1"
+_META_PROVIDER_PREFIXES: frozenset[str] = frozenset({"meta"})
+
+
+def is_meta_model(model: str | None) -> bool:
+    """Return True when *model* explicitly selects Meta's OpenAI-compatible API."""
+    if not model:
+        return False
+    raw = model.strip().lower()
+    if not raw:
+        return False
+    provider_prefix, _ = split_provider_model_name(raw)
+    return bool(provider_prefix and provider_prefix in _META_PROVIDER_PREFIXES)
+
+
+def meta_bare_model_id(model: str) -> str:
+    """Strip a ``meta/`` prefix, returning the bare Meta model id."""
+    raw = model.strip()
+    provider_prefix, bare = split_provider_model_name(raw)
+    if provider_prefix and provider_prefix.strip().lower() in _META_PROVIDER_PREFIXES:
+        return str(bare).strip()
+    return raw
+
+
+def to_meta_model_id(model: str | None) -> str | None:
+    """Canonicalize a Meta model reference to ``meta/<bare-id>``."""
+    if not is_meta_model(model):
+        return model
+    assert model is not None
+    return f"{META_PROVIDER}/{meta_bare_model_id(model)}"
+
+
 def looks_like_bedrock_model_id(model: str | None) -> bool:
     """Return True if *model* is a Bedrock-style id that should route through AWS.
 
@@ -815,6 +851,8 @@ _MODEL_PROVIDER_ALIASES: dict[str, str] = {
     # Build gets a stable first-party provider bucket.
     "xai": XAI_PROVIDER,
     "grok": XAI_PROVIDER,
+    # Meta OpenAI-compatible relay for mini-swe-agent evals.
+    "meta": META_PROVIDER,
 }
 
 
@@ -1204,6 +1242,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     gemini_api_key: str | None = Field(default=None, alias="GEMINI_API_KEY")
+    meta_api_key: str | None = Field(default=None, alias="META_API_KEY")
+    meta_base_url: str = Field(default=META_DEFAULT_BASE_URL, alias="META_BASE_URL")
+    meta_eval_name: str | None = Field(default=None, alias="ODDISH_META_EVAL_NAME")
+    meta_session_id: str | None = Field(default=None, alias="ODDISH_META_SESSION_ID")
     azure_openai_api_key: str | None = Field(default=None, alias="AZURE_OPENAI_API_KEY")
     azure_openai_endpoint: str | None = Field(
         default=None, alias="AZURE_OPENAI_ENDPOINT"
@@ -1353,6 +1395,8 @@ class Settings(BaseSettings):
         # bare-id direct-provider routes below.
         if is_fireworks_model(cleaned):
             return to_fireworks_model_id(cleaned)
+        if is_meta_model(cleaned):
+            return to_meta_model_id(cleaned)
         if is_xai_model(cleaned):
             return to_xai_model_id(cleaned)
         if is_zai_model(cleaned):
@@ -1611,6 +1655,25 @@ class Settings(BaseSettings):
             "OPENAI_API_VERSION": azure["api_version"],
             "OPENAI_API_TYPE": "azure",
         }
+
+    def get_meta_agent_env(self) -> dict[str, str]:
+        """Return env vars for Meta's OpenAI-compatible mini-swe-agent route."""
+        base_url = (self.meta_base_url or META_DEFAULT_BASE_URL).rstrip("/")
+        # mini-swe-agent drives the model through LiteLLM's ``openai/`` provider
+        # (see OddishMetaMiniSweAgent._litellm_model_name), which authenticates
+        # from OPENAI_API_KEY. MSWEA_API_KEY alone does not reach the provider,
+        # so surface the Meta key under OPENAI_API_KEY too (resolved at runtime
+        # from ${META_API_KEY}, never persisted).
+        env = {
+            "MSWEA_API_KEY": "${META_API_KEY}",
+            "OPENAI_API_KEY": "${META_API_KEY}",
+            "OPENAI_BASE_URL": base_url,
+        }
+        if self.meta_eval_name:
+            env["ODDISH_META_EVAL_NAME"] = self.meta_eval_name
+        if self.meta_session_id:
+            env["ODDISH_META_SESSION_ID"] = self.meta_session_id
+        return env
 
 
 settings = Settings()

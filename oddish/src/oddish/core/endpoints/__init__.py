@@ -48,6 +48,7 @@ from oddish.core.endpoints.task_detail import (
     get_task_version_core,
     list_task_versions_core,
 )
+from oddish.core.endpoints.experiment_cost import get_experiment_cost_totals
 from oddish.core.endpoints.tasks_query import (
     _build_browse_author_filter,
     _task_freetext_match,
@@ -87,6 +88,7 @@ __all__ = [
     "delete_experiment_core",
     "delete_task_core",
     "delete_trial_core",
+    "get_experiment_cost_totals",
     "get_task_detail_core",
     "get_task_for_org_core",
     "get_task_status_core",
