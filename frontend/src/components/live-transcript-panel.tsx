@@ -148,11 +148,12 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
 }
 
 function stepPreview(step: LiveStep): string | null {
-  const message = step.events.find((event) => event.kind === "message");
-  if (message) {
-    const text = safeText(message.payload.text).text.trim();
-    if (text) return text.split("\n")[0].slice(0, 80);
-  }
+  const text = step.events
+    .filter((event) => event.kind === "message")
+    .map((event) => safeText(event.payload.text).text)
+    .join("")
+    .trim();
+  if (text) return text.split("\n")[0].slice(0, 80);
   const firstTool = step.events.find((e) => e.kind === "tool_use");
   if (firstTool) return safeText(firstTool.payload.name).text || "tool";
   return null;
@@ -184,19 +185,17 @@ function markers(
 }
 
 function LiveMessage({ events }: { events: LiveEvent[] }) {
+  const parts = events.map((event) => safeText(event.payload.text));
+  const text = parts.map((part) => part.text).join("");
+  const truncated = events.some((event) => event.payload.truncated === true);
+  const sanitized =
+    events.some((event) => event.payload.sanitized === true) ||
+    parts.some((part) => part.changed);
   return (
     <div className="text-sm wrap-break-word whitespace-pre-wrap">
-      {events.map((event) => {
-        const text = safeText(event.payload.text);
-        const sanitized = event.payload.sanitized === true || text.changed;
-        return (
-          <span key={event.seq}>
-            {text.text}
-            {event.payload.truncated ? " …" : ""}
-            {sanitized && <SanitizedBadge />}
-          </span>
-        );
-      })}
+      {text}
+      {truncated ? " …" : ""}
+      {sanitized && <SanitizedBadge />}
     </div>
   );
 }
