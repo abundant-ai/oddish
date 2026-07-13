@@ -60,6 +60,10 @@ function agentNotice(agent: string | null | undefined): string | null {
   return null;
 }
 
+function streamsMessageSuffixes(agent: string | null | undefined): boolean {
+  return (agent ?? "").toLowerCase().includes("claude");
+}
+
 function safeText(value: unknown): { text: string; changed: boolean } {
   if (typeof value !== "string") return { text: "", changed: false };
   let changed = false;
@@ -110,7 +114,10 @@ function prettyJson(text: string): string {
   }
 }
 
-function groupSteps(events: LiveEvent[]): LiveStep[] {
+function groupSteps(
+  events: LiveEvent[],
+  joinMessageSuffixes: boolean
+): LiveStep[] {
   const steps: LiveStep[] = [];
   let current: LiveStep | null = null;
   const flush = () => {
@@ -128,6 +135,7 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
       // A tool use can be interleaved with more text in the same response;
       // the tool result is the boundary before the next assistant turn.
       if (
+        joinMessageSuffixes &&
         current &&
         !current.events.some((event) => event.kind === "tool_result")
       ) {
@@ -330,7 +338,10 @@ export function LiveTranscriptPanel({
     };
   }, [trialId, apiBaseUrl]);
 
-  const steps = useMemo(() => groupSteps(events), [events]);
+  const steps = useMemo(
+    () => groupSteps(events, streamsMessageSuffixes(agent)),
+    [events, agent]
+  );
   const numbered = useMemo(() => {
     let n = 0;
     return steps.map((step) => ({
