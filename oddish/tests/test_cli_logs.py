@@ -69,6 +69,25 @@ def test_render_event_escapes_markup():
     assert _render_event(event(1, text="a [b] c")) == "a \\[b] c"
 
 
+def test_render_event_marks_sanitized_without_terminal_controls():
+    rendered = _render_event(
+        event(1, kind="tool_result", content="bad\x1b[31m", sanitized=True)
+    )
+    assert rendered is not None
+    assert "\x1b" not in rendered
+    assert "␛" in rendered
+    assert "sanitized" in rendered
+
+
+def test_render_event_marks_locally_sanitized_legacy_payload():
+    rendered = _render_event(event(1, kind="summary", text="legacy\x00\x1b"))
+    assert rendered is not None
+    assert "\x00" not in rendered
+    assert "\x1b" not in rendered
+    assert "legacy␀␛" in rendered
+    assert "sanitized" in rendered
+
+
 def test_single_shot_drains_pages_and_advances_cursor():
     seen, fetch, lines, sleeps = run(
         [
