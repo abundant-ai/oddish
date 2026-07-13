@@ -425,6 +425,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             .where(
                 TrialModel.deleted_at.is_(None),
                 TrialModel.finished_at >= recent_cutoff,
+                _real_spend_filter(),
             )
             .distinct()
         )
@@ -669,21 +670,18 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
         recipient = (alert.recipient_email or "").strip().lower()
         if not recipient:
             continue
-        if recipient not in slack_user_ids:
-            try:
-                slack_user_ids[recipient] = await _lookup_slack_user(
-                    bot_token, recipient
-                )
-            except Exception:
-                slack_user_ids[recipient] = None
-                log.exception("slack user lookup failed email=%s", recipient)
-        slack_user_id = slack_user_ids[recipient]
-        if not slack_user_id:
-            continue
         claim_key = f"dm:{alert.key}:{recipient}"
         if not await _claim_alert(claim_key):
             continue
         try:
+            if recipient not in slack_user_ids:
+                slack_user_ids[recipient] = await _lookup_slack_user(
+                    bot_token, recipient
+                )
+            slack_user_id = slack_user_ids[recipient]
+            if not slack_user_id:
+                await _release_alert(claim_key)
+                continue
             await _post_dm(bot_token, slack_user_id, alert.text)
         except Exception:
             await _release_alert(claim_key)

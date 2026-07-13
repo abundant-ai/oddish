@@ -597,8 +597,9 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
     )
 
     assert posted == [("U123", "dm text"), ("U123", "fail"), ("U123", "cost dm")]
+    # The second run never looks up the already-claimed alert: claims are
+    # checked before any Slack API call.
     assert lookups == [
-        "owner@example.com",
         "owner@example.com",
         "owner@example.com",
         "unknown@example.com",
@@ -836,12 +837,23 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
     suffix = uuid4().hex[:12]
     finished_id = f"slack-exp-failed-{suffix}"
     running_id = f"slack-exp-running-{suffix}"
+    stale_id = f"slack-exp-stale-{suffix}"
     task_id = f"slack-task-{suffix}"
     org_id = f"slack-org-{suffix}"
     user_id = f"slack-user-{suffix}"
     now = datetime.now(timezone.utc)
 
-    def trial(trial_id: str, experiment_id: str, status: TrialStatus) -> TrialModel:
+    def trial(
+        trial_id: str,
+        experiment_id: str,
+        status: TrialStatus,
+        *,
+        origin: TrialOrigin = TrialOrigin.ODDISH,
+        finished_at: datetime | None = None,
+        deleted_at: datetime | None = None,
+    ) -> TrialModel:
+        if finished_at is None and status != TrialStatus.QUEUED:
+            finished_at = now
         return TrialModel(
             id=trial_id,
             name=trial_id,
@@ -852,10 +864,11 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
             model="gpt-5.3",
             queue_key="test",
             status=status,
-            origin=TrialOrigin.ODDISH,
+            origin=origin,
             is_probe=False,
             cost_usd=1,
-            finished_at=None if status == TrialStatus.QUEUED else now,
+            finished_at=finished_at,
+            deleted_at=deleted_at,
         )
 
     async with get_session() as session:
@@ -887,6 +900,15 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
             )
         )
         session.add(
+            ExperimentModel(
+                id=stale_id,
+                name="Stale experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
             TaskModel(
                 id=task_id,
                 name=task_id,
@@ -900,8 +922,29 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
                 trial(f"{task_id}-failed-1", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-failed-2", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-success", finished_id, TrialStatus.SUCCESS),
+                # Soft-deleted failure must not count toward failed/total.
+                trial(
+                    f"{task_id}-deleted-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    deleted_at=now,
+                ),
                 trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
                 trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
+                # Old first-party failure: only an excluded imported trial
+                # finished recently, so the stale experiment must not alert.
+                trial(
+                    f"{task_id}-stale-failed",
+                    stale_id,
+                    TrialStatus.FAILED,
+                    finished_at=now - timedelta(hours=3),
+                ),
+                trial(
+                    f"{task_id}-stale-imported",
+                    stale_id,
+                    TrialStatus.SUCCESS,
+                    origin=TrialOrigin.IMPORTED,
+                ),
             ]
         )
 
@@ -923,7 +966,7 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
             )
             await session.execute(
                 ExperimentModel.__table__.delete().where(
-                    ExperimentModel.id.in_([finished_id, running_id])
+                    ExperimentModel.id.in_([finished_id, running_id, stale_id])
                 )
             )
             await session.execute(
