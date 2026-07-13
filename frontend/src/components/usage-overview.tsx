@@ -28,6 +28,7 @@ import type {
   ModelUsage,
   QueueStats,
 } from "@/lib/types";
+import { costEstimateMarks } from "@/lib/format";
 import { fetcher } from "@/lib/api";
 import {
   buildDashboardApiPath,
@@ -155,6 +156,21 @@ function formatCost(usd: number): string {
   return "$0";
 }
 
+// Prefix "~" when the whole amount is a token estimate and "*" when it mixes
+// native cost with an estimate, matching the markers used across the app
+// (experiment header, trials table). estimatedUsd is the estimated portion of
+// costUsd, so costUsd - estimatedUsd is the native portion.
+function formatCostWithEstimateMarks(
+  costUsd: number,
+  estimatedUsd: number,
+): string {
+  const marks = costEstimateMarks(
+    estimatedUsd > 0,
+    costUsd - estimatedUsd > 1e-9,
+  );
+  return `${marks.prefix}${formatCost(costUsd)}${marks.suffix}`;
+}
+
 function formatDuration(seconds: number | null): string {
   if (seconds === null) return "—";
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -197,6 +213,7 @@ type UsageRow = {
   outputTokens: number;
   cacheTokens: number;
   costUsd: number;
+  costEstimatedUsd: number;
   running: number;
   queued: number;
   retrying: number;
@@ -268,6 +285,7 @@ function buildUsageRows(
       outputTokens: usage.output_tokens,
       cacheTokens: usage.cache_tokens,
       costUsd: usage.cost_usd,
+      costEstimatedUsd: usage.cost_estimated_usd ?? 0,
       running:
         jobsForQueue?.running ??
         (queueStats ? Number(queueStats.running) || 0 : usage.running),
@@ -295,6 +313,7 @@ function buildUsageRows(
       outputTokens: 0,
       cacheTokens: 0,
       costUsd: 0,
+      costEstimatedUsd: 0,
       running: jobsForQueue.running,
       queued: jobsForQueue.queued,
       retrying: jobsForQueue.retrying,
@@ -317,6 +336,7 @@ function buildUsageRows(
       outputTokens: 0,
       cacheTokens: 0,
       costUsd: 0,
+      costEstimatedUsd: 0,
       running: Number(queueStats.running) || 0,
       queued: getQueueQueuedJobs(queueStats),
       retrying: Number(queueStats.retrying) || 0,
@@ -662,6 +682,7 @@ export function UsageOverviewCard({
           outputTokens: acc.outputTokens + row.outputTokens,
           cacheTokens: acc.cacheTokens + row.cacheTokens,
           cost: acc.cost + row.costUsd,
+          costEstimated: acc.costEstimated + row.costEstimatedUsd,
           running: acc.running + row.running,
           queued: acc.queued + row.queued,
           retrying: acc.retrying + row.retrying,
@@ -672,6 +693,7 @@ export function UsageOverviewCard({
           outputTokens: 0,
           cacheTokens: 0,
           cost: 0,
+          costEstimated: 0,
           running: 0,
           queued: 0,
           retrying: 0,
@@ -839,7 +861,7 @@ export function UsageOverviewCard({
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <div className="bg-background/70 rounded-md border border-[#6f88b4]/18 p-2 text-center">
                 <div className="text-base font-bold tabular-nums">
-                  {formatCost(totals.cost)}
+                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
                 </div>
                 <div className="text-muted-foreground text-[10px]">Cost</div>
               </div>
@@ -957,9 +979,19 @@ export function UsageOverviewCard({
                               ? formatCompactNumber(row.cacheTokens)
                               : "—"}
                           </TableCell>
-                          <TableCell className="text-right font-mono text-xs">
+                          <TableCell
+                            className="text-right font-mono text-xs"
+                            title={
+                              row.costEstimatedUsd > 0
+                                ? "~ token-estimated (no native cost); * mixes native + token-estimated cost"
+                                : undefined
+                            }
+                          >
                             {row.hasUsageMetrics && row.costUsd > 0
-                              ? formatCost(row.costUsd)
+                              ? formatCostWithEstimateMarks(
+                                  row.costUsd,
+                                  row.costEstimatedUsd,
+                                )
                               : "—"}
                           </TableCell>
                           <TableCell className="text-muted-foreground text-right text-xs">
@@ -992,7 +1024,7 @@ export function UsageOverviewCard({
                   <span>Cached: {formatCompactNumber(totals.cacheTokens)}</span>
                 )}
                 <span className="text-foreground font-medium">
-                  {formatCost(totals.cost)}
+                  {formatCostWithEstimateMarks(totals.cost, totals.costEstimated)}
                 </span>
                 <span>
                   Statuses include trial and task-QA jobs; token and cost

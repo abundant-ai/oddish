@@ -4,7 +4,7 @@ import binascii
 import contextlib
 import json
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -243,7 +243,9 @@ class ClaudeUsageFold:
             if state is None:
                 continue
             supported_index = len(current)
-            prior = previous[supported_index] if supported_index < len(previous) else None
+            prior = (
+                previous[supported_index] if supported_index < len(previous) else None
+            )
             rendered.extend(self._render_block_delta(block, state, prior))
             current.append(state)
         self.rendered_blocks_by_id[msg_id] = current
@@ -659,7 +661,7 @@ class Adapter:
         return self.agent_fragment in agent
 
     def make_fold(self, model: str | None) -> Fold:
-        return self.fold_type(model=model)
+        return cast(Fold, self.fold_type(model=model))
 
 
 ADAPTERS: tuple[Adapter, ...] = (
@@ -775,13 +777,13 @@ class LiveTailer:
 
     async def _tick(self) -> None:
         if self.snapshot:
-            raw = await self._read_snapshot()
-            if raw:
-                self._buffer_events(self.fold.feed_line(raw))
+            snapshot_raw = await self._read_snapshot()
+            if snapshot_raw:
+                self._buffer_events(self.fold.feed_line(snapshot_raw))
         else:
-            raw = await self._read_tail()
-            if raw is not _SKIP_TICK and raw:
-                self._feed_tail_chunk(raw)
+            tail_raw = await self._read_tail()
+            if isinstance(tail_raw, bytes) and tail_raw:
+                self._feed_tail_chunk(tail_raw)
         await self._persist_tick()
 
     async def _read_tail(self) -> bytes | object | None:

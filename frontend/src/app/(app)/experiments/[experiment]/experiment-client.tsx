@@ -23,7 +23,12 @@ import {
 } from "@/components/probe-launch-button";
 import { ExperimentDetailView } from "@/components/experiment-detail-view";
 import { ExperimentDescription } from "@/components/experiment-description";
-import type { Task, Trial, ExperimentShareInfo } from "@/lib/types";
+import type {
+  Task,
+  Trial,
+  ExperimentShareInfo,
+  ExperimentCostTotals,
+} from "@/lib/types";
 import { fetcher } from "@/lib/api";
 import { Loader2, Pencil } from "lucide-react";
 import { encodeExperimentRouteParam } from "@/lib/utils";
@@ -165,7 +170,7 @@ function ExperimentContent({
       // loadFullTrialOnOpen). The old /tasks proxy is left untouched.
       return `/api/experiments/${encodedId}/slim-tasks?limit=${TRIALS_BATCH_SIZE}&offset=${offset}`;
     },
-    [experimentId, encodedId],
+    [experimentId, encodedId]
   );
 
   const {
@@ -183,8 +188,30 @@ function ExperimentContent({
   });
   const trialsLastPage = trialPages?.[trialPages.length - 1] ?? null;
   const hasMoreTrials = Boolean(
-    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE,
+    trialsLastPage && trialsLastPage.length === TRIALS_BATCH_SIZE
   );
+
+  // What the experiment SPENT. Can't be derived from the trial pages above:
+  // they're paginated (so a client-side sum only covers what's loaded), and
+  // they're filtered to each task's current version (so they omit earlier
+  // versions, superseded retries and probes, all of which were still billed).
+  const costTotalsKey = experimentId
+    ? `/api/experiments/${encodedId}/cost-totals`
+    : null;
+  const {
+    data: costTotals,
+    error: costTotalsError,
+    mutate: mutateCostTotals,
+  } = useSWR<ExperimentCostTotals>(costTotalsKey, fetcher, {
+    refreshInterval: 0,
+    revalidateOnFocus: false,
+  });
+  // In flight. The tiles must not fall back to the client sum meanwhile: that
+  // number is wrong on two axes (loaded pages only, grid-filtered) and would
+  // visibly jump when the real total lands. Show a placeholder instead. On
+  // error we do fall back, so a failed rollup degrades rather than blanks.
+  const costTotalsPending =
+    costTotalsKey != null && costTotals === undefined && !costTotalsError;
 
   // Experiment-level metadata (sharing + description) for the header.
   // Fetched eagerly so the description renders immediately; shares the SWR
@@ -238,7 +265,7 @@ function ExperimentContent({
 
   const probeHostTask = useMemo(
     () => resolveProbeHostTask(tasksForExperiment),
-    [tasksForExperiment],
+    [tasksForExperiment]
   );
 
   const isLoading = isLoadingTasks;
@@ -252,7 +279,7 @@ function ExperimentContent({
   const totalTaskCount = lightweightTasks?.length ?? 0;
   const remainingTrialTaskCount = Math.max(
     0,
-    totalTaskCount - trialsLoadedCount,
+    totalTaskCount - trialsLoadedCount
   );
   const canLoadMoreTrials =
     hasMoreTrials && !isLoadingTrialPages && !isValidatingTrials;
@@ -270,7 +297,7 @@ function ExperimentContent({
       // the fast interval forever.
       const activeTrials = Math.max(
         0,
-        task.total - task.completed - task.failed - (task.skipped ?? 0),
+        task.total - task.completed - task.failed - (task.skipped ?? 0)
       );
       return activeTrials > 0 || ACTIVE_TASK_STATUSES.has(task.status);
     });
@@ -283,11 +310,23 @@ function ExperimentContent({
   const canManageExperimentShare =
     orgRole === "org:admin" || orgRole === "org:owner";
 
+  // Deletes below write the grid optimistically, so for one round trip the row
+  // is gone while the cost tiles still show the pre-delete rollup. Do NOT
+  // "fix" that by optimistically subtracting the removed trials' cost: the only
+  // trials on the client are the ones the grid renders, and the rollup also
+  // counts that task's probes, superseded retries and earlier-version trials.
+  // Subtracting the visible ones would leave the tile too LOW -- a spend number
+  // derived from the visible rows, which is the bug this endpoint exists to
+  // remove. Refetching is the correct (and self-healing) answer.
   const refreshTaskPages = useCallback(
     async (_taskIds?: string[]) => {
-      await Promise.all([mutateLightweight(), mutateTrials()]);
+      await Promise.all([
+        mutateLightweight(),
+        mutateTrials(),
+        mutateCostTotals(),
+      ]);
     },
-    [mutateLightweight, mutateTrials],
+    [mutateLightweight, mutateTrials, mutateCostTotals]
   );
 
   const loadMoreTrials = useCallback(() => {
@@ -360,12 +399,21 @@ function ExperimentContent({
       // ``mutateTrials()`` re-runs every page key currently held by
       // useSWRInfinite, in order, with the regular SWR dedup window.
       void mutateTrials();
+      // Cheap grouped aggregate; refresh alongside so the cost tiles track
+      // trials finishing while the page is open.
+      void mutateCostTotals();
     }, refreshIntervalMs);
 
     return () => {
       window.clearInterval(intervalId);
     };
-  }, [allTasksUrl, refreshIntervalMs, mutateLightweight, mutateTrials]);
+  }, [
+    allTasksUrl,
+    refreshIntervalMs,
+    mutateLightweight,
+    mutateTrials,
+    mutateCostTotals,
+  ]);
 
   const handleRename = async () => {
     if (!experimentId) return;
@@ -385,13 +433,13 @@ function ExperimentContent({
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: nextName }),
-        },
+        }
       );
 
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({}));
         throw new Error(
-          errorData.detail || errorData.error || "Failed to rename experiment",
+          errorData.detail || errorData.error || "Failed to rename experiment"
         );
       }
 
@@ -399,14 +447,14 @@ function ExperimentContent({
       await mutateLightweight(
         (tasks) =>
           tasks?.map((task) => ({ ...task, experiment_name: nextName })),
-        { revalidate: false },
+        { revalidate: false }
       );
       await mutateTrials(
         (pages) =>
           pages?.map((page) =>
-            page?.map((task) => ({ ...task, experiment_name: nextName })),
+            page?.map((task) => ({ ...task, experiment_name: nextName }))
           ),
-        { revalidate: false },
+        { revalidate: false }
       );
       void refreshTaskPages();
     } catch (err) {
@@ -416,26 +464,31 @@ function ExperimentContent({
     }
   };
 
-  const handleDeleteTask = async (task: Task) => {
-    const res = await fetch(`/api/tasks/${encodeURIComponent(task.id)}`, {
-      method: "DELETE",
-    });
+  const handleUnlinkTask = async (task: Task) => {
+    const res = await fetch(
+      `/api/experiments/${encodedId}/tasks/${encodeURIComponent(task.id)}`,
+      {
+        method: "DELETE",
+      }
+    );
 
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete task",
+        errorData.detail ||
+          errorData.error ||
+          "Failed to unlink task from experiment"
       );
     }
 
     await mutateLightweight(
       (tasks) => tasks?.filter((item) => item.id !== task.id),
-      { revalidate: false },
+      { revalidate: false }
     );
     await mutateTrials(
       (pages) =>
         pages?.map((page) => page?.filter((item) => item.id !== task.id)),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -448,7 +501,7 @@ function ExperimentContent({
     if (!res.ok) {
       const errorData = await res.json().catch(() => ({}));
       throw new Error(
-        errorData.detail || errorData.error || "Failed to delete trial",
+        errorData.detail || errorData.error || "Failed to delete trial"
       );
     }
 
@@ -456,13 +509,13 @@ function ExperimentContent({
       tasks?.map((task) =>
         task.trials?.some((t) => t.id === trial.id)
           ? { ...task, trials: task.trials.filter((t) => t.id !== trial.id) }
-          : task,
+          : task
       );
 
     await mutateLightweight(filterTrials, { revalidate: false });
     await mutateTrials(
       (pages) => pages?.map((page) => filterTrials(page) ?? page),
-      { revalidate: false },
+      { revalidate: false }
     );
     await refreshTaskPages();
   };
@@ -492,11 +545,12 @@ function ExperimentContent({
         <ExperimentDetailView
           experimentId={experimentId}
           tasksForExperiment={tasksForExperiment}
+          costTotals={costTotals}
+          costTotalsPending={costTotalsPending}
           isLoading={isLoading}
           isLoadingTrials={isLoadingTrials}
           hasError={Boolean(lightweightError)}
           loadFullTrialOnOpen
-
           headerLeft={
             isEditingName ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -532,7 +586,7 @@ function ExperimentContent({
                   type="button"
                   variant="ghost"
                   onClick={handleCopyExperimentName}
-                  className="h-auto min-w-0 max-w-full cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] font-semibold leading-[1.25] tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
+                  className="h-auto max-w-full min-w-0 cursor-pointer justify-start truncate rounded-sm bg-transparent p-0 pb-1 text-left font-mono text-[26px] leading-[1.25] font-semibold tracking-[-0.02em] text-[color:var(--paper-ink)] transition hover:bg-transparent hover:text-[color:var(--paper-ink-2)]"
                   aria-label={`Copy experiment name ${displayName}`}
                   title={
                     copiedExperimentName
@@ -567,7 +621,7 @@ function ExperimentContent({
           }
           headerStatus={
             isLoadingTrials ? (
-              <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <div className="text-muted-foreground flex items-center gap-1.5 text-[10px]">
                 <Loader2 className="h-3 w-3 animate-spin" />
                 <span>
                   Loading trials
@@ -612,7 +666,7 @@ function ExperimentContent({
                 onSaved={(next) =>
                   void mutateExperimentShare(
                     (prev) => (prev ? { ...prev, description: next } : prev),
-                    { revalidate: false },
+                    { revalidate: false }
                   )
                 }
               />
@@ -662,7 +716,7 @@ function ExperimentContent({
           }
           readOnly={false}
           allowRetry
-          onTaskDelete={handleDeleteTask}
+          onTaskUnlink={handleUnlinkTask}
           onTrialDelete={handleDeleteTrial}
           onRerun={refreshTaskPages}
         />
