@@ -125,6 +125,15 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
       continue;
     }
     if (ev.kind === "message") {
+      // Live-tail emits an assistant response as consecutive text suffixes.
+      // Keep those deltas in one turn until tool activity marks a boundary.
+      if (
+        current?.message &&
+        current.events.every((event) => event.kind === "message")
+      ) {
+        current.events.push(ev);
+        continue;
+      }
       flush();
       current = { key: ev.seq, kind: "turn", message: ev, events: [] };
       continue;
