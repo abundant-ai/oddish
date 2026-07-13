@@ -370,13 +370,14 @@ Keep these routing rules in sync with `oddish/src/oddish/config.py` and
 - OpenAI-family jobs default to Azure OpenAI. Use
   `ODDISH_OPENAI_PROVIDER=openai` plus `OPENAI_API_KEY` only when intentionally
   routing to public OpenAI.
-- z.ai, MiniMax, Moonshot/Kimi, Fireworks, and xAI each have explicit canonical
-  provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
-  `fireworks/`, and `xai/`. Add or change provider aliases in `config.py`, then
-  update env injection in the Harbor runner and the network allowlist notes.
+- z.ai, MiniMax, Moonshot/Kimi, Fireworks, xAI, and Meta each have explicit
+  canonical provider prefixes and queue keys: `zai/`, `minimax/`, `moonshot/`,
+  `fireworks/`, `xai/`, and `meta/`. Add or change provider aliases in
+  `config.py`, then update env injection in the Harbor runner and the network
+  allowlist notes.
 - Provider secrets are referenced by env var name (`AWS_BEARER_TOKEN_BEDROCK`,
   `ZAI_API_KEY`, `MINIMAX_API_KEY`, `MOONSHOT_API_KEY`, `FIREWORKS_API_KEY`,
-  `XAI_API_KEY`) and must not be persisted on trial rows.
+  `XAI_API_KEY`, `META_API_KEY`) and must not be persisted on trial rows.
 - `grok-build` (xAI) writes a Grok CLI config whose `[model.*]` blocks pin an
   `api_backend`. Upstream Harbor hardcodes `responses` (`POST /v1/responses`),
   but not every xAI model is served there — some (e.g. newer/unreleased models)
@@ -689,6 +690,12 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+On an experiment page, removing a task always calls the scoped
+`DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
+experiment membership and its scoped trials without deleting the task, even
+when it was the task's final experiment membership. Whole-task deletion remains
+a separate explicit action outside the experiment-scoped table.
 
 See `frontend/README.md` for route groups, scripts, env vars, and deployment
 commands. See `SELF_HOSTING.md` for full-stack local development and production

@@ -113,6 +113,9 @@ def scoped_model_env(*, agent: str, model: str | None, settings: Any) -> dict[st
     if provider == "gemini":
         key = getattr(settings, "gemini_api_key", None)
         return {"GEMINI_API_KEY": key} if key else {}
+    if provider == "meta":
+        key = getattr(settings, "meta_api_key", None)
+        return {"META_API_KEY": key, "MSWEA_API_KEY": key} if key else {}
     return {}
 
 

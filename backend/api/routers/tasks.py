@@ -37,6 +37,7 @@ from oddish.core.endpoints import (
     create_task_sweep_core,
     delete_experiment_core,
     delete_task_core,
+    get_experiment_cost_totals,
     get_task_detail_core,
     get_task_for_org_core,
     get_task_status_core,
@@ -109,6 +110,7 @@ from oddish.schemas import (
     BackfillQARequest,
     ExperimentCombineRequest,
     ExperimentCombineResponse,
+    ExperimentCostTotals,
     ExperimentProbeRow,
     OrgProbeRow,
     TaskBrowseFacets,
@@ -613,6 +615,29 @@ async def list_experiment_task_shells(
             offset=offset,
             include_empty_rewards=True,
             record_timing=_make_timing_recorder(request),
+        )
+
+
+@router.get(
+    "/experiments/{experiment_id}/cost-totals",
+    response_model=ExperimentCostTotals,
+)
+async def get_experiment_cost_totals_route(
+    experiment_id: str,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> ExperimentCostTotals:
+    """What the experiment spent, across every trial that ran under it.
+
+    Deliberately wider than the grid routes above: those page their trials (so
+    the page can't sum cost client-side without loading all of them) and scope
+    each task to its current version (so they omit earlier versions, superseded
+    retries and probes -- all of which were still billed). One grouped query.
+    """
+    auth.require_scope(APIKeyScope.READ)
+
+    async with get_session() as session:
+        return await get_experiment_cost_totals(
+            session, experiment_id=experiment_id, org_id=auth.org_id
         )
 
 
