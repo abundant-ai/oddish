@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from oddish.cli.config import get_api_url, get_auth_headers, require_api_key
+from oddish.transcript_safety import SanitizedText, sanitize_transcript_text
 
 console = Console()
 
@@ -18,26 +19,46 @@ class _TransientError(Exception):
     pass
 
 
+def _safe_text(value: Any) -> SanitizedText:
+    return sanitize_transcript_text(str(value or ""))
+
+
+def _tail(payload: dict, *, changed: bool) -> str:
+    tail = ""
+    if payload.get("sanitized") or changed:
+        tail += " [yellow dim]sanitized[/yellow dim]"
+    if payload.get("truncated"):
+        tail += " [dim]…[/dim]"
+    return tail
+
+
 def _render_event(event: dict) -> str | None:
     kind = event.get("kind")
     payload = event.get("payload") or {}
-    tail = " [dim]…[/dim]" if payload.get("truncated") else ""
     if kind == "message":
-        text = str(payload.get("text") or "").strip()
-        return f"{escape(text)}{tail}" if text else None
+        text = _safe_text(payload.get("text"))
+        stripped = text.text.strip()
+        return f"{escape(stripped)}{_tail(payload, changed=text.changed)}" if stripped else None
     if kind == "tool_use":
-        name = escape(str(payload.get("name") or "tool"))
-        arg = escape(str(payload.get("input") or "").strip().replace("\n", " ")[:160])
-        return f"[cyan]⚙ {name}[/cyan] [dim]{arg}[/dim]{tail}"
+        name = _safe_text(payload.get("name") or "tool")
+        arg = _safe_text(payload.get("input"))
+        display_arg = escape(arg.text.strip().replace("\n", " ")[:160])
+        changed = name.changed or arg.changed
+        return (
+            f"[cyan]⚙ {escape(name.text)}[/cyan] [dim]{display_arg}[/dim]"
+            f"{_tail(payload, changed=changed)}"
+        )
     if kind == "tool_result":
-        text = str(payload.get("content") or "").strip().replace("\n", " ")[:160]
+        content = _safe_text(payload.get("content"))
+        text = content.text.strip().replace("\n", " ")[:160]
         if not text:
             return None
         style = "red" if payload.get("is_error") else "dim"
-        return f"[{style}]  ↳ {escape(text)}[/{style}]{tail}"
+        return f"[{style}]  ↳ {escape(text)}[/{style}]{_tail(payload, changed=content.changed)}"
     if kind == "summary":
-        text = str(payload.get("text") or "").strip()
-        return f"[green]{escape(text)}[/green]{tail}" if text else None
+        text = _safe_text(payload.get("text"))
+        stripped = text.text.strip()
+        return f"[green]{escape(stripped)}[/green]{_tail(payload, changed=text.changed)}" if stripped else None
     return None
 
 
