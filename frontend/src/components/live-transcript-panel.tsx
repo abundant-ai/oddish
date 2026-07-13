@@ -229,7 +229,7 @@ function LiveToolResult({ payload }: { payload: Record<string, unknown> }) {
   ) : null;
   return (
     <ObservationBlock
-      content={content.text.trim() || "(no output)"}
+      content={content.text.trim() ? content.text : "(no output)"}
       isError={payload.is_error === true}
       trailing={
         truncated || sanitized ? (
