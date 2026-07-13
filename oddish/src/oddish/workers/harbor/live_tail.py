@@ -118,6 +118,28 @@ def _clipped_payload(key: str, value: Any, **extra: Any) -> dict[str, Any]:
     return payload
 
 
+def _clip_payload_strings(value: Any) -> tuple[Any, bool]:
+    if isinstance(value, str):
+        return value[:PAYLOAD_CLIP_CHARS], len(value) > PAYLOAD_CLIP_CHARS
+    if isinstance(value, dict):
+        clipped: dict[str, Any] = {}
+        truncated = False
+        for key, item in value.items():
+            clipped_item, item_truncated = _clip_payload_strings(item)
+            clipped[key] = clipped_item
+            truncated = truncated or item_truncated
+        return clipped, truncated
+    if isinstance(value, list):
+        clipped_list: list[Any] = []
+        truncated = False
+        for item in value:
+            clipped_item, item_truncated = _clip_payload_strings(item)
+            clipped_list.append(clipped_item)
+            truncated = truncated or item_truncated
+        return clipped_list, truncated
+    return value, False
+
+
 def _event(kind: str, key: str, value: Any, **extra: Any) -> dict[str, Any]:
     return {"kind": kind, "payload": _clipped_payload(key, value, **extra)}
 
@@ -866,11 +888,15 @@ class LiveTailer:
         safe_payload = sanitize_transcript_value(
             payload if isinstance(payload, dict) else {}
         )
-        if not safe_payload.changed:
+        clipped_payload, truncated = _clip_payload_strings(safe_payload.value)
+        if not safe_payload.changed and not truncated:
             return event
         normalized = dict(event)
-        normalized["payload"] = dict(safe_payload.value)
-        normalized["payload"]["sanitized"] = True
+        normalized["payload"] = dict(clipped_payload)
+        if safe_payload.changed:
+            normalized["payload"]["sanitized"] = True
+        if truncated:
+            normalized["payload"]["truncated"] = True
         return normalized
 
     def _checkpoint_values(self) -> tuple[dict[str, Any], tuple, float | None] | None:

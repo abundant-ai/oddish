@@ -64,7 +64,15 @@ def sanitize_transcript_value(value: Any) -> SanitizedValue:
         for key, item in value.items():
             safe_key = sanitize_transcript_text(str(key))
             safe_item = sanitize_transcript_value(item)
-            normalized[safe_key.text] = safe_item.value
+            normalized_key = safe_key.text
+            if normalized_key in normalized:
+                suffix = 2
+                while f"{safe_key.text} ({suffix})" in normalized:
+                    suffix += 1
+                normalized_key = f"{safe_key.text} ({suffix})"
+                changed = True
+                replacements += 1
+            normalized[normalized_key] = safe_item.value
             changed = changed or safe_key.changed or safe_item.changed
             replacements += safe_key.replacements + safe_item.replacements
         return SanitizedValue(normalized, changed, replacements)
