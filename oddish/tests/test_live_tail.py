@@ -376,6 +376,23 @@ def test_codex_fold_renders_display_kinds():
     ) == [{"kind": "summary", "payload": {"text": "boom"}}]
 
 
+def test_codex_tool_output_nul_is_sanitized():
+    fold = CodexUsageFold()
+    rendered = fold.feed_line(
+        codex_item(
+            {
+                "type": "command_execution",
+                "command": "printf bad",
+                "aggregated_output": "bad\x00output",
+            }
+        )
+    )
+    assert rendered[1]["payload"] == {
+        "content": "bad␀output",
+        "sanitized": True,
+    }
+
+
 def test_codex_fold_ignores_garbage_and_unknown_events():
     fold = CodexUsageFold()
     garbage = [
