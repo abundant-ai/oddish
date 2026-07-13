@@ -10,6 +10,8 @@ from harbor.models.trial.config import AgentConfig
 
 from oddish.config import (
     FIREWORKS_DEFAULT_BASE_URL,
+    META_DEFAULT_BASE_URL,
+    META_PROVIDER,
     MINIMAX_DEFAULT_BASE_URL,
     MOONSHOT_DEFAULT_BASE_URL,
     OPENAI_PROVIDER_AZURE,
@@ -23,6 +25,7 @@ from oddish.config import (
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
+    meta_bare_model_id,
     to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
@@ -65,6 +68,10 @@ def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
 
 def _is_mini_swe_agent(agent_config: AgentConfig) -> bool:
     return (agent_config.name or "").strip().lower() == "mini-swe-agent"
+
+
+def _is_opencode_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() == "opencode"
 
 
 def _to_litellm_claude_model_id(model: str | None) -> str | None:
@@ -302,6 +309,63 @@ def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
     agent_config.kwargs = dict(agent_config.kwargs or {})
 
 
+def _apply_meta_opencode(agent_config: AgentConfig) -> None:
+    """Route Meta model evals through the opencode harness.
+
+    opencode has no built-in Meta provider, and its built-in ``openai`` provider
+    drives the ``/v1/responses`` API (``@ai-sdk/openai``). Meta's endpoint is
+    OpenAI-*chat-completions*-compatible (the same route the mini-swe-agent Meta
+    wrapper uses via litellm ``openai/``). So register a custom opencode provider
+    backed by ``@ai-sdk/openai-compatible`` (``/v1/chat/completions``) under the
+    ``meta`` provider id -- matching the canonical ``meta/<model>`` id opencode is
+    invoked with -- and point it at Meta's base URL.
+
+    The Meta credential is surfaced under ``OPENAI_API_KEY`` (resolved at the
+    worker from ``${META_API_KEY}`` and merged into the agent's ``extra_env`` by
+    ``harbor.agents.factory``), so it lands in the opencode process env without
+    ever being persisted. opencode substitutes ``{env:OPENAI_API_KEY}`` into the
+    provider ``apiKey`` before initialising the SDK, so the raw key stays out of
+    the generated ``opencode.json``.
+    """
+    if agent_config.import_path is not None:
+        return
+    if not _is_opencode_agent(agent_config):
+        return
+    if not is_meta_model(agent_config.model_name):
+        return
+
+    # model_name is already canonicalized to ``meta/<bare>`` above; opencode
+    # keys its ``--model`` and provider lookup off that same string.
+    bare_model = meta_bare_model_id(agent_config.model_name or "")
+
+    env = dict(agent_config.env or {})
+    for key, value in settings.get_meta_agent_env().items():
+        env.setdefault(key, value)
+    agent_config.env = env
+
+    base_url = (settings.meta_base_url or META_DEFAULT_BASE_URL).rstrip("/")
+
+    # Layer the custom-provider block onto any caller-supplied opencode_config
+    # (setdefault throughout so an explicit override always wins).
+    kwargs = dict(agent_config.kwargs or {})
+    opencode_config = dict(kwargs.get("opencode_config") or {})
+    providers = dict(opencode_config.get("provider") or {})
+    meta_provider = dict(providers.get(META_PROVIDER) or {})
+    meta_provider.setdefault("npm", "@ai-sdk/openai-compatible")
+    meta_provider.setdefault("name", "Meta")
+    options = dict(meta_provider.get("options") or {})
+    options.setdefault("baseURL", base_url)
+    options.setdefault("apiKey", "{env:OPENAI_API_KEY}")
+    meta_provider["options"] = options
+    models = dict(meta_provider.get("models") or {})
+    models.setdefault(bare_model, {})
+    meta_provider["models"] = models
+    providers[META_PROVIDER] = meta_provider
+    opencode_config["provider"] = providers
+    kwargs["opencode_config"] = opencode_config
+    agent_config.kwargs = kwargs
+
+
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
@@ -472,6 +536,7 @@ def _build_agent_config(
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
+    _apply_meta_opencode(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
