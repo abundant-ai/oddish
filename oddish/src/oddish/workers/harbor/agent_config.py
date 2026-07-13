@@ -18,10 +18,12 @@ from oddish.config import (
     fireworks_api_model_id,
     fireworks_bare_model_id,
     is_fireworks_model,
+    is_meta_model,
     is_minimax_model,
     is_moonshot_model,
     is_xai_model,
     is_zai_model,
+    to_meta_model_id,
     minimax_api_model_id,
     minimax_bare_model_id,
     moonshot_bare_model_id,
@@ -41,6 +43,9 @@ _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
+_ODDISH_META_MINI_SWE_IMPORT_PATH = (
+    "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
+)
 _ANTHROPIC_MODEL_ALIAS_KEYS = (
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
     "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -56,6 +61,10 @@ _AMBIENT_ANTHROPIC_CREDENTIAL_KEYS = (
 
 def _is_claude_code_agent(agent_config: AgentConfig) -> bool:
     return "claude-code" in (agent_config.name or "").strip().lower()
+
+
+def _is_mini_swe_agent(agent_config: AgentConfig) -> bool:
+    return (agent_config.name or "").strip().lower() == "mini-swe-agent"
 
 
 def _to_litellm_claude_model_id(model: str | None) -> str | None:
@@ -268,6 +277,31 @@ def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.kwargs = kwargs
 
 
+def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
+    """Route Meta model evals through mini-swe-agent with Meta API settings."""
+    if agent_config.import_path is not None:
+        return
+    if not _is_mini_swe_agent(agent_config):
+        return
+    if not is_meta_model(agent_config.model_name):
+        return
+
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_META_MINI_SWE_IMPORT_PATH
+
+    env = dict(agent_config.env or {})
+    for key, value in settings.get_meta_agent_env().items():
+        env.setdefault(key, value)
+    agent_config.env = env
+
+    # Preserve reasoning_effort so callers can request a specific effort
+    # (e.g. --agent-kwarg reasoning_effort=xhigh). The mini-swe-agent harness
+    # forwards it to the model via model.model_kwargs.extra_body.reasoning_effort
+    # (see harbor MiniSweAgent.run). When the caller does not set it, effort
+    # stays unset (vendor default), so other sampling params are untouched.
+    agent_config.kwargs = dict(agent_config.kwargs or {})
+
+
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
@@ -398,6 +432,8 @@ def _build_agent_config(
 
     if is_fireworks_model(agent_config.model_name):
         agent_config.model_name = to_fireworks_model_id(agent_config.model_name)
+    elif is_meta_model(agent_config.model_name):
+        agent_config.model_name = to_meta_model_id(agent_config.model_name)
     elif is_xai_model(agent_config.model_name):
         agent_config.model_name = to_xai_model_id(agent_config.model_name)
     elif is_zai_model(agent_config.model_name):
@@ -435,6 +471,7 @@ def _build_agent_config(
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
+    _apply_meta_mini_swe_agent(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
