@@ -420,10 +420,19 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
         ).all()
 
+        # Current-state health check: superseded (retried) rows and
+        # user-cancelled rows are forced to FAILED by their flows, so counting
+        # them would misreport experiments the owner already repaired or
+        # deliberately stopped.
+        current_trial = and_(
+            TrialModel.deleted_at.is_(None),
+            TrialModel.superseded_by_trial_id.is_(None),
+            func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
+        )
         recently_finished = (
             select(TrialModel.experiment_id)
             .where(
-                TrialModel.deleted_at.is_(None),
+                current_trial,
                 TrialModel.finished_at >= recent_cutoff,
                 _real_spend_filter(),
             )
@@ -455,7 +464,7 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.is_collection.is_(False),
                     ExperimentModel.deleted_at.is_(None),
                     ExperimentModel.id.in_(recently_finished),
-                    TrialModel.deleted_at.is_(None),
+                    current_trial,
                     _real_spend_filter(),
                 )
                 .group_by(

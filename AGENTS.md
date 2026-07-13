@@ -556,13 +556,14 @@ sweep):
    a preview-only named secret selected by `ODDISH_SLACK_EXPENSE_SECRET_NAME`.
    Email alerts go only to active attributed experiment owners, resolved through
    `experiments.owner_user_id -> users.email`; unpriceable-model alerts remain
-   Slack-only. With `SLACK_ALERT_BOT_TOKEN` set, owner-directed alerts are also
-   DMed to the owner's Slack account, resolved from the owner email via
+   webhook-only. With `SLACK_ALERT_BOT_TOKEN` set, owner-directed alerts are
+   also DMed to the owner's Slack account, resolved from the owner email via
    `users.lookupByEmail`, and a DM-only alert fires when a finished experiment
    (no active trials, a trial finished recently) has at least
-   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED.
-   Webhook, email, and DM use independent idempotency claims so one delivery
-   channel cannot suppress or retry another.
+   `ODDISH_SLACK_EXPERIMENT_FAILED_RATIO` (default 0.5) of its trials FAILED;
+   soft-deleted, superseded (retried), and user-cancelled trials are excluded
+   from the failed/total counts. Webhook, email, and DM use independent
+   idempotency claims so one delivery channel cannot suppress or retry another.
 
 Handler registration happens at container load via
 `ensure_builtin_handlers_registered()`. Post-success hooks

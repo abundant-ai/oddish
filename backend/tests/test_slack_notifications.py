@@ -1,9 +1,12 @@
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import httpx
 import pytest
 import slack_notifications as notifications
 from models import OrganizationModel, UserModel
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -553,6 +556,8 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
 
     async def lookup(_token: str, email: str) -> str | None:
         lookups.append(email)
+        if email == "error@example.com":
+            raise RuntimeError("lookup failed")
         return None if email == "unknown@example.com" else "U123"
 
     async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
@@ -592,6 +597,11 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
                 "unmatched",
                 recipient_email="unknown@example.com",
             ),
+            SlackAlert(
+                "experiment:3:1000",
+                "lookup blows up",
+                recipient_email="error@example.com",
+            ),
             SlackAlert("unpriced:model", "admin-only Slack alert"),
         ],
     )
@@ -603,6 +613,7 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
         "owner@example.com",
         "owner@example.com",
         "unknown@example.com",
+        "error@example.com",
     ]
     assert sent == {
         "dm:experiment-failed:1:owner@example.com",
@@ -610,6 +621,69 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
     }
     assert "dm:experiment:1:1000:owner@example.com" not in claimed
     assert "dm:experiment:2:1000:unknown@example.com" not in claimed
+    assert "dm:experiment:3:1000:error@example.com" not in claimed
+
+
+def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    real_client = httpx.AsyncClient
+
+    def _factory(*_args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(notifications.httpx, "AsyncClient", _factory)
+
+
+@pytest.mark.asyncio
+async def test_lookup_slack_user_parses_slack_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/users.lookupByEmail"
+        assert request.headers["Authorization"] == "Bearer xoxb-token"
+        if request.url.params["email"] == "owner@example.com":
+            return httpx.Response(200, json={"ok": True, "user": {"id": "U123"}})
+        return httpx.Response(200, json={"ok": False, "error": "users_not_found"})
+
+    _mock_slack_http(monkeypatch, handler)
+
+    assert (
+        await notifications._lookup_slack_user("xoxb-token", "owner@example.com")
+        == "U123"
+    )
+    assert (
+        await notifications._lookup_slack_user("xoxb-token", "missing@example.com")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_dm_raises_on_slack_logical_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/chat.postMessage"
+        assert request.headers["Authorization"] == "Bearer xoxb-token"
+        payload = json.loads(request.content)
+        posted.append(payload)
+        if payload["channel"] == "U-disabled":
+            return httpx.Response(
+                200, json={"ok": False, "error": "messaging_disabled"}
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    _mock_slack_http(monkeypatch, handler)
+
+    await notifications._post_dm("xoxb-token", "U123", "hello")
+    with pytest.raises(RuntimeError, match="messaging_disabled"):
+        await notifications._post_dm("xoxb-token", "U-disabled", "hello")
+    assert posted == [
+        {"channel": "U123", "text": "hello"},
+        {"channel": "U-disabled", "text": "hello"},
+    ]
 
 
 @pytest.mark.asyncio
@@ -833,7 +907,9 @@ async def test_load_alerts_reports_unpriced_model_without_candidate_experiment()
 
 
 @pytest.mark.asyncio
-async def test_load_alerts_reports_finished_failed_experiments() -> None:
+async def test_load_alerts_reports_finished_failed_experiments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     suffix = uuid4().hex[:12]
     finished_id = f"slack-exp-failed-{suffix}"
     running_id = f"slack-exp-running-{suffix}"
@@ -851,6 +927,8 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
         origin: TrialOrigin = TrialOrigin.ODDISH,
         finished_at: datetime | None = None,
         deleted_at: datetime | None = None,
+        harbor_stage: str | None = None,
+        superseded_by: str | None = None,
     ) -> TrialModel:
         if finished_at is None and status != TrialStatus.QUEUED:
             finished_at = now
@@ -869,6 +947,8 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
             cost_usd=1,
             finished_at=finished_at,
             deleted_at=deleted_at,
+            harbor_stage=harbor_stage,
+            superseded_by_trial_id=superseded_by,
         )
 
     async with get_session() as session:
@@ -922,12 +1002,25 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
                 trial(f"{task_id}-failed-1", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-failed-2", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-success", finished_id, TrialStatus.SUCCESS),
-                # Soft-deleted failure must not count toward failed/total.
+                # Soft-deleted, superseded (retried), and user-cancelled
+                # failures must not count toward failed/total.
                 trial(
                     f"{task_id}-deleted-failed",
                     finished_id,
                     TrialStatus.FAILED,
                     deleted_at=now,
+                ),
+                trial(
+                    f"{task_id}-superseded-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    superseded_by=f"{task_id}-success",
+                ),
+                trial(
+                    f"{task_id}-cancelled-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    harbor_stage=CANCELLED_HARBOR_STAGE,
                 ),
                 trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
                 trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
@@ -956,6 +1049,13 @@ async def test_load_alerts_reports_finished_failed_experiments() -> None:
         assert alert.recipient_email == "failed-owner@example.com"
         assert "Failed trials: *2/3*" in alert.text
         assert "Title: *Failed experiment*" in alert.text
+
+        monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", "0.7")
+        assert not [
+            alert
+            for alert in await load_alerts(now)
+            if alert.key.startswith("experiment-failed:")
+        ]
     finally:
         async with get_session() as session:
             await session.execute(
