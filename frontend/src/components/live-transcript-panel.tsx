@@ -43,7 +43,6 @@ interface LiveResponse {
 interface LiveStep {
   key: number;
   kind: "turn" | "summary";
-  message: LiveEvent | null;
   events: LiveEvent[];
 }
 
@@ -121,25 +120,26 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
   for (const ev of events) {
     if (ev.kind === "summary") {
       flush();
-      steps.push({ key: ev.seq, kind: "summary", message: ev, events: [] });
+      steps.push({ key: ev.seq, kind: "summary", events: [ev] });
       continue;
     }
     if (ev.kind === "message") {
       // Live-tail emits an assistant response as consecutive text suffixes.
-      // Keep those deltas in one turn until tool activity marks a boundary.
+      // A tool use can be interleaved with more text in the same response;
+      // the tool result is the boundary before the next assistant turn.
       if (
-        current?.message &&
-        current.events.every((event) => event.kind === "message")
+        current &&
+        !current.events.some((event) => event.kind === "tool_result")
       ) {
         current.events.push(ev);
         continue;
       }
       flush();
-      current = { key: ev.seq, kind: "turn", message: ev, events: [] };
+      current = { key: ev.seq, kind: "turn", events: [ev] };
       continue;
     }
     if (!current) {
-      current = { key: ev.seq, kind: "turn", message: null, events: [] };
+      current = { key: ev.seq, kind: "turn", events: [] };
     }
     current.events.push(ev);
   }
@@ -148,8 +148,9 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
 }
 
 function stepPreview(step: LiveStep): string | null {
-  if (step.message) {
-    const text = safeText(step.message.payload.text).text.trim();
+  const message = step.events.find((event) => event.kind === "message");
+  if (message) {
+    const text = safeText(message.payload.text).text.trim();
     if (text) return text.split("\n")[0].slice(0, 80);
   }
   const firstTool = step.events.find((e) => e.kind === "tool_use");
@@ -182,14 +183,20 @@ function markers(
   );
 }
 
-function LiveMessage({ payload }: { payload: Record<string, unknown> }) {
-  const text = safeText(payload.text);
-  const sanitized = payload.sanitized === true || text.changed;
+function LiveMessage({ events }: { events: LiveEvent[] }) {
   return (
     <div className="text-sm wrap-break-word whitespace-pre-wrap">
-      {text.text}
-      {payload.truncated ? " …" : ""}
-      {sanitized && <SanitizedBadge />}
+      {events.map((event) => {
+        const text = safeText(event.payload.text);
+        const sanitized = event.payload.sanitized === true || text.changed;
+        return (
+          <span key={event.seq}>
+            {text.text}
+            {event.payload.truncated ? " …" : ""}
+            {sanitized && <SanitizedBadge />}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -242,20 +249,24 @@ function LiveSummary({ payload }: { payload: Record<string, unknown> }) {
 }
 
 function LiveStepContent({ step }: { step: LiveStep }) {
-  return (
-    <div className="space-y-3 text-sm">
-      {step.message && <LiveMessage payload={step.message.payload} />}
-      {step.events.map((ev) =>
-        ev.kind === "tool_use" ? (
-          <LiveToolUse key={ev.seq} payload={ev.payload} />
-        ) : ev.kind === "tool_result" ? (
-          <LiveToolResult key={ev.seq} payload={ev.payload} />
-        ) : (
-          <LiveMessage key={ev.seq} payload={ev.payload} />
-        )
-      )}
-    </div>
-  );
+  const blocks: ReactNode[] = [];
+  for (let i = 0; i < step.events.length; i++) {
+    const event = step.events[i];
+    if (event.kind === "message") {
+      const messages = [event];
+      while (step.events[i + 1]?.kind === "message") {
+        messages.push(step.events[++i]);
+      }
+      blocks.push(<LiveMessage key={event.seq} events={messages} />);
+    } else if (event.kind === "tool_use") {
+      blocks.push(<LiveToolUse key={event.seq} payload={event.payload} />);
+    } else if (event.kind === "tool_result") {
+      blocks.push(<LiveToolResult key={event.seq} payload={event.payload} />);
+    } else {
+      blocks.push(<LiveMessage key={event.seq} events={[event]} />);
+    }
+  }
+  return <div className="space-y-3 text-sm">{blocks}</div>;
 }
 
 export function LiveTranscriptPanel({
@@ -408,9 +419,9 @@ export function LiveTranscriptPanel({
           >
             {numbered.map(({ step, num }) =>
               step.kind === "summary" ? (
-                step.message && (
+                step.events[0] && (
                   <div key={step.key} className="px-4 py-2">
-                    <LiveSummary payload={step.message.payload} />
+                    <LiveSummary payload={step.events[0].payload} />
                   </div>
                 )
               ) : (
