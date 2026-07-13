@@ -199,6 +199,17 @@ def test_recursive_sanitizer_preserves_normal_json_unchanged():
     assert sanitized.replacements == 0
 
 
+def test_recursive_sanitizer_preserves_values_when_keys_collide():
+    sanitized = sanitize_transcript_value(
+        {"bad\x00key": "first", "bad␀key": "second"}
+    )
+    assert sanitized.value == {
+        "bad␀key": "first",
+        "bad␀key (2)": "second",
+    }
+    assert sanitized.changed is True
+
+
 def test_message_text_truncated():
     fold = ClaudeUsageFold()
     [event] = fold.feed_line(text_line("y" * 3000))
@@ -315,6 +326,30 @@ async def test_flush_sanitizes_bad_event_without_dropping_safe_sibling(monkeypat
     assert rows[0]["payload"] == {"content": "bad␀", "sanitized": True}
     assert rows[1]["payload"] == {"text": "safe"}
     assert_no_unsafe_text(rows)
+
+
+@pytest.mark.asyncio
+async def test_flush_clips_payload_strings_after_sanitization(monkeypatch):
+    monkeypatch.setattr(live_tail, "PAYLOAD_CLIP_CHARS", 10)
+    session = patch_db(monkeypatch)
+    tailer = make_tailer(FakeEnv([]))
+    tailer.pending_events = [
+        {
+            "seq": 1,
+            "kind": "tool_result",
+            "payload": {"content": "\x85" * 3, "nested": {"text": "x" * 12}},
+        }
+    ]
+
+    assert await tailer._flush_events(session) == 1
+    [insert] = insert_stmts(session)
+    [row] = insert_rows(insert)
+    assert row["payload"] == {
+        "content": "\\u0085\\u00",
+        "nested": {"text": "x" * 10},
+        "sanitized": True,
+        "truncated": True,
+    }
 
 
 @pytest.mark.asyncio
