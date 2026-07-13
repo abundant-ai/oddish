@@ -63,6 +63,10 @@ class UnpricedModel:
 class SlackAlert:
     key: str
     text: str
+    silent: bool = False
+
+
+_MILESTONE_EPSILON = 1e-6
 
 
 def _env_float(name: str, default: float) -> float:
@@ -122,6 +126,12 @@ def build_alerts(
     for experiment in experiments:
         experiment_trials = trials_by_experiment.get(experiment.id, [])
         total_cost = sum(trial.cost_usd for trial in experiment_trials)
+        recent_spend = sum(
+            trial.cost_usd
+            for trial in experiment_trials
+            if trial.finished_at >= recent_cutoff
+        )
+        baseline_cost = total_cost - recent_spend
         milestones = _experiment_milestones(
             total_cost,
             experiment_threshold_usd,
@@ -145,14 +155,22 @@ def build_alerts(
                 f"{quote(quote(experiment.id, safe=''), safe='')}"
             )
             for milestone in milestones:
+                key = f"experiment:{experiment.id}:{milestone:g}"
+                # Milestones already covered before the watch window opened are
+                # historical: claim them silently so pre-existing spend never
+                # dumps a backlog of alerts the first time we observe it.
+                if milestone <= baseline_cost + _MILESTONE_EPSILON:
+                    alerts.append(SlackAlert(key=key, text="", silent=True))
+                    continue
                 alerts.append(
                     SlackAlert(
-                        key=f"experiment:{experiment.id}:{milestone:g}",
+                        key=key,
                         text=(
                             ":money_with_wings: *Expensive experiment*\n"
                             f"Title: *{_escape(experiment.name)}*\n"
                             f"Spend milestone: *${milestone:,.2f}* "
                             f"(current spend: *${total_cost:,.2f}*)\n"
+                            f"New spend (last 2h): *${recent_spend:,.2f}*\n"
                             f"Trials still running: {experiment.active_trials}\n"
                             f"Owner: *{_escape(experiment.owner or 'Unknown')}*\n"
                             "Top agent costs:\n"
@@ -415,6 +433,9 @@ async def _release_alert(alert_key: str) -> None:
 
 async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
     for alert in alerts:
+        if alert.silent:
+            await _claim_alert(alert.key)
+            continue
         if not await _claim_alert(alert.key):
             continue
         try:

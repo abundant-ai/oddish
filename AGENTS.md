@@ -544,7 +544,12 @@ sweep):
    for experiments at $1,000 and each additional $1,000 of spend, and for recent
    trials over $70 that exceed twice the average of other trials in the
    experiment for the same task and model. Trials without a same-task/model
-   peer do not produce anomaly alerts.
+   peer do not produce anomaly alerts. Milestones are driven by *new* spend:
+   spend that finished within the 2h watch window. Milestones already covered by
+   the pre-window baseline (`total - recent`) are claimed silently (a claim row,
+   no Slack post) so first observing an experiment with
+   pre-existing spend — feature rollout, threshold change, or a dormant run
+   resumed with a cheap trial — never dumps a backlog of historical alerts.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis

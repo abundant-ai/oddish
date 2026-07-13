@@ -94,6 +94,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         ":money_with_wings: *Expensive experiment*",
         "Title: *Exp &lt;One&gt;*",
         "Spend milestone: *$2,000.00* (current spend: *$2,001.00*)",
+        "New spend (last 2h): *$2,001.00*",
         "Trials still running: 2",
         "Owner: *Pat &amp; Sam*",
         "Top agent costs:",
@@ -121,12 +122,87 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
         trial_average_multiplier=2,
     )
 
-    assert alerts[0].text.splitlines()[5:9] == [
+    assert alerts[0].text.splitlines()[6:10] == [
         "Top agent costs:",
         "• `openrouter/opus`: *$250.00*",
         "• `azure/fable`: *$200.00*",
         "• `anthropic/sonnet`: *$100.00*",
     ]
+
+
+def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
+        [
+            _trial("old", 4000, finished_at=now - timedelta(hours=3)),
+            _trial("recent", 50, finished_at=now),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:1000",
+        "experiment:experiment-1:2000",
+        "experiment:experiment-1:3000",
+        "experiment:experiment-1:4000",
+    ]
+    assert all(a.silent for a in milestone_alerts)
+    assert all(a.text == "" for a in milestone_alerts)
+
+
+def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 1)],
+        [
+            _trial("old", 1800, finished_at=now - timedelta(hours=3)),
+            _trial("recent", 1300, finished_at=now),
+        ],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    silent = [a.key for a in milestone_alerts if a.silent]
+    firing = [a for a in milestone_alerts if not a.silent]
+    assert silent == ["experiment:experiment-1:1000"]
+    assert [a.key for a in firing] == [
+        "experiment:experiment-1:2000",
+        "experiment:experiment-1:3000",
+    ]
+    assert "New spend (last 2h): *$1,300.00*" in firing[0].text
+
+
+def test_build_alerts_new_experiment_fires_every_milestone() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 3)],
+        [_trial("burst", 2500, finished_at=now)],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=1000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=10_000,
+        trial_average_multiplier=2,
+    )
+
+    milestone_alerts = [a for a in alerts if a.key.startswith("experiment:")]
+    assert [a.key for a in milestone_alerts] == [
+        "experiment:experiment-1:1000",
+        "experiment:experiment-1:2000",
+    ]
+    assert not any(a.silent for a in milestone_alerts)
 
 
 def test_build_alerts_requires_a_same_task_model_peer() -> None:
@@ -334,6 +410,45 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
 
 @pytest.mark.asyncio
+async def test_send_alerts_claims_silent_baseline_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    posted: list[str] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(key: str) -> None:
+        sent.add(key)
+
+    async def release(key: str) -> None:
+        claimed.discard(key)
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("experiment:1:1000", "", silent=True),
+            SlackAlert("experiment:1:2000", "fire"),
+        ],
+    )
+
+    assert posted == ["fire"]
+    assert sent == {"experiment:1:2000"}
+    assert claimed == {"experiment:1:1000", "experiment:1:2000"}
+@pytest.mark.asyncio
 async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -435,6 +550,7 @@ async def test_load_alerts_uses_settled_trial_costs(
             "unpriced-model:made-up/no-such-model-9000",
         ]
         assert "Trials still running: 0" in alerts[0].text
+        assert "New spend (last 2h):" in alerts[0].text
         assert "Top agent costs:" in alerts[0].text
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
