@@ -191,6 +191,14 @@ function groupSteps(events: LiveEvent[]): LiveStep[] {
       current = { key: ev.seq, kind: "turn", events: [ev] };
       continue;
     }
+    const id = turnId(ev);
+    if (
+      id &&
+      current &&
+      !current.events.some((event) => turnId(event) === id)
+    ) {
+      flush();
+    }
     if (!current) {
       current = { key: ev.seq, kind: "turn", events: [] };
     }
