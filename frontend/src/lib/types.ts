@@ -116,6 +116,8 @@ export interface Trial {
   name: string;
   task_id: string;
   task_path: string;
+  /** Home experiment — the one whose spend this trial is. */
+  experiment_id?: string | null;
   agent: string;
   provider: string;
   model: string | null;
