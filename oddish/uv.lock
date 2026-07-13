@@ -1622,7 +1622,7 @@ wheels = [
 
 [[package]]
 name = "oddish"
-version = "0.1.12"
+version = "0.1.13"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
