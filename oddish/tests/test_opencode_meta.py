@@ -32,6 +32,11 @@ def test_opencode_meta_registers_openai_compatible_provider():
     # apiKey is an opencode {env:...} template resolved from the process env.
     assert provider["options"]["apiKey"] == "{env:OPENAI_API_KEY}"
     assert "redacted_model" in provider["models"]
+    # Default reasoning effort is capped at "medium": Meta's ~32k completion
+    # budget truncates a full-reasoning turn, stranding the agent.
+    model_entry = provider["models"]["redacted_model"]
+    assert model_entry["options"]["reasoningEffort"] == "medium"
+    assert model_entry["limit"]["output"] >= 32000
 
 
 def test_opencode_meta_preserves_caller_opencode_config_overrides():
@@ -61,7 +66,12 @@ def test_opencode_meta_preserves_caller_opencode_config_overrides():
     assert provider["options"]["baseURL"] == "https://relay.example/v1"
     assert provider["options"]["apiKey"] == "{env:OPENAI_API_KEY}"
     assert provider["npm"] == "@ai-sdk/openai-compatible"
-    assert provider["models"]["redacted_model"] == {"name": "Custom"}
+    # Caller's model fields are preserved; defaults (reasoningEffort, limit) fill
+    # the gaps around them.
+    model_entry = provider["models"]["redacted_model"]
+    assert model_entry["name"] == "Custom"
+    assert model_entry["options"]["reasoningEffort"] == "medium"
+    assert model_entry["limit"]["output"] >= 32000
 
 
 def test_opencode_non_meta_model_is_not_meta_routed():

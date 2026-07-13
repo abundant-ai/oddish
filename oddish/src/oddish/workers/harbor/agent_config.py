@@ -358,7 +358,20 @@ def _apply_meta_opencode(agent_config: AgentConfig) -> None:
     options.setdefault("apiKey", "{env:OPENAI_API_KEY}")
     meta_provider["options"] = options
     models = dict(meta_provider.get("models") or {})
-    models.setdefault(bare_model, {})
+    model_entry = dict(models.get(bare_model) or {})
+    # Meta's chat-completions route caps a single response at ~32k completion
+    # tokens. At the model's default (high/max) reasoning effort a single turn
+    # burns the whole budget on reasoning (~32k) and truncates with
+    # finish_reason="length" and ~0 output, which strands opencode after a
+    # couple of steps. "medium" keeps per-turn reasoning well under the cap so
+    # the agent actually emits tool calls and runs to completion. reasoningEffort
+    # is forwarded to the request body via opencode providerOptions -- safe here
+    # because the provider id ("meta") has no dot (see opencode issue #23622).
+    model_opts = dict(model_entry.get("options") or {})
+    model_opts.setdefault("reasoningEffort", "medium")
+    model_entry["options"] = model_opts
+    model_entry.setdefault("limit", {"context": 256000, "output": 64000})
+    models[bare_model] = model_entry
     meta_provider["models"] = models
     providers[META_PROVIDER] = meta_provider
     opencode_config["provider"] = providers
