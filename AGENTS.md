@@ -142,7 +142,10 @@ High-level flow:
    the trial goes terminal (S3 stays the permanent record); a 24h TTL sweep in
    the cleanup pass reaps rows leaked by hard-killed workers. A RETRYING trial
    clears `finished_at` and keeps its cost monotonic so it still counts as
-   inflight for quotas and `/live`.
+   inflight for quotas and `/live`. Claude assistant deltas and tool blocks carry
+   a hashed `turn_id` in their event payload so clients can distinguish streamed
+   suffixes from a new no-tool assistant turn without exposing provider message
+   identifiers.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
    reported, phase timing, and trajectory availability. Use the CLI or dashboard

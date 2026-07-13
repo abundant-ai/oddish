@@ -60,10 +60,6 @@ function agentNotice(agent: string | null | undefined): string | null {
   return null;
 }
 
-function streamsMessageSuffixes(agent: string | null | undefined): boolean {
-  return (agent ?? "").toLowerCase().includes("claude");
-}
-
 function safeText(value: unknown): { text: string; changed: boolean } {
   if (typeof value !== "string") return { text: "", changed: false };
   let changed = false;
@@ -114,10 +110,13 @@ function prettyJson(text: string): string {
   }
 }
 
-function groupSteps(
-  events: LiveEvent[],
-  joinMessageSuffixes: boolean
-): LiveStep[] {
+function turnId(event: LiveEvent): string | null {
+  return typeof event.payload.turn_id === "string"
+    ? event.payload.turn_id
+    : null;
+}
+
+function groupSteps(events: LiveEvent[]): LiveStep[] {
   const steps: LiveStep[] = [];
   let current: LiveStep | null = null;
   const flush = () => {
@@ -131,14 +130,10 @@ function groupSteps(
       continue;
     }
     if (ev.kind === "message") {
-      // Live-tail emits an assistant response as consecutive text suffixes.
-      // A tool use can be interleaved with more text in the same response;
-      // the tool result is the boundary before the next assistant turn.
-      if (
-        joinMessageSuffixes &&
-        current &&
-        !current.events.some((event) => event.kind === "tool_result")
-      ) {
+      const id = turnId(ev);
+      // Claude live-tail tags suffixes and tool blocks from one assistant
+      // message with the same opaque turn id. Missing ids stay conservative.
+      if (id && current?.events.some((event) => turnId(event) === id)) {
         current.events.push(ev);
         continue;
       }
@@ -338,10 +333,7 @@ export function LiveTranscriptPanel({
     };
   }, [trialId, apiBaseUrl]);
 
-  const steps = useMemo(
-    () => groupSteps(events, streamsMessageSuffixes(agent)),
-    [events, agent]
-  );
+  const steps = useMemo(() => groupSteps(events), [events]);
   const numbered = useMemo(() => {
     let n = 0;
     return steps.map((step) => ({
@@ -374,6 +366,12 @@ export function LiveTranscriptPanel({
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [events, expanded]);
+
+  const onAccordionAnimationEnd = () => {
+    if (atBottomRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  };
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -448,7 +446,7 @@ export function LiveTranscriptPanel({
                       badges={stepBadges(step)}
                     />
                   </AccordionTrigger>
-                  <AccordionContent>
+                  <AccordionContent onAnimationEnd={onAccordionAnimationEnd}>
                     <LiveStepContent step={step} />
                   </AccordionContent>
                 </AccordionItem>
