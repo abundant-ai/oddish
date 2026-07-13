@@ -19,6 +19,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v7
 
+      - name: Verify release version
+        run: |
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("oddish/pyproject.toml", "rb"))["project"]["version"])')
+          test "$GITHUB_REF_NAME" = "v$VERSION"
+
       - name: Build distributions
         run: uv build --project oddish
 
