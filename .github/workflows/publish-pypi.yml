@@ -25,6 +25,14 @@ jobs:
       - name: Check distributions
         run: uvx twine check oddish/dist/*
 
+      - name: Smoke-test wheel
+        run: |
+          uv venv --python 3.13 /tmp/oddish-release
+          uv pip install --python /tmp/oddish-release/bin/python oddish/dist/*.whl
+          for command in run status pull cancel; do
+            /tmp/oddish-release/bin/oddish "$command" --help >/dev/null
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: oddish-distributions
