@@ -41,7 +41,7 @@ function Section({
           <MarkdownRenderer content={content} />
         ) : (
           <div className="text-muted-foreground text-sm">
-            {generating ? "Generating…" : "Nothing here yet."}
+            {generating ? "Generating…" : "No findings for this section."}
           </div>
         )}
       </CardContent>
