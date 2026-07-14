@@ -184,6 +184,7 @@ jobs:
     needs:
       - detect-changes
       - prepare-preview-database
+      - deploy-preview-backend
     if: |
       always() &&
       needs.detect-changes.result == 'success' &&
@@ -191,6 +192,10 @@ jobs:
       (
         needs.prepare-preview-database.result == 'success' ||
         needs.prepare-preview-database.result == 'skipped'
+      ) &&
+      (
+        needs.deploy-preview-backend.result == 'success' ||
+        needs.deploy-preview-backend.result == 'skipped'
       )
     runs-on: ubuntu-latest
     permissions:
@@ -259,7 +264,7 @@ jobs:
       DEPLOY_FRONTEND: ${{ needs.detect-changes.outputs.deploy_frontend }}
       VERCEL_PREVIEW_URL: ${{ needs.update-vercel-preview.outputs.preview_alias_url || needs.update-vercel-preview.outputs.preview_url }}
       VERCEL_DEPLOYMENT_URL: ${{ needs.update-vercel-preview.outputs.preview_url }}
-      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url }}
+      MODAL_API_URL: ${{ needs.deploy-preview-backend.outputs.modal_api_url || needs.update-vercel-preview.outputs.backend_api_url }}
       PREVIEW_BACKEND_LABEL: ${{ needs.update-vercel-preview.outputs.backend_label }}
       PREVIEW_DATABASE_LABEL: ${{ needs.update-vercel-preview.outputs.database_label }}
       SUPABASE_BRANCH_REF: ${{ needs.prepare-preview-database.outputs.branch_ref }}
