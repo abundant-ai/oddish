@@ -198,15 +198,26 @@ async def run_task_qa_job(
     try:
         live_trials = await _load_live_trials_for_classification(task_id)
         if not live_trials:
-            # Every live trial is excluded from QA (bulk-migrated imports,
-            # filtered by imported_at). Nothing to classify and no inputs for
-            # a verdict -- complete the task cleanly instead of raising
-            # "No successful classifications" (which would record a FAILED
-            # verdict for what is not an error).
+            # Every live trial is excluded from QA (bulk-migrated imports
+            # filtered by imported_at; gate-skipped trials). Nothing to classify
+            # and no inputs for a verdict -- complete the task cleanly instead of
+            # raising "No successful classifications" (which would record a
+            # FAILED verdict for what is not an error).
+            #
+            # maybe_start_qa_stage now refuses to enqueue a QA job with zero
+            # eligible trials, so this is the belt-and-braces path for a race
+            # (trials excluded between enqueue and run). It MUST leave a
+            # TERMINAL verdict_status: QaJobHandler maps SUCCESS -> ok() and
+            # everything else (including None) -> retryable failure, so a
+            # non-terminal status here would burn every retry and land the job
+            # FAILED. verdict stays None: dashboard counts SUCCESS AND
+            # verdict->>'is_good' IN (true,false), so a null verdict is counted
+            # as neither good nor bad rather than skewing either bucket.
             async with get_session() as session:
                 task = await session.get(TaskModel, task_id, with_for_update=True)
                 if task and await _worker_job_is_running(session, worker_job_id):
-                    task.verdict_status = None
+                    task.verdict = None
+                    task.verdict_status = VerdictStatus.SUCCESS
                     task.verdict_error = None
                     task.verdict_finished_at = utcnow()
                     task.status = TaskStatus.COMPLETED

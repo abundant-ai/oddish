@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import NOP_ORACLE_QUEUE_KEY, is_nop_oracle_agent, settings
 from oddish.core.baseline_gate import (
+    GATE_SKIP_PREFIX,
     GateOutcome,
     evaluate_baseline_gate,
 )
@@ -1295,7 +1296,31 @@ async def maybe_start_qa_stage(session: AsyncSession, trial_id: str) -> bool:
     if pending_count > 0:
         return False
 
+    # Only enqueue QA when there is actually something to classify. A task can
+    # have run_analysis=true yet zero QA-eligible live trials -- e.g. every live
+    # trial is a bulk-migrated Sauron import (excluded on cost) or was skipped by
+    # the baseline gate (never ran, no logs). Enqueueing then produces a job that
+    # can only no-op: run_task_qa_job would leave a non-terminal verdict, which
+    # QaJobHandler reads back as a retryable failure -> the job burns all its
+    # attempts and lands FAILED for what is not an error. Complete the task
+    # instead. Filters MUST mirror qa_handler._load_live_trials_for_classification.
+    qa_eligible = 0
     if task.run_analysis:
+        qa_eligible = await session.scalar(
+            select(func.count(TrialModel.id)).where(
+                and_(
+                    TrialModel.task_id == task_id,
+                    TrialModel.superseded_by_trial_id.is_(None),
+                    TrialModel.imported_at.is_(None),
+                    TrialModel.status != TrialStatus.SKIPPED,
+                    func.coalesce(TrialModel.error_message, "").notlike(
+                        f"{GATE_SKIP_PREFIX}%"
+                    ),
+                )
+            )
+        )
+
+    if task.run_analysis and qa_eligible:
         task.status = TaskStatus.VERDICT_PENDING
         task.verdict_status = VerdictStatus.QUEUED
         await enqueue_qa_worker_job(session, task_id=task_id, org_id=task.org_id)
