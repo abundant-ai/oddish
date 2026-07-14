@@ -73,10 +73,10 @@ export function ReportDetailClient({ reportId }: { reportId: string }) {
         <div>
           <h1 className="text-xl font-semibold">{report.name}</h1>
           <div className="text-muted-foreground mt-1 flex items-center gap-2 text-xs">
-            <Badge variant="outline">{report.status}</Badge>
-            {generating ? (
-              <span>counting trials…</span>
-            ) : (
+            <Badge variant="outline">
+              {generating ? "Generating…" : report.status}
+            </Badge>
+            {!generating && (
               <>
                 <span>{report.num_trials ?? 0} trials</span>
                 <span>· {report.num_bad_failures ?? 0} bad</span>
