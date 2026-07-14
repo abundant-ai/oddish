@@ -348,6 +348,7 @@ export function LiveTranscriptPanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
   const prevNewestRef = useRef<string | null>(null);
+  const autoExpandedRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -411,6 +412,7 @@ export function LiveTranscriptPanel({
     if (!newest || newest === prevNewestRef.current) return;
     const prev = prevNewestRef.current;
     prevNewestRef.current = newest;
+    if (atBottomRef.current) autoExpandedRef.current = newest;
     setExpanded((cur) => {
       const next = new Set(cur);
       if (prev) next.delete(prev);
@@ -423,12 +425,22 @@ export function LiveTranscriptPanel({
     if (atBottomRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [events, expanded]);
+  }, [events]);
 
-  const onAccordionAnimationEnd = () => {
-    if (atBottomRef.current && scrollRef.current) {
+  const onAccordionAnimationEnd = (value: string) => {
+    if (
+      autoExpandedRef.current === value &&
+      atBottomRef.current &&
+      scrollRef.current
+    ) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      autoExpandedRef.current = null;
     }
+  };
+
+  const onExpandedChange = (values: string[]) => {
+    autoExpandedRef.current = null;
+    setExpanded(values);
   };
 
   const onScroll = () => {
@@ -481,7 +493,7 @@ export function LiveTranscriptPanel({
           <Accordion
             type="multiple"
             value={expanded}
-            onValueChange={setExpanded}
+            onValueChange={onExpandedChange}
           >
             {numbered.map(({ step, num }) =>
               step.kind === "summary" ? (
@@ -504,7 +516,11 @@ export function LiveTranscriptPanel({
                       badges={stepBadges(step)}
                     />
                   </AccordionTrigger>
-                  <AccordionContent onAnimationEnd={onAccordionAnimationEnd}>
+                  <AccordionContent
+                    onAnimationEnd={() =>
+                      onAccordionAnimationEnd(`live-${step.key}`)
+                    }
+                  >
                     <LiveStepContent step={step} />
                   </AccordionContent>
                 </AccordionItem>
