@@ -1393,6 +1393,15 @@ class ImportedTrialSpec(BaseModel):
             "rejected by the unique index."
         ),
     )
+    imported_at: datetime | None = Field(
+        None,
+        description=(
+            "Bulk-migration marker (Sauron->Oddish). When set it is written on "
+            "the trial row IN the import transaction, so the QA pipeline's "
+            "imported_at-based exclusion can never race a follow-up UPDATE. "
+            "Leave None for ad-hoc imports (stock analysis behavior)."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_terminal_status(self) -> "ImportedTrialSpec":

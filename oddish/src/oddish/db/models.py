@@ -489,6 +489,16 @@ class ExperimentModel(TimestampedMixin, Base):
     # Nullable; ``None``/blank means "no description".
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Migration markers (Sauron->Oddish import). NULL for normal rows.
+    # ``imported_at`` = when this row was created by the legacy importer ->
+    # clean audit/rollback (WHERE imported_at IS NOT NULL). ``orig_s3_src`` =
+    # the immutable Sauron run-root S3 path this experiment came from (encodes
+    # base/pr/run); anchor for later duplicate reconciliation.
+    imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     # ``lazy="select"`` (the default): no production read path actually
     # touches ``experiment.tasks``. Loading an experiment used to fan
     # out into a task fetch via ``task_experiments`` on every access;
@@ -702,6 +712,13 @@ class TaskModel(TimestampedMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     verdict_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Migration provenance: set when created by the Sauron->Oddish importer,
+    # NULL otherwise. Rich provenance lives in ``tags``; this is the clean
+    # audit/rollback marker (WHERE imported_at IS NOT NULL).
+    imported_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
@@ -995,6 +1012,17 @@ class TrialModel(TimestampedMixin, Base):
         ForeignKey("trials.id", ondelete="SET NULL"),
         nullable=True,
     )
+
+    # Migration markers: set when created by the Sauron->Oddish importer, NULL
+    # otherwise. ``imported_at`` is the clean audit/rollback marker; the source
+    # tag lives in ``harbor_config``. ``orig_s3_src`` is the IMMUTABLE Sauron
+    # attempt-prefix this trial came from -- distinct from ``trial_s3_key``
+    # (the mutable artifact-serving location), so the source survives any later
+    # artifact copy. Anchor for duplicate reconciliation.
+    imported_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    orig_s3_src: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     task: Mapped["TaskModel"] = relationship(  # type: ignore[assignment]

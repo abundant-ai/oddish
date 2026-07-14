@@ -42,7 +42,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oddish.config import settings
+from oddish.config import normalize_model_id, settings
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -211,9 +211,22 @@ async def initialize_trial_import(
         # Derive routing metadata the same way the live path does so
         # dashboards/aggregations treat imported trials uniformly.
         agent = trial_spec.agent
-        model = settings.normalize_trial_model(agent, trial_spec.model)
-        provider = settings.get_provider_for_trial(agent, model)
-        queue_key = settings.get_queue_key_for_trial(agent, model)
+        try:
+            model = settings.normalize_trial_model(agent, trial_spec.model)
+            provider = settings.get_provider_for_trial(agent, model)
+            queue_key = settings.get_queue_key_for_trial(agent, model)
+        except ValueError:
+            # normalize_trial_model routes Claude models through the strict
+            # Bedrock chokepoint, which raises for a legacy model with no
+            # Bedrock runtime id (e.g. claude-3-5-sonnet-20241022). That guard
+            # exists to stop the *live* path handing Bedrock an uninvokable id.
+            # Imported trials are already terminal and never execute, so an
+            # unmapped historical model must be stored faithfully rather than
+            # dropped. Fall back to the un-collapsed model + agent-based routing
+            # (normalize_queue_key is best-effort and never raises).
+            model = normalize_model_id(trial_spec.model)
+            provider = settings.get_provider_for_agent(agent)
+            queue_key = settings.normalize_queue_key(model) if model else "default"
 
         # Pin the trial to the task's current version so the UI's
         # "version filter" keeps working for imported rows too.
@@ -279,6 +292,10 @@ async def initialize_trial_import(
             trial_s3_key=StorageClient._trial_prefix(trial_id),
             started_at=started_at,
             finished_at=finished_at,
+            # Written in the SAME transaction as the insert so the QA
+            # pipeline's imported_at-based exclusion can never race a
+            # follow-up UPDATE (NULL for ad-hoc imports).
+            imported_at=_parse_datetime(trial_spec.imported_at),
         )
         session.add(trial_row)
 
