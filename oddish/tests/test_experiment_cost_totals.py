@@ -282,13 +282,14 @@ async def test_probe_and_superseded_trials_still_count_as_spend(session):
 
 
 @pytest.mark.asyncio
-async def test_trials_gathered_into_a_collection_count(session):
-    """The other half of ``trial_in_experiment``, and the reason it's an OR.
+async def test_trials_gathered_into_a_collection_do_not_count(session):
+    """Gathered membership renders in the grid but never contributes cost.
 
-    A collection experiment owns trials additively through ``experiment_trials``
-    without rewriting their scalar ``experiment_id``. Those trials must be summed
-    under the collection — and a trial that is BOTH the home and gathered must be
-    counted exactly once, not twice.
+    A collection gathers trials through ``experiment_trials`` without rewriting
+    their scalar ``experiment_id``; their spend stays with the home experiment.
+    Summing them under the collection too would report the same dollars under
+    two experiments at once. Only trials the collection actually owns count —
+    and a gathered row pointing at an owned trial must not double-count it.
     """
     task, home = await _fixture(session, "gathered")
 
@@ -300,33 +301,15 @@ async def test_trials_gathered_into_a_collection_count(session):
 
     borrowed = _trial(task, home, cost_usd=4.0)  # home is the OTHER experiment
     native_and_gathered = _trial(task, collection, cost_usd=6.0)  # home == collection
-    unlinked = _trial(task, home, cost_usd=100.0)  # gathered, then removed again
-    session.add_all([borrowed, native_and_gathered, unlinked])
+    session.add_all([borrowed, native_and_gathered])
     await session.flush()
 
     await session.execute(
         insert(experiment_trials).values(
             [
                 {"experiment_id": collection.id, "trial_id": borrowed.id},
-                # Deliberately also link the trial whose home already IS the
-                # collection: the OR must not double-count it.
                 {"experiment_id": collection.id, "trial_id": native_and_gathered.id},
             ]
-        )
-    )
-    # Unlinked from the collection. ``include_deleted=True`` opts the TRIALS out
-    # of the soft-delete filter; it must not also revive a dropped membership
-    # row, which carries its own deleted_at predicate in
-    # ``gathered_trial_ids_select``.
-    #
-    # Inserted separately on purpose: an executemany insert compiles its column
-    # list from the FIRST dict, so a deleted_at that appears only on a later row
-    # is silently dropped and the link goes in live.
-    await session.execute(
-        insert(experiment_trials).values(
-            experiment_id=collection.id,
-            trial_id=unlinked.id,
-            deleted_at=utcnow(),
         )
     )
     await session.flush()
@@ -334,9 +317,14 @@ async def test_trials_gathered_into_a_collection_count(session):
     totals = await get_experiment_cost_totals(
         session, experiment_id=collection.id, org_id=_ORG
     )
+    assert totals.cost_usd == pytest.approx(6.0)
+    assert totals.total_trials == 1
 
-    assert totals.cost_usd == pytest.approx(10.0)
-    assert totals.total_trials == 2  # not 3 (no double count), not 4 (unlinked)
+    home_totals = await get_experiment_cost_totals(
+        session, experiment_id=home.id, org_id=_ORG
+    )
+    assert home_totals.cost_usd == pytest.approx(4.0)
+    assert home_totals.total_trials == 1
 
 
 @pytest.mark.asyncio
