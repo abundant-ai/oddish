@@ -121,6 +121,23 @@ async def test_reduce_parse_failure_raises_step_error_with_context():
 
 
 @pytest.mark.asyncio
+async def test_all_maps_failing_is_fatal_not_blank_success():
+    """If every map call fails there are no findings; that must be a fatal
+    'map' step error, not a blank-but-SUCCESS analysis."""
+
+    class AllMapsFail(FakeClient):
+        async def complete(self, prompt, *, model, temperature, max_tokens):
+            if "lead analyst synthesizing" in prompt:  # reduce should never run
+                raise AssertionError("reduce must not run when there are no findings")
+            raise RuntimeError("map down")
+
+    with pytest.raises(AnalyzerEvalStepError) as ei:
+        await run_analyzer_eval(_failure_inputs(), AnalyzerEvalConfig(), client=AllMapsFail())
+    assert ei.value.step == "map"
+    assert "attempted=2" in ei.value.context
+
+
+@pytest.mark.asyncio
 async def test_map_failure_is_skipped_not_fatal_and_logged(caplog):
     """One map call blowing up must not sink the eval; it's logged with the trial id."""
 

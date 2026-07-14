@@ -174,6 +174,12 @@ async def run_analyzer_generation_job(
             )
         )
 
+    # Seed terminal state so _store always has something to write. Every exit
+    # path from the work block below (success, exception, or cancellation) must
+    # reach _store — otherwise the analyzer is stranded in RUNNING with no
+    # finished_at/error until a reaper notices. Mirrors qa_handler.
+    output = None
+    error = None
     try:
         # 2. Ensure each trial has analysis (best-effort), then gather again fresh.
         async with get_session() as session:
@@ -210,15 +216,23 @@ async def run_analyzer_generation_job(
             async with get_session() as session:
                 if not await _worker_job_is_running(session, worker_job_id):
                     return
-        try:
-            async with get_session() as session:
-                rows = await _gather_trial_rows(session, analyzer_id, org_id)
-                inputs = await build_analyzer_inputs(rows)
-            output = await run_analyzer_eval(inputs, _build_analyzer_eval_config())
-            error = None
-        except Exception as exc:  # noqa: BLE001
-            output = None
-            error = f"Analyzer generation failed: {exc}"
+        async with get_session() as session:
+            rows = await _gather_trial_rows(session, analyzer_id, org_id)
+            inputs = await build_analyzer_inputs(rows)
+        output = await run_analyzer_eval(inputs, _build_analyzer_eval_config())
+    except asyncio.CancelledError:
+        # Reaper/shutdown cancelled us mid-run. Record it as a failure (the
+        # _store liveness guard still skips the write if we no longer own the
+        # job) instead of leaking a RUNNING row. CancelledError is BaseException,
+        # so the broad except below would miss it.
+        output = None
+        error = (
+            "Analyzer generation was cancelled by the worker runtime before it "
+            "finished (usually a worker restart or shutdown)."
+        )
+    except Exception as exc:  # noqa: BLE001
+        output = None
+        error = f"Analyzer generation failed: {exc}"
     finally:
         heartbeat_stop.set()
         if heartbeat_task is not None:

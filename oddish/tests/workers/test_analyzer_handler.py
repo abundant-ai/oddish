@@ -144,6 +144,99 @@ async def test_run_analyzer_generation_job_skips_persist_when_reaped(monkeypatch
     assert analyzer.num_trials is None
 
 
+def _install_owned_analyzer(monkeypatch, rh, JobStatus):
+    """Shared scaffolding: a live analyzer whose worker job stays owned so the
+    persist path actually writes (used by the failure/cancel tests)."""
+
+    class _FakeAnalyzer:
+        def __init__(self):
+            self.status = JobStatus.PENDING
+            self.org_id = "org1"
+            self.started_at = None
+            self.finished_at = None
+            self.error = None
+            self.num_trials = None
+
+    analyzer = _FakeAnalyzer()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            return analyzer
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    async def always_running(session, worker_job_id, *, with_for_update=False):
+        return True  # job keeps ownership through persist
+
+    monkeypatch.setattr(rh, "_worker_job_is_running", always_running)
+
+    async def fake_heartbeat(*, worker_job_id, stop_event):
+        await stop_event.wait()
+
+    monkeypatch.setattr(rh, "_heartbeat_analyzer_worker_job", fake_heartbeat)
+    return analyzer
+
+
+@pytest.mark.asyncio
+async def test_gather_failure_marks_failed_not_stuck_running(monkeypatch):
+    """A failure in the trial-gather step (step 2) must still reach persist and
+    mark the analyzer FAILED — not leave it stranded in RUNNING."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def boom_gather(session, analyzer_id, org_id):
+        raise RuntimeError("db exploded during gather")
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", boom_gather)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.FAILED
+    assert analyzer.finished_at is not None
+    assert "db exploded during gather" in analyzer.error
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_marks_failed_not_stuck_running(monkeypatch):
+    """CancelledError (a BaseException, not Exception) during the eval must be
+    caught so persist runs and the analyzer ends FAILED with a clear reason."""
+    import asyncio
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    async def cancel_eval(inputs, config):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", cancel_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.FAILED
+    assert analyzer.finished_at is not None
+    assert "cancelled" in analyzer.error.lower()
+
+
 @pytest.mark.asyncio
 async def test_run_analyzer_generation_job_stops_mid_loop_on_reap(monkeypatch):
     """Mirrors qa_handler's interior gating: if the worker job is reaped

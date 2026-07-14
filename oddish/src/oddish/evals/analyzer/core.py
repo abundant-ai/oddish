@@ -226,6 +226,26 @@ async def run_analyzer_eval(
         len(findings), len(selected), len(selected) - len(findings),
     )
 
+    # We're past the zero-work early return, so the cohort was non-empty. If it
+    # still produced no findings — every map failed/was unparseable, or every
+    # subanalysis was dropped for a missing bundle — reducing would yield blank
+    # sections that still look like a completed analysis. Treat it as fatal
+    # (parallels qa_handler refusing to synthesize a verdict from zero
+    # classifications).
+    if not findings:
+        ctx = _ctx(
+            cohort=len(bad) + len(good), attempted=len(selected),
+            missing_bundles=len(missing), findings=0,
+        )
+        logger.error(
+            "analyzer-eval map: no findings from a non-empty cohort; "
+            "nothing to reduce (%s)", ctx,
+        )
+        raise AnalyzerEvalStepError(
+            "map", ctx,
+            RuntimeError("no findings produced from a non-empty failure cohort"),
+        )
+
     # Step 5 — reduce the per-trial findings into the four narrative sections.
     reduce_prompt = build_reduce_prompt(findings, counts)
     try:
