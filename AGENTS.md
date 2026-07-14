@@ -550,6 +550,9 @@ sweep):
    no Slack post) so first observing an experiment with
    pre-existing spend — feature rollout, threshold change, or a dormant run
    resumed with a cheap trial — never dumps a backlog of historical alerts.
+   Silent claims are marked complete. Failed loud deliveries keep a separate
+   pending retry marker, so they remain retryable even after the spend ages out
+   of the watch window and that milestone would otherwise become silent.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis

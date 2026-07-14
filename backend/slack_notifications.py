@@ -116,9 +116,7 @@ def build_alerts(
     for trial in trials:
         trials_by_experiment.setdefault(trial.experiment_id, []).append(trial)
         peer_key = (trial.task_id, trial.model)
-        task_model_costs[peer_key] = (
-            task_model_costs.get(peer_key, 0) + trial.cost_usd
-        )
+        task_model_costs[peer_key] = task_model_costs.get(peer_key, 0) + trial.cost_usd
         task_model_counts[peer_key] = task_model_counts.get(peer_key, 0) + 1
 
     alerts: list[SlackAlert] = []
@@ -159,9 +157,7 @@ def build_alerts(
                 # Milestones already covered before the watch window opened are
                 # historical: claim them silently so pre-existing spend never
                 # dumps a backlog of alerts the first time we observe it.
-                if milestone <= baseline_cost + _MILESTONE_EPSILON:
-                    alerts.append(SlackAlert(key=key, text="", silent=True))
-                    continue
+                silent = milestone <= baseline_cost + _MILESTONE_EPSILON
                 alerts.append(
                     SlackAlert(
                         key=key,
@@ -177,11 +173,15 @@ def build_alerts(
                             f"{top_agent_cost_lines}\n"
                             f"<{experiment_url}|open experiment>"
                         ),
+                        silent=silent,
                     )
                 )
 
         for trial in experiment_trials:
-            if trial.finished_at < recent_cutoff or trial.cost_usd <= trial_threshold_usd:
+            if (
+                trial.finished_at < recent_cutoff
+                or trial.cost_usd <= trial_threshold_usd
+            ):
                 continue
             peer_key = (trial.task_id, trial.model)
             peer_count = task_model_counts[peer_key] - 1
@@ -255,7 +255,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
                     ExperimentModel.id,
                     ExperimentModel.name,
                     ExperimentModel.owner,
-                    func.count(TrialModel.id).filter(active_trial).label("active_trials"),
+                    func.count(TrialModel.id)
+                    .filter(active_trial)
+                    .label("active_trials"),
                 )
                 .join(TrialModel, TrialModel.experiment_id == ExperimentModel.id)
                 .where(
@@ -383,13 +385,9 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         experiment_threshold_usd=_env_float(
             "ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", 1000
         ),
-        experiment_repeat_usd=_env_float(
-            "ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000
-        ),
+        experiment_repeat_usd=_env_float("ODDISH_SLACK_EXPERIMENT_REPEAT_USD", 1000),
         trial_threshold_usd=_env_float("ODDISH_SLACK_EXPENSIVE_TRIAL_USD", 70),
-        trial_average_multiplier=_env_float(
-            "ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2
-        ),
+        trial_average_multiplier=_env_float("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", 2),
         unpriced_models=unpriced_models,
     )
 
@@ -431,20 +429,55 @@ async def _release_alert(alert_key: str) -> None:
         )
 
 
+async def _alert_is_pending(alert_key: str) -> bool:
+    async with get_session() as session:
+        return (
+            await session.scalar(
+                select(SlackExpenseAlertModel.alert_key).where(
+                    SlackExpenseAlertModel.alert_key == alert_key,
+                    SlackExpenseAlertModel.notified_at.is_(None),
+                )
+            )
+        ) is not None
+
+
+async def _start_delivery(
+    claim_key: str,
+    *,
+    silent: bool,
+    retry_key: str,
+) -> bool:
+    # A retry marker proves this alert was previously loud and its delivery
+    # failed. Keep retrying it even if its spend has since aged out of the
+    # recent window and build_alerts now classifies the milestone as silent.
+    if await _alert_is_pending(retry_key):
+        return True
+    if not await _claim_alert(claim_key):
+        return False
+    if silent:
+        await _mark_alert_sent(claim_key)
+        return False
+    return True
+
+
 async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
     for alert in alerts:
-        if alert.silent:
-            await _claim_alert(alert.key)
-            continue
-        if not await _claim_alert(alert.key):
+        retry_key = f"retry:slack:{alert.key}"
+        if not await _start_delivery(
+            alert.key,
+            silent=alert.silent,
+            retry_key=retry_key,
+        ):
             continue
         try:
             await _post(webhook_url, alert.text)
         except Exception:
-            await _release_alert(alert.key)
+            await _claim_alert(retry_key)
             log.exception("slack expense alert post failed alert_key=%s", alert.key)
             continue
         await _mark_alert_sent(alert.key)
+        if await _alert_is_pending(retry_key):
+            await _mark_alert_sent(retry_key)
 
 
 @app.function(

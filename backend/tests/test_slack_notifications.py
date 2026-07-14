@@ -154,7 +154,7 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
         "experiment:experiment-1:4000",
     ]
     assert all(a.silent for a in milestone_alerts)
-    assert all(a.text == "" for a in milestone_alerts)
+    assert all(a.text for a in milestone_alerts)
 
 
 def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
@@ -363,7 +363,7 @@ def test_build_alerts_ignores_old_trials() -> None:
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_claims_once_and_releases_failed_posts(
+async def test_send_alerts_claims_once_and_retries_failed_posts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
@@ -379,8 +379,8 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
     async def mark_sent(key: str) -> None:
         sent.add(key)
 
-    async def release(key: str) -> None:
-        claimed.remove(key)
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
@@ -389,7 +389,7 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
     monkeypatch.setattr(notifications, "_post", post)
 
     await send_alerts("https://hooks.slack.test", [SlackAlert("sent", "ok")])
@@ -405,8 +405,17 @@ async def test_send_alerts_claims_once_and_releases_failed_posts(
 
     assert posted == ["ok", "fail", "ok"]
     assert sent == {"sent", "after-failure"}
-    assert "failed" not in claimed
+    assert "failed" in claimed
+    assert "retry:slack:failed" in claimed
     assert "after-failure" in claimed
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [SlackAlert("failed", "recovered", silent=True)],
+    )
+
+    assert posted == ["ok", "fail", "ok", "recovered"]
+    assert {"failed", "retry:slack:failed"}.issubset(sent)
 
 
 @pytest.mark.asyncio
@@ -426,15 +435,15 @@ async def test_send_alerts_claims_silent_baseline_without_posting(
     async def mark_sent(key: str) -> None:
         sent.add(key)
 
-    async def release(key: str) -> None:
-        claimed.discard(key)
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
-    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
     monkeypatch.setattr(notifications, "_post", post)
 
     await send_alerts(
@@ -446,8 +455,10 @@ async def test_send_alerts_claims_silent_baseline_without_posting(
     )
 
     assert posted == ["fire"]
-    assert sent == {"experiment:1:2000"}
+    assert sent == {"experiment:1:1000", "experiment:1:2000"}
     assert claimed == {"experiment:1:1000", "experiment:1:2000"}
+
+
 @pytest.mark.asyncio
 async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch: pytest.MonkeyPatch,
@@ -573,7 +584,9 @@ async def test_load_alerts_uses_settled_trial_costs(
 
 
 @pytest.mark.asyncio
-async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> None:
+async def test_load_alerts_reports_unpriced_model_without_candidate_experiment() -> (
+    None
+):
     # A soft-deleted experiment yields no expensive-experiment candidate, so
     # load_alerts must not early-return before the unpriceable-model scan.
     suffix = uuid4().hex[:12]
@@ -583,9 +596,7 @@ async def test_load_alerts_reports_unpriced_model_without_candidate_experiment()
 
     async with get_session() as session:
         session.add(
-            ExperimentModel(
-                id=experiment_id, name="Deleted exp", deleted_at=now
-            )
+            ExperimentModel(id=experiment_id, name="Deleted exp", deleted_at=now)
         )
         session.add(
             TaskModel(
