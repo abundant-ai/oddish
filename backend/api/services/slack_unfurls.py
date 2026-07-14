@@ -32,6 +32,7 @@ _TASK_GLYPH_LIMIT = 12
 _MATRIX_TASK_LIMIT = 8
 _MATRIX_COLUMN_LIMIT = 6
 _MATRIX_GLYPH_LIMIT = 48
+_TRIAL_LOAD_LIMIT = 500
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,7 @@ class Summary:
     trials: tuple[TrialSnapshot, ...]
     task_count: int
     version: int | None = None
+    total_trials: int | None = None
 
 
 def _decode_segment(value: str) -> str:
@@ -265,14 +267,31 @@ async def resolve_summary(target: UnfurlTarget, org_id: str) -> Summary | None:
             ]
             if task.current_version_id:
                 filters.append(TrialModel.task_version_id == task.current_version_id)
+            total_trials = int(
+                await session.scalar(
+                    select(func.count(TrialModel.id))
+                    .join(TaskModel, TaskModel.id == TrialModel.task_id)
+                    .where(*filters)
+                )
+                or 0
+            )
             rows = await session.execute(
                 select(*_trial_columns())
                 .join(TaskModel, TaskModel.id == TrialModel.task_id)
                 .where(*filters)
-                .order_by(TrialModel.created_at.asc(), TrialModel.id.asc())
+                .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+                .limit(_TRIAL_LOAD_LIMIT)
             )
-            trials = tuple(_trial_from_row(row) for row in rows)
-            return Summary("task", task.name, target.url, trials, 1, version)
+            trials = tuple(reversed([_trial_from_row(row) for row in rows]))
+            return Summary(
+                "task",
+                task.name,
+                target.url,
+                trials,
+                1,
+                version,
+                total_trials,
+            )
 
         experiment_filters = [
             ExperimentModel.org_id == org_id,
@@ -306,27 +325,38 @@ async def resolve_summary(target: UnfurlTarget, org_id: str) -> Summary | None:
             )
             or 0
         )
+        trial_filters = [
+            trial_in_experiment(experiment.id),
+            TrialModel.org_id == org_id,
+            TrialModel.is_probe.is_(False),
+            TrialModel.superseded_by_trial_id.is_(None),
+            TrialModel.deleted_at.is_(None),
+            TaskModel.org_id == org_id,
+            TaskModel.deleted_at.is_(None),
+        ]
+        total_trials = int(
+            await session.scalar(
+                select(func.count(TrialModel.id))
+                .join(TaskModel, TaskModel.id == TrialModel.task_id)
+                .where(*trial_filters)
+            )
+            or 0
+        )
         rows = await session.execute(
             select(*_trial_columns())
             .join(TaskModel, TaskModel.id == TrialModel.task_id)
-            .where(
-                trial_in_experiment(experiment.id),
-                TrialModel.org_id == org_id,
-                TrialModel.is_probe.is_(False),
-                TrialModel.superseded_by_trial_id.is_(None),
-                TrialModel.deleted_at.is_(None),
-                TaskModel.org_id == org_id,
-                TaskModel.deleted_at.is_(None),
-            )
-            .order_by(TaskModel.name.asc(), TrialModel.created_at.asc())
+            .where(*trial_filters)
+            .order_by(TrialModel.created_at.desc(), TrialModel.id.desc())
+            .limit(_TRIAL_LOAD_LIMIT)
         )
-        trials = tuple(_trial_from_row(row) for row in rows)
+        trials = tuple(reversed([_trial_from_row(row) for row in rows]))
         return Summary(
             "experiment",
             experiment.name,
             target.url,
             trials,
             max(task_count, len({trial.task_id for trial in trials})),
+            total_trials=total_trials,
         )
 
 
@@ -400,20 +430,12 @@ def _result_summary(counts: Counter[str]) -> str:
 
 def _avg_score(summary: Summary) -> float | None:
     if summary.kind == "task":
-        rewards = [
-            t.reward
-            for t in summary.trials
-            if t.status == "success" and t.reward is not None
-        ]
+        rewards = [t.reward for t in summary.trials if t.reward is not None]
         return sum(rewards) / len(rewards) if rewards else None
 
     by_task: dict[str, list[float]] = defaultdict(list)
     for trial in summary.trials:
-        if (
-            trial.status == "success"
-            and trial.reward is not None
-            and not is_nop_oracle_agent(trial.agent)
-        ):
+        if trial.reward is not None and not is_nop_oracle_agent(trial.agent):
             by_task[trial.task_id].append(trial.reward)
     task_scores = [sum(values) / len(values) for values in by_task.values() if values]
     return sum(task_scores) / len(task_scores) if task_scores else None
@@ -486,6 +508,9 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
     )
     cost, estimated, unpriced = _cost(summary.trials)
     score = _avg_score(summary)
+    total_trials = summary.total_trials or len(summary.trials)
+    sampled = total_trials > len(summary.trials)
+    sample_label = f" (latest {len(summary.trials)})" if sampled else ""
     title_suffix = f" · v{summary.version}" if summary.version is not None else ""
     blocks: list[dict[str, Any]] = [
         {
@@ -511,20 +536,31 @@ def render_blocks(summary: Summary) -> list[dict[str, Any]]:
     if unpriced:
         cost_text += f" · {unpriced} unpriced"
     fields = [
-        {"type": "mrkdwn", "text": f"*Results*\n{_result_summary(counts)}"},
         {
             "type": "mrkdwn",
-            "text": f"*Completion*\n{terminal}/{len(summary.trials)} trials",
+            "text": f"*Results{sample_label}*\n{_result_summary(counts)}",
         },
         {
             "type": "mrkdwn",
-            "text": f"*Avg score*\n{score * 100:.1f}%"
+            "text": (
+                f"*Completion{sample_label}*\n{terminal}/{len(summary.trials)} sampled"
+                f" · {total_trials} total"
+                if sampled
+                else f"*Completion*\n{terminal}/{len(summary.trials)} trials"
+            ),
+        },
+        {
+            "type": "mrkdwn",
+            "text": f"*Avg score{sample_label}*\n{score * 100:.1f}%"
             if score is not None
-            else "*Avg score*\n—",
+            else f"*Avg score{sample_label}*\n—",
         },
         {
             "type": "mrkdwn",
-            "text": f"*Cost{' so far' if terminal < len(summary.trials) else ''}*\n{cost_text}",
+            "text": (
+                f"*Cost{sample_label}"
+                f"{' so far' if terminal < len(summary.trials) else ''}*\n{cost_text}"
+            ),
         },
     ]
     if summary.kind == "experiment":

@@ -139,6 +139,48 @@ def test_small_experiment_gets_matrix_but_large_one_does_not():
     )
 
 
+def test_experiment_score_includes_non_successful_trials_with_rewards():
+    summary = Summary(
+        "experiment",
+        "timeouts",
+        "https://www.oddish.app/experiments/exp-1",
+        (
+            _trial(
+                task_id="a",
+                status="failed",
+                reward=0.5,
+                error_message="AgentTimeoutError: time limit",
+            ),
+            _trial(task_id="b", status="failed", reward=1.0),
+        ),
+        2,
+    )
+
+    fields = next(
+        block["fields"] for block in render_blocks(summary) if "fields" in block
+    )
+    assert fields[2]["text"] == "*Avg score*\n75.0%"
+
+
+def test_sampled_summary_labels_bounded_trial_window():
+    summary = Summary(
+        "experiment",
+        "large",
+        "https://www.oddish.app/experiments/exp-1",
+        (_trial(), _trial()),
+        100,
+        total_trials=5000,
+    )
+
+    fields = next(
+        block["fields"] for block in render_blocks(summary) if "fields" in block
+    )
+    assert fields[0]["text"].startswith("*Results (latest 2)*")
+    assert fields[1]["text"] == "*Completion (latest 2)*\n2/2 sampled · 5000 total"
+    assert fields[2]["text"].startswith("*Avg score (latest 2)*")
+    assert fields[3]["text"].startswith("*Cost (latest 2)*")
+
+
 def test_slack_signature_verification_checks_hmac_and_age():
     body = b'{"type":"event_callback"}'
     timestamp = "1000"
