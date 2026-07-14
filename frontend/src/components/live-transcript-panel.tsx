@@ -412,7 +412,8 @@ export function LiveTranscriptPanel({
     if (!newest || newest === prevNewestRef.current) return;
     const prev = prevNewestRef.current;
     prevNewestRef.current = newest;
-    if (atBottomRef.current) autoExpandedRef.current = newest;
+    if (!atBottomRef.current) return;
+    autoExpandedRef.current = newest;
     setExpanded((cur) => {
       const next = new Set(cur);
       if (prev) next.delete(prev);
