@@ -186,7 +186,7 @@ async def list_users(
 async def get_my_quota_usage(
     auth: Annotated[AuthContext, Depends(require_auth)],
 ) -> QuotaUsageResponse:
-    used_usd = reserved = bump_usd = Decimal(0)
+    used_usd = reserved = bump_usd = gamble_net = Decimal(0)
     base_limit_usd, bump_expires_at = settings.default_daily_quota_usd, None
     if auth.user_id:
         async with get_session() as session:
@@ -194,10 +194,13 @@ async def get_my_quota_usage(
                 await _read_member_quota_fields(session, auth.org_id, auth.user_id)
             )
             reserved = await inflight_reserved_usd(session, auth.org_id, auth.user_id)
+            gamble_net = await sum_gamble_net_usd(
+                session, auth.org_id, auth.user_id, quota_window_start()
+            )
 
     return QuotaUsageResponse(
         user_id=auth.user_id or "",
-        limit_usd=float(base_limit_usd + bump_usd),
+        limit_usd=float(max(Decimal(0), base_limit_usd + bump_usd + gamble_net)),
         used_usd=float(used_usd),
         reserved_usd=float(reserved),
         enforced=settings.quota_mode == QuotaMode.ENFORCE,
@@ -578,7 +581,7 @@ async def wrestle_bet(
     async with get_session() as session:
         await _require_gambles_table(session)
         await session.execute(
-            text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
+            sa_text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))"),
             {"ns": _GAMBLE_LOCK_NAMESPACE, "key": f"{auth.org_id}:{user_id}"},
         )
         limit = await get_effective_limit(session, auth.org_id, user_id)
