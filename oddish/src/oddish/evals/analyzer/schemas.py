@@ -39,3 +39,6 @@ class AnalyzerEvalOutput:
     findings: list[Finding] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)  # trials, bad, good
     breakdown: dict[str, int] = field(default_factory=dict)
+    # The reduce-stage prompt that produced ``sections``, kept for debugging and
+    # reproducibility. None on the zero-work path (no failures → no reduce ran).
+    reduce_prompt: str | None = None

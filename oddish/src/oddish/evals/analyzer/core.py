@@ -276,5 +276,6 @@ async def run_analyzer_eval(
     }
     logger.info("analyzer-eval complete: %d findings, sections rendered", len(findings))
     return AnalyzerEvalOutput(
-        sections=sections, findings=findings, counts=counts, breakdown=breakdown
+        sections=sections, findings=findings, counts=counts, breakdown=breakdown,
+        reduce_prompt=reduce_prompt,
     )
