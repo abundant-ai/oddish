@@ -281,11 +281,17 @@ async def run_analyzer_generation_job(
         # _store liveness guard still skips the write if we no longer own the
         # job) instead of leaking a RUNNING row. CancelledError is BaseException,
         # so the broad except below would miss it.
-        output = None
-        error = (
-            "Analyzer generation was cancelled by the worker runtime before it "
-            "finished (usually a worker restart or shutdown)."
-        )
+        #
+        # `output` is only ever set once run_analyzer_eval has fully returned, so
+        # a cancel arriving with it already populated landed in the best-effort
+        # trial-analyses upload (whose own `except Exception` cannot catch a
+        # BaseException). That side product must never discard a finished
+        # analysis -- keep the output so _store still records SUCCESS.
+        if output is None:
+            error = (
+                "Analyzer generation was cancelled by the worker runtime before it "
+                "finished (usually a worker restart or shutdown)."
+            )
     except Exception as exc:  # noqa: BLE001
         output = None
         error = f"Analyzer generation failed: {exc}"
