@@ -91,7 +91,7 @@ export function VerifierResultsCard({
   const hasEmbeddedSummary = embeddedSummary !== null;
   const isTerminal = hasTerminalStatus(trial);
   const trialId = trial.id;
-  const shouldLoadArtifact = enabled && isTerminal;
+  const shouldLoadArtifact = enabled && isTerminal && !hasEmbeddedSummary;
   const artifactKey = `${apiBaseUrl}\0${trialId}\0${shouldLoadArtifact ? "load" : "idle"}`;
   const [artifactState, setArtifactState] = useState<ArtifactCtrfState>(() => ({
     key: artifactKey,
@@ -141,7 +141,7 @@ export function VerifierResultsCard({
                 (path === "verifier/ctrf.json" ||
                   path.endsWith("/verifier/ctrf.json")),
             ) ?? null;
-        if (!reportPath || hasEmbeddedSummary) return;
+        if (!reportPath) return;
 
         const reportResponse = await fetch(
           `${filesBase}/${encodeFilePath(reportPath)}`,
@@ -167,13 +167,7 @@ export function VerifierResultsCard({
 
     void loadHistoricalCtrf();
     return () => controller.abort();
-  }, [
-    apiBaseUrl,
-    artifactKey,
-    hasEmbeddedSummary,
-    shouldLoadArtifact,
-    trialId,
-  ]);
+  }, [apiBaseUrl, artifactKey, shouldLoadArtifact, trialId]);
 
   const summary = embeddedSummary ?? artifactSummary;
   const isHistoricalSummaryLoading = !hasEmbeddedSummary && isArtifactLoading;
@@ -235,7 +229,7 @@ export function VerifierResultsCard({
     fallbackDetail = "The verifier did not return a score.";
   }
 
-  const reportPath = artifactReportPath;
+  const reportPath = embeddedSummary?.reportPath ?? artifactReportPath;
 
   return (
     <Card className={tone}>

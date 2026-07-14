@@ -7,6 +7,7 @@ export interface CtrfSummary {
   pending: number;
   other: number;
   tool?: string;
+  reportPath?: string;
 }
 
 export interface VerifierMetric {
@@ -46,6 +47,15 @@ export function parseCtrfSummary(value: unknown): CtrfSummary | null {
     return null;
   }
 
+  const reportPath =
+    typeof value.report_path === "string" &&
+    !value.report_path.startsWith("/") &&
+    !value.report_path.split("/").includes("..") &&
+    (value.report_path === "verifier/ctrf.json" ||
+      value.report_path.endsWith("/verifier/ctrf.json"))
+      ? value.report_path
+      : undefined;
+
   return {
     format: "ctrf",
     tests,
@@ -57,11 +67,12 @@ export function parseCtrfSummary(value: unknown): CtrfSummary | null {
     ...(typeof value.tool === "string" && value.tool.trim()
       ? { tool: value.tool.trim() }
       : {}),
+    ...(reportPath ? { reportPath } : {}),
   };
 }
 
 export function embeddedCtrfSummary(
-  result: Record<string, unknown> | null | undefined
+  result: Record<string, unknown> | null | undefined,
 ): CtrfSummary | null {
   return parseCtrfSummary(result?._verifier);
 }
@@ -111,7 +122,7 @@ function metricValue(key: string, value: string | number | boolean): string {
 
 export function verifierMetrics(
   result: Record<string, unknown> | null | undefined,
-  limit = 6
+  limit = 6,
 ): VerifierMetric[] {
   if (!result) return [];
 

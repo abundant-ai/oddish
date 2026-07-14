@@ -43,6 +43,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
+from oddish.core.harbor_artifacts import sanitize_task_result
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -268,7 +269,10 @@ async def initialize_trial_import(
             max_attempts=1,
             harbor_stage=trial_spec.harbor_stage or "completed",
             reward=trial_spec.reward,
-            result=trial_spec.result,
+            # Import metadata is client-authored. Reserve ``_verifier`` for a
+            # summary Oddish parsed from the uploaded CTRF artifact; otherwise
+            # forged import JSON could override the real test report in S3.
+            result=sanitize_task_result(trial_spec.result),
             error_message=trial_spec.error_message,
             input_tokens=trial_spec.input_tokens,
             cache_tokens=trial_spec.cache_tokens,

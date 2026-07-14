@@ -148,8 +148,9 @@ High-level flow:
    reported, phase timing, trajectory availability, arbitrary verifier
    `metrics.json`, and a compact `_verifier` summary when the verifier emits a
    Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
-   S3; only counts and the tool name are stored in `trials.result`. Use the CLI
-   or dashboard to watch progress and pull logs/artifacts back locally.
+   S3; only counts, the tool name, and the report's trial-relative artifact path
+   are stored in `trials.result`. Use the CLI or dashboard to watch progress and
+   pull logs/artifacts back locally.
 
 ### Worker job kinds
 

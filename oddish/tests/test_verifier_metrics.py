@@ -175,6 +175,7 @@ def test_ctrf_summary_extracts_counts_and_tool(tmp_path):
         "skipped": 1,
         "pending": 0,
         "other": 0,
+        "report_path": "trial__abc123/verifier/ctrf.json",
         "tool": "pytest",
     }
 
@@ -260,3 +261,12 @@ def test_real_verifier_summary_replaces_task_authored_value():
     assert merged_trial_result({"_verifier": {"passed": 999}}, None, None, real) == {
         "_verifier": real
     }
+
+
+def test_sanitize_task_result_removes_reserved_verifier_summary():
+    from oddish.core.harbor_artifacts import sanitize_task_result
+
+    assert sanitize_task_result({"latency_ms": 12, "_verifier": {"passed": 999}}) == {
+        "latency_ms": 12
+    }
+    assert sanitize_task_result({"_verifier": {"passed": 999}}) is None

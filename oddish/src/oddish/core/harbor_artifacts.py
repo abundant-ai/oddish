@@ -79,6 +79,13 @@ def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
     return None
 
 
+def sanitize_task_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Copy task-authored result data without Oddish-owned verifier fields."""
+    sanitized = dict(result or {})
+    sanitized.pop("_verifier", None)
+    return sanitized or None
+
+
 def _nonnegative_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
@@ -125,7 +132,11 @@ def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
                 break
             counts[key] = value
         else:
-            compact: dict[str, Any] = {"format": "ctrf", **counts}
+            compact: dict[str, Any] = {
+                "format": "ctrf",
+                **counts,
+                "report_path": report_path.relative_to(path).as_posix(),
+            }
             tool = results.get("tool")
             if isinstance(tool, dict):
                 tool_name = tool.get("name")
@@ -142,11 +153,7 @@ def build_trial_result(
     exception_type: str | None,
 ) -> dict[str, Any] | None:
     """Merge verifier metrics, a compact report, and a quiet exception marker."""
-    result: dict[str, Any] = dict(metrics or {})
-    # ``metrics.json`` is task-authored, while Oddish owns the normalized
-    # verifier-report envelope. Always discard a task-provided value so a
-    # missing or invalid CTRF report cannot leave spoofed test counts behind.
-    result.pop("_verifier", None)
+    result: dict[str, Any] = sanitize_task_result(metrics) or {}
     if verifier_summary is not None:
         result["_verifier"] = verifier_summary
     if exception_type is not None:

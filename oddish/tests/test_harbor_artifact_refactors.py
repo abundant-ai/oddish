@@ -149,6 +149,7 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
             "skipped": 0,
             "pending": 0,
             "other": 0,
+            "report_path": "verifier/ctrf.json",
             "tool": "pytest",
         },
     }
