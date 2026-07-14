@@ -288,7 +288,7 @@ def create_app() -> FastAPI:
         imports,
         load,
         orgs,
-        analyzers,
+        reports,
         skills,
         public,
         tags,
@@ -313,6 +313,6 @@ def create_app() -> FastAPI:
     api.include_router(public.router)
     api.include_router(admin.router)
     api.include_router(tags.router)
-    api.include_router(analyzers.router)
+    api.include_router(reports.router)
 
     return api

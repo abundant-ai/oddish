@@ -1774,10 +1774,11 @@ class SkillResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Analyzers — agent-eval analyzers across experiments.
+# Reports — agent-eval reports across experiments.
 # ---------------------------------------------------------------------------
-class AnalyzerCreate(BaseModel):
-    name: str = Field(min_length=1)
+class ReportCreate(BaseModel):
+    # Optional: when omitted the server auto-names it report_<N>_<experiment>.
+    name: str | None = Field(default=None)
     experiment_ids: list[str] = Field(min_length=1)
 
 
@@ -1786,7 +1787,7 @@ class ExperimentOption(BaseModel):
     name: str
 
 
-class AnalyzerResponse(BaseModel):
+class ReportResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str

@@ -990,17 +990,17 @@ export interface ExperimentShareInfo {
   description: string | null;
 }
 
-export type AnalyzerStatus =
+export type ReportStatus =
   | "pending"
   | "queued"
   | "running"
   | "success"
   | "failed";
 
-export interface Analyzer {
+export interface Report {
   id: string;
   name: string;
-  status: AnalyzerStatus;
+  status: ReportStatus;
   error?: string | null;
   bad_failure_content?: string | null;
   good_failure_content?: string | null;

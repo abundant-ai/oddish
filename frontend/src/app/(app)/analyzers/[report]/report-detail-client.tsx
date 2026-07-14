@@ -5,7 +5,7 @@ import useSWR from "swr";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { fetcher } from "@/lib/api";
-import type { Analyzer } from "@/lib/types";
+import type { Report } from "@/lib/types";
 
 const MarkdownRenderer = dynamic(() =>
   import("@/components/renderers/markdown-renderer").then(
@@ -32,16 +32,16 @@ function Section({ title, content }: { title: string; content?: string | null })
         {content && content.trim() ? (
           <MarkdownRenderer content={content} />
         ) : (
-          <div className="text-muted-foreground text-sm">Nothing to analyzer.</div>
+          <div className="text-muted-foreground text-sm">Nothing here yet.</div>
         )}
       </CardContent>
     </Card>
   );
 }
 
-export function AnalyzerDetailClient({ analyzerId }: { analyzerId: string }) {
-  const { data: analyzer, error } = useSWR<Analyzer>(
-    `/api/analyzers/${analyzerId}`,
+export function ReportDetailClient({ reportId }: { reportId: string }) {
+  const { data: report, error } = useSWR<Report>(
+    `/api/reports/${reportId}`,
     fetcher,
     {
       refreshInterval: (r) =>
@@ -49,29 +49,29 @@ export function AnalyzerDetailClient({ analyzerId }: { analyzerId: string }) {
     },
   );
 
-  if (error) return <div className="text-sm text-red-500">Failed to load analyzer.</div>;
-  if (!analyzer) return <div className="text-muted-foreground text-sm">Loading…</div>;
+  if (error) return <div className="text-sm text-red-500">Failed to load report.</div>;
+  if (!report) return <div className="text-muted-foreground text-sm">Loading…</div>;
 
   const generating =
-    analyzer.status === "pending" ||
-    analyzer.status === "queued" ||
-    analyzer.status === "running";
+    report.status === "pending" ||
+    report.status === "queued" ||
+    report.status === "running";
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-xl font-semibold">{analyzer.name}</h1>
+          <h1 className="text-xl font-semibold">{report.name}</h1>
           <div className="text-muted-foreground mt-1 flex items-center gap-2 text-xs">
-            <Badge variant="outline">{analyzer.status}</Badge>
-            <span>{analyzer.num_trials ?? 0} trials</span>
-            <span>· {analyzer.num_bad_failures ?? 0} bad</span>
-            <span>· {analyzer.num_good_failures ?? 0} good</span>
+            <Badge variant="outline">{report.status}</Badge>
+            <span>{report.num_trials ?? 0} trials</span>
+            <span>· {report.num_bad_failures ?? 0} bad</span>
+            <span>· {report.num_good_failures ?? 0} good</span>
           </div>
         </div>
-        {analyzer.breakdown && (
+        {report.breakdown && (
           <div className="flex flex-wrap gap-1">
-            {Object.entries(analyzer.breakdown).map(([code, count]) => (
+            {Object.entries(report.breakdown).map(([code, count]) => (
               <Badge key={code} variant="secondary" className="text-[10px]">
                 {(SUBCATEGORY_LABELS[code] ?? code)}: {count}
               </Badge>
@@ -82,20 +82,20 @@ export function AnalyzerDetailClient({ analyzerId }: { analyzerId: string }) {
 
       {generating && (
         <div className="text-muted-foreground text-sm">
-          Generating analyzer… this page updates automatically.
+          Generating report… this page updates automatically.
         </div>
       )}
-      {analyzer.status === "failed" && analyzer.error && (
-        <div className="text-sm text-red-500">{analyzer.error}</div>
+      {report.status === "failed" && report.error && (
+        <div className="text-sm text-red-500">{report.error}</div>
       )}
 
-      <Section title="Bad failures (reward hacking)" content={analyzer.bad_failure_content} />
-      <Section title="Good failures (capability)" content={analyzer.good_failure_content} />
+      <Section title="Bad failures (reward hacking)" content={report.bad_failure_content} />
+      <Section title="Good failures (capability)" content={report.good_failure_content} />
       <Section
         title="Universal capabilities"
-        content={analyzer.universal_capabilities_content}
+        content={report.universal_capabilities_content}
       />
-      <Section title="Headroom analysis" content={analyzer.headroom_analysis} />
+      <Section title="Headroom analysis" content={report.headroom_analysis} />
     </div>
   );
 }

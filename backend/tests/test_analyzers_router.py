@@ -93,7 +93,7 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
     monkeypatch.setattr(analyzers_core, "_enqueue_analyzer_worker_job", _noop)
 
     resp = await client.post(
-        "/analyzers",
+        "/reports",
         json={"name": "Q3", "experiment_ids": [experiment_id]},
     )
     assert resp.status_code == 200, resp.text
@@ -101,11 +101,11 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
     assert resp.json()["status"] == "pending"
     assert resp.json()["experiment_ids"] == [experiment_id]
 
-    listed = await client.get("/analyzers")
+    listed = await client.get("/reports")
     assert listed.status_code == 200, listed.text
     assert any(r["id"] == analyzer_id for r in listed.json())
 
-    got = await client.get(f"/analyzers/{analyzer_id}")
+    got = await client.get(f"/reports/{analyzer_id}")
     assert got.status_code == 200, got.text
     assert got.json()["name"] == "Q3"
     assert got.json()["experiment_ids"] == [experiment_id]
@@ -113,7 +113,7 @@ async def test_create_lists_and_gets_analyzer(client, experiment_id, monkeypatch
 
 @pytest.mark.asyncio
 async def test_experiment_options_lists_org_experiments(client, experiment_id):
-    resp = await client.get("/analyzers/experiment-options")
+    resp = await client.get("/reports/experiment-options")
     assert resp.status_code == 200, resp.text
     assert any(opt["id"] == experiment_id for opt in resp.json())
 
@@ -128,13 +128,13 @@ async def test_delete_analyzer_removes_it(client, experiment_id, monkeypatch):
     monkeypatch.setattr(analyzers_core, "_enqueue_analyzer_worker_job", _noop)
 
     resp = await client.post(
-        "/analyzers",
+        "/reports",
         json={"name": "to-delete", "experiment_ids": [experiment_id]},
     )
     analyzer_id = resp.json()["id"]
 
-    deleted = await client.delete(f"/analyzers/{analyzer_id}")
+    deleted = await client.delete(f"/reports/{analyzer_id}")
     assert deleted.status_code == 200, deleted.text
 
-    got = await client.get(f"/analyzers/{analyzer_id}")
+    got = await client.get(f"/reports/{analyzer_id}")
     assert got.status_code == 404

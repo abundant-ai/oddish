@@ -9,7 +9,7 @@ from oddish.core.analyzers import (
     list_experiment_options_core,
     list_analyzers_core,
 )
-from oddish.schemas import AnalyzerCreate
+from oddish.schemas import ReportCreate
 from oddish.db.models import ExperimentModel, JobStatus
 
 
@@ -33,7 +33,7 @@ async def test_create_and_get_analyzer(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="Q3", experiment_ids=[e1.id, e2.id]),
+        data=ReportCreate(name="Q3", experiment_ids=[e1.id, e2.id]),
         org_id="org_1", user_id="user_1",
     )
 
@@ -76,7 +76,7 @@ async def test_delete_cancels_inflight_worker_job(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="ToDelete", experiment_ids=[e1.id]),
+        data=ReportCreate(name="ToDelete", experiment_ids=[e1.id]),
         org_id="org_1", user_id="user_1",
     )
 
@@ -136,7 +136,7 @@ async def test_create_analyzer_rejects_unknown_or_foreign_org_experiment_id(
     with pytest.raises(HTTPException) as exc:
         await create_analyzer_core(
             session,
-            data=AnalyzerCreate(
+            data=ReportCreate(
                 name="Cross-org", experiment_ids=[e1.id, foreign.id, "does-not-exist"]
             ),
             org_id="org_1",
@@ -165,9 +165,45 @@ async def test_create_analyzer_dedupes_experiment_ids(session, monkeypatch):
 
     analyzer = await create_analyzer_core(
         session,
-        data=AnalyzerCreate(name="Dup", experiment_ids=[e1.id, e1.id]),
+        data=ReportCreate(name="Dup", experiment_ids=[e1.id, e1.id]),
         org_id="org_1", user_id="user_1",
     )
 
     exp_ids = await experiment_ids_for_analyzer(session, analyzer.id)
     assert exp_ids == [e1.id]
+
+
+@pytest.mark.asyncio
+async def test_auto_names_report_when_name_omitted(session, monkeypatch):
+    """No name -> report_<N>_<slug(exp)>, N incrementing per experiment."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    foo = ExperimentModel(name="Card Demo", org_id="org_1")
+    bar = ExperimentModel(name="airflow", org_id="org_1")
+    session.add_all([foo, bar])
+    await session.flush()
+
+    r0 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[foo.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r0.name == "report_0_card_demo"  # slugified, index 0
+    await session.flush()
+
+    r1 = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[foo.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert r1.name == "report_1_card_demo"  # same experiment -> next index
+    await session.flush()
+
+    rb = await create_analyzer_core(
+        session, data=ReportCreate(experiment_ids=[bar.id]),
+        org_id="org_1", user_id="u1",
+    )
+    assert rb.name == "report_0_airflow"  # different experiment resets to 0

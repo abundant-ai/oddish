@@ -6,6 +6,8 @@ off by enqueueing a ANALYZER worker job (see workers/queue/analyzer_handler.py).
 
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,7 @@ from oddish.db.models import (
     AnalyzerModel,
     analyzer_experiments,
 )
-from oddish.schemas import ExperimentOption, AnalyzerCreate
+from oddish.schemas import ExperimentOption, ReportCreate
 
 
 async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str | None) -> None:
@@ -26,25 +28,59 @@ async def _enqueue_analyzer_worker_job(session, *, analyzer_id: str, org_id: str
     await enqueue_analyzer_worker_job(session, analyzer_id=analyzer_id, org_id=org_id)
 
 
-async def create_analyzer_core(
-    session: AsyncSession, *, data: AnalyzerCreate, org_id: str | None, user_id: str | None
-) -> AnalyzerModel:
-    seen: set[str] = set(data.experiment_ids)
-    requested = list(seen)
+def _slug(name: str) -> str:
+    """Lowercase, collapse non-alphanumerics to underscores, for use in a name."""
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "experiment"
 
-    valid_stmt = select(ExperimentModel.id).where(
+
+async def _default_report_name(
+    session: AsyncSession, *, org_id: str | None, experiment_name: str
+) -> str:
+    """report_<N>_<experiment>, N = smallest free index for this org+experiment."""
+    slug = _slug(experiment_name)
+    existing = {
+        row[0]
+        for row in (
+            await session.execute(
+                select(AnalyzerModel.name).where(
+                    AnalyzerModel.org_id == org_id,
+                    AnalyzerModel.deleted_at.is_(None),
+                )
+            )
+        ).all()
+    }
+    n = 0
+    while f"report_{n}_{slug}" in existing:
+        n += 1
+    return f"report_{n}_{slug}"
+
+
+async def create_analyzer_core(
+    session: AsyncSession, *, data: ReportCreate, org_id: str | None, user_id: str | None
+) -> AnalyzerModel:
+    # Order-preserving dedup so the first experiment (used for auto-naming) is
+    # stable and deterministic.
+    requested = list(dict.fromkeys(data.experiment_ids))
+
+    valid_stmt = select(ExperimentModel.id, ExperimentModel.name).where(
         ExperimentModel.id.in_(requested), ExperimentModel.org_id == org_id
     )
-    valid_ids = {row[0] for row in (await session.execute(valid_stmt)).all()}
-    missing = seen - valid_ids
+    valid = {row[0]: row[1] for row in (await session.execute(valid_stmt)).all()}
+    missing = set(requested) - set(valid)
     if missing:
         raise HTTPException(
             status_code=400,
             detail=f"Unknown or inaccessible experiment ids: {sorted(missing)}",
         )
 
+    name = (data.name or "").strip()
+    if not name:
+        name = await _default_report_name(
+            session, org_id=org_id, experiment_name=valid[requested[0]]
+        )
+
     analyzer = AnalyzerModel(
-        name=data.name,
+        name=name,
         org_id=org_id,
         owner_user_id=user_id,
         status=JobStatus.PENDING,
