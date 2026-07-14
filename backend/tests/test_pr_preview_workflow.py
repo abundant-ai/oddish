@@ -52,13 +52,15 @@ def test_prepare_only_needs_detect():
     assert "stop-previous" not in job.get("if", "")
 
 
-def test_vercel_decoupled_from_backend_deploy():
+def test_vercel_waits_for_backend_deploy():
     job = _wf()["jobs"]["update-vercel-preview"]
     needs = _needs(job)
-    assert "deploy-preview-backend" not in needs
+    assert "deploy-preview-backend" in needs
     assert "prepare-preview-database" in needs
     assert "detect-changes" in needs
-    assert "deploy-preview-backend" not in job.get("if", "")
+    condition = job.get("if", "")
+    assert "needs.deploy-preview-backend.result == 'success'" in condition
+    assert "needs.deploy-preview-backend.result == 'skipped'" in condition
 
 
 def test_backend_and_vercel_are_siblings():
@@ -68,9 +70,13 @@ def test_backend_and_vercel_are_siblings():
 
 
 def test_post_links_waits_for_backend_and_vercel():
-    needs = _needs(_wf()["jobs"]["post-preview-links"])
+    job = _wf()["jobs"]["post-preview-links"]
+    needs = _needs(job)
     assert "deploy-preview-backend" in needs
     assert "update-vercel-preview" in needs
+    modal_url = job["env"]["MODAL_API_URL"]
+    assert "needs.deploy-preview-backend.outputs.modal_api_url" in modal_url
+    assert "needs.update-vercel-preview.outputs.backend_api_url" in modal_url
 
 
 def test_deterministic_url_single_sourced_and_consumed():
@@ -86,8 +92,7 @@ def test_deterministic_url_single_sourced_and_consumed():
 
 def test_vercel_modal_url_gated_with_prod_fallback():
     expr = _wf()["jobs"]["update-vercel-preview"]["env"]["MODAL_API_URL"]
-    assert "deploy_backend == 'true'" in expr
-    assert "branch_was_created == 'true'" in expr
+    assert "preview_backend_live == 'true'" in expr
     assert "preview_api_url" in expr
     assert expr.rstrip().endswith("|| '' }}")
 

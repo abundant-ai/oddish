@@ -235,6 +235,77 @@ def test_litellm_candidates_normalize_names() -> None:
     assert "anthropic/claude-opus-4-7" in cs
 
 
+def test_litellm_candidates_walk_nested_provider_suffixes_and_spellings() -> None:
+    cs = _litellm_candidates("openrouter/anthropic/claude-opus-4.8")
+    assert cs[0] == "openrouter/anthropic/claude-opus-4.8"
+    assert "anthropic/claude-opus-4.8" in cs
+    assert "claude-opus-4.8" in cs
+    assert "claude-opus-4-8" in cs
+    assert "8" not in cs
+    assert cs.index("openrouter/anthropic/claude-opus-4.8") < cs.index(
+        "claude-opus-4-8"
+    )
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (
+            "openrouter/anthropic/claude-opus-4.8",
+            ModelPricing(
+                input=5e-6,
+                output=25e-6,
+                cache_read=5e-7,
+                cache_write=6.25e-6,
+            ),
+        ),
+        (
+            "openrouter/anthropic/claude-opus-4-8",
+            ModelPricing(
+                input=5e-6,
+                output=25e-6,
+                cache_read=5e-7,
+                cache_write=6.25e-6,
+            ),
+        ),
+        (
+            "openrouter/openai/gpt-5.5",
+            ModelPricing(input=5e-6, output=30e-6, cache_read=5e-7),
+        ),
+        (
+            "openrouter/openai/gpt-5.4-mini",
+            ModelPricing(input=7.5e-7, output=4.5e-6, cache_read=7.5e-8),
+        ),
+        (
+            "openrouter/moonshotai/kimi-k2.6",
+            ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.6e-7),
+        ),
+        (
+            "openrouter/moonshotai/kimi-k2.7-code",
+            ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.9e-7),
+        ),
+        (
+            "moonshotai/kimi-k2.6",
+            ModelPricing(input=9.5e-7, output=4e-6, cache_read=1.6e-7),
+        ),
+    ],
+)
+def test_nested_and_legacy_aliases_resolve_vendor_pricing(
+    model: str, expected: ModelPricing
+) -> None:
+    assert get_model_pricing(model) == expected
+
+
+def test_exact_router_rate_wins_before_vendor_fallback() -> None:
+    # OpenRouter's GLM-4.7 rate differs from z.ai's direct rate. Even though the
+    # suffix/provider pipeline can derive ``zai/glm-4.7``, the exact router key
+    # must win.
+    pricing = get_model_pricing("openrouter/z-ai/glm-4.7")
+    assert pricing is not None
+    assert pricing.input == pytest.approx(4e-7)
+    assert pricing.output == pytest.approx(1.5e-6)
+
+
 @pytest.mark.parametrize(
     ("model", "litellm_key", "expected"),
     [
