@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import json
+import time
 
-from api.routers.slack import verify_slack_signature
+from fastapi import BackgroundTasks, Request
+
+from api.routers import slack as slack_router
+from api.routers.slack import slack_events, verify_slack_signature
 from api.services.slack_unfurls import (
+    SlackUnfurlConfig,
     Summary,
     TrialSnapshot,
     outcome_glyph,
@@ -209,3 +216,57 @@ def test_slack_signature_verification_checks_hmac_and_age():
         signing_secret=secret,
         now=1400,
     )
+
+
+def test_composer_link_event_is_enqueued_for_unfurl(monkeypatch):
+    secret = "signing-secret"
+    payload = {
+        "type": "event_callback",
+        "team_id": "T123",
+        "event": {
+            "type": "link_shared",
+            "source": "composer",
+            "unfurl_id": "U123",
+            "links": [{"url": "https://www.oddish.app/tasks/task-1"}],
+        },
+    }
+    body = json.dumps(payload).encode()
+    timestamp = str(int(time.time()))
+    signature = (
+        "v0="
+        + hmac.new(
+            secret.encode(),
+            b"v0:" + timestamp.encode() + b":" + body,
+            hashlib.sha256,
+        ).hexdigest()
+    )
+    config = SlackUnfurlConfig(
+        enabled=True,
+        signing_secret=secret,
+        bot_token="xoxb-token",
+        org_id="org-1",
+        team_id="T123",
+        allowed_channels=frozenset(),
+        dashboard_url="https://www.oddish.app",
+    )
+    monkeypatch.setattr(slack_router, "load_slack_unfurl_config", lambda: config)
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"x-slack-request-timestamp", timestamp.encode()),
+                (b"x-slack-signature", signature.encode()),
+            ],
+        },
+        receive,
+    )
+    background_tasks = BackgroundTasks()
+
+    assert asyncio.run(slack_events(request, background_tasks)) == {"ok": True}
+    assert len(background_tasks.tasks) == 1
+    assert background_tasks.tasks[0].func is slack_router.process_link_shared_event
+    assert background_tasks.tasks[0].args == (payload,)

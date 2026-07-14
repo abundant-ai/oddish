@@ -68,7 +68,7 @@ async def slack_events(request: Request, background_tasks: BackgroundTasks) -> d
         return {"ok": True}
 
     event = payload.get("event") or {}
-    if event.get("type") != "link_shared" or event.get("source") == "composer":
+    if event.get("type") != "link_shared":
         return {"ok": True}
     if config.allowed_channels and event.get("channel") not in config.allowed_channels:
         return {"ok": True}
