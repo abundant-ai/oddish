@@ -73,7 +73,21 @@ def _slugify_session_part(value: str) -> str:
     return slug or "oddish-eval"
 
 
-class OddishMetaMiniSweAgent(MiniSweAgent):
+class OddishMiniSweAgent(MiniSweAgent):
+    async def install(self, environment) -> None:
+        await super().install(environment)
+        version_spec = f"=={self._version}" if self._version else ""
+        await self.exec_as_agent(
+            environment,
+            command=(
+                'if [ -f "$HOME/.local/bin/env" ]; then source "$HOME/.local/bin/env"; fi; '
+                'export PATH="$HOME/.local/bin:$PATH"; '
+                f"uv tool install mini-swe-agent{version_spec} --with 'litellm[proxy]'"
+            ),
+        )
+
+
+class OddishMetaMiniSweAgent(OddishMiniSweAgent):
     """mini-swe-agent wrapper for Meta's OpenAI-compatible eval endpoint."""
 
     @classmethod
@@ -106,26 +120,6 @@ class OddishMetaMiniSweAgent(MiniSweAgent):
         }
         domains.add(_META_API_DOMAIN)
         return sorted(domains)
-
-    async def install(self, environment) -> None:
-        await super().install(environment)
-        # litellm >= 1.92 lazily imports proxy/MCP handlers (fastapi, orjson, ...)
-        # on the tool-calling completion path mini-swe-agent uses
-        # (``tools=[BASH_TOOL]``). Those deps are not in the base ``uv tool``
-        # venv, so the first model call crashes with ModuleNotFoundError
-        # (fastapi -> orjson -> ...) and the trial fails at 2 steps / 0 tokens.
-        # Reinstall the tool with litellm's proxy extras so completion() imports
-        # cleanly. (The unpinned tool install started resolving 1.92 recently;
-        # the proxy extra is version-agnostic, unlike pinning litellm.)
-        version_spec = f"=={self._version}" if self._version else ""
-        await self.exec_as_agent(
-            environment,
-            command=(
-                'if [ -f "$HOME/.local/bin/env" ]; then source "$HOME/.local/bin/env"; fi; '
-                'export PATH="$HOME/.local/bin:$PATH"; '
-                f"uv tool install mini-swe-agent{version_spec} --with 'litellm[proxy]'"
-            ),
-        )
 
     def _meta_session_id(self) -> str:
         explicit = (
