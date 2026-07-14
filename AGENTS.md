@@ -145,8 +145,12 @@ High-level flow:
    inflight for quotas and `/live`.
 6. Trial completion persists queryable execution metrics on the trial row:
    input/cache/output tokens, total trajectory steps, native runtime cost when
-   reported, phase timing, and trajectory availability. Use the CLI or dashboard
-   to watch progress and pull logs/artifacts back locally.
+   reported, phase timing, trajectory availability, arbitrary verifier
+   `metrics.json`, and a compact `_verifier` summary when the verifier emits a
+   Common Test Report Format `verifier/ctrf.json`. The full CTRF report stays in
+   S3; only counts, the tool name, and the report's trial-relative artifact path
+   are stored in `trials.result`. Use the CLI or dashboard to watch progress and
+   pull logs/artifacts back locally.
 
 ### Worker job kinds
 
@@ -717,6 +721,13 @@ The frontend is a Next.js 16 / React 19 App Router app. Browser code calls
 `src/app/api/*` route handlers, which forward to the backend from
 `NEXT_PUBLIC_API_URL` and preserve auth. Public routes are `/`, `/share/*`,
 `/datasets/*`, and `/api/public/*`; everything else is Clerk-protected.
+
+The trial drawer's Verifier Results card is adaptive: `_verifier` CTRF counts
+take precedence, scalar `trials.result` metrics render as benchmark metrics,
+and `reward` provides the binary/partial/scoreless fallback. Historical trials
+without a persisted `_verifier` summary lazily discover and parse their
+`verifier/ctrf.json` artifact through the already-scoped trial files API; do not
+add an unscoped artifact lookup for this fallback.
 
 On an experiment page, removing a task always calls the scoped
 `DELETE /experiments/{experiment_id}/tasks/{task_id}` proxy. It unlinks that
