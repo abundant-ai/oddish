@@ -1,0 +1,43 @@
+name: History Guard
+
+on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Post-scrub history
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Reject old history
+        env:
+          CLEAN_HISTORY_ANCHOR: 0e5a84456b68a2b79e728048b8b2668337d66759
+          OLD_FIRST_CHANGED: c332997245d9e5321c1c300a9dd5243551eb2aeb
+        run: |
+          if ! git cat-file -e "${CLEAN_HISTORY_ANCHOR}^{commit}"; then
+            echo "::error::Clean-history anchor is unavailable."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$CLEAN_HISTORY_ANCHOR" HEAD; then
+            echo "::error::Branch is not based on post-scrub main. Re-clone and rebase."
+            exit 1
+          fi
+
+          if git cat-file -e "${OLD_FIRST_CHANGED}^{commit}" 2>/dev/null &&
+             git merge-base --is-ancestor "$OLD_FIRST_CHANGED" HEAD; then
+            echo "::error::Branch contains pre-scrub history. Re-clone and rebase."
+            exit 1
+          fi
