@@ -22,7 +22,15 @@ const SUBCATEGORY_LABELS: Record<string, string> = {
   emergent: "Emergent",
 };
 
-function Section({ title, content }: { title: string; content?: string | null }) {
+function Section({
+  title,
+  content,
+  generating,
+}: {
+  title: string;
+  content?: string | null;
+  generating?: boolean;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -32,7 +40,9 @@ function Section({ title, content }: { title: string; content?: string | null })
         {content && content.trim() ? (
           <MarkdownRenderer content={content} />
         ) : (
-          <div className="text-muted-foreground text-sm">Nothing here yet.</div>
+          <div className="text-muted-foreground text-sm">
+            {generating ? "Generating…" : "Nothing here yet."}
+          </div>
         )}
       </CardContent>
     </Card>
@@ -64,9 +74,15 @@ export function ReportDetailClient({ reportId }: { reportId: string }) {
           <h1 className="text-xl font-semibold">{report.name}</h1>
           <div className="text-muted-foreground mt-1 flex items-center gap-2 text-xs">
             <Badge variant="outline">{report.status}</Badge>
-            <span>{report.num_trials ?? 0} trials</span>
-            <span>· {report.num_bad_failures ?? 0} bad</span>
-            <span>· {report.num_good_failures ?? 0} good</span>
+            {generating ? (
+              <span>counting trials…</span>
+            ) : (
+              <>
+                <span>{report.num_trials ?? 0} trials</span>
+                <span>· {report.num_bad_failures ?? 0} bad</span>
+                <span>· {report.num_good_failures ?? 0} good</span>
+              </>
+            )}
           </div>
         </div>
         {report.breakdown && (
@@ -89,13 +105,26 @@ export function ReportDetailClient({ reportId }: { reportId: string }) {
         <div className="text-sm text-red-500">{report.error}</div>
       )}
 
-      <Section title="Bad failures (reward hacking)" content={report.bad_failure_content} />
-      <Section title="Good failures (capability)" content={report.good_failure_content} />
+      <Section
+        title="Bad failures (reward hacking)"
+        content={report.bad_failure_content}
+        generating={generating}
+      />
+      <Section
+        title="Good failures (capability)"
+        content={report.good_failure_content}
+        generating={generating}
+      />
       <Section
         title="Universal capabilities"
         content={report.universal_capabilities_content}
+        generating={generating}
       />
-      <Section title="Headroom analysis" content={report.headroom_analysis} />
+      <Section
+        title="Headroom analysis"
+        content={report.headroom_analysis}
+        generating={generating}
+      />
     </div>
   );
 }
