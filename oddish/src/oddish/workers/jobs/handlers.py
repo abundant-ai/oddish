@@ -21,6 +21,7 @@ from oddish.db import (
     WorkerJobKind,
     get_session,
 )
+from oddish.db.models import JobStatus, AnalyzerModel
 from oddish.registry_auth import (
     RegistryAuthDecryptError,
     current_registry_credentials,
@@ -29,6 +30,7 @@ from oddish.registry_auth import (
 from oddish.workers.jobs.registry import JobOutcome
 from oddish.workers.queue.analysis_handler import run_analysis_job
 from oddish.workers.queue.qa_handler import run_task_qa_job
+from oddish.workers.queue.analyzer_handler import run_analyzer_generation_job
 from oddish.workers.queue.task_expand_handler import run_task_expand_job
 from oddish.workers.queue.trial_handler import run_trial_job
 from oddish.workers.queue.trial_failures import (
@@ -285,9 +287,36 @@ class TagProjectJobHandler:
         return JobOutcome.ok(summary if isinstance(summary, dict) else None)
 
 
+class AnalyzerJobHandler:
+    kind = WorkerJobKind.ANALYZER
+
+    def default_queue_key(self, job) -> str:
+        return job.queue_key or "qa"
+
+    def validate_payload(self, payload: dict) -> dict:
+        return payload
+
+    async def run(self, job) -> JobOutcome:
+        analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
+        if not analyzer_id:
+            raise ValueError("ANALYZER worker_job missing subject_id / payload.analyzer_id")
+        await run_analyzer_generation_job(analyzer_id, worker_job_id=job.id)
+        async with get_session() as session:
+            analyzer = await session.get(AnalyzerModel, analyzer_id)
+            if analyzer is None:
+                return JobOutcome.fail("Analyzer vanished mid-generation", retryable=False)
+            if analyzer.status == JobStatus.SUCCESS:
+                return JobOutcome.ok()
+            return JobOutcome.fail(
+                analyzer.error or f"Analyzer {analyzer_id} left in {analyzer.status}",
+                retryable=True,
+            )
+
+
 __all__ = [
     "AnalysisJobHandler",
     "QaJobHandler",
+    "AnalyzerJobHandler",
     "TagProjectJobHandler",
     "TaskExpandJobHandler",
     "TrialJobHandler",
