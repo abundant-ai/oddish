@@ -577,10 +577,23 @@ async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
 
 async def _post_dm(bot_token: str, slack_user_id: str, text: str) -> None:
     async with httpx.AsyncClient(timeout=30) as client:
+        open_response = await client.post(
+            "https://slack.com/api/conversations.open",
+            headers={"Authorization": f"Bearer {bot_token}"},
+            json={"users": slack_user_id},
+        )
+        open_response.raise_for_status()
+        open_payload = open_response.json()
+        if not open_payload.get("ok"):
+            raise RuntimeError(f"slack dm open failed: {open_payload.get('error')}")
+        channel_id = open_payload.get("channel", {}).get("id")
+        if not channel_id:
+            raise RuntimeError("slack dm open failed: missing channel id")
+
         response = await client.post(
             "https://slack.com/api/chat.postMessage",
             headers={"Authorization": f"Bearer {bot_token}"},
-            json={"channel": slack_user_id, "text": text},
+            json={"channel": channel_id, "text": text},
         )
         response.raise_for_status()
         payload = response.json()

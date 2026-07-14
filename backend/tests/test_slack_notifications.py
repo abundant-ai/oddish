@@ -660,14 +660,23 @@ async def test_lookup_slack_user_parses_slack_responses(
 async def test_post_dm_raises_on_slack_logical_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    opened: list[dict] = []
     posted: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/chat.postMessage"
         assert request.headers["Authorization"] == "Bearer xoxb-token"
         payload = json.loads(request.content)
+        if request.url.path == "/api/conversations.open":
+            opened.append(payload)
+            if payload["users"] == "U-open-failed":
+                return httpx.Response(200, json={"ok": False, "error": "cannot_dm_bot"})
+            return httpx.Response(
+                200,
+                json={"ok": True, "channel": {"id": f"D-{payload['users']}"}},
+            )
+        assert request.url.path == "/api/chat.postMessage"
         posted.append(payload)
-        if payload["channel"] == "U-disabled":
+        if payload["channel"] == "D-U-disabled":
             return httpx.Response(
                 200, json={"ok": False, "error": "messaging_disabled"}
             )
@@ -678,9 +687,16 @@ async def test_post_dm_raises_on_slack_logical_error(
     await notifications._post_dm("xoxb-token", "U123", "hello")
     with pytest.raises(RuntimeError, match="messaging_disabled"):
         await notifications._post_dm("xoxb-token", "U-disabled", "hello")
+    with pytest.raises(RuntimeError, match="cannot_dm_bot"):
+        await notifications._post_dm("xoxb-token", "U-open-failed", "hello")
+    assert opened == [
+        {"users": "U123"},
+        {"users": "U-disabled"},
+        {"users": "U-open-failed"},
+    ]
     assert posted == [
-        {"channel": "U123", "text": "hello"},
-        {"channel": "U-disabled", "text": "hello"},
+        {"channel": "D-U123", "text": "hello"},
+        {"channel": "D-U-disabled", "text": "hello"},
     ]
 
 
