@@ -91,7 +91,7 @@ export function VerifierResultsCard({
   const hasEmbeddedSummary = embeddedSummary !== null;
   const isTerminal = hasTerminalStatus(trial);
   const trialId = trial.id;
-  const shouldLoadArtifact = enabled && isTerminal;
+  const shouldLoadArtifact = enabled && isTerminal && !hasEmbeddedSummary;
   const artifactKey = `${apiBaseUrl}\0${trialId}\0${shouldLoadArtifact ? "load" : "idle"}`;
   const [artifactState, setArtifactState] = useState<ArtifactCtrfState>(() => ({
     key: artifactKey,
