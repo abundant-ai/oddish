@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [2026-07-14]
+
+### Added
+
+- Vercel Web Analytics is now installed on the dashboard: `@vercel/analytics` is added alongside the existing Speed Insights snippet in the root layout (#697).
+
+### Fixed
+
+- Restored the hosted `DELETE /tasks/{task_id}` admin endpoint, which had been dropped from the FastAPI router during earlier preview-environment safety work and was returning 405 while the frontend/proxy still called it. The route runs the existing soft-delete core (tombstones the task and all trials, preserves S3 artifacts), commits, invalidates the dashboard cache, and cancels queued/active workers afterward, matching the experiment-delete lifecycle order (#676).
+- Live trial transcripts are now sanitized before storage and display: model-controlled tool/message text is normalized to strip NULs, lone UTF-16 surrogates, and C0/C1 control characters (rendering them as visible placeholders) before JSONB insertion, with dict keys de-duplicated after normalization. The CLI (`oddish logs`) and the dashboard's live transcript panel both mark affected events with a "sanitized" indicator (#663).
+
+---
+
 ## [2026-07-07]
 
 ### Changed
