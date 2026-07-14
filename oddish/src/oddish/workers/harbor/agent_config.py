@@ -43,6 +43,9 @@ _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
+_ODDISH_MINI_SWE_IMPORT_PATH = (
+    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
+)
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
@@ -277,13 +280,23 @@ def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.kwargs = kwargs
 
 
-def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
-    """Route Meta model evals through mini-swe-agent with Meta API settings."""
+def _apply_mini_swe_agent_oddish_wrapper(agent_config: AgentConfig) -> None:
+    """Route mini-swe-agent trials through Oddish's wrapper.
+
+    Every mini-swe-agent trial uses the Oddish subclass so ``install()`` pulls
+    litellm's proxy extras (fastapi/orjson/...) into the tool venv; litellm>=1.92
+    lazily imports them on the tool-calling completion path and otherwise crashes
+    the first model call at 2 steps / 0 tokens. Meta-model trials additionally
+    get the Meta subclass with Meta API env.
+    """
     if agent_config.import_path is not None:
         return
     if not _is_mini_swe_agent(agent_config):
         return
+
     if not is_meta_model(agent_config.model_name):
+        agent_config.name = None
+        agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
         return
 
     agent_config.name = None
@@ -471,7 +484,7 @@ def _build_agent_config(
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
-    _apply_meta_mini_swe_agent(agent_config)
+    _apply_mini_swe_agent_oddish_wrapper(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
