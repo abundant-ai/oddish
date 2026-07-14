@@ -140,6 +140,71 @@ def test_list_task_versions_core_fetches_task_when_not_passed(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# set_task_default_version_core
+# ---------------------------------------------------------------------------
+
+
+def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch):
+    task = SimpleNamespace(
+        id="task-1",
+        current_version_id="v2",
+        task_path="/tmp/new",
+        task_s3_key="tasks/task-1/v2.tar.gz",
+    )
+    version = _VersionRow("v1", 1)
+    version.task_path = "/tmp/old"
+    version.task_s3_key = "tasks/task-1/v1.tar.gz"
+
+    async def fake_get_task_for_org_core(*_args, **kwargs):
+        assert kwargs == {"task_id": "task-1", "org_id": "org-1"}
+        return task
+
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
+    session = _RecordingSession(results=[_Result(scalar=version)])
+
+    selected = _run(
+        endpoints.set_task_default_version_core(
+            session,
+            task_id="task-1",
+            version=1,
+            org_id="org-1",
+        )
+    )
+
+    assert selected.id == "v1"
+    assert task.current_version_id == "v1"
+    assert task.task_path == "/tmp/old"
+    assert task.task_s3_key == "tasks/task-1/v1.tar.gz"
+    assert "task_versions.task_id" in str(session.queries[0])
+    assert "task_versions.version" in str(session.queries[0])
+
+
+def test_set_task_default_version_rejects_unknown_version(monkeypatch):
+    async def fake_get_task_for_org_core(*_args, **_kwargs):
+        return SimpleNamespace(id="task-1")
+
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
+    session = _RecordingSession(results=[_Result(scalar=None)])
+
+    with pytest.raises(HTTPException) as exc:
+        _run(
+            endpoints.set_task_default_version_core(
+                session,
+                task_id="task-1",
+                version=99,
+                org_id="org-1",
+            )
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Version 99 not found for task task-1"
+
+
+# ---------------------------------------------------------------------------
 # get_task_detail_core: org scoping
 # ---------------------------------------------------------------------------
 

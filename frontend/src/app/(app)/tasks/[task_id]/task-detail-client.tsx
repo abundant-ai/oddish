@@ -62,6 +62,7 @@ import {
   FileText,
   GitPullRequest,
   Loader2,
+  Star,
 } from "lucide-react";
 
 const TaskFilesPanel = dynamic(
@@ -70,18 +71,18 @@ const TaskFilesPanel = dynamic(
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading task files..." />,
-  },
+  }
 );
 
 const TrialDetailPanel = dynamic(
   () =>
     import("@/components/trial-detail-panel").then(
-      (mod) => mod.TrialDetailPanel,
+      (mod) => mod.TrialDetailPanel
     ),
   {
     ssr: false,
     loading: () => <DrawerContentLoading label="Loading trial details..." />,
-  },
+  }
 );
 
 function DrawerContentLoading({ label }: { label: string }) {
@@ -100,7 +101,7 @@ function readVersionFromQuery(): string | null {
 
 function writeVersionToQuery(
   versionId: string | null,
-  defaultId: string | null,
+  defaultId: string | null
 ) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
@@ -295,7 +296,7 @@ function TaskDetailHeader({
                   ? `${title} — view on GitHub`
                   : "View pull request on GitHub"
               }
-              className="inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors hover:bg-accent"
+              className="hover:bg-accent inline-flex h-8 max-w-[200px] items-center justify-center gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-3 text-[12px] transition-colors"
             >
               <GitPullRequest className="h-3.5 w-3.5 shrink-0" aria-hidden />
               <span className="min-w-0 truncate">
@@ -373,7 +374,7 @@ function VersionSwitcher({
   if (versions.length === 0) return null;
   const selected = versions.find((v) => v.id === selectedVersionId);
   const triggerLabel = selected
-    ? `v${selected.version}${selected.is_current ? " · current" : ""}`
+    ? `v${selected.version}${selected.is_current ? " · default" : ""}`
     : "Select version";
 
   return (
@@ -394,7 +395,7 @@ function VersionSwitcher({
       >
         {versions.map((v) => {
           const label = v.is_current
-            ? `v${v.version} · current`
+            ? `v${v.version} · default`
             : `v${v.version}`;
           const cost =
             v.cost_trial_count > 0
@@ -424,11 +425,63 @@ function VersionSwitcher({
   );
 }
 
+function DefaultVersionControl({
+  version,
+  isSaving,
+  onSetDefault,
+}: {
+  version: TaskVersionSummary | undefined;
+  isSaving: boolean;
+  onSetDefault: () => void;
+}) {
+  if (!version) return null;
+
+  if (version.is_current) {
+    return (
+      <span
+        className="inline-flex h-8 items-center gap-1.5 rounded-[7px] border border-amber-500/25 bg-amber-500/8 px-2.5 font-mono text-[10.5px] font-semibold text-amber-700 dark:text-amber-300"
+        title="This version is shown by default and used for new runs"
+      >
+        <Star className="h-3 w-3 fill-current" />
+        Default version
+      </span>
+    );
+  }
+
+  return (
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isSaving}
+            onClick={onSetDefault}
+            className="h-8 gap-1.5 rounded-[7px] border border-[color:var(--paper-line)] bg-[color:var(--paper-surface)] px-2.5 font-mono text-[10.5px] font-semibold text-[color:var(--paper-ink-2)] hover:bg-[color:var(--paper-surface-2)] hover:text-[color:var(--paper-ink)]"
+          >
+            {isSaving ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Star className="h-3 w-3" />
+            )}
+            {isSaving ? "Saving..." : "Make default"}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-[280px]">
+          Show v{version.version} by default on this task page and use it for
+          new runs.
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function TrialChip({ trial, onClick }: { trial: Trial; onClick: () => void }) {
   const status = getMatrixStatus(
     trial.status,
     trial.reward,
-    trial.error_message,
+    trial.error_message
   );
   const config = STATUS_CONFIG[status];
   const badgeLabel =
@@ -514,7 +567,7 @@ function AgentCard({
         const bTime = b.finished_at || b.started_at || b.created_at;
         return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
       }),
-    [trials],
+    [trials]
   );
 
   return (
@@ -628,7 +681,7 @@ export function TaskDetailClient({
       revalidateOnFocus: false,
       keepPreviousData: true,
       fallbackData: initialDetail ?? undefined,
-    },
+    }
   );
 
   const detail = data ?? initialDetail ?? null;
@@ -639,7 +692,11 @@ export function TaskDetailClient({
   const defaultVersionId = task?.current_version_id ?? versions[0]?.id ?? null;
 
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(
-    () => initialVersionId ?? null,
+    () => initialVersionId ?? null
+  );
+  const [isSettingDefaultVersion, setIsSettingDefaultVersion] = useState(false);
+  const [defaultVersionError, setDefaultVersionError] = useState<string | null>(
+    null
   );
 
   useEffect(() => {
@@ -660,9 +717,10 @@ export function TaskDetailClient({
   const handleSelectVersion = useCallback(
     (id: string) => {
       setSelectedVersionId(id);
+      setDefaultVersionError(null);
       writeVersionToQuery(id, defaultVersionId);
     },
-    [defaultVersionId],
+    [defaultVersionId]
   );
 
   const trialsForVersion = useMemo(() => {
@@ -671,13 +729,63 @@ export function TaskDetailClient({
   }, [task?.trials, selectedVersionId]);
 
   const selectedVersion = versions.find((v) => v.id === selectedVersionId);
+  const handleSetDefaultVersion = useCallback(async () => {
+    if (!task || !selectedVersion || selectedVersion.is_current) return;
+
+    const versionId = selectedVersion.id;
+    const versionNumber = selectedVersion.version;
+    setIsSettingDefaultVersion(true);
+    setDefaultVersionError(null);
+    try {
+      const res = await fetch(
+        `/api/tasks/${encodeURIComponent(task.id)}/versions/${versionNumber}/default`,
+        { method: "PUT" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          data.detail || data.error || "Failed to change the default version"
+        );
+      }
+
+      await mutate(
+        (current) =>
+          current
+            ? {
+                ...current,
+                task: {
+                  ...current.task,
+                  current_version_id: versionId,
+                  current_version: versionNumber,
+                },
+                versions: current.versions.map((candidate) => ({
+                  ...candidate,
+                  is_current: candidate.id === versionId,
+                })),
+              }
+            : current,
+        { revalidate: false }
+      );
+      writeVersionToQuery(versionId, versionId);
+      void mutate();
+    } catch (err) {
+      setDefaultVersionError(
+        err instanceof Error
+          ? err.message
+          : "Failed to change the default version"
+      );
+    } finally {
+      setIsSettingDefaultVersion(false);
+    }
+  }, [mutate, selectedVersion, task]);
+
   const versionSummary: TrialAggregate = useMemo(() => {
     if (selectedVersion) return summaryFromVersion(selectedVersion);
     return summarizeTrials(trialsForVersion);
   }, [selectedVersion, trialsForVersion]);
   const allVersionsSummary = useMemo(
     () => summarizeTrials(task?.trials ?? []),
-    [task?.trials],
+    [task?.trials]
   );
 
   const tasksForGrouping = useMemo<Task[]>(
@@ -690,21 +798,21 @@ export function TaskDetailClient({
             },
           ]
         : [],
-    [task, trialsForVersion],
+    [task, trialsForVersion]
   );
 
   const { agentSummaries, modelScopedAgents } = useMemo(
     () => buildExperimentAgentSummaries(tasksForGrouping),
-    [tasksForGrouping],
+    [tasksForGrouping]
   );
 
   const realAgentCount = useMemo(
     () => agentSummaries.filter((s) => s.key !== PROBE_AGENT_KEY).length,
-    [agentSummaries],
+    [agentSummaries]
   );
   const realTrialCount = useMemo(
     () => trialsForVersion.filter((t) => !t.is_probe).length,
-    [trialsForVersion],
+    [trialsForVersion]
   );
 
   const trialsByAgentKey = useMemo(() => {
@@ -728,7 +836,7 @@ export function TaskDetailClient({
           trials,
         };
       }),
-    [agentSummaries, trialsByAgentKey],
+    [agentSummaries, trialsByAgentKey]
   );
 
   const orderedTrials = useMemo(() => {
@@ -752,7 +860,7 @@ export function TaskDetailClient({
         trialGroups,
       });
     },
-    [orderedTrials, trialGroups],
+    [orderedTrials, trialGroups]
   );
 
   const handleOpenTaskFiles = useCallback(() => {
@@ -768,10 +876,10 @@ export function TaskDetailClient({
   const handleNavigateToTrial = useCallback(
     (trial: Trial, trialIndex: number) => {
       setDrawer((prev) =>
-        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev,
+        prev ? { ...prev, mode: "trial", trial, trialIndex } : prev
       );
     },
-    [],
+    []
   );
 
   const handleRerun = useCallback(() => {
@@ -798,7 +906,7 @@ export function TaskDetailClient({
       void mutate();
     } catch (err) {
       setJudgeError(
-        err instanceof Error ? err.message : "Failed to queue judge",
+        err instanceof Error ? err.message : "Failed to queue judge"
       );
     } finally {
       setIsRunningJudge(false);
@@ -996,6 +1104,13 @@ export function TaskDetailClient({
               selectedVersionId={selectedVersionId}
               onSelect={handleSelectVersion}
             />
+            {versions.length > 1 ? (
+              <DefaultVersionControl
+                version={selectedVersion}
+                isSaving={isSettingDefaultVersion}
+                onSetDefault={handleSetDefaultVersion}
+              />
+            ) : null}
             {selectedVersionId ? (
               <TagEditor
                 key={selectedVersionId}
@@ -1007,6 +1122,14 @@ export function TaskDetailClient({
               />
             ) : null}
           </div>
+          {defaultVersionError ? (
+            <p
+              role="alert"
+              className="font-mono text-[10.5px] text-red-600 dark:text-red-400"
+            >
+              {defaultVersionError}
+            </p>
+          ) : null}
           {selectedVersion?.experiments?.length ? (
             <div
               className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-[color:var(--paper-ink-3)]"
@@ -1135,7 +1258,7 @@ export function TaskDetailClient({
                             trial: null,
                             trialIndex: null,
                           }
-                        : prev,
+                        : prev
                     )
                   }
                   onRetry={handleRerun}

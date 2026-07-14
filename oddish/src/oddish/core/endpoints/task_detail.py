@@ -72,6 +72,38 @@ async def get_task_version_core(
     return TaskVersionResponse.model_validate(version_row)
 
 
+async def set_task_default_version_core(
+    session: AsyncSession,
+    *,
+    task_id: str,
+    version: int,
+    org_id: str | None = None,
+) -> TaskVersionResponse:
+    """Make one of a task's stored versions its default/current version.
+
+    ``TaskModel`` keeps the selected version's storage fields mirrored for
+    legacy callers that do not resolve ``current_version_id`` themselves.
+    """
+    task = await get_task_for_org_core(session, task_id=task_id, org_id=org_id)
+    result = await session.execute(
+        select(TaskVersionModel).where(
+            TaskVersionModel.task_id == task.id,
+            TaskVersionModel.version == version,
+        )
+    )
+    version_row = result.scalar_one_or_none()
+    if not version_row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Version {version} not found for task {task_id}",
+        )
+
+    task.current_version_id = version_row.id
+    task.task_path = version_row.task_path
+    task.task_s3_key = version_row.task_s3_key
+    return TaskVersionResponse.model_validate(version_row)
+
+
 async def get_task_detail_core(
     session: AsyncSession,
     *,
