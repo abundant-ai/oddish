@@ -636,3 +636,23 @@ cat > /logs/verifier/metrics.json <<'JSON'
 {"schema_version": 1, "ttft_ms": 12.5, "throughput_tokens_per_sec": 4300}
 JSON
 ```
+
+## Test Results (ctrf.json)
+
+Test-based tasks can expose passed, failed, skipped, pending, and other counts
+by writing a [Common Test Report Format](https://ctrf.io/) report to
+`/logs/verifier/ctrf.json`. Current Harbor tasks commonly do this with
+`pytest-json-ctrf`:
+
+```bash
+uvx --with pytest --with pytest-json-ctrf \
+  pytest --ctrf /logs/verifier/ctrf.json /tests -rA
+```
+
+Oddish keeps the full report with the trial artifacts and persists only its
+compact `results.summary` counts, `results.tool.name`, and the trial-relative
+report artifact path under the reserved `trial.result._verifier` key. The
+dashboard uses those counts and path for the Verifier Results card. Missing,
+malformed, or oversized CTRF reports are ignored and never change the settled
+`reward`; non-test verifiers continue to display their binary or partial reward
+and any `metrics.json` values.
