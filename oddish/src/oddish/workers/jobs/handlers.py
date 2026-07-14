@@ -300,6 +300,20 @@ class AnalyzerJobHandler:
         analyzer_id = job.subject_id or (job.payload or {}).get("analyzer_id")
         if not analyzer_id:
             raise ValueError("ANALYZER worker_job missing subject_id / payload.analyzer_id")
+        # A retryable failure re-dispatches this handler, but
+        # run_analyzer_generation_job early-exits on a terminal analyzer status.
+        # Clear a prior terminal state so the retry actually re-runs instead of
+        # no-op'ing and reporting the same failure forever (mirrors QaJobHandler).
+        async with get_session() as session:
+            analyzer = await session.get(
+                AnalyzerModel, analyzer_id, with_for_update=True
+            )
+            if analyzer is None:
+                return JobOutcome.fail("Analyzer vanished before generation", retryable=False)
+            if analyzer.status in (JobStatus.SUCCESS, JobStatus.FAILED):
+                analyzer.status = JobStatus.QUEUED
+                analyzer.error = None
+                analyzer.finished_at = None
         await run_analyzer_generation_job(analyzer_id, worker_job_id=job.id)
         async with get_session() as session:
             analyzer = await session.get(AnalyzerModel, analyzer_id)

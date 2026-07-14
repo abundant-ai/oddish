@@ -18,6 +18,30 @@ import { Badge } from "@/components/ui/badge";
 import { fetcher } from "@/lib/api";
 import type { ExperimentOption } from "@/lib/types";
 
+// The BFF forwards the backend/FastAPI body verbatim, so real errors arrive as
+// `error` (our routes) or `detail` (FastAPI HTTPException / 422 validation).
+// Reading only `error` collapsed messages like "unknown experiment id" to a
+// generic status text.
+function messageFromError(data: unknown): string | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const d = data as { error?: unknown; detail?: unknown };
+  if (typeof d.error === "string" && d.error) return d.error;
+  if (typeof d.detail === "string" && d.detail) return d.detail;
+  if (Array.isArray(d.detail)) {
+    const msgs = d.detail
+      .map((item) =>
+        item && typeof item === "object" && "msg" in item
+          ? String((item as { msg: unknown }).msg)
+          : typeof item === "string"
+            ? item
+            : undefined,
+      )
+      .filter(Boolean);
+    if (msgs.length) return msgs.join("; ");
+  }
+  return undefined;
+}
+
 export function NewAnalyzerDialog({ onCreated }: { onCreated?: () => void }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -58,9 +82,7 @@ export function NewAnalyzerDialog({ onCreated }: { onCreated?: () => void }) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(
-          ("error" in data && data.error) || res.statusText || "Create failed",
-        );
+        throw new Error(messageFromError(data) || res.statusText || "Create failed");
       }
       setOpen(false);
       reset();

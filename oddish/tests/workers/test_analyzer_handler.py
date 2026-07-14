@@ -32,6 +32,42 @@ def test_analyzer_handler_registered():
     assert handler.validate_payload({"analyzer_id": "r1"}) == {"analyzer_id": "r1"}
 
 
+@pytest.mark.asyncio
+async def test_handler_resets_terminal_status_before_retry(monkeypatch):
+    """A retry must clear a prior FAILED status, else run_analyzer_generation_job
+    early-exits and the retry is a no-op."""
+    import oddish.workers.jobs.handlers as h
+    from oddish.db.models import JobStatus
+
+    class _Analyzer:
+        def __init__(self):
+            self.status = JobStatus.FAILED  # left FAILED by a previous attempt
+            self.error = "transient boom"
+            self.finished_at = "then"
+
+    analyzer = _Analyzer()
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, model, id_, with_for_update=False): return analyzer
+    monkeypatch.setattr(h, "get_session", lambda: _Session())
+
+    seen = {}
+
+    async def fake_run(analyzer_id, *, worker_job_id=None):
+        # By the time generation runs, the terminal state must be cleared.
+        seen["status_at_run"] = analyzer.status
+        analyzer.status = JobStatus.SUCCESS  # this attempt succeeds
+    monkeypatch.setattr(h, "run_analyzer_generation_job", fake_run)
+
+    outcome = await h.AnalyzerJobHandler().run(_Job("r1"))
+
+    assert seen["status_at_run"] == JobStatus.QUEUED  # reset happened
+    assert analyzer.error is None and analyzer.finished_at is None
+    assert outcome.failure is None  # ok()
+
+
 class _Job:
     def __init__(self, analyzer_id):
         self.subject_id = analyzer_id

@@ -7,7 +7,7 @@ off by enqueueing a ANALYZER worker job (see workers/queue/analyzer_handler.py).
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db.models import (
@@ -93,6 +93,29 @@ async def delete_analyzer_core(
 
     analyzer = await get_analyzer_core(session, analyzer_id, org_id=org_id)
     analyzer.deleted_at = utcnow()
+
+    # Cancel any in-flight generation job so it stops burning map/reduce LLM
+    # work against a now-deleted analyzer (mirrors task/trial deletion). The
+    # running handler's liveness guard then bails without writing back. Terminal
+    # rows (SUCCESS/FAILED/CANCELLED) are left untouched.
+    await session.execute(
+        text(
+            """
+            UPDATE worker_jobs
+            SET    status = 'CANCELLED',
+                   finished_at = NOW(),
+                   error_message = 'Analyzer deleted',
+                   current_worker_id = NULL,
+                   current_queue_slot = NULL,
+                   modal_function_call_id = NULL
+            WHERE  kind::text = 'ANALYZER'
+              AND  subject_table = 'analyzers'
+              AND  subject_id = :analyzer_id
+              AND  status::text IN ('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')
+            """
+        ),
+        {"analyzer_id": analyzer_id},
+    )
 
 
 async def experiment_ids_for_analyzer(

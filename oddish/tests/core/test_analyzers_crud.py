@@ -60,6 +60,52 @@ async def test_create_and_get_analyzer(session, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_delete_cancels_inflight_worker_job(session, monkeypatch):
+    """Soft-deleting an analyzer must cancel its in-flight generation job so it
+    stops running map/reduce LLM work (mirrors task/trial deletion)."""
+    import oddish.core.analyzers as mod
+
+    async def _fake_enqueue(session, *, analyzer_id, org_id):
+        pass
+
+    monkeypatch.setattr(mod, "_enqueue_analyzer_worker_job", _fake_enqueue)
+
+    e1 = ExperimentModel(name="exp-1", org_id="org_1")
+    session.add(e1)
+    await session.flush()
+
+    analyzer = await create_analyzer_core(
+        session,
+        data=AnalyzerCreate(name="ToDelete", experiment_ids=[e1.id]),
+        org_id="org_1", user_id="user_1",
+    )
+
+    # Capture the cancel UPDATE (it executes for real, matching zero rows here).
+    executed: list[tuple[str, object]] = []
+    real_execute = session.execute
+
+    async def spy_execute(statement, params=None, *a, **k):
+        executed.append((str(statement), params))
+        return await real_execute(statement, params, *a, **k)
+
+    monkeypatch.setattr(session, "execute", spy_execute)
+
+    await delete_analyzer_core(session, analyzer.id, org_id="org_1")
+
+    cancels = [
+        (sql, p) for sql, p in executed
+        if "UPDATE worker_jobs" in sql and "CANCELLED" in sql
+    ]
+    assert cancels, "delete did not issue a worker_jobs cancel"
+    sql, params = cancels[0]
+    assert params == {"analyzer_id": analyzer.id}
+    assert "kind::text = 'ANALYZER'" in sql
+    assert "subject_table = 'analyzers'" in sql
+    # Only in-flight rows are cancelled; terminal ones are excluded.
+    assert "('QUEUED', 'RETRYING', 'RUNNING', 'BLOCKED')" in sql
+
+
+@pytest.mark.asyncio
 async def test_get_analyzer_core_404_for_unknown_id(session):
     with pytest.raises(HTTPException) as exc:
         await get_analyzer_core(session, "does-not-exist", org_id="org_1")
