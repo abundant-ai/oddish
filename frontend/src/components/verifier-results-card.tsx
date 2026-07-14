@@ -35,6 +35,10 @@ function trialFilesBase(apiBaseUrl: string, trialId: string): string {
   return `${apiBaseUrl.replace(/\/$/, "")}/trials/${encodeURIComponent(trialId)}/files`;
 }
 
+function encodeFilePath(path: string): string {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 function hasTerminalStatus(trial: Trial): boolean {
   return ["success", "failed", "cancelled", "skipped"].includes(trial.status);
 }
@@ -115,7 +119,7 @@ export function VerifierResultsCard({
         if (!reportPath) return;
 
         const reportResponse = await fetch(
-          `${filesBase}/${encodeURIComponent(reportPath)}`,
+          `${filesBase}/${encodeFilePath(reportPath)}`,
           { signal: controller.signal }
         );
         if (!reportResponse.ok) return;
