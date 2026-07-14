@@ -462,6 +462,27 @@ async def enqueue_qa_worker_job(
     )
 
 
+async def enqueue_report_worker_job(
+    session: AsyncSession, *, report_id: str, org_id: str | None
+) -> WorkerJobModel:
+    """Enqueue a cross-experiment report generation job.
+
+    Runs on the QA queue: report generation is dominated by per-trial
+    classification, the same workload the QA pool is sized for.
+    """
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.REPORT,
+            queue_key=settings.get_qa_queue_key(),  # runs on the analysis pool
+            payload={"report_id": report_id},
+            subject_table="reports",
+            subject_id=report_id,
+            org_id=org_id,
+        ),
+    )
+
+
 async def enqueue_task_expand_worker_job(
     session: AsyncSession,
     *,

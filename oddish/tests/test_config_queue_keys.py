@@ -271,9 +271,9 @@ def test_fireworks_models_route_to_fireworks_not_direct_providers(monkeypatch):
 
 def test_grok_build_xai_model_routes_to_xai(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
-    model = "xai/v9m-rl-learnability-tp8"
+    model = "xai/redacted-model"
 
-    assert normalize_model_id(" XAI / v9m rl learnability tp8 ") == model
+    assert normalize_model_id(" XAI / redacted-model ") == model
     assert settings.normalize_trial_model("grok-build", model) == model
     assert settings.get_provider_for_trial("grok-build", model) == "xai"
     assert settings.get_queue_key_for_trial("grok-build", model) == model
@@ -310,15 +310,15 @@ def test_grok_provider_prefix_canonicalizes_to_xai(monkeypatch):
     settings = _settings(monkeypatch, clear_openai_env=False)
 
     assert (
-        settings.normalize_trial_model("grok-build", "grok/v9m-rl-learnability-tp8")
-        == "xai/v9m-rl-learnability-tp8"
+        settings.normalize_trial_model("grok-build", "grok/redacted-model")
+        == "xai/redacted-model"
     )
     assert (
-        settings.get_queue_key_for_trial("grok-build", "grok/v9m-rl-learnability-tp8")
-        == "xai/v9m-rl-learnability-tp8"
+        settings.get_queue_key_for_trial("grok-build", "grok/redacted-model")
+        == "xai/redacted-model"
     )
     assert (
-        settings.get_provider_for_trial("grok-build", "grok/v9m-rl-learnability-tp8")
+        settings.get_provider_for_trial("grok-build", "grok/redacted-model")
         == "xai"
     )
 

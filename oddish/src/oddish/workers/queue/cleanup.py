@@ -32,6 +32,7 @@ from oddish.core.helpers import cancel_job_by_worker
 from oddish.core.tags.ownership_transfer import sweep_orphaned_tag_owners
 from oddish.db import (
     AnalysisStatus,
+    JobStatus,
     TaskModel,
     TaskStatus,
     TrialModel,
@@ -40,6 +41,7 @@ from oddish.db import (
     get_session,
     utcnow,
 )
+from oddish.db.models import ReportModel
 from oddish.workers.queue.worker_job_single_job import (
     calculate_trial_retry_delay_seconds,
     classify_retry_reason,
@@ -383,6 +385,19 @@ async def _mirror_stale_job_to_domain_row(session, row) -> str | None:
         else:
             task.verdict_status = VerdictStatus.QUEUED
             task.verdict_error = row["error_message"]
+        return None
+
+    if kind == "REPORT":
+        report = await _locked_or_missing(session, ReportModel, str(subject_id))
+        if report is None:
+            return None
+        if row["new_status"] == "FAILED":
+            report.status = JobStatus.FAILED
+            report.error = row["error_message"]
+            report.finished_at = utcnow()
+        else:
+            report.status = JobStatus.QUEUED
+            report.error = row["error_message"]
         return None
 
     return None

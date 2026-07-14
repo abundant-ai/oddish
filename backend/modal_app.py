@@ -480,8 +480,8 @@ MODEL_CONCURRENCY_OVERRIDES = os.environ.get(
     '{"google/gemini-3.5-flash": 128, '
     '"global.anthropic.claude-haiku-4-5-20251001-v1:0": 128, '
     '"openai/gpt-5.4-mini": 128, '
-    '"xai/v9m-rl-learnability-tp8": 108, '
-    '"meta/super_nova_ext": 80, '
+    '"xai/redacted-model": 108, '
+    '"meta/redacted_model": 80, '
     '"zai/glm-5.2": 64}',
 )
 

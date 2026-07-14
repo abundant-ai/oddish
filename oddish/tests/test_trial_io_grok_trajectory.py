@@ -37,7 +37,7 @@ def test_read_trial_trajectory_converts_grok_build_s3_artifact(monkeypatch):
     trial = SimpleNamespace(
         id="trial-1",
         name="trial-1",
-        model="xai/v9m-rl-learnability-tp8",
+        model="xai/redacted-model",
         trial_s3_key="tasks/task-1/trials/trial-1/",
         harbor_result_path=None,
         finished_at=datetime.now(timezone.utc),

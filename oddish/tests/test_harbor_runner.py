@@ -1010,7 +1010,7 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
 
     agent_config = harbor_runner._build_agent_config(
         agent="grok-build",
-        model="xai/v9m-rl-learnability-tp8",
+        model="xai/redacted-model",
         raw_harbor_config={},
     )
 
@@ -1018,7 +1018,7 @@ def test_build_agent_config_preserves_grok_build_xai_route(monkeypatch):
     assert (
         agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
-    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+    assert agent_config.model_name == "xai/redacted-model"
     assert agent_config.kwargs["reasoning_effort"] == "high"
     assert "XAI_API_KEY" not in (agent_config.env or {})
     assert "ANTHROPIC_AUTH_TOKEN" not in (agent_config.env or {})
@@ -1030,7 +1030,7 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
 
     agent_config = harbor_runner._build_agent_config(
         agent="grok-build",
-        model="grok/v9m-rl-learnability-tp8",
+        model="grok/redacted-model",
         raw_harbor_config={},
     )
 
@@ -1038,13 +1038,13 @@ def test_build_agent_config_canonicalizes_grok_prefix_to_xai(monkeypatch):
     assert (
         agent_config.import_path == "oddish.workers.agents.grok_build:OddishGrokBuild"
     )
-    assert agent_config.model_name == "xai/v9m-rl-learnability-tp8"
+    assert agent_config.model_name == "xai/redacted-model"
 
 
 def test_build_agent_config_preserves_grok_build_reasoning_override():
     agent_config = harbor_runner._build_agent_config(
         agent="grok-build",
-        model="xai/v9m-rl-learnability-tp8",
+        model="xai/redacted-model",
         raw_harbor_config={"agent_config": {"kwargs": {"reasoning_effort": "medium"}}},
     )
 
@@ -1066,7 +1066,7 @@ def test_convert_grok_build_stream_to_multi_step_trajectory():
     trajectory = convert_grok_build_json_text_to_trajectory(
         raw,
         agent_version="grok 0.2.73",
-        model_name="xai/v9m-rl-learnability-tp8",
+        model_name="xai/redacted-model",
     )
 
     assert trajectory is not None
@@ -1092,7 +1092,7 @@ def test_oddish_grok_build_requests_streaming_json(tmp_path):
         async def upload_file(self, source_path, target_path):
             uploads.append(target_path)
 
-    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8")
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/redacted-model")
 
     asyncio.run(agent.run("fix it", _FakeEnvironment(), SimpleNamespace()))
 
@@ -1150,7 +1150,7 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
         n_cache_tokens=0,
         n_output_tokens=0,
     )
-    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/v9m-rl-learnability-tp8")
+    agent = OddishGrokBuild(logs_dir=tmp_path, model_name="xai/redacted-model")
 
     agent.populate_context_post_run(context)
 

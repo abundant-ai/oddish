@@ -185,6 +185,10 @@ class WorkerJobKind(str, Enum):
     # rebuilds from source rather than applying a delta. Sibling-enqueued
     # by every tag write in the same transaction.
     TAG_PROJECT = "TAG_PROJECT"
+    # Generate a cross-experiment analysis report: fans out per-trial Haiku
+    # findings and reduces them into four narrative sections. Runs on the QA
+    # queue; handled by ReportJobHandler.
+    REPORT = "REPORT"
 
 
 class WorkerJobStatus(str, Enum):
@@ -376,6 +380,30 @@ experiment_trials = Table(
 )
 
 
+# Association table: reports ↔ experiments. A report analyzes trajectories
+# across N experiments; membership is additive and soft-deletable, mirroring
+# ``experiment_trials``.
+report_experiments = Table(
+    "report_experiments",
+    Base.metadata,
+    Column(
+        "report_id",
+        String(64),
+        ForeignKey("reports.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column(
+        "experiment_id",
+        String(64),
+        ForeignKey("experiments.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("created_at", DateTime(timezone=True), default=utcnow, nullable=False),
+    Column("deleted_at", DateTime(timezone=True), nullable=True),
+    Index("idx_report_experiments_experiment_id", "experiment_id"),
+)
+
+
 class ExperimentModel(TimestampedMixin, Base):
     """Experiment database model (grouping for tasks)."""
 
@@ -476,6 +504,65 @@ class ExperimentModel(TimestampedMixin, Base):
         secondaryjoin=lambda: TaskModel.id == task_experiments.c.task_id,
         back_populates="experiments",
         passive_deletes=True,
+    )
+
+
+class ReportModel(TimestampedMixin, Base):
+    """Cross-experiment trajectory-analysis report.
+
+    Inherits from experiments in the domain sense: a report references N
+    experiments (via ``report_experiments``), gathers their trials, and rolls
+    the per-trial subanalysis up one tier into four narrative sections. The
+    section bodies are markdown with inline ``/tasks/{task_id}/probe/{trial_id}``
+    deep links.
+    """
+
+    __tablename__ = "reports"
+    __table_args__ = (
+        Index(
+            "idx_reports_org_created_live",
+            "org_id",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_reports_org_owner_user_live",
+            "org_id",
+            "owner_user_id",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=generate_id)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[JobStatus] = mapped_column(
+        SQLEnum(JobStatus, name="jobstatus", create_type=False),
+        default=JobStatus.PENDING,
+        nullable=False,
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    bad_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    good_failure_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    universal_capabilities_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    headroom_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    num_trials: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    num_bad_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    num_good_failures: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # Additive: per-subcategory counts (1a/1b, 3a/3b/3c, emergent) for FE chips.
+    breakdown: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
 
@@ -1888,6 +1975,7 @@ from oddish.db.soft_delete import register_soft_delete_models
 
 register_soft_delete_models(
     ExperimentModel,
+    ReportModel,
     TaskModel,
     TrialModel,
     TagModel,
