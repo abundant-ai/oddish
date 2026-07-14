@@ -549,8 +549,9 @@ sweep):
    the pre-window baseline (`total - recent`) are claimed and completed silently
    across every delivery channel so first observing pre-existing spend never
    dumps historical alerts. Failed loud deliveries retain per-channel retry
-   markers; primary and retry completion is atomic, and interrupted claims are
-   recovered without losing loud alerts or sending silent ones.
+   markers; primary and retry completion is atomic. Indeterminate loud claims
+   are not repeated because the external channels do not offer an idempotency
+   key, while interrupted silent claims are completed without sending.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis
