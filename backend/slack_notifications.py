@@ -410,11 +410,13 @@ async def _claim_alert(alert_key: str) -> bool:
         return (await session.scalar(statement)) is not None
 
 
-async def _mark_alert_sent(alert_key: str) -> None:
+async def _mark_alert_sent(*alert_keys: str) -> None:
+    if not alert_keys:
+        return
     async with get_session() as session:
         await session.execute(
             update(SlackExpenseAlertModel)
-            .where(SlackExpenseAlertModel.alert_key == alert_key)
+            .where(SlackExpenseAlertModel.alert_key.in_(alert_keys))
             .values(notified_at=datetime.now(timezone.utc))
         )
 
@@ -441,6 +443,18 @@ async def _alert_is_pending(alert_key: str) -> bool:
         ) is not None
 
 
+async def _alert_is_sent(alert_key: str) -> bool:
+    async with get_session() as session:
+        return (
+            await session.scalar(
+                select(SlackExpenseAlertModel.alert_key).where(
+                    SlackExpenseAlertModel.alert_key == alert_key,
+                    SlackExpenseAlertModel.notified_at.is_not(None),
+                )
+            )
+        ) is not None
+
+
 async def _start_delivery(
     claim_key: str,
     *,
@@ -451,6 +465,12 @@ async def _start_delivery(
     # failed. Keep retrying it even if its spend has since aged out of the
     # recent window and build_alerts now classifies the milestone as silent.
     if await _alert_is_pending(retry_key):
+        # Recover a partial completion from an older run: if the webhook was
+        # already recorded on the primary key, close the retry marker instead
+        # of posting the same alert again.
+        if await _alert_is_sent(claim_key):
+            await _mark_alert_sent(retry_key)
+            return False
         return True
     if not await _claim_alert(claim_key):
         return False
@@ -475,9 +495,9 @@ async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
             await _claim_alert(retry_key)
             log.exception("slack expense alert post failed alert_key=%s", alert.key)
             continue
-        await _mark_alert_sent(alert.key)
-        if await _alert_is_pending(retry_key):
-            await _mark_alert_sent(retry_key)
+        # Mark the primary and any retry marker in one transaction so a crash
+        # cannot leave a delivered alert eligible to post again.
+        await _mark_alert_sent(alert.key, retry_key)
 
 
 @app.function(
