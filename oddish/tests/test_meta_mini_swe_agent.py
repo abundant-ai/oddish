@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from oddish.workers.agents.mini_swe_agent import OddishMetaMiniSweAgent
+from oddish.workers.agents.mini_swe_agent import (
+    OddishMetaMiniSweAgent,
+    OddishMiniSweAgent,
+)
 
 
 @pytest.mark.asyncio
@@ -176,6 +179,29 @@ async def test_meta_mini_swe_agent_install_adds_litellm_proxy_extras(tmp_path):
 
     # litellm's proxy extras must be pulled into the tool venv so the
     # tool-calling completion path can import fastapi/orjson/...
+    assert any("uv tool install mini-swe-agent" in c for c in commands)
+    assert any("litellm[proxy]" in c for c in commands)
+
+
+@pytest.mark.asyncio
+async def test_mini_swe_agent_install_adds_litellm_proxy_extras(tmp_path):
+    """The non-Meta base agent must also pull litellm's proxy extras so the
+    tool-calling completion path can import fastapi/orjson/... (else the trial
+    crashes at 2 steps / 0 tokens with ModuleNotFoundError)."""
+    commands: list[str] = []
+
+    class _FakeEnvironment:
+        async def exec(self, command, user=None, env=None, cwd=None, timeout_sec=None):
+            commands.append(command)
+            return SimpleNamespace(return_code=0, stdout="mini-swe-agent, 2.4.5", stderr="")
+
+    agent = OddishMiniSweAgent(
+        logs_dir=tmp_path,
+        model_name="anthropic/claude-opus-4-8",
+    )
+
+    await agent.install(_FakeEnvironment())
+
     assert any("uv tool install mini-swe-agent" in c for c in commands)
     assert any("litellm[proxy]" in c for c in commands)
 
