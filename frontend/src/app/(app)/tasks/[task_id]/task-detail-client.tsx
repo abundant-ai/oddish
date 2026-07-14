@@ -959,7 +959,7 @@ export function TaskDetailClient({
   }
 
   const versionLabel = selectedVersion
-    ? `v${selectedVersion.version}${selectedVersion.is_current ? " · current" : ""}`
+    ? `v${selectedVersion.version}${selectedVersion.is_current ? " · default" : ""}`
     : "Selected version";
 
   return (
