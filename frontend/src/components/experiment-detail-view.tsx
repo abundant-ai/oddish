@@ -189,7 +189,15 @@ function buildExperimentSummary(tasksForExperiment: Task[]): ExperimentSummary {
   for (const task of tasksForExperiment) {
     const trials = (task.trials ?? []).filter((t) => !t.is_probe);
     if (trials.length > 0) {
-      for (const trial of trials) accumulateTrial(acc, trial);
+      // task.experiment_id is the viewing experiment (set by the backend
+      // builders); trials homed elsewhere render but don't count as spend.
+      for (const trial of trials)
+        accumulateTrial(
+          acc,
+          trial,
+          trial.experiment_id == null ||
+            trial.experiment_id === task.experiment_id,
+        );
 
       let scoredRewardSum = 0;
       let scoredCount = 0;
@@ -1417,6 +1425,7 @@ export function ExperimentDetailView({
                 apiBaseUrl={apiBaseUrl}
                 contentOnly={true}
                 paneAction={paneAction}
+                spendOwnerExperimentId={drawerState.task?.experiment_id ?? null}
               />
             )
           }
