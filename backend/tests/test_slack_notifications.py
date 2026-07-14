@@ -511,6 +511,52 @@ async def test_send_alerts_closes_retry_after_partial_success_without_reposting(
 
 
 @pytest.mark.asyncio
+async def test_send_alerts_recovers_pending_primary_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loud_key = "experiment:1:1000"
+    silent_key = "experiment:1:2000"
+    claimed = {loud_key, silent_key}
+    sent: set[str] = set()
+    posted: list[str] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert(loud_key, "retry loud"),
+            SlackAlert(silent_key, "do not post", silent=True),
+        ],
+    )
+
+    assert posted == ["retry loud"]
+    assert sent == claimed
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

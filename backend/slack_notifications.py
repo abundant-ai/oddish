@@ -473,6 +473,14 @@ async def _start_delivery(
             return False
         return True
     if not await _claim_alert(claim_key):
+        # A pending primary claim means an older run stopped after claiming but
+        # before completing delivery. Resume loud delivery; finish a silent
+        # claim in place without posting.
+        if await _alert_is_pending(claim_key):
+            if silent:
+                await _mark_alert_sent(claim_key)
+                return False
+            return True
         return False
     if silent:
         await _mark_alert_sent(claim_key)
