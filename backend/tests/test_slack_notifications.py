@@ -635,7 +635,7 @@ async def test_send_alerts_closes_retry_after_partial_success_without_reposting(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_recovers_pending_primary_claims(
+async def test_send_alerts_does_not_repeat_pending_primary_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     loud_key = "experiment:1:1000"
@@ -676,8 +676,8 @@ async def test_send_alerts_recovers_pending_primary_claims(
         ],
     )
 
-    assert posted == ["retry loud"]
-    assert sent == claimed
+    assert posted == []
+    assert sent == {silent_key}
 
 
 @pytest.mark.asyncio

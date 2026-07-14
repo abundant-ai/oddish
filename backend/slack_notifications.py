@@ -700,14 +700,20 @@ async def _start_delivery(
             return False
         return True
     if not await _claim_alert(claim_key):
-        # A pending primary claim means an older run stopped after claiming but
-        # before completing delivery. Resume loud delivery; finish a silent
-        # claim in place without sending.
+        # A pending primary claim has an indeterminate outcome: the previous
+        # process may have completed the external request and crashed before
+        # recording it. Never repeat a loud delivery in that state, because
+        # Slack webhooks do not provide an idempotency key. Explicit request
+        # failures remain retryable through the retry marker handled above.
         if await _alert_is_pending(claim_key):
             if silent:
                 await _mark_alert_sent(claim_key)
-                return False
-            return True
+            else:
+                log.warning(
+                    "skipping indeterminate expense alert to avoid duplicate "
+                    "delivery alert_key=%s",
+                    claim_key,
+                )
         return False
     if silent:
         await _mark_alert_sent(claim_key)
