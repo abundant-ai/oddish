@@ -50,13 +50,20 @@ export const EMPTY_TRIAL_AGGREGATE: TrialAggregate = {
   lastRunAt: null,
 };
 
-export function accumulateTrial(acc: TrialAggregate, trial: Trial): void {
+// countSpend=false keeps the trial in every display stat (counts, scores,
+// recency) but out of the cost/billed/token totals — used for trials rendered
+// under an experiment that doesn't own them (gathered/shared-task rows).
+export function accumulateTrial(
+  acc: TrialAggregate,
+  trial: Trial,
+  countSpend = true,
+): void {
   acc.trialCount += 1;
-  if (trial.input_tokens != null || trial.output_tokens != null) {
+  if (countSpend && (trial.input_tokens != null || trial.output_tokens != null)) {
     acc.tokenCount += (trial.input_tokens ?? 0) + (trial.output_tokens ?? 0);
     acc.tokenTrialCount += 1;
   }
-  if (trial.cost_usd != null) {
+  if (countSpend && trial.cost_usd != null) {
     acc.costUsd += trial.cost_usd;
     acc.costTrialCount += 1;
     if (trial.cost_is_estimated === true) acc.costHasEstimated = true;
