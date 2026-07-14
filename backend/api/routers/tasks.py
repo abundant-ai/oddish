@@ -48,6 +48,7 @@ from oddish.core.endpoints import (
     replay_has_retryable_failed_trials,
     list_task_versions_core,
     rerun_task_qa_core,
+    set_task_default_version_core,
     unlink_task_from_experiment_core,
 )
 from oddish.core.helpers import terminate_run_harvest
@@ -1116,9 +1117,7 @@ async def delete_task(
     workers are cancelled only after the database tombstones commit.
     """
     async with get_session() as session:
-        result = await delete_task_core(
-            session, task_id=task_id, org_id=auth.org_id
-        )
+        result = await delete_task_core(session, task_id=task_id, org_id=auth.org_id)
         await session.commit()
     invalidate_dashboard_cache(org_id=auth.org_id)
 
@@ -1435,6 +1434,31 @@ async def get_task_version(
         return await get_task_version_core(
             session, task_id=task_id, version=version, org_id=auth.org_id
         )
+
+
+@router.put(
+    "/tasks/{task_id}/versions/{version}/default",
+    response_model=TaskVersionResponse,
+)
+async def set_task_default_version(
+    task_id: str,
+    version: int,
+    auth: Annotated[AuthContext, Depends(require_auth)],
+) -> TaskVersionResponse:
+    """Use a stored task version as the default for display and new runs."""
+    auth.require_scope(APIKeyScope.TASKS)
+
+    async with get_session() as session:
+        selected = await set_task_default_version_core(
+            session,
+            task_id=task_id,
+            version=version,
+            org_id=auth.org_id,
+        )
+        await session.commit()
+
+    invalidate_dashboard_cache(org_id=auth.org_id)
+    return selected
 
 
 # =============================================================================
