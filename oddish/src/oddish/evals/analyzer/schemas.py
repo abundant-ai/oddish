@@ -13,6 +13,9 @@ class AnalyzerEvalConfig:
     taxonomy_version: str = "v1"
     token_budget: int = 6000
     prompt_version: str = "v1"
+    # WorkerJobKind of the job driving this run; prefixes every core log line so
+    # entries are attributable to the job kind. Set by the host handler.
+    job_kind: str = "ANALYZER"
 
 
 @dataclass
