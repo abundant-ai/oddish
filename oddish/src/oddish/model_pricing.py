@@ -111,9 +111,7 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
 }
-_CLAUDE_DOTTED_VERSION_RE = re.compile(
-    r"(claude-(?:opus|sonnet|haiku)-\d+)\.(\d+)"
-)
+_CLAUDE_DOTTED_VERSION_RE = re.compile(r"(claude-(?:opus|sonnet|haiku)-\d+)\.(\d+)")
 _ANTHROPIC_DOTTED_NAMESPACE_RE = re.compile(
     r"^(?:(?:global|us|eu|au)\.)?anthropic\.(.+)$"
 )
@@ -218,9 +216,7 @@ def _litellm_candidates(model_name: str) -> list[str]:
             if bare.casefold().startswith("accounts/fireworks/"):
                 add_with_variants(f"fireworks_ai/{bare}")
             elif "/" not in bare:
-                add_with_variants(
-                    f"fireworks_ai/accounts/fireworks/models/{bare}"
-                )
+                add_with_variants(f"fireworks_ai/accounts/fireworks/models/{bare}")
 
         mapped_provider = _PROVIDER_ALIASES.get(provider)
         if mapped_provider:
