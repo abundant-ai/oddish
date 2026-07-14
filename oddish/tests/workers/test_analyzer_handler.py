@@ -1,0 +1,350 @@
+import pytest
+
+from oddish.config import settings, to_anthropic_api_model_id
+from oddish.db.models import WorkerJobKind
+from oddish.workers.jobs import ensure_builtin_handlers_registered
+from oddish.workers.jobs.registry import get_handler
+
+
+def test_build_analyzer_eval_config_uses_settings_model_and_default_concurrency(
+    monkeypatch
+):
+    import oddish.workers.queue.analyzer_handler as rh
+
+    monkeypatch.delenv("ODDISH_ANALYZER_CONCURRENCY", raising=False)
+    config = rh._build_analyzer_eval_config()
+    assert config.analysis_model == to_anthropic_api_model_id(settings.analysis_model)
+    assert config.map_concurrency == 16  # AnalyzerEvalConfig default
+
+
+def test_build_analyzer_eval_config_reads_concurrency_env(monkeypatch):
+    import oddish.workers.queue.analyzer_handler as rh
+
+    monkeypatch.setenv("ODDISH_ANALYZER_CONCURRENCY", "4")
+    config = rh._build_analyzer_eval_config()
+    assert config.map_concurrency == 4
+
+
+def test_analyzer_handler_registered():
+    ensure_builtin_handlers_registered()
+    handler = get_handler(WorkerJobKind.ANALYZER)
+    assert handler.kind == WorkerJobKind.ANALYZER
+    assert handler.validate_payload({"analyzer_id": "r1"}) == {"analyzer_id": "r1"}
+
+
+@pytest.mark.asyncio
+async def test_handler_resets_terminal_status_before_retry(monkeypatch):
+    """A retry must clear a prior FAILED status, else run_analyzer_generation_job
+    early-exits and the retry is a no-op."""
+    import oddish.workers.jobs.handlers as h
+    from oddish.db.models import JobStatus
+
+    class _Analyzer:
+        def __init__(self):
+            self.status = JobStatus.FAILED  # left FAILED by a previous attempt
+            self.error = "transient boom"
+            self.finished_at = "then"
+
+    analyzer = _Analyzer()
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, model, id_, with_for_update=False): return analyzer
+    monkeypatch.setattr(h, "get_session", lambda: _Session())
+
+    seen = {}
+
+    async def fake_run(analyzer_id, *, worker_job_id=None):
+        # By the time generation runs, the terminal state must be cleared.
+        seen["status_at_run"] = analyzer.status
+        analyzer.status = JobStatus.SUCCESS  # this attempt succeeds
+    monkeypatch.setattr(h, "run_analyzer_generation_job", fake_run)
+
+    outcome = await h.AnalyzerJobHandler().run(_Job("r1"))
+
+    assert seen["status_at_run"] == JobStatus.QUEUED  # reset happened
+    assert analyzer.error is None and analyzer.finished_at is None
+    assert outcome.failure is None  # ok()
+
+
+class _Job:
+    def __init__(self, analyzer_id):
+        self.subject_id = analyzer_id
+        self.payload = {"analyzer_id": analyzer_id}
+        self.queue_key = "qa"
+        self.modal_function_call_id = None
+        self.id = "job-1"
+
+
+@pytest.mark.asyncio
+async def test_handler_run_maps_status_to_outcome(monkeypatch):
+    import oddish.workers.jobs.handlers as h
+
+    # run_analyzer_generation_job is stubbed; status is read back from the analyzer row.
+    async def fake_run(analyzer_id, *, worker_job_id=None):
+        fake_run.called = analyzer_id
+    monkeypatch.setattr(h, "run_analyzer_generation_job", fake_run)
+
+    class _Analyzer:
+        status = __import__("oddish.db.models", fromlist=["JobStatus"]).JobStatus.SUCCESS
+        error = None
+
+    class _Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): return _Analyzer()
+    monkeypatch.setattr(h, "get_session", lambda: _Session())
+
+    outcome = await h.AnalyzerJobHandler().run(_Job("r1"))
+    assert outcome.failure is None  # JobOutcome.ok()
+    assert fake_run.called == "r1"
+
+
+@pytest.mark.asyncio
+async def test_run_analyzer_generation_job_skips_persist_when_reaped(monkeypatch):
+    """Mirrors qa_handler's cancellation-safety intent: if the worker_jobs row
+    is no longer the live owner by the time the long work finishes (e.g. it
+    was reaped and re-claimed elsewhere), the analyzer row must not be written.
+    """
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    class _FakeAnalyzer:
+        def __init__(self):
+            self.status = JobStatus.PENDING
+            self.org_id = "org1"
+            self.started_at = None
+            self.finished_at = None
+            self.error = None
+            self.num_trials = None
+
+    analyzer = _FakeAnalyzer()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            return analyzer
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    liveness_calls = {"n": 0}
+
+    async def fake_is_running(session, worker_job_id, *, with_for_update=False):
+        liveness_calls["n"] += 1
+        # 1st call: initial RUNNING guard (job still alive). 2nd call: persist
+        # guard (job was reaped mid-run and no longer owns the work).
+        return liveness_calls["n"] == 1
+
+    monkeypatch.setattr(rh, "_worker_job_is_running", fake_is_running)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    class _Inputs:
+        pass
+
+    async def fake_build_inputs(rows):
+        return _Inputs()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    class _Output:
+        sections = {"bad": "b", "good": "g", "capabilities": "c", "headroom": "h"}
+        counts = {"trials": 0, "bad": 0, "good": 0}
+        breakdown = {}
+
+    async def fake_run_eval(inputs, config):
+        return _Output()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", fake_run_eval)
+
+    async def fake_heartbeat(*, worker_job_id, stop_event):
+        await stop_event.wait()
+
+    monkeypatch.setattr(rh, "_heartbeat_analyzer_worker_job", fake_heartbeat)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert liveness_calls["n"] == 2
+    # Persist bailed out: status is still RUNNING (set by step 1), never SUCCESS.
+    assert analyzer.status == JobStatus.RUNNING
+    assert analyzer.finished_at is None
+    assert analyzer.num_trials is None
+
+
+def _install_owned_analyzer(monkeypatch, rh, JobStatus):
+    """Shared scaffolding: a live analyzer whose worker job stays owned so the
+    persist path actually writes (used by the failure/cancel tests)."""
+
+    class _FakeAnalyzer:
+        def __init__(self):
+            self.status = JobStatus.PENDING
+            self.org_id = "org1"
+            self.started_at = None
+            self.finished_at = None
+            self.error = None
+            self.num_trials = None
+
+    analyzer = _FakeAnalyzer()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            return analyzer
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    async def always_running(session, worker_job_id, *, with_for_update=False):
+        return True  # job keeps ownership through persist
+
+    monkeypatch.setattr(rh, "_worker_job_is_running", always_running)
+
+    async def fake_heartbeat(*, worker_job_id, stop_event):
+        await stop_event.wait()
+
+    monkeypatch.setattr(rh, "_heartbeat_analyzer_worker_job", fake_heartbeat)
+    return analyzer
+
+
+@pytest.mark.asyncio
+async def test_gather_failure_marks_failed_not_stuck_running(monkeypatch):
+    """A failure in the trial-gather step (step 2) must still reach persist and
+    mark the analyzer FAILED — not leave it stranded in RUNNING."""
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def boom_gather(session, analyzer_id, org_id):
+        raise RuntimeError("db exploded during gather")
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", boom_gather)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.FAILED
+    assert analyzer.finished_at is not None
+    assert "db exploded during gather" in analyzer.error
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_marks_failed_not_stuck_running(monkeypatch):
+    """CancelledError (a BaseException, not Exception) during the eval must be
+    caught so persist runs and the analyzer ends FAILED with a clear reason."""
+    import asyncio
+
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    analyzer = _install_owned_analyzer(monkeypatch, rh, JobStatus)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return []
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    async def fake_build_inputs(rows):
+        return object()
+
+    monkeypatch.setattr(rh, "build_analyzer_inputs", fake_build_inputs)
+
+    async def cancel_eval(inputs, config):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(rh, "run_analyzer_eval", cancel_eval)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    assert analyzer.status == JobStatus.FAILED
+    assert analyzer.finished_at is not None
+    assert "cancelled" in analyzer.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_run_analyzer_generation_job_stops_mid_loop_on_reap(monkeypatch):
+    """Mirrors qa_handler's interior gating: if the worker job is reaped
+    while iterating trials needing classification, the loop must stop
+    immediately and not classify any further trials.
+    """
+    import oddish.workers.queue.analyzer_handler as rh
+    from oddish.db.models import JobStatus
+
+    class _FakeAnalyzer:
+        def __init__(self):
+            self.status = JobStatus.PENDING
+            self.org_id = "org1"
+            self.started_at = None
+            self.finished_at = None
+            self.error = None
+            self.num_trials = None
+
+    analyzer = _FakeAnalyzer()
+
+    class _FakeTrial:
+        def __init__(self, id_):
+            self.id = id_
+            self.analysis_status = JobStatus.PENDING
+
+    trials_by_id = {"t1": _FakeTrial("t1"), "t2": _FakeTrial("t2")}
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, model, id_, with_for_update=False):
+            if model is rh.AnalyzerModel:
+                return analyzer
+            return trials_by_id.get(id_)
+
+    monkeypatch.setattr(rh, "get_session", lambda: _FakeSession())
+
+    liveness_calls = {"n": 0}
+
+    async def fake_is_running(session, worker_job_id, *, with_for_update=False):
+        liveness_calls["n"] += 1
+        # 1: initial job-RUNNING guard. 2: loop-top check before t1 (still
+        # live). 3: loop-top check before t2 (reaped mid-loop -> stop).
+        return liveness_calls["n"] <= 2
+
+    monkeypatch.setattr(rh, "_worker_job_is_running", fake_is_running)
+
+    async def fake_gather(session, analyzer_id, org_id):
+        return [(trials_by_id["t1"], "task1"), (trials_by_id["t2"], "task2")]
+
+    monkeypatch.setattr(rh, "_gather_trial_rows", fake_gather)
+
+    classify_calls = []
+
+    async def fake_classify(tid, should_store=None):
+        classify_calls.append(tid)
+
+    monkeypatch.setattr(rh, "classify_trial_and_store", fake_classify)
+
+    async def fake_heartbeat(*, worker_job_id, stop_event):
+        await stop_event.wait()
+
+    monkeypatch.setattr(rh, "_heartbeat_analyzer_worker_job", fake_heartbeat)
+
+    await rh.run_analyzer_generation_job("r1", worker_job_id="job-1")
+
+    # Only the first trial was classified before the reap was detected.
+    assert classify_calls == ["t1"]
+    # The job stopped before reaching persist; status is unchanged from RUNNING.
+    assert analyzer.status == JobStatus.RUNNING
+    assert analyzer.finished_at is None
