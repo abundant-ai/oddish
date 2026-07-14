@@ -7,6 +7,7 @@ from api.routers import (
     dashboard,
     github_webhooks,
     orgs,
+    slack,
     tasks,
     trials,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "github_webhooks",
     "orgs",
     "public",
+    "slack",
     "tasks",
     "trials",
 ]
