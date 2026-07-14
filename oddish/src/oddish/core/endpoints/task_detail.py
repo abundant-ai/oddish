@@ -15,6 +15,7 @@ from oddish.core.helpers import (
 from oddish.core.tags.projection import (
     list_direct_version_tags,
     list_effective_user_tags_for_task_versions,
+    recompute_task_browse_projection,
 )
 from oddish.db import ExperimentModel, TaskModel, TaskVersionModel, TrialStatus
 from oddish.schemas import (
@@ -101,6 +102,12 @@ async def set_task_default_version_core(
     task.current_version_id = version_row.id
     task.task_path = version_row.task_path
     task.task_s3_key = version_row.task_s3_key
+    # The task-level tag projection distinguishes tags on the current version
+    # from tags that exist only on older versions. Flush the new pointer before
+    # recomputing because the projection reads ``current_version_id`` through
+    # raw SQL in the same transaction.
+    await session.flush()
+    await recompute_task_browse_projection(session, task_id=task.id)
     return TaskVersionResponse.model_validate(version_row)
 
 

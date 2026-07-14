@@ -60,12 +60,16 @@ class _RecordingSession:
     def __init__(self, results):
         self._results = list(results)
         self.queries = []
+        self.flushed = False
 
     async def execute(self, query):
         self.queries.append(query)
         if not self._results:
             raise AssertionError("unexpected extra session.execute() call")
         return self._results.pop(0)
+
+    async def flush(self):
+        self.flushed = True
 
 
 def _run(coro):
@@ -162,6 +166,17 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
     monkeypatch.setattr(
         _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
     )
+    projected = []
+
+    async def fake_recompute_task_browse_projection(_session, *, task_id):
+        assert _session.flushed is True
+        projected.append(task_id)
+
+    monkeypatch.setattr(
+        _task_detail,
+        "recompute_task_browse_projection",
+        fake_recompute_task_browse_projection,
+    )
     session = _RecordingSession(results=[_Result(scalar=version)])
 
     selected = _run(
@@ -177,6 +192,7 @@ def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch
     assert task.current_version_id == "v1"
     assert task.task_path == "/tmp/old"
     assert task.task_s3_key == "tasks/task-1/v1.tar.gz"
+    assert projected == ["task-1"]
     assert "task_versions.task_id" in str(session.queries[0])
     assert "task_versions.version" in str(session.queries[0])
 
