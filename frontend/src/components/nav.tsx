@@ -24,6 +24,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import {
   BookOpen,
   ChevronDown,
+  FileBarChart,
   FileText,
   Gauge,
   LogOut,
@@ -154,6 +155,21 @@ export function Nav() {
               >
                 <Gauge className="h-4 w-4" />
                 <span>Usage</span>
+              </Link>
+            </Button>
+            <Button
+              variant={pathname.startsWith("/analyzers") ? "secondary" : "ghost"}
+              size="sm"
+              asChild
+              className="gap-2 border border-transparent data-[active=true]:border-[#85b85c]/25"
+            >
+              <Link
+                href="/analyzers"
+                className="flex items-center gap-2"
+                data-active={pathname.startsWith("/analyzers")}
+              >
+                <FileBarChart className="h-4 w-4" />
+                <span>Analyzers</span>
               </Link>
             </Button>
           </div>

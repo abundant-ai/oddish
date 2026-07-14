@@ -462,6 +462,27 @@ async def enqueue_qa_worker_job(
     )
 
 
+async def enqueue_analyzer_worker_job(
+    session: AsyncSession, *, analyzer_id: str, org_id: str | None
+) -> WorkerJobModel:
+    """Enqueue a cross-experiment analyzer generation job.
+
+    Runs on the QA queue: analyzer generation is dominated by per-trial
+    classification, the same workload the QA pool is sized for.
+    """
+    return await enqueue_worker_job(
+        session,
+        EnqueueRequest(
+            kind=WorkerJobKind.ANALYZER,
+            queue_key=settings.get_qa_queue_key(),  # runs on the analysis pool
+            payload={"analyzer_id": analyzer_id},
+            subject_table="analyzers",
+            subject_id=analyzer_id,
+            org_id=org_id,
+        ),
+    )
+
+
 async def enqueue_task_expand_worker_job(
     session: AsyncSession,
     *,
