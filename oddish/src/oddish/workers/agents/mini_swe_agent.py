@@ -74,17 +74,6 @@ def _slugify_session_part(value: str) -> str:
 
 
 class OddishMiniSweAgent(MiniSweAgent):
-    """Base Oddish mini-swe-agent: ensure litellm's proxy extras are installed.
-
-    litellm >= 1.92 lazily imports proxy/MCP handlers (fastapi, orjson, ...) on
-    the tool-calling completion path mini-swe-agent uses (``tools=[BASH_TOOL]``).
-    Those deps are absent from the base ``uv tool`` venv, so the first model call
-    crashes with ModuleNotFoundError (fastapi -> orjson -> ...) and the trial
-    fails at 2 steps / 0 tokens. Reinstall with litellm's proxy extras so
-    completion() imports cleanly. (The proxy extra is version-agnostic, unlike
-    pinning litellm.)
-    """
-
     async def install(self, environment) -> None:
         await super().install(environment)
         version_spec = f"=={self._version}" if self._version else ""

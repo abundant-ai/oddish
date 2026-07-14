@@ -280,23 +280,13 @@ def _apply_grok_build_oddish_wrapper(agent_config: AgentConfig) -> None:
     agent_config.kwargs = kwargs
 
 
-def _apply_mini_swe_agent_oddish_wrapper(agent_config: AgentConfig) -> None:
-    """Route mini-swe-agent trials through Oddish's wrapper.
-
-    Every mini-swe-agent trial uses the Oddish subclass so ``install()`` pulls
-    litellm's proxy extras (fastapi/orjson/...) into the tool venv; litellm>=1.92
-    lazily imports them on the tool-calling completion path and otherwise crashes
-    the first model call at 2 steps / 0 tokens. Meta-model trials additionally
-    get the Meta subclass with Meta API env.
-    """
+def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
+    """Route Meta model evals through mini-swe-agent with Meta API settings."""
     if agent_config.import_path is not None:
         return
     if not _is_mini_swe_agent(agent_config):
         return
-
     if not is_meta_model(agent_config.model_name):
-        agent_config.name = None
-        agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
         return
 
     agent_config.name = None
@@ -313,6 +303,13 @@ def _apply_mini_swe_agent_oddish_wrapper(agent_config: AgentConfig) -> None:
     # (see harbor MiniSweAgent.run). When the caller does not set it, effort
     # stays unset (vendor default), so other sampling params are untouched.
     agent_config.kwargs = dict(agent_config.kwargs or {})
+
+
+def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
+    if agent_config.import_path is not None or not _is_mini_swe_agent(agent_config):
+        return
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
 
 
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
@@ -484,7 +481,8 @@ def _build_agent_config(
 
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
-    _apply_mini_swe_agent_oddish_wrapper(agent_config)
+    _apply_meta_mini_swe_agent(agent_config)
+    _apply_mini_swe_agent(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
