@@ -248,13 +248,12 @@ def build_alerts(
             )
 
     for failed in failed_experiments or []:
-        if failed.failed_trials == 0 or failed.total_trials == 0:
+        if (
+            not failed.failed_trials
+            or not failed.total_trials
+            or failed.failed_trials < failed.total_trials * experiment_failed_ratio
+        ):
             continue
-        if failed.failed_trials < failed.total_trials * experiment_failed_ratio:
-            continue
-        experiment_url = (
-            f"{dashboard_url}/experiments/{quote(quote(failed.id, safe=''), safe='')}"
-        )
         alerts.append(
             SlackAlert(
                 key=f"experiment-failed:{failed.id}",
@@ -263,7 +262,8 @@ def build_alerts(
                     f"Title: *{_escape(failed.name)}*\n"
                     f"Failed trials: *{failed.failed_trials}/{failed.total_trials}*\n"
                     f"Owner: *{_escape(failed.owner or 'Unknown')}*\n"
-                    f"<{experiment_url}|open experiment>"
+                    f"<{dashboard_url}/experiments/"
+                    f"{quote(quote(failed.id, safe=''), safe='')}|open experiment>"
                 ),
                 recipient_email=failed.owner_email,
                 dm_only=True,
@@ -420,10 +420,6 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
             )
         ).all()
 
-        # Current-state health check: superseded (retried) rows and
-        # user-cancelled rows are forced to FAILED by their flows, so counting
-        # them would misreport experiments the owner already repaired or
-        # deliberately stopped.
         current_trial = and_(
             TrialModel.deleted_at.is_(None),
             TrialModel.superseded_by_trial_id.is_(None),
@@ -571,14 +567,12 @@ async def _lookup_slack_user(bot_token: str, email: str) -> str | None:
         )
         response.raise_for_status()
         payload = response.json()
-    if not payload.get("ok"):
-        log.warning(
-            "slack user lookup failed email=%s error=%s",
-            email,
-            payload.get("error"),
-        )
-        return None
-    return str(payload["user"]["id"])
+    if payload.get("ok"):
+        return str(payload["user"]["id"])
+    log.warning(
+        "slack user lookup failed email=%s error=%s", email, payload.get("error")
+    )
+    return None
 
 
 async def _post_dm(bot_token: str, slack_user_id: str, text: str) -> None:
@@ -687,8 +681,7 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
                 slack_user_ids[recipient] = await _lookup_slack_user(
                     bot_token, recipient
                 )
-            slack_user_id = slack_user_ids[recipient]
-            if not slack_user_id:
+            if not (slack_user_id := slack_user_ids[recipient]):
                 await _release_alert(claim_key)
                 continue
             await _post_dm(bot_token, slack_user_id, alert.text)

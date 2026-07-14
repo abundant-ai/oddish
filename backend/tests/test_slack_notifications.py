@@ -607,8 +607,6 @@ async def test_send_owner_dms_claims_per_recipient_and_releases_failures(
     )
 
     assert posted == [("U123", "dm text"), ("U123", "fail"), ("U123", "cost dm")]
-    # The second run never looks up the already-claimed alert: claims are
-    # checked before any Slack API call.
     assert lookups == [
         "owner@example.com",
         "owner@example.com",
@@ -930,8 +928,7 @@ async def test_load_alerts_reports_finished_failed_experiments(
         harbor_stage: str | None = None,
         superseded_by: str | None = None,
     ) -> TrialModel:
-        if finished_at is None and status != TrialStatus.QUEUED:
-            finished_at = now
+        finished_at = finished_at or (now if status != TrialStatus.QUEUED else None)
         return TrialModel(
             id=trial_id,
             name=trial_id,
@@ -1002,8 +999,6 @@ async def test_load_alerts_reports_finished_failed_experiments(
                 trial(f"{task_id}-failed-1", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-failed-2", finished_id, TrialStatus.FAILED),
                 trial(f"{task_id}-success", finished_id, TrialStatus.SUCCESS),
-                # Soft-deleted, superseded (retried), and user-cancelled
-                # failures must not count toward failed/total.
                 trial(
                     f"{task_id}-deleted-failed",
                     finished_id,
@@ -1024,8 +1019,6 @@ async def test_load_alerts_reports_finished_failed_experiments(
                 ),
                 trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
                 trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
-                # Old first-party failure: only an excluded imported trial
-                # finished recently, so the stale experiment must not alert.
                 trial(
                     f"{task_id}-stale-failed",
                     stale_id,
