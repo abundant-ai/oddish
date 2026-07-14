@@ -13,7 +13,9 @@ import json
 from pathlib import Path
 
 from oddish.core.harbor_artifacts import (
+    VERIFIER_CTRF_MAX_BYTES,
     VERIFIER_METRICS_MAX_BYTES,
+    extract_ctrf_summary,
     extract_verifier_metrics,
 )
 from oddish.workers.harbor.outcome import HarborOutcome
@@ -131,3 +133,140 @@ def test_nonfinite_metrics_rejected(tmp_path):
     # NaN would parse under stock json but break JSONB persistence; the
     # extractor must skip it rather than return an unpersistable dict.
     assert extract_verifier_metrics(tmp_path) is None
+
+
+def _write_ctrf(job_dir, payload: object) -> Path:
+    verifier_dir = job_dir / "trial__abc123" / "verifier"
+    verifier_dir.mkdir(parents=True)
+    path = verifier_dir / "ctrf.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_ctrf_summary_extracts_counts_and_tool(tmp_path):
+    _write_ctrf(
+        tmp_path,
+        {
+            "reportFormat": "CTRF",
+            "results": {
+                "tool": {"name": "pytest"},
+                "summary": {
+                    "tests": 9,
+                    "passed": 7,
+                    "failed": 1,
+                    "skipped": 1,
+                    "pending": 0,
+                    "other": 0,
+                    "start": 1,
+                    "stop": 2,
+                },
+                "tests": [
+                    {"name": "kept in S3 only", "status": "failed", "duration": 1}
+                ],
+            },
+        },
+    )
+
+    assert extract_ctrf_summary(tmp_path) == {
+        "format": "ctrf",
+        "tests": 9,
+        "passed": 7,
+        "failed": 1,
+        "skipped": 1,
+        "pending": 0,
+        "other": 0,
+        "report_path": "trial__abc123/verifier/ctrf.json",
+        "tool": "pytest",
+    }
+
+
+def test_ctrf_summary_rejects_bad_counts(tmp_path):
+    _write_ctrf(
+        tmp_path,
+        {
+            "results": {
+                "tool": {"name": "pytest"},
+                "summary": {
+                    "tests": 1,
+                    "passed": True,
+                    "failed": 0,
+                    "skipped": 0,
+                    "pending": 0,
+                    "other": 0,
+                },
+            }
+        },
+    )
+    assert extract_ctrf_summary(tmp_path) is None
+
+
+def test_oversized_ctrf_is_ignored(tmp_path):
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir()
+    verifier_dir.joinpath("ctrf.json").write_text(
+        json.dumps({"blob": "x" * (VERIFIER_CTRF_MAX_BYTES + 1)})
+    )
+    assert extract_ctrf_summary(tmp_path) is None
+
+
+def test_merged_result_includes_compact_verifier_summary():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    verifier = {
+        "format": "ctrf",
+        "tests": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+    }
+    assert merged_trial_result({"latency_ms": 12}, None, None, verifier) == {
+        "latency_ms": 12,
+        "_verifier": verifier,
+    }
+
+
+def test_merged_result_discards_task_authored_verifier_summary():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    spoofed = {
+        "format": "ctrf",
+        "tests": 100,
+        "passed": 100,
+        "failed": 0,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+    }
+
+    assert merged_trial_result(
+        {"latency_ms": 12, "_verifier": spoofed}, None, None
+    ) == {"latency_ms": 12}
+
+
+def test_real_verifier_summary_replaces_task_authored_value():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    real = {
+        "format": "ctrf",
+        "tests": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+    }
+
+    assert merged_trial_result({"_verifier": {"passed": 999}}, None, None, real) == {
+        "_verifier": real
+    }
+
+
+def test_sanitize_task_result_removes_reserved_verifier_summary():
+    from oddish.core.harbor_artifacts import sanitize_task_result
+
+    assert sanitize_task_result({"latency_ms": 12, "_verifier": {"passed": 999}}) == {
+        "latency_ms": 12
+    }
+    assert sanitize_task_result({"_verifier": {"passed": 999}}) is None

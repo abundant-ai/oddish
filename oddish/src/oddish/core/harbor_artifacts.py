@@ -41,6 +41,12 @@ def detect_trajectory(path: Path) -> bool:
 # column and rides every trial-detail response.
 VERIFIER_METRICS_MAX_BYTES = 64 * 1024
 
+# CTRF reports can include every test name, failure message, and stack trace,
+# so they are commonly much larger than metrics.json. We only persist the
+# compact summary below, but still bound the source document before parsing it
+# in a worker process.
+VERIFIER_CTRF_MAX_BYTES = 8 * 1024 * 1024
+
 
 def _reject_nonfinite(name: str):
     raise ValueError(f"non-finite JSON constant in metrics: {name}")
@@ -71,6 +77,91 @@ def extract_verifier_metrics(path: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return cast(dict[str, Any], payload)
     return None
+
+
+def sanitize_task_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Copy task-authored result data without Oddish-owned verifier fields."""
+    sanitized = dict(result or {})
+    sanitized.pop("_verifier", None)
+    return sanitized or None
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def extract_ctrf_summary(path: Path) -> dict[str, Any] | None:
+    """Return a compact summary from the first valid ``verifier/ctrf.json``.
+
+    Harbor tasks using pytest-json-ctrf (and any other CTRF reporter) write a
+    standard report next to ``reward.txt``. The full report stays in object
+    storage; only aggregate counts and the reporter name ride in
+    ``trials.result`` so the trial drawer can render them without an S3 read.
+
+    Missing, oversized, malformed, or structurally invalid candidates are
+    ignored, just like metrics.json. A report problem must never change the
+    settled verifier reward.
+    """
+    if not path or not path.exists():
+        return None
+    for report_path in sorted(path.rglob("verifier/ctrf.json")):
+        try:
+            if report_path.stat().st_size > VERIFIER_CTRF_MAX_BYTES:
+                continue
+            payload = json.loads(
+                report_path.read_text(),
+                parse_constant=_reject_nonfinite,
+            )
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        results = payload.get("results")
+        if not isinstance(results, dict):
+            continue
+        summary = results.get("summary")
+        if not isinstance(summary, dict):
+            continue
+
+        counts: dict[str, int] = {}
+        for key in ("tests", "passed", "failed", "skipped", "pending", "other"):
+            value = _nonnegative_int(summary.get(key))
+            if value is None:
+                break
+            counts[key] = value
+        else:
+            compact: dict[str, Any] = {
+                "format": "ctrf",
+                **counts,
+                "report_path": report_path.relative_to(path).as_posix(),
+            }
+            tool = results.get("tool")
+            if isinstance(tool, dict):
+                tool_name = tool.get("name")
+                if isinstance(tool_name, str) and tool_name.strip():
+                    compact["tool"] = tool_name.strip()[:80]
+            return compact
+    return None
+
+
+def build_trial_result(
+    metrics: dict[str, Any] | None,
+    verifier_summary: dict[str, Any] | None,
+    error: str | None,
+    exception_type: str | None,
+) -> dict[str, Any] | None:
+    """Merge verifier metrics, a compact report, and a quiet exception marker."""
+    result: dict[str, Any] = sanitize_task_result(metrics) or {}
+    if verifier_summary is not None:
+        result["_verifier"] = verifier_summary
+    if exception_type is not None:
+        result["harbor_exception"] = {
+            "exception_type": exception_type,
+            "error": error[:300] if error else None,
+        }
+    return result or None
 
 
 def _as_int(value: Any) -> int | None:
