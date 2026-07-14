@@ -410,9 +410,9 @@ export function LiveTranscriptPanel({
 
   useEffect(() => {
     if (!newest || newest === prevNewestRef.current) return;
+    if (!atBottomRef.current) return;
     const prev = prevNewestRef.current;
     prevNewestRef.current = newest;
-    if (!atBottomRef.current) return;
     autoExpandedRef.current = newest;
     setExpanded((cur) => {
       const next = new Set(cur);
@@ -447,7 +447,25 @@ export function LiveTranscriptPanel({
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const wasAtBottom = atBottomRef.current;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    atBottomRef.current = isAtBottom;
+    if (
+      !wasAtBottom &&
+      isAtBottom &&
+      newest &&
+      newest !== prevNewestRef.current
+    ) {
+      const prev = prevNewestRef.current;
+      prevNewestRef.current = newest;
+      autoExpandedRef.current = newest;
+      setExpanded((cur) => {
+        const next = new Set(cur);
+        if (prev) next.delete(prev);
+        next.add(newest);
+        return Array.from(next);
+      });
+    }
   };
 
   const usage = last?.usage;
