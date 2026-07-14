@@ -224,3 +224,39 @@ def test_merged_result_includes_compact_verifier_summary():
         "latency_ms": 12,
         "_verifier": verifier,
     }
+
+
+def test_merged_result_discards_task_authored_verifier_summary():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    spoofed = {
+        "format": "ctrf",
+        "tests": 100,
+        "passed": 100,
+        "failed": 0,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+    }
+
+    assert merged_trial_result(
+        {"latency_ms": 12, "_verifier": spoofed}, None, None
+    ) == {"latency_ms": 12}
+
+
+def test_real_verifier_summary_replaces_task_authored_value():
+    from oddish.workers.harbor.outcome import merged_trial_result
+
+    real = {
+        "format": "ctrf",
+        "tests": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+    }
+
+    assert merged_trial_result({"_verifier": {"passed": 999}}, None, None, real) == {
+        "_verifier": real
+    }

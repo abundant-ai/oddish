@@ -143,9 +143,11 @@ def build_trial_result(
 ) -> dict[str, Any] | None:
     """Merge verifier metrics, a compact report, and a quiet exception marker."""
     result: dict[str, Any] = dict(metrics or {})
+    # ``metrics.json`` is task-authored, while Oddish owns the normalized
+    # verifier-report envelope. Always discard a task-provided value so a
+    # missing or invalid CTRF report cannot leave spoofed test counts behind.
+    result.pop("_verifier", None)
     if verifier_summary is not None:
-        # Reserved underscore key: task-authored metrics may use arbitrary
-        # names, while Oddish owns this normalized verifier-report envelope.
         result["_verifier"] = verifier_summary
     if exception_type is not None:
         result["harbor_exception"] = {
