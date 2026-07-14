@@ -10,6 +10,14 @@ version, superseded, or probe filter, and the admin spend filter keeps billed
 probes too. So this counts all versions, superseded retries, and probes, and the
 tile's tooltip tells the reader the table below is a filtered view of it.
 
+"Ran under this experiment" means owned by it: ``trials.experiment_id`` only.
+Trials gathered into a collection (``experiment_trials``) or reached through a
+shared task's link rows (``task_experiments``) render in the grid so scores can
+be compared, but their spend belongs to -- and is already reported by -- their
+home experiment. Counting them here would show the same dollars under two
+experiments at once (and inflate rollup views assembled from other experiments'
+work), so membership rows never contribute cost.
+
 **Soft-deleted trials count too**, which is why the query opts out of the global
 soft-delete filter with ``include_deleted=True`` (``db.soft_delete``). Deleting a
 trial removes it from the *view*; it does not refund it. Both other places that
@@ -45,7 +53,6 @@ from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import settings
-from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db.models import TrialModel
 from oddish.model_pricing import estimate_cost_usd
 from oddish.schemas import ExperimentCostTotals
@@ -92,17 +99,11 @@ def experiment_cost_groups_select(
 ) -> Select:
     """One row per ``(agent, model, billed)`` bucket of the experiment's trials.
 
-    Membership is the only filter: a trial counts if it ran under this
-    experiment, either as its home (``trials.experiment_id``) or gathered into a
-    collection via ``experiment_trials``. No version / superseded / probe /
-    soft-delete filtering -- see the module docstring: those hide trials from the
+    Ownership is the only filter: a trial counts iff ``trials.experiment_id``
+    is this experiment. Gathered / shared-task trials are excluded -- their
+    spend is reported by their home experiment (module docstring). No version /
+    superseded / probe / soft-delete filtering: those hide trials from the
     grid, but the spend is real and already billed.
-
-    ``include_deleted=True`` opts the *trials* out of the global soft-delete
-    filter. It does not resurrect unlinked collection membership: the
-    ``experiment_trials`` rows carry their own explicit ``deleted_at IS NULL``
-    predicate (``gathered_trial_ids_select``), so a trial unlinked from a
-    collection stays out of that collection's total.
     """
     billed = TrialModel.billed_user_id.isnot(None)
 
@@ -120,7 +121,7 @@ def experiment_cost_groups_select(
             _sum_when(_ESTIMATED_ROW, _CACHE_WRITE).label("cache_write_tokens"),
             _sum_when(_ESTIMATED_ROW, _OUTPUT).label("output_tokens"),
         )
-        .where(trial_in_experiment(experiment_id))
+        .where(TrialModel.experiment_id == experiment_id)
         .group_by(TrialModel.agent, TrialModel.model, billed)
         .execution_options(include_deleted=True)
     )
