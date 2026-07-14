@@ -173,7 +173,7 @@ def build_alerts(
                 key = f"experiment:{experiment.id}:{milestone:g}"
                 # Milestones already covered before the watch window opened are
                 # historical: claim them silently so pre-existing spend never
-                # dumps a backlog of alerts the first time we observe it.
+                # dumps a backlog of alerts into any delivery channel.
                 silent = milestone <= baseline_cost + _MILESTONE_EPSILON
                 email_subject = (
                     f"Cost alert: {experiment.name} reached ${milestone:,.0f}"
@@ -183,6 +183,7 @@ def build_alerts(
                     f"{experiment.name}\n"
                     f"Spend milestone: ${milestone:,.2f}\n"
                     f"Current spend: ${total_cost:,.2f}\n"
+                    f"New spend (last 2h): ${recent_spend:,.2f}\n"
                     f"Trials still running: {experiment.active_trials}\n"
                     f"Owner: {experiment.owner or 'Unknown'}\n\n"
                     "Top agent costs:\n"
@@ -691,9 +692,9 @@ async def _start_delivery(
     # failed. Keep retrying it even if its spend has since aged out of the
     # recent window and build_alerts now classifies the milestone as silent.
     if await _alert_is_pending(retry_key):
-        # Recover a partial completion from an older run: if the webhook was
+        # Recover a partial completion from an older run: if the delivery was
         # already recorded on the primary key, close the retry marker instead
-        # of posting the same alert again.
+        # of sending the same alert again.
         if await _alert_is_sent(claim_key):
             await _mark_alert_sent(retry_key)
             return False
@@ -701,7 +702,7 @@ async def _start_delivery(
     if not await _claim_alert(claim_key):
         # A pending primary claim means an older run stopped after claiming but
         # before completing delivery. Resume loud delivery; finish a silent
-        # claim in place without posting.
+        # claim in place without sending.
         if await _alert_is_pending(claim_key):
             if silent:
                 await _mark_alert_sent(claim_key)
@@ -731,8 +732,6 @@ async def send_alerts(webhook_url: str, alerts: list[SlackAlert]) -> None:
             await _claim_alert(retry_key)
             log.exception("slack expense alert post failed alert_key=%s", alert.key)
             continue
-        # Mark the primary and any retry marker in one transaction so a crash
-        # cannot leave a delivered alert eligible to post again.
         await _mark_alert_sent(alert.key, retry_key)
 
 

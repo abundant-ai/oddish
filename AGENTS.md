@@ -540,19 +540,17 @@ sweep):
    `FAILED` / `CANCELLED`), runs the post-success hook when applicable,
    releases the slot in its `finally`, and exits.
 4. `send_slack_expense_notifications()` runs every five minutes in production
-   when a Slack or email delivery channel is configured. It deterministically alerts
-   for experiments at $1,000 and each additional $1,000 of spend, and for recent
-   trials over $70 that exceed twice the average of other trials in the
-   experiment for the same task and model. Trials without a same-task/model
+   when a Slack or email delivery channel is configured. It deterministically
+   alerts for experiments at $1,000 and each additional $1,000 of spend, and
+   for recent trials over $70 that exceed twice the average of other trials in
+   the experiment for the same task and model. Trials without a same-task/model
    peer do not produce anomaly alerts. Milestones are driven by *new* spend:
    spend that finished within the 2h watch window. Milestones already covered by
-   the pre-window baseline (`total - recent`) are claimed silently (a claim row,
-   no Slack post, owner email, or DM) so first observing an experiment with
-   pre-existing spend — feature rollout, threshold change, or a dormant run
-   resumed with a cheap trial — never dumps a backlog of historical alerts.
-   Silent claims are marked complete. Failed loud deliveries keep a separate
-   pending retry marker, so they remain retryable even after the spend ages out
-   of the watch window and that milestone would otherwise become silent.
+   the pre-window baseline (`total - recent`) are claimed and completed silently
+   across every delivery channel so first observing pre-existing spend never
+   dumps historical alerts. Failed loud deliveries retain per-channel retry
+   markers; primary and retry completion is atomic, and interrupted claims are
+   recovered without losing loud alerts or sending silent ones.
    The first experiment threshold and repeat interval are configurable with
    `ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD` and
    `ODDISH_SLACK_EXPERIMENT_REPEAT_USD`. It uses the shared settled-cost basis

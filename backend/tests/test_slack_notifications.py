@@ -118,6 +118,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         "Exp <One>",
         "Spend milestone: $2,000.00",
         "Current spend: $2,001.00",
+        "New spend (last 2h): $2,001.00",
         "Trials still running: 2",
         "Owner: Pat & Sam",
         "",
@@ -158,7 +159,7 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
 def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0, owner_email="a@e.com")],
         [
             _trial("old", 4000, finished_at=now - timedelta(hours=3)),
             _trial("recent", 50, finished_at=now),
@@ -179,7 +180,8 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
         "experiment:experiment-1:4000",
     ]
     assert all(a.silent for a in milestone_alerts)
-    assert all(a.text for a in milestone_alerts)
+    assert all(a.text and a.email_text for a in milestone_alerts)
+    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
 
 
 def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
@@ -525,12 +527,13 @@ async def test_send_alerts_claims_once_and_retries_failed_posts(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_claims_silent_baseline_without_posting(
+async def test_silent_milestone_completes_all_channels_without_sending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
     sent: set[str] = set()
     posted: list[str] = []
+    looked_up: list[str] = []
 
     async def claim(key: str) -> bool:
         if key in claimed:
@@ -547,26 +550,45 @@ async def test_send_alerts_claims_silent_baseline_without_posting(
     async def is_sent(key: str) -> bool:
         return key in sent
 
-    async def post(_url: str, text: str) -> None:
-        posted.append(text)
+    async def post(*_args) -> None:
+        posted.append("sent")
+
+    async def lookup(_token: str, email: str) -> str | None:
+        looked_up.append(email)
+        return "U123"
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
     monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
     monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_post_email", post)
+    monkeypatch.setattr(notifications, "_post_dm", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
-        [
-            SlackAlert("experiment:1:1000", "", silent=True),
-            SlackAlert("experiment:1:2000", "fire"),
-        ],
+    alert = SlackAlert(
+        "experiment:1:1000",
+        "historical",
+        recipient_email="owner@example.com",
+        email_subject="Historical",
+        email_text="Historical",
+        silent=True,
     )
+    await send_alerts("https://hooks.slack.test", [alert])
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [alert])
+    await send_owner_dms("xoxb-token", [alert])
 
-    assert posted == ["fire"]
-    assert sent == {"experiment:1:1000", "experiment:1:2000"}
-    assert claimed == {"experiment:1:1000", "experiment:1:2000"}
+    assert posted == []
+    assert looked_up == []
+    assert (
+        sent
+        == claimed
+        == {
+            "experiment:1:1000",
+            "email:experiment:1:1000:owner@example.com",
+            "dm:experiment:1:1000:owner@example.com",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -766,17 +788,23 @@ async def test_send_alerts_skips_dm_only_alerts(
 ) -> None:
     posted: list[str] = []
 
+    claimed: set[str] = set()
+    sent: set[str] = set()
+
     async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
         return True
 
-    async def mark_sent(*_keys: str) -> None:
-        pass
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
 
-    async def is_pending(_key: str) -> bool:
-        return False
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
 
-    async def is_sent(_key: str) -> bool:
-        return False
+    async def is_sent(key: str) -> bool:
+        return key in sent
 
     async def post(_url: str, text: str) -> None:
         posted.append(text)
