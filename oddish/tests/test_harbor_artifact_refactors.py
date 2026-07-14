@@ -77,6 +77,29 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
         json.dumps({"steps": [{"step_id": "a"}, {"step_id": "b"}]}),
         encoding="utf-8",
     )
+    verifier_dir = tmp_path / "verifier"
+    verifier_dir.mkdir()
+    (verifier_dir / "metrics.json").write_text(
+        json.dumps({"latency_ms": 12.5}), encoding="utf-8"
+    )
+    (verifier_dir / "ctrf.json").write_text(
+        json.dumps(
+            {
+                "results": {
+                    "tool": {"name": "pytest"},
+                    "summary": {
+                        "tests": 3,
+                        "passed": 2,
+                        "failed": 1,
+                        "skipped": 0,
+                        "pending": 0,
+                        "other": 0,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     trial_result = SimpleNamespace(
         id="trial-id",
         agent_info=SimpleNamespace(
@@ -116,6 +139,20 @@ def test_trial_import_spec_reuses_shared_extraction(tmp_path):
     assert spec["output_tokens"] == 6
     assert spec["total_steps"] == 2
     assert spec["has_trajectory"] is True
+    assert spec["result"] == {
+        "latency_ms": 12.5,
+        "_verifier": {
+            "format": "ctrf",
+            "tests": 3,
+            "passed": 2,
+            "failed": 1,
+            "skipped": 0,
+            "pending": 0,
+            "other": 0,
+            "report_path": "verifier/ctrf.json",
+            "tool": "pytest",
+        },
+    }
 
 
 def test_trial_import_spec_treats_non_numeric_reward_as_missing():

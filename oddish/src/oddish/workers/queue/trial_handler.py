@@ -725,9 +725,13 @@ async def _store_trial_results(
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),
-            # plus a harbor_exception marker when a phase raised quietly.
+            # compact CTRF test counts, plus a harbor_exception marker when a
+            # phase raised quietly.
             trial.result = merged_trial_result(
-                outcome.metrics, outcome.error, outcome.exception_type
+                outcome.metrics,
+                outcome.error,
+                outcome.exception_type,
+                outcome.verifier_summary,
             )
 
             trial.has_trajectory = outcome.has_trajectory
