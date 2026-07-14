@@ -646,6 +646,13 @@ for webhook ingestion. Common optional settings include `CORS_ALLOWED_ORIGINS`,
 `GITHUB_TOKEN`, and `ODDISH_DASHBOARD_URL`. See `backend/.env.example` for the
 full surface and `backend/README.md` for details.
 
+Slack link unfurls are a lean hosted-only integration configured through
+`ODDISH_SLACK_UNFURL_*`. One manually installed Slack workspace is bound to one
+Oddish org; the Slack app needs `links:read` and `links:write`, subscribes to
+`link_shared`, and sends signed events to `POST /webhooks/slack/events`.
+Optional team and channel allowlists provide defense in depth. This integration
+is separate from the scheduled expense-notification webhook.
+
 Hosted API containers keep a conservative warm SQLAlchemy pool by default so
 Modal bursts do not overrun shared Postgres poolers. The engine still disables
 prepared statement caching so it remains compatible with transaction-mode
@@ -687,6 +694,8 @@ uv run alembic upgrade head
 | `api/routers/trials.py` | Trial logs, result, trajectory, retries, deletion |
 | `api/routers/dashboard.py` | Cached aggregate dashboard endpoint |
 | `api/routers/admin.py` | Auth wrapper over `oddish.core.admin` (slots, queue status, orphaned state, worker_jobs) |
+| `api/routers/slack.py` | Signed Slack Events API endpoint for link unfurls |
+| `api/services/slack_unfurls.py` | Task/experiment summary queries and Slack block construction |
 | `auth/__init__.py` | Header parsing, `get_auth_context`, permission dependencies |
 | `auth/verification.py` | API key + Clerk JWT verification |
 | `worker/functions.py` | Modal dispatcher (`poll_queue`), reconciler (`reconcile_queue_state`), and kind-agnostic single-job runner |
