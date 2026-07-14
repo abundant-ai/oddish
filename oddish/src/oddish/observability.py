@@ -150,7 +150,12 @@ def log_unpriced_trial_if_needed(
     """Log one structured integrity warning when tokens cannot be priced."""
     if cost_usd is not None or not any(
         int(tokens or 0) > 0
-        for tokens in (input_tokens, output_tokens, cache_write_tokens)
+        for tokens in (
+            input_tokens,
+            cache_tokens,
+            cache_write_tokens,
+            output_tokens,
+        )
     ):
         return False
 

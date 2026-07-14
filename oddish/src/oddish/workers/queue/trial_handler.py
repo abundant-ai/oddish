@@ -722,20 +722,6 @@ async def _store_trial_results(
                 cache_tokens=outcome.cache_tokens,
                 cache_write_tokens=outcome.cache_write_tokens,
             )
-            log_unpriced_trial_if_needed(
-                cost_usd=trial.cost_usd,
-                trial_id=trial.id,
-                model=trial.model,
-                agent=getattr(trial, "agent", None),
-                provider=provider,
-                attempt=trial.attempts,
-                input_tokens=outcome.input_tokens,
-                cache_tokens=outcome.cache_tokens,
-                cache_write_tokens=outcome.cache_write_tokens,
-                output_tokens=outcome.output_tokens,
-                native_cost_usd=outcome.cost_usd,
-                native_cost_trusted=native_cost_trusted,
-            )
 
             trial.phase_timing = outcome.phase_timing
             # Verifier-reported benchmark metrics (the metrics.json contract),
@@ -799,6 +785,24 @@ async def _store_trial_results(
                     trial.status = TrialStatus.FAILED
                     trial.finished_at = utcnow()
                     console.print(f"[red]Trial {trial_id} FAILED (max attempts)[/red]")
+
+            # Retry reconciliation can restore a previously checkpointed cost.
+            # Log only after that monotonic adjustment so we never report an
+            # unpriced row that will actually retain a resolved cost.
+            log_unpriced_trial_if_needed(
+                cost_usd=trial.cost_usd,
+                trial_id=trial.id,
+                model=trial.model,
+                agent=getattr(trial, "agent", None),
+                provider=provider,
+                attempt=trial.attempts,
+                input_tokens=outcome.input_tokens,
+                cache_tokens=outcome.cache_tokens,
+                cache_write_tokens=outcome.cache_write_tokens,
+                output_tokens=outcome.output_tokens,
+                native_cost_usd=outcome.cost_usd,
+                native_cost_trusted=native_cost_trusted,
+            )
         else:
             trial.status = TrialStatus.FAILED
             trial.finished_at = utcnow()

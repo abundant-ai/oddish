@@ -86,6 +86,11 @@ def test_unpriced_trial_helper_only_logs_null_cost_with_tokens(monkeypatch) -> N
     assert observability.log_unpriced_trial_if_needed(
         cost_usd=None, input_tokens=100, output_tokens=10, **base
     )
-    assert len(calls) == 1
+    cache_only = {**base, "cache_tokens": 50}
+    assert observability.log_unpriced_trial_if_needed(
+        cost_usd=None, input_tokens=0, output_tokens=0, **cache_only
+    )
+    assert len(calls) == 2
     assert calls[0][1]["metric"] == "trial_cost_unpriced"
     assert calls[0][1]["model"] == "new-model"
+    assert calls[1][1]["cache_tokens"] == 50
