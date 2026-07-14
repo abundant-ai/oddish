@@ -253,6 +253,7 @@ All routes require auth unless marked public.
 | GET | `/tasks/{task_id}/trials/{index}` | Trial by index |
 | GET | `/tasks/{task_id}/versions` | List stored task versions |
 | GET | `/tasks/{task_id}/versions/{version}` | Get one stored task version |
+| PUT | `/tasks/{task_id}/versions/{version}/default` | Make a stored version the task default for display and new runs |
 | DELETE | `/trials/{trial_id}` | Soft-delete a trial, cancel jobs, and invalidate the cached verdict (admin only) |
 | POST | `/trials/{trial_id}/retry` | Re-queue trial |
 | GET | `/trials/{trial_id}/logs` | Trial logs |

@@ -28,6 +28,7 @@ from oddish.core.endpoints import (
     get_trial_by_index_core,
     get_trial_for_org_core,
     list_task_versions_core,
+    set_task_default_version_core,
     list_tasks_core,
     rerun_task_qa_core,
     retry_trial_core,
@@ -526,6 +527,20 @@ async def get_task_version(task_id: str, version: int):
     """Get a specific version of a task."""
     async with get_session() as session:
         return await get_task_version_core(session, task_id=task_id, version=version)
+
+
+@api.put(
+    "/tasks/{task_id}/versions/{version}/default",
+    response_model=TaskVersionResponse,
+)
+async def set_task_default_version(task_id: str, version: int) -> TaskVersionResponse:
+    """Use a stored task version as the default for display and new runs."""
+    async with get_session() as session:
+        selected = await set_task_default_version_core(
+            session, task_id=task_id, version=version
+        )
+        await session.commit()
+        return selected
 
 
 @api.post("/tasks/cancel")

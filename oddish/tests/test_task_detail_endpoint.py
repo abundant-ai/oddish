@@ -60,12 +60,16 @@ class _RecordingSession:
     def __init__(self, results):
         self._results = list(results)
         self.queries = []
+        self.flushed = False
 
     async def execute(self, query):
         self.queries.append(query)
         if not self._results:
             raise AssertionError("unexpected extra session.execute() call")
         return self._results.pop(0)
+
+    async def flush(self):
+        self.flushed = True
 
 
 def _run(coro):
@@ -137,6 +141,83 @@ def test_list_task_versions_core_fetches_task_when_not_passed(monkeypatch):
     _run(endpoints.list_task_versions_core(session, task_id="task-1"))
 
     assert fetched["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# set_task_default_version_core
+# ---------------------------------------------------------------------------
+
+
+def test_set_task_default_version_updates_pointer_and_storage_mirror(monkeypatch):
+    task = SimpleNamespace(
+        id="task-1",
+        current_version_id="v2",
+        task_path="/tmp/new",
+        task_s3_key="tasks/task-1/v2.tar.gz",
+    )
+    version = _VersionRow("v1", 1)
+    version.task_path = "/tmp/old"
+    version.task_s3_key = "tasks/task-1/v1.tar.gz"
+
+    async def fake_get_task_for_org_core(*_args, **kwargs):
+        assert kwargs == {"task_id": "task-1", "org_id": "org-1"}
+        return task
+
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
+    projected = []
+
+    async def fake_recompute_task_browse_projection(_session, *, task_id):
+        assert _session.flushed is True
+        projected.append(task_id)
+
+    monkeypatch.setattr(
+        _task_detail,
+        "recompute_task_browse_projection",
+        fake_recompute_task_browse_projection,
+    )
+    session = _RecordingSession(results=[_Result(scalar=version)])
+
+    selected = _run(
+        endpoints.set_task_default_version_core(
+            session,
+            task_id="task-1",
+            version=1,
+            org_id="org-1",
+        )
+    )
+
+    assert selected.id == "v1"
+    assert task.current_version_id == "v1"
+    assert task.task_path == "/tmp/old"
+    assert task.task_s3_key == "tasks/task-1/v1.tar.gz"
+    assert projected == ["task-1"]
+    assert "task_versions.task_id" in str(session.queries[0])
+    assert "task_versions.version" in str(session.queries[0])
+
+
+def test_set_task_default_version_rejects_unknown_version(monkeypatch):
+    async def fake_get_task_for_org_core(*_args, **_kwargs):
+        return SimpleNamespace(id="task-1")
+
+    monkeypatch.setattr(
+        _task_detail, "get_task_for_org_core", fake_get_task_for_org_core
+    )
+    session = _RecordingSession(results=[_Result(scalar=None)])
+
+    with pytest.raises(HTTPException) as exc:
+        _run(
+            endpoints.set_task_default_version_core(
+                session,
+                task_id="task-1",
+                version=99,
+                org_id="org-1",
+            )
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "Version 99 not found for task task-1"
 
 
 # ---------------------------------------------------------------------------
