@@ -423,7 +423,13 @@ async def load_alerts(now: datetime | None = None) -> list[SlackAlert]:
         current_trial = and_(
             TrialModel.deleted_at.is_(None),
             TrialModel.superseded_by_trial_id.is_(None),
-            func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
+            or_(
+                func.coalesce(TrialModel.harbor_stage, "") != CANCELLED_HARBOR_STAGE,
+                # The orphan reaper uses the cancelled runtime stage too, but
+                # exhausted reaps are real FAILED outcomes and must count
+                # toward failed-experiment notifications.
+                TrialModel.stale_reaped_at.isnot(None),
+            ),
         )
         recently_finished = (
             select(TrialModel.experiment_id)

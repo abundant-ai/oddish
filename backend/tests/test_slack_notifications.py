@@ -942,6 +942,7 @@ async def test_load_alerts_reports_finished_failed_experiments(
         finished_at: datetime | None = None,
         deleted_at: datetime | None = None,
         harbor_stage: str | None = None,
+        stale_reaped_at: datetime | None = None,
         superseded_by: str | None = None,
     ) -> TrialModel:
         finished_at = finished_at or (now if status != TrialStatus.QUEUED else None)
@@ -961,6 +962,7 @@ async def test_load_alerts_reports_finished_failed_experiments(
             finished_at=finished_at,
             deleted_at=deleted_at,
             harbor_stage=harbor_stage,
+            stale_reaped_at=stale_reaped_at,
             superseded_by_trial_id=superseded_by,
         )
 
@@ -1033,6 +1035,13 @@ async def test_load_alerts_reports_finished_failed_experiments(
                     TrialStatus.FAILED,
                     harbor_stage=CANCELLED_HARBOR_STAGE,
                 ),
+                trial(
+                    f"{task_id}-reaped-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    harbor_stage=CANCELLED_HARBOR_STAGE,
+                    stale_reaped_at=now,
+                ),
                 trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
                 trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
                 trial(
@@ -1056,10 +1065,10 @@ async def test_load_alerts_reports_finished_failed_experiments(
         alert = alerts[0]
         assert alert.dm_only
         assert alert.recipient_email == "failed-owner@example.com"
-        assert "Failed trials: *2/3*" in alert.text
+        assert "Failed trials: *3/4*" in alert.text
         assert "Title: *Failed experiment*" in alert.text
 
-        monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", "0.7")
+        monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", "0.8")
         assert not [
             alert
             for alert in await load_alerts(now)
