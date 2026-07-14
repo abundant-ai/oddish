@@ -1712,6 +1712,7 @@ class OrgProbeRow(BaseModel):
     run_count: int
     last_run_at: datetime | None
     last_status: str
+    probe_names: list[str] = Field(default_factory=list)
 
 
 # Skills — custom agent skill bundles.

@@ -6,7 +6,7 @@ typed Pydantic models so they can be unit-tested without the web layer.
 
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
@@ -114,6 +114,10 @@ async def list_org_probes_core(
         TrialModel.status.label("last_status"),
         TrialModel.created_at.label("last_run_at"),
         func.count().over(partition_by=TrialModel.task_id).label("run_count"),
+        func.array_agg(distinct(TrialModel.harbor_config["probe_name"].astext))
+        .filter(TrialModel.harbor_config["probe_name"].astext.isnot(None))
+        .over(partition_by=TrialModel.task_id)
+        .label("probe_names"),
         func.row_number()
         .over(
             partition_by=TrialModel.task_id,
@@ -132,6 +136,7 @@ async def list_org_probes_core(
             ranked.c.run_count,
             ranked.c.last_run_at,
             ranked.c.last_status,
+            ranked.c.probe_names,
         )
         .join(ranked, ranked.c.task_id == TaskModel.id)
         .where(ranked.c.rn == 1)
@@ -146,6 +151,7 @@ async def list_org_probes_core(
             run_count=row.run_count,
             last_run_at=row.last_run_at,
             last_status=getattr(row.last_status, "value", row.last_status),
+            probe_names=list(row.probe_names or []),
         )
         for row in result.all()
     ]
