@@ -6,7 +6,7 @@ typed Pydantic models so they can be unit-tested without the web layer.
 
 from __future__ import annotations
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.db import (
@@ -106,7 +106,7 @@ async def list_org_probes_core(
     # blobs over the wire) for *every* probe trial and folded them in Python;
     # work scaled with total trial count. Here a single windowed pass over the
     # org's probe trials computes the per-task count and ranks each task's
-    # trials newest-first, selecting only the five scalar columns the row
+    # trials newest-first, selecting only the six scalar columns the row
     # needs. The org filter sits on ``TrialModel.org_id`` (mirrors the task's
     # org at trial creation) so Postgres restricts the scan before windowing.
     ranked_select = select(
@@ -114,7 +114,7 @@ async def list_org_probes_core(
         TrialModel.status.label("last_status"),
         TrialModel.created_at.label("last_run_at"),
         func.count().over(partition_by=TrialModel.task_id).label("run_count"),
-        func.array_agg(distinct(TrialModel.harbor_config["probe_name"].astext))
+        func.array_agg(TrialModel.harbor_config["probe_name"].astext)
         .filter(TrialModel.harbor_config["probe_name"].astext.isnot(None))
         .over(partition_by=TrialModel.task_id)
         .label("probe_names"),
@@ -151,7 +151,7 @@ async def list_org_probes_core(
             run_count=row.run_count,
             last_run_at=row.last_run_at,
             last_status=getattr(row.last_status, "value", row.last_status),
-            probe_names=list(row.probe_names or []),
+            probe_names=sorted(set(row.probe_names or [])),
         )
         for row in result.all()
     ]
