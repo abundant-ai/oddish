@@ -265,10 +265,8 @@ def convert_grok_build_payloads_to_trajectory(
                 steps.append(
                     Step(
                         step_id=len(steps) + 1,
-                        source="agent",
-                        model_name=resolved_model or model_name,
+                        source="user",
                         message=content,
-                        llm_call_count=0,
                         observation=Observation(
                             results=[
                                 ObservationResult(
