@@ -13,6 +13,7 @@ from oddish.cli.ls import ls
 from oddish.cli.publish import publish, unpublish
 from oddish.cli.probe import probe_app
 from oddish.cli.pull import pull
+from oddish.cli.analyzer import analyzer_app
 from oddish.cli.run import run
 from oddish.cli.status import status
 from oddish.cli.upload import upload
@@ -35,6 +36,7 @@ app.command()(costs)
 app.command()(collect)
 app.command()(delete)
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(analyzer_app, name="analyzer")
 app.command()(pull)
 app.command()(publish)
 app.command()(unpublish)

@@ -288,6 +288,7 @@ def create_app() -> FastAPI:
         imports,
         load,
         orgs,
+        analyzers,
         skills,
         public,
         slack,
@@ -314,5 +315,6 @@ def create_app() -> FastAPI:
     api.include_router(slack.router)
     api.include_router(admin.router)
     api.include_router(tags.router)
+    api.include_router(analyzers.router)
 
     return api
