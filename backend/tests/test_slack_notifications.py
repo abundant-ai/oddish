@@ -1,8 +1,12 @@
+import json
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import httpx
 import pytest
 import slack_notifications as notifications
+from models import OrganizationModel, UserModel
+from oddish.core.cost_basis import CANCELLED_HARBOR_STAGE
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -13,12 +17,15 @@ from oddish.db import (
 )
 from slack_notifications import (
     ExperimentCandidate,
+    FailedExperiment,
     SlackAlert,
     TrialSpend,
     UnpricedModel,
     build_alerts,
     load_alerts,
     send_alerts,
+    send_owner_dms,
+    send_owner_emails,
 )
 
 
@@ -71,6 +78,7 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
                 name="Exp <One>",
                 owner="Pat & Sam",
                 active_trials=2,
+                owner_email="owner@example.com",
             )
         ],
         [
@@ -100,6 +108,24 @@ def test_build_alerts_reports_each_expense_milestone() -> None:
         "Top agent costs:",
         "• `model-1`: *$2,001.00*",
         "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+    assert experiment_alert.recipient_email == "owner@example.com"
+    assert experiment_alert.email_subject == "Cost alert: Exp <One> reached $2,000"
+    assert experiment_alert.email_text is not None
+    assert experiment_alert.email_text.splitlines() == [
+        "Expensive experiment",
+        "",
+        "Exp <One>",
+        "Spend milestone: $2,000.00",
+        "Current spend: $2,001.00",
+        "New spend (last 2h): $2,001.00",
+        "Trials still running: 2",
+        "Owner: Pat & Sam",
+        "",
+        "Top agent costs:",
+        "- model-1: $2,001.00",
+        "",
+        "Open experiment: https://www.oddish.app/experiments/experiment%252F1",
     ]
 
 
@@ -133,7 +159,7 @@ def test_build_alerts_lists_the_top_three_agent_costs() -> None:
 def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> None:
     now = datetime.now(timezone.utc)
     alerts = build_alerts(
-        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0)],
+        [ExperimentCandidate("experiment-1", "Exp", "Ada", 0, owner_email="a@e.com")],
         [
             _trial("old", 4000, finished_at=now - timedelta(hours=3)),
             _trial("recent", 50, finished_at=now),
@@ -154,7 +180,8 @@ def test_build_alerts_silently_claims_milestones_reached_before_the_window() -> 
         "experiment:experiment-1:4000",
     ]
     assert all(a.silent for a in milestone_alerts)
-    assert all(a.text for a in milestone_alerts)
+    assert all(a.text and a.email_text for a in milestone_alerts)
+    assert all(a.recipient_email == "a@e.com" for a in milestone_alerts)
 
 
 def test_build_alerts_fires_only_milestones_new_spend_crosses() -> None:
@@ -362,6 +389,83 @@ def test_build_alerts_ignores_old_trials() -> None:
     assert alerts == []
 
 
+def test_build_alerts_reports_failed_experiments_as_dm_only() -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        failed_experiments=[
+            FailedExperiment(
+                id="experiment/1",
+                name="Exp <One>",
+                owner="Pat & Sam",
+                failed_trials=3,
+                total_trials=4,
+                owner_email="owner@example.com",
+            )
+        ],
+    )
+
+    assert [alert.key for alert in alerts] == ["experiment-failed:experiment/1"]
+    alert = alerts[0]
+    assert alert.dm_only
+    assert alert.recipient_email == "owner@example.com"
+    assert alert.email_subject is None
+    assert alert.text.splitlines() == [
+        ":x: *Experiment failed*",
+        "Title: *Exp &lt;One&gt;*",
+        "Failed trials: *3/4*",
+        "Owner: *Pat &amp; Sam*",
+        "<https://www.oddish.app/experiments/experiment%252F1|open experiment>",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failed_trials", "total_trials", "expected"),
+    [
+        (0, 4, False),
+        (1, 4, False),
+        (2, 4, True),
+        (4, 4, True),
+        (0, 0, False),
+    ],
+)
+def test_build_alerts_failed_experiment_respects_ratio(
+    failed_trials: int,
+    total_trials: int,
+    expected: bool,
+) -> None:
+    now = datetime.now(timezone.utc)
+    alerts = build_alerts(
+        [],
+        [],
+        recent_cutoff=now - timedelta(hours=2),
+        dashboard_url="https://www.oddish.app",
+        experiment_threshold_usd=2000,
+        experiment_repeat_usd=1000,
+        trial_threshold_usd=100,
+        trial_average_multiplier=2,
+        failed_experiments=[
+            FailedExperiment(
+                id="experiment-1",
+                name="Experiment",
+                owner=None,
+                failed_trials=failed_trials,
+                total_trials=total_trials,
+            )
+        ],
+        experiment_failed_ratio=0.5,
+    )
+
+    assert bool(alerts) is expected
+
+
 @pytest.mark.asyncio
 async def test_send_alerts_claims_once_and_retries_failed_posts(
     monkeypatch: pytest.MonkeyPatch,
@@ -423,12 +527,13 @@ async def test_send_alerts_claims_once_and_retries_failed_posts(
 
 
 @pytest.mark.asyncio
-async def test_send_alerts_claims_silent_baseline_without_posting(
+async def test_silent_milestone_completes_all_channels_without_sending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     claimed: set[str] = set()
     sent: set[str] = set()
     posted: list[str] = []
+    looked_up: list[str] = []
 
     async def claim(key: str) -> bool:
         if key in claimed:
@@ -445,26 +550,45 @@ async def test_send_alerts_claims_silent_baseline_without_posting(
     async def is_sent(key: str) -> bool:
         return key in sent
 
-    async def post(_url: str, text: str) -> None:
-        posted.append(text)
+    async def post(*_args) -> None:
+        posted.append("sent")
+
+    async def lookup(_token: str, email: str) -> str | None:
+        looked_up.append(email)
+        return "U123"
 
     monkeypatch.setattr(notifications, "_claim_alert", claim)
     monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
     monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
     monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
     monkeypatch.setattr(notifications, "_post", post)
+    monkeypatch.setattr(notifications, "_post_email", post)
+    monkeypatch.setattr(notifications, "_post_dm", post)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
 
-    await send_alerts(
-        "https://hooks.slack.test",
-        [
-            SlackAlert("experiment:1:1000", "", silent=True),
-            SlackAlert("experiment:1:2000", "fire"),
-        ],
+    alert = SlackAlert(
+        "experiment:1:1000",
+        "historical",
+        recipient_email="owner@example.com",
+        email_subject="Historical",
+        email_text="Historical",
+        silent=True,
     )
+    await send_alerts("https://hooks.slack.test", [alert])
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [alert])
+    await send_owner_dms("xoxb-token", [alert])
 
-    assert posted == ["fire"]
-    assert sent == {"experiment:1:1000", "experiment:1:2000"}
-    assert claimed == {"experiment:1:1000", "experiment:1:2000"}
+    assert posted == []
+    assert looked_up == []
+    assert (
+        sent
+        == claimed
+        == {
+            "experiment:1:1000",
+            "email:experiment:1:1000:owner@example.com",
+            "dm:experiment:1:1000:owner@example.com",
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -557,12 +681,308 @@ async def test_send_alerts_recovers_pending_primary_claims(
 
 
 @pytest.mark.asyncio
+async def test_send_owner_emails_claims_per_recipient_and_retries_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    posted: list[tuple[str, str, str]] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post_email(
+        _api_key: str,
+        _sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+    ) -> None:
+        posted.append((recipient, subject, body))
+        if subject == "fail":
+            raise RuntimeError("failed")
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post_email", post_email)
+
+    delivered = SlackAlert(
+        "experiment:1:1000",
+        "slack text",
+        recipient_email=" Owner@Example.com ",
+        email_subject="Cost alert",
+        email_text="Details",
+    )
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [delivered])
+    await send_owner_emails("secret", "Oddish <alerts@example.com>", [delivered])
+    await send_owner_emails(
+        "secret",
+        "Oddish <alerts@example.com>",
+        [
+            SlackAlert(
+                "trial:2:70:2",
+                "slack text",
+                recipient_email="owner@example.com",
+                email_subject="fail",
+                email_text="Details",
+            ),
+            SlackAlert("unpriced:model", "admin-only Slack alert"),
+        ],
+    )
+
+    assert posted == [
+        ("owner@example.com", "Cost alert", "Details"),
+        ("owner@example.com", "fail", "Details"),
+    ]
+    assert sent == {"email:experiment:1:1000:owner@example.com"}
+    assert "email:trial:2:70:2:owner@example.com" in claimed
+    assert "retry:email:trial:2:70:2:owner@example.com" in claimed
+
+
+@pytest.mark.asyncio
+async def test_send_alerts_skips_dm_only_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posted: list[str] = []
+
+    claimed: set[str] = set()
+    sent: set[str] = set()
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def post(_url: str, text: str) -> None:
+        posted.append(text)
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_post", post)
+
+    await send_alerts(
+        "https://hooks.slack.test",
+        [
+            SlackAlert("experiment-failed:1", "dm only", dm_only=True),
+            SlackAlert("experiment:1:1000", "channel"),
+        ],
+    )
+
+    assert posted == ["channel"]
+
+
+@pytest.mark.asyncio
+async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claimed: set[str] = set()
+    sent: set[str] = set()
+    lookups: list[str] = []
+    posted: list[tuple[str, str]] = []
+
+    async def claim(key: str) -> bool:
+        if key in claimed:
+            return False
+        claimed.add(key)
+        return True
+
+    async def mark_sent(*keys: str) -> None:
+        sent.update(key for key in keys if key in claimed)
+
+    async def release(key: str) -> None:
+        claimed.remove(key)
+
+    async def is_pending(key: str) -> bool:
+        return key in claimed and key not in sent
+
+    async def is_sent(key: str) -> bool:
+        return key in sent
+
+    async def lookup(_token: str, email: str) -> str | None:
+        lookups.append(email)
+        if email == "error@example.com":
+            raise RuntimeError("lookup failed")
+        return None if email == "unknown@example.com" else "U123"
+
+    async def post_dm(_token: str, slack_user_id: str, text: str) -> None:
+        posted.append((slack_user_id, text))
+        if text == "fail":
+            raise RuntimeError("failed")
+
+    monkeypatch.setattr(notifications, "_claim_alert", claim)
+    monkeypatch.setattr(notifications, "_mark_alert_sent", mark_sent)
+    monkeypatch.setattr(notifications, "_release_alert", release)
+    monkeypatch.setattr(notifications, "_alert_is_pending", is_pending)
+    monkeypatch.setattr(notifications, "_alert_is_sent", is_sent)
+    monkeypatch.setattr(notifications, "_lookup_slack_user", lookup)
+    monkeypatch.setattr(notifications, "_post_dm", post_dm)
+
+    delivered = SlackAlert(
+        "experiment-failed:1",
+        "dm text",
+        recipient_email=" Owner@Example.com ",
+        dm_only=True,
+    )
+    await send_owner_dms("xoxb-token", [delivered])
+    await send_owner_dms("xoxb-token", [delivered])
+    await send_owner_dms(
+        "xoxb-token",
+        [
+            SlackAlert(
+                "experiment:1:1000",
+                "fail",
+                recipient_email="owner@example.com",
+            ),
+            SlackAlert(
+                "trial:2:70:2",
+                "cost dm",
+                recipient_email="owner@example.com",
+            ),
+            SlackAlert(
+                "experiment:2:1000",
+                "unmatched",
+                recipient_email="unknown@example.com",
+            ),
+            SlackAlert(
+                "experiment:3:1000",
+                "lookup blows up",
+                recipient_email="error@example.com",
+            ),
+            SlackAlert("unpriced:model", "admin-only Slack alert"),
+        ],
+    )
+
+    assert posted == [("U123", "dm text"), ("U123", "fail"), ("U123", "cost dm")]
+    assert lookups == [
+        "owner@example.com",
+        "owner@example.com",
+        "unknown@example.com",
+        "error@example.com",
+    ]
+    assert sent == {
+        "dm:experiment-failed:1:owner@example.com",
+        "dm:trial:2:70:2:owner@example.com",
+    }
+    assert "dm:experiment:1:1000:owner@example.com" in claimed
+    assert "retry:dm:experiment:1:1000:owner@example.com" in claimed
+    assert "dm:experiment:2:1000:unknown@example.com" not in claimed
+    assert "dm:experiment:3:1000:error@example.com" in claimed
+    assert "retry:dm:experiment:3:1000:error@example.com" in claimed
+
+
+def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    real_client = httpx.AsyncClient
+
+    def _factory(*_args, **kwargs):
+        kwargs.pop("timeout", None)
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(notifications.httpx, "AsyncClient", _factory)
+
+
+@pytest.mark.asyncio
+async def test_lookup_slack_user_parses_slack_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/users.lookupByEmail"
+        assert request.headers["Authorization"] == "Bearer xoxb-token"
+        if request.url.params["email"] == "owner@example.com":
+            return httpx.Response(200, json={"ok": True, "user": {"id": "U123"}})
+        return httpx.Response(200, json={"ok": False, "error": "users_not_found"})
+
+    _mock_slack_http(monkeypatch, handler)
+
+    assert (
+        await notifications._lookup_slack_user("xoxb-token", "owner@example.com")
+        == "U123"
+    )
+    assert (
+        await notifications._lookup_slack_user("xoxb-token", "missing@example.com")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_dm_raises_on_slack_logical_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[dict] = []
+    posted: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer xoxb-token"
+        payload = json.loads(request.content)
+        if request.url.path == "/api/conversations.open":
+            opened.append(payload)
+            if payload["users"] == "U-open-failed":
+                return httpx.Response(200, json={"ok": False, "error": "cannot_dm_bot"})
+            return httpx.Response(
+                200,
+                json={"ok": True, "channel": {"id": f"D-{payload['users']}"}},
+            )
+        assert request.url.path == "/api/chat.postMessage"
+        posted.append(payload)
+        if payload["channel"] == "D-U-disabled":
+            return httpx.Response(
+                200, json={"ok": False, "error": "messaging_disabled"}
+            )
+        return httpx.Response(200, json={"ok": True})
+
+    _mock_slack_http(monkeypatch, handler)
+
+    await notifications._post_dm("xoxb-token", "U123", "hello")
+    with pytest.raises(RuntimeError, match="messaging_disabled"):
+        await notifications._post_dm("xoxb-token", "U-disabled", "hello")
+    with pytest.raises(RuntimeError, match="cannot_dm_bot"):
+        await notifications._post_dm("xoxb-token", "U-open-failed", "hello")
+    assert opened == [
+        {"users": "U123"},
+        {"users": "U-disabled"},
+        {"users": "U-open-failed"},
+    ]
+    assert posted == [
+        {"channel": "D-U123", "text": "hello"},
+        {"channel": "D-U-disabled", "text": "hello"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     suffix = uuid4().hex[:12]
     experiment_id = f"slack-exp-{suffix}"
     task_id = f"slack-task-{suffix}"
+    org_id = f"slack-org-{suffix}"
+    user_id = f"slack-user-{suffix}"
     now = datetime.now(timezone.utc)
     monkeypatch.setenv("ODDISH_SLACK_EXPENSIVE_EXPERIMENT_USD", "100")
     monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_REPEAT_USD", "1000")
@@ -570,11 +990,35 @@ async def test_load_alerts_uses_settled_trial_costs(
     monkeypatch.setenv("ODDISH_SLACK_TRIAL_AVERAGE_MULTIPLIER", "2")
 
     async with get_session() as session:
-        session.add(ExperimentModel(id=experiment_id, name="Slack expense test"))
+        session.add(
+            OrganizationModel(
+                id=org_id,
+                name="Slack expense test org",
+                slug=org_id,
+            )
+        )
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email="expense-owner@example.com",
+                name="Expense Owner",
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=experiment_id,
+                name="Slack expense test",
+                org_id=org_id,
+                owner="Expense Owner",
+                owner_user_id=user_id,
+            )
+        )
         session.add(
             TaskModel(
                 id=task_id,
                 name=task_id,
+                org_id=org_id,
                 user="test",
                 task_path="/tmp/test",
             )
@@ -659,10 +1103,12 @@ async def test_load_alerts_uses_settled_trial_costs(
         ]
         assert "Trials still running: 0" in alerts[0].text
         assert "New spend (last 2h):" in alerts[0].text
+        assert alerts[0].recipient_email == "expense-owner@example.com"
         assert "Top agent costs:" in alerts[0].text
         assert "Title: `outlier`" in alerts[1].text
         assert "Experiment: *Slack expense test*" in alerts[1].text
-        assert "Author: *Unknown*" in alerts[1].text
+        assert "Author: *Expense Owner*" in alerts[1].text
+        assert alerts[1].recipient_email == "expense-owner@example.com"
         assert "same-task/model average" in alerts[1].text
         assert "*Unpriceable model:*" in alerts[2].text
     finally:
@@ -676,6 +1122,14 @@ async def test_load_alerts_uses_settled_trial_costs(
             await session.execute(
                 ExperimentModel.__table__.delete().where(
                     ExperimentModel.id == experiment_id
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
                 )
             )
 
@@ -737,6 +1191,183 @@ async def test_load_alerts_reports_unpriced_model_without_candidate_experiment()
             await session.execute(
                 ExperimentModel.__table__.delete().where(
                     ExperimentModel.id == experiment_id
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_load_alerts_reports_finished_failed_experiments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    suffix = uuid4().hex[:12]
+    finished_id = f"slack-exp-failed-{suffix}"
+    running_id = f"slack-exp-running-{suffix}"
+    stale_id = f"slack-exp-stale-{suffix}"
+    task_id = f"slack-task-{suffix}"
+    org_id = f"slack-org-{suffix}"
+    user_id = f"slack-user-{suffix}"
+    now = datetime.now(timezone.utc)
+
+    def trial(
+        trial_id: str,
+        experiment_id: str,
+        status: TrialStatus,
+        *,
+        origin: TrialOrigin = TrialOrigin.ODDISH,
+        finished_at: datetime | None = None,
+        deleted_at: datetime | None = None,
+        harbor_stage: str | None = None,
+        stale_reaped_at: datetime | None = None,
+        superseded_by: str | None = None,
+    ) -> TrialModel:
+        finished_at = finished_at or (now if status != TrialStatus.QUEUED else None)
+        return TrialModel(
+            id=trial_id,
+            name=trial_id,
+            task_id=task_id,
+            experiment_id=experiment_id,
+            agent="claude-code",
+            provider="openai",
+            model="gpt-5.3",
+            queue_key="test",
+            status=status,
+            origin=origin,
+            is_probe=False,
+            cost_usd=1,
+            finished_at=finished_at,
+            deleted_at=deleted_at,
+            harbor_stage=harbor_stage,
+            stale_reaped_at=stale_reaped_at,
+            superseded_by_trial_id=superseded_by,
+        )
+
+    async with get_session() as session:
+        session.add(OrganizationModel(id=org_id, name="Failed org", slug=org_id))
+        session.add(
+            UserModel(
+                id=user_id,
+                org_id=org_id,
+                email="failed-owner@example.com",
+                name="Failed Owner",
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=finished_id,
+                name="Failed experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=running_id,
+                name="Running experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
+            ExperimentModel(
+                id=stale_id,
+                name="Stale experiment",
+                org_id=org_id,
+                owner="Failed Owner",
+                owner_user_id=user_id,
+            )
+        )
+        session.add(
+            TaskModel(
+                id=task_id,
+                name=task_id,
+                org_id=org_id,
+                user="test",
+                task_path="/tmp/test",
+            )
+        )
+        session.add_all(
+            [
+                trial(f"{task_id}-failed-1", finished_id, TrialStatus.FAILED),
+                trial(f"{task_id}-failed-2", finished_id, TrialStatus.FAILED),
+                trial(f"{task_id}-success", finished_id, TrialStatus.SUCCESS),
+                trial(
+                    f"{task_id}-deleted-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    deleted_at=now,
+                ),
+                trial(
+                    f"{task_id}-superseded-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    superseded_by=f"{task_id}-success",
+                ),
+                trial(
+                    f"{task_id}-cancelled-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    harbor_stage=CANCELLED_HARBOR_STAGE,
+                ),
+                trial(
+                    f"{task_id}-reaped-failed",
+                    finished_id,
+                    TrialStatus.FAILED,
+                    harbor_stage=CANCELLED_HARBOR_STAGE,
+                    stale_reaped_at=now,
+                ),
+                trial(f"{task_id}-running-failed", running_id, TrialStatus.FAILED),
+                trial(f"{task_id}-running-active", running_id, TrialStatus.QUEUED),
+                trial(
+                    f"{task_id}-stale-failed",
+                    stale_id,
+                    TrialStatus.FAILED,
+                    finished_at=now - timedelta(hours=3),
+                ),
+                trial(
+                    f"{task_id}-stale-imported",
+                    stale_id,
+                    TrialStatus.SUCCESS,
+                    origin=TrialOrigin.IMPORTED,
+                ),
+            ]
+        )
+
+    try:
+        alerts = await load_alerts(now)
+        assert [alert.key for alert in alerts] == [f"experiment-failed:{finished_id}"]
+        alert = alerts[0]
+        assert alert.dm_only
+        assert alert.recipient_email == "failed-owner@example.com"
+        assert "Failed trials: *3/4*" in alert.text
+        assert "Title: *Failed experiment*" in alert.text
+
+        monkeypatch.setenv("ODDISH_SLACK_EXPERIMENT_FAILED_RATIO", "0.8")
+        assert not [
+            alert
+            for alert in await load_alerts(now)
+            if alert.key.startswith("experiment-failed:")
+        ]
+    finally:
+        async with get_session() as session:
+            await session.execute(
+                TrialModel.__table__.delete().where(TrialModel.task_id == task_id)
+            )
+            await session.execute(
+                TaskModel.__table__.delete().where(TaskModel.id == task_id)
+            )
+            await session.execute(
+                ExperimentModel.__table__.delete().where(
+                    ExperimentModel.id.in_([finished_id, running_id, stale_id])
+                )
+            )
+            await session.execute(
+                UserModel.__table__.delete().where(UserModel.id == user_id)
+            )
+            await session.execute(
+                OrganizationModel.__table__.delete().where(
+                    OrganizationModel.id == org_id
                 )
             )
 
