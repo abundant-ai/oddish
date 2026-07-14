@@ -32,6 +32,7 @@ from oddish.db.models import (
     TaskModel,
     TrialModel,
     TrialStatus,
+    WorkerJobKind,
     WorkerJobModel,
     WorkerJobStatus,
     utcnow,
@@ -111,6 +112,7 @@ def _build_analyzer_eval_config() -> AnalyzerEvalConfig:
         taxonomy_version=config.taxonomy_version,
         token_budget=config.token_budget,
         prompt_version=config.prompt_version,
+        job_kind=WorkerJobKind.ANALYZER.value,
     )
 
 
