@@ -24,6 +24,13 @@ interface TrialFile {
   path?: string;
 }
 
+interface ArtifactCtrfState {
+  key: string;
+  status: "loading" | "done";
+  summary: CtrfSummary | null;
+  reportPath: string | null;
+}
+
 interface VerifierResultsCardProps {
   trial: Trial;
   apiBaseUrl: string;
@@ -65,7 +72,7 @@ function CtrfProgress({ summary }: { summary: CtrfSummary }) {
             className={segment.className}
             style={{ width: `${(segment.count / summary.tests) * 100}%` }}
           />
-        ) : null
+        ) : null,
       )}
     </div>
   );
@@ -79,70 +86,102 @@ export function VerifierResultsCard({
 }: VerifierResultsCardProps) {
   const embeddedSummary = useMemo(
     () => embeddedCtrfSummary(trial.result),
-    [trial.result]
+    [trial.result],
   );
-  const [artifactSummary, setArtifactSummary] = useState<CtrfSummary | null>(
-    null
-  );
-  const [artifactReportPath, setArtifactReportPath] = useState<string | null>(
-    null
-  );
+  const hasEmbeddedSummary = embeddedSummary !== null;
   const isTerminal = hasTerminalStatus(trial);
   const trialId = trial.id;
+  const shouldLoadArtifact = enabled && isTerminal;
+  const artifactKey = `${apiBaseUrl}\0${trialId}\0${shouldLoadArtifact ? "load" : "idle"}`;
+  const [artifactState, setArtifactState] = useState<ArtifactCtrfState>(() => ({
+    key: artifactKey,
+    status: shouldLoadArtifact ? "loading" : "done",
+    summary: null,
+    reportPath: null,
+  }));
+  const isCurrentArtifact = artifactState.key === artifactKey;
+  const artifactSummary = isCurrentArtifact ? artifactState.summary : null;
+  const artifactReportPath = isCurrentArtifact
+    ? artifactState.reportPath
+    : null;
+  const isArtifactLoading =
+    shouldLoadArtifact &&
+    (!isCurrentArtifact || artifactState.status === "loading");
 
   useEffect(() => {
-    setArtifactSummary(null);
-    setArtifactReportPath(null);
-    if (!enabled || embeddedSummary || !isTerminal) return;
+    setArtifactState({
+      key: artifactKey,
+      status: shouldLoadArtifact ? "loading" : "done",
+      summary: null,
+      reportPath: null,
+    });
+    if (!shouldLoadArtifact) return;
 
     const controller = new AbortController();
     const filesBase = trialFilesBase(apiBaseUrl, trialId);
 
     async function loadHistoricalCtrf() {
+      let reportPath: string | null = null;
+      let summary: CtrfSummary | null = null;
       try {
         const listingResponse = await fetch(
           `${filesBase}?recursive=true&presign=false&limit=1000`,
-          { signal: controller.signal }
+          { signal: controller.signal },
         );
         if (!listingResponse.ok) return;
         const listing = (await listingResponse.json()) as {
           files?: TrialFile[];
         };
-        const reportPath = listing.files
-          ?.map((file) => file.path)
-          .find(
-            (path): path is string =>
-              typeof path === "string" &&
-              (path === "verifier/ctrf.json" ||
-                path.endsWith("/verifier/ctrf.json"))
-          );
-        if (!reportPath) return;
+        reportPath =
+          listing.files
+            ?.map((file) => file.path)
+            .find(
+              (path): path is string =>
+                typeof path === "string" &&
+                (path === "verifier/ctrf.json" ||
+                  path.endsWith("/verifier/ctrf.json")),
+            ) ?? null;
+        if (!reportPath || hasEmbeddedSummary) return;
 
         const reportResponse = await fetch(
           `${filesBase}/${encodeFilePath(reportPath)}`,
-          { signal: controller.signal }
+          { signal: controller.signal },
         );
         if (!reportResponse.ok) return;
-        const summary = parseCtrfReport(await reportResponse.json());
-        if (!summary || controller.signal.aborted) return;
-        setArtifactSummary(summary);
-        setArtifactReportPath(reportPath);
+        summary = parseCtrfReport(await reportResponse.json());
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
           // CTRF is optional. Reward and task metrics remain the fallback.
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setArtifactState({
+            key: artifactKey,
+            status: "done",
+            summary,
+            reportPath,
+          });
         }
       }
     }
 
     void loadHistoricalCtrf();
     return () => controller.abort();
-  }, [apiBaseUrl, embeddedSummary, enabled, isTerminal, trialId]);
+  }, [
+    apiBaseUrl,
+    artifactKey,
+    hasEmbeddedSummary,
+    shouldLoadArtifact,
+    trialId,
+  ]);
 
   const summary = embeddedSummary ?? artifactSummary;
+  const isHistoricalSummaryLoading = !hasEmbeddedSummary && isArtifactLoading;
   const metrics = useMemo(() => verifierMetrics(trial.result), [trial.result]);
   const isVerifierRunning =
     ["running", "retrying"].includes(trial.status) &&
     trial.harbor_stage === "verification";
+  const isLoading = isVerifierRunning || isHistoricalSummaryLoading;
 
   if (
     !summary &&
@@ -154,7 +193,7 @@ export function VerifierResultsCard({
     return null;
   }
 
-  const tone = isVerifierRunning
+  const tone = isLoading
     ? "border-blue-500/30 bg-blue-500/5"
     : trial.reward === 1
       ? "border-emerald-500/30 bg-emerald-500/5"
@@ -164,7 +203,7 @@ export function VerifierResultsCard({
           ? "border-amber-500/30 bg-amber-500/5"
           : "border-slate-500/30 bg-slate-500/5";
 
-  const ResultIcon = isVerifierRunning
+  const ResultIcon = isLoading
     ? Loader2
     : trial.reward === 1
       ? CheckCircle2
@@ -176,7 +215,10 @@ export function VerifierResultsCard({
 
   let fallbackHeadline = "Not scored";
   let fallbackDetail = "The verifier was disabled or returned no score.";
-  if (isVerifierRunning) {
+  if (isHistoricalSummaryLoading) {
+    fallbackHeadline = "Loading…";
+    fallbackDetail = "Loading the verifier test report.";
+  } else if (isVerifierRunning) {
     fallbackHeadline = "Running…";
     fallbackDetail = "The verifier is evaluating this trial.";
   } else if (trial.reward === 1) {
@@ -193,8 +235,7 @@ export function VerifierResultsCard({
     fallbackDetail = "The verifier did not return a score.";
   }
 
-  const reportPath =
-    artifactReportPath ?? (summary ? "verifier/ctrf.json" : null);
+  const reportPath = artifactReportPath;
 
   return (
     <Card className={tone}>
@@ -213,7 +254,7 @@ export function VerifierResultsCard({
           <ResultIcon
             className={cn(
               "mt-0.5 h-5 w-5 shrink-0",
-              isVerifierRunning
+              isLoading
                 ? "animate-spin text-blue-500"
                 : trial.reward === 1
                   ? "text-emerald-500"
@@ -221,7 +262,7 @@ export function VerifierResultsCard({
                     ? "text-red-500"
                     : trial.reward != null
                       ? "text-amber-500"
-                      : "text-slate-500"
+                      : "text-slate-500",
             )}
           />
           <div className="min-w-0 flex-1">
@@ -295,12 +336,21 @@ export function VerifierResultsCard({
               variant="ghost"
               size="sm"
               className="text-muted-foreground mt-1.5 -ml-2 h-6 px-2 text-[11px]"
+              disabled={isArtifactLoading}
               onClick={() =>
                 onViewFile(reportPath ?? "verifier/test-stdout.txt")
               }
             >
-              {reportPath ? "View test report" : "View verifier output"}
-              <ExternalLink className="ml-1 h-3 w-3" />
+              {isArtifactLoading
+                ? "Finding test report…"
+                : reportPath
+                  ? "View test report"
+                  : "View verifier output"}
+              {isArtifactLoading ? (
+                <Loader2 className="ml-1 h-3 w-3 animate-spin" />
+              ) : (
+                <ExternalLink className="ml-1 h-3 w-3" />
+              )}
             </Button>
           </div>
         </div>
