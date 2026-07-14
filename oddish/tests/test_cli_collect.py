@@ -9,7 +9,12 @@ from typer.testing import CliRunner
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oddish.cli import app
-from oddish.cli.collect import _build_payload, _guard_sources
+from oddish.cli.collect import (
+    _build_payload,
+    _guard_sources,
+    _parse_task_ref,
+    _version_trial_ids,
+)
 
 
 def test_build_payload_tasks_and_trials():
@@ -20,6 +25,46 @@ def test_build_payload_tasks_and_trials():
 def test_guard_requires_a_source():
     assert _guard_sources(tasks=[], trial_ids=[]) is False
     assert _guard_sources(tasks=["a"], trial_ids=[]) is True
+
+
+def test_parse_task_ref():
+    assert _parse_task_ref("mytask") == ("mytask", None)
+    assert _parse_task_ref("mytask@16") == ("mytask", "16")
+    assert _parse_task_ref("mytask@v16") == ("mytask", "16")
+    assert _parse_task_ref("  mytask @ 16 ".replace(" ", "")) == ("mytask", "16")
+    # A non-numeric suffix (e.g. an email-ish id) is not a version.
+    assert _parse_task_ref("user@example.com") == ("user@example.com", None)
+    # Task ids with a trailing hash but no @ are untouched.
+    assert _parse_task_ref("mytask-9aa07749") == ("mytask-9aa07749", None)
+
+
+class _VersionResolveClient:
+    """GET /tasks/{id}/trials returns three v16 + one v22 trial (one superseded,
+    one probe, one running) so only terminal, non-probe, non-superseded v16
+    trials are linked."""
+
+    def get(self, url, params=None):
+        trials = [
+            {"id": "T-16a", "task_version_id": "TID-v16", "status": "success",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-16b", "task_version_id": "TID-v16", "status": "failed",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-16-probe", "task_version_id": "TID-v16", "status": "success",
+             "is_probe": True, "superseded_by_trial_id": None},
+            {"id": "T-16-superseded", "task_version_id": "TID-v16",
+             "status": "success", "is_probe": False,
+             "superseded_by_trial_id": "T-16a"},
+            {"id": "T-16-running", "task_version_id": "TID-v16", "status": "running",
+             "is_probe": False, "superseded_by_trial_id": None},
+            {"id": "T-22a", "task_version_id": "TID-v22", "status": "success",
+             "is_probe": False, "superseded_by_trial_id": None},
+        ]
+        return httpx.Response(200, json=trials)
+
+
+def test_version_trial_ids_filters_terminal_nonprobe_nonsuperseded():
+    ids = _version_trial_ids(_VersionResolveClient(), "https://api", "TID", "16")
+    assert ids == ["T-16a", "T-16b"]
 
 
 # ---------------------------------------------------------------------------
