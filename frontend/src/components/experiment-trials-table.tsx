@@ -2297,7 +2297,13 @@ export function ExperimentTrialsTable({
                               // Sum the trials actually rendered in this row's
                               // matrix (visible agent columns) so the badge
                               // tracks the grid when agent columns are hidden.
-                              const c = sumTaskTrialCost(orderedTrials);
+                              // Owner-scoped: gathered/shared-task trials
+                              // render here, but their spend isn't this
+                              // experiment's.
+                              const c = sumTaskTrialCost(
+                                orderedTrials,
+                                task.experiment_id,
+                              );
                               if (c.pricedCount === 0) return null;
                               const marks = costEstimateMarks(
                                 c.hasEstimated,
