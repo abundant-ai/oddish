@@ -989,3 +989,33 @@ export interface ExperimentShareInfo {
   public_token: string | null;
   description: string | null;
 }
+
+export type AnalyzerStatus =
+  | "pending"
+  | "queued"
+  | "running"
+  | "success"
+  | "failed";
+
+export interface Analyzer {
+  id: string;
+  name: string;
+  status: AnalyzerStatus;
+  error?: string | null;
+  bad_failure_content?: string | null;
+  good_failure_content?: string | null;
+  universal_capabilities_content?: string | null;
+  headroom_analysis?: string | null;
+  num_trials?: number | null;
+  num_bad_failures?: number | null;
+  num_good_failures?: number | null;
+  breakdown?: Record<string, number> | null;
+  experiment_ids: string[];
+  created_at?: string | null;
+  finished_at?: string | null;
+}
+
+export interface ExperimentOption {
+  id: string;
+  name: string;
+}
