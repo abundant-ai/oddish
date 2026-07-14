@@ -43,6 +43,9 @@ _ODDISH_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:OddishCodex"
 _AZURE_COMPAT_CODEX_IMPORT_PATH = "oddish.workers.agents.codex:AzureCompatibleCodex"
 _ODDISH_CLAUDE_CODE_IMPORT_PATH = "oddish.workers.agents.claude_code:OddishClaudeCode"
 _ODDISH_GROK_BUILD_IMPORT_PATH = "oddish.workers.agents.grok_build:OddishGrokBuild"
+_ODDISH_MINI_SWE_IMPORT_PATH = (
+    "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
+)
 _ODDISH_META_MINI_SWE_IMPORT_PATH = (
     "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
 )
@@ -302,6 +305,13 @@ def _apply_meta_mini_swe_agent(agent_config: AgentConfig) -> None:
     agent_config.kwargs = dict(agent_config.kwargs or {})
 
 
+def _apply_mini_swe_agent(agent_config: AgentConfig) -> None:
+    if agent_config.import_path is not None or not _is_mini_swe_agent(agent_config):
+        return
+    agent_config.name = None
+    agent_config.import_path = _ODDISH_MINI_SWE_IMPORT_PATH
+
+
 def _apply_claude_code_probe_harbor(agent_config: AgentConfig, is_probe: bool) -> None:
     """Install the harbor package in the sandbox for probe claude-code trials."""
     if not is_probe or agent_config.import_path is not None:
@@ -472,6 +482,7 @@ def _build_agent_config(
     _apply_codex_oddish_wrapper(agent_config)
     _apply_grok_build_oddish_wrapper(agent_config)
     _apply_meta_mini_swe_agent(agent_config)
+    _apply_mini_swe_agent(agent_config)
     _apply_claude_code_probe_harbor(agent_config, is_probe)
     _apply_probe_oddish_creds(agent_config, probe_oddish_env)
 
