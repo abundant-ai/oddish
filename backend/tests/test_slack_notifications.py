@@ -912,15 +912,16 @@ async def test_send_owner_dms_claims_per_recipient_and_retries_failures(
     ]
     assert sent == {
         "dm:experiment-failed:1:owner@example.com",
+        "dm:experiment:2:1000:unknown@example.com",
         "dm:trial:2:70:2:owner@example.com",
     }
     for failed_key in (
         "dm:experiment:1:1000:owner@example.com",
-        "dm:experiment:2:1000:unknown@example.com",
         "dm:experiment:3:1000:error@example.com",
     ):
         assert failed_key in claimed
         assert f"retry:{failed_key}" in claimed
+    assert "retry:dm:experiment:2:1000:unknown@example.com" not in claimed
 
 
 def _mock_slack_http(monkeypatch: pytest.MonkeyPatch, handler) -> None:

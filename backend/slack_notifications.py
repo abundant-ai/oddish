@@ -799,7 +799,10 @@ async def send_owner_dms(bot_token: str, alerts: list[SlackAlert]) -> None:
                     bot_token, recipient
                 )
             if not (slack_user_id := slack_user_ids[recipient]):
-                await _claim_alert(retry_key)
+                # No Slack account is a terminal channel outcome, not a
+                # transient post failure. Complete both keys so an old loud
+                # retry cannot keep a now-silent milestone alive forever.
+                await _mark_alert_sent(claim_key, retry_key)
                 continue
             await _post_dm(bot_token, slack_user_id, alert.text)
         except Exception:
