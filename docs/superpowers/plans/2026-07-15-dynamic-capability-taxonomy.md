@@ -257,11 +257,35 @@ def taxonomy_from_snapshot(d: dict) -> Taxonomy:
 def taxonomy_fingerprint(taxonomy: Taxonomy) -> str:
     """Short content hash, stored as ``analyzers.taxonomy_version``.
 
-    sort_keys makes it order-independent, so a row reshuffle does not read as a
-    taxonomy change.
+    Lists are sorted before hashing, not just dict keys: rows arrive from a DB
+    query, so their order is not content and must not churn the version.
     """
-    blob = json.dumps(taxonomy_snapshot(taxonomy), sort_keys=True).encode()
+    snap = taxonomy_snapshot(taxonomy)
+    snap["categories"].sort(key=lambda c: c["slug"])
+    snap["capabilities"].sort(key=lambda c: c["slug"])
+    for cap in snap["capabilities"]:
+        cap["extra_categories"].sort()
+    blob = json.dumps(snap, sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()[:12]
+```
+
+**Do not "simplify" this to `json.dumps(taxonomy_snapshot(t), sort_keys=True)`.**
+`sort_keys` sorts dict keys only — it leaves list order alone, so the fingerprint
+would change when rows merely reshuffle. Sorting must not move into
+`taxonomy_snapshot`: the snapshot is a faithful record of the order actually
+rendered into the rubric, and the round-trip test depends on that.
+
+Add this test alongside the others (it fails against the `sort_keys`-only version):
+
+```python
+def test_fingerprint_ignores_row_order():
+    """Rows come back from a DB query; their order is not content."""
+    tax = _tax()
+    shuffled = Taxonomy(
+        categories=tuple(reversed(tax.categories)),
+        capabilities=tuple(reversed(tax.capabilities)),
+    )
+    assert taxonomy_fingerprint(shuffled) == taxonomy_fingerprint(tax)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
