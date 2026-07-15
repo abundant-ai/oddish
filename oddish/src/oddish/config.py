@@ -1064,6 +1064,16 @@ class Settings(BaseSettings):
     # at provision time. See docs/cc-chat-snapshot.md to build it.
     cc_chat_daytona_snapshot: str = ""
 
+    # Snapshot for non-chat agent sandboxes (the analyzer). Falls back to the
+    # cc_chat snapshot below, which is the same image: ClaudeCodeRuntime.install
+    # checks claude-code and harbor independently, so a leaner analyzer-only
+    # image would still pay harbor's pip install on every sandbox.
+    agent_daytona_snapshot: str = ""
+
+    @property
+    def analyzer_snapshot(self) -> str:
+        return self.agent_daytona_snapshot or self.cc_chat_daytona_snapshot
+
     # GKE execution backend (TPU trials). The cluster and Artifact Registry
     # coordinates are unset by default; configuring GKE (project id, or an
     # explicit cluster name) registers the backend and makes ``--env gke``
