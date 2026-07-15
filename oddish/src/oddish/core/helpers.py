@@ -593,23 +593,8 @@ def _parse_version_number(version_id: str) -> int:
     return int(parts[1]) if len(parts) == 2 and parts[1].isdigit() else 0
 
 
-def _resolve_task_version_fields(
-    task: TaskModel,
-    *,
-    effective_version_id: str | None | object = _VERSION_ID_UNSET,
-) -> tuple[int | None, str | None]:
-    """Extract the version number and id to report for a task.
-
-    Defaults to ``task.current_version_id`` (the global latest).  Pass
-    ``effective_version_id`` to report a context-specific version instead —
-    for example, the latest version that has trials in the experiment the
-    caller is viewing.  Passing ``None`` explicitly clears the version.
-    """
-    version_id: str | None
-    if effective_version_id is _VERSION_ID_UNSET:
-        version_id = task.current_version_id
-    else:
-        version_id = effective_version_id  # type: ignore[assignment]
+def _resolve_version_fields(version_id: str | None) -> tuple[int | None, str | None]:
+    """Extract a task version number and id from a stored version id."""
     if version_id is None:
         return None, None
     parsed = _parse_version_number(version_id)
@@ -625,13 +610,12 @@ def resolve_effective_version_id(
     """Return the ``task_version_id`` that best represents ``task`` in context.
 
     Outside an experiment (``experiment_context_id`` is ``None``) this is the
-    task's global ``current_version_id``.  Within an experiment we instead
-    use the latest version among trials that belong to that experiment
-    (folding in legacy ``NULL``-experiment trials attached to the task).
-    This lets an experiment page keep showing the trials it actually ran,
-    even if the underlying task has since been re-uploaded and bumped to a
-    newer version elsewhere.  Falls back to ``task.current_version_id`` when
-    no scoped trial has a ``task_version_id``.
+    task's global ``current_version_id``. Within an experiment, that explicit
+    default wins when a visible trial represents it; otherwise the latest
+    represented version wins. This lets users promote an older stored version
+    and see new runs on it without blanking historical experiments whose trials
+    exist only on another version. Falls back to ``task.current_version_id``
+    when no scoped trial has a ``task_version_id``.
 
     ``gathered_trial_ids`` folds in trials owned by a *collection* experiment
     via the ``experiment_trials`` join table -- these carry their home
@@ -643,17 +627,21 @@ def resolve_effective_version_id(
         return task.current_version_id
     candidates: list[str] = []
     for trial in task.trials or []:
+        if getattr(trial, "is_probe", False):
+            continue
+        if getattr(trial, "superseded_by_trial_id", None) is not None:
+            continue
         version_id = getattr(trial, "task_version_id", None)
         if not version_id:
             continue
         trial_exp_id = getattr(trial, "experiment_id", None)
-        if (
-            trial_exp_id == experiment_context_id
-            or trial_exp_id is None
-            or (gathered_trial_ids and trial.id in gathered_trial_ids)
+        if trial_exp_id == experiment_context_id or (
+            gathered_trial_ids and trial.id in gathered_trial_ids
         ):
             candidates.append(version_id)
     if not candidates:
+        return task.current_version_id
+    if task.current_version_id in candidates:
         return task.current_version_id
     return max(candidates, key=_parse_version_number)
 
@@ -667,9 +655,10 @@ async def fetch_experiment_effective_version_ids(
     """SQL-backed version of :func:`resolve_effective_version_id` for many tasks.
 
     Used by paths that don't eagerly load ``task.trials`` (e.g. the lightweight
-    counts-only task list).  Returns a mapping of ``task_id`` → latest
-    ``task_version_id`` among trials belonging to ``experiment_id`` (plus legacy
-    ``NULL``-experiment trials).  Tasks with no scoped trials are omitted.
+    counts-only task list). Returns a mapping of ``task_id`` to the task's
+    explicit default version when a visible trial represents it in this
+    experiment, or the latest represented version otherwise. Tasks with no
+    scoped trials are omitted.
 
     Uses ``DISTINCT ON (task_id)`` joined to ``task_versions`` so the
     server returns at most one row per task -- ordered by the *integer*
@@ -682,27 +671,26 @@ async def fetch_experiment_effective_version_ids(
     if not task_ids:
         return {}
 
-    from oddish.core.experiment_membership import gathered_trial_ids_select
+    from oddish.core.experiment_membership import trial_in_experiment
     from oddish.db import TaskVersionModel  # local import: avoid cycle
 
     stmt = (
         select(TrialModel.task_id, TrialModel.task_version_id)
+        .join(TaskModel, TaskModel.id == TrialModel.task_id)
         .join(TaskVersionModel, TaskVersionModel.id == TrialModel.task_version_id)
         .where(
             TrialModel.task_id.in_(list(task_ids)),
-            or_(
-                TrialModel.experiment_id == experiment_id,
-                TrialModel.experiment_id.is_(None),
-                # Collection experiments own trials additively via the
-                # ``experiment_trials`` join table without rewriting the
-                # scalar ``experiment_id``; fold those gathered trials in so
-                # the effective version reflects the versions they ran on.
-                TrialModel.id.in_(gathered_trial_ids_select(experiment_id)),
-            ),
+            trial_in_experiment(experiment_id),
             TrialModel.task_version_id.is_not(None),
+            TrialModel.is_probe.is_(False),
+            TrialModel.superseded_by_trial_id.is_(None),
         )
         .order_by(
             TrialModel.task_id.asc(),
+            case(
+                (TrialModel.task_version_id == TaskModel.current_version_id, 0),
+                else_=1,
+            ).asc(),
             TaskVersionModel.version.desc(),
         )
         .distinct(TrialModel.task_id)
@@ -811,6 +799,7 @@ TASK_STATUS_RESPONSE_COLUMNS = (
     TaskModel.verdict,
     TaskModel.verdict_error,
     TaskModel.created_at,
+    TaskModel.updated_at,
     TaskModel.started_at,
     TaskModel.finished_at,
 )
@@ -830,7 +819,7 @@ def _build_task_status_response(
     trials: list[TrialResponse] | None,
     jobs: Sequence[VisibleWorkerJob] | None = None,
     experiment_context_id: str | None = None,
-    effective_version_id: str | None | object = _VERSION_ID_UNSET,
+    trial_version_id: str | None | object = _VERSION_ID_UNSET,
 ) -> TaskStatusResponse:
     formatted_reward_success, formatted_reward_sum, formatted_reward_total = (
         _format_reward_fields(
@@ -840,8 +829,17 @@ def _build_task_status_response(
             include_empty_rewards=include_empty_rewards,
         )
     )
-    current_version, current_version_id = _resolve_task_version_fields(
-        task, effective_version_id=effective_version_id
+    current_version, current_version_id = _resolve_version_fields(
+        task.current_version_id
+    )
+    if trial_version_id is _VERSION_ID_UNSET:
+        resolved_trial_version_id = task.current_version_id
+    elif isinstance(trial_version_id, str):
+        resolved_trial_version_id = trial_version_id
+    else:
+        resolved_trial_version_id = None
+    trial_version, resolved_trial_version_id = _resolve_version_fields(
+        resolved_trial_version_id
     )
     primary_experiment = _primary_experiment_for_task(
         task, preferred_experiment_id=experiment_context_id
@@ -882,6 +880,8 @@ def _build_task_status_response(
         ],
         current_version=current_version,
         current_version_id=current_version_id,
+        trial_version=trial_version,
+        trial_version_id=resolved_trial_version_id,
         total=total,
         completed=completed,
         failed=failed,
@@ -901,6 +901,7 @@ def _build_task_status_response(
         verdict_error=task.verdict_error,
         jobs=list(jobs or []),
         created_at=task.created_at,
+        updated_at=task.updated_at,
         started_at=task.started_at,
         finished_at=task.finished_at,
     )
@@ -922,9 +923,9 @@ def build_task_status_response(
     When called with ``experiment_context_id`` and no explicit
     ``effective_version_id``, the effective version is auto-derived from the
     task's currently-loaded trials (assumed to already be scoped to the
-    experiment by the caller).  This keeps experiment pages showing trials at
-    whatever version actually ran in that experiment, even if the task has
-    since been re-uploaded to a newer version elsewhere.
+    experiment by the caller). That version scopes trials and aggregate counts;
+    the response's ``current_version`` still reports the task's selected
+    default so task and experiment pages cannot disagree about it.
 
     ``gathered_trial_ids`` is forwarded to the internal auto-resolve so
     collection-gathered trials on an older version aren't re-resolved away.
@@ -983,7 +984,7 @@ def build_task_status_response(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1058,7 +1059,7 @@ def build_task_status_response_compact(
         trials=trials,
         jobs=task_jobs,
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1178,7 +1179,7 @@ def build_slim_task_status_response(
         trials=trials,
         jobs=[],
         experiment_context_id=experiment_context_id,
-        effective_version_id=effective_version_id,
+        trial_version_id=effective_version_id,
     )
 
 
@@ -1235,10 +1236,9 @@ async def build_task_status_responses_from_counts(
 ) -> list[TaskStatusResponse]:
     """Build TaskStatusResponse objects with aggregated trial counts.
 
-    When ``effective_version_id_by_task_id`` is provided, the stats query
-    and each response's ``current_version`` field are scoped to that version
-    per task — useful for experiment-scoped task lists where the displayed
-    counts should reflect the version that actually ran in this experiment.
+    When ``effective_version_id_by_task_id`` is provided, the stats query is
+    scoped to that version per task. The response's ``current_version`` always
+    remains the task's selected default so every page reports it consistently.
     """
     if not tasks:
         return []
@@ -1254,6 +1254,15 @@ async def build_task_status_responses_from_counts(
         # behind every TaskStatusResponse matches what the UI shows.
         TrialModel.superseded_by_trial_id.is_(None),
     ]
+    if experiment_context_id is not None:
+        from oddish.core.experiment_membership import trial_in_experiment
+
+        stats_filters.extend(
+            [
+                trial_in_experiment(experiment_context_id),
+                TrialModel.is_probe.is_(False),
+            ]
+        )
     if effective_map:
         # Match (task_id, task_version_id) pairs so we only count trials at
         # each task's effective version.  Tasks without an effective version
@@ -1347,7 +1356,7 @@ async def build_task_status_responses_from_counts(
                 else None
             ),
             experiment_context_id=experiment_context_id,
-            effective_version_id=_effective(task),
+            trial_version_id=_effective(task),
         )
         for task in tasks
     ]

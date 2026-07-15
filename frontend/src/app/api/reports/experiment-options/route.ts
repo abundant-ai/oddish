@@ -19,7 +19,7 @@ export async function GET() {
         { status: 401 },
       );
     }
-    const res = await fetch(getBackendUrl("analyzers", "/experiment-options"), {
+    const res = await fetch(getBackendUrl("reports", "/experiment-options"), {
       cache: "no-store",
       headers: getAuthHeaders(token),
     });

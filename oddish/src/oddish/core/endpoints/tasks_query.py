@@ -255,10 +255,10 @@ async def list_tasks_core(
 
     # When trial payloads are loaded, constrain them to the subset the status UI
     # should reflect: first the requested experiment, then the task's active
-    # version within that experiment.  Within an experiment the "active version"
-    # is the latest version that has trials in that experiment — not the task's
-    # global ``current_version_id`` — so an experiment still shows its own
-    # trials after the underlying task is re-uploaded elsewhere.
+    # version within that experiment. The task's explicit default wins when the
+    # experiment has visible trials for it; otherwise the latest represented
+    # version wins so an experiment still shows its own historical trials after
+    # the task's default changes elsewhere.
     # Collection experiments gather trials additively via ``experiment_trials``
     # without rewriting each trial's scalar ``experiment_id``. Compute that
     # gathered set once so effective-version resolution recognizes those trials
@@ -285,8 +285,7 @@ async def list_tasks_core(
                 # below, so excluding them here stops a probe-only version from
                 # skewing the effective version resolution). Resolve the
                 # experiment's effective version from that scoped set, then drop
-                # superseded / off-version trials -- identical result to before,
-                # without re-filtering in Python.
+                # superseded / off-version trials.
                 effective = resolve_effective_version_id(
                     task,
                     experiment_context_id=experiment_id,
@@ -484,12 +483,21 @@ async def list_experiment_task_shells_core(
             set_committed_value(task, "experiments", scoped_experiments)
 
     build_started_at = now()
+    effective_version_id_by_task_id = (
+        await fetch_experiment_effective_version_ids(
+            session,
+            experiment_id=experiment_id,
+            task_ids=[task.id for task in tasks],
+        )
+        if tasks
+        else {}
+    )
     response = await build_task_status_responses_from_counts(
         session,
         tasks=tasks,
         include_empty_rewards=include_empty_rewards,
         experiment_context_id=experiment_id,
-        effective_version_id_by_task_id=None,
+        effective_version_id_by_task_id=(effective_version_id_by_task_id or None),
         jobs_by_subject={},
     )
     if record_timing is not None:
@@ -1352,9 +1360,7 @@ async def browse_tasks_core(
             TrialModel.finished_at <= trial_finished_before
         )
     if model_and_finished_predicates:
-        ranked_tasks = ranked_tasks.where(
-            _trial_exists(*model_and_finished_predicates)
-        )
+        ranked_tasks = ranked_tasks.where(_trial_exists(*model_and_finished_predicates))
     if agent_models:
         # Each token is "agent:model" (model = everything after the first colon;
         # agent names have no colons) or bare "agent" for a null model. Match a

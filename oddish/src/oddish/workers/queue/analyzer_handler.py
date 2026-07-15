@@ -12,15 +12,21 @@ check it's still the live owner before writing its terminal state.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import os
+from dataclasses import asdict
+from typing import Any, Awaitable, Callable
 
 from sqlalchemy import or_, select
 
 from oddish.config import settings, to_anthropic_api_model_id
 from oddish.core.analyzer_inputs import build_analyzer_inputs
+from oddish.core.analyzer_trial_export import build_trial_analyses_payload
 from oddish.core.analyzers import experiment_ids_for_analyzer
 from oddish.core.experiment_membership import trial_in_experiment
 from oddish.db import get_session
+from oddish.db.storage import get_storage_client
 from oddish.db.models import (
     AnalysisStatus,
     JobStatus,
@@ -34,11 +40,66 @@ from oddish.db.models import (
     utcnow,
 )
 from oddish.evals.analyzer.core import run_analyzer_eval
-from oddish.evals.analyzer.schemas import AnalyzerEvalConfig
+from oddish.evals.analyzer.schemas import AnalyzerEvalConfig, AnalyzerEvalOutput
 from oddish.workers.queue.analysis_handler import classify_trial_and_store
 from oddish.workers.queue.worker_job_single_job import heartbeat_worker_job
 
 ANALYZER_HEARTBEAT_INTERVAL_SECONDS = 30
+
+logger = logging.getLogger(__name__)
+
+# The eval strategy seam. Takes rows (not AnalyzerEvalInputs) so a hosted
+# implementation can skip build_analyzer_inputs' S3 reads entirely.
+EvalRowsFn = Callable[
+    [list[tuple[Any, str]], AnalyzerEvalConfig, str], Awaitable[AnalyzerEvalOutput]
+]
+
+
+async def default_eval_rows(
+    rows: list[tuple[Any, str]], config: AnalyzerEvalConfig, analyzer_id: str
+) -> AnalyzerEvalOutput:
+    inputs = await build_analyzer_inputs(rows)
+    return await run_analyzer_eval(inputs, config)
+
+
+def _trial_analyses_s3_key(analyzer_id: str) -> str:
+    return f"analyzers/{analyzer_id}/trial_analyses.json"
+
+
+async def _maybe_save_trial_analyses(
+    *,
+    analyzer_id: str,
+    findings,
+    subanalyses,
+    counts,
+) -> None:
+    """Best-effort upload of the per-trial analyses to S3.
+
+    A failure here logs a warning but must NOT fail the analyzer job — the
+    aggregate sections are the primary product. Called only when the analyzer's
+    ``save_trial_analyses`` flag is set.
+    """
+    key = _trial_analyses_s3_key(analyzer_id)
+    try:
+        payload = build_trial_analyses_payload(
+            analyzer_id=analyzer_id,
+            findings=findings,
+            subanalyses=subanalyses,
+            counts=counts,
+        )
+        data = json.dumps(payload, indent=2).encode("utf-8")
+        await get_storage_client().upload_bytes(
+            data, key, content_type="application/json"
+        )
+        logger.info(
+            "Saved %d trial analyses for analyzer %s to s3://%s/%s",
+            len(payload["trials"]), analyzer_id, settings.s3_bucket, key,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to save trial analyses for analyzer %s to s3://%s/%s: %s",
+            analyzer_id, settings.s3_bucket, key, exc,
+        )
 
 
 def _build_analyzer_eval_config() -> AnalyzerEvalConfig:
@@ -121,6 +182,17 @@ async def _worker_job_is_running(
     return status == WorkerJobStatus.RUNNING
 
 
+def _models_by_task(rows) -> dict[str, list[str]]:
+    """task_id -> the distinct models that ran it. Includes trials that passed,
+    which is exactly what findings cannot tell us."""
+    by_task: dict[str, set[str]] = {}
+    for trial, _task_path in rows:
+        model = getattr(trial, "model", None)
+        if model:
+            by_task.setdefault(trial.task_id, set()).add(model)
+    return {k: sorted(v) for k, v in by_task.items()}
+
+
 async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):
     exp_ids = await experiment_ids_for_analyzer(session, analyzer_id)
     if not exp_ids:
@@ -151,7 +223,10 @@ async def _gather_trial_rows(session, analyzer_id: str, org_id: str | None):
 
 
 async def run_analyzer_generation_job(
-    analyzer_id: str, *, worker_job_id: str | None = None
+    analyzer_id: str,
+    *,
+    worker_job_id: str | None = None,
+    eval_rows_fn: EvalRowsFn = default_eval_rows,
 ) -> None:
     # 1. Load + set RUNNING.
     async with get_session() as session:
@@ -165,6 +240,7 @@ async def run_analyzer_generation_job(
         analyzer.status = JobStatus.RUNNING
         analyzer.started_at = utcnow()
         org_id = analyzer.org_id
+        save_trial_analyses = analyzer.save_trial_analyses
 
     heartbeat_stop = asyncio.Event()
     heartbeat_task: asyncio.Task | None = None
@@ -220,18 +296,34 @@ async def run_analyzer_generation_job(
                     return
         async with get_session() as session:
             rows = await _gather_trial_rows(session, analyzer_id, org_id)
-            inputs = await build_analyzer_inputs(rows)
-        output = await run_analyzer_eval(inputs, _build_analyzer_eval_config())
+        output = await eval_rows_fn(rows, _build_analyzer_eval_config(), analyzer_id)
+        if output is not None:
+            # Derived host-side from rows, so it holds for every eval strategy --
+            # including ones that never build AnalyzerEvalInputs.
+            output.models_by_task = _models_by_task(rows)
+        if save_trial_analyses and output is not None:
+            await _maybe_save_trial_analyses(
+                analyzer_id=analyzer_id,
+                findings=output.findings,
+                subanalyses=output.subanalyses,
+                counts=output.counts,
+            )
     except asyncio.CancelledError:
         # Reaper/shutdown cancelled us mid-run. Record it as a failure (the
         # _store liveness guard still skips the write if we no longer own the
         # job) instead of leaking a RUNNING row. CancelledError is BaseException,
         # so the broad except below would miss it.
-        output = None
-        error = (
-            "Analyzer generation was cancelled by the worker runtime before it "
-            "finished (usually a worker restart or shutdown)."
-        )
+        #
+        # `output` is only ever set once run_analyzer_eval has fully returned, so
+        # a cancel arriving with it already populated landed in the best-effort
+        # trial-analyses upload (whose own `except Exception` cannot catch a
+        # BaseException). That side product must never discard a finished
+        # analysis -- keep the output so _store still records SUCCESS.
+        if output is None:
+            error = (
+                "Analyzer generation was cancelled by the worker runtime before it "
+                "finished (usually a worker restart or shutdown)."
+            )
     except Exception as exc:  # noqa: BLE001
         output = None
         error = f"Analyzer generation failed: {exc}"
@@ -257,6 +349,9 @@ async def run_analyzer_generation_job(
                 analyzer.num_bad_failures = output.counts["bad"]
                 analyzer.num_good_failures = output.counts["good"]
                 analyzer.breakdown = output.breakdown
+                analyzer.reduce_prompt = output.reduce_prompt
+                analyzer.findings = [asdict(f) for f in output.findings]
+                analyzer.models_by_task = output.models_by_task
                 analyzer.status = JobStatus.SUCCESS
                 analyzer.error = None
             else:

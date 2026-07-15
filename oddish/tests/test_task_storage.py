@@ -288,6 +288,65 @@ async def test_resolve_trial_directory_cleans_temp_dir_on_download_failure(
 
 
 @pytest.mark.asyncio
+async def test_resolve_trial_directory_recovers_null_s3_key_from_canonical_prefix(
+    monkeypatch, tmp_path
+):
+    # A failed upload leaves trial_s3_key NULL and harbor_result_path pointing
+    # at a dead worker-local /tmp path; the resolver must fall back to the
+    # canonical trial prefix, where partial uploads still land.
+    storage = _FakeStorage(exists=True)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    trial_dir, temp_dir, resolved_key = await storage_mod.resolve_trial_directory(
+        "task-123-0",
+        trial_s3_key=None,
+        trial_result_path=str(tmp_path / "gone" / "result.json"),
+    )
+
+    canonical = "tasks/task-123/trials/task-123-0/"
+    assert storage.prefix_exists_calls == [canonical]
+    assert resolved_key == canonical
+    assert temp_dir is not None and trial_dir == temp_dir
+    assert (trial_dir / "result.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_resolve_trial_directory_prefers_existing_local_path(
+    monkeypatch, tmp_path
+):
+    storage = _FakeStorage(exists=True)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+    local = tmp_path / "job"
+    local.mkdir()
+
+    trial_dir, temp_dir, resolved_key = await storage_mod.resolve_trial_directory(
+        "task-123-0",
+        trial_s3_key=None,
+        trial_result_path=str(local),
+    )
+
+    assert trial_dir == local
+    assert temp_dir is None and resolved_key is None
+    assert storage.prefix_exists_calls == []
+    assert storage.download_trial_directory_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_trial_directory_missing_everywhere_raises(
+    monkeypatch, tmp_path
+):
+    storage = _FakeStorage(exists=False)
+    monkeypatch.setattr(storage_mod, "get_storage_client", lambda: storage)
+
+    with pytest.raises(ValueError, match="Trial result path does not exist"):
+        await storage_mod.resolve_trial_directory(
+            "task-123-0",
+            trial_s3_key=None,
+            trial_result_path=str(tmp_path / "gone" / "result.json"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_download_task_directory_extracts_archive_object(monkeypatch, tmp_path):
     archive_bytes = _make_task_archive(
         {

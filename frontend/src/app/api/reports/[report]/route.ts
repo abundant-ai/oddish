@@ -16,7 +16,7 @@ function safeJson(text: string): unknown {
 
 async function forward(
   method: "GET" | "DELETE",
-  analyzerId: string,
+  reportId: string,
 ): Promise<NextResponse> {
   const authObj = await auth();
   if (!authObj || !authObj.userId) {
@@ -29,7 +29,7 @@ async function forward(
       { status: 401 },
     );
   }
-  const url = getBackendUrl("analyzers", `/${encodeURIComponent(analyzerId)}`);
+  const url = getBackendUrl("reports", `/${encodeURIComponent(reportId)}`);
   const res = await fetch(url, {
     method,
     cache: "no-store",
@@ -41,11 +41,11 @@ async function forward(
 
 export async function GET(
   _request: Request,
-  { params }: { params: Promise<{ analyzer: string }> },
+  { params }: { params: Promise<{ report: string }> },
 ) {
   try {
-    const { analyzer } = await params;
-    return await forward("GET", analyzer);
+    const { report } = await params;
+    return await forward("GET", report);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
@@ -56,11 +56,11 @@ export async function GET(
 
 export async function DELETE(
   _request: Request,
-  { params }: { params: Promise<{ analyzer: string }> },
+  { params }: { params: Promise<{ report: string }> },
 ) {
   try {
-    const { analyzer } = await params;
-    return await forward("DELETE", analyzer);
+    const { report } = await params;
+    return await forward("DELETE", report);
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Unknown error" },

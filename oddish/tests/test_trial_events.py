@@ -75,11 +75,11 @@ def test_feed_line_renders_display_kinds():
         )
     )
     assert [e["kind"] for e in rendered] == ["message", "tool_use"]
-    assert rendered[0]["payload"] == {"text": "hello"}
-    assert rendered[1]["payload"] == {
-        "input": json.dumps({"command": "ls"}),
-        "name": "Bash",
-    }
+    assert rendered[0]["payload"]["text"] == "hello"
+    assert len(rendered[0]["payload"]["turn_id"]) == 64
+    assert rendered[1]["payload"]["input"] == json.dumps({"command": "ls"})
+    assert rendered[1]["payload"]["name"] == "Bash"
+    assert rendered[1]["payload"]["turn_id"] == rendered[0]["payload"]["turn_id"]
     assert fold.usage_by_id == {"msg_1": {"input_tokens": 1}}
 
     assert fold.feed_line(tool_result_line("output text")) == [
@@ -182,7 +182,8 @@ def test_lone_surrogates_and_control_bytes_are_sanitized():
 def test_newline_tab_and_carriage_return_are_preserved_unmarked():
     fold = ClaudeUsageFold()
     [event] = fold.feed_line(text_line("line 1\nline\t2\rline 3"))
-    assert event["payload"] == {"text": "line 1\nline\t2\rline 3"}
+    assert event["payload"]["text"] == "line 1\nline\t2\rline 3"
+    assert len(event["payload"]["turn_id"]) == 64
 
 
 def test_recursive_sanitizer_preserves_normal_json_unchanged():

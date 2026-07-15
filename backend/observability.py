@@ -173,6 +173,18 @@ def configure_logfire(service_name: str) -> bool:
             logger.warning("logfire.install_auto_tracing failed", exc_info=True)
 
         _configured = True
+        # Oddish is a portable package and cannot import this hosted module,
+        # but both layers share Logfire's process-global singleton. Tell its
+        # helpers that configuration already succeeded so structured warnings
+        # emitted inside core worker handlers also reach Logfire.
+        try:
+            from oddish.observability import mark_observability_configured
+
+            mark_observability_configured()
+        except Exception:
+            logger.warning(
+                "failed to mark Oddish observability configured", exc_info=True
+            )
         logger.info("Logfire configured (service=%s)", service_name)
         return True
 

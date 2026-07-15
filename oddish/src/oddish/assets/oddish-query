@@ -2,6 +2,14 @@
 'use strict';
 
 const MAX_BYTES = 16000, LOG_HEAD = 4000, LOG_TAIL = 4000;
+// Trajectories are read tail-first: a run's failure manifests at the END, while
+// the head is setup boilerplate. So --trajectory spends its whole byte budget on
+// the tail rather than splitting it head/tail like plain logs do.
+//
+// A FIXED budget, not a percentage: callers batch N trajectories into one
+// context, so the per-trial cost has to be bounded independently of how long the
+// trajectory happens to be. ("Last 10%" of a 500KB trajectory is 50KB.)
+const TRAJ_TAIL_DEFAULT = Number(process.env.ODDISH_QUERY_TRAJ_TAIL_BYTES || 8000);
 const BASE = (process.env.ODDISH_API_BASE_URL || '').replace(/\/+$/, '');
 const KEY = process.env.ODDISH_API_KEY || '';
 
@@ -83,7 +91,20 @@ async function cmdExpTrials(a) {
 async function cmdLogs(a) {
   const data = await get(`/trials/${a.trialId}/${a.trajectory ? 'trajectory' : 'logs'}`);
   let text = typeof data === 'string' ? data : JSON.stringify(data);
-  if (text.length > LOG_HEAD + LOG_TAIL) text = text.slice(0, LOG_HEAD) + '\n…[truncated]…\n' + text.slice(-LOG_TAIL);
+  if (a.trajectory) {
+    // Tail-only. Announce the elision so the agent knows earlier steps exist and
+    // can widen with --tail-bytes rather than reasoning from a silent fragment.
+    const budget = a.tailBytes > 0 ? a.tailBytes : TRAJ_TAIL_DEFAULT;
+    if (text.length > budget) {
+      // ASCII only: agents paste this banner into python/node one-liners, and a
+      // U+2026 ellipsis makes those die with `SyntaxError: invalid character`.
+      // Observed in a real run against c02666c5.
+      text = `### trajectory truncated: showing last ${budget} of ${text.length} bytes; `
+        + `re-run with --tail-bytes N for more\n` + text.slice(-budget);
+    }
+  } else if (text.length > LOG_HEAD + LOG_TAIL) {
+    text = text.slice(0, LOG_HEAD) + '\n…[truncated]…\n' + text.slice(-LOG_TAIL);
+  }
   out(text);
 }
 
@@ -201,7 +222,10 @@ USAGE: node /probe-harness/oddish-query <group> <command> [args]
   tasks get <task_id>         task detail
   tasks trials <task_id>      a task's trials
   experiments trials <exp_id> trials in an experiment (trial_id, task, status, reward, is_probe)
-  trials logs <trial_id> [--trajectory]   a trial's logs, or full trajectory
+  trials logs <trial_id> [--trajectory] [--tail-bytes N]
+                              a trial's logs, or its trajectory. --trajectory shows
+                              the LAST N bytes (default 8000) — failures land at the
+                              end; raise --tail-bytes if you need earlier steps.
 
 Use your judgement about which of these to call for your probe — not every probe needs every command.`;
 
@@ -226,7 +250,7 @@ async function main() {
   if (cmd === '--help' || cmd === '-h') { out(HELP); return; }
   const a = { id, rel: id, trialId: id, q: opt.q, tagsAll: opt['tags-all'], tagsAny: opt['tags-any'],
     tagsNone: opt['tags-none'], limit: opt.limit || 25, offset: opt.offset || 0,
-    trajectory: !!opt.trajectory };
+    trajectory: !!opt.trajectory, tailBytes: Number(opt['tail-bytes'] || 0) };
   if (group === 'tasks' && cmd === 'search') return cmdSearch(a);
   if (group === 'tasks' && cmd === 'get') return cmdGet(a);
   if (group === 'tasks' && cmd === 'trials') return cmdTaskTrials(a);

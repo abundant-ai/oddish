@@ -655,6 +655,39 @@ def test_build_agent_config_non_probe_leaves_timeout_unset(monkeypatch):
     assert agent_config.override_timeout_sec is None
 
 
+def test_build_agent_config_mini_swe_anthropic_uses_oddish_wrapper(monkeypatch):
+    """Non-Meta mini-swe-agent trials route through the Oddish base subclass so
+    install() pulls litellm's proxy extras (orjson/fastapi) into the tool venv."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="claude-opus-4-8",
+        raw_harbor_config={},
+    )
+
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.mini_swe_agent:OddishMiniSweAgent"
+    )
+
+
+def test_build_agent_config_mini_swe_meta_uses_meta_wrapper(monkeypatch):
+    """Meta-model mini-swe-agent trials still route through the Meta subclass."""
+    monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
+
+    agent_config = harbor_runner._build_agent_config(
+        agent="mini-swe-agent",
+        model="meta/llama-eval-model",
+        raw_harbor_config={},
+    )
+
+    assert (
+        agent_config.import_path
+        == "oddish.workers.agents.mini_swe_agent:OddishMetaMiniSweAgent"
+    )
+
+
 def test_build_agent_config_claude_uses_bedrock_id_in_bedrock_mode(monkeypatch):
     monkeypatch.setattr(harbor_runner.settings, "openai_provider", "openai")
     monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
@@ -1163,6 +1196,7 @@ def test_oddish_grok_build_writes_streaming_json_trajectory(tmp_path):
     assert (
         trajectory["steps"][1]["observation"]["results"][0]["content"] == "README.md\n"
     )
+    assert trajectory["steps"][1]["extra"]["source_call_id"] == "call_1"
     assert trajectory["steps"][2]["message"] == "Done."
     assert trajectory["final_metrics"]["total_steps"] == 3
 

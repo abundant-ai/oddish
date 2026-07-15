@@ -615,7 +615,7 @@ caps each uploaded zip at 1 GiB.
 A task can report structured benchmark numbers by having its **verifier**
 write `metrics.json` next to `reward.txt` (i.e. `/logs/verifier/metrics.json`
 inside the sandbox). Oddish persists the parsed object onto the trial and
-returns it as the trial's `result` in the API and dashboard.
+returns it as the trial's `result` in the API.
 
 Contract:
 
@@ -636,3 +636,23 @@ cat > /logs/verifier/metrics.json <<'JSON'
 {"schema_version": 1, "ttft_ms": 12.5, "throughput_tokens_per_sec": 4300}
 JSON
 ```
+
+## Test Results (ctrf.json)
+
+Test-based tasks can expose passed, failed, skipped, pending, and other counts
+by writing a [Common Test Report Format](https://ctrf.io/) report to
+`/logs/verifier/ctrf.json`. Current Harbor tasks commonly do this with
+`pytest-json-ctrf`:
+
+```bash
+uvx --with pytest --with pytest-json-ctrf \
+  pytest --ctrf /logs/verifier/ctrf.json /tests -rA
+```
+
+Oddish keeps the full report with the trial artifacts and persists only its
+compact `results.summary` counts, `results.tool.name`, and the trial-relative
+report artifact path under the reserved `trial.result._verifier` key. The
+dashboard shows those counts as a small passed/total line in the trial
+drawer's summary. Missing, malformed, or oversized CTRF reports are ignored
+and never change the settled `reward`; verifiers without a test report simply
+show no test line.

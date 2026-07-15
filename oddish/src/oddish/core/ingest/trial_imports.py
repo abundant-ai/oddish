@@ -43,6 +43,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oddish.config import normalize_model_id, settings
+from oddish.core.harbor_artifacts import build_trial_result
 from oddish.db import (
     ExperimentModel,
     TaskModel,
@@ -281,6 +282,11 @@ async def initialize_trial_import(
             max_attempts=1,
             harbor_stage=trial_spec.harbor_stage or "completed",
             reward=trial_spec.reward,
+            # ``_verifier`` is an Oddish-owned normalized CTRF envelope, not
+            # client-authored import metadata. Imported artifacts may contain
+            # the real report, so never persist a caller-supplied summary that
+            # could override it in the dashboard.
+            result=build_trial_result(trial_spec.result, None, None, None),
             error_message=trial_spec.error_message,
             input_tokens=trial_spec.input_tokens,
             cache_tokens=trial_spec.cache_tokens,

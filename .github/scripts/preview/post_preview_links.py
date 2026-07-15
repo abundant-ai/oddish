@@ -92,14 +92,26 @@ def build_body() -> str:
     )
 
 
+def find_existing_comment(pr_number: str):
+    page = 1
+    while True:
+        comments = gh_request(
+            "GET",
+            f"/issues/{pr_number}/comments?per_page=100&page={page}",
+        )
+        existing = next(
+            (comment for comment in comments if MARKER in comment.get("body", "")),
+            None,
+        )
+        if existing or len(comments) < 100:
+            return existing
+        page += 1
+
+
 def main() -> None:
     pr_number = env("PR_NUMBER")
     body = build_body()
-    comments = gh_request("GET", f"/issues/{pr_number}/comments?per_page=100")
-    existing = next(
-        (comment for comment in comments if MARKER in comment.get("body", "")),
-        None,
-    )
+    existing = find_existing_comment(pr_number)
 
     if existing:
         gh_request("PATCH", f"/issues/comments/{existing['id']}", {"body": body})
